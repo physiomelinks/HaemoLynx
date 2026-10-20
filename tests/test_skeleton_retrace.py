@@ -7,6 +7,7 @@ Each case is a square ring of tube, its skeleton the ring's centreline, and a gr
 that follows three of its four sides: the fourth is the lost stretch."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import networkx as nx
 import numpy as np
 import pytest
@@ -413,3 +414,94 @@ def test_the_trial_copy_is_the_graphs_copy_in_order():
     H.nodes["c"]["pos"] = None
     assert G.edges["a", "b", 0]["length"] == 1.0 and G.nodes["c"]["pos"] == (0.0, 0.0, 0.0)
     assert H.edges["b", "a", 0] is H.edges["a", "b", 0]
+
+
+class _FreshEdits(R._Edits):
+    """The re-trace's edits as they were: a fresh trial copy for every
+    judgement, every new node's id scanned for, every edge read for a piece's."""
+
+    @contextmanager
+    def trial(self):
+        H = R._trial_copy(self.G)
+        yield H, lambda point, owner, made: R._split_at(H, point, owner, made)
+
+    def split(self, point_um, owner, made):
+        return R._split_at(self.G, point_um, owner, made)
+
+    def add_edge(self, a, b, **attributes):
+        self.G.add_edge(a, b, **attributes)
+
+    def piece_edges(self, tag):
+        return None
+
+
+@pytest.mark.parametrize("seed, missing_share", [(1, 0.3), (2, 0.45), (5, 0.25)])
+def test_the_kept_trial_copy_draws_what_a_fresh_copy_per_judgement_drew(monkeypatch, seed, missing_share):
+    """A lattice's lost sides tie for the shortest way round at every turn, so
+    the loop each judgement reads depends on the trial copy's adjacency order:
+    the copy put back after each judgement must be the copy taken afresh. The
+    graphs drawn are the same, every attribute and the order of every node,
+    edge and neighbour, and so is every verdict judge_lost_skeleton gives."""
+    import pickle
+
+    kept, fresh = _lattice(seed=seed, missing_share=missing_share), _lattice(seed=seed, missing_share=missing_share)
+    verdicts = R.judge_lost_skeleton(kept.G, kept.skeleton, kept.support())
+    R.retrace_lost_skeleton(kept.G, kept.skeleton, kept.support())
+    monkeypatch.setattr(R, "_Edits", _FreshEdits)
+    fresh_verdicts = R.judge_lost_skeleton(fresh.G, fresh.skeleton, fresh.support())
+    R.retrace_lost_skeleton(fresh.G, fresh.skeleton, fresh.support())
+
+    assert len(R.retraced_edges(kept.G)) >= 5
+    assert pickle.dumps(kept.G) == pickle.dumps(fresh.G)
+    assert [v.reason for v in verdicts] == [v.reason for v in fresh_verdicts]
+    for mine, theirs in zip(verdicts, fresh_verdicts):
+        assert (mine.hole_um, mine.loop_length_um) == (theirs.hole_um, theirs.loop_length_um)
+        assert (mine.path_um is None) == (theirs.path_um is None)
+        assert mine.path_um is None or np.array_equal(mine.path_um, theirs.path_um)
+
+
+def test_a_trial_put_back_is_the_copy_taken_afresh():
+    """Splits on one vessel twice over, on a parallel pair and on a self-loop:
+    put back, the trial copy is node for node, neighbour for neighbour and key
+    for key the copy a fresh _trial_copy gives, and its next split takes the id
+    next_node_id gives."""
+    import pickle
+
+    from haemolynx.graph._helpers import next_node_id
+
+    scene = _lattice(cells=3, missing_share=0.0, seed=4)
+    G = scene.G
+    first = next(iter(G.nodes))
+    at = np.asarray(G.nodes[first]["pos"], dtype=float)
+    loop = [tuple(at + (0.0, 3.0 * np.sin(t), 3.0 - 3.0 * np.cos(t))) for t in np.linspace(0.0, 2 * np.pi, 13)]
+    loop[0] = loop[-1] = tuple(at)
+    G.add_edge(first, first, voxels=loop, length=float(np.linalg.norm(np.diff(loop, axis=0), axis=1).sum()))
+    u, v, key = sorted(G.edges(keys=True))[2]
+    G.add_edge(u, v, voxels=list(reversed(G.edges[u, v, key]["voxels"])), length=G.edges[u, v, key]["length"])
+    edits = R._Edits(G)
+    for owner in [(u, v, key), (u, v, 1), (first, first, 0)]:
+        path = np.asarray(G.edges[owner]["voxels"], dtype=float)
+        with edits.trial() as (H, split):
+            made = []
+            a = split(path[len(path) // 3], owner, made)
+            b = split(path[len(path) // 4], owner, made)  # the piece of it the first split left
+            assert a == next_node_id(G, set()) and b == a + 1
+            assert H.number_of_nodes() == G.number_of_nodes() + 2
+        fresh = R._trial_copy(G)
+        # (A graph's cached node and edge views are no part of it.)
+        assert pickle.dumps((H.graph, H._node, H._adj)) == pickle.dumps((fresh.graph, fresh._node, fresh._adj))
+    assert edits._copy is H  # kept for the next judgement
+
+
+def test_a_pieces_edges_are_read_as_the_graphs_edge_view_gives_them():
+    scene = _lattice(cells=3, missing_share=0.0, seed=6)
+    G = scene.G
+    edits = R._Edits(G)
+    edges = sorted(G.edges(keys=True))
+    for n, (u, v, key) in enumerate(edges[:4]):
+        G.edges[u, v, key][R._PIECE] = 7 if n % 2 else 8
+        edits.piece_nodes.update((u, v))
+    expected = [(u, v, k, d) for u, v, k, d in G.edges(keys=True, data=True) if d.get(R._PIECE) == 7]
+    found = edits.piece_edges(7)
+    assert [(u, v, k) for u, v, k, _d in found] == [(u, v, k) for u, v, k, _d in expected]
+    assert all(a is b for (*_e, a), (*_f, b) in zip(found, expected))

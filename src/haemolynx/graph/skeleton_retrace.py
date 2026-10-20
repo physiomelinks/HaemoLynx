@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -43,6 +44,7 @@ from ._helpers import (
     duplicates_existing_vessel,
     edge_id,
     edge_sample_points,
+    next_node_id,
 )
 from .edit import insert_node_on_edge
 from .lumen_loops import DEFAULT_SHORT_LOOP_KEEP_HOLE_UM, loop_hole_um
@@ -147,6 +149,111 @@ def _trial_copy(G: nx.MultiGraph) -> nx.MultiGraph:
                     copied[key] = data.copy()
                 mine[v] = adj[v][u] = copied
     return H
+
+
+class _Edits:
+    """How the re-trace edits *G*, and tries edits on its trial copy: cheaper,
+    with the same graphs as before.
+
+    - :meth:`trial` hands out the trial copy (:func:`_trial_copy`), taken once
+      and again only after *G* changed, and puts every split a judgement makes
+      on it back as it was, dict order and all: each judgement reads the copy
+      a fresh ``_trial_copy`` would give. A copy per judged piece and join was
+      half the step (29_2_f contra replay, 2026-10-20).
+    - a node it adds takes the id ``next_node_id`` would have scanned the
+      graph for, counted on instead.
+    - :meth:`piece_edges` reads the edges of the piece being drawn at its own
+      nodes, in the order and from the end ``G.edges`` gives them, not every
+      edge of the graph.
+    """
+
+    def __init__(self, G: nx.MultiGraph):
+        self.G = G
+        self._copy: Optional[nx.MultiGraph] = None
+        self.next_id = next_node_id(G, set())
+        # Each node's place in G's node order: the re-trace only adds nodes.
+        self.order = {n: i for i, n in enumerate(G._adj)}
+        #: The nodes of the edges the piece being drawn has added.
+        self.piece_nodes: set = set()
+
+    def split(self, point_um: np.ndarray, owner, made: list) -> Any:
+        """:func:`_split_at` on *G*."""
+        node = _split_at(self.G, point_um, owner, made, node_id=self.next_id)
+        if node == self.next_id:
+            self.order[node] = len(self.order)
+            self.next_id += 1
+        self.piece_nodes.add(node)
+        self._copy = None
+        return node
+
+    def add_edge(self, a: Any, b: Any, **attributes) -> None:
+        self.G.add_edge(a, b, **attributes)
+        self.piece_nodes.update((a, b))
+        self._copy = None
+
+    @contextmanager
+    def trial(self):
+        """``(H, split)``: the trial copy, and ``split(point_um, owner, made)``,
+        :func:`_split_at` on it; put back as it was when the block ends."""
+        if self._copy is None:
+            self._copy = _trial_copy(self.G)
+        H = self._copy
+        splits: list = []
+        next_id = [self.next_id]
+
+        def split(point_um: np.ndarray, owner, made: list) -> Any:
+            node = _split_at(H, point_um, owner, made, node_id=next_id[0], record=splits)
+            if node == next_id[0]:
+                next_id[0] += 1
+            return node
+
+        try:
+            yield H, split
+        except BaseException:
+            self._copy = None
+            raise
+        _put_back(H, splits)
+
+    def piece_edges(self, tag: int) -> list:
+        """``(u, v, key, data)`` of every edge carrying ``_PIECE == tag``, as
+        ``G.edges(keys=True, data=True)`` gives them: ordered by the node first
+        met, its neighbours' order and the keys', each from that node."""
+        adj, order = self.G._adj, self.order
+        found: dict = {}
+        for n in self.piece_nodes:
+            for neighbour, keys in adj[n].items():
+                first, second = (n, neighbour) if order[n] <= order[neighbour] else (neighbour, n)
+                for key, data in keys.items():
+                    if data.get(_PIECE) == tag:
+                        found[(first, second, key)] = data
+
+        def place(edge):
+            first, second, key = edge
+            return order[first], list(adj[first]).index(second), list(adj[first][second]).index(key)
+
+        return [(u, v, key, found[(u, v, key)]) for u, v, key in sorted(found, key=place)]
+
+
+def _put_back(H: nx.MultiGraph, splits: list) -> None:
+    """Undo, newest first, the *splits* :func:`_split_at` recorded on *H*: the
+    nodes they added go, and the adjacency of the vessels they split is as it
+    was, the same dicts in the same order."""
+    adj = H._adj
+    for u, v, key, around_u, around_v, keyed, node in reversed(splits):
+        if node is not None:
+            H.remove_node(node)
+        adj[u].clear()
+        adj[u].update(around_u)
+        if v != u:
+            adj[v].clear()
+            adj[v].update(around_v)
+        keys = adj[u][v]
+        keys.clear()
+        keys.update(keyed)
+    splits.clear()
+    clear_cache = getattr(nx, "_clear_cache", None)
+    if clear_cache is not None:
+        clear_cache(H)
 
 
 class _LiveSamples:
@@ -524,10 +631,14 @@ def _other_places(piece: LostSkeletonPiece, route: np.ndarray, spacing: np.ndarr
     return branches
 
 
-def _split_at(G: nx.MultiGraph, point_um: np.ndarray, owner, made: list) -> Any:
+def _split_at(
+    G: nx.MultiGraph, point_um: np.ndarray, owner, made: list, *, node_id: Any = None, record: Optional[list] = None,
+) -> Any:
     """Join *point_um* to the network: the node it lies at, splitting the
     vessel *owner* there -- or, where a split this piece made already took
-    that vessel, the piece of it nearest."""
+    that vessel, the piece of it nearest. *node_id*: a new node's id
+    (``insert_node_on_edge``'s). *record*: a list the split is noted in, for
+    :func:`_put_back`."""
     u, v, key = owner
     if not G.has_edge(u, v, key):
         pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True)}
@@ -537,7 +648,12 @@ def _split_at(G: nx.MultiGraph, point_um: np.ndarray, owner, made: list) -> Any:
             key=lambda e: float(np.min(np.linalg.norm(
                 edge_sample_points(e[0], e[1], G.edges[e], pos) - point_um, axis=1))),
         )
-    node = insert_node_on_edge(G, u, v, key, point_um)
+    if record is not None:
+        adj = G._adj
+        record.append([u, v, key, list(adj[u].items()), list(adj[v].items()), list(adj[u][v].items()), None])
+    node = insert_node_on_edge(G, u, v, key, point_um, node_id=node_id)
+    if record is not None and node != u and node != v:
+        record[-1][-1] = node
     made.append(node)
     return node
 
@@ -566,9 +682,11 @@ def _judge(
     index: EdgeSampleIndex,
     spacing: np.ndarray,
     keep_hole_over_um: float,
+    edits: Optional[_Edits] = None,
 ):
     """``(Retrace, attachments)``: the verdict on *piece*, and where it would
-    join the graph -- ``(point, owner)`` at each end -- when it is drawn back."""
+    join the graph -- ``(point, owner)`` at each end -- when it is drawn back.
+    *edits*: the run's :class:`_Edits` of *G*."""
     points = piece.voxels * spacing
     nothing = dict(path_um=None, hole_um=None, loop_length_um=None)
     mask_fraction = float(np.mean(support.inside(points)))
@@ -590,10 +708,21 @@ def _judge(
     if start is None or end is None:
         return Retrace(**verdict, **nothing, reason=REFUSED_ONE_END), None
     # Tried on a copy: the loop it would close is read with both ends joined.
-    trial = _trial_copy(G)
+    with (edits if edits is not None else _Edits(G)).trial() as (trial, split):
+        return _judge_on_trial(
+            G, trial, split, verdict, nothing, start, start_owner, end, end_owner, route, route_um,
+            support, index, keep_hole_over_um,
+        )
+
+
+def _judge_on_trial(
+    G, trial, split, verdict, nothing, start, start_owner, end, end_owner, route, route_um,
+    support, index, keep_hole_over_um,
+):
+    """:func:`_judge` from the trial split on: the piece's joins, the loop it closes."""
     made: list = []
-    a = _split_at(trial, start, start_owner, made)
-    b = _split_at(trial, end, end_owner, made)
+    a = split(start, start_owner, made)
+    b = split(end, end_owner, made)
     path = np.vstack([trial.nodes[a]["pos"], route_um, trial.nodes[b]["pos"]]).astype(float)
     nothing["path_um"] = path
     # The bridge gate judges the two joins from the graph to the skeleton, which
@@ -619,14 +748,16 @@ def _judge(
     return Retrace(**verdict, **measured, reason=None), ((start, start_owner), (end, end_owner), route)
 
 
-def _nearest_on(G: nx.MultiGraph, point_um: np.ndarray, keep) -> tuple:
+def _nearest_on(G: nx.MultiGraph, point_um: np.ndarray, keep, edges: Optional[list] = None) -> tuple:
     """``(point, (u, v, key))``: the centreline sample nearest *point_um* on
-    the edges *keep* (``data -> bool``) accepts; ``(None, None)`` with none."""
-    pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True)}
+    the edges *keep* (``data -> bool``) accepts; ``(None, None)`` with none.
+    *edges*: those edges, ``(u, v, key, data)`` as ``G.edges`` gives them
+    (:meth:`_Edits.piece_edges`), when the caller has them."""
+    if edges is None:
+        edges = [(u, v, key, data) for u, v, key, data in G.edges(keys=True, data=True) if keep(data)]
     best, best_point, best_owner = np.inf, None, None
-    for u, v, key, data in G.edges(keys=True, data=True):
-        if not keep(data):
-            continue
+    for u, v, key, data in edges:
+        pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v)}
         path = densify_polyline(edge_sample_points(u, v, data, pos), max_step_um=_STEP_UM)
         d = np.linalg.norm(path - point_um, axis=1)
         i = int(np.argmin(d))
@@ -644,6 +775,7 @@ def _join_place(
     keep_hole_over_um: float,
     centrelines: _Centrelines,
     index: EdgeSampleIndex,
+    edits: Optional[_Edits] = None,
 ) -> Optional[str]:
     """Draw, in place, one further place a drawn piece meets the graph: the
     piece's skeleton *branch* (voxel indices, from its route to the reached
@@ -654,37 +786,40 @@ def _join_place(
     only when the loop it closes runs round a hole wider than
     *keep_hole_over_um*. Grid N2's drawings (N2-12, N2-14): every join
     Harvey added ran along the piece to such a place. Returns None when it is
-    drawn, else why not (a ``REFUSED_*`` reason)."""
+    drawn, else why not (a ``REFUSED_*`` reason). *edits*: the run's
+    :class:`_Edits` of *G*, its piece the one *tag* names."""
     branch_um = branch * spacing
-    start, start_owner = _nearest_on(G, branch_um[0], lambda d: d.get(_PIECE) == tag)
+    keep = lambda d: d.get(_PIECE) == tag  # noqa: E731
+    start, start_owner = _nearest_on(G, branch_um[0], keep, None if edits is None else edits.piece_edges(tag))
     end, end_owner = centrelines.nearest_vessel(
         branch_um[-1], skip=lambda e: not G.has_edge(*e) or G.edges[e].get(_PIECE) == tag)
     if start is None or end is None:
         return REFUSED_ONE_END
-    trial = _trial_copy(G)
-    made: list = []
-    a = _split_at(trial, start, start_owner, made)
-    b = _split_at(trial, end, end_owner, made)
-    if a == b:
-        return REFUSED_NO_LOOP
-    path = np.vstack([trial.nodes[a]["pos"], branch_um[1:], trial.nodes[b]["pos"]]).astype(float)
-    if not support.accepts(path[-2:]):
-        return REFUSED_BACKGROUND
-    if support.support(path).inside_fraction < MIN_MASK_FRACTION:
-        return REFUSED_OFF_MASK
-    if duplicates_existing_vessel(path, G, support.inside, support.radius, index=index, judge_short_at_middle=True):
-        return REFUSED_SAME_LUMEN
-    back = _loop_back(trial, a, b)
-    if back is None:
-        return REFUSED_NO_LOOP
-    hole = loop_hole_um(np.vstack([path, back]), support)
-    if hole is None or hole <= float(keep_hole_over_um):
-        return REFUSED_SMALL_HOLE
+    edits = _Edits(G) if edits is None else edits
+    with edits.trial() as (trial, split):
+        made: list = []
+        a = split(start, start_owner, made)
+        b = split(end, end_owner, made)
+        if a == b:
+            return REFUSED_NO_LOOP
+        path = np.vstack([trial.nodes[a]["pos"], branch_um[1:], trial.nodes[b]["pos"]]).astype(float)
+        if not support.accepts(path[-2:]):
+            return REFUSED_BACKGROUND
+        if support.support(path).inside_fraction < MIN_MASK_FRACTION:
+            return REFUSED_OFF_MASK
+        if duplicates_existing_vessel(path, G, support.inside, support.radius, index=index, judge_short_at_middle=True):
+            return REFUSED_SAME_LUMEN
+        back = _loop_back(trial, a, b)
+        if back is None:
+            return REFUSED_NO_LOOP
+        hole = loop_hole_um(np.vstack([path, back]), support)
+        if hole is None or hole <= float(keep_hole_over_um):
+            return REFUSED_SMALL_HOLE
     made = []
-    a = _split_at(G, start, start_owner, made)
-    b = _split_at(G, end, end_owner, made)
+    a = edits.split(start, start_owner, made)
+    b = edits.split(end, end_owner, made)
     path[0], path[-1] = G.nodes[a]["pos"], G.nodes[b]["pos"]
-    G.add_edge(
+    edits.add_edge(
         a, b, voxels=path.tolist(), length=_length(path),
         **{RETRACED: True, RETRACED_JOIN: True, RETRACED_HOLE_UM: round(float(hole), 2), _PIECE: tag},
     )
@@ -705,8 +840,9 @@ def judge_lost_skeleton(
     against, so the run itself may draw a different set."""
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     centrelines, index = _Centrelines(G), _LiveIndex(G)
+    edits = _Edits(G)
     return [
-        _judge(G, piece, support, centrelines, index, spacing, keep_hole_over_um)[0]
+        _judge(G, piece, support, centrelines, index, spacing, keep_hole_over_um, edits)[0]
         for piece in lost_skeleton_pieces(G, skeleton, spacing, reach_um=reach_um, centrelines=centrelines)
     ]
 
@@ -745,21 +881,23 @@ def retrace_lost_skeleton(
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     centrelines, index = _Centrelines(G), _LiveIndex(G)
     pieces = lost_skeleton_pieces(G, skeleton, spacing, reach_um=reach_um, centrelines=centrelines)
+    edits = _Edits(G)
     drawn = joins = 0
     joins_refused: dict[str, int] = {}
     refused: dict[str, int] = {}
     for piece in pieces:
-        verdict, attachments = _judge(G, piece, support, centrelines, index, spacing, keep_hole_over_um)
+        verdict, attachments = _judge(G, piece, support, centrelines, index, spacing, keep_hole_over_um, edits)
         if attachments is None:
             refused[verdict.reason] = refused.get(verdict.reason, 0) + 1
             continue
         made: list = []
         (start, start_owner), (end, end_owner), route = attachments
-        a = _split_at(G, start, start_owner, made)
-        b = _split_at(G, end, end_owner, made)
+        edits.piece_nodes = set()
+        a = edits.split(start, start_owner, made)
+        b = edits.split(end, end_owner, made)
         path = verdict.path_um.copy()
         path[0], path[-1] = G.nodes[a]["pos"], G.nodes[b]["pos"]
-        G.add_edge(
+        edits.add_edge(
             a, b,
             voxels=path.tolist(), length=_length(path),
             **{RETRACED: True, RETRACED_HOLE_UM: round(float(verdict.hole_um), 2), _PIECE: drawn},
@@ -767,7 +905,7 @@ def retrace_lost_skeleton(
         # the route, and the vessels its ends split
         _follow(G, centrelines, index)
         for branch in _other_places(piece, route, spacing):
-            why = _join_place(G, branch, drawn, support, spacing, keep_hole_over_um, centrelines, index)
+            why = _join_place(G, branch, drawn, support, spacing, keep_hole_over_um, centrelines, index, edits)
             if why is None:
                 joins += 1
                 # its split took a vessel the indexes still name
