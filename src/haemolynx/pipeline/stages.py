@@ -1715,7 +1715,7 @@ def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
         max_short_loop_um=float(settings.get("remove_short_loops_under_um") or 0.0),
         short_loop_keep_hole_um=_short_loop_keep_hole_um(settings),
         fill_tree_gaps=bool(settings.get("thick_vessel_fill_centreline_gaps", True)),
-        extend_thick_ends=bool(settings.get("thick_vessel_extend_centreline_ends", False)),
+        extend_thick_ends=bool(settings.get("thick_vessel_extend_centreline_ends", True)),
         min_stub_length=float(settings.get("min_stub_length", 10.0)),
         min_stub_length_radius_multiple=float(settings.get("min_stub_length_radius_multiple", 3.0) or 0.0),
     )

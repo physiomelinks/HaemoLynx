@@ -3825,7 +3825,7 @@ SCHEMA = Schema(
         Setting(
             name="thick_vessel_extend_centreline_ends",
             kind="bool",
-            default=False,
+            default=True,
             help=(
                 "Where the graph's own centreline of a thick vessel stops at a "
                 "dead end while the segmented vessel runs on, draw it on: along "
@@ -3833,8 +3833,9 @@ SCHEMA = Schema(
                 "on, then through the segmentation, heading on within 60 "
                 "degrees, to the first vessel or dead end it reaches within "
                 "40 um. Where it reaches the image's edge first, the vessel "
-                "leaves the image there and nothing is drawn. Off by default "
-                "until checked on a second set of marked examples"
+                "leaves the image there and nothing is drawn. On by default "
+                "since 2026-10-20 (right at 17 of 18 places on grid Y); not yet "
+                "checked on a second set of marked examples"
             ),
             section=_PIPELINE_STAGES,
             requires=("use_thick_vessel_skeletonisation",),

@@ -1348,7 +1348,8 @@ are only caught locally.
   second strands); and at a fork of the thick centreline an arm at most
   `FORK_BRANCH_MAX_RADIUS_FRACTION` (0.8) of the trunk's radius gets a bridge over its stretch
   inside the trunk's lumen (`bridge_forks`). `thick_vessel_extend_centreline_ends`
-  (`extend_thick_ends`, **off by default** until a fresh grid confirms it): where the graph's
+  (`extend_thick_ends`, **on by default** since 2026-10-20, Harvey's call; not yet checked on a
+  fresh grid): where the graph's
   thick centreline stops at a dead end while the segmented vessel runs on, it is drawn on, along
   the tree where the tree runs on with no graph beside it, then through the segmentation (a
   centre-seeking route leaving within 60 degrees of its heading) to the first vessel or dead end
@@ -1357,7 +1358,9 @@ are only caught locally.
   16, 20 and 23 the tree ended where the graph did, so following the tree alone could not make
   Harvey's joins. Grid Y (`outputs/thick_vessel_breaks/GRID_Y_extension.md`, all 18 such
   places on E14.5's two segmentations): 17/18 against 14 for drawing every one, wrong at a 4 um
-  step out to a face; leave-one-out about 15-16, the reach resting on one example.
+  step out to a face; leave-one-out about 15-16, the reach resting on one example. On Harvey's
+  E14.5 Claudin segmentation (2026-10-20, rebuilt from his run's skeleton) it drew 12 thick
+  centrelines on: dead ends in vessels of 5 um radius or more 124 -> 116, `stops_short` 102 -> 96.
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
   FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself

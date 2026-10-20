@@ -1034,17 +1034,17 @@ def test_a_post_processing_split_draws_on_only_the_thick_ends_of_its_edges():
     assert all(d.get("edited") for *_e, d in named.edges(data=True) if d.get(EXTENDED_UM))
 
 
-def test_the_run_draws_thick_centrelines_on_only_with_its_setting():
+def test_the_run_draws_thick_centrelines_on_by_default_and_off_with_its_setting():
     from haemolynx.pipeline import default_schema
     from haemolynx.pipeline.stages import thick_junction_bridge_arguments
 
     settings = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
                 "bridge_min_mask_fraction": 0.8, "remove_short_loops_under_um": 200.0}
-    # Off by default until a fresh grid confirms grid Y's rule.
-    assert thick_junction_bridge_arguments(settings)["extend_thick_ends"] is False
-    assert default_schema()["thick_vessel_extend_centreline_ends"].default is False
-    settings["thick_vessel_extend_centreline_ends"] = True
+    # On by default since 2026-10-20 (grid Y, 17/18; Harvey's E14.5 Claudin run).
     assert thick_junction_bridge_arguments(settings)["extend_thick_ends"] is True
+    assert default_schema()["thick_vessel_extend_centreline_ends"].default is True
+    settings["thick_vessel_extend_centreline_ends"] = False
+    assert thick_junction_bridge_arguments(settings)["extend_thick_ends"] is False
 
 
 # --- the inscribed radius read a block at a time; one measurement a run (2026-10-18) ---
