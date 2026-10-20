@@ -280,6 +280,33 @@ def _touches_tree(tree: np.ndarray, voxel: tuple[int, int, int]) -> bool:
     return bool(tree[z0:z1, y0:y1, x0:x1].any())
 
 
+def _numbers_carried_along(
+    path: list[tuple[int, int, int]],
+    inside,
+    first: int,
+    number: int,
+    step: int,
+) -> dict[tuple[int, int, int], int]:
+    """The component number of each voxel of *path* reached from
+    ``path[first]`` (numbered *number*) by stepping *step* (+1 or -1) along it
+    through 26-adjacent voxels all *inside* the mask: two 26-adjacent voxels
+    of a mask labelled with the full structure lie in one component of it.
+    Stops at the first voxel outside, or a step that is not to a neighbour."""
+    out: dict[tuple[int, int, int], int] = {}
+    previous = None
+    i = int(first)
+    while 0 <= i < len(path):
+        voxel = path[i]
+        if not inside[voxel]:
+            break
+        if previous is not None and max(abs(a - b) for a, b in zip(voxel, previous)) > 1:
+            break
+        out[voxel] = int(number)
+        previous = voxel
+        i += int(step)
+    return out
+
+
 def inscribed_radius_map(
     binary: np.ndarray,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
@@ -2453,6 +2480,12 @@ def _join_thin_arms_to_fat_ridge(
 
     unjoined_by_bound: list[tuple[int, int, int]] = []
     times = _JoinTimes()
+    # Under the low-RAM option, the structure number (of `result | thick_b`
+    # as labelled) of each voxel a bridge made fat, carried along the bridge
+    # from the tree voxel it touched; read where a bridge's voxels were
+    # looked up, each a slab labelled again (four fifths of the patella's
+    # join, 2026-10-20).
+    new_fat_roi_numbers: dict[tuple[int, int, int], int] = {}
 
     def _bounded_join(label_key: int, local_start, local_end) -> list:
         """The last resort under *bounded_fallback*, in the coordinates of
@@ -2501,7 +2534,14 @@ def _join_thin_arms_to_fat_ridge(
     )
 
     def _local_fat_radius_um_at(voxel: tuple[int, int, int]) -> float:
-        roi_id = int(roi_at[voxel])
+        if use_memmap:
+            cached = radius_at_cache.get(voxel)
+            if cached is not None:
+                return cached
+            carried = new_fat_roi_numbers.get(voxel)
+            roi_id = int(roi_at[voxel]) if carried is None else carried
+        else:
+            roi_id = int(roi_at[voxel])
         if roi_id == 0:
             return 0.0
         # Padded by 1 beyond the component's own tight bounding box: a
@@ -2554,6 +2594,37 @@ def _join_thin_arms_to_fat_ridge(
             cached = float(np.float32(radii.max())) if len(radii) else 0.0
             radius_at_cache[voxel] = cached
         return cached
+
+    def _roi_number(voxel: tuple[int, int, int]) -> int:
+        carried = new_fat_roi_numbers.get(voxel)
+        return int(roi_at[voxel]) if carried is None else carried
+
+    def _numbers_on_bridge(path, stopped_at, stop_on) -> tuple[dict, dict]:
+        """The `allowed` and `result | thick_b` numbers of a bridge's voxels
+        that the path itself settles: the first carried on from the arm's
+        own voxel it starts at, through `allowed`; the second carried back
+        from a voxel of the tree the walk stopped against, through the fat
+        region. A voxel neither reaches is looked up (see NumbersAnywhere)."""
+        carried_allowed = _numbers_carried_along(
+            path, allowed_b, 0, int(allowed_at[path[0]]), +1
+        )
+        carried_roi: dict = {}
+        if roi_at is None or stopped_at is None:
+            return carried_allowed, carried_roi
+        last = path[stopped_at]
+        if not thick_b[last]:
+            return carried_allowed, carried_roi
+        box = tuple(
+            slice(max(0, int(v) - 1), min(int(n), int(v) + 2)) for v, n in zip(last, shape)
+        )
+        touched = np.argwhere(np.asarray(stop_on[box], dtype=bool) & np.asarray(thick_b[box], dtype=bool))
+        if touched.size == 0:
+            return carried_allowed, carried_roi
+        tree_voxel = tuple(int(v) for v in touched[0] + np.array([b.start for b in box]))
+        carried_roi = _numbers_carried_along(
+            path, thick_b, stopped_at, _roi_number(tree_voxel), -1
+        )
+        return carried_allowed, carried_roi
 
     def _bridge_cap_um(end: tuple[int, int, int]) -> float | None:
         """How long a bridge ending at *end* may be: the tighter of the fixed
@@ -2682,12 +2753,16 @@ def _join_thin_arms_to_fat_ridge(
         # not an earlier bridge it passes -- so this arm's voxels are drawn
         # only once it is over (fat_now reads them from the skeleton).
         drawn: list[tuple[int, int, int]] = []
-        for voxel in path:
+        stopped_at = None
+        for step_index, voxel in enumerate(path):
             if not allowed_b[voxel]:
                 continue
             drawn.append(voxel)
             if _touches_tree(stop_on, voxel):
+                stopped_at = step_index
                 break
+        if use_memmap and drawn:
+            carried_allowed, carried_roi = _numbers_on_bridge(path, stopped_at, stop_on)
         if use_memmap and roi_at is not None:
             _skeleton_changed(np.array(
                 [voxel for voxel in drawn if not result[voxel] and not thick_b[voxel]], dtype=np.intp
@@ -2704,9 +2779,23 @@ def _join_thin_arms_to_fat_ridge(
         if newly_fat:
             new_coords = np.asarray(newly_fat, dtype=np.intp)
             fat_coords = np.concatenate([fat_coords, new_coords], axis=0)
-            fat_component_labels = np.concatenate(
-                [fat_component_labels, allowed_at[tuple(new_coords.T)]]
-            )
+            if use_memmap:
+                new_labels = np.array(
+                    [carried_allowed.get(voxel, 0) for voxel in newly_fat],
+                    dtype=fat_component_labels.dtype,
+                )
+                unknown = np.flatnonzero(
+                    [voxel not in carried_allowed for voxel in newly_fat]
+                )
+                if unknown.size:
+                    new_labels[unknown] = allowed_at[tuple(new_coords[unknown].T)]
+                for voxel in newly_fat:
+                    number = carried_roi.get(voxel)
+                    if number is not None:
+                        new_fat_roi_numbers[voxel] = number
+            else:
+                new_labels = allowed_at[tuple(new_coords.T)]
+            fat_component_labels = np.concatenate([fat_component_labels, new_labels])
             with times.timing("nearest-fat tree rebuilt"):
                 fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
         _checkpoint(arm_index, "joined" if drawn else "nothing drawn")

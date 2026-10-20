@@ -743,8 +743,12 @@ are only caught locally.
   `skeleton._SlabComponents` for the fraction filter, the connectivity stats, both
   small-component drops, the bridging and `skeletonize_by_component` (each component's mask
   written as the slabs pass its box and thinned once its last plane is read). The thin-arm join
-  looks component numbers up at the skeleton's voxels only, int32, and a bridge's voxel from its
-  slab labelled again as it was (`slab_labels.NumbersAnywhere`); it held 16 B a fat voxel, twice.
+  looks component numbers up at the skeleton's voxels only, int32; a bridge's new fat voxels take
+  theirs along the bridge drawn (two 26-adjacent voxels of one mask share its component:
+  `thick_vessels._numbers_carried_along`, from the arm voxel it starts at and the tree voxel it
+  stopped against), and only a voxel neither reaches is read from its slab labelled again as it
+  was (`slab_labels.NumbersAnywhere`; read voxel by voxel, those reads were four fifths of the
+  patella's join, 2026-10-20). It held 16 B a fat voxel, twice.
   Every `label` of a whole vessel or pericyte mask is `slab_labels.ForegroundLabels` (each
   foreground voxel's key and int32 number, 12 B a foreground voxel, numbered as `label` numbers;
   scipy's own volume is 8 B a voxel from 2**31 voxels): the volume filter, the minority swap,
