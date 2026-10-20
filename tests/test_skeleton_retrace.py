@@ -505,3 +505,59 @@ def test_a_pieces_edges_are_read_as_the_graphs_edge_view_gives_them():
     found = edits.piece_edges(7)
     assert [(u, v, k) for u, v, k, _d in found] == [(u, v, k) for u, v, k, _d in expected]
     assert all(a is b for (*_e, a), (*_f, b) in zip(found, expected))
+
+
+def _same_copy(H, G) -> bool:
+    import pickle
+
+    fresh = R._trial_copy(G)
+    # (A graph's cached node and edge views are no part of it.)
+    return pickle.dumps((H.graph, H._node, H._adj)) == pickle.dumps((fresh.graph, fresh._node, fresh._adj))
+
+
+def test_the_kept_trial_copy_is_a_fresh_copy_at_every_judgement(monkeypatch):
+    """Edited with the graph as pieces and joins are drawn, never taken again:
+    at every judgement the copy is the one _trial_copy would take of the graph
+    as it stands."""
+    checked = []
+    real_trial = R._Edits.trial
+
+    @contextmanager
+    def checking(self):
+        if self._copy is not None:
+            assert _same_copy(self._copy, self.G)
+            checked.append(1)
+        with real_trial(self) as handed:
+            yield handed
+
+    monkeypatch.setattr(R._Edits, "trial", checking)
+    scene = _lattice(seed=2, missing_share=0.45)
+    R.retrace_lost_skeleton(scene.G, scene.skeleton, scene.support())
+    assert len(R.retraced_edges(scene.G)) >= 5 and len(checked) >= 20
+
+
+def test_each_edit_of_the_graph_is_made_on_its_kept_copy_where_a_fresh_copy_has_it():
+    """Splits of a vessel, of one of a parallel pair and of a self-loop, and
+    edges added from an earlier node to a later one, from a later to an
+    earlier, beside an existing one and round a loop."""
+    scene = _lattice(cells=3, missing_share=0.0, seed=4)
+    G = scene.G
+    first = next(iter(G.nodes))
+    at = np.asarray(G.nodes[first]["pos"], dtype=float)
+    loop = [tuple(at + (0.0, 3.0 * np.sin(t), 3.0 - 3.0 * np.cos(t))) for t in np.linspace(0.0, 2 * np.pi, 13)]
+    loop[0] = loop[-1] = tuple(at)
+    G.add_edge(first, first, voxels=loop, length=float(np.linalg.norm(np.diff(loop, axis=0), axis=1).sum()))
+    u, v, key = sorted(G.edges(keys=True))[2]
+    G.add_edge(u, v, voxels=list(reversed(G.edges[u, v, key]["voxels"])), length=G.edges[u, v, key]["length"])
+    edits = R._Edits(G)
+    with edits.trial():
+        pass
+    nodes = list(G.nodes)
+    for owner in [(u, v, 1), (first, first, 0), sorted(G.edges(keys=True))[7]]:
+        path = np.asarray(G.edges[owner]["voxels"], dtype=float)
+        edits.split(path[len(path) // 2], owner, [])
+        assert _same_copy(edits._copy, G)
+    late = list(G.nodes)[-1]
+    for a, b in [(nodes[1], late), (late, nodes[2]), (nodes[1], late), (nodes[3], nodes[3])]:
+        edits.add_edge(a, b, voxels=[G.nodes[a]["pos"], G.nodes[b]["pos"]], length=1.0)
+        assert _same_copy(edits._copy, G)
