@@ -24,7 +24,9 @@ from haemolynx.statistics.batch_comparison import (
     collect_batch_statistics,
     compare_paired,
     compare_two,
+    excluded_section,
     parse_condition,
+    parse_sections,
     read_branch_statistics_csv,
     read_statistics_csv,
     smallest_mann_whitney_p,
@@ -674,3 +676,143 @@ def test_an_image_with_a_wide_field_stays_in_the_comparison(tmp_path):
         tmp_path, ["WT_1", "WT_2", "KO_1", "KO_2"], BatchConditions.from_text("WT", "KO")
     )
     assert files.images == 4 and files.missing == ()
+
+
+# -- sections left out -------------------------------------------------------------
+
+
+def test_section_names_parse_from_text_or_a_list():
+    assert parse_sections(None) == ()
+    assert parse_sections("") == ()
+    assert parse_sections(" Dead Ends , ,Strahler Network") == ("Dead Ends", "Strahler Network")
+    # The command line's repeated flag, each of which may hold commas.
+    assert parse_sections(["Dead Ends", "Loops, Dead Ends"]) == ("Dead Ends", "Loops")
+
+
+def test_a_section_is_left_out_with_its_subsections_ignoring_case():
+    excluded = ("dead ends", "Strahler Network")
+    assert excluded_section("Dead Ends", excluded) == "dead ends"
+    assert excluded_section("Strahler Network", excluded) == "Strahler Network"
+    assert excluded_section("Strahler Network > Orders > 1", excluded) == "Strahler Network"
+    # A section whose name only starts the same is another section.
+    assert excluded_section("Dead Ends per Vessel", excluded) is None
+    assert excluded_section("Core Statistics", excluded) is None
+    assert excluded_section("Dead Ends", ()) is None
+
+
+def _write_sections(root: Path, stem: str, length: float, degree: float, dead: float, blind: float) -> None:
+    export_statistics_to_csv(
+        {
+            "Total Edge Length (microns)": length,
+            "Average Degree": degree,
+            "Dead Ends": {"Dead Ends": dead, "Blind Ends": blind},
+            "Strahler Network": {"Orders": {"1": {"Element Count": length}}},
+        },
+        root / stem / f"{stem}_statistics.csv",
+    )
+
+
+def _sectioned_batch(root: Path) -> list[str]:
+    """Three WT and three KO images. Length and both dead-end measures part
+    the conditions completely (Mann-Whitney p = 0.1 at 3 against 3); degree
+    has one pair crossed (WT 1, 2, 4 against KO 3, 5, 6: U = 1, p = 0.2)."""
+    for stem, length, degree, dead, blind in (
+        ("WT_1", 1.0, 1.0, 1.0, 1.0),
+        ("WT_2", 2.0, 2.0, 2.0, 2.0),
+        ("WT_3", 3.0, 4.0, 3.0, 3.0),
+        ("KO_1", 4.0, 3.0, 4.0, 4.0),
+        ("KO_2", 5.0, 5.0, 5.0, 5.0),
+        ("KO_3", 6.0, 6.0, 6.0, 6.0),
+    ):
+        _write_sections(root, stem, length, degree, dead, blind)
+    return ["WT_1", "WT_2", "WT_3", "KO_1", "KO_2", "KO_3"]
+
+
+def test_a_section_left_out_is_absent_from_every_csv_and_the_rest_unchanged(tmp_path):
+    every, without = tmp_path / "every", tmp_path / "without"
+    stems = _sectioned_batch(every)
+    _sectioned_batch(without)
+    conditions = BatchConditions.from_text("WT", "KO")
+    all_files = write_batch_statistics(every, stems, conditions)
+    files = write_batch_statistics(without, stems, conditions, exclude_sections=["dead ends"])
+
+    assert files.excluded == {"dead ends": 2}
+    assert files.metrics == all_files.metrics - 2
+    assert "left out: dead ends (2 metrics)" in files.message
+    for name in (BY_IMAGE_FILENAME, SUMMARY_FILENAME, COMPARISON_FILENAME):
+        rows = _rows(without / name)
+        assert not any(row[0] == "Dead Ends" for row in rows), name
+        kept = [row for row in _rows(every / name) if row[0] != "Dead Ends"]
+        if name == COMPARISON_FILENAME:
+            q = rows[0].index("Q (Benjamini-Hochberg)")
+            rows = [row[:q] + row[q + 1:] for row in rows]
+            kept = [row[:q] + row[q + 1:] for row in kept]
+        # Every other row as it was, the Strahler subsections included.
+        assert rows == kept, name
+    assert any(row[0] == "Strahler Network > Orders > 1" for row in _rows(without / BY_IMAGE_FILENAME))
+
+
+def test_q_values_are_over_the_metrics_left_once_a_section_is_out(tmp_path):
+    every, without = tmp_path / "every", tmp_path / "without"
+    stems = _sectioned_batch(every)
+    _sectioned_batch(without)
+    conditions = BatchConditions.from_text("WT", "KO")
+
+    def q_by_metric(root, **kwargs):
+        files = write_batch_statistics(root, stems, conditions, **kwargs)
+        rows = _dict_rows(root / COMPARISON_FILENAME)
+        return files, {
+            (row["Section"], row["Metric"]): (
+                float(row["P (Mann-Whitney U, two-sided)"]), float(row["Q (Benjamini-Hochberg)"])
+            )
+            for row in rows
+        }
+
+    files, q = q_by_metric(every)
+    assert files.tested == 5
+    # p: length .1, degree .2, Strahler count .1, dead ends .1, blind ends .1 (m = 5).
+    # Ranked .1 .1 .1 .1 .2: q = min(.1 * 5 / 4, .2 * 5 / 5) = .125 for the four, .2 for degree.
+    assert q[("Core Statistics", "Total Edge Length")] == pytest.approx((0.1, 0.125))
+    assert q[("Core Statistics", "Average Degree")] == pytest.approx((0.2, 0.2))
+    assert q[("Dead Ends", "Dead Ends")] == pytest.approx((0.1, 0.125))
+
+    files, q = q_by_metric(without, exclude_sections="Dead Ends")
+    assert files.tested == 3
+    # m = 3, ranked .1 .1 .2: q = min(.1 * 3 / 2, .2) = .15 for length and the count.
+    assert q[("Core Statistics", "Total Edge Length")] == pytest.approx((0.1, 0.15))
+    assert q[("Strahler Network > Orders > 1", "Element Count")] == pytest.approx((0.1, 0.15))
+    assert q[("Core Statistics", "Average Degree")] == pytest.approx((0.2, 0.2))
+    assert not any(section == "Dead Ends" for section, _metric in q)
+
+    # Leaving out a section with subsections takes them too: m = 2, q = .2 for both.
+    strahler = tmp_path / "strahler"
+    _sectioned_batch(strahler)
+    files, q = q_by_metric(strahler, exclude_sections=["Dead Ends", "strahler network"])
+    assert files.excluded == {"Dead Ends": 2, "strahler network": 1}
+    assert set(q) == {("Core Statistics", "Total Edge Length"), ("Core Statistics", "Average Degree")}
+    assert q[("Core Statistics", "Total Edge Length")] == pytest.approx((0.1, 0.2))
+
+
+def test_a_paired_comparison_leaves_the_section_out_of_its_q_values(tmp_path):
+    for subject, (a, b) in {"S1": (1.0, 2.0), "S2": (2.0, 4.0), "S3": (3.0, 5.0)}.items():
+        _write_sections(tmp_path, f"{subject}_contra", a, a, a, a)
+        _write_sections(tmp_path, f"{subject}_ipsi", b, b, b, b)
+    stems = [f"S{i}_{side}" for i in (1, 2, 3) for side in ("contra", "ipsi")]
+    conditions = BatchConditions.from_text("contra", "ipsi", paired=True)
+    files = write_batch_statistics(tmp_path, stems, conditions, exclude_sections="Dead Ends")
+    rows = _dict_rows(tmp_path / COMPARISON_FILENAME)
+    assert {row["Section"] for row in rows} == {"Core Statistics", "Strahler Network > Orders > 1"}
+    assert files.tested == 3
+    # Every pair rises: Wilcoxon's smallest p at 3 pairs, 2 / 2^3, for all three, so q = p.
+    assert [float(row["Q (Benjamini-Hochberg)"]) for row in rows] == pytest.approx([0.25] * 3)
+    assert not any(row[0] == "Dead Ends" for row in _rows(tmp_path / BY_IMAGE_FILENAME))
+
+
+def test_a_section_name_that_matches_nothing_is_said_and_leaves_everything(tmp_path):
+    stems = _sectioned_batch(tmp_path)
+    files = write_batch_statistics(
+        tmp_path, stems, BatchConditions.from_text("WT", "KO"), exclude_sections="Dead End"
+    )
+    assert files.excluded == {"Dead End": 0}
+    assert files.metrics == 5
+    assert "no section named Dead End" in files.message

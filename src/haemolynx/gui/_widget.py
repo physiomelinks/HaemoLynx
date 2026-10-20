@@ -6561,6 +6561,7 @@ def _run_batch_in_background(
             check_cancelled=lambda: run_state.check(cancel_flag),
             skip_done=setup.skip_done,
             conditions=setup.conditions,
+            exclude_sections=setup.exclude_sections,
         )
 
     def finished(summary) -> None:
@@ -9829,6 +9830,14 @@ class _BatchRunWindow:
         self.aggregate.currentIndexChanged.connect(lambda *_: self._conditions_changed())
         conditions.addWidget(QLabel("Several images of a subject"), 2, 2)
         conditions.addWidget(self.aggregate, 2, 3)
+        self.exclude_sections = QLineEdit()
+        self.exclude_sections.setPlaceholderText(
+            "statistics sections to leave out, comma-separated, e.g. Dead Ends (blank: none)"
+        )
+        self.exclude_sections.setToolTip(tips["exclude_sections"])
+        self.exclude_sections.textChanged.connect(lambda *_: self._sections_changed())
+        conditions.addWidget(QLabel("Leave out sections"), 3, 0)
+        conditions.addWidget(self.exclude_sections, 3, 1, 1, 3)
         layout.addLayout(conditions)
         self._refresh_design_rows()
 
@@ -9924,6 +9933,7 @@ class _BatchRunWindow:
                 self.design.setCurrentIndex(self.design.findData(setup.conditions.design))
                 self.subject_pattern.setText(setup.conditions.subject_pattern)
                 self.aggregate.setCurrentIndex(self.aggregate.findData(setup.conditions.aggregate))
+                self.exclude_sections.setText(", ".join(setup.exclude_sections))
             finally:
                 self._filling = False
             self._refresh_design_rows()
@@ -9951,6 +9961,18 @@ class _BatchRunWindow:
             subject_pattern=self.subject_pattern.text() if paired else None,
             aggregate=self.aggregate.currentData() if paired else None,
         )
+
+    def _excluded_sections(self) -> tuple[str, ...]:
+        from haemolynx.statistics.batch_comparison import parse_sections
+
+        return parse_sections(self.exclude_sections.text())
+
+    def _sections_changed(self) -> None:
+        from dataclasses import replace
+
+        if self._filling or self.setup is None:
+            return
+        self.setup = replace(self.setup, exclude_sections=self._excluded_sections())
 
     def _refresh_design_rows(self) -> None:
         from haemolynx.statistics.batch_comparison import PAIRED
@@ -9981,7 +10003,9 @@ class _BatchRunWindow:
 
         if self.setup is None and not self.match():
             return
-        self.setup = replace(self.setup, conditions=self._conditions())
+        self.setup = replace(
+            self.setup, conditions=self._conditions(), exclude_sections=self._excluded_sections()
+        )
         problem = self.setup.conditions.problem()
         if problem:
             self._say(problem)
@@ -9990,6 +10014,7 @@ class _BatchRunWindow:
             self.setup.output_root,
             [match.stem for match in self.setup.selected()],
             self.setup.conditions,
+            exclude_sections=self.setup.exclude_sections,
         )
         self._say(written.message if written is not None else "No image is ticked.")
 
@@ -10033,6 +10058,7 @@ class _BatchRunWindow:
             unticked=frozenset(unticked) & {match.stem for match in matches},
             skip_done=self.skip_done.isChecked(),
             conditions=self._conditions(),
+            exclude_sections=self._excluded_sections(),
         )
         self.setup = setup
         self._fill_table()
@@ -10075,7 +10101,10 @@ class _BatchRunWindow:
         if self.setup is None and not self.match():
             return
         self.setup = replace(
-            self.setup, skip_done=self.skip_done.isChecked(), conditions=self._conditions()
+            self.setup,
+            skip_done=self.skip_done.isChecked(),
+            conditions=self._conditions(),
+            exclude_sections=self._excluded_sections(),
         )
         if not self.setup.selected():
             self._say("No image is ticked.")
