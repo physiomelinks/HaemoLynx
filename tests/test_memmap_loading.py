@@ -192,6 +192,29 @@ def test_unique_with_counts_matches_np_unique_with_memmap_on():
     assert np.array_equal(counts, expected_counts)
 
 
+@pytest.mark.parametrize(
+    "arr",
+    [
+        np.where(np.random.default_rng(3).random((6, 7, 8)) < 0.1, 1, 2).astype(np.uint8),
+        np.where(np.random.default_rng(4).random((6, 7, 8)) < 0.1, 255, 0).astype(np.uint8),
+        np.random.default_rng(5).integers(0, 256, (6, 7, 8), dtype=np.uint8),
+        np.random.default_rng(6).integers(-9, 7, (6, 7, 8)).astype(np.int16),
+        np.random.default_rng(7).integers(0, 60000, (6, 7, 8)).astype(np.uint16),
+        np.full((6, 7, 8), 3, dtype=np.int8),
+    ],
+    ids=["1/2", "0/255", "grey", "int16 near zero", "uint16 wide", "one value"],
+)
+def test_unique_with_counts_with_memmap_on_counts_small_integers_as_np_unique(arr):
+    """Few values are counted by comparison, many by bincount: both exact."""
+    expected_values, expected_counts = np.unique(arr, return_counts=True)
+
+    values, counts = _unique_with_counts(arr, use_memmap=True)
+
+    assert values.dtype == arr.dtype
+    assert np.array_equal(values, expected_values)
+    assert np.array_equal(counts, expected_counts)
+
+
 def test_unique_with_counts_with_memmap_on_never_flattens_the_whole_array():
     arr = _watched(_random_volume(shape=(4, 5, 6), seed=2))
 

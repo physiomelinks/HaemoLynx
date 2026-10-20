@@ -8,6 +8,7 @@ is cut to the same box, so the masks still land on the vessels they belong to.
 from __future__ import annotations
 
 import logging
+import pickle
 
 import networkx as nx
 import numpy as np
@@ -557,3 +558,185 @@ def test_preflight_reports_a_crop_no_image_could_hold():
     bad = check_crop_on_import(_settings(crop_start_xyz=(12, 3, 4)))
     assert bad.errors and "Crop on import" in bad.errors[0]
     assert not check_crop_on_import(_settings(crop_on_import=False, crop_start_xyz=None)).errors
+
+
+# --- an H5 stack read only within the box ---------------------------------------
+#
+# The AIA stacks are 9.4 GB H5 files cut to a 5% box: the box is read alone, and
+# a mask is binarised by the rule its whole file gives. Every test compares with
+# reading the file whole and cutting it, as the loaders did before.
+
+h5py = pytest.importorskip("h5py")
+
+
+def _write_h5(path, volume, *, chunks=(4, 8, 8, 1)) -> str:
+    """*volume* as ilastik writes a Simple Segmentation: ``exported_data``,
+    a trailing size-1 channel axis, chunked."""
+    with h5py.File(path, "w") as f:
+        f.create_dataset("exported_data", data=np.asarray(volume)[..., None], chunks=chunks)
+    return str(path)
+
+
+def _labels(seed=0) -> np.ndarray:
+    """A 1/2 ilastik label volume: 1 (vessel) the minority, as in the AIA masks."""
+    rng = np.random.default_rng(seed)
+    return np.where(rng.random(STACK) < 0.2, 1, 2).astype(np.uint8)
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+@pytest.mark.parametrize("axis_order", ["zyx", "xzy"])
+def test_an_h5_box_read_holds_the_voxels_cutting_the_whole_stack_keeps(tmp_path, use_memmap, axis_order):
+    from haemolynx.io import h5_volume_shape, load_3d_h5_with_voxel_size
+
+    path = _write_h5(tmp_path / "stack.h5", np.arange(np.prod(STACK), dtype=np.uint16).reshape(STACK))
+    whole, *whole_rest = load_3d_h5_with_voxel_size(path, axis_order=axis_order)
+    assert h5_volume_shape(path, axis_order=axis_order) == whole.shape
+    box = crop_box(whole.shape, method="coordinates", start_xyz=(3, 5, 1), end_xyz=(9, 17, 6)).slices
+
+    cut, *cut_rest = load_3d_h5_with_voxel_size(
+        path, axis_order=axis_order, use_memmap=use_memmap, memmap_directory=str(tmp_path), box=box
+    )
+
+    assert isinstance(cut, np.memmap) is use_memmap
+    assert np.asarray(cut).dtype == whole.dtype and cut.shape == whole[box].shape
+    assert np.array_equal(np.asarray(cut), whole[box])
+    assert cut_rest == whole_rest  # the voxel size and its metadata status
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        _labels(),
+        np.where(_labels(1) == 1, 255, 0).astype(np.uint8),
+        (_labels(2) + (_labels(3) == 1)).astype(np.uint8),
+        np.random.default_rng(4).integers(0, 200, STACK, dtype=np.uint8),
+        np.random.default_rng(5).integers(-300, 300, STACK).astype(np.int16),
+        np.random.default_rng(6).random(STACK).astype(np.float32),
+        (np.random.default_rng(7).random(STACK) * 9 - 3).astype(np.float64),
+        _labels(8) == 1,
+    ],
+    ids=["1/2", "0/255", "three labels", "grey", "int16", "float 0-1", "float", "bool"],
+)
+def test_the_rule_read_from_an_h5_file_binarises_as_the_whole_volume_does(tmp_path, volume):
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization, h5_binarization_rule
+
+    path = _write_h5(tmp_path / "mask.h5", volume)
+    rule = h5_binarization_rule(path)
+
+    expected = _to_binary_volume_for_skeletonization(volume)
+    assert np.array_equal(volume if rule is None else rule(volume), expected)
+
+
+def test_an_h5_rule_counts_the_whole_file_not_the_box(tmp_path):
+    """Inside the box label 2 is the minority, over the whole file label 1:
+    a rule read from the box alone would take the wrong label for vessel."""
+    from haemolynx.io.load import h5_binarization_rule
+
+    volume = np.full(STACK, 2, dtype=np.uint8)
+    volume[BOX] = 1
+    volume[BOX][::3] = 2
+    inside = volume[BOX]
+    assert np.count_nonzero(inside == 2) < np.count_nonzero(inside == 1)
+    assert np.count_nonzero(volume == 1) < np.count_nonzero(volume == 2)
+    rule = h5_binarization_rule(_write_h5(tmp_path / "mask.h5", volume))
+    assert np.array_equal(rule(inside), inside == 1)
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_an_h5_mask_is_read_within_the_box_and_is_the_mask_cut_from_the_whole(tmp_path, use_memmap):
+    from haemolynx.io.automated_vessel_assignment import _load_mask_image
+
+    path = tmp_path / "mask.h5"
+    _write_h5(path, _labels(9))
+    crop = crop_box(STACK, method="coordinates", start_xyz=BOX_START_XYZ, end_xyz=BOX_END_XYZ)
+    low_ram = dict(use_memmap=use_memmap, memmap_directory=str(tmp_path))
+
+    whole, xyz, status, whole_cut = _load_mask_image(path, **low_ram)
+    cut, cut_xyz, cut_status, was_cut = _load_mask_image(path, crop=crop, **low_ram)
+
+    assert not whole_cut and was_cut
+    expected = crop_volume(whole, crop)
+    assert type(cut) is type(expected) and cut.dtype == expected.dtype
+    assert np.array_equal(cut, expected)
+    assert (cut_xyz, cut_status) == (xyz, status)
+
+
+def test_a_mask_the_box_cannot_be_read_from_comes_back_whole(tmp_path):
+    from haemolynx.io.automated_vessel_assignment import _load_mask_image
+
+    crop = crop_box(STACK, method="coordinates", start_xyz=BOX_START_XYZ, end_xyz=BOX_END_XYZ)
+    wider = np.zeros((STACK[0], STACK[1], STACK[2] + 1), dtype=np.uint8)
+    _write(tmp_path / "mask.tif", _rods()[0])
+    _write_h5(tmp_path / "wider.h5", wider)
+
+    tiff = _load_mask_image(tmp_path / "mask.tif", crop=crop)
+    h5 = _load_mask_image(tmp_path / "wider.h5", crop=crop)
+
+    assert tiff[0].shape == STACK and not tiff[3]
+    assert h5[0].shape == wider.shape and not h5[3]
+
+
+def test_an_h5_vessel_mask_of_another_whole_shape_is_still_refused(tmp_path):
+    crop = crop_box(STACK, method="coordinates", start_xyz=BOX_START_XYZ, end_xyz=BOX_END_XYZ)
+    wider = np.zeros((STACK[0], STACK[1], STACK[2] + 1), dtype=bool)
+    wider[5:8, 24:27, 33:57] = True
+    arguments = _mask_arguments(tmp_path, wider, wider, crop)
+    arguments["arteriole_mask_path"] = _write_h5(tmp_path / "a.h5", wider)
+    arguments["venule_mask_path"] = _write_h5(tmp_path / "v.h5", wider)
+    clear_vessel_mask_cache()
+
+    try:
+        with pytest.raises(ValueError, match="large_arteriole_mask shape does not match input image shape before"):
+            load_and_validate_vessel_masks(**arguments)
+        arguments["venule_mask_path"] = None
+        with pytest.raises(ValueError, match="large_global_mask shape does not match input image shape before"):
+            load_and_validate_vessel_masks(**arguments)
+    finally:
+        clear_vessel_mask_cache()
+
+
+@pytest.mark.parametrize("use_memmap_loading", [False, True])
+def test_an_h5_run_reads_the_box_and_analyses_what_reading_it_whole_did(tmp_path, monkeypatch, use_memmap_loading):
+    from haemolynx.io import automated_vessel_assignment as masks
+
+    inside, outside = _rods()
+    arteriole = np.where(inside, 1, 2).astype(np.uint8)
+    venule = np.full(STACK, 2, dtype=np.uint8)
+    venule[1:3, 30:33, 50:55] = 1
+    settings = _run_settings(
+        tmp_path,
+        input_path=_write_h5(tmp_path / "stack.h5", np.where(inside | outside, 1, 2).astype(np.uint8)),
+        use_memmap_loading=use_memmap_loading,
+        automated_vessel_assignment=True,
+        use_large_vessel_masks=True,
+        large_arteriole_mask_path=_write_h5(tmp_path / "arteriole.h5", arteriole),
+        large_venule_mask_path=_write_h5(tmp_path / "venule.h5", venule),
+        large_vessel_mask_dilation_microns=0.0,
+        large_vessel_min_component_volume_um3=0.0,
+        large_vessel_swap_minority_components=False,
+        large_vessel_remove_small_opposite_attached_components=False,
+        exclude_smaller_overlapping_volumes=False,
+    )
+
+    def run():
+        clear_vessel_mask_cache()
+        try:
+            volume = stages.skeletonise(settings, stages.segment(settings))
+            return volume, stages.build_network(settings, volume, SCHEMA)
+        finally:
+            clear_vessel_mask_cache()
+
+    volume, network = run()
+    # Read whole and cut, as the loaders did before: the input and each mask.
+    monkeypatch.setattr(stages, "_h5_input_crop_box", lambda settings, input_format: None)
+    monkeypatch.setattr(masks, "h5_volume_shape", lambda *args, **kwargs: None)
+    whole_volume, whole_network = run()
+
+    assert volume.crop == whole_volume.crop == CropBox((0, 20, 30), (12, 35, 60), STACK)
+    assert np.array_equal(np.asarray(volume.image), np.asarray(whole_volume.image))
+    assert np.array_equal(np.asarray(volume.skeleton), np.asarray(whole_volume.skeleton))
+    assert np.array_equal(network.large_arteriole_mask, inside[BOX])
+    assert np.array_equal(network.large_arteriole_mask, whole_network.large_arteriole_mask)
+    assert np.array_equal(network.large_venule_mask, whole_network.large_venule_mask)
+    # The same graph, every attribute bit for bit, nodes and edges in the same order.
+    assert pickle.dumps(network.graph) == pickle.dumps(whole_network.graph)

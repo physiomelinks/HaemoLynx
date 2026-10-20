@@ -83,7 +83,7 @@ from haemolynx.haemodynamics.poiseuille import (
     set_edge_diameter_override,
 )
 from haemolynx.io.crop import GRAPH_ATTRIBUTE as CROP_GRAPH_ATTRIBUTE
-from haemolynx.io.crop import CropBox, crop_volume_and_box, crop_volume_like_graph
+from haemolynx.io.crop import CropBox, crop_box_from_settings, crop_volume_and_box, crop_volume_like_graph
 from haemolynx.io.downsample import GRAPH_ATTRIBUTE as DOWNSAMPLE_GRAPH_ATTRIBUTE
 from haemolynx.io.downsample import (
     RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
@@ -799,6 +799,20 @@ def run_voxel_size_xyz(
     )
 
 
+def _h5_input_crop_box(settings: dict, input_format: str) -> CropBox | None:
+    """The crop_on_import box a 3D H5 input image is read within, rather than
+    read whole and cut (the AIA stacks: 9.4 GB read for a 5% box); None when
+    it is read whole -- another format, no box or the whole image, or the
+    low-RAM raw cache keeping the whole image for the next run."""
+    if input_format != "h5" or (settings["use_memmap_loading"] and settings["memmap_directory"]):
+        return None
+    shape = io.h5_volume_shape(settings["input_path"], axis_order=settings["image_axis_order"])
+    if len(shape) != 3:
+        return None
+    box = crop_box_from_settings(settings, shape)
+    return None if box is None or box.is_whole_volume else box
+
+
 def _load_and_crop_volume(settings: dict, input_format: str):
     """:func:`load_volume_for_skeletonise`, with the box ``crop_on_import``
     cut (None while it is off) and the reduction ``segmented_image_downsample``
@@ -810,7 +824,23 @@ def _load_and_crop_volume(settings: dict, input_format: str):
     reduced grid's once scaled (:meth:`Downsample.scale_voxel_size_xyz`)."""
     if input_format not in {"tif", "tiff", "h5"}:
         raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
-    if settings["use_memmap_loading"] and settings["memmap_directory"]:
+    box = _h5_input_crop_box(settings, input_format)
+    if box is not None:
+        # Only the box is read: the voxels cutting the whole image would keep.
+        (
+            image,
+            voxel_size_x,
+            voxel_size_y,
+            voxel_size_z,
+            voxel_meta_status,
+        ) = io.load_3d_h5_with_voxel_size(
+            settings["input_path"],
+            axis_order=settings["image_axis_order"],
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+            box=box.slices,
+        )
+    elif settings["use_memmap_loading"] and settings["memmap_directory"]:
         (
             image,
             voxel_size_x,
@@ -842,7 +872,11 @@ def _load_and_crop_volume(settings: dict, input_format: str):
         float(voxel_size_y),
         float(voxel_size_z),
     )
-    image, crop = crop_volume_and_box(image, settings, description="input image")
+    if box is not None:
+        logger.info("Crop on import, %s: %s", "input image", box.describe())
+        crop = box
+    else:
+        image, crop = crop_volume_and_box(image, settings, description="input image")
     downsample = None
     if downsample_factor(settings.get("segmented_image_downsample")) > 1:
         resolved, _source = resolve_voxel_size_xyz(

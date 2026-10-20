@@ -1,6 +1,7 @@
 """I/O utilities for loading and simplifying image data."""
 from .load import (
     crop_tiff_volume_from_corners,
+    h5_volume_shape,
     load_3d_h5_with_voxel_size,
     load_3d_tif_with_voxel_size,
     read_voxel_size_xyz,
@@ -59,6 +60,7 @@ __all__ = [
     "tiff_channels",
     "load_3d_tif_with_voxel_size",
     "read_voxel_size_xyz",
+    "h5_volume_shape",
     "load_3d_h5_with_voxel_size",
     "load_and_skeletonize_3d_tif",
     "load_and_skeletonize_3d_h5",
