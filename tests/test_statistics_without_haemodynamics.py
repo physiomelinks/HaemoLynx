@@ -452,7 +452,16 @@ NETWORK_ANALYSES = {
         "Arteriolar Territory Count",
     ),
     "statistics_transit_time": (("transit_time_s", "arrival_time_s"), "Transit Time Status"),
-    "statistics_flux_heterogeneity": (("vessel_velocity_um_s",), "Flux Heterogeneity Status"),
+    "statistics_flux_heterogeneity": (
+        (
+            "vessel_velocity_um_s",
+            "tube_haematocrit",
+            "red_cell_velocity_um_s",
+            "red_cell_flux_per_s",
+            "red_cell_linear_density_per_mm",
+        ),
+        "Flux Heterogeneity Status",
+    ),
     "statistics_loop_hierarchy": (("loop_length_um",), "Vessels On No Loop"),
     "statistics_strahler": (("strahler_order",), "Strahler Method"),
     "statistics_algebraic_connectivity": (("fiedler_value", "fiedler_side"), "Algebraic Connectivity lambda_2"),

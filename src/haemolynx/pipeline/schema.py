@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..io.crop import CROP_LOCATIONS, CROP_METHODS, CROP_Z_LOCATIONS
+from ..haemodynamics.red_cells import DEFAULT_RED_CELL_VOLUME_FL
 from ..io.downsample import DOWNSAMPLE_CHOICES
 from ..parsers import Schema, Setting, dump_config
 
@@ -4578,8 +4579,13 @@ SCHEMA = Schema(
                 "of mean velocity over the vessels carrying flow, for the "
                 "capillaries and for every vessel, and how much of the network "
                 "carries flow (vessels, length and volume, with their share of "
-                "the whole). Needs haemodynamics; adds vessel_velocity_um_s as a "
-                "vessels-layer colour option"
+                "the whole), and the red cells predicted from the flow and the "
+                "discharge haematocrit -- tube haematocrit (Pries et al. 1990), "
+                "red-cell velocity, red-cell flux (cells/s) and spacing "
+                "(cells/mm), counted by red_cell_volume_fl. Needs haemodynamics; "
+                "adds vessel_velocity_um_s, tube_haematocrit, "
+                "red_cell_velocity_um_s, red_cell_flux_per_s and "
+                "red_cell_linear_density_per_mm as vessels-layer colour options"
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
@@ -4781,13 +4787,33 @@ SCHEMA = Schema(
             kind="float",
             default=0.45,
             help=(
-                "Discharge haematocrit the pries law is evaluated at; read by "
-                "no other law"
+                "Discharge haematocrit the pries law is evaluated at (read by "
+                "no other law), and the haematocrit the flux heterogeneity "
+                "statistic predicts each vessel's red-cell flux, velocity and "
+                "tube haematocrit from, unless distributed_iterative below "
+                "gave the vessel its own"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             unit="fraction",
             minimum=0.0,
             maximum=0.99,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="red_cell_volume_fl",
+            kind="float",
+            default=DEFAULT_RED_CELL_VOLUME_FL,
+            help=(
+                "Mean red-cell volume (MCV) the red-cell flux and spacing are "
+                "counted with: cells per second is flow x discharge "
+                "haematocrit / this volume, cells per mm is tube haematocrit x "
+                "cross-section / it. Mouse 45-50, rat 55-60, human about 90. "
+                "Read by the flux heterogeneity statistic and the "
+                "capillary-block comparison; it moves no resistance or flow"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="fL",
+            minimum=1.0,
             requires=("run_haemodynamics",),
         ),
         Setting(

@@ -4,6 +4,8 @@ from . import edt_diameter
 from . import fwhm_decoys
 from . import raw_section
 from . import open_ends
+from . import red_cells
+from .red_cells import DEFAULT_RED_CELL_VOLUME_FL
 from .viscosity import (
     PRIES_FORMS,
     VISCOSITY_LAWS,
@@ -107,6 +109,8 @@ from .perturbations import (
 __all__ = [
     "automated",
     "open_ends",
+    "red_cells",
+    "DEFAULT_RED_CELL_VOLUME_FL",
     "PRIES_FORMS",
     "VISCOSITY_LAWS",
     "describe_law",

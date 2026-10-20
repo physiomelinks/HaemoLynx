@@ -782,3 +782,54 @@ def test_branch_orders_no_vessel_has_are_refused_by_name():
             branch_orders=["BO9"],
             probability=0.5,
         )
+
+
+def test_the_red_cell_flux_and_velocity_cvs_are_compared_before_and_after():
+    """With the run's one haematocrit the red-cell flux is the flow times a
+    constant, so its CV is the flow's on both networks; the red-cell
+    velocity CV reads the Fahraeus ratio, which every vessel here shares
+    (one width), so it is the velocity's too."""
+    from haemolynx.haemodynamics.capillary_block import FLUX_HETEROGENEITY_SUMMARY_ROWS
+
+    baseline = _two_routes()
+    baseline.graph["haematocrit"] = 0.45
+    _solve(baseline, [0], [5])
+    blocked = baseline.copy()
+    block_vessels(blocked, [(1, 2, 0)], 1e6)
+    _solve(blocked, [0], [5])
+
+    summary, _ = compare_block_to_baseline(
+        baseline, blocked, inlet_nodes=[0], outlet_nodes=[5], red_cell_volume_fl=45.0
+    )
+
+    for label in ("baseline", "blocked"):
+        assert summary[f"capillary_red_cell_flux_cv_{label}"] == pytest.approx(
+            summary[f"capillary_flow_cv_{label}"], abs=1e-12
+        )
+        assert summary[f"vessel_red_cell_flux_cv_{label}"] == pytest.approx(
+            summary[f"vessel_flow_cv_{label}"], abs=1e-12
+        )
+        assert summary[f"capillary_red_cell_velocity_cv_{label}"] == pytest.approx(
+            summary[f"capillary_velocity_cv_{label}"], abs=1e-12
+        )
+        assert summary[f"vessel_red_cell_velocity_cv_{label}"] == pytest.approx(
+            summary[f"vessel_velocity_cv_{label}"], abs=1e-12
+        )
+    names = [name for _row, name in FLUX_HETEROGENEITY_SUMMARY_ROWS]
+    assert {
+        "capillary_red_cell_flux_cv",
+        "capillary_red_cell_velocity_cv",
+        "vessel_red_cell_flux_cv",
+        "vessel_red_cell_velocity_cv",
+    } <= set(names)
+
+
+def test_without_a_haematocrit_the_red_cell_rows_of_the_comparison_say_so():
+    baseline = _two_routes()
+    _solve(baseline, [0], [5])
+    blocked = baseline.copy()
+    block_vessels(blocked, [(1, 2, 0)], 1e6)
+    _solve(blocked, [0], [5])
+    summary, _ = compare_block_to_baseline(baseline, blocked, inlet_nodes=[0], outlet_nodes=[5])
+    assert summary["capillary_red_cell_flux_cv_baseline"].startswith("N/A (no haematocrit")
+    assert summary["capillary_flow_cv_baseline"] == pytest.approx(0.0, abs=1e-9)

@@ -253,6 +253,7 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
                 "viscosity_law",
                 "pries_viscosity_form",
                 "haematocrit",
+                "red_cell_volume_fl",
                 "haematocrit_model",
                 "haematocrit_junction_rule",
                 "haematocrit_split_connector_length_um",

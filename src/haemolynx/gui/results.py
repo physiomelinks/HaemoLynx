@@ -541,6 +541,12 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "transit_time_s": "export_results",
     "arrival_time_s": "export_results",
     "vessel_velocity_um_s": "export_results",
+    # The red cells predicted from the flow (haemodynamics.red_cells), by
+    # the same analysis.
+    "tube_haematocrit": "export_results",
+    "red_cell_velocity_um_s": "export_results",
+    "red_cell_flux_per_s": "export_results",
+    "red_cell_linear_density_per_mm": "export_results",
     "loop_length_um": "export_results",
     "strahler_order": "export_results",
     "fiedler_value": "export_results",
@@ -555,7 +561,13 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
 #: Edge columns that scale with the flow itself, so every sweep point --
 #: even a pressure-only one -- has its own values.
 SWEEP_FLOW_MAGNITUDE_COLUMNS = frozenset(
-    {"transit_time_s", "arrival_time_s", "vessel_velocity_um_s"}
+    {
+        "transit_time_s",
+        "arrival_time_s",
+        "vessel_velocity_um_s",
+        "red_cell_velocity_um_s",
+        "red_cell_flux_per_s",
+    }
 )
 
 #: Edge columns a dilation or geometry sweep point changes.
@@ -602,6 +614,10 @@ SOLVED_FLOW_COLUMNS: frozenset[str] = frozenset(
         "transit_time_s",
         "arrival_time_s",
         "vessel_velocity_um_s",
+        "tube_haematocrit",
+        "red_cell_velocity_um_s",
+        "red_cell_flux_per_s",
+        "red_cell_linear_density_per_mm",
         "current_flow_share",
         "occlusion_flow_loss",
         "occlusion_hypoperfused_length_um",

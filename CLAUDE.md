@@ -76,7 +76,9 @@ haemolynx/
 │   │                       #   (vessels of known width planted in the raw image, which the
 │   │                       #   FWHM optimiser scores accuracy by),
 │   │                       #   haematocrit_distribution.py (Pries-Secomb phase
-│   │                       #   separation), constriction (the one constriction model) + its
+│   │                       #   separation), red_cells.py (tube haematocrit by the Fahraeus
+│   │                       #   relation, red-cell velocity, flux and spacing, read off the
+│   │                       #   solve), constriction (the one constriction model) + its
 │   │                       #   site-choosing strategies: probability, pericyte_mask;
 │   │                       #   constriction_strategy (which strategy a run uses),
 │   │                       #   pericyte_comparison; perturbations.py (typed settings overrides
@@ -1156,7 +1158,23 @@ are only caught locally.
   comparison's own floor, imported from there -- the CV (sample SD / mean) of flow and of mean
   velocity, for the capillaries and for every vessel, and the flowing share of the network by
   count, length and volume (a cylinder per vessel), with rows by vessel type; it writes
-  `vessel_velocity_um_s` on each carrying vessel. `compare_block_to_baseline` reports the same
+  `vessel_velocity_um_s` on each carrying vessel. **The red cells** (2026-10-20,
+  `haemodynamics/red_cells.py`): on each carrying vessel it also writes `tube_haematocrit`,
+  `red_cell_velocity_um_s`, `red_cell_flux_per_s` and `red_cell_linear_density_per_mm`,
+  predicted from the flow and the discharge haematocrit -- the vessel's own
+  `discharge_haematocrit` under `distributed_iterative`, else the run's `G.graph["haematocrit"]`
+  -- by the Fahraeus relation of Pries, Secomb, Gaehtgens & Gross 1990 (`H_T/H_D = H_D + (1 -
+  H_D)(1 + 1.7 e^{-0.415 D} - 0.6 e^{-0.011 D})`, held at 1 below 2.58 um where the fit runs
+  above it) and red-cell conservation (flux `Q H_D / V`, cell velocity `v_mean H_D / H_T`,
+  spacing `H_T A / V`), with `red_cell_volume_fl` (Haemodynamics tab, under the haematocrit;
+  50 fL, a mouse's; rat ~57, human ~90) the mean cell volume `V`; the report gets the same mean /
+  SD / CV rows for the flux and the red-cell velocity, the mean tube haematocrit and spacing, by
+  group and by vessel type, `Red Cell Volume (fL)` and `Haematocrit Source`, and the block
+  comparison the four CVs `_baseline` / `_blocked`. With one haematocrit the flux CV *is* the
+  flow CV. Predictions, never measurements: they carry every error of the flow (the assumed
+  pressure drop, the diameters, the viscosity law, what the segmentation missed; `flow.10a` is
+  still unticked) and the haematocrit model's; cited through `_used_red_cell_transport`.
+  `compare_block_to_baseline` reports the same
   rows `_baseline` / `_blocked`, and counts the blocked network's *stopped* vessels
   (`stopped_vessels`, `stopped_vessel_length_um`): the blocked ones and, through
   `inlet_to_outlet_vessels`, every vessel fed only through one

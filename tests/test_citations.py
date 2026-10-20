@@ -391,3 +391,49 @@ def test_a_synthetic_run_cites_the_generator_and_not_the_image_tools(tmp_path):
     assert "- skan" in render_citations(image_run)
     # Tissue measurement still credits scikit-image (it is read even without a skeleton).
     assert "- scikit-image" in render_citations({**settings, "measure_tissue_volume": True})
+
+
+def test_the_fahraeus_relation_is_cited_when_red_cells_are_predicted(tmp_path):
+    """The flux heterogeneity statistic and the capillary-block comparison
+    predict each vessel's tube haematocrit, red-cell velocity and flux by
+    Pries et al. 1990's relation; nothing else reads it."""
+    name = "Fahraeus effect: tube haematocrit from discharge haematocrit (Pries et al., 1990)"
+    on = _settings(
+        tmp_path,
+        run_haemodynamics=True,
+        statistics=True,
+        statistics_network_analysis=True,
+        statistics_flux_heterogeneity=True,
+    )
+    assert name in _names(used_citations(on, MODEL_CITATIONS))
+    for off in (
+        "statistics_flux_heterogeneity",
+        "statistics_network_analysis",
+        "statistics",
+        "run_haemodynamics",
+    ):
+        overrides = dict(
+            run_haemodynamics=True,
+            statistics=True,
+            statistics_network_analysis=True,
+            statistics_flux_heterogeneity=True,
+        )
+        overrides[off] = False
+        settings = _settings(tmp_path, **overrides)
+        assert name not in _names(used_citations(settings, MODEL_CITATIONS)), off
+    block = _settings(
+        tmp_path,
+        run_haemodynamics=True,
+        statistics=False,
+        run_perturbations=True,
+        perturbations=[{"name": "stall", "type": "capillary_block"}],
+    )
+    assert name in _names(used_citations(block, MODEL_CITATIONS))
+    other = _settings(
+        tmp_path,
+        run_haemodynamics=True,
+        statistics=False,
+        run_perturbations=True,
+        perturbations=[{"name": "dilate", "type": "pericyte_dilation_sweep"}],
+    )
+    assert name not in _names(used_citations(other, MODEL_CITATIONS))

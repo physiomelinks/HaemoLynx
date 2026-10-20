@@ -5443,6 +5443,7 @@ def _capillary_block_replicates(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             hypoperfusion_fraction=hypoperfusion_fraction,
+            red_cell_volume_fl=float(settings["red_cell_volume_fl"]),
         )
         replicates.append((seed, len(blocked_edges), comparison))
     return replicates
@@ -5462,6 +5463,7 @@ def _write_capillary_block_comparison(
     selection_summary: dict[str, Any],
     replicates: Sequence[tuple[int | None, int, dict[str, Any]]] | None = None,
     first_seed: int | None = None,
+    red_cell_volume_fl: float = haemodynamics.DEFAULT_RED_CELL_VOLUME_FL,
 ) -> dict[str, Any]:
     """The blocked network's flow set against the baseline's, as three CSVs:
     what was blocked, the network-level comparison, and the comparison per
@@ -5480,6 +5482,7 @@ def _write_capillary_block_comparison(
         inlet_nodes=list(boundaries.inlet_nodes),
         outlet_nodes=list(boundaries.outlet_nodes),
         hypoperfusion_fraction=hypoperfusion_fraction,
+        red_cell_volume_fl=red_cell_volume_fl,
     )
 
     vessels_path = output_dir / f"{result.name}_blocked_vessels.csv"
@@ -5891,6 +5894,7 @@ def _perturb_one(
             boundaries=boundaries,
             hypoperfusion_fraction=hypoperfusion,
             selection_summary=summary,
+            red_cell_volume_fl=float(perturbed["red_cell_volume_fl"]),
             replicates=replicates,
             first_seed=block_seeds[0],
         )
@@ -6140,6 +6144,7 @@ def statistics_arguments(settings: dict) -> dict[str, Any]:
             else 0.0
         ),
         "route_weighting": settings["statistics_route_weighting"],
+        "red_cell_volume_fl": float(settings["red_cell_volume_fl"]),
         "shunt_max_route_fraction": float(settings["statistics_shunt_max_route_fraction"]),
         "occlusion_hypoperfusion_fraction": float(
             settings["statistics_occlusion_hypoperfusion_fraction"]

@@ -387,6 +387,7 @@ def test_a_tab_carries_the_rows_for_its_settings():
         "viscosity_law",
         "pries_viscosity_form",
         "haematocrit",
+        "red_cell_volume_fl",
         "inlet_p_bc",
         "outlet_p_bc",
         "do_equiv_resistance_calculation",

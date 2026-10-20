@@ -294,3 +294,266 @@ def test_the_velocity_is_a_vessels_layer_colour_option_that_moves_with_the_flow(
     assert OPTIONAL_EDGE_COLUMNS[VELOCITY_EDGE_ATTRIBUTE] == "export_results"
     assert VELOCITY_EDGE_ATTRIBUTE in SWEEP_FLOW_MAGNITUDE_COLUMNS
     assert VELOCITY_EDGE_ATTRIBUTE in SOLVED_FLOW_COLUMNS
+
+
+# --- the red cells ---------------------------------------------------------------------
+#
+# Predicted from each vessel's flow and discharge haematocrit by
+# haemodynamics/red_cells.py (tested on its own in test_red_cells.py): here,
+# that the analysis writes and reports them as it does the velocity.
+
+from haemolynx.haemodynamics.red_cells import (  # noqa: E402
+    RED_CELL_EDGE_ATTRIBUTES,
+    RED_CELL_FLUX_ATTR,
+    RED_CELL_LINEAR_DENSITY_ATTR,
+    RED_CELL_VELOCITY_ATTR,
+    TUBE_HAEMATOCRIT_ATTR,
+    fahraeus_ratio,
+)
+
+HAEMATOCRIT = 0.45
+CELL_VOLUME_FL = 50.0
+
+
+def _solved_bed(haematocrit=HAEMATOCRIT):
+    G = _bed()
+    G.graph["haematocrit"] = haematocrit
+    return G
+
+
+def _flux(flow, h, volume_fl=CELL_VOLUME_FL):
+    return flow * h / (volume_fl * 1e-18)
+
+
+def _rbc_velocity_um_s(flow, d, h):
+    return _velocity_um_s(flow, d) / fahraeus_ratio(h, d)
+
+
+def test_each_carrying_vessel_gets_its_red_cells_from_the_runs_haematocrit():
+    G = _solved_bed()
+    compute_flux_heterogeneity(G, red_cell_volume_fl=CELL_VOLUME_FL)
+    for (_u, _v, _k, data), flow, d in zip(
+        [e for e in G.edges(keys=True, data=True) if e[3]["branch_order"] == "BO2"],
+        CAPILLARY_FLOWS,
+        CAPILLARY_DIAMETERS,
+    ):
+        assert data[RED_CELL_FLUX_ATTR] == pytest.approx(_flux(flow, HAEMATOCRIT))
+        assert data[TUBE_HAEMATOCRIT_ATTR] == pytest.approx(
+            HAEMATOCRIT * fahraeus_ratio(HAEMATOCRIT, d)
+        )
+        assert data[RED_CELL_VELOCITY_ATTR] == pytest.approx(_rbc_velocity_um_s(flow, d, HAEMATOCRIT))
+        assert data[RED_CELL_VELOCITY_ATTR] > data[VELOCITY_EDGE_ATTRIBUTE]
+        assert data[RED_CELL_LINEAR_DENSITY_ATTR] == pytest.approx(
+            data[TUBE_HAEMATOCRIT_ATTR] * math.pi * (d / 2) ** 2 * 1000.0 / CELL_VOLUME_FL
+        )
+        # Cells per mm times mm per second is cells per second.
+        assert data[RED_CELL_LINEAR_DENSITY_ATTR] * data[RED_CELL_VELOCITY_ATTR] * 1e-3 == pytest.approx(
+            data[RED_CELL_FLUX_ATTR]
+        )
+    # The 5 um capillary at 1 pL/s, by hand: 1e-12 x 0.45 / 50e-18 = 9,000 cells/s.
+    assert G[1][2][0][RED_CELL_FLUX_ATTR] == pytest.approx(9000.0)
+
+
+def test_with_one_haematocrit_the_flux_cv_is_the_flow_cv_and_the_red_cell_velocity_cv_is_not():
+    result = compute_flux_heterogeneity(_solved_bed(), red_cell_volume_fl=CELL_VOLUME_FL)
+
+    assert result["Red Cell Volume (fL)"] == CELL_VOLUME_FL
+    assert result["Haematocrit Source"] == "the run's haematocrit (0.45) on every vessel"
+    assert result["Capillaries Carrying Flow Without Haematocrit"] == 0
+    assert result["Capillary Red Cell Flux CV"] == pytest.approx(result["Capillary Flow CV"])
+    assert result["Capillary Red Cell Flux Mean (cells/s)"] == pytest.approx(
+        np.mean([_flux(q, HAEMATOCRIT) for q in CAPILLARY_FLOWS])
+    )
+    assert result["Capillary Red Cell Flux SD (cells/s)"] == pytest.approx(
+        np.std([_flux(q, HAEMATOCRIT) for q in CAPILLARY_FLOWS], ddof=1)
+    )
+    rbc = [_rbc_velocity_um_s(q, d, HAEMATOCRIT) for q, d in zip(CAPILLARY_FLOWS, CAPILLARY_DIAMETERS)]
+    assert result["Capillary Red Cell Velocity CV"] == pytest.approx(_cv(rbc))
+    assert result["Capillary Red Cell Velocity CV"] != pytest.approx(result["Capillary Velocity CV"])
+    assert result["Capillary Red Cell Velocity Mean (mm/s)"] == pytest.approx(np.mean(rbc) * 1e-3)
+    assert result["Capillary Tube Haematocrit Mean"] == pytest.approx(
+        np.mean([HAEMATOCRIT * fahraeus_ratio(HAEMATOCRIT, d) for d in CAPILLARY_DIAMETERS])
+    )
+    assert result["Capillary Tube Haematocrit Mean"] < HAEMATOCRIT
+    assert result["Capillary Red Cell Linear Density Mean (cells/mm)"] == pytest.approx(
+        np.mean(
+            [
+                HAEMATOCRIT * fahraeus_ratio(HAEMATOCRIT, d) * math.pi * (d / 2) ** 2 * 1000.0 / CELL_VOLUME_FL
+                for d in CAPILLARY_DIAMETERS
+            ]
+        )
+    )
+    all_flows = [6e-12, *CAPILLARY_FLOWS, 6e-12]
+    assert result["Vessel Red Cell Flux CV"] == pytest.approx(_cv(all_flows))
+    assert "Fahraeus" in result["Flux Heterogeneity Assumptions"]
+    by_type = result["Flux Heterogeneity By Vessel Type"]
+    assert by_type["capillary"]["Red Cell Flux CV"] == pytest.approx(_cv(CAPILLARY_FLOWS))
+    assert by_type["capillary"]["Red Cell Velocity CV"] == pytest.approx(_cv(rbc))
+    assert by_type["arteriole"]["Red Cell Flux CV"] == "N/A (fewer than two vessels carry flow)"
+
+
+def test_a_vessels_own_discharge_haematocrit_comes_before_the_runs():
+    G = _solved_bed()
+    G[1][2][0]["discharge_haematocrit"] = 0.2
+    result = compute_flux_heterogeneity(G, red_cell_volume_fl=CELL_VOLUME_FL)
+
+    assert G[1][2][0][RED_CELL_FLUX_ATTR] == pytest.approx(_flux(1e-12, 0.2))
+    assert G[1][2][0][TUBE_HAEMATOCRIT_ATTR] == pytest.approx(0.2 * fahraeus_ratio(0.2, 5.0))
+    assert G[1][2][1][RED_CELL_FLUX_ATTR] == pytest.approx(_flux(2e-12, HAEMATOCRIT))
+    fluxes = [_flux(1e-12, 0.2), _flux(2e-12, HAEMATOCRIT), _flux(3e-12, HAEMATOCRIT)]
+    assert result["Capillary Red Cell Flux CV"] == pytest.approx(_cv(fluxes))
+    assert result["Haematocrit Source"] == (
+        "the vessel's own discharge_haematocrit on 1 of 5 carrying vessels, "
+        "the run's haematocrit (0.45) on the rest"
+    )
+
+
+def test_the_cell_volume_scales_the_flux_and_spacing_and_nothing_else():
+    G = _solved_bed()
+    compute_flux_heterogeneity(G, red_cell_volume_fl=CELL_VOLUME_FL)
+    before = {name: G[1][2][0][name] for name in RED_CELL_EDGE_ATTRIBUTES}
+    result = compute_flux_heterogeneity(G, red_cell_volume_fl=CELL_VOLUME_FL / 2)
+    after = {name: G[1][2][0][name] for name in RED_CELL_EDGE_ATTRIBUTES}
+    assert after[RED_CELL_FLUX_ATTR] == pytest.approx(2 * before[RED_CELL_FLUX_ATTR])
+    assert after[RED_CELL_LINEAR_DENSITY_ATTR] == pytest.approx(2 * before[RED_CELL_LINEAR_DENSITY_ATTR])
+    assert after[RED_CELL_VELOCITY_ATTR] == pytest.approx(before[RED_CELL_VELOCITY_ATTR])
+    assert after[TUBE_HAEMATOCRIT_ATTR] == pytest.approx(before[TUBE_HAEMATOCRIT_ATTR])
+    assert result["Red Cell Volume (fL)"] == CELL_VOLUME_FL / 2
+    # The default is the module's.
+    from haemolynx.haemodynamics.red_cells import DEFAULT_RED_CELL_VOLUME_FL
+
+    assert compute_flux_heterogeneity(G)["Red Cell Volume (fL)"] == DEFAULT_RED_CELL_VOLUME_FL
+
+
+@pytest.mark.parametrize("volume", [0.0, -1.0, math.nan])
+def test_a_cell_volume_that_is_not_positive_is_refused_before_anything_is_written(volume):
+    G = _solved_bed()
+    with pytest.raises(ValueError, match="red_cell_volume_fl"):
+        compute_flux_heterogeneity(G, red_cell_volume_fl=volume)
+    assert all(VELOCITY_EDGE_ATTRIBUTE not in d for *_e, d in G.edges(keys=True, data=True))
+
+
+def test_without_a_haematocrit_the_red_cell_rows_say_so_and_the_velocity_rows_stand():
+    G = _bed()  # no G.graph["haematocrit"], no discharge_haematocrit
+    result = compute_flux_heterogeneity(G)
+
+    assert result["Capillary Velocity CV"] == pytest.approx(
+        _cv([_velocity_um_s(q, d) for q, d in zip(CAPILLARY_FLOWS, CAPILLARY_DIAMETERS)])
+    )
+    no_haematocrit = (
+        "N/A (no haematocrit: no discharge_haematocrit on the vessels and no "
+        "haematocrit on the graph)"
+    )
+    assert result["Capillary Red Cell Flux CV"] == no_haematocrit
+    assert result["Capillary Red Cell Flux Mean (cells/s)"] == no_haematocrit
+    assert result["Capillary Red Cell Velocity CV"] == no_haematocrit
+    assert result["Capillary Tube Haematocrit Mean"] == no_haematocrit
+    assert result["Vessel Red Cell Flux CV"] == no_haematocrit
+    assert result["Capillaries Carrying Flow Without Haematocrit"] == 3
+    assert result["Vessels Carrying Flow Without Haematocrit"] == 5
+    assert result["Haematocrit Source"].startswith("none")
+    for *_e, data in G.edges(keys=True, data=True):
+        assert all(math.isnan(data[name]) for name in RED_CELL_EDGE_ATTRIBUTES)
+        assert not math.isnan(data[VELOCITY_EDGE_ATTRIBUTE])
+
+
+@pytest.mark.parametrize("bad", [1.0, -0.1, "x", None])
+def test_a_run_haematocrit_that_is_no_fraction_counts_as_none(bad):
+    G = _solved_bed(bad)
+    result = compute_flux_heterogeneity(G)
+    assert result["Capillaries Carrying Flow Without Haematocrit"] == 3
+    assert math.isnan(G[1][2][0][RED_CELL_FLUX_ATTR])
+
+
+def test_the_flux_needs_no_diameter_but_the_velocity_tube_haematocrit_and_spacing_do():
+    G = _solved_bed()
+    del G[1][2][1]["diameter_um"]
+    result = compute_flux_heterogeneity(G, red_cell_volume_fl=CELL_VOLUME_FL)
+
+    assert G[1][2][1][RED_CELL_FLUX_ATTR] == pytest.approx(_flux(2e-12, HAEMATOCRIT))
+    assert math.isnan(G[1][2][1][RED_CELL_VELOCITY_ATTR])
+    assert math.isnan(G[1][2][1][TUBE_HAEMATOCRIT_ATTR])
+    assert math.isnan(G[1][2][1][RED_CELL_LINEAR_DENSITY_ATTR])
+    assert result["Capillary Red Cell Flux CV"] == pytest.approx(_cv(CAPILLARY_FLOWS))
+    assert result["Capillary Red Cell Velocity CV"] == pytest.approx(
+        _cv([_rbc_velocity_um_s(1e-12, 5.0, HAEMATOCRIT), _rbc_velocity_um_s(3e-12, 8.0, HAEMATOCRIT)])
+    )
+    assert result["Capillaries Carrying Flow Without Haematocrit"] == 0
+
+
+def test_a_vessel_carrying_no_flow_has_no_red_cells_and_a_stale_value_is_cleared():
+    G = _solved_bed()
+    _vessel(G, 1, 4, 0.0, diameter=5.0, flow_state="blind_end", flow_solved=False)
+    compute_flux_heterogeneity(G)
+    assert all(math.isnan(G[1][4][0][name]) for name in RED_CELL_EDGE_ATTRIBUTES)
+    for *_e, data in G.edges(keys=True, data=True):
+        del data["flow_abs"]
+    compute_flux_heterogeneity(G)
+    assert all(
+        name not in d for name in RED_CELL_EDGE_ATTRIBUTES for *_e, d in G.edges(keys=True, data=True)
+    )
+
+
+def test_the_run_passes_its_cell_volume_through_to_the_measure():
+    schema = default_schema()
+    setting = schema["red_cell_volume_fl"]
+    assert setting.default == 50.0
+    assert setting.unit == "fL"
+    assert setting.minimum == 1.0
+    assert not setting.advanced
+    assert set(setting.requires) == {"run_haemodynamics"}
+    assert setting.section == schema["haematocrit"].section
+    assert "cells per second" in setting.help
+
+    settings = schema.defaults()
+    settings["red_cell_volume_fl"] = 90
+    arguments = statistics_arguments(settings)
+    assert arguments["red_cell_volume_fl"] == 90.0
+    sections = compute_vessel_statistics_by_measure(
+        _solved_bed(), enabled_measures=frozenset({"flux_heterogeneity"}), red_cell_volume_fl=90.0
+    )
+    rows = sections["flux_heterogeneity"]
+    assert rows["Red Cell Volume (fL)"] == 90.0
+    assert rows["Capillary Red Cell Flux Mean (cells/s)"] == pytest.approx(
+        np.mean([_flux(q, HAEMATOCRIT, 90.0) for q in CAPILLARY_FLOWS])
+    )
+
+
+def test_the_red_cells_are_vessels_layer_colour_options_that_blank_on_unsolved_vessels():
+    from haemolynx.gui.results import (
+        OPTIONAL_EDGE_COLUMNS,
+        SOLVED_FLOW_COLUMNS,
+        SWEEP_FLOW_MAGNITUDE_COLUMNS,
+    )
+
+    for name in RED_CELL_EDGE_ATTRIBUTES:
+        assert OPTIONAL_EDGE_COLUMNS[name] == "export_results"
+        assert name in SOLVED_FLOW_COLUMNS
+    # A pressure sweep moves the flow, so the flux and the cells' velocity;
+    # the tube haematocrit and spacing read the haematocrit and diameter alone.
+    assert {RED_CELL_VELOCITY_ATTR, RED_CELL_FLUX_ATTR} <= SWEEP_FLOW_MAGNITUDE_COLUMNS
+    assert not {TUBE_HAEMATOCRIT_ATTR, RED_CELL_LINEAR_DENSITY_ATTR} & SWEEP_FLOW_MAGNITUDE_COLUMNS
+
+
+def test_the_csv_notes_call_the_red_cell_rows_predictions(tmp_path):
+    """The CSV's keyword notes used to read "Linear Density" as a vessel
+    density and "Red Cell Velocity" as the plasma velocity."""
+    import csv
+
+    from haemolynx.statistics import export_statistics_to_csv
+
+    result = compute_flux_heterogeneity(_solved_bed())
+    path = export_statistics_to_csv(result, tmp_path / "stats.csv")
+    with path.open(encoding="utf-8", newline="") as handle:
+        notes = {row[1]: (row[3], row[4]) for row in csv.reader(handle)}
+    assert notes["Capillary Red Cell Flux Mean"] == (
+        "cells/s",
+        "Flow x discharge haematocrit / red-cell volume, over vessels carrying flow: a prediction, not a count.",
+    )
+    assert notes["Capillary Red Cell Linear Density Mean"][0] == "cells/mm"
+    assert "cells per mm" in notes["Capillary Red Cell Linear Density Mean"][1]
+    assert "normalized" not in notes["Capillary Red Cell Linear Density Mean"][1]
+    assert "Fahraeus" in notes["Capillary Red Cell Velocity CV"][1]
+    assert "Fahraeus" in notes["Capillary Tube Haematocrit Mean"][1]
+    # The plasma velocity keeps its own note.
+    assert notes["Capillary Velocity CV"][1] == "Flow over the lumen's cross-section, over vessels carrying flow."

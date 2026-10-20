@@ -119,6 +119,14 @@ def _annotation_for_metric(metric_name: str) -> str:
         return "Subnetwork partition summary."
     if metric_name.startswith("Vessel Class Density Volume"):
         return "What every vessel class's densities divide by."
+    if "Red Cell Flux" in metric_name:
+        return "Flow x discharge haematocrit / red-cell volume, over vessels carrying flow: a prediction, not a count."
+    if "Red Cell Velocity" in metric_name:
+        return "Mean velocity x discharge / tube haematocrit (Fahraeus, Pries et al. 1990), over vessels carrying flow: a prediction."
+    if "Red Cell Linear Density" in metric_name:
+        return "Tube haematocrit x cross-section / red-cell volume: cells per mm of vessel, a prediction."
+    if "Tube Haematocrit" in metric_name:
+        return "The haematocrit inside the vessel, below the discharge haematocrit (Fahraeus, Pries et al. 1990)."
     if "Volume Density" in metric_name:
         return "Vessel volume (a cylinder per vessel) normalized by available volume."
     if "Surface Density" in metric_name:

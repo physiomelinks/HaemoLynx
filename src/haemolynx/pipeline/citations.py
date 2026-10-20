@@ -118,6 +118,24 @@ def _used_haematocrit_distribution(settings: Mapping[str, Any]) -> bool:
     )
 
 
+def _used_red_cell_transport(settings: Mapping[str, Any]) -> bool:
+    """Whether the run predicts tube haematocrit, red-cell velocity and
+    flux (haemodynamics.red_cells): the flux heterogeneity statistic, or a
+    capillary-block perturbation's comparison, on a solved network."""
+    if not settings.get("run_haemodynamics"):
+        return False
+    if (
+        settings.get("statistics")
+        and settings.get("statistics_network_analysis")
+        and settings.get("statistics_flux_heterogeneity")
+    ):
+        return True
+    if not settings.get("run_perturbations"):
+        return False
+    entries = settings.get("perturbations") or ()
+    return any(str(entry.get("type")) == "capillary_block" for entry in entries)
+
+
 def _used_open_end_estimate(settings: Mapping[str, Any]) -> bool:
     return bool(settings.get("run_haemodynamics")) and settings.get("open_end_model") == "estimated"
 
@@ -373,6 +391,20 @@ MODEL_CITATIONS: tuple[Citation, ...] = (
             "Physiology, 289(6), H2657-H2664."
         ),
         applies=_used_haematocrit_distribution,
+    ),
+    Citation(
+        name="Fahraeus effect: tube haematocrit from discharge haematocrit (Pries et al., 1990)",
+        reason=(
+            "each vessel's tube haematocrit, red-cell velocity, red-cell flux "
+            "and spacing, predicted from the solved flow (the flux heterogeneity "
+            "statistic and the capillary-block comparison)"
+        ),
+        reference=(
+            "Pries, A.R., Secomb, T.W., Gaehtgens, P., Gross, J.F. (1990). "
+            "Blood flow in microvascular networks. Experiments and simulation. "
+            "Circulation Research, 67(4), 826-834."
+        ),
+        applies=_used_red_cell_transport,
     ),
     Citation(
         name="Secomb's network-flow junction rules (haematocrit_junction_rule)",

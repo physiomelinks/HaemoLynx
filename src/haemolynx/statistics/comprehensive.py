@@ -12,6 +12,8 @@ from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from .bifurcation import compute_daughter_daughter_angles, compute_murray_law_compliance
 from .capillary_bed_joins import compute_capillary_bed_joins
 from .current_flow import compute_current_flow
+from haemolynx.haemodynamics.red_cells import DEFAULT_RED_CELL_VOLUME_FL
+
 from .flux_heterogeneity import compute_flux_heterogeneity
 from .inlet_outlet_routes import (
     compute_inlet_outlet_bottlenecks,
@@ -198,6 +200,7 @@ def compute_comprehensive_vessel_statistics(
     arteriole_boundary_nodes: Optional[Any] = None,
     venule_boundary_nodes: Optional[Any] = None,
     short_loop_removal_um: Optional[float] = None,
+    red_cell_volume_fl: float = DEFAULT_RED_CELL_VOLUME_FL,
 ) -> Dict[str, Any]:
     """Combine all vessel statistics.
 
@@ -222,6 +225,10 @@ def compute_comprehensive_vessel_statistics(
     (:func:`~haemolynx.graph.branch_order.capillary_start_nodes`) -- and reports
     *short_loop_removal_um* -- the ``remove_short_loops_under_um`` the graph
     was built with -- beside them when given.
+
+    *red_cell_volume_fl* is the mean red-cell volume "flux_heterogeneity"
+    counts its red-cell flux and spacing by (the ``red_cell_volume_fl``
+    setting; see :mod:`haemolynx.haemodynamics.red_cells`).
 
     "bottlenecks", "shunts", "occlusion_impact", "current_flow",
     "perfusion_territories", "capillary_bed_joins", "transit_time",
@@ -267,6 +274,7 @@ def compute_comprehensive_vessel_statistics(
         arteriole_boundary_nodes=arteriole_boundary_nodes,
         venule_boundary_nodes=venule_boundary_nodes,
         short_loop_removal_um=short_loop_removal_um,
+        red_cell_volume_fl=red_cell_volume_fl,
     )
     return flatten_statistics_sections(sections, statistics_mode)
 
@@ -290,6 +298,7 @@ def compute_vessel_statistics_by_measure(
     arteriole_boundary_nodes: Optional[Any] = None,
     venule_boundary_nodes: Optional[Any] = None,
     short_loop_removal_um: Optional[float] = None,
+    red_cell_volume_fl: float = DEFAULT_RED_CELL_VOLUME_FL,
 ) -> Dict[str, Dict[str, Any]]:
     """Every vessel statistic, one section per measure that ran.
 
@@ -462,7 +471,9 @@ def compute_vessel_statistics_by_measure(
     if "transit_time" in enabled:
         sections["transit_time"] = compute_transit_times(G, inlet_nodes, outlet_nodes)
     if "flux_heterogeneity" in enabled:
-        sections["flux_heterogeneity"] = compute_flux_heterogeneity(G)
+        sections["flux_heterogeneity"] = compute_flux_heterogeneity(
+            G, red_cell_volume_fl=red_cell_volume_fl
+        )
     if "loop_hierarchy" in enabled:
         sections["loop_hierarchy"] = compute_loop_hierarchy(
             G,

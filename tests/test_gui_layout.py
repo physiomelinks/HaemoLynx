@@ -554,3 +554,14 @@ def test_box_names_include_the_rows_behind_its_buttons():
     )
     assert box.names == ("a", "b", "c")
     assert box.rows == ("a",)
+
+
+def test_the_red_cell_volume_sits_beside_the_haematocrit_as_an_ordinary_row():
+    """The mean cell volume the red-cell flux is counted by is a blood
+    property like the haematocrit, so it is the row under it in the blood
+    model box, not behind an Advanced button."""
+    assert not SCHEMA["red_cell_volume_fl"].advanced
+    _tab, haemodynamics = LAYOUTS["build_haemodynamic_model"]
+    names = list(haemodynamics.box("blood_model").names)
+    assert names.index("red_cell_volume_fl") == names.index("haematocrit") + 1
+    assert "red_cell_volume_fl" in haemodynamics.box("blood_model").rows

@@ -21,7 +21,7 @@ SCHEMA = default_schema()
 
 #: The spellings a unit may use. One per quantity -- `um` and `microns` for the
 #: same thing reads as two different units to anyone scanning a config file.
-ALLOWED_UNITS = {"um", "um3", "voxels", "percent", "fraction", "Pa"}
+ALLOWED_UNITS = {"um", "um3", "voxels", "percent", "fraction", "Pa", "fL"}
 
 #: Settings whose unit is settled by what the consuming code compares them
 #: against. `um` wherever the value meets node `pos` or edge `length`, which
@@ -55,6 +55,9 @@ EXPECTED_UNITS = {
     # Pressures.
     "inlet_p_bc": "Pa",
     "outlet_p_bc": "Pa",
+    # A red cell's volume, femtolitres: a flow (m^3/s) times a haematocrit
+    # over it is cells per second.
+    "red_cell_volume_fl": "fL",
     # Walked along an edge's centreline in `get_diameter_at_position`, whose
     # position runs over edge `length`: microns.
     "constriction_length_um": "um",

@@ -45,6 +45,7 @@ import networkx as nx
 import numpy as np
 
 from haemolynx.haemodynamics.poiseuille import set_edge_resistance
+from haemolynx.haemodynamics.red_cells import DEFAULT_RED_CELL_VOLUME_FL
 
 __all__ = [
     "BLOCK_SELECTIONS",
@@ -299,6 +300,10 @@ FLUX_HETEROGENEITY_SUMMARY_ROWS: tuple[tuple[str, str], ...] = (
     ("Capillary Velocity CV", "capillary_velocity_cv"),
     ("Vessel Flow CV", "vessel_flow_cv"),
     ("Vessel Velocity CV", "vessel_velocity_cv"),
+    ("Capillary Red Cell Flux CV", "capillary_red_cell_flux_cv"),
+    ("Capillary Red Cell Velocity CV", "capillary_red_cell_velocity_cv"),
+    ("Vessel Red Cell Flux CV", "vessel_red_cell_flux_cv"),
+    ("Vessel Red Cell Velocity CV", "vessel_red_cell_velocity_cv"),
     ("Vessels Carrying Flow", "vessels_carrying_flow"),
     ("Capillaries Carrying Flow", "capillaries_carrying_flow"),
     ("Flowing Vessel Length (microns)", "flowing_vessel_length_um"),
@@ -375,6 +380,7 @@ def compare_block_to_baseline(
     inlet_nodes: Iterable[Any],
     outlet_nodes: Iterable[Any],
     hypoperfusion_fraction: float = 0.5,
+    red_cell_volume_fl: float = DEFAULT_RED_CELL_VOLUME_FL,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """How the blocked network's flow differs from the baseline's.
 
@@ -383,7 +389,9 @@ def compare_block_to_baseline(
     flow, and *reversed* when its flow runs the other way (both only for
     vessels that carried flow at baseline, and not counting the blocked
     vessels themselves). Writes :data:`FLOW_CHANGE_EDGE_ATTRIBUTE` onto every
-    vessel of *blocked*.
+    vessel of *blocked*. The flux heterogeneity rows
+    (:data:`FLUX_HETEROGENEITY_SUMMARY_ROWS`) count red cells by
+    *red_cell_volume_fl* (the ``red_cell_volume_fl`` setting).
     """
     from haemolynx.statistics.bifurcation import (
         _branch_order_sort_key,
@@ -525,7 +533,7 @@ def compare_block_to_baseline(
                 summary[f"{name}_{label}"] = times[key]
         if "Transit Time Status" in times:
             summary[f"transit_time_status_{label}"] = times["Transit Time Status"]
-        flux = compute_flux_heterogeneity(G)
+        flux = compute_flux_heterogeneity(G, red_cell_volume_fl=red_cell_volume_fl)
         for key, name in FLUX_HETEROGENEITY_SUMMARY_ROWS:
             if key in flux:
                 summary[f"{name}_{label}"] = flux[key]

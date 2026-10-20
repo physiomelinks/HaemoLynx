@@ -21,6 +21,18 @@ either would pull the CV up with a flow that is no perfusion.
 Writes each carrying vessel's mean velocity over its lumen's cross-section,
 :data:`VELOCITY_EDGE_ATTRIBUTE` (um/s), onto the edge, NaN elsewhere; the
 report's velocities are in mm/s, as the Vessel Classes section's.
+
+And the red cells (:mod:`haemolynx.haemodynamics.red_cells`): each carrying
+vessel's tube haematocrit, red-cell velocity, red-cell flux (cells per
+second) and linear density (cells per mm), predicted from its flow, its
+discharge haematocrit -- the vessel's own ``discharge_haematocrit`` where the
+run distributed it, else the run's one ``G.graph["haematocrit"]`` -- and the
+mean cell volume *red_cell_volume_fl*, with the same mean / SD / CV rows as
+the flow and velocity. With a fixed haematocrit the red-cell flux is the flow
+times a constant, so its CV is the flow's; the red-cell velocity's is not the
+velocity's, since the Fahraeus ratio depends on diameter. None of these is a
+measurement: they carry every error of the flow, and the flux the haematocrit
+model's too.
 """
 from __future__ import annotations
 
@@ -30,6 +42,20 @@ from typing import Any, Dict, Optional, Union
 
 import networkx as nx
 import numpy as np
+
+from haemolynx.haemodynamics.red_cells import (
+    DEFAULT_RED_CELL_VOLUME_FL,
+    RED_CELL_EDGE_ATTRIBUTES,
+    RED_CELL_FLUX_ATTR,
+    RED_CELL_LINEAR_DENSITY_ATTR,
+    RED_CELL_VELOCITY_ATTR,
+    TUBE_HAEMATOCRIT_ATTR,
+    red_cell_flux_per_s,
+    red_cell_linear_density_per_mm,
+    red_cell_velocity_um_s,
+    tube_haematocrit,
+    vessel_discharge_haematocrit,
+)
 
 from ._route_graph import _clear_edge_attributes, _iter_edges, _set_edge, _unavailable
 from .bifurcation import branch_order_category
@@ -50,12 +76,22 @@ CARRYING_FLOOR_FRACTION = 1e-9
 
 #: Per-vessel mean velocity over the lumen's cross-section, um/s.
 VELOCITY_EDGE_ATTRIBUTE = "vessel_velocity_um_s"
-FLUX_HETEROGENEITY_EDGE_ATTRIBUTES: tuple[str, ...] = (VELOCITY_EDGE_ATTRIBUTE,)
+#: What this measure writes on the edges: the velocity and the red cells'
+#: four (``haemodynamics.red_cells.RED_CELL_EDGE_ATTRIBUTES``).
+FLUX_HETEROGENEITY_EDGE_ATTRIBUTES: tuple[str, ...] = (
+    VELOCITY_EDGE_ATTRIBUTE,
+    *RED_CELL_EDGE_ATTRIBUTES,
+)
 
 _PREFIX = "Flux Heterogeneity"
 ASSUMPTIONS = (
     "CV is the sample SD over the mean across vessels; velocity is the solved "
-    "mean (plasma) flow over the lumen's cross-section, not red-cell speed"
+    "mean (plasma) flow over the lumen's cross-section, not red-cell speed; "
+    "the red-cell rows are predictions from that flow and the discharge "
+    "haematocrit -- tube haematocrit by the Fahraeus relation of Pries et al. "
+    "1990, red-cell velocity as the mean velocity times discharge over tube "
+    "haematocrit, flux as flow times discharge haematocrit over the red-cell "
+    "volume -- not measurements"
 )
 
 _NO_CARRYING = "N/A (no vessel carries flow)"
@@ -63,6 +99,10 @@ _ONE_CARRYING = "N/A (fewer than two vessels carry flow)"
 _NO_CAPILLARIES = "N/A (no vessels classified as capillaries)"
 _NO_CARRYING_CAPILLARIES = "N/A (no capillary carries flow)"
 _ONE_CARRYING_CAPILLARY = "N/A (fewer than two capillaries carry flow)"
+_NO_HAEMATOCRIT = (
+    "N/A (no haematocrit: no discharge_haematocrit on the vessels and no "
+    "haematocrit on the graph)"
+)
 
 
 def _number(value: Any) -> Optional[float]:
@@ -160,27 +200,113 @@ def _group_rows(vessels: list, what: str, none: str, one: str) -> Dict[str, Any]
     rows[f"{what} Velocity Mean (mm/s)"] = mean
     rows[f"{what} Velocity SD (mm/s)"] = sd
     rows[f"{what} Velocity CV"] = cv
+    rows.update(_red_cell_rows(carrying, what, noun, none, one))
     return rows
 
 
-def compute_flux_heterogeneity(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str, Any]:
+def _mean_or(values: list, none: str) -> Union[float, str]:
+    return float(np.mean(values)) if values else none
+
+
+def _red_cell_rows(carrying: list, what: str, noun: str, none: str, one: str) -> Dict[str, Any]:
+    """The red-cell rows for one group: the spread of the flux (which needs
+    no diameter, like the flow) and of the red-cell velocity (which needs
+    one, like the velocity), and the mean tube haematocrit and spacing, over
+    the carrying vessels with a haematocrit."""
+    with_h = [v for v in carrying if v["haematocrit"] is not None]
+    if carrying and not with_h:
+        none = _NO_HAEMATOCRIT
+    rows: Dict[str, Any] = {
+        f"{noun} Carrying Flow Without Haematocrit": len(carrying) - len(with_h)
+    }
+    mean, sd, cv = _spread([v["red_cells"][RED_CELL_FLUX_ATTR] for v in with_h], none, one)
+    rows[f"{what} Red Cell Flux Mean (cells/s)"] = mean
+    rows[f"{what} Red Cell Flux SD (cells/s)"] = sd
+    rows[f"{what} Red Cell Flux CV"] = cv
+    sized = [v for v in with_h if v["diameter"] is not None]
+    mean, sd, cv = _spread(
+        [v["red_cells"][RED_CELL_VELOCITY_ATTR] * 1e-3 for v in sized], none, one
+    )
+    rows[f"{what} Red Cell Velocity Mean (mm/s)"] = mean
+    rows[f"{what} Red Cell Velocity SD (mm/s)"] = sd
+    rows[f"{what} Red Cell Velocity CV"] = cv
+    rows[f"{what} Tube Haematocrit Mean"] = _mean_or(
+        [v["red_cells"][TUBE_HAEMATOCRIT_ATTR] for v in sized], none
+    )
+    rows[f"{what} Red Cell Linear Density Mean (cells/mm)"] = _mean_or(
+        [v["red_cells"][RED_CELL_LINEAR_DENSITY_ATTR] for v in sized], none
+    )
+    return rows
+
+
+def _red_cell_values(vessel: dict, red_cell_volume_fl: float) -> Dict[str, float]:
+    """A vessel's red-cell attributes: NaN unless it carries flow at a
+    haematocrit; the flux needs no diameter, the other three do."""
+    values = {name: math.nan for name in RED_CELL_EDGE_ATTRIBUTES}
+    h = vessel["haematocrit"]
+    if not vessel["carrying"] or h is None:
+        return values
+    values[RED_CELL_FLUX_ATTR] = red_cell_flux_per_s(vessel["flow"], h, red_cell_volume_fl)
+    d = vessel["diameter"]
+    if d is not None:
+        values[TUBE_HAEMATOCRIT_ATTR] = tube_haematocrit(h, d)
+        values[RED_CELL_VELOCITY_ATTR] = red_cell_velocity_um_s(
+            _velocity_um_s(vessel["flow"], d), h, d
+        )
+        values[RED_CELL_LINEAR_DENSITY_ATTR] = red_cell_linear_density_per_mm(
+            d, h, red_cell_volume_fl
+        )
+    return values
+
+
+def _haematocrit_source(vessels: list, run_haematocrit: Optional[float]) -> str:
+    """Which haematocrit the carrying vessels' red cells were counted at."""
+    carrying = sum(1 for v in vessels if v["carrying"])
+    own = sum(1 for v in vessels if v["carrying"] and v["own_haematocrit"])
+    if own:
+        source = f"the vessel's own discharge_haematocrit on {own} of {carrying} carrying vessels"
+        if own < carrying:
+            source += (
+                f", the run's haematocrit ({run_haematocrit:g}) on the rest"
+                if run_haematocrit is not None
+                else ", none on the rest"
+            )
+        return source
+    if run_haematocrit is not None:
+        return f"the run's haematocrit ({run_haematocrit:g}) on every vessel"
+    return "none: no discharge_haematocrit on the vessels and no haematocrit on the graph"
+
+
+def compute_flux_heterogeneity(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    red_cell_volume_fl: float = DEFAULT_RED_CELL_VOLUME_FL,
+) -> Dict[str, Any]:
     """Flux heterogeneity and the flowing share of *G*: see the module.
 
     Needs a solved flow (``flow_abs`` on the edges); every row that needs a
-    diameter says so where one is missing. Writes
-    :data:`VELOCITY_EDGE_ATTRIBUTE` onto every edge (NaN on a vessel carrying
-    no flow or with no diameter) once it has an answer, nothing otherwise.
+    diameter says so where one is missing, and the red-cell rows say so
+    where no vessel has a haematocrit. Writes
+    :data:`FLUX_HETEROGENEITY_EDGE_ATTRIBUTES` onto every edge (NaN on a
+    vessel carrying no flow, or with no diameter or haematocrit for what
+    needs one) once it has an answer, nothing otherwise. *red_cell_volume_fl*
+    is the mean cell volume the flux and spacing count cells by (the
+    ``red_cell_volume_fl`` setting).
     """
+    if not float(red_cell_volume_fl) > 0.0:
+        raise ValueError(f"red_cell_volume_fl must be positive, got {red_cell_volume_fl}")
     _clear_edge_attributes(G, FLUX_HETEROGENEITY_EDGE_ATTRIBUTES)
     edges = list(_iter_edges(G))
     if not any(_number(d.get("flow_abs")) is not None for *_e, d in edges):
         return _unavailable(_PREFIX, "needs a solved flow (run haemodynamics)")
     floor = carrying_floor(G)
+    run_haematocrit, _own = vessel_discharge_haematocrit({}, G.graph.get("haematocrit"))
     vessels = []
     for u, v, key, data in edges:
         diameter = _number(data.get("diameter_um"))
         length = _number(data.get("length"))
         flow = _number(data.get("flow_abs"))
+        haematocrit, own = vessel_discharge_haematocrit(data, run_haematocrit)
         vessels.append(
             {
                 "edge": (u, v, key),
@@ -189,6 +315,8 @@ def compute_flux_heterogeneity(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str, A
                 "diameter": diameter if diameter is not None and diameter > 0 else None,
                 "length": max(length, 0.0) if length is not None else 0.0,
                 "category": branch_order_category(data.get("branch_order")),
+                "haematocrit": haematocrit,
+                "own_haematocrit": own,
             }
         )
     if not any(vessel["carrying"] for vessel in vessels):
@@ -201,10 +329,15 @@ def compute_flux_heterogeneity(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str, A
             else math.nan
         )
         _set_edge(G, *vessel["edge"], VELOCITY_EDGE_ATTRIBUTE, velocity)
+        vessel["red_cells"] = _red_cell_values(vessel, red_cell_volume_fl)
+        for name, value in vessel["red_cells"].items():
+            _set_edge(G, *vessel["edge"], name, value)
 
     result: Dict[str, Any] = {
         f"{_PREFIX} Assumptions": ASSUMPTIONS,
         "Carrying Flow Floor (m³/s)": floor,
+        "Red Cell Volume (fL)": float(red_cell_volume_fl),
+        "Haematocrit Source": _haematocrit_source(vessels, run_haematocrit),
         "Vessels": len(vessels),
     }
     result.update(_group_rows(vessels, "Vessel", _NO_CARRYING, _ONE_CARRYING))
@@ -227,11 +360,14 @@ def compute_flux_heterogeneity(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str, A
         _m, _sd, velocity_cv = _spread(
             [_velocity_um_s(v["flow"], v["diameter"]) for v in sized], _NO_CARRYING, _ONE_CARRYING
         )
+        red = _red_cell_rows(carrying, "Vessel", "Vessels", _NO_CARRYING, _ONE_CARRYING)
         result[f"{_PREFIX} By Vessel Type"][category] = {
             "Vessels": len(members),
             "Vessels Carrying Flow": len(carrying),
             "Flow CV": flow_cv,
             "Velocity CV": velocity_cv,
+            "Red Cell Flux CV": red["Vessel Red Cell Flux CV"],
+            "Red Cell Velocity CV": red["Vessel Red Cell Velocity CV"],
             **_volume_rows(members, carrying, "Vessel"),
         }
     return result
