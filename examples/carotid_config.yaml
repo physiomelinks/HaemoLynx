@@ -931,7 +931,7 @@ endothelial_diameter:
 # EDT mask diameter estimate
 # ------------------------------------------------------------------------
 edt_mask_diameter_estimate:
-  # Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against FWHM  [needs run_haemodynamics]
+  # Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against the raw-image measurement (FWHM, or the endothelial wall fit)  [needs run_haemodynamics]
   use_edt_diameter_crosscheck: false
   # Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge, or was never attempted  [needs use_edt_diameter_crosscheck]
   edt_diameter_prefer_over_table_on_fwhm_failure: true

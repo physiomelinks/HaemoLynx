@@ -6065,7 +6065,7 @@ SCHEMA = Schema(
             name="use_edt_diameter_crosscheck",
             kind="bool",
             default=False,
-            help="Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against FWHM",
+            help="Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against the raw-image measurement (FWHM, or the endothelial wall fit)",
             section=_EDT_DIAMETER,
             # Seeding FWHM's own first-pass guess and flagging disagreement
             # with FWHM do need FWHM on, but falling back for an edge FWHM
