@@ -1180,6 +1180,9 @@ are only caught locally.
   this process adds each source's increments in networkx's node order and calls its `_rescale`:
   the same floats in the same order, so the same bits. Below the threshold, with one worker, or
   when a worker fails, networkx runs it here. Never sampling (`k`) or another library.
+  Harvey's AIA batch graph `29_1_b_contra_FITC` (18,253 nodes, 8 workers, a busy machine):
+  414 s against networkx's ~2,950 s (timed on 300 sources, scaled); a 4,000-node piece of it
+  122.5 -> 44.7 s, every value's bits equal. `MAX_DEFAULT_WORKERS` (8) is the ceiling.
 - **Vascular communities** (`graph/communities.py`) — the `compute_vascular_communities` toggle,
   independent of Statistics; when Statistics also runs, the two share one partition
   (`pipeline/stages.py`'s `shared_vascular_community_partition`) instead of computing it twice.
