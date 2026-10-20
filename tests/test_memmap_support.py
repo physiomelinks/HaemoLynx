@@ -143,3 +143,40 @@ def test_a_released_memmap_leaves_nothing_for_the_clean_up_at_exit(tmp_path):
     assert path not in memmap_support._FINALISERS
     assert path not in memmap_support._DROPPED_FILES
     assert not os.path.exists(path)
+
+
+def test_release_resident_pages_writes_every_volume_out_and_hands_its_pages_back(tmp_path):
+    """Every live new_memmap_array volume and any memmap given -- a view of
+    one included -- is written to its file, and on Windows taken out of this
+    process's working set (flushing alone leaves it there, not counted free);
+    the data reads back as written."""
+    import sys
+
+    import psutil
+
+    from haemolynx.preprocessing.memmap_support import release_resident_pages
+
+    made = new_memmap_array((64, 1024, 1024), np.uint8, directory=tmp_path)
+    npy = np.lib.format.open_memmap(str(tmp_path / "given.npy"), mode="w+", dtype=np.uint8, shape=(32, 1024, 1024))
+    made[...] = 3
+    npy[...] = 5
+    before = psutil.Process().memory_info().wset if sys.platform == "win32" else None
+
+    release_resident_pages(npy[4:9], np.zeros(3), [1, 2])
+
+    assert np.all(np.fromfile(made.filename, dtype=np.uint8) == 3), "written out"
+    assert np.all(np.asarray(np.load(tmp_path / "given.npy", mmap_mode="r")) == 5)
+    if before is not None:
+        dropped = before - psutil.Process().memory_info().wset
+        assert dropped > 0.8 * (made.nbytes + npy.nbytes), dropped
+    assert np.all(made == 3) and np.all(npy == 5)
+    release_memmap_array(made)
+    del npy
+
+
+def test_release_resident_pages_passes_over_a_released_volume(tmp_path):
+    from haemolynx.preprocessing.memmap_support import release_resident_pages
+
+    gone = new_memmap_array((4, 4), np.uint8, directory=tmp_path)
+    release_memmap_array(gone)
+    release_resident_pages(gone)

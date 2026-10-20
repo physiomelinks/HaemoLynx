@@ -172,6 +172,27 @@ def test_distances_at_points_with_no_points_is_empty():
     assert read.shape == (0,)
 
 
+def test_the_parallel_plan_counts_this_process_s_own_volumes_as_free(monkeypatch):
+    """The plan hands this process's disk-backed volumes' pages back before
+    it reads the free memory: on Windows a written memmap's pages are not
+    counted free until then, and the plan took them for the machine's."""
+    import os
+
+    import haemolynx.haemodynamics.resistance as resistance
+    from haemolynx.preprocessing import memmap_support
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 20)
+    handed_back = []
+    monkeypatch.setattr(memmap_support, "release_resident_pages", lambda *a: handed_back.append(a))
+    monkeypatch.setattr(
+        resistance, "available_memory_bytes", lambda: (8 << 30) if handed_back else (300 << 20)
+    )
+
+    block, workers = blockwise_edt.parallel_plan((200, 1200, 1250), 32_000_000)
+
+    assert handed_back and workers > 1, (block, workers)
+
+
 def test_the_parallel_plan_follows_cores_free_memory_and_the_volume(monkeypatch):
     """Workers: one per core but one, as many as half the free memory holds
     at the smallest block, and no more than there are blocks; blocks as large

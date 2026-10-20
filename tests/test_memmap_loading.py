@@ -408,6 +408,7 @@ def test_fill_binary_holes_with_memmap_on_labels_its_slabs_in_worker_processes(t
     """The slabs labelled in two worker processes, then joined here: the same
     holes, filled whichever process labelled them."""
     import haemolynx.preprocessing.blockwise_edt as blockwise_edt
+    import haemolynx.preprocessing.shared_volume_tasks as shared_volume_tasks
     from scipy.ndimage import binary_fill_holes
 
     rng = np.random.default_rng(5)
@@ -417,10 +418,15 @@ def test_fill_binary_holes_with_memmap_on_labels_its_slabs_in_worker_processes(t
     mask[3:13, 7:12, 7:11] = False  # a cavity through many slabs
     mask[5:9, 14:17, 0:12] = False  # one reaching the x = 0 face
     monkeypatch.setattr(blockwise_edt, "parallel_plan", lambda shape, block_voxels=None: (2 * 24 * 20, 2))
+    starts = []
+    real_start = shared_volume_tasks._start_pool
+    monkeypatch.setattr(shared_volume_tasks, "_start_pool", lambda n: starts.append(n) or real_start(n))
 
     result = fill_binary_holes(mask, use_memmap=True, memmap_directory=tmp_path)
 
     assert np.array_equal(result, binary_fill_holes(mask))
+    assert starts == [2], "the same workers label the slabs and write them"
+    assert shared_volume_tasks._KEPT["pool"] is None
     release_memmap_array(result)
 def test_fill_binary_holes_honours_memmap_directory(tmp_path):
     mask = np.zeros((10, 10, 10), dtype=bool)

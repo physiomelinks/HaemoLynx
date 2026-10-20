@@ -2003,10 +2003,12 @@ def test_the_low_ram_catchment_in_worker_processes_is_the_one_in_this_process(
 ):
     """The radius gates, the wall and the flake filter, their blocks
     transformed in two worker processes reading the stack from disk: the same
-    region and skeleton as in RAM, with every pass planned for workers."""
+    region and skeleton as in RAM, with every pass planned for workers -- and
+    one set of workers started for them all, stopped before Lee thins here."""
     import os
 
-    from haemolynx.preprocessing import blockwise_edt, memmap_support
+    import haemolynx.preprocessing.thick_vessels as thick_vessels
+    from haemolynx.preprocessing import blockwise_edt, memmap_support, shared_volume_tasks
 
     mask, kwargs = _network_case(case)
     plain, plain_thick = skeletonize_thickness_gated(mask, **kwargs)
@@ -2024,11 +2026,24 @@ def test_the_low_ram_catchment_in_worker_processes_is_the_one_in_this_process(
     monkeypatch.setattr(
         blockwise_edt, "parallel_plan", lambda *a, **k: plans.append(real_plan(*a, **k)) or plans[-1]
     )
+    starts = []
+    real_start = shared_volume_tasks._start_pool
+    monkeypatch.setattr(shared_volume_tasks, "_start_pool", lambda n: starts.append(n) or real_start(n))
+    lee_while_kept = []
+    real_lee = thick_vessels.skeletonize_by_component
+    monkeypatch.setattr(
+        thick_vessels,
+        "skeletonize_by_component",
+        lambda *a, **k: lee_while_kept.append(shared_volume_tasks._KEPT["pool"] is not None) or real_lee(*a, **k),
+    )
     low_ram, low_ram_thick = skeletonize_thickness_gated(
         mask, use_memmap=True, memmap_directory=tmp_path, **kwargs
     )
 
     assert plans and all(workers == 2 for _block, workers in plans), plans
+    assert len(plans) >= 2 and starts == [2], (plans, starts)
+    assert lee_while_kept and not any(lee_while_kept), "workers stopped before Lee thins here"
+    assert shared_volume_tasks._KEPT["pool"] is None
     assert np.array_equal(low_ram_thick, plain_thick)
     assert np.array_equal(low_ram, plain)
 

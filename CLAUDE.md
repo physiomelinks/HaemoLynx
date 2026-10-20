@@ -1246,7 +1246,18 @@ are only caught locally.
   labels the background a slab of planes at a time (`skeleton._fill_binary_holes_by_slab`, no label
   volume), and the catchment's blocks run in worker processes (`blockwise_edt.near_blocks`, sized by
   `parallel_plan` from cores and free memory): catchment 90 -> 51 s and Lee step 72 -> 35 s on that
-  stack with 14 workers, 7.5 GB with theirs counted. **The large-stack tree**
+  stack with 14 workers, 7.5 GB with theirs counted. One set of workers serves the hole fill, every
+  pass of the region and the Lee step's catchment (`shared_volume_tasks.kept_workers`, stopped
+  before Lee thins here: a worker imports the whole package as it starts, ~17 s with a dozen at
+  once, and each pass started its own), each mapping its volumes for one task and flushing what it
+  writes; the free memory the plan and the re-check before each task read (2 GB kept free) is read
+  once this process's disk-backed volumes are written out and their pages handed back
+  (`memmap_support.release_resident_pages`): on Windows a mapped file's pages are not available
+  while in a working set or unwritten on the modified list (14.7 GB of it on the patella, emptying
+  at ~55 MB/s), so the re-check took the run's own volumes for the machine's memory and held the
+  patella's catchment to one task at a time (region 925 -> 1,296 s at `dcc41c25`; 916 s with the
+  re-check off). 75 M-voxel stack: region 132 -> 42 s (45 s in one process); 300 M: catchment
+  85 -> 25 s, both bit for bit (the patella with this not yet timed). **The large-stack tree**
   (`skeleton_thick_vessel_large_stack_tree`, off by default, under the low-RAM option only;
   `preprocessing/thick_vessel_tree.py`, 2026-10-19) is for a fat region that is one network
   crossing the stack -- Harvey's patella at a 3 um gate, 111 M of its 144 M fat voxels in one
