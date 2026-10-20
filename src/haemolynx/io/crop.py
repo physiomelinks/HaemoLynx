@@ -266,6 +266,7 @@ def crop_volume(
     *,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    binarise=None,
 ) -> np.ndarray:
     """*volume* cut to *box*, as an array of its own.
 
@@ -273,6 +274,12 @@ def crop_volume(
     once the caller lets go of it. With *use_memmap* the copy is a new
     disk-backed array, filled a slab at a time. *volume* itself comes back
     when *box* is None or covers all of it.
+
+    *binarise*, an elementwise rule decided on the whole of *volume*
+    (:func:`haemolynx.io.load.mask_binarization_rule`), makes the copy the
+    box's boolean mask by that rule, a slab at a time: binarised after the
+    cut, the box alone decided what was vessel (an ilastik 1/2 box holding
+    only background came back solid vessel).
     """
     if box is None:
         return volume
@@ -284,14 +291,19 @@ def crop_volume(
     if box.is_whole_volume:
         return volume
     region = volume[box.slices]
-    if not use_memmap:
+    if binarise is None and not use_memmap:
         return np.array(region, copy=True)
     from haemolynx.preprocessing.memmap_support import new_memmap_array, slab_step
 
-    out = new_memmap_array(box.shape_zyx, volume.dtype, directory=memmap_directory)
+    dtype = volume.dtype if binarise is None else np.dtype(bool)
+    if use_memmap:
+        out = new_memmap_array(box.shape_zyx, dtype, directory=memmap_directory)
+    else:
+        out = np.empty(box.shape_zyx, dtype=dtype)
     step = slab_step(box.shape_zyx)
     for start in range(0, box.shape_zyx[0], step):
-        out[start:start + step] = region[start:start + step]
+        slab = region[start:start + step]
+        out[start:start + step] = slab if binarise is None else binarise(np.asarray(slab))
     return out
 
 
@@ -336,9 +348,11 @@ def crop_volume_and_box(
     settings: Mapping[str, Any],
     *,
     description: str = "image",
+    binarise=None,
 ) -> tuple[np.ndarray, CropBox | None]:
     """:func:`crop_volume_from_settings`, and the box it cut (None while
-    ``crop_on_import`` is off)."""
+    ``crop_on_import`` is off). *binarise* is :func:`crop_volume`'s: a rule
+    decided on the whole of *volume*, applied only when a box is cut."""
     box = crop_box_from_settings(settings, volume.shape)
     if box is None or box.is_whole_volume:
         return volume, box
@@ -348,6 +362,7 @@ def crop_volume_and_box(
         box,
         use_memmap=bool(settings.get("use_memmap_loading")),
         memmap_directory=settings.get("memmap_directory"),
+        binarise=binarise,
     )
     return cropped, box
 

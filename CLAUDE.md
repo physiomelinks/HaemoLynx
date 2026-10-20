@@ -615,6 +615,17 @@ are only caught locally.
   third of its graph is then false joins. The optimiser's own downsampling keeps block max. Positions: a
   coarse voxel's index times its voxel size is where the first voxel of its block was, so the
   crop record's offset is measured in the source grid's voxel size. Not yet tried on a real stack.
+  **A crop is binarised as the whole file reads** (2026-10-20): which value is vessel (the
+  minority of an ilastik 1/2 export) is decided from every value the whole file holds, counted a
+  slab at a time (`io.load.mask_binarization_rule`), then applied to the box as it is cut
+  (`crop_volume(binarise=)`); the segmented image's rule is kept per file
+  (`stages._segmented_image_binarization_rule`). Decided on the box, a box holding only label 2
+  read as solid vessel and one where vessel is the majority came back inside out. The vessel,
+  pericyte and cell masks were already binarised whole before the cut. A file holding one value
+  only is read explicitly, with a warning: 0 and 2 (ilastik background) empty, any other value
+  vessel everywhere -- it was `> 0`, so Harvey's `28_3_d_ipsi_FITC_Simple Segmentation_large.h5`,
+  label 2 in all 17.1 G voxels, loaded as one solid large vessel and every vessel of the run was
+  classed Unknown_Large. Pinned in `tests/test_crop_on_import.py`.
 - **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
   on by default) — with the segmented mask, nothing that joins two pieces of skeleton or graph
   (closing and `bridge_gaps`, a bundle hub's links, `connect_skeleton_components`, and graph

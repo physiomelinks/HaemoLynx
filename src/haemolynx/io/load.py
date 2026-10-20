@@ -241,6 +241,42 @@ def _finite_range(arr: np.ndarray, *, use_memmap: bool) -> tuple[float, float] |
     return None if low > high else (low, high)
 
 
+#: The value an ilastik "Simple Segmentation" export gives its background
+#: when label 1 is the vessel: a volume holding only this value is empty.
+ILASTIK_BACKGROUND_LABEL = 2
+
+
+def _single_value_rule(value, shape: tuple[int, ...]):
+    """The rule for an integer volume holding one value only: empty for 0 and
+    for :data:`ILASTIK_BACKGROUND_LABEL` (an ilastik export that found no
+    vessel -- read as ``> 0`` it was solid vessel, and every vessel of the run
+    lay in the large-vessel mask), every voxel for any other value."""
+    value = int(value)
+    empty = value in (0, ILASTIK_BACKGROUND_LABEL)
+    logger.warning(
+        "A volume of shape %s holds the one value %d throughout: read as %s.",
+        tuple(int(n) for n in shape), value,
+        "empty (no vessel)" if empty else "vessel everywhere",
+    )
+    if empty:
+        return lambda a: np.zeros(np.shape(a), dtype=bool)
+    return lambda a: np.asarray(a) == value
+
+
+def mask_binarization_rule(volume: np.ndarray):
+    """The rule :func:`_to_binary_volume_for_skeletonization` would binarise
+    the whole of *volume* by, its values counted a slab at a time (so in
+    bounded memory whether *volume* is in RAM or on disk). Applied to a box
+    cut from *volume*, it reads that box as the whole volume reads it: decided
+    from the box alone, an ilastik 1/2 box holding only background (one value)
+    came back solid vessel, and one where vessel is the majority came back
+    inside out. None for a boolean *volume*, which needs no rule."""
+    arr = np.asanyarray(volume)
+    if arr.dtype == bool:
+        return None
+    return _binarization_rule(arr, use_memmap=True)
+
+
 def _binarization_rule(arr: np.ndarray, *, use_memmap: bool):
     """The elementwise rule that turns *arr* into a foreground mask.
 
@@ -252,7 +288,7 @@ def _binarization_rule(arr: np.ndarray, *, use_memmap: bool):
     if np.issubdtype(arr.dtype, np.integer):
         values, counts = _unique_with_counts(arr, use_memmap=use_memmap)
         if values.size == 1:
-            return lambda a: a > 0
+            return _single_value_rule(values[0], arr.shape)
         # Common binary-mask conventions (e.g., 0/1 or 0/255).
         if values.size == 2 and 0 in values:
             fg_value = values[values != 0][0]

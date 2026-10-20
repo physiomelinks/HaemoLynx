@@ -29,6 +29,7 @@ from haemolynx.io.crop import (
     crop_volume_like_graph,
     graph_crop_box,
 )
+from haemolynx.io.downsample import downsample_for
 from haemolynx.pipeline import default_schema
 from haemolynx.pipeline import stages
 
@@ -557,3 +558,183 @@ def test_preflight_reports_a_crop_no_image_could_hold():
     bad = check_crop_on_import(_settings(crop_start_xyz=(12, 3, 4)))
     assert bad.errors and "Crop on import" in bad.errors[0]
     assert not check_crop_on_import(_settings(crop_on_import=False, crop_start_xyz=None)).errors
+
+
+# --- a box binarised as the whole file reads ------------------------------------
+#
+# An ilastik "Simple Segmentation" export labels vessel 1 and background 2, and
+# which is vessel is decided from the values a volume holds (the minority of
+# two). Decided on the box alone, a box holding only background (one value) came
+# back solid vessel -- Harvey's 28_3_d_ipsi box, every vessel then classed
+# Unknown_Large -- and a box where vessel is the majority came back inside out.
+
+#: Background, as an ilastik Simple Segmentation export writes it.
+ILASTIK_BACKGROUND, ILASTIK_VESSEL = 2, 1
+
+
+def _ilastik_labels(vessel: np.ndarray) -> np.ndarray:
+    return np.where(vessel, ILASTIK_VESSEL, ILASTIK_BACKGROUND).astype(np.uint8)
+
+
+def _write_labels(path, labels: np.ndarray) -> str:
+    """*labels* as ilastik exports them: an H5 ``exported_data`` dataset with a
+    trailing channel axis, or a plain TIFF."""
+    if str(path).endswith(".h5"):
+        import h5py
+
+        with h5py.File(path, "w") as f:
+            f.create_dataset("exported_data", data=labels[..., np.newaxis])
+    else:
+        tifffile.imwrite(path, labels)
+    return str(path)
+
+
+def _vessel_outside_box() -> np.ndarray:
+    _inside, outside = _rods()
+    return outside
+
+
+def _vessel_filling_box() -> np.ndarray:
+    vessel = np.zeros(STACK, dtype=bool)
+    vessel[BOX] = True
+    return vessel
+
+
+def _vessel_majority_in_box() -> np.ndarray:
+    """Vessel in most of the box (a minority of the whole stack), with a
+    strip of background across it."""
+    vessel = _vessel_filling_box()
+    vessel[0:12, 20:23, 30:60] = False
+    return vessel
+
+
+BOX_CASES = {
+    "only background in the box": _vessel_outside_box,
+    "only vessel in the box": _vessel_filling_box,
+    "vessel the majority in the box": _vessel_majority_in_box,
+}
+
+
+@pytest.mark.parametrize("suffix", [".h5", ".tif"])
+@pytest.mark.parametrize("low_ram", [False, True], ids=["in_ram", "low_ram"])
+@pytest.mark.parametrize("case", list(BOX_CASES))
+def test_the_segmented_image_box_is_binarised_as_the_whole_file_reads(tmp_path, case, low_ram, suffix):
+    vessel = BOX_CASES[case]()
+    path = _write_labels(tmp_path / f"segmented{suffix}", _ilastik_labels(vessel))
+    settings = _run_settings(tmp_path, input_path=path, use_memmap_loading=low_ram)
+
+    image, *_ = stages.load_volume_for_skeletonise(settings, suffix.lstrip("."))
+
+    assert image.dtype == bool
+    assert np.array_equal(np.asarray(image), vessel[BOX])
+
+
+@pytest.mark.parametrize("low_ram", [False, True], ids=["in_ram", "low_ram"])
+def test_a_downsampled_box_holding_only_background_is_empty(tmp_path, low_ram):
+    """Harvey's run: crop, then 2x, of an ilastik H5 whose box has no label 1."""
+    path = _write_labels(tmp_path / "segmented.h5", _ilastik_labels(_vessel_outside_box()))
+    settings = _run_settings(
+        tmp_path, input_path=path, use_memmap_loading=low_ram, segmented_image_downsample="2x"
+    )
+
+    image, *_ = stages.load_volume_for_skeletonise(settings, "h5")
+
+    assert image.shape == (6, 8, 15)
+    assert not np.asarray(image).any()
+
+
+def test_the_whole_files_rule_is_decided_once_for_repeated_loads(tmp_path, monkeypatch):
+    path = _write_labels(tmp_path / "segmented.h5", _ilastik_labels(_vessel_majority_in_box()))
+    settings = _run_settings(tmp_path, input_path=path)
+    decided = []
+    real = stages.mask_binarization_rule
+    monkeypatch.setattr(
+        stages, "mask_binarization_rule", lambda volume: decided.append(volume.shape) or real(volume)
+    )
+    stages._SEGMENTED_IMAGE_RULE.clear()
+
+    first, *_ = stages.load_volume_for_skeletonise(settings, "h5")
+    second, *_ = stages.load_volume_for_skeletonise(settings, "h5")
+
+    assert decided == [STACK]
+    assert np.array_equal(first, second)
+
+
+def test_crop_volume_binarises_the_box_by_the_rule_it_is_given():
+    from haemolynx.io.load import mask_binarization_rule
+
+    labels = _ilastik_labels(_vessel_outside_box())
+    box = crop_box(STACK, method="coordinates", start_xyz=BOX_START_XYZ, end_xyz=BOX_END_XYZ)
+
+    cut = crop_volume(labels, box, binarise=mask_binarization_rule(labels))
+
+    assert cut.dtype == bool and not cut.any()
+    # Without a rule the box keeps its labels, as before.
+    assert np.array_equal(crop_volume(labels, box), labels[BOX])
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [(0, False), (ILASTIK_BACKGROUND, False), (ILASTIK_VESSEL, True), (255, True)],
+)
+def test_a_file_holding_one_value_is_read_explicitly_and_says_so(value, expected, caplog):
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    uniform = np.full((4, 5, 6), value, dtype=np.uint8)
+    for low_ram in (False, True):
+        with caplog.at_level(logging.WARNING, logger="haemolynx.io.load"):
+            mask = _to_binary_volume_for_skeletonization(uniform, use_memmap=low_ram)
+        assert mask.dtype == bool
+        assert np.array_equal(np.asarray(mask), np.full(uniform.shape, expected))
+    assert f"holds the one value {value} throughout" in caplog.text
+
+
+def _global_mask_arguments(path, *, low_ram, memmap_directory) -> dict:
+    crop = crop_box(STACK, method="coordinates", start_xyz=BOX_START_XYZ, end_xyz=BOX_END_XYZ)
+    down = downsample_for(2, crop.shape_zyx, (1.0, 1.0, 1.0))
+    return dict(
+        mask_role="large",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=path,
+        venule_mask_path=None,
+        image_shape=down.shape_zyx,
+        main_voxel_size_xyz=down.scale_voxel_size_xyz((1.0, 1.0, 1.0)),
+        crop=crop,
+        downsample=down,
+        use_memmap=low_ram,
+        memmap_directory=memmap_directory,
+    )
+
+
+def _no_vessel_anywhere() -> np.ndarray:
+    return np.zeros(STACK, dtype=bool)
+
+
+MASK_CASES = {
+    # The ipsi large-vessel export: label 2 throughout, read as solid vessel.
+    "only background in the file": _no_vessel_anywhere,
+    **BOX_CASES,
+}
+
+
+@pytest.mark.parametrize("low_ram", [False, True], ids=["in_ram", "low_ram"])
+@pytest.mark.parametrize("case", list(MASK_CASES))
+def test_a_cropped_and_downsampled_vessel_mask_is_binarised_as_the_whole_file_reads(tmp_path, case, low_ram):
+    from haemolynx.io.downsample import block_reduce_volume
+
+    vessel = MASK_CASES[case]()
+    path = _write_labels(tmp_path / "large.h5", _ilastik_labels(vessel))
+    arguments = _global_mask_arguments(path, low_ram=low_ram, memmap_directory=tmp_path)
+    clear_vessel_mask_cache()
+
+    try:
+        mask, venule, *_ = load_and_validate_vessel_masks(**arguments)
+    finally:
+        clear_vessel_mask_cache()
+
+    expected = block_reduce_volume(
+        vessel[BOX], arguments["downsample"].axis_factors_zyx, "majority"
+    )
+    assert venule is None
+    assert np.array_equal(np.asarray(mask), np.asarray(expected))
