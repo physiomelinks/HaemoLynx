@@ -793,7 +793,26 @@ are only caught locally.
   the volume's corner, and so does this; and segmentation cleanup's reconnect labels its
   components a slab at a time (`ForegroundLabels`, read by boxes) instead of an int32 label
   file. Identical to `a82c7e9` on random fixtures (`outputs/lvc/continuity_check.py`,
-  `union_check.py`). FOLLOWUP_PEAKS_PLACEHOLDER
+  `union_check.py`). The small-mask progressive dilation and the hand-edit tags read their
+  distances from the surface's tiles too (`_distances_to_mask_microns(low_memory=)`). Peaks,
+  `b6c602a` -> `3bdb785`, on the same 120 M-voxel stack (`outputs/lvc/peaks2.py`, traced numpy,
+  the same answers): continuity (on 40 M voxels of it) 2,712 MB and 62 s -> 207 MB and 6.4 s; a
+  2 um dilation 5,608 MB and 33 s -> 580 MB and 20 s (only voxels with mask inside the reach's
+  box are measured); the union's 1 B a voxel goes to disk; the reconnect's label file (4 B a
+  voxel: 744 -> 515 MB of temp files) is gone, its RAM peak unchanged at 2.0 GB -- the blockwise
+  EDT's block, whose float64 transform is still a file (8 B a voxel). E14.5 low-RAM, a `git
+  archive` of `b6c602a` against it with `3bdb785`'s changes (`outputs/lvc/e14b/`, git-ignored,
+  stopped after the boundaries, the small masks `make_masks.py`'s stand-ins): four runs reaching
+  every one of these steps but the hand-edit tags -- A the cleanup's reconnect (12 bridges), the
+  thick restriction over all four masks and a 2 um dilation on load; B a global small mask (the
+  large pair read as their union); C the cut, the confidence assignment, the redefinition (5
+  pieces moved) and continuity (0 of 11 bridges); D the cut, the legacy progressive dilation
+  and continuity (4 of 77 bridges) -- gave the skeleton, the thick region, the built graph,
+  every mask after the boundaries, every boundary list and the graph after them identical, node
+  for node, edge for edge, every attribute (A stops in both at the large venule mask's missing
+  stump). Private peaks: the boundaries 7.2 -> 2.1 GB (C) and 7.4 -> 2.3 GB (D); skeletonise,
+  which loads the dilated large masks for the restriction, 5.0 -> 1.8 GB (B, C); build_network
+  unchanged (2.9-3.2 GB). Times not compared: a shared machine.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the
