@@ -479,6 +479,181 @@ def test_the_low_ram_join_carries_bridge_numbers_along_the_bridge(tmp_path, monk
     assert relabelled, "with nothing carried, a bridge voxel is read where it landed"
 
 
+def _ridge_trees(coords, labels, scale):
+    """The join's `_ridge_tree_for`: each structure's ridge voxels and their tree."""
+    from scipy.spatial import cKDTree
+
+    trees = {}
+
+    def ridge_of(number):
+        if number not in trees:
+            mine = coords[labels == number]
+            trees[number] = (mine, cKDTree(mine.astype(np.float64) * scale)) if len(mine) else None
+        return trees[number]
+
+    return ridge_of
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 1.0, 1.0), (1.0, 0.98, 0.98), (2.0, 0.3, 0.3)])
+def test_the_nearest_fat_of_a_structure_is_the_voxel_its_whole_tree_finds(spacing):
+    """The low-RAM join's nearest fat voxel to an arm, from the ridge's tree
+    and the trees of doubling size the bridges' voxels go into: exactly
+    `_nearest_point` with a cKDTree of the structure's fat voxels in the
+    order the in-RAM join lists them (`fat_coords[same_component]`), with the
+    grid's ties and voxels two bridges drew. Without taking ties from that
+    whole tree, 1-4% of these answers differed."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.preprocessing import thick_vessels as tv
+
+    scale = np.asarray(spacing, dtype=np.float64)
+    shape = (24, 24, 24)
+    rng = np.random.default_rng(3)
+    ridge_keys = np.unique(rng.integers(0, 24 ** 3, 400))
+    ridge = tv._coords_of(ridge_keys, shape)
+
+    def structure_of(coords):  # one number a voxel, as `allowed`'s labels give it
+        return (1 + (coords[:, 2] >= 12)).astype(np.int32)
+
+    labels = structure_of(ridge)
+    fat = tv._FatByStructure(_ridge_trees(ridge, labels, scale), ridge_keys, labels, scale, shape)
+    every, every_label = ridge, labels
+    asked = 0
+    for _bridge in range(80):
+        drawn = rng.integers(0, 24, (int(rng.integers(1, 12)), 3)).astype(np.intp)
+        if rng.random() < 0.3:  # across an earlier bridge, or the ridge
+            drawn = np.concatenate([drawn, every[rng.integers(0, len(every), 3)]])
+        fat.add(drawn, structure_of(drawn))
+        every = np.concatenate([every, drawn])
+        every_label = np.concatenate([every_label, structure_of(drawn)])
+        for _arm in range(4):
+            number = int(rng.integers(1, 3))
+            points_um = rng.integers(0, 24, (int(rng.integers(1, 8)), 3)) * scale
+            mine = every[every_label == number]
+            expected = tv._nearest_point(points_um, mine, cKDTree(mine.astype(np.float64) * scale))
+            assert fat.nearest(number, points_um) == expected
+            asked += 1
+    assert 0 < fat.full_trees_built < asked / 4
+
+
+def test_a_tie_for_the_nearest_fat_is_the_whole_trees_choice():
+    """Two fat voxels as near an arm, one on the ridge and one a bridge drew:
+    which a cKDTree returns depends on how it split its points, so the answer
+    is a tree of them all's, built then and kept until the structure gains a
+    voxel. Two arm points as near the fat, each with one voxel nearest it, are
+    the k-d tree's own distances either way (the first wins); one of them
+    with two voxels as near it needs the whole tree again."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.preprocessing import thick_vessels as tv
+
+    scale = np.ones(3)
+    shape = (10, 10, 10)
+    ridge = np.array([[5, 5, 2]], dtype=np.intp)
+    labels = np.array([1], dtype=np.int32)
+    fat = tv._FatByStructure(
+        _ridge_trees(ridge, labels, scale), tv._keys_of(ridge, shape), labels, scale, shape
+    )
+    fat.add(np.array([[5, 5, 8]]), np.array([1], dtype=np.int32))
+    every = np.array([[5, 5, 2], [5, 5, 8]], dtype=np.intp)
+
+    def whole(points):
+        return tv._nearest_point(points, every, cKDTree(every * scale))
+
+    between = np.array([[5.0, 5.0, 5.0]])
+    assert fat.nearest(1, between) == whole(between)
+    assert fat.full_trees_built == 1
+    assert fat.nearest(1, between) == whole(between) and fat.full_trees_built == 1, "kept"
+
+    fat.add(np.array([[1, 1, 1]]), np.array([1], dtype=np.int32))
+    every = np.concatenate([every, [[1, 1, 1]]])
+    assert fat.nearest(1, np.array([[5.0, 5.0, 6.0]])) == (0, 2.0, (5, 5, 8))
+    assert fat.full_trees_built == 1, "one voxel nearest: no tree of them all"
+    two = np.array([[5.0, 5.0, 4.0], [5.0, 5.0, 6.0]])
+    assert fat.nearest(1, two) == whole(two) == (0, 2.0, (5, 5, 2))
+    assert fat.full_trees_built == 1
+    tied = np.array([[1.0, 1.0, 4.0], [5.0, 5.0, 5.0]])
+    assert fat.nearest(1, tied) == whole(tied)
+    assert fat.full_trees_built == 2
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 1.0, 1.0), (1.0, 0.98, 0.98), (1.5, 0.6, 0.6)])
+def test_the_cap_radius_from_a_box_transformed_once_is_each_windows_own(spacing, monkeypatch):
+    """The bridge cap's radius over a window of a box distances_at_points
+    transforms whole, read from that box's radius map made once: the float32
+    of the window's largest distance, bit for bit, the empty window's 0
+    included. Boxes are let go, least recently read first, past twice
+    LOW_MEMORY_BLOCK_VOXELS voxels between them."""
+    from haemolynx.preprocessing import blockwise_edt
+    from haemolynx.preprocessing import thick_vessels as tv
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 40_000)
+    rng = np.random.default_rng(5)
+    thick = np.zeros((30, 40, 40), dtype=bool)
+    for _ in range(6):
+        a = rng.uniform(0, 1, 3) * np.array(thick.shape) * spacing
+        _capsule_into(thick, spacing, a, a + rng.normal(size=3) * 12.0, rng.uniform(2.0, 6.0))
+    boxes = [
+        (slice(0, 30), slice(0, 30), slice(0, 40)),
+        (slice(2, 30), slice(10, 40), slice(5, 40)),
+        (slice(0, 25), slice(0, 40), slice(0, 35)),
+    ]
+    radii = tv._BoxRadii(thick, spacing)
+    for _ in range(60):
+        box = boxes[int(rng.integers(0, len(boxes)))]
+        assert radii.fits(box)
+        corner = [int(rng.integers(b.start, b.stop)) for b in box]
+        window = tuple(
+            slice(c, min(b.stop, c + int(rng.integers(1, 12)))) for c, b in zip(corner, box)
+        )
+        points = np.argwhere(thick[window]) + np.array([w.start for w in window])
+        found = blockwise_edt.distances_at_points(
+            lambda region: thick[region], box, points, sampling=spacing
+        )
+        expected = float(np.float32(found.max())) if len(found) else 0.0
+        assert radii.largest(box, window) == expected
+    assert len(radii._boxes) == 2 and radii.made > len(boxes), "two boxes fit; the third evicts one"
+    assert not radii.fits((slice(0, 30), slice(0, 40), slice(0, 40)))
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 0.98, 0.98), (1.5, 0.6, 0.6)])
+def test_the_cap_radius_from_voxels_measured_once_is_each_windows_own(spacing, monkeypatch):
+    """Over a box too large to transform whole, the bridge cap's radius from
+    each fat voxel's distance measured once and kept in cells -- windows of
+    nearby arms overlapping, cells let go past the budget and measured again
+    -- is each window's own reading by distances_at_points, bit for bit."""
+    from haemolynx.preprocessing import blockwise_edt
+    from haemolynx.preprocessing import thick_vessels as tv
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 6_000)
+    rng = np.random.default_rng(11)
+    thick = np.zeros((24, 60, 60), dtype=bool)
+    for _ in range(6):
+        a = rng.uniform(0, 1, 3) * np.array(thick.shape) * spacing
+        _capsule_into(thick, spacing, a, a + rng.normal(size=3) * 20.0, rng.uniform(2.0, 9.0))
+    box = (slice(1, 24), slice(0, 58), slice(2, 60))
+    radii = tv._CellRadii(thick, spacing, {})
+    assert not tv._BoxRadii.fits(box)
+    fat = np.argwhere(thick[box]) + [b.start for b in box]
+    ends = fat[rng.integers(0, len(fat), 50)]
+    ends = np.concatenate([ends, ends[:10] + 1])  # arms beside earlier ones
+    for end in ends:
+        window = tuple(
+            slice(max(b.start, int(v) - 5), min(b.stop, int(v) + 6)) for v, b in zip(end, box)
+        )
+        points = np.argwhere(thick[window]) + np.array([w.start for w in window])
+        found = blockwise_edt.distances_at_points(
+            lambda region: thick[region], box, points, sampling=spacing
+        )
+        expected = float(np.float32(found.max())) if len(found) else 0.0
+        assert radii.largest(box, window) == expected
+    assert radii.measured < sum(
+        int(np.count_nonzero(thick[tuple(slice(max(b.start, int(v) - 5), min(b.stop, int(v) + 6))
+                                       for v, b in zip(end, box))])) for end in ends
+    ), "overlapping windows share measured voxels"
+    assert radii._held <= 2 * memmap_support.LOW_MEMORY_BLOCK_VOXELS + 27 * 16 ** 3
+
+
 def test_numbers_are_carried_only_through_neighbours_inside_the_mask():
     """Two 26-adjacent voxels of a mask are in one of its components: a
     number goes along a path while each step is to a neighbour inside, and

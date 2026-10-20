@@ -22,6 +22,7 @@ fixture. Volume (µm³) of the whole object is not the gate.
 from __future__ import annotations
 
 import gc
+import itertools
 import logging
 import time
 from contextlib import contextmanager
@@ -2106,6 +2107,280 @@ def _bounded_structure_path(
         pad *= 2
 
 
+#: Two distances in the thin-arm join's nearest-fat search within this
+#: fraction of each other count as a tie: far above a k-d tree's rounding
+#: (~1e-16), far below the gap between two different distances on a grid.
+_NEAREST_TIE_MARGIN = 1e-9
+
+
+def _nearest_point(points_um: np.ndarray, coords: np.ndarray, tree: cKDTree):
+    """``(index into the arm's points, distance in microns, target voxel)``
+    of the arm point nearest any of *coords* (*tree* holds them, scaled)."""
+    distance, index = tree.query(points_um, k=1)
+    distance, index = np.atleast_1d(distance), np.atleast_1d(index)
+    nearest = int(np.argmin(distance))
+    target = tuple(int(v) for v in coords[int(index[nearest])])
+    return nearest, float(distance[nearest]), target
+
+
+class _FatByStructure:
+    """The fat voxels of each physically connected structure as the thin-arm
+    join's nearest-fat search sees them under the low-RAM option -- the ridge,
+    then each bridge's voxels in the fat region in the order drawn -- and the
+    nearest of them to an arm: what :func:`_nearest_point` finds with a
+    cKDTree of exactly those voxels in that order, without one built after
+    every bridge (552 s of the patella's join, 2026-10-20).
+
+    A structure's ridge keeps the tree its arms aim at first
+    (*ridge_of(label)*: ``(coords, tree)`` or None); each voxel bridges add
+    since sits, once, in one of a few trees of doubling size beside it. Their
+    nearest voxel to an arm is the full tree's whenever it is the only one,
+    both ways round: one arm point nearest the fat, one voxel nearest it --
+    the distances are the k-d tree's own arithmetic either way. Where two are
+    within :data:`_NEAREST_TIE_MARGIN`, as a grid often makes them, which one
+    a cKDTree returns depends on how it split its points, so the answer comes
+    from the full tree, built then and kept until the structure gains a voxel.
+
+    *labels* are the structure numbers of the ridge's voxels *ridge_keys*
+    (sorted packed keys); *scale* the voxel size the trees are scaled by.
+    """
+
+    def __init__(self, ridge_of, ridge_keys: np.ndarray, labels: np.ndarray, scale, shape):
+        self._ridge_of = ridge_of
+        self._ridge_keys = np.asarray(ridge_keys, dtype=np.int64)
+        self._ridge_labels = np.asarray(labels)
+        self._scale = np.asarray(scale, dtype=np.float64)
+        self._shape = tuple(int(s) for s in shape)
+        numbers, counts = np.unique(self._ridge_labels, return_counts=True)
+        self._count = {int(n): int(c) for n, c in zip(numbers, counts)}
+        self._added: dict[int, list[np.ndarray]] = {}
+        self._seen: dict[int, set[int]] = {}
+        self._forest: dict[int, list[tuple[np.ndarray, cKDTree]]] = {}
+        self._full: dict[int, tuple[np.ndarray, cKDTree]] = {}
+        self.full_trees_built = 0
+
+    def has_fat(self, label: int) -> bool:
+        return self._count.get(int(label), 0) > 0
+
+    def add(self, coords: np.ndarray, labels: np.ndarray) -> None:
+        """A bridge's voxels in the fat region, in the order drawn, with
+        their structure numbers."""
+        coords = np.asarray(coords, dtype=np.intp).reshape(-1, 3)
+        labels = np.asarray(labels)
+        keys = _keys_of(coords, self._shape)
+        at = np.minimum(np.searchsorted(self._ridge_keys, keys), max(len(self._ridge_keys) - 1, 0))
+        on_ridge = np.zeros(len(keys), dtype=bool)
+        if len(self._ridge_keys):
+            on_ridge = self._ridge_keys[at] == keys
+        for number in np.unique(labels).tolist():
+            number = int(number)
+            mine = labels == number
+            self._added.setdefault(number, []).append(coords[mine])
+            self._count[number] = self._count.get(number, 0) + int(mine.sum())
+            self._full.pop(number, None)
+            # Each voxel once in the structure's trees: not one of its
+            # ridge's, nor one an earlier bridge added.
+            seen = self._seen.setdefault(number, set())
+            fresh = []
+            for i in np.flatnonzero(mine).tolist():
+                key = int(keys[i])
+                if (on_ridge[i] and self._ridge_labels[at[i]] == number) or key in seen:
+                    continue
+                seen.add(key)
+                fresh.append(i)
+            if fresh:
+                self._grow(number, coords[fresh])
+
+    def _grow(self, number: int, coords: np.ndarray) -> None:
+        trees = self._forest.setdefault(number, [])
+        while trees and len(trees[-1][0]) <= len(coords):
+            coords = np.concatenate([trees.pop()[0], coords])
+        trees.append((coords, cKDTree(coords.astype(np.float64) * self._scale)))
+
+    def nearest(self, label: int, points_um: np.ndarray, times=None):
+        """:func:`_nearest_point` over structure *label*'s fat voxels."""
+        label = int(label)
+        full = self._full.get(label)
+        if full is not None:
+            return _nearest_point(points_um, *full)
+        ridge = self._ridge_of(label)
+        trees = ([ridge] if ridge is not None else []) + self._forest.get(label, [])
+        best = np.full(len(points_um), np.inf)
+        part = np.zeros(len(points_um), dtype=np.intp)
+        index = np.zeros(len(points_um), dtype=np.intp)
+        for t, (_coords, tree) in enumerate(trees):
+            distance, found = tree.query(points_um, k=1)
+            nearer = np.atleast_1d(distance) < best
+            best[nearer] = np.atleast_1d(distance)[nearer]
+            part[nearer] = t
+            index[nearer] = np.atleast_1d(found)[nearer]
+        nearest = int(np.argmin(best))
+        reach = 1.0 + _NEAREST_TIE_MARGIN
+        alone = all(
+            sum(int(tree.query_ball_point(points_um[p], best[p] * reach, return_length=True))
+                for _coords, tree in trees) == 1
+            for p in np.flatnonzero(best <= best[nearest] * reach).tolist()
+        )
+        if alone:
+            target = tuple(int(v) for v in trees[part[nearest]][0][index[nearest]])
+            return nearest, float(best[nearest]), target
+        full = self._full_tree(label, ridge, times)
+        return _nearest_point(points_um, *full)
+
+    def _full_tree(self, label: int, ridge, times) -> tuple[np.ndarray, cKDTree]:
+        """The tree the in-RAM join builds: the ridge's voxels, then the
+        bridges', in order (``fat_coords[same_component]``)."""
+        parts = ([ridge[0]] if ridge is not None else []) + self._added.get(label, [])
+        coords = np.concatenate(parts, axis=0)
+        with (times.timing("nearest-fat tree of the structure") if times is not None else _no_timing()):
+            full = (coords, cKDTree(coords.astype(np.float64, copy=False) * self._scale))
+        self.full_trees_built += 1
+        self._full[label] = full
+        return full
+
+
+@contextmanager
+def _no_timing():
+    yield
+
+
+def _box_fat_radii(thick, box: tuple[slice, ...], sampling) -> np.ndarray:
+    """``distance_transform_edt(thick[box], sampling)`` as float32, by
+    :func:`.blockwise_edt.distances_at_points`' arithmetic for a box it
+    transforms whole: its distances at the fat voxels, 0 elsewhere."""
+    block = np.asarray(thick[box], dtype=bool)
+    features = blockwise_edt.feature_transform(block, sampling)
+    radii = np.zeros(block.shape, dtype=np.float32)
+    plane = max(1, int(np.prod(block.shape[1:])))
+    step = max(1, (1 << 20) // plane)
+    for z0 in range(0, block.shape[0], step):
+        coords = np.argwhere(block[z0:z0 + step])
+        if len(coords):
+            coords[:, 0] += z0
+            radii[tuple(coords.T)] = blockwise_edt.distances_at(features, coords, sampling)
+    return radii
+
+
+class _BoxRadii:
+    """The bridge cap's radius map of each structure's box small enough for
+    :func:`.blockwise_edt.distances_at_points` to transform whole, made once
+    (:func:`_box_fat_radii`) rather than once per window read from it, and
+    kept while those kept hold at most twice
+    ``memmap_support.LOW_MEMORY_BLOCK_VOXELS`` voxels, the least recently
+    read let go first. Its float32 values are the windows' float32 maxima:
+    rounding to float32 keeps their order."""
+
+    def __init__(self, thick, sampling):
+        self._thick = thick
+        self._sampling = np.asarray(sampling, dtype=np.float64)
+        self._boxes: dict[tuple, np.ndarray] = {}
+        self.made = 0
+
+    @staticmethod
+    def fits(box: tuple[slice, ...]) -> bool:
+        voxels = int(np.prod([int(s.stop) - int(s.start) for s in box]))
+        return voxels <= int(memmap_support.LOW_MEMORY_BLOCK_VOXELS)
+
+    def largest(self, box: tuple[slice, ...], window: tuple[slice, ...]) -> float:
+        """The largest radius in *window* (inside *box*), as the cap reads it."""
+        key = tuple((int(s.start), int(s.stop)) for s in box)
+        radii = self._boxes.pop(key, None)
+        if radii is None:
+            radii = _box_fat_radii(self._thick, box, self._sampling)
+            self.made += 1
+            budget = 2 * int(memmap_support.LOW_MEMORY_BLOCK_VOXELS)
+            held = sum(r.size for r in self._boxes.values())
+            while self._boxes and held + radii.size > budget:
+                held -= self._boxes.pop(next(iter(self._boxes))).size
+        self._boxes[key] = radii
+        local = tuple(
+            slice(int(w.start) - int(b.start), int(w.stop) - int(b.start)) for w, b in zip(window, box)
+        )
+        return float(radii[local].max())
+
+
+#: Voxels a side of the cells :class:`_CellRadii` keeps distances in.
+_RADIUS_CELL_VOXELS = 16
+
+
+class _CellRadii:
+    """The bridge cap's radius over a window of a box too large to transform
+    whole: each fat voxel's distance measured once, by
+    :func:`.blockwise_edt.distances_at_points` over the box (a window's voxels
+    not measured before, together), and kept as float32 in cells of
+    :data:`_RADIUS_CELL_VOXELS` a side while they hold at most twice
+    ``memmap_support.LOW_MEMORY_BLOCK_VOXELS`` voxels, the least recently read
+    let go first. Nearby arms' windows overlap, and each was measured again.
+
+    A voxel's distance is the box's transform there whichever voxels it is
+    measured with, unless two features are exactly as near it (the caveat in
+    :mod:`.blockwise_edt`): the distance to the other one can differ in the
+    last binary place, which float32 rounding then almost always hides. A
+    window none of whose voxels were measured before is measured exactly as
+    it was, its fat voxels in the same order."""
+
+    def __init__(self, thick, sampling, surface_cache: dict | None = None):
+        self._thick = thick
+        self._sampling = np.asarray(sampling, dtype=np.float64)
+        self._surface_cache = surface_cache
+        self._cells: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
+        self._held = 0
+        self.measured = 0
+
+    def _cell(self, key, cell, box) -> tuple[np.ndarray, np.ndarray]:
+        found = self._cells.pop((key, cell), None)
+        if found is None:
+            c_lo = np.asarray(cell, dtype=np.int64) * _RADIUS_CELL_VOXELS
+            b_lo = np.array([int(s.start) for s in box], dtype=np.int64)
+            b_hi = np.array([int(s.stop) for s in box], dtype=np.int64)
+            origin = np.maximum(c_lo, b_lo)
+            stop = np.minimum(c_lo + _RADIUS_CELL_VOXELS, b_hi)
+            fat = np.asarray(
+                self._thick[tuple(slice(int(a), int(b)) for a, b in zip(origin, stop))], dtype=bool
+            )
+            # NaN: a fat voxel not measured yet; every other voxel reads 0.
+            found = (origin, np.where(fat, np.float32(np.nan), np.float32(0.0)).astype(np.float32))
+            self._held += found[1].size
+        self._cells[(key, cell)] = found
+        return found
+
+    def largest(self, box: tuple[slice, ...], window: tuple[slice, ...]) -> float:
+        """The largest radius in *window* (inside *box*), as the cap reads it."""
+        key = tuple((int(s.start), int(s.stop)) for s in box)
+        lo = np.array([int(w.start) for w in window], dtype=np.int64)
+        hi = np.array([int(w.stop) for w in window], dtype=np.int64)
+        first, last = lo // _RADIUS_CELL_VOXELS, (hi - 1) // _RADIUS_CELL_VOXELS
+        cells = list(itertools.product(*(range(int(a), int(b) + 1) for a, b in zip(first, last))))
+        values = np.empty(tuple(int(v) for v in hi - lo), dtype=np.float32)
+        parts = []
+        for cell in cells:
+            origin, radii = self._cell(key, cell, box)
+            a = np.maximum(lo, origin)
+            b = np.minimum(hi, origin + radii.shape)
+            here = tuple(slice(int(x), int(y)) for x, y in zip(a - lo, b - lo))
+            there = tuple(slice(int(x), int(y)) for x, y in zip(a - origin, b - origin))
+            values[here] = radii[there]
+            parts.append((origin, radii))
+        unknown = np.argwhere(np.isnan(values))
+        if len(unknown):
+            points = unknown + lo
+            values[tuple(unknown.T)] = blockwise_edt.distances_at_points(
+                lambda region: self._thick[region],
+                box,
+                points,
+                sampling=self._sampling,
+                surface_cache=self._surface_cache,
+            )
+            self.measured += len(points)
+            for origin, radii in parts:
+                inside = np.all((points >= origin) & (points < origin + radii.shape), axis=1)
+                radii[tuple((points[inside] - origin).T)] = values[tuple(unknown[inside].T)]
+        budget = 2 * int(memmap_support.LOW_MEMORY_BLOCK_VOXELS)
+        while self._held > budget and len(self._cells) > len(cells):
+            self._held -= self._cells.pop(next(iter(self._cells)))[1].size
+        return float(values.max())
+
+
 #: The thin-arm join logs its progress every this many arms (and every 30 s).
 _JOIN_PROGRESS_EVERY = 200
 
@@ -2395,7 +2670,9 @@ def _join_thin_arms_to_fat_ridge(
             allowed_components, allowed_at, lambda z0, z1: allowed_b[z0:z1]
         )
     fat_component_labels = allowed_at[tuple(fat_coords.T)]
-    fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
+    # Under the low-RAM option the fat voxels are kept per structure, in
+    # fat_by_structure below, rather than in one tree rebuilt per bridge.
+    fat_kdt = None if use_memmap else cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
     # The ridge and every bridge voxel inside the fat region so far: exactly
     # the skeleton's fat voxels, as long as each bridge is drawn only once
     # its walk (which must see the region as it was before) is over.
@@ -2420,14 +2697,11 @@ def _join_thin_arms_to_fat_ridge(
             )
         return ridge_trees[label_key]
 
-    def _nearest_point(points_um: np.ndarray, coords: np.ndarray, tree: cKDTree):
-        """``(index into the arm's points, distance in microns, target voxel)``
-        of the arm point nearest any of *coords*."""
-        distance, index = tree.query(points_um, k=1)
-        distance, index = np.atleast_1d(distance), np.atleast_1d(index)
-        nearest = int(np.argmin(distance))
-        target = tuple(int(v) for v in coords[int(index[nearest])])
-        return nearest, float(distance[nearest]), target
+    fat_by_structure = (
+        _FatByStructure(_ridge_tree_for, fat_keys, fat_component_labels, scale, shape)
+        if use_memmap
+        else None
+    )
 
     # Memoized per physically-connected structure: the fallback's EDT and
     # Dijkstra graph depend only on that structure's shape, not on which arm
@@ -2529,6 +2803,10 @@ def _join_thin_arms_to_fat_ridge(
     # Each roi box's fat surface, once a window deep inside a wide vessel
     # needed it (see blockwise_edt.distances_at_points).
     radius_surface_cache: dict = {}
+    # A box distances_at_points transforms whole, transformed once; each
+    # fat voxel of a larger one, measured once.
+    box_radii = _BoxRadii(thick_b, scale)
+    cell_radii = _CellRadii(thick_b, scale, radius_surface_cache)
     footprint = tuple(
         max(1, 2 * int(np.ceil(radius_smoothing_um / max(s, 1e-6))) + 1) for s in scale
     )
@@ -2575,23 +2853,20 @@ def _join_thin_arms_to_fat_ridge(
         """The same reading from the window alone: the maximum filter's
         value at *voxel* is the largest radius in the window around it --
         clipped to the padded box, which is where scipy's reflection at the
-        box's faces takes it -- and only fat voxels have a radius above 0."""
+        box's faces takes it -- and only fat voxels have a radius above 0.
+        A box small enough to transform whole is transformed once
+        (:class:`_BoxRadii`), and each fat voxel of a larger one measured
+        once (:class:`_CellRadii`)."""
         cached = radius_at_cache.get(voxel)
         if cached is None:
             window = tuple(
                 slice(max(int(p.start), int(v) - f // 2), min(int(p.stop), int(v) + f // 2 + 1))
                 for p, v, f in zip(padded_slc, voxel, footprint)
             )
-            points = np.argwhere(np.asarray(thick_b[window], dtype=bool))
-            points += np.array([int(w.start) for w in window])
-            radii = blockwise_edt.distances_at_points(
-                lambda region: thick_b[region],
-                padded_slc,
-                points,
-                sampling=scale,
-                surface_cache=radius_surface_cache,
-            )
-            cached = float(np.float32(radii.max())) if len(radii) else 0.0
+            if box_radii.fits(padded_slc):
+                cached = box_radii.largest(padded_slc, window)
+            else:
+                cached = cell_radii.largest(padded_slc, window)
             radius_at_cache[voxel] = cached
         return cached
 
@@ -2673,8 +2948,12 @@ def _join_thin_arms_to_fat_ridge(
             _checkpoint(arm_index, "already touching")
             continue
         arm_component_label = int(allowed_at[tuple(pts[0])])
-        same_component = fat_component_labels == arm_component_label
-        if not np.any(same_component):
+        if use_memmap:
+            has_fat = fat_by_structure.has_fat(arm_component_label)
+        else:
+            same_component = fat_component_labels == arm_component_label
+            has_fat = bool(np.any(same_component))
+        if not has_fat:
             # No fat ridge material anywhere in this arm's own physically
             # connected structure: it is either a fully self-contained small
             # network with no fat trunk of its own (already complete, needs
@@ -2693,15 +2972,21 @@ def _join_thin_arms_to_fat_ridge(
             nearest, nearest_distance, end = _nearest_point(arm_points_um, *ridge)
             effective_cap = _bridge_cap_um(end)
         if ridge is None or (effective_cap is not None and nearest_distance > effective_cap):
-            scoped_fat_coords = fat_coords[same_component]
-            if same_component.all():
-                scoped_kdt = fat_kdt
+            if use_memmap:
+                with times.timing("nearest fat of the structure"):
+                    nearest, nearest_distance, end = fat_by_structure.nearest(
+                        arm_component_label, arm_points_um, times
+                    )
             else:
-                with times.timing("nearest-fat tree of the structure"):
-                    scoped_kdt = cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
-            nearest, nearest_distance, end = _nearest_point(
-                arm_points_um, scoped_fat_coords, scoped_kdt
-            )
+                scoped_fat_coords = fat_coords[same_component]
+                if same_component.all():
+                    scoped_kdt = fat_kdt
+                else:
+                    with times.timing("nearest-fat tree of the structure"):
+                        scoped_kdt = cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
+                nearest, nearest_distance, end = _nearest_point(
+                    arm_points_um, scoped_fat_coords, scoped_kdt
+                )
             effective_cap = _bridge_cap_um(end)
             stop_on = fat_now
         start = tuple(int(v) for v in pts[nearest])
@@ -2778,7 +3063,6 @@ def _join_thin_arms_to_fat_ridge(
         newly_fat = [voxel for voxel in drawn if thick_b[voxel]]
         if newly_fat:
             new_coords = np.asarray(newly_fat, dtype=np.intp)
-            fat_coords = np.concatenate([fat_coords, new_coords], axis=0)
             if use_memmap:
                 new_labels = np.array(
                     [carried_allowed.get(voxel, 0) for voxel in newly_fat],
@@ -2793,11 +3077,14 @@ def _join_thin_arms_to_fat_ridge(
                     number = carried_roi.get(voxel)
                     if number is not None:
                         new_fat_roi_numbers[voxel] = number
+                with times.timing("bridge fat kept"):
+                    fat_by_structure.add(new_coords, new_labels)
             else:
+                fat_coords = np.concatenate([fat_coords, new_coords], axis=0)
                 new_labels = allowed_at[tuple(new_coords.T)]
-            fat_component_labels = np.concatenate([fat_component_labels, new_labels])
-            with times.timing("nearest-fat tree rebuilt"):
-                fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
+                fat_component_labels = np.concatenate([fat_component_labels, new_labels])
+                with times.timing("nearest-fat tree rebuilt"):
+                    fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
         _checkpoint(arm_index, "joined" if drawn else "nothing drawn")
     logger.info(
         "_join_thin_arms_to_fat_ridge: %d arm components in %.1fs; %s",

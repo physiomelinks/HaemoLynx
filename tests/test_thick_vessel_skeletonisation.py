@@ -2311,6 +2311,45 @@ def test_an_arm_whose_ridge_is_past_the_cap_still_joins_an_earlier_bridge_within
     assert n_alone == 2, "on its own the second arm is past the cap"
 
 
+@pytest.mark.parametrize("arm_xs", [tuple(range(3, 38, 3)), tuple(range(2, 38, 2))])
+def test_the_low_ram_join_chains_arms_through_earlier_bridges_as_in_ram(monkeypatch, caplog, arm_xs):
+    """A ridge short of most arms: each arm past the cap joins the nearest of
+    the ridge and the bridges before it. Under the low-RAM option that is
+    found from the ridge's tree and the bridges' voxels kept beside it, not
+    from a tree of every fat voxel built again after each bridge (552 s of
+    the patella's join, 2026-10-20), and the skeleton is the in-RAM one."""
+    import logging
+
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+
+    skeleton, thick, allowed = _two_arms_into_a_fat_band(arm_xs, ridge_x=slice(0, 6))
+    asked = []
+    real = thick_vessels_module._FatByStructure.nearest
+    monkeypatch.setattr(
+        thick_vessels_module._FatByStructure, "nearest",
+        lambda self, *a, **k: asked.append(1) or real(self, *a, **k),
+    )
+    with caplog.at_level(logging.INFO, logger=thick_vessels_module.logger.name):
+        plain = _join_thin_arms_to_fat_ridge(
+            skeleton, thick, allowed, min_arm_extent_um=0.0, max_bridge_distance_um=11.5
+        )
+        low_ram = _join_thin_arms_to_fat_ridge(
+            skeleton, thick, allowed, min_arm_extent_um=0.0, max_bridge_distance_um=11.5,
+            use_memmap=True,
+        )
+
+    _, n_cc = label(plain, structure=generate_binary_structure(3, 3))
+    assert n_cc == 1, "every arm reaches the network, most through earlier bridges"
+    assert np.array_equal(low_ram, plain)
+    assert len(asked) >= len(arm_xs) // 2, "most arms are past the ridge's cap"
+    in_ram_summary, low_ram_summary = [
+        r.getMessage() for r in caplog.records if "arm components in" in r.getMessage()
+    ]
+    assert "nearest-fat tree rebuilt" in in_ram_summary
+    assert "nearest-fat tree rebuilt" not in low_ram_summary
+    assert "nearest fat of the structure" in low_ram_summary
+
+
 # --- the fat catchment found before (preprocessing/thick_vessel_region_cache.py) ---
 
 
