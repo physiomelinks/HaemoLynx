@@ -1,5 +1,6 @@
 """statistics/exact_betweenness.py: exact betweenness in worker processes,
-equal (``==``, not approximately) to ``nx.betweenness_centrality``."""
+equal (``==``, not approximately) to ``nx.betweenness_centrality``, and the
+batched pass the unweighted undirected graphs take, here and in the workers."""
 from __future__ import annotations
 
 import functools
@@ -16,18 +17,55 @@ from haemolynx.statistics.comprehensive import compute_vessel_statistics_by_meas
 
 #: Every parallel call here runs in two workers, whatever the graph's size.
 parallel = functools.partial(eb.exact_betweenness_centrality, workers=2, min_nodes=0)
+#: And every call of this one in this process.
+here = functools.partial(eb.exact_betweenness_centrality, workers=1, min_nodes=0)
 
 
-def _assert_identical(G, **arguments):
-    expected = nx.betweenness_centrality(G, **arguments)
-    got = parallel(G, **arguments)
+def _assert_bitwise_equal(got, expected):
     assert list(got) == list(expected), "nodes in another order"
     assert got == expected
     # == on floats already compares bits for these finite values; say so.
     assert np.array_equal(
-        np.array(list(got.values())).view(np.int64),
-        np.array(list(expected.values())).view(np.int64),
+        np.array(list(got.values()), dtype=float).view(np.int64),
+        np.array(list(expected.values()), dtype=float).view(np.int64),
     )
+    assert all(type(got[node]) is type(expected[node]) for node in expected)
+
+
+def _assert_identical(G, **arguments):
+    expected = nx.betweenness_centrality(G, **arguments)
+    _assert_bitwise_equal(parallel(G, **arguments), expected)
+    _assert_bitwise_equal(here(G, **arguments), expected)
+
+
+def _scrambled(G, seed):
+    """*G* with its nodes and each node's neighbours in a shuffled order and
+    relabelled to strings: networkx's answer depends on both orders."""
+    rng = random.Random(seed)
+    nodes = list(G)
+    rng.shuffle(nodes)
+    edges = list(G.edges())
+    rng.shuffle(edges)
+    H = nx.Graph()
+    H.add_nodes_from(f"n{node}" for node in nodes)
+    H.add_edges_from((f"n{u}", f"n{v}") for u, v in edges)
+    return H
+
+
+def _random_vessel_like_graph(seed, n=400):
+    """Several components: a few loopy beds, trees, pairs and lone nodes,
+    with a self-loop or two."""
+    rng = random.Random(seed)
+    G = nx.Graph()
+    offset = 0
+    for size in (n, n // 3, 40, 7, 3, 2, 1, 1):
+        part = nx.gnm_random_graph(size, int(size * 1.2), seed=rng.randrange(1 << 30))
+        G.update(nx.relabel_nodes(part, {i: i + offset for i in part}))
+        offset += size
+    for _ in range(3):
+        node = rng.randrange(offset)
+        G.add_edge(node, node)
+    return G
 
 
 def _weighted_random_graph(n=120, p=0.04, seed=3):
@@ -111,37 +149,110 @@ def test_callable_weight_is_identical():
     _assert_identical(G, weight=weight)
 
 
-def test_below_min_nodes_or_one_worker_networkx_runs_here(monkeypatch):
+@pytest.mark.parametrize("seed", range(4))
+def test_batched_pass_matches_networkx_on_scrambled_random_networks(seed):
+    _assert_identical(_scrambled(_random_vessel_like_graph(seed), seed))
+
+
+def test_batched_pass_matches_networkx_where_path_counts_pass_2_to_the_53():
+    # On a 30 x 30 grid the corner-to-corner shortest paths number C(58, 29),
+    # about 3e16: past 2**53, so each path count's float depends on the order
+    # its terms were added in, and a dependency's on the order it was passed back.
+    _assert_identical(_scrambled(nx.grid_2d_graph(30, 30), 7))
+
+
+@pytest.mark.parametrize("slots, most", [(1, 128), (5, 3), (64, 128), (1 << 20, 1), (1 << 20, 128)])
+def test_batched_pass_is_the_same_in_batches_and_tasks_of_any_size(monkeypatch, slots, most):
+    G = _scrambled(nx.grid_2d_graph(9, 7), 3)
+    G.add_edges_from([("a", "b"), ("b", "c"), ("c", "a"), ("c", "d")])
+    monkeypatch.setattr(eb, "BATCH_SLOTS", slots)
+    monkeypatch.setattr(eb, "MAX_BATCH_SOURCES", most)
+    _assert_identical(G)
+
+
+@pytest.mark.parametrize(
+    "G",
+    [
+        nx.Graph(),
+        nx.empty_graph(1),
+        nx.path_graph(2),
+        nx.path_graph(3),
+        nx.star_graph(6),
+        nx.cycle_graph(11),
+        nx.balanced_tree(3, 4),
+        nx.complete_graph(9),
+        nx.MultiGraph([(0, 1), (0, 1), (1, 2), (2, 3), (3, 0), (2, 2)]),
+    ],
+    ids=["empty", "one", "two", "path3", "star", "cycle", "tree", "complete", "multigraph"],
+)
+@pytest.mark.parametrize("normalized", [True, False])
+def test_batched_pass_matches_networkx_on_small_shapes(G, normalized):
+    _assert_identical(G, normalized=normalized)
+
+
+def test_batched_tasks_keep_every_components_sources_in_order():
+    for workers in (1, 3):
+        tasks = eb._batched_tasks([5, 3000, 1, 40], workers)
+        jobs = [job for task in tasks for job in task]
+        for component, size in enumerate([5, 3000, 1, 40]):
+            ranges = [(start, stop) for c, start, stop in jobs if c == component]
+            assert ranges[0][0] == 0 and ranges[-1][1] == size
+            assert all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))
+        assert all(
+            sum((stop - start) * [5, 3000, 1, 40][c] for c, start, stop in task) <= eb.BATCH_SLOTS
+            or len(task) == 1
+            for task in tasks
+        )
+    # Split for the workers: at least four batches a worker of a large component.
+    assert len([job for task in eb._batched_tasks([3000], 3) for job in task]) >= 12
+
+
+def test_below_min_nodes_or_one_worker_it_runs_here(monkeypatch):
     def never(*args, **kwargs):
         raise AssertionError("worker processes started")
 
-    monkeypatch.setattr(eb, "_parallel_sums", never)
-    G = nx.grid_2d_graph(6, 6)
-    expected = nx.betweenness_centrality(G)
-    assert eb.exact_betweenness_centrality(G, workers=4) == expected  # 36 < min_nodes
-    assert eb.exact_betweenness_centrality(G, workers=1, min_nodes=0) == expected
-    monkeypatch.setattr(eb, "betweenness_worker_count", lambda n, m: 1)
-    assert eb.exact_betweenness_centrality(G, min_nodes=0) == expected
+    monkeypatch.setattr(eb, "_start_workers", never)
+    for G, weight in ((nx.grid_2d_graph(6, 6), None), (_weighted_random_graph(n=40), "length")):
+        expected = nx.betweenness_centrality(G, weight=weight)
+        _assert_bitwise_equal(eb.exact_betweenness_centrality(G, workers=4, weight=weight), expected)  # < min_nodes
+        _assert_bitwise_equal(eb.exact_betweenness_centrality(G, workers=1, min_nodes=0, weight=weight), expected)
+        with monkeypatch.context() as m:
+            m.setattr(eb, "betweenness_worker_count", lambda n, m: 1)
+            _assert_bitwise_equal(eb.exact_betweenness_centrality(G, min_nodes=0, weight=weight), expected)
     assert eb.exact_betweenness_centrality(nx.Graph(), workers=4, min_nodes=0) == {}
 
 
-def test_a_worker_that_fails_falls_back_to_networkx(monkeypatch, caplog):
-    monkeypatch.setattr(eb, "_WORKER_CODE", "import sys; sys.exit(3)")
-    G = nx.grid_2d_graph(6, 6)
+@pytest.mark.parametrize(
+    "code_name, G, weight",
+    [
+        ("_WORKER_CODE", _weighted_random_graph(n=40), "length"),
+        ("_BATCHED_WORKER_CODE", nx.grid_2d_graph(6, 6), None),
+    ],
+    ids=["networkx", "batched"],
+)
+def test_a_worker_that_fails_falls_back_to_this_process(monkeypatch, caplog, code_name, G, weight):
+    monkeypatch.setattr(eb, code_name, "import sys; sys.exit(3)")
     with caplog.at_level(logging.WARNING, logger=eb.__name__):
-        got = parallel(G)
-    assert got == nx.betweenness_centrality(G)
+        got = parallel(G, weight=weight)
+    _assert_bitwise_equal(got, nx.betweenness_centrality(G, weight=weight))
     assert "worker processes failed" in caplog.text
 
 
-def test_a_worker_that_raises_falls_back_to_networkx(monkeypatch, caplog):
+@pytest.mark.parametrize(
+    "code_name, line, weight",
+    [("_WORKER_CODE", "rows = []", "length"), ("_BATCHED_WORKER_CODE", "blocks = []", None)],
+    ids=["networkx", "batched"],
+)
+def test_a_worker_that_raises_falls_back_to_this_process(monkeypatch, caplog, code_name, line, weight):
     """A worker's own error comes back as one, not as a hang."""
-    code = eb._WORKER_CODE.replace("rows = []", "raise ValueError('boom')")
-    assert code != eb._WORKER_CODE
-    monkeypatch.setattr(eb, "_WORKER_CODE", code)
+    original = getattr(eb, code_name)
+    code = original.replace(line, "raise ValueError('boom')")
+    assert code != original
+    monkeypatch.setattr(eb, code_name, code)
     G = nx.path_graph(30)
+    nx.set_edge_attributes(G, 1.5, "length")
     with caplog.at_level(logging.WARNING, logger=eb.__name__):
-        assert parallel(G) == nx.betweenness_centrality(G)
+        _assert_bitwise_equal(parallel(G, weight=weight), nx.betweenness_centrality(G, weight=weight))
     assert "boom" in caplog.text
 
 
