@@ -37,7 +37,10 @@ summary still covers every image of each condition, paired or not.
 
 Only numbers are read: a metric named only by digits (the per-node rows of a
 full-mode run), the Metadata section, and every text, list or N/A value are
-left out. Pure: CSVs in, CSVs out.
+left out. Whole sections can be left out too (``exclude_sections``: say the
+Dead Ends of a batch whose dead ends are the segmentation's fragments), from
+all three CSVs and so from the Benjamini-Hochberg count. Pure: CSVs in, CSVs
+out.
 """
 from __future__ import annotations
 
@@ -566,6 +569,50 @@ def collect_batch_statistics(
     return images, missing
 
 
+#: Where a section's subsections are named after it ("Strahler Network > Orders > 1").
+SUBSECTION_SEPARATOR = " > "
+
+
+def parse_sections(text: str | Iterable[str] | None) -> tuple[str, ...]:
+    """Section names from a comma-separated string or a list of them (each of
+    which may hold commas too), blanks dropped, each once, in order."""
+    if text is None:
+        return ()
+    parts = [text] if isinstance(text, str) else list(text)
+    names = (name.strip() for part in parts for name in str(part).split(","))
+    return tuple(dict.fromkeys(name for name in names if name))
+
+
+def excluded_section(section: str, excluded: Iterable[str]) -> str | None:
+    """The name in *excluded* that leaves *section* out -- the section itself
+    or one it is a subsection of, ignoring case -- or None."""
+    folded = section.strip().casefold()
+    for name in excluded:
+        name_folded = name.strip().casefold()
+        if folded == name_folded or folded.startswith(name_folded + SUBSECTION_SEPARATOR.casefold()):
+            return name
+    return None
+
+
+def leave_out_sections(
+    images: Sequence[ImageStatistics], excluded: Iterable[str]
+) -> dict[str, int]:
+    """Drop every metric of the *excluded* sections (and their subsections)
+    from *images*, in place. Returns how many metrics each name took out,
+    every name listed, 0 for one that matched no section."""
+    excluded = tuple(excluded)
+    taken: dict[str, set[MetricKey]] = {name: set() for name in excluded}
+    if not excluded:
+        return {}
+    for image in images:
+        for key in list(image.values):
+            name = excluded_section(key[0], excluded)
+            if name is not None:
+                del image.values[key]
+                taken[name].add(key)
+    return {name: len(keys) for name, keys in taken.items()}
+
+
 def metric_keys(images: Sequence[ImageStatistics]) -> list[MetricKey]:
     """Every metric any image has, in the order first met."""
     keys: dict[MetricKey, None] = {}
@@ -807,6 +854,8 @@ class BatchStatisticsFiles:
     metrics: int = 0
     tested: int = 0
     significant: int = 0
+    #: The sections asked to be left out: how many metrics each took out.
+    excluded: dict[str, int] = field(default_factory=dict)
     message: str = ""
 
     @property
@@ -967,14 +1016,21 @@ def write_batch_statistics(
     conditions: BatchConditions | None = None,
     *,
     alpha: float = 0.05,
+    exclude_sections: str | Iterable[str] | None = None,
 ) -> BatchStatisticsFiles:
     """Read *stems*' statistics under *output_root* and write the by-image,
     summary and (with two conditions) comparison CSVs there. Writes nothing,
-    and says why in ``message``, when no image has statistics."""
+    and says why in ``message``, when no image has statistics.
+
+    *exclude_sections* (names, or one comma-separated string) leaves those
+    sections and their subsections out of every CSV, ignoring case, before
+    anything is summarised or tested: the Benjamini-Hochberg q-values are over
+    the metrics left. A name matching no section is said in ``message``."""
     output_root = Path(output_root)
     conditions = conditions or BatchConditions()
     images, missing = collect_batch_statistics(output_root, stems, conditions)
     files = BatchStatisticsFiles(images=len(images), missing=tuple(missing))
+    files.excluded = leave_out_sections(images, parse_sections(exclude_sections))
     if not images:
         files.message = (
             "No image of the batch has a statistics CSV (is Statistics on?): "
@@ -1064,6 +1120,15 @@ def write_batch_statistics(
         _write_paired(files, output_root, images, keys, conditions, pairing, alpha)
 
     parts = [f"Batch statistics of {len(images)} image(s), {len(keys)} metrics: {files.summary}"]
+    found = {name: count for name, count in files.excluded.items() if count}
+    unknown = [name for name, count in files.excluded.items() if not count]
+    if found:
+        parts.append(
+            "left out: "
+            + ", ".join(f"{name} ({count} metric{'' if count == 1 else 's'})" for name, count in found.items())
+        )
+    if unknown:
+        parts.append(f"no section named {', '.join(unknown)} (nothing left out for it)")
     if files.comparison is not None and conditions.paired:
         left_out = ", ".join(name for name, _subject, _reason in pairing.unpaired)
         parts.append(
@@ -1112,6 +1177,7 @@ __all__ = [
     "Pair",
     "PairedTest",
     "Pairing",
+    "SUBSECTION_SEPARATOR",
     "SUMMARY_FIELDS",
     "SUMMARY_FILENAME",
     "TwoGroupTest",
@@ -1120,9 +1186,12 @@ __all__ = [
     "collect_batch_statistics",
     "compare_paired",
     "compare_two",
+    "excluded_section",
     "image_statistics_files",
+    "leave_out_sections",
     "metric_keys",
     "parse_condition",
+    "parse_sections",
     "read_branch_statistics_csv",
     "read_statistics_csv",
     "smallest_mann_whitney_p",

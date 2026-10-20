@@ -3193,6 +3193,22 @@ SCHEMA = Schema(
             requires=("do_graph_building",),
         ),
         Setting(
+            name="remove_pieces_without_junction",
+            kind="bool",
+            default=False,
+            help=(
+                "At the end of graph building, remove every piece of the network "
+                "with no junction: a vessel on its own, both its ends dead ends "
+                "(the dead ends counted as ends of pieces without a junction), "
+                "whatever its length or where it lies. On a speckled segmentation "
+                "most of these are specks, but some are pieces of real vessel the "
+                "segmentation cut off, and those go too"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
             name="recover_uncovered_mask_vessels",
             kind="bool",
             default=True,

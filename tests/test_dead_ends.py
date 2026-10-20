@@ -220,3 +220,53 @@ def test_census_lists_every_kind():
     census = de.dead_end_census(ends)
     assert tuple(census) == de.DEAD_END_KINDS
     assert census[de.LEAVES_IMAGE] == 3
+
+
+def _island_nodes(G, ends):
+    return {n for tip, end in ends.items() if end.kind == de.ISLAND_END for edge in end.chain for n in edge[:2]}
+
+
+@pytest.mark.parametrize("make", CASES, ids=lambda make: make.__name__)
+def test_removing_pieces_without_a_junction_takes_exactly_the_island_ends_chains(make):
+    """The removal reads the one definition: it takes the nodes of every chain
+    the classifier calls an island end, and nothing else."""
+    case = make()
+    support = MaskSupport(case.mask, VOXEL_SIZE)
+    ends = de.classify_dead_ends(case.graph, extent_um=EXTENT, support=support)
+    islands = _island_nodes(case.graph, ends)
+    before = set(case.graph.nodes)
+
+    removed = de.remove_pieces_without_junction(case.graph)
+
+    assert set(case.graph.nodes) == before - islands, case.name
+    assert removed["nodes"] == len(islands)
+    after = de.classify_dead_ends(case.graph, extent_um=EXTENT, support=support)
+    assert de.ISLAND_END not in {end.kind for end in after.values()}, case.name
+
+
+def test_an_island_of_two_edges_counts_as_one_piece_and_its_length():
+    from dead_end_fixtures import island
+
+    case = island()
+    removed = de.remove_pieces_without_junction(case.graph)
+
+    assert removed == {"pieces": 1, "vessels": 2, "nodes": 3, "length_um": pytest.approx(20.0)}
+    assert case.graph.number_of_edges() == 3     # the trunk's two halves and the short spur
+    assert (10.0, 50.0, 20.0) not in case.graph
+
+
+def test_rings_lone_nodes_and_short_pieces_with_a_junction_stay_and_long_islands_go():
+    from lumen_artefact_fixtures import polyline_graph
+
+    star = [[(0, 0, 0), (0, 0, 3)], [(0, 0, 3), (0, 0, 6)], [(0, 0, 3), (0, 3, 3)]]   # 9 um, one junction
+    ring = [[(0, 20, 0), (0, 20, 10)], [(0, 20, 10), (0, 30, 10)], [(0, 30, 10), (0, 20, 0)]]
+    long_island = [[(0, 50, 0), (0, 50, 400)]]
+    G = polyline_graph(star + ring + long_island)
+    G.add_node((5.0, 5.0, 5.0), pos=np.asarray((5.0, 5.0, 5.0)))
+    kept = set(G.nodes) - {(0.0, 50.0, 0.0), (0.0, 50.0, 400.0)}
+
+    removed = de.remove_pieces_without_junction(G)
+
+    assert set(G.nodes) == kept
+    assert removed == {"pieces": 1, "vessels": 1, "nodes": 2, "length_um": pytest.approx(400.0)}
+    assert de.remove_pieces_without_junction(G) == {"pieces": 0, "vessels": 0, "nodes": 0, "length_um": 0.0}

@@ -444,6 +444,11 @@ BATCH_RUN_TOOLTIPS = {
         "median or mean, and those are paired. batch_condition_pairs.csv lists "
         "the images in each subject's value"
     ),
+    "exclude_sections": (
+        "Statistics sections, comma-separated, left out of the batch statistics and "
+        "the comparison (with their subsections, ignoring case), so the "
+        "Benjamini-Hochberg q-values are over the statistics left; e.g. Dead Ends"
+    ),
     "compare": (
         "Write the batch statistics from the ticked images already run in the "
         "output folder, by the conditions as they are now, without running anything"
@@ -599,6 +604,17 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "What the chosen check found, in the order it ranks them; click one "
         "to zoom to it and list its vessels below, or click its ring in the "
         "viewer. Kept items are not listed again"
+    ),
+    "dead_end_show": (
+        "List every kind of dead end the scan found, or only one kind; "
+        "pieces with no junction are vessels on their own, both ends dead "
+        "ends"
+    ),
+    "remove_pieces": (
+        "Remove every piece with no junction the list shows, each as Delete "
+        "all its vessels would; a piece with a boundary node on it, or one "
+        "a vessel was drawn onto since the scan, stays. Each is recorded in "
+        "{stem}_dead_ends_review.csv"
     ),
     "review_table": (
         "The chosen item's vessels; click or shift/ctrl-click rows to select "

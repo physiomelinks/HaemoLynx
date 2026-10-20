@@ -270,9 +270,10 @@ def write_batch_settings(
     folders: BatchFolders,
     output_root: Path,
     conditions: BatchConditions | None = None,
+    exclude_sections: Sequence[str] = (),
 ) -> Path:
     """``batch_settings.yaml``: the settings the batch ran with, then its
-    folders and conditions."""
+    folders, conditions and the statistics sections its comparison leaves out."""
     from haemolynx.pipeline.provenance import write_settings_yaml
 
     path = output_root / SETTINGS_FILENAME
@@ -291,6 +292,8 @@ def write_batch_settings(
             lines.append(f"# batch_subject_pattern: {conditions.subject_pattern}")
         if conditions.paired:
             lines.append(f"# batch_paired_aggregate: {conditions.aggregate}")
+    if exclude_sections:
+        lines.append(f"# batch_exclude_sections: {', '.join(exclude_sections)}")
     with path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     return path
@@ -308,6 +311,7 @@ def run_batch(
     check_cancelled: Callable[[], None] | None = None,
     skip_done: bool = True,
     conditions: BatchConditions | None = None,
+    exclude_sections: Sequence[str] = (),
 ) -> BatchSummary:
     """Run *values* (the panel's form values) on each of *matches*, in order.
 
@@ -320,7 +324,8 @@ def run_batch(
 
     Once the images are done (or the batch is cancelled), the statistics of
     every image that ran or was skipped as done are written side by side,
-    by *conditions* when given (:func:`write_statistics`).
+    by *conditions* when given and without the *exclude_sections*
+    (:func:`write_statistics`).
     """
     from haemolynx.gui.run_state import RunCancelled
     from haemolynx.io import clear_vessel_mask_cache
@@ -334,7 +339,9 @@ def run_batch(
     )
     if folders is not None:
         try:
-            write_batch_settings(values, schema, folders, output_root, conditions)
+            write_batch_settings(
+                values, schema, folders, output_root, conditions, exclude_sections
+            )
         except Exception:  # noqa: BLE001 - a record of the batch must not stop it
             logger.exception("could not write %s", SETTINGS_FILENAME)
     summary.write()
@@ -392,20 +399,28 @@ def run_batch(
         output_root,
         [result.match.stem for result in summary.results if result.status in (DONE, SKIPPED)],
         conditions,
+        exclude_sections=exclude_sections,
     )
     logger.info(summary.message())
     return summary
 
 
 def write_statistics(
-    output_root: Path | str, stems: Sequence[str], conditions: BatchConditions | None = None
+    output_root: Path | str,
+    stems: Sequence[str],
+    conditions: BatchConditions | None = None,
+    *,
+    exclude_sections: Sequence[str] = (),
 ) -> BatchStatisticsFiles | None:
-    """The batch's statistics for *stems*; never raises, so a batch that ran
-    is never reported as failed for its statistics."""
+    """The batch's statistics for *stems*, without the *exclude_sections*;
+    never raises, so a batch that ran is never reported as failed for its
+    statistics."""
     if not stems:
         return None
     try:
-        return write_batch_statistics(output_root, stems, conditions)
+        return write_batch_statistics(
+            output_root, stems, conditions, exclude_sections=exclude_sections
+        )
     except Exception as error:  # noqa: BLE001 - the images' own outputs stand
         logger.exception("could not write the batch statistics")
         return BatchStatisticsFiles(message=f"Could not write the batch statistics: {error}")
@@ -447,6 +462,8 @@ class BatchSetup:
     checked: Mapping[str, str] = field(default_factory=dict)
     #: The conditions the images' file names put them in.
     conditions: BatchConditions = field(default_factory=BatchConditions)
+    #: Statistics sections the comparison leaves out ("Dead Ends").
+    exclude_sections: tuple[str, ...] = ()
 
     def selected(self) -> list[BatchMatch]:
         return [match for match in self.matches if match.stem not in self.unticked]

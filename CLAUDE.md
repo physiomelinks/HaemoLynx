@@ -617,6 +617,17 @@ are only caught locally.
   third of its graph is then false joins. The optimiser's own downsampling keeps block max. Positions: a
   coarse voxel's index times its voxel size is where the first voxel of its block was, so the
   crop record's offset is measured in the source grid's voxel size. Not yet tried on a real stack.
+  **A crop is binarised as the whole file reads** (2026-10-20): which value is vessel (the
+  minority of an ilastik 1/2 export) is decided from every value the whole file holds, counted a
+  slab at a time (`io.load.mask_binarization_rule`), then applied to the box as it is cut
+  (`crop_volume(binarise=)`); the segmented image's rule is kept per file
+  (`stages._segmented_image_binarization_rule`). Decided on the box, a box holding only label 2
+  read as solid vessel and one where vessel is the majority came back inside out. The vessel,
+  pericyte and cell masks were already binarised whole before the cut. A file holding one value
+  only is read explicitly, with a warning: 0 and 2 (ilastik background) empty, any other value
+  vessel everywhere -- it was `> 0`, so Harvey's `28_3_d_ipsi_FITC_Simple Segmentation_large.h5`,
+  label 2 in all 17.1 G voxels, loaded as one solid large vessel and every vessel of the run was
+  classed Unknown_Large. Pinned in `tests/test_crop_on_import.py`.
 - **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
   on by default) — with the segmented mask, nothing that joins two pieces of skeleton or graph
   (closing and `bridge_gaps`, a bundle hub's links, `connect_skeleton_components`, and graph
@@ -850,6 +861,13 @@ are only caught locally.
   left the same way (`reclassify_dead_ends`, over the touched nodes alone: a touched node that
   is a dead end no longer loses the classifier's kind, a person's stays). Diagnostics, the
   review lists and the boundary review all classify through it; a fixed `image_face_margin_um` is only a caller's explicit choice.
+  `remove_pieces_without_junction` (Graph tab, off by default, 2026-10-20) removes every piece
+  with no junction at the end of graph building, before the kinds are marked and the graph is
+  saved (`remove_pieces_without_junction`: the chains whose dead ends are `island_end`, any
+  length, anywhere; rings and lone nodes stay; the count and length go on
+  `G.graph["pieces_without_junction_removed"]` / `_um`). Harvey's AIA patella grid P1
+  (`outputs/patella_dead_end_review/`) marked 11 of 14 such pieces specks and 3 real vessel the
+  segmentation cut off, and none of 30 patella dead ends a real blind end.
   The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
   ends inside the tissue: drawn unsolved, grey, while exports keep its 0 -- Harvey, 2026-10-15), `closed_end`
   (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the
@@ -1021,7 +1039,11 @@ are only caught locally.
   `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
   shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),
   hairpin vessels, dead ends by kind (`graph.classify_dead_ends`, the lumen-artefact report's
-  dead ends; Trace on from the tip starts Add vessel there), two vessels in one lumen, facing
+  dead ends; Trace on from the tip starts Add vessel there; a Show filter lists one kind,
+  `gui/post_processing.DEAD_END_SHOW`, and shown pieces with no junction get "Remove all N
+  listed pieces", `remove_listed_pieces`: each deleted through `delete_vessels` with its own
+  decision and CSV row, skipping one a vessel was drawn onto since the scan and refusing one
+  holding a boundary node), two vessels in one lumen, facing
   dead ends the join left open (`facing_ends.facing_dead_end_pairs`, with why; Join the two
   ends), segmented vessels without a centreline (`mask_recovery.uncovered_mask_regions`),
   unsolved pieces (`graph.unsolved_pieces`), flow against the branch orders, flow outliers,
@@ -1485,7 +1507,7 @@ are only caught locally.
   recorded and the batch goes on, `batch_summary.csv` is rewritten after every image,
   `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
   haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
-  [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE] [--paired-aggregate none|median|mean]]] [--compare-only]`;
+  [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE] [--paired-aggregate none|median|mean]]] [--exclude-section S ...] [--compare-only]`;
   every image passes its checks or nothing runs. Its log lines carry the time
   (`configure_console_logging(timestamps=True)`), so each step's time reads off a batch log.
   **Conditions and the batch's statistics** (2026-10-19, `statistics/batch_comparison.py`): up
@@ -1526,6 +1548,17 @@ are only caught locally.
   differences dropped) with Benjamini-Hochberg q, W+, the smallest p it can reach (2 / 2^n: 0.5
   at 2 pairs, so nothing reaches 0.05 below 6), the matched-pairs rank-biserial r, and the paired
   t with Cohen's dz. The summary still covers every image of each condition.
+  **Sections left out** (2026-10-20): `--exclude-section "Dead Ends"` (repeatable or
+  comma-separated; `write_batch_statistics(exclude_sections=)`, `run_batch` / `write_statistics`'s
+  keyword, `BatchSetup.exclude_sections`, the window's "Leave out sections" row) drops those
+  sections and their subsections (`Strahler Network` takes `Strahler Network > Orders > 1`;
+  ignoring case, `excluded_section`) from all three CSVs before anything is summarised or
+  tested, so the Benjamini-Hochberg q is over the metrics left; a name matching no section is
+  said in the message, and a batch records them in `batch_settings.yaml`
+  (`# batch_exclude_sections:`). For Harvey's AIA contra/ipsi batch, whose patella dead ends are
+  segmentation fragments (his P1 marks: none a real blind end): rebuilt from its per-image CSVs
+  with `exclude_sections="Dead Ends"` it gives `outputs/aia_all8`'s hand-edited CSVs byte for
+  byte, and without it the originals in `with_dead_ends/`.
   In the panel: the Input tab's Batch run button (above the Input row) opens
   `_widget.py`'s `_BatchRunWindow` (folders, the matched table with ticks and tie choices,
   Check, Use this batch, Leave batch run; double-click a finished row to load its

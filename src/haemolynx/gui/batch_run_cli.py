@@ -15,7 +15,12 @@ from haemolynx.gui import batch_run
 from haemolynx.io.batch_matching import BatchFolders, match_batch
 from haemolynx.parsers import configure_console_logging
 from haemolynx.pipeline.batch import batch_mask_sizes, batch_preflight, default_output_root
-from haemolynx.statistics.batch_comparison import AGGREGATE_NONE, AGGREGATES, BatchConditions
+from haemolynx.statistics.batch_comparison import (
+    AGGREGATE_NONE,
+    AGGREGATES,
+    BatchConditions,
+    parse_sections,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,6 +84,19 @@ def _parser() -> argparse.ArgumentParser:
             "by their median or mean, and those are paired."
         ),
     )
+    parser.add_argument(
+        "--exclude-section",
+        action="append",
+        default=[],
+        metavar="SECTION",
+        help=(
+            "Leave this statistics section (and its subsections, 'Strahler Network' "
+            "takes 'Strahler Network > Orders > 1'), ignoring case, out of the batch "
+            "statistics and the comparison, so the Benjamini-Hochberg q-values are "
+            "over the metrics left; e.g. --exclude-section \"Dead Ends\". Repeat it, "
+            "or separate names by commas, for more than one."
+        ),
+    )
     return parser
 
 
@@ -113,10 +131,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if conditions.problem():
         print(conditions.problem())
         return 1
+    exclude_sections = parse_sections(args.exclude_section)
     if conditions.conditions:
         print(f"Conditions: {conditions.describe(match.stem for match in matches)}.")
     if args.compare_only:
-        written = batch_run.write_statistics(output_root, [match.stem for match in matches], conditions)
+        written = batch_run.write_statistics(
+            output_root,
+            [match.stem for match in matches],
+            conditions,
+            exclude_sections=exclude_sections,
+        )
         print(written.message if written is not None else "No images.")
         return 0 if written is not None and written.written else 1
     failing = []
@@ -150,6 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         folders=folders,
         skip_done=not args.rerun,
         conditions=conditions,
+        exclude_sections=exclude_sections,
     )
     print(summary.message())
     return 0 if summary.count(batch_run.FAILED) == 0 and summary.count(batch_run.CANCELLED) == 0 else 1

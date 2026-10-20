@@ -83,7 +83,7 @@ from haemolynx.haemodynamics.poiseuille import (
     set_edge_diameter_override,
 )
 from haemolynx.io.crop import GRAPH_ATTRIBUTE as CROP_GRAPH_ATTRIBUTE
-from haemolynx.io.crop import CropBox, crop_volume_and_box, crop_volume_like_graph
+from haemolynx.io.crop import CropBox, crop_box_from_settings, crop_volume_and_box, crop_volume_like_graph
 from haemolynx.io.downsample import GRAPH_ATTRIBUTE as DOWNSAMPLE_GRAPH_ATTRIBUTE
 from haemolynx.io.downsample import (
     RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
@@ -97,6 +97,7 @@ from haemolynx.io.downsample import (
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
+    mask_binarization_rule,
 )
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
 from haemolynx.visualization.perturbation_plots import (
@@ -799,6 +800,33 @@ def run_voxel_size_xyz(
     )
 
 
+#: The binarisation rule last decided on a whole segmented image, keyed on
+#: the file's identity and the volume as read: deciding it reads every voxel
+#: (a minute or two on a 17 G-voxel stack), and a run may load the image
+#: more than once (the panel's checks, a preflight, the run itself).
+_SEGMENTED_IMAGE_RULE: dict[str, tuple[tuple, Any]] = {}
+
+
+def _segmented_image_binarization_rule(input_path: Any, image: np.ndarray):
+    """:func:`io.load.mask_binarization_rule` of the whole segmented *image*
+    read from *input_path*, remembered for the last file."""
+    try:
+        stat = Path(input_path).stat()
+        key = (
+            str(Path(input_path).resolve()), stat.st_size, stat.st_mtime_ns,
+            tuple(image.shape), str(image.dtype),
+        )
+    except (OSError, TypeError):
+        key = None
+    cached = _SEGMENTED_IMAGE_RULE.get("rule")
+    if key is not None and cached is not None and cached[0] == key:
+        return cached[1]
+    rule = mask_binarization_rule(image)
+    if key is not None:
+        _SEGMENTED_IMAGE_RULE["rule"] = (key, rule)
+    return rule
+
+
 def _load_and_crop_volume(settings: dict, input_format: str):
     """:func:`load_volume_for_skeletonise`, with the box ``crop_on_import``
     cut (None while it is off) and the reduction ``segmented_image_downsample``
@@ -807,7 +835,8 @@ def _load_and_crop_volume(settings: dict, input_format: str):
     voxel size (the metadata and the override resolved as the run resolves
     them), so a coarse z axis is reduced by less. The voxel size returned is
     the image's metadata as read, unscaled: what is resolved from it is the
-    reduced grid's once scaled (:meth:`Downsample.scale_voxel_size_xyz`)."""
+    reduced grid's once scaled (:meth:`Downsample.scale_voxel_size_xyz`).
+    A cut box comes back boolean, binarised by the whole image's rule."""
     if input_format not in {"tif", "tiff", "h5"}:
         raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
     if settings["use_memmap_loading"] and settings["memmap_directory"]:
@@ -842,7 +871,13 @@ def _load_and_crop_volume(settings: dict, input_format: str):
         float(voxel_size_y),
         float(voxel_size_z),
     )
-    image, crop = crop_volume_and_box(image, settings, description="input image")
+    # A box is binarised as the whole image reads: decided on the box alone,
+    # an ilastik 1/2 box holding only background was solid vessel.
+    box = crop_box_from_settings(settings, image.shape)
+    rule = None
+    if box is not None and not box.is_whole_volume:
+        rule = _segmented_image_binarization_rule(settings["input_path"], image)
+    image, crop = crop_volume_and_box(image, settings, description="input image", binarise=rule)
     downsample = None
     if downsample_factor(settings.get("segmented_image_downsample")) > 1:
         resolved, _source = resolve_voxel_size_xyz(
@@ -1782,6 +1817,8 @@ def _no_vessels_left_error(
             "the image: edges and stubs lying mostly outside its foreground are removed, so it "
             "must be the segmentation the skeleton was made from"
         )
+    if settings.get("remove_pieces_without_junction"):
+        reasons.append("remove_pieces_without_junction removes every vessel with no junction on it")
     return ValueError(
         f"Graph building left no vessels. {built} Settings to check: " + "; ".join(reasons) + "."
     )
@@ -2114,6 +2151,19 @@ def build_network(
                 max_deviation=settings["centreline_max_deviation"],
                 radius_at=radius_at,
             )
+        # Pieces with no junction (their dead ends are graph.dead_ends'
+        # island ends), taken out last so no step after rejoins or re-makes
+        # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
+        # specks and 3 real vessel the segmentation cut off.
+        if settings.get("remove_pieces_without_junction"):
+            removed = graph.dead_ends.remove_pieces_without_junction(G)
+            G.graph["pieces_without_junction_removed"] = removed["pieces"]
+            G.graph["pieces_without_junction_removed_um"] = removed["length_um"]
+            logger.info(
+                "Removed %d piece(s) with no junction: %d vessel(s), %.0f um of centreline.",
+                removed["pieces"], removed["vessels"], removed["length_um"],
+            )
+            edges_after_step.append(("removal of pieces with no junction", G.number_of_edges()))
 
         # Nothing after this can run on no vessels, and what tried failed on
         # something else (the 3D drawing on no node positions, boundary

@@ -196,6 +196,7 @@ STAGES: tuple[Stage, ...] = (
             "recovery_min_length_um",
             "facing_dead_end_max_gap_um",
             "remove_short_loops_under_um",
+            "lumen_cleanup_max_rounds",
             "short_loop_keep_hole_over_um",
             "retrace_lost_skeleton",
             # Read by the thick-vessel split, graph building's last step.
@@ -205,6 +206,7 @@ STAGES: tuple[Stage, ...] = (
             "trace_on_dead_ends",
             "join_dead_ends_to_vessel_sides",
             "stub_face_protection",
+            "remove_pieces_without_junction",
             "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
             "smooth_centrelines",

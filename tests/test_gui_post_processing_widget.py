@@ -1545,3 +1545,61 @@ def test_with_an_edit_armed_a_click_on_a_ring_edits_instead(make_napari_viewer):
     c.click_delete_button.click()
     _click(page, tuple(other.centre_um))  # the middle of the other dead end
     assert not c.state.graph.has_edge(*other.edges[0][:2]), "deleted, not chosen"
+
+
+def _island_page(viewer, tmp_path):
+    """dead_end_fixtures' island case: the trunk, a short spur off it, and a
+    two-edge piece of its own."""
+    from dead_end_fixtures import island
+
+    case = island()
+    G = nx.convert_node_labels_to_integers(case.graph, ordering="sorted")
+    island_nodes = {n for n, d in G.nodes(data=True) if abs(float(d["pos"][1]) - 50.0) < 1e-6}
+    for _u, _v, d in G.edges(data=True):
+        d.setdefault("branch_order", "B01")
+        d.setdefault("diameter_um", 5.0)
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(image=case.mask.astype(np.uint8), skeleton=np.zeros_like(case.mask, dtype=bool),
+                        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0)),
+    ))
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    c = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: results,
+        boundary_roles=lambda: {"inlet": (), "outlet": ()},
+        regenerate=lambda graph, stop_after=None: True, running=lambda: False,
+        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+    )
+    c.refresh()
+    c.review_choice.setCurrentText(DEAD_ENDS)
+    return c, island_nodes
+
+
+def test_dead_ends_filtered_to_pieces_with_no_junction_can_all_be_removed(make_napari_viewer, qtbot, tmp_path):
+    c, island_nodes = _island_page(make_napari_viewer(), tmp_path)
+    assert not c.dead_end_show.isHidden() and c.dead_end_show.toolTip() and c.remove_pieces_button.toolTip()
+    assert c.review_box.isAncestorOf(c.dead_end_show) and c.review_box.isAncestorOf(c.remove_pieces_button)
+
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    assert c.review_items.count() == 2, "the spur and the island"
+    assert c.remove_pieces_button.isHidden(), "only offered while the list shows pieces with no junction"
+
+    c.dead_end_show.setCurrentText("Pieces with no junction")
+    assert c.review_items.count() == 1
+    assert not c.remove_pieces_button.isHidden() and c.remove_pieces_button.isEnabled()
+    assert c.remove_pieces_button.text() == "Remove all 1 listed piece with no junction"
+
+    c.remove_pieces_button.click()
+    assert not island_nodes & set(c.state.graph), "the whole piece is gone"
+    assert c.state.graph.number_of_edges() == 3, "the trunk's two halves and the spur stay"
+    assert c.review_items.count() == 0
+    assert not c.remove_pieces_button.isEnabled()
+    rows = _csv_rows(tmp_path / "run_dead_ends_review.csv")
+    assert [(r["decision"], r["kind"]) for r in rows] == [("deleted", "dead_ends")]
+    assert "Removed 1 piece(s) with no junction" in c.log_box.toPlainText()
+
+    c.dead_end_show.setCurrentText("All kinds")
+    assert c.review_items.count() == 1, "the spur is still listed, the removed piece is not"
+    assert c.remove_pieces_button.isHidden()

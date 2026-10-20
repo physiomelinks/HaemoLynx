@@ -932,3 +932,83 @@ def test_the_branch_ids_of_vessels_named_either_way_round_once_each():
     ids = branch_ids_of(G, [(5, 1, 0), (1, 5, 0), (1, 2, 0), (8, 9, 0)])
     assert ids == sorted({branch_id_of(G, (1, 5, 0)), branch_id_of(G, (1, 2, 0))})
     assert branch_ids_of(G, []) == []
+
+
+# --- Dead ends: the Show filter and removing every listed piece with no junction ------
+
+def _island_items():
+    """dead_end_fixtures' island case and its dead-end review items: a short
+    spur off the trunk (an artefact) and a two-edge piece of its own."""
+    from dead_end_fixtures import VOXEL_SIZE, island
+
+    from haemolynx.graph import network_review as nr
+    from haemolynx.preprocessing import MaskSupport
+
+    case = island()
+    return case, nr.find_dead_ends(case.graph, MaskSupport(case.mask, VOXEL_SIZE))
+
+
+def test_the_dead_end_list_shows_one_kind_or_all_and_only_islands_get_the_remove_button():
+    from haemolynx.graph import network_review as nr
+    from haemolynx.gui.post_processing import (
+        DEAD_END_SHOW,
+        DEAD_END_SHOW_ALL,
+        DEAD_END_SHOW_BY_LABEL,
+        dead_ends_shown,
+        remove_pieces_label,
+        removes_listed_pieces,
+    )
+
+    _case, items = _island_items()
+    assert sorted(i.measures["kind"] for i in items) == ["artefact", "island_end"]
+    assert dead_ends_shown(items, DEAD_END_SHOW_ALL) == items
+    assert [i.measures["kind"] for i in dead_ends_shown(items, "island_end")] == ["island_end"]
+    assert dead_ends_shown(items, "broken") == []
+    assert DEAD_END_SHOW_BY_LABEL["Pieces with no junction"] == "island_end"
+    assert {key for key, _label in DEAD_END_SHOW} == {DEAD_END_SHOW_ALL, *nr.DEAD_END_WORDS}
+    assert removes_listed_pieces(nr.DEAD_ENDS, "island_end")
+    assert not removes_listed_pieces(nr.DEAD_ENDS, DEAD_END_SHOW_ALL)
+    assert not removes_listed_pieces(nr.UNSOLVED_PIECES, "island_end")
+    assert remove_pieces_label(1) == "Remove all 1 listed piece with no junction"
+    assert remove_pieces_label(2270) == "Remove all 2270 listed pieces with no junction"
+
+
+def test_removing_listed_pieces_deletes_each_island_and_records_it_and_nothing_else():
+    from haemolynx.graph.post_processing import has_pending_edits
+    from haemolynx.gui.post_processing import branch_id_of, remove_listed_pieces
+
+    case, items = _island_items()
+    G = case.graph
+    island = next(i for i in items if i.measures["kind"] == "island_end")
+    ids = sorted(branch_id_of(G, e) for e in island.edges)
+    trunk_and_spur = {n for n in G if abs(G.nodes[n]["pos"][1] - 50.0) > 1e-6}
+
+    done = remove_listed_pieces(G, items, time="t0")
+
+    assert set(G.nodes) == trunk_and_spur, "the island's three nodes go, the trunk and its spur stay"
+    assert (done.pieces, done.vessels, done.skipped, done.refused) == (1, 2, 1, [])
+    assert done.length_um == pytest.approx(20.0)
+    assert [d.decision for d in done.decisions] == ["deleted"]
+    row = done.rows[0]
+    assert row["decision"] == "deleted" and row["kind"] == "dead_ends" and row["time"] == "t0"
+    assert row["branch_ids"] == ";".join(str(i) for i in ids), "branchIDs as the list showed them"
+    assert has_pending_edits(G), "the deletions are hand edits post processing brings in line"
+
+
+def test_a_listed_piece_that_holds_a_boundary_node_or_got_a_junction_stays():
+    from haemolynx.gui.post_processing import remove_listed_pieces
+
+    case, items = _island_items()
+    G = case.graph
+    island = next(i for i in items if i.measures["kind"] == "island_end")
+    tip = island.nodes[0]
+
+    held = remove_listed_pieces(G, [island], protected={tip})
+    assert held.pieces == 0 and len(held.refused) == 1 and tip in G
+
+    # A vessel drawn from the middle of the piece to the trunk since the scan
+    # gives it a junction: it is no longer a piece with no junction.
+    middle = (10.0, 50.0, 20.0)
+    G.add_edge(middle, (10.0, 30.0, 40.0), voxels=[list(middle), [10.0, 30.0, 40.0]], length=28.3)
+    joined = remove_listed_pieces(G, [island])
+    assert joined.pieces == 0 and joined.skipped == 1 and tip in G

@@ -68,6 +68,15 @@ __all__ = [
     "ACTION_SET_DIAMETER",
     "ACTION_TRACE_ON",
     "action_applies",
+    "DEAD_END_SHOW",
+    "DEAD_END_SHOW_ALL",
+    "DEAD_END_SHOW_BY_LABEL",
+    "RemovedPieces",
+    "dead_ends_shown",
+    "remove_listed_pieces",
+    "remove_pieces_label",
+    "removes_listed_pieces",
+    "still_without_junction",
     "NEEDS_BOUNDARIES",
     "NEEDS_FLOW",
     "NEEDS_MASK",
@@ -1518,10 +1527,12 @@ def review_record(
     decision: ReviewDecision,
     *,
     voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+    index: Mapping[tuple[Any, Any, Any], int] | None = None,
 ) -> dict[str, str]:
     """One CSV row for *decision* about *item*, read off *graph* before the
-    edit it records changes it."""
-    index = _branch_index(graph)
+    edit it records changes it. *index* is the graph's branchIDs
+    (``_branch_index``), when a caller recording many items read it once."""
+    index = _branch_index(graph) if index is None else index
     centre = np.asarray(item.centre_um, dtype=float)
     voxel = np.rint(centre / np.asarray(voxel_size_zyx, dtype=float)).astype(int)
     row: dict[str, Any] = {
@@ -1539,6 +1550,115 @@ def review_record(
     for name, value in (item.measures or {}).items():
         row.setdefault(str(name), value)
     return {name: _csv_value(value) for name, value in row.items()}
+
+
+#: The dead-end list's "Show" filter: every kind it lists, or one of them.
+DEAD_END_SHOW_ALL = "all"
+DEAD_END_SHOW = (
+    (DEAD_END_SHOW_ALL, "All kinds"),
+    ("artefact", "Not vessel ends (artefacts)"),
+    ("stops_short", "The graph stopped short"),
+    ("broken", "Vessels broken by the segmentation"),
+    ("unknown", "Blind or broken (unknown)"),
+    ("blind", "Marked as real blind ends"),
+    ("island_end", "Pieces with no junction"),
+)
+DEAD_END_SHOW_BY_LABEL = {label: key for key, label in DEAD_END_SHOW}
+
+
+def dead_ends_shown(items: Iterable[Any], show: str) -> list[Any]:
+    """The dead-end review *items* of kind *show* (``DEAD_END_SHOW``'s keys),
+    in their order; all of them for :data:`DEAD_END_SHOW_ALL`."""
+    if show == DEAD_END_SHOW_ALL:
+        return list(items)
+    return [item for item in items if (item.measures or {}).get("kind") == show]
+
+
+def removes_listed_pieces(review_key: str | None, show: str) -> bool:
+    """Whether the review list on show is the dead ends filtered to pieces with
+    no junction: the one list "Remove all listed pieces" acts on."""
+    from haemolynx.graph import network_review as nr
+    from haemolynx.graph.dead_ends import ISLAND_END
+
+    return review_key == nr.DEAD_ENDS and show == ISLAND_END
+
+
+def remove_pieces_label(count: int) -> str:
+    """The text of the button that removes every listed piece with no junction."""
+    return f"Remove all {count} listed piece{'' if count == 1 else 's'} with no junction"
+
+
+def still_without_junction(graph: Any, item: Any) -> bool:
+    """Whether review *item* is still a piece with no junction on *graph*: its
+    tip a dead end whose chain ends at another dead end (graph.dead_ends'
+    island end), every vessel the scan listed still there. A vessel drawn
+    onto it since the scan gives it a junction, and it is left alone."""
+    from haemolynx.graph.dead_ends import chain_to_junction
+
+    tip = item.nodes[0] if item.nodes else None
+    if tip not in graph or graph.degree(tip) != 1 or not item_still_there(graph, item):
+        return False
+    nodes, _edges = chain_to_junction(graph, tip)
+    return graph.degree(nodes[-1]) <= 1
+
+
+@dataclass
+class RemovedPieces:
+    """What :func:`remove_listed_pieces` did."""
+
+    decisions: list[ReviewDecision] = field(default_factory=list)
+    #: One ``{stem}_dead_ends_review.csv`` row per piece removed.
+    rows: list[dict[str, str]] = field(default_factory=list)
+    vessels: int = 0
+    length_um: float = 0.0
+    #: Pieces that have a junction now, or lost a vessel, since the scan.
+    skipped: int = 0
+    #: Why a deletion was refused (it would strand a boundary node), one per piece.
+    refused: list[str] = field(default_factory=list)
+
+    @property
+    def pieces(self) -> int:
+        return len(self.decisions)
+
+
+def remove_listed_pieces(
+    graph: Any,
+    items: Iterable[Any],
+    *,
+    protected: Iterable[Any] = (),
+    time: str = "",
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+) -> RemovedPieces:
+    """Delete, in place, every listed dead-end item that is still a piece with
+    no junction (:func:`still_without_junction`), each through the tab's own
+    edit, ``delete_vessels`` (so post processing brings the edit in line),
+    with a "deleted" decision and its CSV row. Every row carries the
+    branchIDs the network had before the first deletion, as the list showed
+    them. A piece holding a boundary node is refused and stays."""
+    from haemolynx.graph.dead_ends import ISLAND_END
+    from haemolynx.graph.post_processing import delete_vessels
+
+    protected = set(protected)
+    index = _branch_index(graph)
+    done = RemovedPieces()
+    for item in list(items):
+        if (item.measures or {}).get("kind") != ISLAND_END or not still_without_junction(graph, item):
+            done.skipped += 1
+            continue
+        edges = [tuple(edge) for edge in item.edges]
+        decision = ReviewDecision.of(item, "deleted", time=time)
+        row = review_record(graph, item, decision, voxel_size_zyx=voxel_size_zyx, index=index)
+        length = sum(float(graph.edges[edge].get("length") or 0.0) for edge in edges)
+        try:
+            delete_vessels(graph, edges, protected=protected)
+        except ValueError as error:
+            done.refused.append(str(error))
+            continue
+        done.decisions.append(decision)
+        done.rows.append(row)
+        done.vessels += len(edges)
+        done.length_um += length
+    return done
 
 
 def review_csv_path(values: Any, kind: str) -> "Path | None":
