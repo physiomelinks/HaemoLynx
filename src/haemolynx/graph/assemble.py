@@ -403,6 +403,8 @@ def consolidate_lumen(
     # few places, and only the edges near them are judged again.
     pairs_memo: dict = cleanup.memos.setdefault("pairs", {})
     stretch_memo: dict = cleanup.memos.setdefault("stretches", {})
+    # And each loop's mask measures, which read only its points.
+    loops_memo: dict = cleanup.memos.setdefault("loops", {})
     def state(G):
         # A rewired stretch can leave the counts as they were and shorten
         # the centreline: the length is part of what "changed" means.
@@ -422,14 +424,16 @@ def consolidate_lumen(
             G, cleanup.support, memo=pairs_memo, keep_apart=cleanup.keep_apart,
             along_centreline=cleanup.along_centreline,
         )
-        G = remove_loops_inside_one_lumen(G, cleanup.support, along_centreline=cleanup.along_centreline)
+        G = remove_loops_inside_one_lumen(
+            G, cleanup.support, along_centreline=cleanup.along_centreline, memo=loops_memo
+        )
         if cleanup.max_short_loop_um > 0:
             # Grids I and I2: nine in ten short loops close inside one vessel,
             # and the in-lumen rule above found none of them.
             # Not given the thick centreline: keeping its side, the rule
             # took the capillary beside it instead (grid W, 2 and 22).
             G = remove_short_loops(G, cleanup.support, max_length_um=cleanup.max_short_loop_um,
-                                   keep_hole_over_um=cleanup.short_loop_keep_hole_um)
+                                   keep_hole_over_um=cleanup.short_loop_keep_hole_um, memo=loops_memo)
         # What the whole-edge pair rule leaves: a stretch of an edge beside
         # another, rewired rather than deleted (graph.doubled_stretches).
         G = resolve_doubled_stretches(

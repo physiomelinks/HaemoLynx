@@ -627,3 +627,79 @@ def test_the_hole_limit_defaults_to_the_grids_and_is_a_setting():
     old = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
            "bridge_min_mask_fraction": 0.8, "remove_short_loops_under_um": 200.0}
     assert thick_junction_bridge_arguments(old)["short_loop_keep_hole_um"] == DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
+
+
+def _bed_build(**kwargs):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from dense_capillary_fixtures import dense_capillary_bed
+
+    from haemolynx.graph.assemble import build_graph_from_skeleton, mask_radius_sampler
+    from haemolynx.preprocessing import preprocess_skeleton_for_graph
+
+    bed = dense_capillary_bed()
+    voxel = bed.voxel_size_zyx
+    skeleton = preprocess_skeleton_for_graph(
+        bed.skeleton, min_branch_length=3, max_bridge_distance=4, closing_radius=1,
+        bridge_gap_size=3, voxel_size_zyx=voxel, segmentation_mask=bed.mask,
+    )
+    return build_graph_from_skeleton(
+        skeleton, voxel_size=voxel, graph_reconnect_threshold=10.0,
+        final_orphan_reconnect_threshold=3.0, cluster_collapse_distance=5.0,
+        min_stub_length=10.0, min_stub_length_radius_multiple=1.5,
+        stub_radius_at=mask_radius_sampler(bed.mask, voxel, 1.0),
+        segmentation_mask=bed.mask, remove_short_loops_under_um=200.0, **kwargs,
+    )
+
+
+def test_loops_measured_once_build_the_graph_measuring_every_loop_every_call_built(monkeypatch):
+    """The clean-up's loop rules remember each loop's mask measures from one
+    call to the next (_LoopMeasures): the dense capillary bed's graph is the
+    same, pickle for pickle, as when every loop is measured every call, with
+    fewer loops measured."""
+    import pickle
+
+    from haemolynx.graph import lumen_loops
+
+    counts = {"measured": 0}
+    for name in ("loop_inside_one_lumen", "loop_hole_um"):
+        def counting(loop_um, support, _real=getattr(lumen_loops, name)):
+            counts["measured"] += 1
+            return _real(loop_um, support)
+
+        monkeypatch.setattr(lumen_loops, name, counting)
+    remembered = _bed_build()
+    measured_once = counts["measured"]
+    monkeypatch.setattr(lumen_loops._LoopMeasures, "__call__", lambda self, loop_um: self._measure(loop_um))
+    counts["measured"] = 0
+    every_time = _bed_build()
+
+    assert pickle.dumps((remembered.graph, remembered._node, remembered._adj)) == pickle.dumps(
+        (every_time.graph, every_time._node, every_time._adj)
+    )
+    assert 0 < measured_once < counts["measured"]
+
+
+def test_a_loop_measure_is_taken_once_for_the_same_points_and_kept_for_the_next_call():
+    from haemolynx.graph.lumen_loops import _LoopMeasures
+
+    calls = []
+    memo: dict = {}
+    loop = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, 0.0]])
+    moved = loop + 1e-12
+
+    first = _LoopMeasures(memo, "m", lambda points: calls.append(points.copy()) or float(points.sum()))
+    assert first(loop) == first(loop) == float(loop.sum())
+    first.keep()
+    second = _LoopMeasures(memo, "m", lambda points: calls.append(points.copy()) or -1.0)
+    assert second(loop) == float(loop.sum())  # remembered from the first call
+    assert second(moved) == -1.0  # other points: measured
+    third = _LoopMeasures(memo, "m", lambda points: calls.append(points.copy()) or -2.0)
+    assert third(moved) == -2.0  # the second call kept nothing (no keep())
+    second.keep()
+    fourth = _LoopMeasures(memo, "m", lambda points: calls.append(points.copy()) or -3.0)
+    assert fourth(moved) == -1.0 and fourth(loop) == float(loop.sum())  # what the second call asked
+    assert len(calls) == 3
+    assert _LoopMeasures(None, "m", lambda points: 7.0)(loop) == 7.0

@@ -85,6 +85,36 @@ def _length(data: dict) -> float:
     return float(data.get("length", 0.0) or 0.0)
 
 
+class _LoopMeasures:
+    """One mask measure of loops -- whether one lies inside one lumen, the hole
+    one runs round -- remembered under each loop's exact points, from one call
+    of a loop rule to the next (*memo*, a dict a caller keeps per graph and
+    mask: ``assemble.consolidate_lumen``'s). The measures read only the points
+    and the mask, so a loop the last call measured is not measured again;
+    each call keeps only the loops it asked about. The clean-up calls each
+    loop rule nine times on graphs that change in a few places, and measuring
+    every loop again was ~half of each call (29_2_f contra, 2026-10-20)."""
+
+    def __init__(self, memo: dict | None, kind: str, measure: Callable[[np.ndarray], Any]):
+        self._memo, self._kind, self._measure = memo, kind, measure
+        self._before = memo.get(kind, {}) if memo is not None else {}
+        self._now: dict = {}
+
+    def __call__(self, loop_um: np.ndarray) -> Any:
+        if self._memo is None:
+            return self._measure(loop_um)
+        key = np.ascontiguousarray(loop_um, dtype=float).tobytes()
+        if key in self._now:
+            return self._now[key]
+        value = self._before[key] if key in self._before else self._measure(loop_um)
+        self._now[key] = value
+        return value
+
+    def keep(self) -> None:
+        if self._memo is not None:
+            self._memo[self._kind] = self._now
+
+
 class _Pairs:
     """The graph as one weighted edge per node pair -- its shortest -- for
     SciPy's Dijkstra, kept in step as edges are taken out."""
@@ -454,6 +484,7 @@ def remove_loops_inside_one_lumen(
     *,
     search_um: float = LOOP_SEARCH_UM,
     along_centreline: Callable[[np.ndarray], float] | None = None,
+    memo: dict | None = None,
 ) -> nx.MultiGraph:
     """Break, in place, every loop of *G* lying inside one lumen of
     *support*'s mask (:func:`loop_inside_one_lumen`).
@@ -464,10 +495,12 @@ def remove_loops_inside_one_lumen(
     once, and no spur is left hanging. A loop only one place meets goes
     whole. Runs until no loop inside a lumen is left; a loop round tissue,
     however short, stays. *along_centreline*: see :func:`_removal_order`; a
-    loop whose side would be a vessel beside a thick one stays too.
+    loop whose side would be a vessel beside a thick one stays too. *memo*:
+    see :class:`_LoopMeasures`.
     """
     if G.number_of_edges() == 0:
         return G
+    inside_one_lumen = _LoopMeasures(memo, "inside_one_lumen", lambda loop: loop_inside_one_lumen(loop, support))
     removed: list[float] = []
     # Loops left as they are: round tissue, or through a vessel beside a
     # thick one. Every edge of one finds it again, pass after pass.
@@ -486,7 +519,7 @@ def remove_loops_inside_one_lumen(
             signature = frozenset((a, b, key) if str(a) <= str(b) else (b, a, key) for a, b, key in cycle)
             if signature in round_tissue:
                 continue
-            if not loop_inside_one_lumen(_polyline(G, cycle), support):
+            if not inside_one_lumen(_polyline(G, cycle)):
                 round_tissue.add(signature)
                 continue
             lengths = {(a, b, key): _length(G.edges[a, b, key]) for a, b, key in cycle}
@@ -502,6 +535,7 @@ def remove_loops_inside_one_lumen(
                 else:
                     pairs.set_weight(a, b, _UNUSABLE)
             changed = True
+    inside_one_lumen.keep()
     if left_beside:
         logger.info(
             "Left %d loop(s) inside one lumen whose side would have been a vessel beside a thick one",
@@ -547,6 +581,7 @@ def remove_short_loops(
     max_length_um: float = DEFAULT_SHORT_LOOP_UM,
     keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
     along_centreline: Callable[[np.ndarray], float] | None = None,
+    memo: dict | None = None,
 ) -> nx.MultiGraph:
     """Break, in place, every loop of *G* up to *max_length_um* round, as
     :func:`remove_loops_inside_one_lumen` breaks a loop inside one lumen --
@@ -568,10 +603,12 @@ def remove_short_loops(
     with its neighbour into a longer loop that was broken in turn. Those
     loops are left to the Short loops review list. 0 for *max_length_um*
     turns the rule off; 0 for *keep_hole_over_um* breaks every short loop.
-    *along_centreline*: see :func:`_removal_order`.
+    *along_centreline*: see :func:`_removal_order`. *memo*: see
+    :class:`_LoopMeasures`.
     """
     if G.number_of_edges() == 0 or not max_length_um > 0:
         return G
+    hole_um = _LoopMeasures(memo, "hole_um", lambda loop: loop_hole_um(loop, support))
     removed: list[float] = []
     # Whether each loop, by its edges, is left alone -- round a wide hole, or
     # its side a vessel beside a thick one: every edge of a loop left alone
@@ -603,7 +640,7 @@ def remove_short_loops(
             signature = frozenset((a, b, key) if str(a) <= str(b) else (b, a, key) for a, b, key in cycle)
             if keep_hole_over_um > 0:
                 if signature not in wide_hole:
-                    hole = loop_hole_um(_polyline(G, cycle), support)
+                    hole = hole_um(_polyline(G, cycle))
                     wide_hole[signature] = hole is not None and hole > keep_hole_over_um
                     kept_for_hole += int(wide_hole[signature])
                 if wide_hole[signature]:
@@ -622,6 +659,7 @@ def remove_short_loops(
                 else:
                     pairs.set_weight(a, b, _UNUSABLE)
             changed = True
+    hole_um.keep()
     if removed or kept_for_hole:
         logger.info(
             "Broke every loop under %.0f um round but those round a hole over %.0f um (grids I, I2, Q, "
