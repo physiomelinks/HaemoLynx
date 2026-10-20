@@ -848,6 +848,13 @@ are only caught locally.
   left the same way (`reclassify_dead_ends`, over the touched nodes alone: a touched node that
   is a dead end no longer loses the classifier's kind, a person's stays). Diagnostics, the
   review lists and the boundary review all classify through it; a fixed `image_face_margin_um` is only a caller's explicit choice.
+  `remove_pieces_without_junction` (Graph tab, off by default, 2026-10-20) removes every piece
+  with no junction at the end of graph building, before the kinds are marked and the graph is
+  saved (`remove_pieces_without_junction`: the chains whose dead ends are `island_end`, any
+  length, anywhere; rings and lone nodes stay; the count and length go on
+  `G.graph["pieces_without_junction_removed"]` / `_um`). Harvey's AIA patella grid P1
+  (`outputs/patella_dead_end_review/`) marked 11 of 14 such pieces specks and 3 real vessel the
+  segmentation cut off, and none of 30 patella dead ends a real blind end.
   The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
   ends inside the tissue: drawn unsolved, grey, while exports keep its 0 -- Harvey, 2026-10-15), `closed_end`
   (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the

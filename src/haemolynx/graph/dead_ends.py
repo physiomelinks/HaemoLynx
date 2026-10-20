@@ -667,6 +667,31 @@ def open_end_nodes(G: nx.Graph, *, extent_um: Optional[Sequence[float]] = None) 
     return [node for node in G.nodes if G.degree(node) == 1 and node_leaves_image(G, node, extent)]
 
 
+def remove_pieces_without_junction(G: nx.MultiGraph) -> dict[str, float]:
+    """Remove every piece of *G* that has no junction, in place: the chains
+    whose dead ends are :data:`ISLAND_END` (a tip whose chain ends at another
+    dead end, not at a junction), whatever their length or where they lie.
+    Rings and lone nodes have no dead end and stay.
+
+    Returns ``{"pieces", "vessels", "nodes", "length_um"}`` removed.
+    """
+    removed: set = set()
+    pieces = vessels = 0
+    length = 0.0
+    for tip in [n for n in G.nodes if G.degree(n) == 1]:
+        if tip in removed:
+            continue
+        nodes, edges = chain_to_junction(G, tip)
+        if G.degree(nodes[-1]) > 1:
+            continue
+        pieces += 1
+        vessels += len(edges)
+        length += chain_length_um(G, edges)
+        removed.update(nodes)
+    G.remove_nodes_from(removed)
+    return {"pieces": pieces, "vessels": vessels, "nodes": len(removed), "length_um": length}
+
+
 def dead_end_census(dead_ends: Mapping[Any, DeadEnd]) -> dict[str, int]:
     """How many dead ends of each kind, every kind listed."""
     counts = Counter(end.kind for end in dead_ends.values())
@@ -707,6 +732,7 @@ __all__ = [
     "open_end_nodes",
     "reclassify_dead_ends",
     "record_image_extent",
+    "remove_pieces_without_junction",
     "set_dead_end_kind",
     "tip_heading",
 ]

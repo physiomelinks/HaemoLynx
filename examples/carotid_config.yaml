@@ -462,6 +462,8 @@ pipeline_stages:
   min_stub_length: 10.0
   # Prune a terminal stub shorter than this many radii of the vessel it branches from, read from the segmented mask: a skeleton spur on a wide vessel is about as long as the vessel is thick, and one fixed length removes those or real short capillary ends, never just the spurs. 0 uses min_stub_length for every stub  [range 0.0..; needs do_graph_building]
   min_stub_length_radius_multiple: 3.0
+  # At the end of graph building, remove every piece of the network with no junction: a vessel on its own, both its ends dead ends (the dead ends counted as ends of pieces without a junction), whatever its length or where it lies. On a speckled segmentation most of these are specks, but some are pieces of real vessel the segmentation cut off, and those go too  [needs do_graph_building]
+  remove_pieces_without_junction: false
   # After the reconnects, trace the segmented vessels the graph does not run through (a capillary the skeleton lost) and join each to the network through the mask, where one of its ends reaches it. No effect without the segmented mask  [needs do_graph_building]
   recover_uncovered_mask_vessels: true
   # Recover only uncovered mask regions at least this large: smaller ones are segmentation specks, not vessels  [um3; range 0.0..; needs do_graph_building and recover_uncovered_mask_vessels]
