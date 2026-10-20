@@ -43,7 +43,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 import networkx as nx
 import numpy as np
 
-from ._helpers import densify_polyline, edge_id, edge_sample_points
+from ._helpers import densify_polyline, edge_id, edge_sample_points, points_within
 
 LEAVES_IMAGE = "leaves_image"
 ISLAND_END = "island_end"
@@ -387,8 +387,7 @@ def _beside_share(path: np.ndarray, own: set, centrelines: _Centrelines, support
     if centrelines.tree is None or len(path) < 2:
         return None
     reach = 2.0 * float(np.max(support.radius(path))) + 1.0
-    found = centrelines.tree.query_ball_point(path, r=reach)
-    near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in np.atleast_1d(found)])) if len(found) else np.empty(0, dtype=np.intp)
+    near = points_within(centrelines.tree, path, reach)
     near = near[~np.isin(centrelines.owners[near], list(own))] if len(near) else near
     if not len(near):
         return 0.0

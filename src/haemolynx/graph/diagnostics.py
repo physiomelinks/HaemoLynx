@@ -372,7 +372,7 @@ def diagnose_parallel_duplicates_in_lumen(
     )
     from scipy.spatial import cKDTree
 
-    from ._helpers import EdgeSampleIndex, edge_id, edge_sample_points
+    from ._helpers import EdgeSampleIndex, edge_id, edge_sample_points, points_within
 
     if mask_support is None:
         mask_support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
@@ -424,8 +424,7 @@ def diagnose_parallel_duplicates_in_lumen(
                     pairs.add(tuple(sorted((edges[own], partner), key=str)))
                 kept[signature] = (path, reach, partner_signature)
                 continue
-        found = index.tree.query_ball_point(path, r=reach)
-        near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
+        near = points_within(index.tree, path, reach)
         near = near[owners[near] != own]
         partner_signature = None
         if len(near):
@@ -506,8 +505,9 @@ class _CentrelineNeighbours:
     def other_points_near(self, points: np.ndarray, own: Any, reach: float) -> np.ndarray:
         if self.index.tree is None:
             return np.empty(0, dtype=np.intp)
-        found = self.index.tree.query_ball_point(points, r=reach)
-        near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in np.atleast_1d(found)]))
+        from ._helpers import points_within
+
+        near = points_within(self.index.tree, points, reach)
         return near[self.owners[near] != own] if own is not None else near
 
     def beside(self, u: Any, v: Any, key: Any, data: dict):

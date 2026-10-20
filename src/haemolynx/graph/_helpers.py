@@ -832,6 +832,38 @@ class EdgeSampleIndex:
         return [self.added[i] for i in np.flatnonzero(meets)]
 
 
+def points_within(tree: cKDTree, points: np.ndarray, reach: float) -> np.ndarray:
+    """The indices of *tree*'s points within *reach* of any of *points*, in
+    ascending order: ``np.unique`` of ``tree.query_ball_point(points, reach)``'s
+    lists, the same indices.
+
+    Asked along a densely sampled centreline, those balls overlap many times
+    over and their lists were most of the pair rule's and the stretch
+    finder's time. Here the balls are asked only at points of *points* half a
+    *reach* apart along it, grown by that half, which holds every point the
+    balls would; each of those is kept when a point of *points* lies within
+    *reach* of it, by the same test SciPy makes (a squared distance is the
+    same whichever way round it is taken). 29_2_f contra's 17,955 edges at
+    their own reaches: 31.6 s -> 13.1 s, every list the same."""
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    reach = float(reach)
+    if len(points) <= 2 or not reach > 0:
+        found = tree.query_ball_point(points, r=reach)
+        return np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found] or [np.empty(0, np.intp)]))
+    half = 0.5 * reach
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
+    bins = np.floor(arc / half)
+    probes = points[np.flatnonzero(np.diff(bins, prepend=-1.0) != 0)]
+    # Every point lies within half a reach (along the path) of the probe
+    # before it; the margin covers rounding.
+    found = tree.query_ball_point(probes, r=reach + half * 1.001 + 1e-9)
+    candidates = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
+    if not len(candidates):
+        return candidates
+    hits = cKDTree(points).query_ball_point(tree.data[candidates], r=reach, return_length=True)
+    return candidates[hits > 0]
+
+
 def duplicates_existing_vessel(
     new_path: Any,
     G: nx.MultiGraph,

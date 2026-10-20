@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from haemolynx.graph import (
     diagnose_parallel_duplicates_in_lumen,
@@ -259,3 +260,82 @@ def test_an_edge_added_beside_a_remembered_one_is_judged_with_it():
     assert report == diagnose_parallel_duplicates_in_lumen(G, mask)
     added = (7.0, 6.0, 2.0)
     assert any(added in edge[:2] for pair in report["duplicate_pairs"] for edge in pair)
+
+
+# --- points_within: the index points a centreline's reach covers -------------
+
+
+def _ball_union(tree, points, reach):
+    """What the pair rule and the stretch finder computed before points_within."""
+    from scipy.spatial import cKDTree  # noqa: F401
+
+    found = tree.query_ball_point(points, r=reach)
+    return np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
+
+
+def _wiggly_path(rng, n, step):
+    turns = rng.normal(size=(n, 3))
+    turns /= np.linalg.norm(turns, axis=1, keepdims=True)
+    return np.cumsum(turns * step, axis=0)
+
+
+@pytest.mark.parametrize("seed", range(5))
+@pytest.mark.parametrize("reach", [0.7, 3.0, 12.5, 40.0])
+def test_points_within_finds_exactly_the_points_the_ball_queries_do(seed, reach):
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph._helpers import points_within
+
+    rng = np.random.default_rng(seed)
+    cloud = rng.uniform(-30, 60, size=(4000, 3))
+    tree = cKDTree(cloud)
+    for n, step in ((300, 0.5), (40, 2.0), (3, 7.0), (2, 1.0), (1, 1.0)):
+        path = _wiggly_path(rng, n, step)
+        found = points_within(tree, path, reach)
+        expected = _ball_union(tree, path, reach)
+        assert found.dtype == expected.dtype
+        assert np.array_equal(found, expected)
+
+
+def test_points_within_keeps_a_point_exactly_at_the_reach_as_the_ball_query_does():
+    """A point at exactly the reach is in a ball (SciPy's test is <=); one a
+    hair further is not, whichever side of the path it lies."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph._helpers import points_within
+
+    path = np.stack([np.linspace(0.0, 20.0, 41), np.zeros(41), np.zeros(41)], axis=1)
+    reach = 1.5
+    cloud = np.array([
+        [10.0, reach, 0.0],
+        [10.0, -reach, 0.0],
+        [10.0, 0.0, np.nextafter(reach, 2.0)],
+        [20.0 + reach, 0.0, 0.0],
+        [-np.nextafter(reach, 2.0), 0.0, 0.0],
+        [5.25, 0.6, 0.8],
+    ])
+    tree = cKDTree(cloud)
+    found = points_within(tree, path, reach)
+    assert np.array_equal(found, _ball_union(tree, path, reach))
+    assert found.tolist() == [0, 1, 3, 5]
+
+
+def test_points_within_on_a_real_shape_of_index_matches_the_ball_queries():
+    """An edge sample index (every centreline every micron) asked along each
+    of its own edges at a lumen-like reach, as the pair rule asks it."""
+    from haemolynx.graph._helpers import EdgeSampleIndex, edge_sample_points, points_within
+
+    G = nx.MultiGraph()
+    rng = np.random.default_rng(3)
+    for i in range(12):
+        start = rng.uniform(0, 40, 3)
+        path = start + _wiggly_path(rng, 30, 1.3)
+        G.add_node(2 * i, pos=tuple(path[0]))
+        G.add_node(2 * i + 1, pos=tuple(path[-1]))
+        G.add_edge(2 * i, 2 * i + 1, voxels=path.tolist())
+    index = EdgeSampleIndex(G)
+    pos = {n: np.asarray(d["pos"]) for n, d in G.nodes(data=True)}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        path = edge_sample_points(u, v, data, pos)
+        for reach in (2.0, 9.0):
+            assert np.array_equal(points_within(index.tree, path, reach), _ball_union(index.tree, path, reach))
