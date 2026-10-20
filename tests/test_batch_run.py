@@ -519,3 +519,94 @@ def test_the_command_line_pairs_animals_by_the_median_of_their_images(tmp_path, 
 
     with pytest.raises(SystemExit):  # argparse knows the three ways to combine
         main(argv[:-3] + ["--paired-aggregate", "sum", "--compare-only"])
+
+
+def _statistics_with_dead_ends(path: Path, length: float, degree: float, dead_ends: float) -> None:
+    from haemolynx.statistics import export_statistics_to_csv
+
+    export_statistics_to_csv(
+        {
+            "Total Edge Length (microns)": length,
+            "Average Degree": degree,
+            "Dead Ends": {"Dead Ends": dead_ends},
+        },
+        path,
+    )
+
+
+def test_the_command_line_leaves_a_section_out_of_the_comparison(tmp_path, schema, monkeypatch, capsys):
+    from haemolynx.pipeline.provenance import write_settings_yaml
+
+    calls = []
+    monkeypatch.setattr(batch_run, "run_image", _fake_run(calls))
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    out = tmp_path / "out"
+    # Length and dead ends part WT from KO (p = 0.1 at 3 against 3); degree has
+    # one pair crossed (p = 0.2).
+    for stem, length, degree in (
+        ("WT_1", 1.0, 1.0), ("WT_2", 2.0, 2.0), ("WT_3", 3.0, 4.0),
+        ("KO_1", 4.0, 3.0), ("KO_2", 5.0, 5.0), ("KO_3", 6.0, 6.0),
+    ):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+        _statistics_with_dead_ends(out / stem / f"{stem}_statistics.csv", length, degree, length)
+    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    argv = [
+        "--config", str(config), "--segmented", str(folder), "--output", str(out),
+        "--condition-a", "WT", "--condition-b", "KO", "--compare-only",
+    ]
+
+    def q_values():
+        return {
+            row["Metric"]: float(row["Q (Benjamini-Hochberg)"])
+            for row in _summary_rows(out / "batch_condition_comparison.csv")
+        }
+
+    assert main(argv) == 0
+    assert "3 metrics tested" in capsys.readouterr().out
+    # m = 3, p .1 .1 .2: q = .1 * 3 / 2 for length and dead ends.
+    assert q_values() == pytest.approx({"Total Edge Length": 0.15, "Dead Ends": 0.15, "Average Degree": 0.2})
+
+    assert main(argv + ["--exclude-section", "Dead Ends", "--exclude-section", "Loops"]) == 0
+    printed = capsys.readouterr().out
+    assert "left out: Dead Ends (1 metric)" in printed
+    assert "no section named Loops" in printed
+    assert "2 metrics tested" in printed
+    # m = 2, p .1 .2: q = .2 for both.
+    assert q_values() == pytest.approx({"Total Edge Length": 0.2, "Average Degree": 0.2})
+    for name in ("batch_statistics_by_image.csv", "batch_statistics_summary.csv"):
+        with (out / name).open(encoding="utf-8") as handle:
+            assert not any(row[0] == "Dead Ends" for row in csv.reader(handle)), name
+    assert calls == []
+
+
+def test_a_batch_leaves_its_sections_out_and_records_them(tmp_path, schema, monkeypatch):
+    from haemolynx.statistics.batch_comparison import BatchConditions
+
+    def run_image(values, schema, *, progress=None, check_cancelled=None, haemorun=None):
+        stem = Path(values["input_path"]).stem
+        haemorun.parent.mkdir(parents=True, exist_ok=True)
+        haemorun.write_bytes(b"run")
+        number = float(stem[-1])
+        _statistics_with_dead_ends(haemorun.parent / f"{stem}_statistics.csv", number, number, number)
+        G = nx.MultiGraph()
+        G.add_edge(0, 1)
+        return G
+
+    monkeypatch.setattr(batch_run, "run_image", run_image)
+    folders, matches = _batch(tmp_path, "WT_1", "WT_2", "KO_3", "KO_4")
+    out = tmp_path / "out"
+    summary = run_batch(
+        _values(schema, tmp_path),
+        schema,
+        matches,
+        out,
+        folders=folders,
+        conditions=BatchConditions.from_text("WT", "KO"),
+        exclude_sections=("Dead Ends",),
+    )
+    assert summary.statistics.excluded == {"Dead Ends": 1}
+    comparison = _summary_rows(out / "batch_condition_comparison.csv")
+    assert [row["Section"] for row in comparison] == ["Core Statistics", "Core Statistics"]
+    settings_file = (out / "batch_settings.yaml").read_text(encoding="utf-8")
+    assert "# batch_exclude_sections: Dead Ends" in settings_file

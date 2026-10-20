@@ -1478,7 +1478,7 @@ are only caught locally.
   recorded and the batch goes on, `batch_summary.csv` is rewritten after every image,
   `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
   haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
-  [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE] [--paired-aggregate none|median|mean]]] [--compare-only]`;
+  [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE] [--paired-aggregate none|median|mean]]] [--exclude-section S ...] [--compare-only]`;
   every image passes its checks or nothing runs. Its log lines carry the time
   (`configure_console_logging(timestamps=True)`), so each step's time reads off a batch log.
   **Conditions and the batch's statistics** (2026-10-19, `statistics/batch_comparison.py`): up
@@ -1519,6 +1519,17 @@ are only caught locally.
   differences dropped) with Benjamini-Hochberg q, W+, the smallest p it can reach (2 / 2^n: 0.5
   at 2 pairs, so nothing reaches 0.05 below 6), the matched-pairs rank-biserial r, and the paired
   t with Cohen's dz. The summary still covers every image of each condition.
+  **Sections left out** (2026-10-20): `--exclude-section "Dead Ends"` (repeatable or
+  comma-separated; `write_batch_statistics(exclude_sections=)`, `run_batch` / `write_statistics`'s
+  keyword, `BatchSetup.exclude_sections`, the window's "Leave out sections" row) drops those
+  sections and their subsections (`Strahler Network` takes `Strahler Network > Orders > 1`;
+  ignoring case, `excluded_section`) from all three CSVs before anything is summarised or
+  tested, so the Benjamini-Hochberg q is over the metrics left; a name matching no section is
+  said in the message, and a batch records them in `batch_settings.yaml`
+  (`# batch_exclude_sections:`). For Harvey's AIA contra/ipsi batch, whose patella dead ends are
+  segmentation fragments (his P1 marks: none a real blind end): rebuilt from its per-image CSVs
+  with `exclude_sections="Dead Ends"` it gives `outputs/aia_all8`'s hand-edited CSVs byte for
+  byte, and without it the originals in `with_dead_ends/`.
   In the panel: the Input tab's Batch run button (above the Input row) opens
   `_widget.py`'s `_BatchRunWindow` (folders, the matched table with ticks and tie choices,
   Check, Use this batch, Leave batch run; double-click a finished row to load its

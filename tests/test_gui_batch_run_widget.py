@@ -301,3 +301,35 @@ def test_the_window_combines_a_subjects_images_by_their_median(panel, tmp_path):
     window.aggregate.setCurrentIndex(window.aggregate.findData("none"))
     batch.open()
     assert window.aggregate.currentData() == "median"
+
+
+def test_sections_typed_in_the_window_are_left_out_of_compare_and_the_batch(panel, tmp_path):
+    from haemolynx.statistics import export_statistics_to_csv
+
+    batch = panel._haemolynx_batch
+    _images(tmp_path / "seg", "WT_1", "WT_2", "KO_1", "KO_2")
+    batch.open()
+    window = batch.window[0]
+    assert window.exclude_sections.toolTip().strip()
+    window.fields["segmented"].setText(str(tmp_path / "seg"))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    assert window.match()
+    window.condition_fields["condition_a"].setText("WT")
+    window.condition_fields["condition_b"].setText("KO")
+    window.exclude_sections.setText("dead ends, ")
+    for stem, length in (("WT_1", 1.0), ("WT_2", 2.0), ("KO_1", 5.0), ("KO_2", 6.0)):
+        export_statistics_to_csv(
+            {"Total Edge Length (microns)": length, "Dead Ends": {"Dead Ends": length}},
+            tmp_path / "out" / stem / f"{stem}_statistics.csv",
+        )
+    window.compare()
+    text = (tmp_path / "out" / "batch_condition_comparison.csv").read_text(encoding="utf-8")
+    assert "Total Edge Length" in text and "Dead Ends" not in text
+    assert "left out: dead ends (1 metric)" in window.status.text()
+
+    window.use()
+    assert batch.mode.setup.exclude_sections == ("dead ends",)
+    # Reopened, the window shows the batch's sections.
+    window.exclude_sections.setText("")
+    batch.open()
+    assert window.exclude_sections.text() == "dead ends"

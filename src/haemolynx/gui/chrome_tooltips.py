@@ -444,6 +444,11 @@ BATCH_RUN_TOOLTIPS = {
         "median or mean, and those are paired. batch_condition_pairs.csv lists "
         "the images in each subject's value"
     ),
+    "exclude_sections": (
+        "Statistics sections, comma-separated, left out of the batch statistics and "
+        "the comparison (with their subsections, ignoring case), so the "
+        "Benjamini-Hochberg q-values are over the statistics left; e.g. Dead Ends"
+    ),
     "compare": (
         "Write the batch statistics from the ticked images already run in the "
         "output folder, by the conditions as they are now, without running anything"
