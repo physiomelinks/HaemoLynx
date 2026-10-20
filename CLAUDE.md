@@ -27,7 +27,9 @@ haemolynx/
 │   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement;
 │   │                       #   thick_vessels.py (thickness-gated skeletonisation of fat
 │   │                       #   vessels) + thick_vessel_braid_guard.py + thick_vessel_region_cache.py
-│   │                       #   (the region, kept beside the skeleton between runs); segmentation_cleanup.py
+│   │                       #   (the region, kept beside the skeleton between runs) +
+│   │                       #   thick_vessel_tree.py (the large-stack centreline tree, a low-RAM
+│   │                       #   toggle: no per-voxel graph, no arm cap); segmentation_cleanup.py
 │   │                       #   (pre-skeleton mask cleanup), segmentation_quality.py and
 │   │                       #   segmentation_raw_comparison.py ("Check segmented image");
 │   │                       #   raw_stain.py (whether the raw image stains the lumen or
@@ -339,7 +341,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | Change area | Typical test location |
 |-------------|----------------------|
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties) |
-| `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
+| `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_tree.py` (the large-stack tree and the join's bounded last resort; digests of the in-RAM skeleton), `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
@@ -563,7 +565,7 @@ are only caught locally.
   a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
   pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
   settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds
-  (`CONSOLIDATION_MAX_ROUNDS` is 12): pairs in one lumen 124 -> 9 (all kept by the guard), loops
+  (`lumen_cleanup_max_rounds`, 12 by default, `CONSOLIDATION_MAX_ROUNDS`): pairs in one lumen 124 -> 9 (all kept by the guard), loops
   inside one lumen 12 -> 0, at a cost of 1.9 points of mask coverage and ~35 s. A round after
   the first re-judges only what changed: the pair check keeps each edge's verdict between rounds
   (`diagnose_parallel_duplicates_in_lumen(memo=)`; an edge is judged again only when it, or a
@@ -720,9 +722,16 @@ are only caught locally.
   paging file) and are at most `shared_volume_tasks.default_worker_count()`. The lumen radius
   reads tiles of the surface (`FeatureDistance(by_block=True)`, through
   `MaskSupport(low_memory=)` and `mask_radius_sampler(low_memory=)`: a k-d tree per 96-voxel
-  tile, made when a query first needs it, least recently used dropped past 256 MB, searched ring
+  tile, made when a query first needs it, least recently used dropped past 256 MB or, when
+  memory is free, past a quarter of it shared by every such lookup alive
+  (`SURFACE_TILE_MEMORY_FRACTION`, read again each 64 MB: 256 MB alone held a tenth of the
+  uncropped patella's 2.4 GB of tiles and mask recovery remade tiles all step), searched ring
   by ring until the best is no further than the nearest voxel unsearched) instead of one tree
-  over the whole surface (~69 B a surface voxel, 7-9 GB). Skeletonisation hands on the thick
+  over the whole surface (~69 B a surface voxel, 7-9 GB). A tile is made from the packed bits
+  a byte at a time (`PackedMask.box`), its surface by a separable 3x3x3 dilation
+  (`pointwise_distance._dilate_box`, scipy's own answer) and its tree unbalanced and
+  uncompacted (twice as fast to build and query; the tree only narrows candidates, so the same
+  distances). Skeletonisation hands on the thick
   tree it drew as its voxels (`SkeletonisedVolume.thick_vessel_centreline`,
   `thick_vessel_centreline_voxels`, `edt_ridge_voxels`), which the split, `ThickCentreline` and
   post-processing take in place of a volume of it, so `build_network` neither redraws it (a
@@ -734,8 +743,12 @@ are only caught locally.
   `skeleton._SlabComponents` for the fraction filter, the connectivity stats, both
   small-component drops, the bridging and `skeletonize_by_component` (each component's mask
   written as the slabs pass its box and thinned once its last plane is read). The thin-arm join
-  looks component numbers up at the skeleton's voxels only, int32, and a bridge's voxel from its
-  slab labelled again as it was (`slab_labels.NumbersAnywhere`); it held 16 B a fat voxel, twice.
+  looks component numbers up at the skeleton's voxels only, int32; a bridge's new fat voxels take
+  theirs along the bridge drawn (two 26-adjacent voxels of one mask share its component:
+  `thick_vessels._numbers_carried_along`, from the arm voxel it starts at and the tree voxel it
+  stopped against), and only a voxel neither reaches is read from its slab labelled again as it
+  was (`slab_labels.NumbersAnywhere`; read voxel by voxel, those reads were four fifths of the
+  patella's join, 2026-10-20). It held 16 B a fat voxel, twice.
   Every `label` of a whole vessel or pericyte mask is `slab_labels.ForegroundLabels` (each
   foreground voxel's key and int32 number, 12 B a foreground voxel, numbered as `label` numbers;
   scipy's own volume is 8 B a voxel from 2**31 voxels): the volume filter, the minority swap,
@@ -784,7 +797,26 @@ are only caught locally.
   the volume's corner, and so does this; and segmentation cleanup's reconnect labels its
   components a slab at a time (`ForegroundLabels`, read by boxes) instead of an int32 label
   file. Identical to `a82c7e9` on random fixtures (`outputs/lvc/continuity_check.py`,
-  `union_check.py`). FOLLOWUP_PEAKS_PLACEHOLDER
+  `union_check.py`). The small-mask progressive dilation and the hand-edit tags read their
+  distances from the surface's tiles too (`_distances_to_mask_microns(low_memory=)`). Peaks,
+  `b6c602a` -> `3bdb785`, on the same 120 M-voxel stack (`outputs/lvc/peaks2.py`, traced numpy,
+  the same answers): continuity (on 40 M voxels of it) 2,712 MB and 62 s -> 207 MB and 6.4 s; a
+  2 um dilation 5,608 MB and 33 s -> 580 MB and 20 s (only voxels with mask inside the reach's
+  box are measured); the union's 1 B a voxel goes to disk; the reconnect's label file (4 B a
+  voxel: 744 -> 515 MB of temp files) is gone, its RAM peak unchanged at 2.0 GB -- the blockwise
+  EDT's block, whose float64 transform is still a file (8 B a voxel). E14.5 low-RAM, a `git
+  archive` of `b6c602a` against it with `3bdb785`'s changes (`outputs/lvc/e14b/`, git-ignored,
+  stopped after the boundaries, the small masks `make_masks.py`'s stand-ins): four runs reaching
+  every one of these steps but the hand-edit tags -- A the cleanup's reconnect (12 bridges), the
+  thick restriction over all four masks and a 2 um dilation on load; B a global small mask (the
+  large pair read as their union); C the cut, the confidence assignment, the redefinition (5
+  pieces moved) and continuity (0 of 11 bridges); D the cut, the legacy progressive dilation
+  and continuity (4 of 77 bridges) -- gave the skeleton, the thick region, the built graph,
+  every mask after the boundaries, every boundary list and the graph after them identical, node
+  for node, edge for edge, every attribute (A stops in both at the large venule mask's missing
+  stump). Private peaks: the boundaries 7.2 -> 2.1 GB (C) and 7.4 -> 2.3 GB (D); skeletonise,
+  which loads the dilated large masks for the restriction, 5.0 -> 1.8 GB (B, C); build_network
+  unchanged (2.9-3.2 GB). Times not compared: a shared machine.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the
@@ -1160,7 +1192,41 @@ are only caught locally.
   labels the background a slab of planes at a time (`skeleton._fill_binary_holes_by_slab`, no label
   volume), and the catchment's blocks run in worker processes (`blockwise_edt.near_blocks`, sized by
   `parallel_plan` from cores and free memory): catchment 90 -> 51 s and Lee step 72 -> 35 s on that
-  stack with 14 workers, 7.5 GB with theirs counted. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
+  stack with 14 workers, 7.5 GB with theirs counted. **The large-stack tree**
+  (`skeleton_thick_vessel_large_stack_tree`, off by default, under the low-RAM option only;
+  `preprocessing/thick_vessel_tree.py`, 2026-10-19) is for a fat region that is one network
+  crossing the stack -- Harvey's patella at a 3 um gate, 111 M of its 144 M fat voxels in one
+  component, ~40 GB of that CSR. Each component's tree is built as `_component_tree` builds it
+  (root and far end, arms farthest first, the same tests), from shortest paths found over the
+  voxels themselves (`shortest_path_parents`: bucketed label-correcting, neighbours three to a
+  row by searchsorted on the sorted keys, a distance and a parent a voxel kept -- scipy's
+  distances bit for bit, ties to the lower voxel number, so a route of exactly equal cost can
+  step a voxel aside), the farthest candidate from cells re-measured only near what the tree
+  gained (`_FarthestCandidates`), and no arm cap. A component of at most
+  `EXACT_TREE_MAX_VOXELS` (4 M) keeps scipy's walk, so its tree is the in-RAM one bar the cap
+  (`tests/test_thick_vessel_tree.py`, with digests of the in-RAM skeleton from 4c96e9c5); the
+  voxels are grouped by component in one array filled as the slabs are labelled, the radius
+  read along `distances_at_points`' own block rows on up to 4 threads, small components on
+  threads, and the join's last resort bounded (`_bounded_structure_path`: a box round the
+  arm's ends, 41 voxels padding doubling, at most 64 M box voxels and 2 M searched; an arm
+  with no path is left unjoined and logged). E14.5 (Harvey's settings) with it: thick region,
+  tree and skeleton bit for bit the in-RAM ones. Patella tree step (1312 s at `1d9bf1ab`, its
+  region read back): labelling 120 s, 5,644 small components 330 s, the big one's radius
+  119 s, its shortest paths 740 s (~6.6 us a voxel; threads gave nothing there), arms 8 s;
+  peak 22.2 GB commit, 9.7 GB above the region and skeleton buffer (6 GB unthreaded), during the radius
+  (four block transforms and the domain's surface tree at once). The whole
+  `skeletonize_thickness_gated` under it (`e375545b`, region read back, skeleton on disk,
+  2026-10-20): Lee 343 s, tree 1,079 s, the thin-arm join 2,383 s for 43,254 arms (5,800
+  joined, 4,215 past the cap, 33,239 with no fat in their structure, 41 left unjoined by the
+  bounded search), 4,031 s in all at 10.25 GB peak commit; the join's own parts are in its
+  closing log line (paths 907 s, the nearest-fat tree rebuilt per bridge 552 s, the cap's radius
+  465 s, the bounded search 360 s). Before the bridge numbers were carried it ran 5.6 arms/s
+  against 20. **It draws the same arms,
+  so it does not keep a network's narrower vessels**: arms aim only at voxels of at least 0.4
+  of the component's widest radius, so the patella's 111 M-voxel component got its main path
+  and 2 arms (263,706 tree voxels in all; 68% of fat voxels over 20 um from the tree, against
+  3.5% on E14.5), and the fat voxels no arm reaches are not handed to Lee. What to do there
+  (hand them back, or aim arms by local radius) waits on Harvey and a marked grid. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
   wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
   (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
   digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
@@ -1388,7 +1454,8 @@ are only caught locally.
   `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
   haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
   [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE] [--paired-aggregate none|median|mean]]] [--compare-only]`;
-  every image passes its checks or nothing runs.
+  every image passes its checks or nothing runs. Its log lines carry the time
+  (`configure_console_logging(timestamps=True)`), so each step's time reads off a batch log.
   **Conditions and the batch's statistics** (2026-10-19, `statistics/batch_comparison.py`): up
   to two conditions, each one or more phrases (comma-separated) a file name holds, ignoring case
   (`BatchConditions`: an image in both or neither is left out of the test; two conditions alike

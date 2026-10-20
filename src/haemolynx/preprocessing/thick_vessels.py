@@ -280,6 +280,33 @@ def _touches_tree(tree: np.ndarray, voxel: tuple[int, int, int]) -> bool:
     return bool(tree[z0:z1, y0:y1, x0:x1].any())
 
 
+def _numbers_carried_along(
+    path: list[tuple[int, int, int]],
+    inside,
+    first: int,
+    number: int,
+    step: int,
+) -> dict[tuple[int, int, int], int]:
+    """The component number of each voxel of *path* reached from
+    ``path[first]`` (numbered *number*) by stepping *step* (+1 or -1) along it
+    through 26-adjacent voxels all *inside* the mask: two 26-adjacent voxels
+    of a mask labelled with the full structure lie in one component of it.
+    Stops at the first voxel outside, or a step that is not to a neighbour."""
+    out: dict[tuple[int, int, int], int] = {}
+    previous = None
+    i = int(first)
+    while 0 <= i < len(path):
+        voxel = path[i]
+        if not inside[voxel]:
+            break
+        if previous is not None and max(abs(a - b) for a, b in zip(voxel, previous)) > 1:
+            break
+        out[voxel] = int(number)
+        previous = voxel
+        i += int(step)
+    return out
+
+
 def inscribed_radius_map(
     binary: np.ndarray,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
@@ -1616,6 +1643,17 @@ def _component_tree(
     return coords[in_tree]
 
 
+#: The large-stack setting's bounded last resort for the thin-arm join
+#: (:func:`_join_thin_arms_to_fat_ridge`'s *bounded_fallback*): the box round
+#: an arm's two ends is padded by this much at first -- past the widest
+#: corridor :func:`_path_through_mask` tried -- then twice as much, while it
+#: holds at most ``_BOUNDED_FALLBACK_MAX_BOX_VOXELS`` voxels (a byte and a
+#: label each) and the part of the structure joined to the arm in it at most
+#: ``_BOUNDED_FALLBACK_MAX_VOXELS`` (about 360 bytes each in the search graph).
+_BOUNDED_FALLBACK_MIN_PAD_VOXELS = 41
+_BOUNDED_FALLBACK_MAX_BOX_VOXELS = 64_000_000
+_BOUNDED_FALLBACK_MAX_VOXELS = 2_000_000
+
 #: 26-connected, matching every other label() call in this module. The
 #: default (6-connected, face-only) can split a solid fat blob that is only
 #: diagonally connected at a jagged mask boundary into two "components",
@@ -1631,6 +1669,7 @@ def skeletonize_edt_ridge(
     voxel_size_zyx: tuple[float, float, float] | None = None,
     *,
     use_memmap: bool = False,
+    large_stack_tree: bool = False,
 ) -> np.ndarray:
     """Centreline tree per connected component: every fat arm, not a medial sheet.
 
@@ -1643,12 +1682,19 @@ def skeletonize_edt_ridge(
     :func:`_join_thin_arms_to_fat_ridge`'s local radius) -- a block at a
     time when that box is large, instead of a distance transform and int32
     labels over the whole region's box. Same tree.
+
+    *large_stack_tree*, under *use_memmap*, draws each component's tree with
+    :mod:`.thick_vessel_tree` (``skeleton_thick_vessel_large_stack_tree``):
+    no per-voxel graph and no arm cap, so a fat network crossing a stack
+    fits in memory. The same tree for a component of up to
+    ``thick_vessel_tree.EXACT_TREE_MAX_VOXELS`` voxels (bar the cap); a
+    larger one may take another route of exactly the same cost.
     """
     relative = _relative_spacing(voxel_size_zyx)
     mask = np.asarray(binary, dtype=bool)
     result = np.zeros(mask.shape, dtype=bool)
     if mask.any():
-        _edt_ridge_into(result, mask, relative, low_ram=use_memmap)
+        _edt_ridge_into(result, mask, relative, low_ram=use_memmap, large_stack_tree=large_stack_tree)
     return result
 
 
@@ -1657,13 +1703,21 @@ def edt_ridge_voxels(
     voxel_size_zyx: tuple[float, float, float] | None = None,
     *,
     use_memmap: bool = False,
+    large_stack_tree: bool = False,
 ) -> np.ndarray:
     """:func:`skeletonize_edt_ridge`'s tree as its voxels, ``(n, ndim)`` in
     C order -- ``np.argwhere`` of the tree -- without a volume to draw it in."""
     mask = np.asarray(binary, dtype=bool)
     drawn: list[np.ndarray] = []
     if mask.any():
-        _edt_ridge_into(None, mask, _relative_spacing(voxel_size_zyx), low_ram=use_memmap, drawn=drawn)
+        _edt_ridge_into(
+            None,
+            mask,
+            _relative_spacing(voxel_size_zyx),
+            low_ram=use_memmap,
+            drawn=drawn,
+            large_stack_tree=large_stack_tree,
+        )
     return drawn_voxels(drawn, mask.shape)
 
 
@@ -1693,9 +1747,15 @@ def _edt_ridge_into(
     *,
     low_ram: bool,
     drawn: list[np.ndarray] | None = None,
+    large_stack_tree: bool = False,
 ) -> None:
     """Draw :func:`skeletonize_edt_ridge`'s tree of *mask* into *out* (None:
     nowhere), and add each component's tree voxels to *drawn* when given."""
+    if low_ram and large_stack_tree:
+        from .thick_vessel_tree import edt_ridge_by_component
+
+        edt_ridge_by_component(out, mask, relative, drawn=drawn)
+        return
     if low_ram:
         _edt_ridge_by_component(out, mask, relative, drawn=drawn)
         return
@@ -1869,6 +1929,7 @@ def _path_through_mask(
     allowed: np.ndarray,
     *,
     fallback_graph_fn=None,
+    fallback_path_fn=None,
     relative_spacing: np.ndarray | None = None,
 ) -> list[tuple[int, int, int]]:
     """Geodesic in *allowed* from *start* to *end*, falling back to a straight line.
@@ -1887,6 +1948,11 @@ def _path_through_mask(
     graph per arm (the dominant cost when several arms in one physically
     connected structure all need this fallback), without paying for it at
     all when (as for most arms) a corridor attempt already succeeds.
+
+    *fallback_path_fn*, when given, replaces that last resort: called with
+    *start* and *end*, it returns the path or an empty list (the
+    large-stack setting's bounded search, see
+    :func:`_join_thin_arms_to_fat_ridge`).
     """
     start = tuple(int(v) for v in start)
     end = tuple(int(v) for v in end)
@@ -1947,13 +2013,16 @@ def _path_through_mask(
     # vanishes from the graph the moment anything downstream drops small
     # disconnected components. Fall back to Dijkstra on the whole mask: no
     # crop, so no box to be too tight, at the cost of one full-mask walk.
-    full_path = _geodesic_on_crop(
-        allowed_b,
-        start,
-        end,
-        precomputed_graph=fallback_graph_fn() if fallback_graph_fn is not None else None,
-        relative_spacing=relative,
-    )
+    if fallback_path_fn is not None:
+        full_path = fallback_path_fn(start, end)
+    else:
+        full_path = _geodesic_on_crop(
+            allowed_b,
+            start,
+            end,
+            precomputed_graph=fallback_graph_fn() if fallback_graph_fn is not None else None,
+            relative_spacing=relative,
+        )
     if len(full_path) >= 2:
         return full_path
     logger.warning(
@@ -1964,6 +2033,113 @@ def _path_through_mask(
         end,
     )
     return [start, end]
+
+
+def _bounded_structure_path(
+    allowed: np.ndarray,
+    box: tuple[slice, slice, slice],
+    local_start: tuple[int, int, int],
+    local_end: tuple[int, int, int],
+    relative_spacing: np.ndarray,
+    structure: np.ndarray,
+) -> tuple[list[tuple[int, int, int]], str]:
+    """``(path, why)``: the thin-arm join's last resort under the
+    large-stack setting, from *local_start* to *local_end* (coordinates in
+    *box*, the connected structure's tight box in *allowed*), or ``([],
+    why not)``.
+
+    The geodesic through the part of the structure joined to the start
+    within a box round the two ends, padded by
+    :data:`_BOUNDED_FALLBACK_MIN_PAD_VOXELS` and twice as much each time it
+    holds no path, while the box holds at most
+    :data:`_BOUNDED_FALLBACK_MAX_BOX_VOXELS` voxels and that part of the
+    structure at most :data:`_BOUNDED_FALLBACK_MAX_VOXELS`. Each voxel is
+    costed from its exact distance in the structure's box, as the unbounded
+    last resort costs it, so where the whole structure fits the budgets the
+    path is that one's.
+    """
+    origin = np.array([int(s.start) for s in box], dtype=np.int64)
+    stop = np.array([int(s.stop) for s in box], dtype=np.int64)
+    start_g = np.asarray(local_start, dtype=np.int64) + origin
+    end_g = np.asarray(local_end, dtype=np.int64) + origin
+    pad = _BOUNDED_FALLBACK_MIN_PAD_VOXELS
+    tried = "no box"
+    while True:
+        lo = np.maximum(np.minimum(start_g, end_g) - pad, origin)
+        hi = np.minimum(np.maximum(start_g, end_g) + pad + 1, stop)
+        if int(np.prod(hi - lo)) > _BOUNDED_FALLBACK_MAX_BOX_VOXELS:
+            return [], (
+                f"not joined in {tried}; a box {pad} voxels round the two ends holds "
+                f"more than {_BOUNDED_FALLBACK_MAX_BOX_VOXELS} voxels"
+            )
+        tried = f"a box {pad} voxels round the two ends"
+        window = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+        labels, _n = label(np.asarray(allowed[window], dtype=bool), structure=structure)
+        mine = labels[tuple(start_g - lo)]
+        if mine and labels[tuple(end_g - lo)] == mine:
+            keys = np.flatnonzero(labels.reshape(-1) == mine)
+            del labels
+            if len(keys) > _BOUNDED_FALLBACK_MAX_VOXELS:
+                return [], (
+                    f"joined within {pad} voxels of the two ends through {len(keys)} "
+                    f"voxels, more than {_BOUNDED_FALLBACK_MAX_VOXELS}"
+                )
+            window_shape = tuple(int(v) for v in hi - lo)
+            coords = _coords_of(keys, window_shape)
+            distance = blockwise_edt.distances_at_points(
+                lambda region: allowed[region], box, coords + lo, sampling=relative_spacing
+            )
+            graph = _build_dijkstra_graph_from_coords(
+                coords, window_shape, 1.0 / (np.square(distance) + 1e-6), relative_spacing
+            )
+            here = tuple(int(v) for v in start_g - lo)
+            walked = _dijkstra_parents(None, None, here, precomputed_graph=graph)
+            if walked is not None:
+                parent, fg_coords, index_of = walked
+                path = _traceback(parent, fg_coords, index_of, here, tuple(int(v) for v in end_g - lo))
+                if len(path) >= 2:
+                    return _shift_path(path, tuple(int(v) for v in lo - origin)), ""
+            return [], "no path"
+        del labels
+        if np.all(lo == origin) and np.all(hi == stop):
+            return [], "not joined within the whole structure's box"
+        pad *= 2
+
+
+#: The thin-arm join logs its progress every this many arms (and every 30 s).
+_JOIN_PROGRESS_EVERY = 200
+
+
+class _JoinTimes:
+    """Seconds and calls the thin-arm join spends in each of its parts, and
+    how many arms ended each way, for its closing log line: on the patella
+    (Harvey's batch, 2026-10-19) one stretch of 5,459 arms took 411 s while
+    17,000 more took 20 s, and the log could not say where."""
+
+    def __init__(self):
+        self.seconds: dict[str, float] = {}
+        self.calls: dict[str, int] = {}
+        self.arms: dict[str, int] = {}
+
+    @contextmanager
+    def timing(self, part: str):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.seconds[part] = self.seconds.get(part, 0.0) + time.perf_counter() - start
+            self.calls[part] = self.calls.get(part, 0) + 1
+
+    def arm(self, outcome: str) -> None:
+        self.arms[outcome] = self.arms.get(outcome, 0) + 1
+
+    def summary(self) -> str:
+        arms = ", ".join(f"{n} {k}" for k, n in self.arms.items()) or "none"
+        parts = ", ".join(
+            f"{k} {self.seconds[k]:.1f}s ({self.calls[k]} calls)"
+            for k in sorted(self.seconds, key=lambda k: -self.seconds[k])
+        ) or "nothing timed"
+        return f"arms: {arms}; time in: {parts}"
 
 
 def _join_thin_arms_to_fat_ridge(
@@ -1979,6 +2155,7 @@ def _join_thin_arms_to_fat_ridge(
     arms_reach_extent: bool = False,
     in_place: bool = False,
     use_memmap: bool = False,
+    bounded_fallback: bool = False,
 ) -> np.ndarray:
     """Connect each thin-vessel skeleton that leaves the fat wall to the fat ridge.
 
@@ -2054,6 +2231,17 @@ def _join_thin_arms_to_fat_ridge(
     distance from blocks around the voxels asked about
     (:mod:`.blockwise_edt`) rather than a transform of a whole component's
     box. Same result either way.
+
+    *bounded_fallback* (the large-stack setting, under *use_memmap*) bounds
+    the last resort of :func:`_path_through_mask`, which otherwise walks a
+    graph of every voxel of the arm's connected structure -- about 400 bytes
+    a voxel, and on a fat network crossing the stack the structure is the
+    stack's vessels. It searches the box round the arm's two ends instead,
+    padded by at least the widest corridor's reach and growing while the
+    box holds at most :data:`_BOUNDED_FALLBACK_MAX_BOX_VOXELS` voxels and
+    the part of the structure joined to the arm in it at most
+    :data:`_BOUNDED_FALLBACK_MAX_VOXELS`. An arm with no path within that
+    is left unjoined, and logged.
     """
     result = skeleton if in_place else np.array(skeleton, dtype=bool)
     thick_b = np.asarray(thick, dtype=bool)
@@ -2253,12 +2441,17 @@ def _join_thin_arms_to_fat_ridge(
         cached = graph_cache.get(label_key)
         if cached is not None:
             return cached
-        if use_memmap:
-            built = _structure_graph(label_key)
-        else:
-            local_edt = distance_transform_edt(local_mask, sampling=tuple(relative_scale))
-            cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
-            built = _build_dijkstra_graph(local_mask, cost, relative_scale)
+        with times.timing("last-resort graph"):
+            if use_memmap:
+                built = _structure_graph(label_key)
+            else:
+                local_edt = distance_transform_edt(local_mask, sampling=tuple(relative_scale))
+                cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
+                built = _build_dijkstra_graph(local_mask, cost, relative_scale)
+        logger.info(
+            "_join_thin_arms_to_fat_ridge: last-resort graph over a structure of %d voxels",
+            int(built[1].shape[0]),
+        )
         graph_cache[label_key] = built
         return built
 
@@ -2284,6 +2477,36 @@ def _join_thin_arms_to_fat_ridge(
         cost = 1.0 / (np.square(distance) + 1e-6)
         box_shape = tuple(int(s.stop) - int(s.start) for s in box)
         return _build_dijkstra_graph_from_coords(coords - origin, box_shape, cost, relative_scale)
+
+    unjoined_by_bound: list[tuple[int, int, int]] = []
+    times = _JoinTimes()
+    # Under the low-RAM option, the structure number (of `result | thick_b`
+    # as labelled) of each voxel a bridge made fat, carried along the bridge
+    # from the tree voxel it touched; read where a bridge's voxels were
+    # looked up, each a slab labelled again (four fifths of the patella's
+    # join, 2026-10-20).
+    new_fat_roi_numbers: dict[tuple[int, int, int], int] = {}
+
+    def _bounded_join(label_key: int, local_start, local_end) -> list:
+        """The last resort under *bounded_fallback*, in the coordinates of
+        the structure's box; an arm it cannot join is noted and logged."""
+        box = allowed_components.box(label_key)
+        with times.timing("bounded last resort"):
+            path, reason = _bounded_structure_path(
+                allowed_b, box, local_start, local_end, relative_scale, structure
+            )
+        if path:
+            return path
+        origin = np.array([int(s.start) for s in box], dtype=np.int64)
+        at = tuple(int(v) for v in np.asarray(local_start) + origin)
+        unjoined_by_bound.append(at)
+        logger.info(
+            "Bounded last-resort join from %s to %s: %s; the arm is left unjoined.",
+            at,
+            tuple(int(v) for v in np.asarray(local_end) + origin),
+            reason,
+        )
+        return []
 
     # Memoized per roi component (see the flake-length filter above, which
     # scopes its own EDT the same way): the fat vessel's own local radius at
@@ -2311,7 +2534,14 @@ def _join_thin_arms_to_fat_ridge(
     )
 
     def _local_fat_radius_um_at(voxel: tuple[int, int, int]) -> float:
-        roi_id = int(roi_at[voxel])
+        if use_memmap:
+            cached = radius_at_cache.get(voxel)
+            if cached is not None:
+                return cached
+            carried = new_fat_roi_numbers.get(voxel)
+            roi_id = int(roi_at[voxel]) if carried is None else carried
+        else:
+            roi_id = int(roi_at[voxel])
         if roi_id == 0:
             return 0.0
         # Padded by 1 beyond the component's own tight bounding box: a
@@ -2365,12 +2595,44 @@ def _join_thin_arms_to_fat_ridge(
             radius_at_cache[voxel] = cached
         return cached
 
+    def _roi_number(voxel: tuple[int, int, int]) -> int:
+        carried = new_fat_roi_numbers.get(voxel)
+        return int(roi_at[voxel]) if carried is None else carried
+
+    def _numbers_on_bridge(path, stopped_at, stop_on) -> tuple[dict, dict]:
+        """The `allowed` and `result | thick_b` numbers of a bridge's voxels
+        that the path itself settles: the first carried on from the arm's
+        own voxel it starts at, through `allowed`; the second carried back
+        from a voxel of the tree the walk stopped against, through the fat
+        region. A voxel neither reaches is looked up (see NumbersAnywhere)."""
+        carried_allowed = _numbers_carried_along(
+            path, allowed_b, 0, int(allowed_at[path[0]]), +1
+        )
+        carried_roi: dict = {}
+        if roi_at is None or stopped_at is None:
+            return carried_allowed, carried_roi
+        last = path[stopped_at]
+        if not thick_b[last]:
+            return carried_allowed, carried_roi
+        box = tuple(
+            slice(max(0, int(v) - 1), min(int(n), int(v) + 2)) for v, n in zip(last, shape)
+        )
+        touched = np.argwhere(np.asarray(stop_on[box], dtype=bool) & np.asarray(thick_b[box], dtype=bool))
+        if touched.size == 0:
+            return carried_allowed, carried_roi
+        tree_voxel = tuple(int(v) for v in touched[0] + np.array([b.start for b in box]))
+        carried_roi = _numbers_carried_along(
+            path, thick_b, stopped_at, _roi_number(tree_voxel), -1
+        )
+        return carried_allowed, carried_roi
+
     def _bridge_cap_um(end: tuple[int, int, int]) -> float | None:
         """How long a bridge ending at *end* may be: the tighter of the fixed
         cap and the radius multiple there, None when neither is set."""
         cap = max_bridge_distance_um
         if max_bridge_radius_multiple is not None:
-            radius_cap = float(max_bridge_radius_multiple) * _local_fat_radius_um_at(end)
+            with times.timing("cap radius"):
+                radius_cap = float(max_bridge_radius_multiple) * _local_fat_radius_um_at(end)
             cap = radius_cap if cap is None else min(cap, radius_cap)
         return cap
 
@@ -2381,15 +2643,34 @@ def _join_thin_arms_to_fat_ridge(
     )
     join_step_start = time.perf_counter()
     last_log_time = join_step_start
+
+    def _checkpoint(arm_index: int, outcome: str) -> None:
+        """Count the arm's outcome and log progress, whichever way it ended."""
+        nonlocal last_log_time
+        times.arm(outcome)
+        now = time.perf_counter()
+        if arm_index % _JOIN_PROGRESS_EVERY == 0 or now - last_log_time > 30.0:
+            logger.info(
+                "_join_thin_arms_to_fat_ridge: %d/%d arm components processed "
+                "(%.2fs since last checkpoint, %.2fs total)",
+                arm_index,
+                int(arm_ids.size),
+                now - last_log_time,
+                now - join_step_start,
+            )
+            last_log_time = now
+
     for arm_index, component_id in enumerate(arm_ids, start=1):
         pts = thin_coords[by_arm[arm_bounds[component_id - 1]:arm_bounds[component_id]]]
         if pts.size == 0:
+            _checkpoint(arm_index, "empty")
             continue
         padded = _expand_slices(thin_components.box(int(component_id)), shape, pad=1)
         origin_p = np.array([int(s.start) for s in padded], dtype=int)
         component = np.zeros(tuple(int(s.stop) - int(s.start) for s in padded), dtype=bool)
         component[tuple((pts - origin_p).T)] = True
         if (binary_dilation(component, structure=structure) & fat_now[padded]).any():
+            _checkpoint(arm_index, "already touching")
             continue
         arm_component_label = int(allowed_at[tuple(pts[0])])
         same_component = fat_component_labels == arm_component_label
@@ -2400,6 +2681,7 @@ def _join_thin_arms_to_fat_ridge(
             # no joining) or genuinely isolated. Either way there is nothing
             # to join it to -- keep it as already-drawn Lee output, and do
             # not manufacture a connection to an unrelated nearby network.
+            _checkpoint(arm_index, "no fat in its structure")
             continue
         arm_points_um = pts.astype(np.float64, copy=False) * scale
         # The ridge first; the nearest of everything already connected (the
@@ -2412,11 +2694,11 @@ def _join_thin_arms_to_fat_ridge(
             effective_cap = _bridge_cap_um(end)
         if ridge is None or (effective_cap is not None and nearest_distance > effective_cap):
             scoped_fat_coords = fat_coords[same_component]
-            scoped_kdt = (
-                fat_kdt
-                if same_component.all()
-                else cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
-            )
+            if same_component.all():
+                scoped_kdt = fat_kdt
+            else:
+                with times.timing("nearest-fat tree of the structure"):
+                    scoped_kdt = cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
             nearest, nearest_distance, end = _nearest_point(
                 arm_points_um, scoped_fat_coords, scoped_kdt
             )
@@ -2433,6 +2715,7 @@ def _join_thin_arms_to_fat_ridge(
                 nearest_distance,
                 effective_cap,
             )
+            _checkpoint(arm_index, "past the cap")
             continue
         # Search only this arm's own physically connected structure, not the
         # whole image: _path_through_mask's own local searches are already
@@ -2446,15 +2729,21 @@ def _join_thin_arms_to_fat_ridge(
         local_allowed = allowed_b[component_slc]
         local_start = tuple(int(v) for v in (np.array(start) - component_origin))
         local_end = tuple(int(v) for v in (np.array(end) - component_origin))
-        local_path = _path_through_mask(
-            local_start,
-            local_end,
-            local_allowed,
-            fallback_graph_fn=lambda: _fallback_graph_for(
-                arm_component_label, local_allowed
-            ),
-            relative_spacing=relative_scale,
-        )
+        with times.timing("path through the mask"):
+            local_path = _path_through_mask(
+                local_start,
+                local_end,
+                local_allowed,
+                fallback_graph_fn=lambda: _fallback_graph_for(
+                    arm_component_label, local_allowed
+                ),
+                fallback_path_fn=(
+                    (lambda a, b, key=arm_component_label: _bounded_join(key, a, b))
+                    if bounded_fallback
+                    else None
+                ),
+                relative_spacing=relative_scale,
+            )
         path = [
             tuple(int(v) for v in (np.array(voxel) + component_origin))
             for voxel in local_path
@@ -2464,12 +2753,16 @@ def _join_thin_arms_to_fat_ridge(
         # not an earlier bridge it passes -- so this arm's voxels are drawn
         # only once it is over (fat_now reads them from the skeleton).
         drawn: list[tuple[int, int, int]] = []
-        for voxel in path:
+        stopped_at = None
+        for step_index, voxel in enumerate(path):
             if not allowed_b[voxel]:
                 continue
             drawn.append(voxel)
             if _touches_tree(stop_on, voxel):
+                stopped_at = step_index
                 break
+        if use_memmap and drawn:
+            carried_allowed, carried_roi = _numbers_on_bridge(path, stopped_at, stop_on)
         if use_memmap and roi_at is not None:
             _skeleton_changed(np.array(
                 [voxel for voxel in drawn if not result[voxel] and not thick_b[voxel]], dtype=np.intp
@@ -2486,21 +2779,40 @@ def _join_thin_arms_to_fat_ridge(
         if newly_fat:
             new_coords = np.asarray(newly_fat, dtype=np.intp)
             fat_coords = np.concatenate([fat_coords, new_coords], axis=0)
-            fat_component_labels = np.concatenate(
-                [fat_component_labels, allowed_at[tuple(new_coords.T)]]
-            )
-            fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
-        if arm_index % 200 == 0 or time.perf_counter() - last_log_time > 30.0:
-            now = time.perf_counter()
-            logger.info(
-                "_join_thin_arms_to_fat_ridge: %d/%d arm components processed "
-                "(%.2fs since last checkpoint, %.2fs total)",
-                arm_index,
-                int(arm_ids.size),
-                now - last_log_time,
-                now - join_step_start,
-            )
-            last_log_time = now
+            if use_memmap:
+                new_labels = np.array(
+                    [carried_allowed.get(voxel, 0) for voxel in newly_fat],
+                    dtype=fat_component_labels.dtype,
+                )
+                unknown = np.flatnonzero(
+                    [voxel not in carried_allowed for voxel in newly_fat]
+                )
+                if unknown.size:
+                    new_labels[unknown] = allowed_at[tuple(new_coords[unknown].T)]
+                for voxel in newly_fat:
+                    number = carried_roi.get(voxel)
+                    if number is not None:
+                        new_fat_roi_numbers[voxel] = number
+            else:
+                new_labels = allowed_at[tuple(new_coords.T)]
+            fat_component_labels = np.concatenate([fat_component_labels, new_labels])
+            with times.timing("nearest-fat tree rebuilt"):
+                fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
+        _checkpoint(arm_index, "joined" if drawn else "nothing drawn")
+    logger.info(
+        "_join_thin_arms_to_fat_ridge: %d arm components in %.1fs; %s",
+        int(arm_ids.size),
+        time.perf_counter() - join_step_start,
+        times.summary(),
+    )
+    if unjoined_by_bound:
+        logger.warning(
+            "_join_thin_arms_to_fat_ridge: %d thin arm(s) left unjoined by the bounded "
+            "last-resort search (large-stack setting), starting at %s%s",
+            len(unjoined_by_bound),
+            unjoined_by_bound[:10],
+            " ..." if len(unjoined_by_bound) > 10 else "",
+        )
     return result
 
 
@@ -2661,6 +2973,7 @@ def skeletonize_thickness_gated(
     tile_halo_voxels: int = 0,
     thick_region: np.ndarray | None = None,
     centreline_voxels: list | None = None,
+    large_stack_tree: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
     """Lee on the thin catchment; an EDT-ridge tree (every arm) inside the fat catchment.
 
@@ -2746,6 +3059,16 @@ def skeletonize_thickness_gated(
     byte a voxel, and lists of the fat region's voxels;
     the skeleton returned is on disk (a ``new_memmap_array``). Same skeleton
     and region either way.
+
+    *large_stack_tree* (``skeleton_thick_vessel_large_stack_tree``) applies
+    under *use_memmap* only: the centreline tree is drawn by
+    :mod:`.thick_vessel_tree`, with no graph of every fat voxel and no arm
+    cap, and the thin-arm join's last resort is bounded (see
+    :func:`_join_thin_arms_to_fat_ridge`'s *bounded_fallback*), so a fat
+    region that is one network crossing a large stack fits in memory. Not
+    the same skeleton as without it wherever a component is too large for
+    the exact walk, the 500-arm cap was reached, or an arm is left unjoined
+    by the bound.
     """
     lee_kwargs = {
         "use_memmap": use_memmap,
@@ -2876,7 +3199,14 @@ def skeletonize_thickness_gated(
         )
         t2 = time.perf_counter()
         drawn = [] if centreline_voxels is not None else None
-        _edt_ridge_into(result, thick, _relative_spacing(voxel_size_zyx), low_ram=low_ram, drawn=drawn)
+        _edt_ridge_into(
+            result,
+            thick,
+            _relative_spacing(voxel_size_zyx),
+            low_ram=low_ram,
+            drawn=drawn,
+            large_stack_tree=bool(large_stack_tree),
+        )
         if centreline_voxels is not None:
             centreline_voxels.append(drawn_voxels(drawn, thick.shape))
         del drawn
@@ -2904,6 +3234,7 @@ def skeletonize_thickness_gated(
                 arms_reach_extent=True,
                 in_place=True,
                 use_memmap=low_ram,
+                bounded_fallback=low_ram and bool(large_stack_tree),
             ),
             dtype=bool,
         )

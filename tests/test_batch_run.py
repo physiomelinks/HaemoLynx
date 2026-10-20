@@ -165,6 +165,34 @@ def test_the_command_line_checks_every_image_before_running(tmp_path, schema, mo
     assert (out / "B_seg" / "B_seg.haemorun").is_file()
 
 
+def test_the_command_line_logs_each_line_with_its_time(tmp_path, schema, monkeypatch, capsys):
+    """A batch runs unattended; how long each step took is read off its log."""
+    import logging
+    import re
+
+    from haemolynx.pipeline.provenance import write_settings_yaml
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    shutil.copy(FIXTURE, folder / "A_seg.tif")
+    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    root = logging.getLogger()
+    original_handlers, original_level = list(root.handlers), root.level
+    root.handlers.clear()  # basicConfig does nothing while pytest's are there
+    try:
+        assert main(["--config", str(config), "--segmented", str(folder), "--dry-run"]) == 0
+        capsys.readouterr()
+        logging.getLogger("haemolynx.pipeline").info("Step 11/13 recover_uncovered_mask_vessels")
+        line = capsys.readouterr().out
+    finally:
+        root.handlers[:] = original_handlers
+        root.setLevel(original_level)
+    assert re.fullmatch(
+        r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} \[INFO\] Step 11/13 recover_uncovered_mask_vessels\s*", line
+    ), line
+
+
 def test_the_command_line_refuses_a_batch_whose_checks_fail(tmp_path, schema, monkeypatch, capsys):
     from haemolynx.pipeline.provenance import write_settings_yaml
 

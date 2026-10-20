@@ -407,10 +407,15 @@ def test_numbers_anywhere_are_labels_numbers_at_any_voxel(monkeypatch):
 
 @pytest.mark.parametrize("cap", [None, 2.0])
 @pytest.mark.parametrize("reach", [True, False])
-def test_the_low_ram_join_reads_bridge_voxels_where_they_land(tmp_path, monkeypatch, cap, reach):
-    """The join's numbers at the skeleton only, a bridge's voxels read from
-    their slab labelled again (as it was before the flake filter and the
-    bridges changed the skeleton): the same skeleton as in RAM."""
+def test_the_low_ram_join_carries_bridge_numbers_along_the_bridge(tmp_path, monkeypatch, cap, reach):
+    """The join's numbers at the skeleton only. A bridge's new fat voxels take
+    theirs along the bridge drawn -- `allowed`'s from the arm voxel it starts
+    at, the fat structures' from the tree voxel it stopped against -- and only
+    a voxel neither reaches is read from its slab labelled again (as it was
+    before the flake filter and the bridges changed the skeleton): every
+    number carried is the one that read gives, the skeleton is the in-RAM
+    one, and with nothing carried it is too, read slab by slab. On the
+    patella (2026-10-20) the slab reads were four fifths of the join."""
     from haemolynx.preprocessing import slab_labels
     from haemolynx.preprocessing import thick_vessels as tv
 
@@ -420,13 +425,30 @@ def test_the_low_ram_join_reads_bridge_voxels_where_they_land(tmp_path, monkeypa
     lee = np.asarray(skeletonize_thickness_gated(mask, voxel_size_zyx=SPACING, min_radius_um=0.0))
     start = (lee & ~thick) | tv.skeletonize_edt_ridge(thick, SPACING)
     relabelled = []
-    real = slab_labels.NumbersAnywhere._slab_numbers
+    real_numbers = slab_labels.NumbersAnywhere._slab_numbers
 
     def counting(self, index):
         relabelled.append(index)
-        return real(self, index)
+        return real_numbers(self, index)
+
+    lookups = []
+    real_init = slab_labels.NumbersAnywhere.__init__
+
+    def keeping(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        lookups.append(self)
+
+    carried = []
+    real_carry = tv._numbers_carried_along
+
+    def recording(path, inside, first, number, step):
+        out = real_carry(path, inside, first, number, step)
+        carried.append((step, out))
+        return out
 
     monkeypatch.setattr(slab_labels.NumbersAnywhere, "_slab_numbers", counting)
+    monkeypatch.setattr(slab_labels.NumbersAnywhere, "__init__", keeping)
+    monkeypatch.setattr(tv, "_numbers_carried_along", recording)
     kwargs = dict(
         voxel_size_zyx=SPACING, min_arm_extent_um=2.0, max_bridge_radius_multiple=cap,
         arms_reach_extent=reach,
@@ -436,7 +458,66 @@ def test_the_low_ram_join_reads_bridge_voxels_where_they_land(tmp_path, monkeypa
 
     assert not np.array_equal(np.asarray(plain), start), "the fixture must be joined"
     assert np.array_equal(np.asarray(low), np.asarray(plain))
-    assert relabelled, "some bridge voxel was read where it landed"
+    assert not relabelled, "every bridge voxel's numbers came along its bridge"
+    roi = [n for n in lookups if getattr(n.foreground, "__name__", "") == "_roi_planes_then"]
+    allowed = [n for n in lookups if n not in roi]
+    assert len(allowed) == 1 and len(roi) == (0 if reach and cap is None else 1)
+    checked = {+1: 0, -1: 0}
+    for step, numbers in carried:
+        if not numbers:
+            continue
+        lookup = (allowed if step == +1 else roi)[0]
+        voxels = tuple(np.array(list(numbers)).T)
+        assert np.array_equal(lookup[voxels], np.array(list(numbers.values())))
+        checked[step] += len(numbers)
+    assert checked[+1] > 0 and (checked[-1] > 0) == bool(roi)
+
+    relabelled.clear()
+    monkeypatch.setattr(tv, "_numbers_carried_along", lambda *args: {})
+    looked_up = tv._join_thin_arms_to_fat_ridge(start.copy(), thick, mask, use_memmap=True, **kwargs)
+    assert np.array_equal(np.asarray(looked_up), np.asarray(plain))
+    assert relabelled, "with nothing carried, a bridge voxel is read where it landed"
+
+
+def test_numbers_are_carried_only_through_neighbours_inside_the_mask():
+    """Two 26-adjacent voxels of a mask are in one of its components: a
+    number goes along a path while each step is to a neighbour inside, and
+    every voxel it reaches is in the first one's component."""
+    from scipy.ndimage import label
+
+    from haemolynx.preprocessing.thick_vessels import _numbers_carried_along
+
+    rng = np.random.default_rng(5)
+    mask = rng.random((12, 12, 12)) > 0.45
+    labels, _ = label(mask, structure=np.ones((3, 3, 3), dtype=bool))
+    for _ in range(200):
+        voxel = np.array([rng.integers(0, 12) for _ in range(3)])
+        path = [tuple(int(v) for v in voxel)]
+        for _ in range(15):
+            voxel = np.clip(voxel + rng.integers(-1, 2, 3), 0, 11)
+            path.append(tuple(int(v) for v in voxel))
+        if rng.random() < 0.3:
+            path.insert(8, (0, 0, 0))  # a jump in the path
+        for first, step in ((0, +1), (len(path) - 1, -1)):
+            numbers = _numbers_carried_along(path, mask, first, 7, step)
+            assert all(n == 7 for n in numbers.values())
+            if numbers:
+                assert set(labels[tuple(np.array(list(numbers)).T)]) == {labels[path[first]]}
+            # it runs exactly as far as the first voxel outside or jump
+            i, reached = first, []
+            while 0 <= i < len(path) and mask[path[i]] and (
+                not reached or max(abs(a - b) for a, b in zip(path[i], reached[-1])) <= 1
+            ):
+                reached.append(path[i])
+                i += step
+            assert set(numbers) == set(reached)
+
+    line = [(0, 0, x) for x in range(5)]
+    mask = np.zeros((1, 1, 5), dtype=bool)
+    mask[0, 0, [0, 1, 3, 4]] = True
+    assert _numbers_carried_along(line, mask, 0, 3, +1) == {(0, 0, 0): 3, (0, 0, 1): 3}
+    assert _numbers_carried_along(line, mask, 4, 9, -1) == {(0, 0, 4): 9, (0, 0, 3): 9}
+    assert _numbers_carried_along(line, mask, 2, 9, -1) == {}
 
 
 # --- vessel and pericyte masks: labels at the foreground voxels only ------------

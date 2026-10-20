@@ -287,6 +287,24 @@ def test_a_packed_mask_answers_point_lookups_as_the_mask_does_inside_and_outside
     assert len(packed.contains(np.empty((0, 3), dtype=int))) == 0
 
 
+@pytest.mark.parametrize("shape", [(12, 20, 30), (5, 7, 9), (3, 1, 13), (40, 33)])
+def test_a_packed_masks_box_is_the_masks_own_box(shape):
+    """Rows of every bit offset (a row of 30, 9 or 13 voxels starts anywhere
+    in a byte), boxes touching the last voxel, one voxel wide or tall."""
+    rng = np.random.default_rng(sum(shape))
+    mask = rng.random(shape) > 0.5
+    packed = PackedMask.from_mask(mask)
+    boxes = [tuple(slice(0, n) for n in shape), tuple(slice(n - 1, n) for n in shape)]
+    for _ in range(200):
+        start = [int(rng.integers(0, n)) for n in shape]
+        boxes.append(tuple(slice(a, int(rng.integers(a + 1, n + 1))) for a, n in zip(start, shape)))
+    for box in boxes:
+        got = packed.box(box)
+        assert got.dtype == bool and np.array_equal(got, mask[box]), box
+    empty = tuple(slice(2, 2) if axis == 0 else slice(0, n) for axis, n in enumerate(shape))
+    assert packed.box(empty).shape == mask[empty].shape
+
+
 def test_a_memmapped_mask_packs_to_the_same_bits(tmp_path):
     rng = np.random.default_rng(5)
     mask = rng.random((17, 7, 9)) > 0.5
