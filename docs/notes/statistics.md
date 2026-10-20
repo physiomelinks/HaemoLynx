@@ -70,6 +70,14 @@ per-source searches run in `python -c` workers (networkx's own `_single_source_*
 this process adds each source's increments in networkx's node order and calls its `_rescale`:
 the same floats in the same order, so the same bits. Below the threshold, with one worker, or
 when a worker fails, networkx runs it here. Never sampling (`k`) or another library.
+The unweighted, undirected pass without endpoints -- the one the statistics make -- is not
+networkx's loop but the batched pass (`_BATCHED_PASS`, 2026-10-20): the same search for a
+batch of sources at once with numpy (the workers import numpy only), every addition in
+networkx's order (`np.add.at` adds in index order, the sorts are stable), so each source's
+increments are networkx's bits; it also runs in this process below the threshold, with one
+worker, or when the workers fail. Weighted, endpoint and directed passes keep networkx's loop.
+One machine state, 29_2_f contra (15,843 nodes): networkx's loop in 8 workers 164 s, the
+batched pass here 125 s, in 8 workers 19 s; 29_1_f contra (21,944): 303, 213 and 26 s.
 Harvey's AIA batch graph `29_1_b_contra_FITC` (18,253 nodes, 8 workers, a busy machine):
 414 s against networkx's ~2,950 s (timed on 300 sources, scaled); a 4,000-node piece of it
 122.5 -> 44.7 s, every value's bits equal. `MAX_DEFAULT_WORKERS` (8) is the ceiling.
