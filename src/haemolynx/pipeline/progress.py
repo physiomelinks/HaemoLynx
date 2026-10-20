@@ -194,6 +194,7 @@ STAGES: tuple[Stage, ...] = (
             "recovery_min_length_um",
             "facing_dead_end_max_gap_um",
             "remove_short_loops_under_um",
+            "lumen_cleanup_max_rounds",
             "short_loop_keep_hole_over_um",
             "retrace_lost_skeleton",
             # Read by the thick-vessel split, graph building's last step.
