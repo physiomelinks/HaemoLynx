@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Local guardrail (CI only runs on PRs to origin). Enable once per clone:
 #   git config core.hooksPath "$PWD/scripts/git-hooks"   (run from the repo root)
-# 0. If core.hooksPath names another checkout's scripts/git-hooks (Claude Code's worktree
-#    setup makes it absolute), re-exec the committing checkout's own pre-commit first.
+# 0. If core.hooksPath names another checkout's scripts/git-hooks (it is set absolute, so
+#    every worktree gets the main checkout's), re-exec the committing checkout's own pre-commit first.
 # 1. Pyflakes lint on staged Python files: undefined names and redefinitions,
 #    plus unused imports in staged files under tests/ only.
 # 2. Fast tests (not slow, integration or realdata), skipped when every staged file is a Markdown doc (no test reads
@@ -10,7 +10,7 @@
 #    Also skipped when .git/hook-stamp/fast-tests-ok matches the staged tree,
 #    the interpreter and its installed packages (see _stamp.sh); a passing run
 #    here, or scripts/stamp-tests.sh, writes it.
-#    The tests run with no GIT_* variables: git's GIT_DIR/GIT_INDEX_FILE would point a test's own git calls at this repo.
+#    The tests run with no GIT_* variables: git's GIT_INDEX_FILE (and GIT_DIR in a worktree) would point a test's own git calls at this repo.
 #    The test run is quiet: output goes to .git/hook-stamp/fast-tests.log.
 #    Bypass in an emergency with `git commit --no-verify`.
 set -euo pipefail
@@ -75,7 +75,7 @@ log_dir=$(git rev-parse --git-path hook-stamp)
 mkdir -p "$log_dir"
 log="$log_dir/fast-tests.log"
 rc=0
-# git's GIT_DIR / GIT_INDEX_FILE would send a test's own `git init` or `git add` into this repo.
+# git's GIT_INDEX_FILE (and GIT_DIR in a worktree) would send a test's own `git init` or `git add` into this repo.
 unset_git=()
 while IFS= read -r name; do unset_git+=(-u "$name"); done < <(compgen -e | grep '^GIT_' || true)
 env "${unset_git[@]}" MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration and not realdata" >"$log" 2>&1 || rc=$?

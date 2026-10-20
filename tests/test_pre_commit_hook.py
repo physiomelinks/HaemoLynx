@@ -1,11 +1,12 @@
 """The pre-commit hook runs the committing checkout's own copy, whatever `core.hooksPath` says.
 
 Claude Code's worktree setup rewrites a relative `core.hooksPath` to the main checkout's
-absolute `scripts/git-hooks` (ticket retro-14-19-followups/04). Git then runs the main
-checkout's `pre-commit` from every worktree, which used to source that worktree's own
-`_stamp.sh`: two versions mixed. Each test builds a toy repo with a worktree, never this
-checkout, and stages only a `.md` file, so the real hook stops at its "only .md files staged"
-exit without running pyflakes or pytest.
+absolute `scripts/git-hooks` (ticket retro-14-19-followups/04); this checkout now sets it
+absolute itself. Git then runs the main checkout's `pre-commit` from every worktree, which
+used to source that worktree's own `_stamp.sh`: two versions mixed. Each test builds a toy
+repo with a worktree, never this checkout. All but the last stage only a `.md` file, so the
+real hook stops at its "only .md files staged" exit without running pyflakes or pytest; the
+last stages a toy test and runs it through the hook's pytest step.
 """
 import shutil
 import subprocess
@@ -44,13 +45,18 @@ def _toy(tmp_path, stub=False):
     return main, wt
 
 
+def _commit(checkout, message):
+    """Commit what is staged in `checkout`, hook included; the finished process."""
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                           "-m", message], cwd=checkout, env=TOY_ENV, capture_output=True,
+                          text=True)
+
+
 def _commit_md(checkout, name="notes.md"):
     """Stage one new .md file `name` in `checkout` and commit it; the finished process."""
     (checkout / name).write_text("notes\n")
     toy_git(checkout, "add", name)
-    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
-                           "-m", "notes"], cwd=checkout, env=TOY_ENV, capture_output=True,
-                          text=True)
+    return _commit(checkout, "notes")
 
 
 def _absolute_hooks_path(main):
@@ -90,20 +96,19 @@ def test_a_worktree_without_its_own_hook_commits_with_one_line_saying_so(tmp_pat
 
 
 def test_the_hook_runs_the_fast_tests_without_git_variables(tmp_path):
-    """Git hands the hook GIT_DIR / GIT_INDEX_FILE; a test that runs `git` in a temp folder
-    would then write into the committing repo (ticket worktree-hygiene/01)."""
+    """In a worktree git hands the hook GIT_DIR and GIT_INDEX_FILE; a test that runs `git` in a
+    temp folder would then write into the committing repo (ticket worktree-hygiene/01)."""
     main, wt = _toy(tmp_path)
     shutil.copytree(main / "scripts", wt / "scripts")
     _absolute_hooks_path(main)
     (wt / "venv" / "bin").mkdir(parents=True)
-    (wt / "venv" / "bin" / "python").symlink_to(Path(sys.prefix) / "bin" / "python")
+    (wt / "venv" / "bin" / "python").symlink_to(sys.executable)
     (wt / "tests").mkdir()
     (wt / "tests" / "test_env.py").write_text(
         "import os\n\n\ndef test_no_git_variables():\n"
         "    assert [k for k in os.environ if k.startswith('GIT_')] == []\n")
     toy_git(wt, "add", "tests/test_env.py")
-    proc = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
-                           "-m", "env test"], cwd=wt, env=TOY_ENV, capture_output=True, text=True)
+    proc = _commit(wt, "env test")
 
     log = wt / toy_git(wt, "rev-parse", "--git-path", "hook-stamp").strip() / "fast-tests.log"
     assert proc.returncode == 0, proc.stderr

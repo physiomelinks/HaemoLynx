@@ -24,7 +24,7 @@ After the commit that implements a ticket, set its `Status:` line to `done (<has
 
 ## Handing a ticket to an agent in a worktree
 
-- Before dispatching, check out the integration branch in the main checkout, so new worktrees start from it (`worktree.baseRef` is `head`). The implementer still checks its base. A merger runs `git merge --ff-only <branch>` in the main checkout.
+- Before dispatching, check out the integration branch in the main checkout, so new worktrees start from it (`worktree.baseRef` is `head`). The implementer still checks its base, as `implement-spec` step 4 says. A merger runs `git merge --ff-only <branch>` in the main checkout.
 - When a ticket is handed to an agent, set its `Status: in progress (<branch>)`.
 - A brief asks only for git commands that run inside the worktree, one plain command per call (no `git -C <main checkout>`). A worktree shares `.git/config`, so `git config core.bare` run there checks the main checkout's config too.
 - The implementer writes its notes and new-ticket drafts into its own worktree's `.scratch/<feature>/` (gitignored, so they survive a `/clear` of the orchestrator's session), never into a session scratchpad.
