@@ -1107,3 +1107,99 @@ def test_the_small_tiers_follow_the_small_masks_through_a_run(tmp_path):
     assert not [d for d in G.edges.values() if SMALL_MASK_VESSEL_TYPE in d]
     assert [label("i", "p"), label("p", "q")] == ["Art1", "B01"]
     assert [label("t", "o"), label("r", "t")] == ["Ven1", "B02"]
+
+
+# --- A Large tier from the large masks alone -----------------------------------
+#
+# Hierarchical mode needs arteriole and venule boundary nodes, which only the
+# small masks or a hand pick give. A run with the large masks alone fell back
+# to B orders from the inlets, so its large arteriole was B01 and the
+# Large_Art/Large_Ven tags were computed and never read (E14.5, 2026-10-21).
+
+
+def _large_vessels_without_small_ones():
+    G, nodes = _capillaries_from_large_arteriole_to_large_vein()
+    return G, dict(nodes, arteriole_boundary_nodes=[], venule_boundary_nodes=[])
+
+
+def test_the_large_masks_alone_give_the_large_tiers_and_capillaries_beside_them():
+    G, nodes = _large_vessels_without_small_ones()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    labels = _labels(G)
+    assert summary["mode"] == "large_tier"
+    assert summary["large_arteriole_edge_count"] == 2
+    assert summary["large_venule_edge_count"] == 2
+    assert [labels[(0, 1, 0)], labels[(1, 2, 0)]] == ["Large_Art1", "Large_Art2"]
+    assert [labels[(9, 10, 0)], labels[(8, 9, 0)]] == ["Large_Ven1", "Large_Ven2"]
+    # No Art/Ven tier: every other vessel is a capillary counted from where it
+    # leaves the large arteriole.
+    assert [labels[(1, 5, 0)], labels[(5, 8, 0)]] == ["B01", "B02"]
+    assert [labels[(2, 3, 0)], labels[(3, 4, 0)], labels[(4, 7, 0)], labels[(7, 8, 0)]] == [
+        "B01", "B02", "B03", "B03",  # 8 is 2 hops from 1 through 5 as well
+    ]
+
+
+def test_strict_orders_do_not_complain_of_small_vessels_a_run_never_asked_for():
+    G, nodes = _large_vessels_without_small_ones()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MissingSmallVesselAssignmentWarning)
+        summary = assign_vessel_branch_orders(G, **nodes, strict_hierarchical=True)
+
+    assert summary["mode"] == "large_tier"
+
+
+def test_large_masks_alone_with_no_tagged_vessel_fall_back_to_capillary_orders():
+    from haemolynx.graph import MissingLargeVesselTierWarning
+
+    G, nodes = _large_vessels_without_small_ones()
+    for _u, _v, data in G.edges(data=True):
+        data.pop(LARGE_MASK_VESSEL_TYPE, None)
+
+    with pytest.warns(MissingLargeVesselTierWarning):
+        summary = assign_vessel_branch_orders(G, **nodes)
+
+    assert summary["mode"] == "capillary"
+    assert _labels(G)[(0, 1, 0)] == "B01"
+
+
+def test_the_capillary_beds_feed_from_the_large_arteriole_without_small_vessels():
+    from haemolynx.graph.branch_order import capillary_start_nodes
+
+    G, nodes = _large_vessels_without_small_ones()
+    assign_vessel_branch_orders(G, **nodes)
+
+    feeds, drains = capillary_start_nodes([0], [10], [], [], graph=G)
+
+    assert sorted(feeds) == [0, 1, 2], "the inlet and both places a capillary leaves the tier"
+    assert sorted(drains) == [8, 10]
+
+
+def test_the_large_tier_follows_the_large_masks_alone_through_a_run(tmp_path):
+    from haemolynx.pipeline.stages import _assign_branch_orders, assign_boundaries
+
+    network, ids = _branching_large_vessel_network()
+    network.small_arteriole_mask = network.small_venule_mask = None
+    settings = _large_tier_settings(tmp_path)
+    settings["use_small_vessel_masks_for_boundary_assignment"] = False
+
+    assign_boundaries(settings, network)
+    summary = _assign_branch_orders(settings, network.graph)
+
+    G = network.graph
+
+    def label(a, b):
+        return G.edges[ids[a], ids[b], 0]["branch_order"]
+
+    assert summary["mode"] == "large_tier"
+    assert settings["arteriole_boundary_nodes"] == settings["venule_boundary_nodes"] == []
+    assert [label("a0", "a1"), label("a1", "a2"), label("a2", "a3")] == [
+        "Large_Art1", "Large_Art2", "Large_Art3",
+    ]
+    assert [label("v0", "v1"), label("v1", "v2"), label("v2", "v3")] == [
+        "Large_Ven1", "Large_Ven2", "Large_Ven3",
+    ]
+    assert [label("a1", "s1"), label("s1", "w1"), label("w1", "v1")] == ["B01", "B02", "B03"]
+    assert [label("a2", "c"), label("c", "v2")] == ["B01", "B02"]

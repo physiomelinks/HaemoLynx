@@ -3870,17 +3870,13 @@ def _assign_branch_orders(
         large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
         strict_hierarchical=settings["strict_branch_order_assignment"],
         # Hierarchical Art*/Ven* labelling needs small-vessel terminals
-        # (auto masks or manual A/V coords/volumes/node IDs). Large-vessel
-        # automation alone only fills inlets/outlets. Large_Art/Large_Ven
-        # sits above Art/Ven, so it also needs hierarchical mode to
-        # actually fire -- turning it on without small-vessel/manual A-V
-        # boundaries configured would otherwise silently never tag
-        # anything.
+        # (auto masks or manual A/V coords/volumes/node IDs). The
+        # Large_Art/Large_Ven tier does not: with the large masks alone it
+        # runs with B orders beside it (graph.assign_large_tier_branch_orders).
         expects_hierarchical=bool(
             graph.vessel_masks_in_use(settings, "small")
             or _vessel_boundary_configured(settings, "arteriole")
             or _vessel_boundary_configured(settings, "venule")
-            or graph.assigns_large_vessel_branch_orders(settings)
         ),
         post_assign_callback=post_assign_callback,
     )
@@ -3890,6 +3886,13 @@ def _assign_branch_orders(
             "(Art*/Ven* first, then capillary B* from arteriole boundary)."
         )
         logger.info(f"Branch assignment summary: {branch_summary}")
+    elif branch_summary["mode"] == "large_tier":
+        logger.info(
+            "Assigned Large_Art/Large_Ven orders along the large-vessel masks and "
+            "capillary B* orders beside them (no arteriole/venule boundary nodes, so "
+            f"no Art*/Ven* tier): {branch_summary['large_arteriole_edge_count']} "
+            f"Large_Art and {branch_summary['large_venule_edge_count']} Large_Ven vessel(s)."
+        )
     elif branch_summary["mode"] == "capillary":
         logger.info(
             "Assigned capillary branch orders from STARTING_NODES only "

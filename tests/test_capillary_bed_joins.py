@@ -377,8 +377,10 @@ def test_capillary_start_nodes_add_where_capillaries_leave_and_join_the_large_ti
 
     assert capillary_start_nodes(*terminals, graph=G) == ([3, 1], [7, 8])
     assert capillary_start_nodes(*terminals) == ([3], [7])
-    # B orders from the inlets alone count from the inlets, Large tier or not.
-    assert capillary_start_nodes([0], [10], [3], [], graph=G) == ([0], [10])
+    # Without hierarchical mode the B orders count from the inlets, and from
+    # where a capillary leaves a Large tier (graph.assign_large_tier_branch_orders).
+    assert capillary_start_nodes([0], [10], [3], [], graph=G) == ([0, 1], [10, 8])
+    assert capillary_start_nodes([0], [10], [3], []) == ([0], [10])
 
 
 def test_a_capillary_leaving_the_large_arteriole_feeds_a_bed_of_its_own():

@@ -409,13 +409,13 @@ def test_the_stage_passes_the_component_fraction_setting(tmp_path, monkeypatch):
     G, arteriole, venule = _chain_with_large_vessel_masks()
     network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
     seen = []
-    real = module.find_large_vessel_mask_stump_points
+    real = module._mask_stumps
 
     def spy(mask, **kwargs):
         seen.append(kwargs.get("min_component_fraction"))
         return real(mask, **kwargs)
 
-    monkeypatch.setattr(module, "find_large_vessel_mask_stump_points", spy)
+    monkeypatch.setattr(module, "_mask_stumps", spy)
     settings = _assign_boundaries_settings(plot_dir=tmp_path, large_vessel_stump_min_component_fraction=0.2)
 
     assign_boundaries(settings, network)
@@ -423,3 +423,109 @@ def test_the_stage_passes_the_component_fraction_setting(tmp_path, monkeypatch):
     assert seen == [0.2, 0.2], "once per side"
     assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
     assert default_schema()["large_vessel_stump_min_component_fraction"].default == 0.05
+
+
+# --- each stump snaps to its own vessel's end at its face ------------------------
+
+
+def _path(*corners) -> list[tuple[float, float, float]]:
+    """Points every micron along the polyline through *corners*."""
+    points: list[tuple[float, float, float]] = []
+    for start, end in zip(corners, corners[1:]):
+        start, end = np.asarray(start, dtype=float), np.asarray(end, dtype=float)
+        steps = max(int(np.ceil(np.linalg.norm(end - start))), 1)
+        for t in np.linspace(0.0, 1.0, steps + 1)[(1 if points else 0):]:
+            points.append(tuple(start + (end - start) * t))
+    return points
+
+
+def _vessel_graph(vessels) -> nx.MultiGraph:
+    """One edge per polyline in *vessels* ({(u, v): corners}), its end nodes
+    at the polyline's ends."""
+    G = nx.MultiGraph()
+    for (u, v), corners in vessels.items():
+        voxels = _path(*corners)
+        G.add_node(u, pos=tuple(float(c) for c in corners[0]))
+        G.add_node(v, pos=tuple(float(c) for c in corners[-1]))
+        G.add_edge(u, v, voxels=voxels, length=float(len(voxels) - 1))
+    return G
+
+
+def _stump_inlets(G, mask):
+    return select_large_vessel_mask_stump_terminal_nodes_for_role(
+        G, mask, node_role="inlet", voxel_size_zyx=(1.0, 1.0, 1.0), image_shape=mask.shape,
+        coordinates_setting_name="large_arteriole_mask stump",
+    )
+
+
+@pytest.mark.parametrize(
+    "tip",
+    [(10.0, 16.0, 0.0), (10.0, 10.0, 3.0)],
+    ids=["its-end-a-few-um-outside-the-mask-at-the-face", "its-end-just-short-of-the-face"],
+)
+def test_a_stump_takes_its_own_vessels_end_at_the_face_not_a_terminal_deep_in_the_mask(tip):
+    """Regression (E14.5, 2026-10-21): the large masks and the network came
+    from two segmentations, so the arteriole's centreline left its mask 4 um
+    before the face. Held to the mask, the snap passed that end over for the
+    one terminal inside the mask, an arm tip 354 um away."""
+    mask = np.zeros((20, 20, 120), dtype=bool)
+    mask[7:13, 7:13, 0:100] = True  # a large vessel along x from the x = 0 face
+    G = _vessel_graph({
+        (0, 1): [tip, (10, 10, 10), (10, 10, 50)],
+        (1, 2): [(10, 10, 50), (10, 10, 95)],  # its arm, ending deep inside the mask
+        (1, 3): [(10, 10, 50), (10, 19, 50)],  # a capillary leaving it
+    })
+
+    assert _stump_inlets(G, mask) == [0]
+
+
+def test_two_stumps_give_two_nodes_each_its_own_vessels_end():
+    """Regression (E14.5): both vein stumps snapped to the one terminal inside
+    the vein mask, ~100 um from either, so its two outlets became one."""
+    mask = np.zeros((20, 20, 120), dtype=bool)
+    mask[7:13, 2:7, 0:50] = True  # vein A, from the x = 0 face
+    mask[7:13, 13:18, 0:50] = True  # vein B, beside it, from the same face
+    G = _vessel_graph({
+        (0, 2): [(10, 8, 0), (10, 4, 8), (10, 4, 45), (10, 10, 60)],  # A's end, 2 um out
+        (1, 2): [(10, 12, 0), (10, 15, 8), (10, 15, 45), (10, 10, 60)],  # B's end, 1 um out
+        (2, 3): [(10, 10, 60), (10, 10, 110)],
+        (4, 5): [(10, 5, 30), (10, 5, 44)],  # a piece lying deep inside A's mask
+    })
+
+    outlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
+        G, mask, node_role="outlet", voxel_size_zyx=(1.0, 1.0, 1.0), image_shape=mask.shape,
+        coordinates_setting_name="large_venule_mask stump",
+    )
+
+    assert outlets == [0, 1]
+
+
+def test_a_capillary_ending_by_the_face_beside_the_large_vessel_is_not_its_end():
+    """Its tip is nearer the stump's centroid than the large vessel's own end,
+    and as near the mask, but its vessel runs away from the mask."""
+    mask = np.zeros((20, 50, 120), dtype=bool)
+    mask[7:13, 7:13, 0:100] = True
+    G = _vessel_graph({
+        (0, 1): [(16, 10, 0), (10, 10, 10), (10, 10, 80)],  # the vessel's end, 3 um out
+        (2, 3): [(10, 14, 0), (10, 40, 0)],  # a capillary along the face, its tip 2 um out
+    })
+
+    assert _stump_inlets(G, mask) == [0]
+
+
+def test_a_stump_with_no_vessel_end_at_its_face_warns_how_far_its_node_is():
+    """The far-snap warning never fired: it measured the network's extent from
+    the candidates alone, one node, so every stump lay outside it."""
+    from haemolynx.graph.boundaries import BoundaryCoordinateWarning
+
+    mask = np.zeros((20, 20, 120), dtype=bool)
+    mask[7:13, 7:13, 0:100] = True
+    G = _vessel_graph({
+        (0, 1): [(10, 10, 40), (10, 10, 95)],  # inside the mask, nowhere near the face
+        (2, 3): [(10, 19, 0), (10, 19, 30)],  # outside it
+    })
+
+    with pytest.warns(BoundaryCoordinateWarning, match=r"x=0 face .* node 0, 40\.\d um away"):
+        inlets = _stump_inlets(G, mask)
+
+    assert inlets == [0], "the nearest terminal inside the mask, as before"

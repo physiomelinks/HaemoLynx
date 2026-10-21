@@ -723,6 +723,56 @@ def assign_hierarchical_branch_orders(
     }
 
 
+def assign_large_tier_branch_orders(
+    G: nx.MultiGraph,
+    inlet_nodes: list[Any],
+    outlet_nodes: list[Any],
+    *,
+    large_arteriole_boundary_nodes: list[Any] | None = None,
+    large_venule_boundary_nodes: list[Any] | None = None,
+) -> dict | None:
+    """Large_Art/Large_Ven and B orders, with no small arterioles or venules.
+
+    For a run given large-vessel masks alone: no arteriole or venule boundary
+    nodes, so there is no Art/Ven tier, but the large vessels are known. The
+    Large tiers are read as :func:`assign_hierarchical_branch_orders` reads
+    them, and every other vessel is a capillary, its ``B`` order counted from
+    the inlets and from where it leaves the Large_Art tier. Hierarchical mode
+    used to be the only way to a Large tier, so such a run fell back to ``B``
+    orders from the inlets and its large arteriole was B01.
+
+    Returns None, writing nothing, when neither tier has a vessel.
+    """
+    large_arteriole_edges = _large_tier_or_warn(
+        G, inlet_nodes, "arteriole", list(large_arteriole_boundary_nodes or [])
+    )
+    large_venule_edges = _large_tier_or_warn(
+        G, outlet_nodes, "venule", list(large_venule_boundary_nodes or [])
+    )
+    if not large_arteriole_edges and not large_venule_edges:
+        return None
+    large_edges = large_arteriole_edges | large_venule_edges
+    results: dict[str, Any] = {"large_arteriole": None, "large_venule": None}
+    arteriole_hand_offs: list[Any] = []
+    for name, edges, roots, prefix in (
+        ("large_arteriole", large_arteriole_edges, inlet_nodes, "Large_Art"),
+        ("large_venule", large_venule_edges, outlet_nodes, "Large_Ven"),
+    ):
+        if not edges:
+            continue
+        view = G.edge_subgraph(edges)
+        results[name] = assign_branch_orders(
+            view, [node for node in roots if node in view], prefix=prefix
+        )
+        if prefix == "Large_Art":
+            arteriole_hand_offs = _hand_off_nodes(G, edges)
+    starts = list(inlet_nodes) + [node for node in arteriole_hand_offs if node not in set(inlet_nodes)]
+    results["capillary"] = assign_branch_orders(G, starts, prefix="B", excluded_edges=large_edges)
+    results["large_arteriole_edge_count"] = len(large_arteriole_edges)
+    results["large_venule_edge_count"] = len(large_venule_edges)
+    return results
+
+
 def assign_unknown_vessel_classes(
     G: nx.MultiGraph, *, post_assign_callback: PostAssignCallback | None = None
 ) -> dict[str, Any]:
@@ -808,11 +858,14 @@ def capillary_start_nodes(
     leave the Large_Art tier and join the Large_Ven tier
     (:func:`large_tier_capillary_hand_offs`): a capillary leaving a large
     arteriole is counted from it, and one joining the large vein drains
-    there. Without a Large tier that adds nothing.
+    there. Without a Large tier that adds nothing. Without hierarchical mode
+    the feeds are the inlets and the drains the outlets, with the same
+    hand-offs added (:func:`assign_large_tier_branch_orders`' tiers).
     """
-    if not uses_hierarchical_branch_orders(outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes):
-        return list(inlet_nodes or []), list(outlet_nodes or [])
-    feeds, drains = list(arteriole_boundary_nodes), list(venule_boundary_nodes)
+    if uses_hierarchical_branch_orders(outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes):
+        feeds, drains = list(arteriole_boundary_nodes), list(venule_boundary_nodes)
+    else:
+        feeds, drains = list(inlet_nodes or []), list(outlet_nodes or [])
     if graph is not None:
         arterial, venous = large_tier_capillary_hand_offs(graph)
         known_feeds, known_drains = set(feeds), set(drains)
@@ -852,8 +905,9 @@ def assign_vessel_branch_orders(
     large_arteriole_boundary_nodes, large_venule_boundary_nodes
         Optional node sets adding a ``Large_Art``/``Large_Ven`` tier outside
         the ``Art``/``Ven`` tier, read from the vessels tagged
-        :data:`LARGE_MASK_VESSEL_TYPE` (only takes effect when hierarchical
-        mode is already active -- see :func:`assign_hierarchical_branch_orders`).
+        :data:`LARGE_MASK_VESSEL_TYPE` (see :func:`assign_hierarchical_branch_orders`);
+        without arteriole/venule boundary nodes, the Large tiers and ``B``
+        orders alone (:func:`assign_large_tier_branch_orders`).
     strict_hierarchical
         When hierarchical prerequisites are missing: raise if small-vessel
         (or manual A/V) assignment was expected, otherwise warn and fall back
@@ -867,7 +921,8 @@ def assign_vessel_branch_orders(
     Returns
     -------
     dict
-        Summary with ``mode`` of ``"hierarchical"``, ``"capillary"``, or ``"skipped"``.
+        Summary with ``mode`` of ``"hierarchical"``, ``"large_tier"``, ``"capillary"``,
+        or ``"skipped"``.
     """
     if not inlet_nodes:
         return {"mode": "skipped", "reason": "no_inlet_nodes"}
@@ -881,7 +936,12 @@ def assign_vessel_branch_orders(
     use_hierarchical = uses_hierarchical_branch_orders(
         outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
     )
-    if strict_hierarchical and not use_hierarchical:
+    large_tier_only = not use_hierarchical and bool(
+        large_arteriole_boundary_nodes or large_venule_boundary_nodes
+    )
+    # A run given large masks alone asks for no Art/Ven tier: its Large tier
+    # is all it expects.
+    if strict_hierarchical and not use_hierarchical and (expects_hierarchical or not large_tier_only):
         if expects_hierarchical:
             raise ValueError(
                 "Strict branch-order assignment is enabled, but hierarchical "
@@ -914,8 +974,22 @@ def assign_vessel_branch_orders(
         )
         summary: dict[str, Any] = {"mode": "hierarchical", **branch_results}
     else:
-        capillary_results = assign_branch_orders(G, inlet_nodes)
-        summary = {"mode": "capillary", "capillary": capillary_results}
+        large_results = (
+            assign_large_tier_branch_orders(
+                G,
+                inlet_nodes,
+                outlet_nodes,
+                large_arteriole_boundary_nodes=large_arteriole_boundary_nodes,
+                large_venule_boundary_nodes=large_venule_boundary_nodes,
+            )
+            if large_tier_only
+            else None
+        )
+        if large_results is not None:
+            summary = {"mode": "large_tier", **large_results}
+        else:
+            capillary_results = assign_branch_orders(G, inlet_nodes)
+            summary = {"mode": "capillary", "capillary": capillary_results}
 
     if post_assign_callback is not None:
         post_assign_callback(G)
