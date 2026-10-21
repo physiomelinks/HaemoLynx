@@ -20,6 +20,18 @@ from typing import Any, Iterable
 import numpy as np
 
 
+def _require_attribute(G, attr: str, why: str) -> None:
+    """Raise unless every edge carries ``attr``, naming the first few that do not."""
+    missing = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+               if d.get(attr) is None]
+    if missing:
+        shown = ", ".join(str(e) for e in missing[:3])
+        raise ValueError(
+            f"{len(missing)} of {G.number_of_edges()} edges have no '{attr}', for example "
+            f"{shown}. {why} Run the rheology solve first, or set it on every edge."
+        )
+
+
 def _edge_diameter(data) -> float | None:
     d = data.get("assigned_diameter_um", data.get("fwhm_diameter_um"))
     return float(d) if d is not None and float(d) > 0 else None
@@ -33,8 +45,12 @@ def edge_transit_times(G) -> dict:
     share of the ±45% floor.
 
     An edge carrying no flow gets ``inf`` rather than a large number: blood that does not move
-    does not arrive, and a finite stand-in would propagate as a merely slow path.
+    does not arrive, and a finite stand-in would propagate as a merely slow path. An edge
+    with no ``length`` or ``flow_abs`` at all raises: a 0 there would read as an empty or
+    stagnant edge.
     """
+    _require_attribute(G, "length", "A 0 would make the edge hold no blood.")
+    _require_attribute(G, "flow_abs", "A 0 would make the edge carry no blood.")
     missing = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
                if _edge_diameter(d) is None]
     if missing:
@@ -47,8 +63,8 @@ def edge_transit_times(G) -> dict:
     out = {}
     for u, v, key, data in G.edges(keys=True, data=True):
         d = _edge_diameter(data)
-        length = float(data.get("length", 0.0))
-        flow = abs(float(data.get("flow_abs", 0.0)))
+        length = float(data["length"])
+        flow = abs(float(data["flow_abs"]))
         volume = np.pi * (d / 2.0) ** 2 * length
         out[(u, v, key)] = (volume / flow) if flow > 0 else float("inf")
     return out
@@ -69,12 +85,14 @@ def transit_time_from_inlets(G, inlets: Iterable[Any]) -> dict:
     so a caller cannot read a missing key as zero.
     """
     tau = edge_transit_times(G)
+    _require_attribute(G, "flow_signed",
+                       "Without it the edge would be read as flowing u -> v as stored.")
     inlets = list(inlets)
 
     # Direct each edge by its solved flow sign. flow_signed > 0 means u -> v as stored.
     outgoing: dict = {n: [] for n in G.nodes()}
     for u, v, key, data in G.edges(keys=True, data=True):
-        signed = float(data.get("flow_signed", data.get("flow_abs", 0.0)))
+        signed = float(data["flow_signed"])
         cost = tau[(u, v, key)]
         if signed >= 0:
             outgoing[u].append((v, cost))

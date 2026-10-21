@@ -266,6 +266,27 @@ def _require_diameters(G, default_diameter_um=None):
         )
 
 
+def _require_lengths_where_unresisted(G):
+    """Raise unless every edge that arrives with no resistance carries a finite length.
+
+    Such an edge gets straight-tube Poiseuille built from its length. A missing length used
+    to become 10 um, so the edge solved at a resistance nothing measured.
+    """
+    missing = [
+        (u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+        if "original_resistance" not in d and d.get("resistance") is None
+        and (d.get("length") is None or not np.isfinite(float(d["length"])))
+    ]
+    if missing:
+        shown = ", ".join(str(e) for e in missing[:3])
+        raise ValueError(
+            f"{len(missing)} of {G.number_of_edges()} edges have no resistance and no usable "
+            f"'length' (absent or non-finite), for example {shown}. Their resistance is "
+            f"built from the length, so a substituted one would be fabricated. Build the graph "
+            f"with lengths, or set a resistance on those edges."
+        )
+
+
 def feeding_vessel_diameter(
     DAG: nx.MultiDiGraph, node, d1: float, d2: float, default_diameter_um=None
 ) -> tuple[float, bool]:
@@ -313,9 +334,9 @@ def _record_original_resistance(data: dict, diameter_um: float) -> None:
         return
     resistance = data.get("resistance")
     if resistance is None:
-        length = data.get("length", 10.0)
+        # _require_lengths_where_unresisted has already checked the length.
         resistance = (
-            128.0 * _upstream_viscosity(diameter_um) * length
+            128.0 * _upstream_viscosity(diameter_um) * data["length"]
         ) / (np.pi * diameter_um**4)
     data["original_resistance"] = resistance
 
@@ -399,6 +420,7 @@ def solve_coupled_flow_and_hematocrit(
     import logging
     logger = logging.getLogger(__name__)
     _require_diameters(G, default_diameter_um)
+    _require_lengths_where_unresisted(G)
     
     # Initialization: Assign baseline hematocrit and viscosity. The arriving resistance is
     # recorded before it is touched; overwriting it here used to discard any upstream

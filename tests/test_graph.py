@@ -426,22 +426,46 @@ def test_direct_skan_loop_extraction():
     
     assert len(loops) >= 1
     assert len(loops[0]) == 8 # The loop has 8 voxels
-    # Test fallback by patching igraph to raise ImportError
+
+
+def _loop_skeleton():
+    from skan import csr
+
+    data = np.zeros((10, 10, 10), dtype=bool)
+    data[1, 1, 1:4] = True
+    data[1, 3, 1:4] = True
+    data[1, 1:4, 1] = True
+    data[1, 1:4, 3] = True
+    return csr.Skeleton(data), data
+
+
+def test_loop_extraction_without_igraph_raises(monkeypatch):
+    """It used to return no loops, so the graph lost its loop edges and nothing said so."""
+    pytest.importorskip("skan")
     import builtins
-    
+
+    sk, data = _loop_skeleton()
     real_import = builtins.__import__
+
     def mock_import(name, *args, **kwargs):
         if name == "igraph":
             raise ImportError("Mocked missing igraph")
         return real_import(name, *args, **kwargs)
-        
-    try:
-        builtins.__import__ = mock_import
-        # Call it again
-        G2, loops2, loop_edges2 = build_graph_segment_skan_stitched_loops(
-            sk, data, debug=True
-        )
-        assert len(loops2) == 0 # Graceful fallback returns empty
-    finally:
-        builtins.__import__ = real_import
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+    with pytest.raises(ImportError, match="python-igraph"):
+        build_graph_segment_skan_stitched_loops(sk, data, debug=True)
+
+
+def test_a_loop_extraction_error_is_not_swallowed(monkeypatch):
+    pytest.importorskip("skan")
+    igraph = pytest.importorskip("igraph")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("biconnected components failed")
+
+    monkeypatch.setattr(igraph.Graph, "biconnected_components", broken)
+    sk, data = _loop_skeleton()
+    with pytest.raises(RuntimeError, match="biconnected components failed"):
+        build_graph_segment_skan_stitched_loops(sk, data, debug=True)
 

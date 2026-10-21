@@ -1002,6 +1002,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     max_fit_center_offset_um: float = 1.5,
     reject_samples_with_low_fit_r2: bool = True,
     min_fit_r2: float = 0.85,
+    n_jobs: int = -1,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -1089,6 +1090,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         If True, discard samples with poor Gaussian fit quality.
     min_fit_r2 :
         Minimum accepted R² for Gaussian fit.
+    n_jobs :
+        joblib worker count for the per-edge measurement; -1 (default) uses every core.
     """
     if profile_baseline_mode not in ("wings", "percentile"):
         raise ValueError(
@@ -1131,10 +1134,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     sorted_edges = sorted(G.edges(keys=True, data=True), key=lambda t: (t[0], t[1], t[2]))
     G_degrees = dict(G.degree())
 
-    print(f"Parallelizing FWHM diameter measurement for {len(sorted_edges)} edges using all CPU cores...")
+    print(f"Parallelizing FWHM diameter measurement for {len(sorted_edges)} edges with n_jobs={n_jobs}...")
 
     results_list = list(tqdm(
-        Parallel(n_jobs=-1, return_as="generator")(
+        Parallel(n_jobs=n_jobs, return_as="generator")(
             delayed(_measure_single_edge_fwhm)(
                 u, v, key, data,
                 raw, labels, voxel_size_xyz,

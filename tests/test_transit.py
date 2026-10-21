@@ -96,3 +96,28 @@ def test_a_cycle_in_the_flow_directions_does_not_hang():
     times = transit_time_from_inlets(G, inlets=[0])
     assert np.isfinite(times[1])
     assert np.isfinite(times[2])
+
+
+@pytest.mark.parametrize("attr", ["length", "flow_abs"])
+@pytest.mark.parametrize("how", ["absent", "none"])
+def test_an_edge_without_a_length_or_flow_is_refused(attr, how):
+    """A missing length or flow used to become 0: no volume, or no flow and so no arrival."""
+    G = _chain(3)
+    if how == "absent":
+        del G.edges[1, 2, 0][attr]
+    else:
+        G.edges[1, 2, 0][attr] = None
+    with pytest.raises(ValueError, match=rf"1 of 3 edges have no '{attr}'.*\(1, 2, 0\)"):
+        edge_transit_times(G)
+
+
+@pytest.mark.parametrize("how", ["absent", "none"])
+def test_an_edge_without_a_flow_direction_is_refused(how):
+    """A missing flow_signed used to fall back to flow_abs, which always points u -> v."""
+    G = _chain(3)
+    if how == "absent":
+        del G.edges[1, 2, 0]["flow_signed"]
+    else:
+        G.edges[1, 2, 0]["flow_signed"] = None
+    with pytest.raises(ValueError, match=r"1 of 3 edges have no 'flow_signed'.*\(1, 2, 0\)"):
+        transit_time_from_inlets(G, inlets=[0])

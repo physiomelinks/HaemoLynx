@@ -56,33 +56,37 @@ def build_graph_segment_skan_stitched_loops(
                 n_voxels, max_voxel_graph_size
             )
         else:
+            # A missing igraph or a failed detection raises. Both used to return no loops with
+            # a warning, and the graph lost its loop edges.
             try:
                 import igraph as ig
-                t_start = time.perf_counter()
+            except ImportError as e:
+                raise ImportError(
+                    "Loop detection needs python-igraph (a declared dependency); install it."
+                ) from e
+            t_start = time.perf_counter()
                 
-                # Convert CSR matrix to igraph edges
-                # Since sk.graph is symmetric, we take the upper triangle to avoid duplicate edges
-                rows, cols = sk.graph.nonzero()
-                upper = rows < cols
-                edges = list(zip(rows[upper], cols[upper]))
+            # Convert CSR matrix to igraph edges
+            # Since sk.graph is symmetric, we take the upper triangle to avoid duplicate edges
+            rows, cols = sk.graph.nonzero()
+            upper = rows < cols
+            edges = list(zip(rows[upper], cols[upper]))
                 
-                ig_vox = ig.Graph(n=n_voxels, edges=edges)
+            ig_vox = ig.Graph(n=n_voxels, edges=edges)
                 
-                # Find biconnected components of size >= 3 (loop clusters)
-                # igraph's biconnected_components() is implemented in C and is O(V+E)
-                bc = ig_vox.biconnected_components()
-                for comp in bc:
-                    if len(comp) >= 3:
-                        # Map internal skan indices back to global (z,y,x) coordinates
-                        loop_coords = sk.coordinates[list(comp)]
-                        voxel_loops.append([tuple(p.astype(int)) for p in loop_coords])
+            # Find biconnected components of size >= 3 (loop clusters)
+            # igraph's biconnected_components() is implemented in C and is O(V+E)
+            bc = ig_vox.biconnected_components()
+            for comp in bc:
+                if len(comp) >= 3:
+                    # Map internal skan indices back to global (z,y,x) coordinates
+                    loop_coords = sk.coordinates[list(comp)]
+                    voxel_loops.append([tuple(p.astype(int)) for p in loop_coords])
                 
-                logger.info(
-                    "Direct skan graph loop detection complete: %d nodes, %d edges, %d loop clusters found in %.3fs",
-                    n_voxels, len(edges), len(voxel_loops), time.perf_counter() - t_start
-                )
-            except (ImportError, Exception) as e:
-                logger.warning("Fast loop detection failed, falling back to basic extraction: %s", e)
+            logger.info(
+                "Direct skan graph loop detection complete: %d nodes, %d edges, %d loop clusters found in %.3fs",
+                n_voxels, len(edges), len(voxel_loops), time.perf_counter() - t_start
+            )
 
     t0 = time.perf_counter()
     loop_vox = set()

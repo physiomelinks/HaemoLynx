@@ -134,6 +134,36 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     assert abs(r - expect_r) < expect_r * 0.05
 
 
+@pytest.mark.parametrize("kwargs, expected", [({}, -1), ({"n_jobs": 1}, 1)],
+                         ids=["default", "one"])
+def test_fwhm_worker_count_is_the_callers_choice(tmp_path: Path, monkeypatch, kwargs, expected):
+    """The worker pool was fixed at every core; n_jobs passes through, defaulting to -1."""
+    import joblib
+
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), _cylinder_gaussian_volume(11, 11, 21, 1.5))
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([5.0, 5.0, 2.0]))
+    G.add_node(1, pos=np.array([5.0, 5.0, 18.0]))
+    G.add_edge(0, 1, length=16.0, voxels=[(5.0, 5.0, float(x)) for x in range(2, 19)])
+
+    seen = []
+    real_parallel = joblib.Parallel
+
+    def spy(*args, **kw):
+        seen.append(kw.get("n_jobs"))
+        return real_parallel(*args, **kw)
+
+    monkeypatch.setattr(joblib, "Parallel", spy)
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G, raw_tiff_path=raw_path, voxel_size_xyz=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=5.0, transverse_profile_step_um=0.2,
+        transverse_half_extent_um=8.0, diameter_guess_um=2.0, **kwargs,
+    )
+    assert seen == [expected]
+    assert summary["edges_measured"] == 1
+
+
 def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     G[0][1][0]["fwhm_diameter_um"] = 2.0

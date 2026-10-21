@@ -124,3 +124,36 @@ def test_pericyte_mask_setter_records_the_unconstricted_diameter(tmp_path):
         constriction_length=8.0,
     )
     assert G[0][1][0]["assigned_diameter_um"] == 6.0
+
+
+_ABSENT = object()
+
+
+@pytest.mark.parametrize(
+    "length",
+    [_ABSENT, None, float("nan"), float("inf")],
+    ids=["absent", "none", "nan", "inf"],
+)
+def test_an_edge_with_no_resistance_and_no_usable_length_is_refused(length):
+    """With no resistance to rescale, the solver builds Poiseuille from the length.
+
+    A missing length used to become 10 um, a resistance nothing measured.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, assigned_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, assigned_diameter_um=8.0)
+    if length is not _ABSENT:
+        G[1][2][0]["length"] = length
+    with pytest.raises(ValueError, match=r"1 of 2 edges .*'length'.*\(1, 2, 0\)"):
+        solve_coupled_flow_and_hematocrit(
+            G, starting_nodes=[0], output_nodes=[2], input_p_bc=P_IN, output_p_bc=P_OUT,
+            systemic_hematocrit=0.45, max_iterations=5,
+        )
+    assert "hematocrit" not in G[0][1][0], "the check runs before any edge is touched"
+
+
+def test_an_edge_that_arrives_with_a_resistance_needs_no_length():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, assigned_diameter_um=8.0, resistance=3.7)
+    G = _solve(G, max_iterations=5)
+    assert G[0][1][0]["original_resistance"] == 3.7
