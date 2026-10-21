@@ -4,7 +4,12 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from carotid_image_to_model import PipelineConfig, carotid_image_to_model
+from carotid_image_to_model import PipelineConfig, SkeletonConfig, carotid_image_to_model
+
+
+def _no_crop():
+    """The mocked probability field is not cropped, so the anatomy must not be either."""
+    return SkeletonConfig(sub_volume_percentage=1.0)
 
 def test_grid_preview_writes_the_five_preview_vtis(tmp_path):
     """With chunk_fraction < 1.0 the grid preview writes five VTI files, then exits."""
@@ -33,7 +38,8 @@ def test_grid_preview_writes_the_five_preview_vtis(tmp_path):
          
          # Run orchestrator
          with pytest.raises(Exception, match="sys.exit was called"):
-             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config)
+             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config,
+                                    skel_config=_no_crop())
          
          assert mock_load_tif.call_count == 1
          
@@ -55,7 +61,6 @@ def test_dual_anatomy_export_alignment_real(tmp_path):
     right; the values are compared with the box cut from the global anatomy too.
     """
     import pyvista as pv
-    from carotid_image_to_model import SkeletonConfig
 
     anatomy = np.arange(100 ** 3, dtype=np.float32).reshape(100, 100, 100)
     saved = {}
@@ -91,6 +96,26 @@ def test_dual_anatomy_export_alignment_real(tmp_path):
     np.testing.assert_array_equal(sub_vti.point_data["RawAnatomy"],
                                   anatomy[25:75, 25:75, 25:75].flatten(order="F"))
 
+def test_a_sub_volume_of_the_wrong_size_is_refused_not_zero_filled(tmp_path):
+    """The anatomy sub-volume used to become all zeros when its size differed from the
+    probability field's, and the export's try/except turned any error into a printed warning.
+    """
+    with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
+         patch('ImageLynx.io.load_3d_tif') as mock_load_tif, \
+         patch('pyvista.ImageData.save'), \
+         patch('carotid_image_to_model.sys.exit') as mock_exit:
+
+         mock_load_prob.return_value = (np.zeros((50, 50, 50), dtype=np.float32), None)
+         # No crop, so the sub-volume is the whole 60^3 anatomy.
+         mock_load_tif.side_effect = [np.zeros((60, 60, 60), dtype=np.float32)]
+         mock_exit.side_effect = Exception("sys.exit was called")
+
+         config = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
+                                 vtk_output_prefix=tmp_path / "resistance_network")
+         with pytest.raises(ValueError, match=r"\(60, 60, 60\).*\(50, 50, 50\)"):
+             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config,
+                                    skel_config=_no_crop())
+
 def test_early_termination_toggle(tmp_path):
     """Verify sys.exit is called based on export_grid_preview toggle."""
     with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
@@ -102,7 +127,8 @@ def test_early_termination_toggle(tmp_path):
          
          mock_prob = np.zeros((10, 10, 10), dtype=np.float32)
          mock_load_prob.return_value = (mock_prob, None)
-         mock_load_tif.side_effect = [np.zeros((10, 10, 10), dtype=np.float32)]
+         # Both runs export the anatomy: chunk_fraction < 1 writes the preview files either way.
+         mock_load_tif.return_value = np.zeros((10, 10, 10), dtype=np.float32)
          
          mock_exit.side_effect = Exception("sys.exit was called")
          
@@ -110,7 +136,8 @@ def test_early_termination_toggle(tmp_path):
          config_exit = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
                                       vtk_output_prefix=tmp_path / "resistance_network")
          with pytest.raises(Exception, match="sys.exit was called"):
-             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config_exit)
+             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config_exit,
+                                    skel_config=_no_crop())
          
          assert mock_exit.call_count == 1
          
@@ -125,7 +152,8 @@ def test_early_termination_toggle(tmp_path):
          config_continue = PipelineConfig(chunk_fraction=0.5, export_grid_preview=False, do_graph_building=False,
                                           vtk_output_prefix=tmp_path / "resistance_network")
          try:
-             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config_continue)
+             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config_continue,
+                                    skel_config=_no_crop())
          except Exception:
              pass # We only care that it proceeded past the sys.exit block
          
