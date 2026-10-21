@@ -10,7 +10,12 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from ImageLynx.haemodynamics.perfusion import PerfusionGrid, map_vessels_to_grid
+from ImageLynx.haemodynamics.perfusion import (
+    PerfusionGrid,
+    build_adr_matrix,
+    cell_discharge_hematocrit,
+    map_vessels_to_grid,
+)
 from ImageLynx.haemodynamics.resistance import build_conductance_matrix_from_graph
 
 
@@ -88,6 +93,71 @@ def test_the_edge_haematocrit_is_carried_into_the_mapping():
                for vessels in map_vessels_to_grid(G, grid).values() for item in vessels}
     assert carried[("hub", "n0", 0)] == 0.2
     assert carried[("hub", "n1", 0)] == 0.45
+
+
+# --- Package AE: the 0.0 flow and length defaults on the Tier 1 path -----------------------
+
+_ABSENT = object()
+
+
+def _set_or_delete(data, attr, value):
+    if value is _ABSENT:
+        del data[attr]
+    else:
+        data[attr] = value
+
+
+@pytest.mark.parametrize("value", [_ABSENT, None], ids=["absent", "none"])
+def test_an_edge_without_a_flow_is_refused_not_dropped_from_tier_1(value):
+    """A 0.0 flow put the edge in the mapping delivering no oxygen, and nothing said so."""
+    G = _grid_graph([8.0, 6.0, 10.0])
+    _set_or_delete(G.edges["hub", "n1", 0], "flow_abs", value)
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError, match=r"1 of 3 edges have no 'flow_abs'.*\('hub', 'n1', 0\)"):
+        map_vessels_to_grid(G, grid)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [_ABSENT, None, float("nan"), float("inf"), 0.0, -5.0],
+    ids=["absent", "none", "nan", "inf", "zero", "negative"],
+)
+def test_an_edge_without_a_usable_length_is_refused_not_dropped_from_tier_1(value):
+    """A 0.0 length gave the edge no length share in any cell, so its flow reached no cell.
+
+    NaN and infinity would spread NaN through every share of the edge, and a zero or negative
+    length is the same silent drop as an absent one.
+    """
+    G = _grid_graph([8.0, 6.0, 10.0])
+    _set_or_delete(G.edges["hub", "n2", 0], "length", value)
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError,
+                       match=r"1 of 3 edges have no usable 'length'.*\('hub', 'n2', 0\)"):
+        map_vessels_to_grid(G, grid)
+
+
+def test_edges_missing_flow_are_counted():
+    G = _grid_graph([8.0, 6.0, 10.0, 7.0])
+    del G.edges["hub", "n0", 0]["flow_abs"]
+    del G.edges["hub", "n3", 0]["flow_abs"]
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError, match="2 of 4 edges have no 'flow_abs'"):
+        map_vessels_to_grid(G, grid)
+
+
+def test_a_vessel_entry_without_a_length_share_is_refused_by_both_readers():
+    """A missing share used to count as 1.0: the edge's whole flow in every cell it crossed."""
+    G = _grid_graph([8.0])
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    cells = {0: [{"flow": 1.0, "hematocrit": 0.45}]}
+
+    class Cfg:
+        sigma_diff, po2_arterial_mmHg = 1.5e-9, 100.0
+
+    with pytest.raises(KeyError, match="length_fraction"):
+        build_adr_matrix(grid, cells, Cfg())
+    with pytest.raises(KeyError, match="length_fraction"):
+        cell_discharge_hematocrit(cells, grid.n_cells)
 
 
 # --- T2.3: edges dropped from the conductance matrix ---------------------------------------

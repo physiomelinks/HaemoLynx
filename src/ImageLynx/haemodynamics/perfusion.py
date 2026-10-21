@@ -558,15 +558,43 @@ def map_vessels_to_grid(
             f"substituted silently. Run the rheology solve "
             f"(solve_coupled_flow_and_hematocrit) first, or set it on every edge."
         )
+    no_flow = [
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if data.get("flow_abs") is None
+    ]
+    if no_flow:
+        shown = ", ".join(str(e) for e in no_flow[:3])
+        raise ValueError(
+            f"{len(no_flow)} of {G.number_of_edges()} edges have no 'flow_abs', for example "
+            f"{shown}. Flow sets the oxygen each edge delivers to Tier 1, and a zero would drop "
+            f"the edge from it without a trace, so it is not substituted silently. Run the "
+            f"rheology solve (solve_coupled_flow_and_hematocrit) first, or set it on every edge."
+        )
+    no_length = [
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if data.get("length") is None
+        or not np.isfinite(float(data["length"])) or float(data["length"]) <= 0
+    ]
+    if no_length:
+        shown = ", ".join(str(e) for e in no_length[:3])
+        raise ValueError(
+            f"{len(no_length)} of {G.number_of_edges()} edges have no usable 'length' (absent, "
+            f"non-finite or non-positive), for example {shown}. Length shares each edge's flow "
+            f"and wall area among the cells it crosses; with none the edge reaches no cell, so "
+            f"it is not substituted silently. Build the graph with lengths, or set a positive "
+            f"one on every edge."
+        )
 
     _raise_on_non_finite_flow(G)
 
     cell_to_vessels = {}
-    
+
     for u, v, key, data in G.edges(keys=True, data=True):
         voxels = data.get("voxels")
-        flow = float(data.get("flow_abs", 0.0)) * flow_to_um3_per_s
-        edge_len = data.get("length", 0.0)
+        flow = float(data["flow_abs"]) * flow_to_um3_per_s
+        # Not cast to float: a few graph lengths are numpy float64, and making them exact floats
+        # moves the per-cell sums by 1 ulp (sum() is compensated only over exact floats).
+        edge_len = data["length"]
         
         diameter = _edge_diameter_um(data, default_diameter_um)
         radius = diameter / 2.0
@@ -725,7 +753,7 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     for idx, vessels in cell_to_vessels.items():
         # Each edge contributes the share of its flow that lies in this cell, so summing over
         # cells recovers the edge's flow once rather than once per cell crossed.
-        q_total[idx] = sum(v['flow'] * v.get('length_fraction', 1.0) for v in vessels)
+        q_total[idx] = sum(v['flow'] * v['length_fraction'] for v in vessels)
         
         # Calculate exactly how much oxygen is delivered to this cell based on the Hill Equation
         # S_incoming = Sum( Q_share * C_blood_arterial )
@@ -733,7 +761,7 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
         for v in vessels:
             h = v['hematocrit']
             c_art = calculate_blood_oxygen_content(po2_arterial, h)
-            total_o2_flux += v['flow'] * v.get('length_fraction', 1.0) * c_art
+            total_o2_flux += v['flow'] * v['length_fraction'] * c_art
             
         s_incoming[idx] = total_o2_flux
 
@@ -801,9 +829,9 @@ def cell_discharge_hematocrit(cell_to_vessels: Dict[int, List[Dict[str, Any]]], 
     """
     h = np.zeros(n_cells, dtype=np.float64)
     for idx, vessels in cell_to_vessels.items():
-        q = sum(v['flow'] * v.get('length_fraction', 1.0) for v in vessels)
+        q = sum(v['flow'] * v['length_fraction'] for v in vessels)
         if q > 0:
-            h[idx] = sum(v['flow'] * v.get('length_fraction', 1.0) * v['hematocrit']
+            h[idx] = sum(v['flow'] * v['length_fraction'] * v['hematocrit']
                          for v in vessels) / q
     return h
 

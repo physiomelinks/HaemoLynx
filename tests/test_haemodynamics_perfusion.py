@@ -153,8 +153,11 @@ def test_advective_source_hematocrit_weighting(mock_graph):
     
     # We will manually craft cell_to_vessels to simulate two identical flows, but one is pure plasma.
     cell_to_vessels = {
-        0: [{'edge': (1, 2, 0), 'flow': 10.0, 'hematocrit': 0.45, 'length': 5.0}], # Normal blood
-        1: [{'edge': (2, 3, 0), 'flow': 10.0, 'hematocrit': 0.00, 'length': 5.0}]  # Skimmed pure plasma
+        # Each edge lies wholly in its one cell, so its whole flow is shared there.
+        0: [{'edge': (1, 2, 0), 'flow': 10.0, 'hematocrit': 0.45, 'length': 5.0,
+             'length_fraction': 1.0}], # Normal blood
+        1: [{'edge': (2, 3, 0), 'flow': 10.0, 'hematocrit': 0.00, 'length': 5.0,
+             'length_fraction': 1.0}]  # Skimmed pure plasma
     }
     
     config = MockPerfusionConfig()
