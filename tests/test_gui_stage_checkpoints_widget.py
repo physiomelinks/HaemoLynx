@@ -747,6 +747,10 @@ def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
 
 
 FIXTURE = Path(__file__).resolve().parent / "data" / "seven_vessel_noisy_3d.tif"
+# The fixture is a tree whose ends all lie inside the image: on by default,
+# remove_interior_dead_ends cuts its 10 vessels to 1 (94d26a26), and the solve
+# then has no conductance path between inlet and outlet. The runs below turn
+# it off, as test_build_network_stage.py does for its toy trees.
 
 
 def _flows(graph):
@@ -771,6 +775,7 @@ def test_run_from_a_tab_leaves_earlier_tabs_as_they_were(make_napari_viewer, qtb
     widget = settings_widget(napari_viewer=viewer)
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
+    rows["remove_interior_dead_ends"].value = False
     rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
     running = widget._haemolynx_run_state
 
@@ -818,6 +823,7 @@ def test_run_from_perturbations_repeats_the_full_runs_perturbations(
     widget = settings_widget(napari_viewer=viewer)
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
+    rows["remove_interior_dead_ends"].value = False
     rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
     rows["run_perturbations"].value = True
     widget._haemolynx_perturbations.add()
@@ -862,6 +868,7 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
     widget = settings_widget(napari_viewer=viewer)
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
+    rows["remove_interior_dead_ends"].value = False
     rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
     running = widget._haemolynx_run_state
 
@@ -939,6 +946,7 @@ def test_a_run_pauses_for_post_processing_and_continue_finishes_it(
     widget = settings_widget(napari_viewer=viewer)
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
+    rows["remove_interior_dead_ends"].value = False
     rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
     rows["mid_run_postprocessing"].value = True
     running = widget._haemolynx_run_state
