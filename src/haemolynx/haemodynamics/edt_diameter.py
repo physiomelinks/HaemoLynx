@@ -188,6 +188,8 @@ def measure_edge_diameters_from_binary_mask(
     method: Literal["cross_section", "inscribed_radius"] = "cross_section",
     min_resolvable_diameter_um: float = MIN_RESOLVABLE_DIAMETER_UM,
     edges: Any = None,
+    workers: int = 1,
+    memmap_directory=None,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from *binary_mask*.
 
@@ -239,6 +241,12 @@ def measure_edge_diameters_from_binary_mask(
     edges :
         Measure only these ``(u, v, key)`` edges (either way round); every
         other edge keeps what it has. ``None`` (default) measures them all.
+    workers :
+        Processes the edges' cross-sections are read in (see
+        :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`: only with
+        enough edges to repay starting them), sharing the mask as packed
+        bits written under *memmap_directory*. The widths are the same
+        however many.
 
     Returns
     -------
@@ -247,6 +255,8 @@ def measure_edge_diameters_from_binary_mask(
     own: ``edges_measured``, ``edges_skipped`` (list of
     ``(u, v, key, reason)``), ``per_edge``.
     """
+    from . import sections as sections_module  # it imports this module
+
     if sample_spacing_along_edge_um <= 0:
         raise ValueError("sample_spacing_along_edge_um must be positive.")
     if min_resolvable_diameter_um < 0:
@@ -280,19 +290,26 @@ def measure_edge_diameters_from_binary_mask(
         "per_edge": [],
     }
 
+    # Each edge in turn: a skip reason, or its inscribed radii and, for the
+    # cross-section method, the payload its sections are read from. The
+    # sections are most of the time (95% of E14.5's 150 s in one process),
+    # so they go to worker processes; the edges are then finished in this
+    # order, so the summary is the same however many there were.
+    pending: list[tuple] = []
+    payloads: list[tuple] = []
     chosen = edge_selection(edges)
     for u, v, key, data in G.edges(keys=True, data=True):
         if chosen is not None and (frozenset((u, v)), key) not in chosen:
             continue
         vox = data.get("voxels")
         if not vox or len(vox) < 2:
-            summary["edges_skipped"].append((u, v, key, "no_voxels"))
+            pending.append((u, v, key, "no_voxels"))
             continue
 
         poly = np.asarray(vox, dtype=float)
         s, total_len = _arc_length_parameterize(poly)
         if total_len <= 0:
-            summary["edges_skipped"].append((u, v, key, "zero_length"))
+            pending.append((u, v, key, "zero_length"))
             continue
 
         for stale in _EDGE_ATTRIBUTES:
@@ -320,20 +337,37 @@ def measure_edge_diameters_from_binary_mask(
             data["edt_off_centreline_samples"] = int(np.count_nonzero(off_mask))
         radii = [float(value) for value in values if np.isfinite(value) and value > 0]
         if not radii:
-            summary["edges_skipped"].append((u, v, key, "edt_failed"))
+            pending.append((u, v, key, "edt_failed"))
             continue
+        section_index = None
+        if method == "cross_section":
+            section_index = len(payloads)
+            payloads.append((
+                np.asarray(sample_points, dtype=float), tangents,
+                np.where(np.isfinite(values), values, 0.0),
+                tuple(float(x) for x in voxel_size_zyx), tuple(int(n) for n in binary_mask.shape),
+            ))
+        pending.append((u, v, key, (data, radii, section_index)))
 
+    # Workers read the mask from its packed bits, an eighth of its bytes.
+    in_workers = int(workers) > 1 and len(payloads) >= sections_module.MIN_EDGES_FOR_WORKERS
+    if in_workers and packed is None:
+        packed = PackedMask.from_mask(binary_mask)
+    section_volume = packed.bits if packed is not None else binary_mask
+    section_readings = sections_module.run_edge_tasks(
+        _edge_sections, payloads, volume=section_volume, workers=int(workers),
+        memmap_directory=memmap_directory,
+    )
+
+    for u, v, key, outcome in pending:
+        if isinstance(outcome, str):
+            summary["edges_skipped"].append((u, v, key, outcome))
+            continue
+        data, radii, section_index = outcome
         diameters = [2.0 * radius for radius in radii]
         used = "inscribed_radius"
-        if method == "cross_section":
-            sections = [
-                _cross_section_diameter(
-                    binary_mask if packed is None else packed, point, tangent, voxel_size_zyx,
-                    guide_radius_um=float(radius) if np.isfinite(radius) else 0.0,
-                )
-                for point, tangent, radius in zip(sample_points, tangents, values)
-            ]
-            closed = [d for d in sections if np.isfinite(d) and d > 0]
+        if section_index is not None:
+            closed = [d for d in section_readings[section_index] if np.isfinite(d) and d > 0]
             if closed:
                 diameters = closed
                 used = "cross_section"
@@ -365,6 +399,20 @@ def measure_edge_diameters_from_binary_mask(
         )
 
     return summary
+
+
+def _edge_sections(volume: np.ndarray, payload: tuple) -> list[float]:
+    """One edge's :func:`_cross_section_diameter` readings. *volume* is the
+    mask, or its packed bits (one-dimensional), which the payload's shape
+    turns back into a ``PackedMask`` -- a module-level function, so worker
+    processes can run it (see
+    :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`)."""
+    points, tangents, guide_radii, voxel_size_zyx, shape = payload
+    mask = PackedMask(volume, shape) if volume.ndim == 1 else volume
+    return [
+        _cross_section_diameter(mask, point, tangent, voxel_size_zyx, guide_radius_um=float(radius))
+        for point, tangent, radius in zip(points, tangents, guide_radii)
+    ]
 
 
 def _centreline_tangents(poly: np.ndarray, s: np.ndarray, total: float, at: np.ndarray) -> np.ndarray:

@@ -625,3 +625,117 @@ def test_a_memmapped_mask_is_read_as_bits_with_the_same_widths(tmp_path, method)
     assert edges[0][(0, 1, 0)]["edt_diameter_um"] > 4.5, "the vessel was measured"
     assert graph.edges[0, 1, 0]["edt_diameter_um"] == edges[0][(0, 1, 0)]["edt_diameter_um"]
     on_disk._mmap.close()
+
+
+def _mixed_graph(line):
+    """Two vessels to measure, between them an edge with no voxels and one
+    far from any vessel, so the skip list's order is checked too."""
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, voxels=[tuple(point) for point in line])
+    graph.add_edge(1, 2, key=0, voxels=[])
+    graph.add_edge(2, 3, key=0, voxels=[(4.0, 4.0, float(x)) for x in np.arange(4.0, 12.0)])
+    graph.add_edge(3, 4, key=0, voxels=[(28.0, 37.0, float(x)) for x in np.arange(10.0, 45.0)])
+    return graph
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_worker_processes_give_the_same_widths_and_summary_as_one(tmp_path, monkeypatch, use_memmap):
+    """The cross-sections are read in worker processes, sharing the mask as
+    packed bits: every width, every attribute and the summary, in its order,
+    are the ones one process gives, and the shared bits are removed."""
+    import concurrent.futures
+
+    from haemolynx.haemodynamics import sections
+
+    started = []
+
+    class Counted(concurrent.futures.ProcessPoolExecutor):
+        def __init__(self, *args, **kwargs):
+            started.append(kwargs.get("max_workers"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(sections, "MIN_EDGES_FOR_WORKERS", 1)
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", Counted)
+    first, line = _tube(6.0, (1, 1, 1))
+    second, _ = _tube(3.0, (1, 0, 0), shift=(0.0, 9.0, 0.0))
+    mask = first | second
+    results = []
+    for workers in (1, 2):
+        graph = _mixed_graph(line)
+        summary = measure_edge_diameters_from_binary_mask(
+            graph, binary_mask=mask, voxel_size_zyx=_VOXEL, sample_spacing_along_edge_um=2.0,
+            use_memmap=use_memmap, workers=workers, memmap_directory=tmp_path / "mm",
+        )
+        results.append((summary, {k: dict(graph.edges[k]) for k in graph.edges(keys=True)}))
+
+    assert started == [2], "the second measurement ran in two worker processes"
+    assert results[1] == results[0]
+    summary, edges = results[0]
+    assert summary["edges_measured"] == 2
+    assert [(u, v, why) for u, v, _key, why in summary["edges_skipped"]] == [
+        (1, 2, "no_voxels"), (2, 3, "edt_failed"),
+    ]
+    assert edges[(0, 1, 0)]["edt_diameter_method"] == "cross_section"
+    assert abs(edges[(0, 1, 0)]["edt_diameter_um"] - 6.0) < 0.6
+    assert not list((tmp_path / "mm").glob("haemolynx_*")), "the shared bits were left behind"
+
+
+def test_when_workers_cannot_start_the_sections_are_read_here(monkeypatch, caplog):
+    import concurrent.futures
+
+    from haemolynx.haemodynamics import sections
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("no processes here")
+
+    first, line = _tube(6.0, (1, 1, 1))
+    expected = _mixed_graph(line)
+    measure_edge_diameters_from_binary_mask(
+        expected, binary_mask=first, voxel_size_zyx=_VOXEL, sample_spacing_along_edge_um=2.0,
+    )
+    monkeypatch.setattr(sections, "MIN_EDGES_FOR_WORKERS", 1)
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", refuse)
+    graph = _mixed_graph(line)
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=first, voxel_size_zyx=_VOXEL, sample_spacing_along_edge_um=2.0, workers=4,
+    )
+
+    assert graph.edges[0, 1, 0]["edt_diameter_samples_um"] == expected.edges[0, 1, 0]["edt_diameter_samples_um"]
+    assert "measuring in this one" in caplog.text
+
+
+def test_few_edges_are_measured_without_starting_workers(monkeypatch):
+    """A hand edit's few vessels (post processing) are not worth a pool."""
+    import concurrent.futures
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("workers were started for one edge")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", refuse)
+    first, line = _tube(6.0, (1, 1, 1))
+    graph = _mixed_graph(line)
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=first, voxel_size_zyx=_VOXEL, sample_spacing_along_edge_um=2.0, workers=8,
+    )
+
+    assert graph.edges[0, 1, 0]["edt_diameter_method"] == "cross_section"
+
+
+def test_the_diameters_stage_measures_the_mask_widths_in_workers(monkeypatch):
+    from haemolynx.haemodynamics import apply, sections
+    from haemolynx.haemodynamics.apply import HaemodynamicsApplyConfig
+
+    seen = []
+    monkeypatch.setattr(sections, "default_worker_count", lambda: 7)
+    monkeypatch.setattr(
+        apply.edt_diameter, "measure_edge_diameters_from_binary_mask",
+        lambda G, **kwargs: seen.append((kwargs["workers"], kwargs["memmap_directory"]))
+        or {"edges_measured": 0, "edges_skipped": []},
+    )
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": {"B01": 5.0}},
+        edt={"use_edt_diameter_crosscheck": True}, memmap_directory="D:/volumes",
+    )
+    apply._measure_edt_diameters(nx.MultiGraph(), config, mask_volume=np.zeros((2, 2, 2), bool))
+
+    assert seen == [(7, "D:/volumes")]

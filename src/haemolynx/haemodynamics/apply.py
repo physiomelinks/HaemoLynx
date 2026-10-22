@@ -628,6 +628,8 @@ def _measure_edt_diameters(
                 "edt_min_resolvable_diameter_um", edt_diameter.MIN_RESOLVABLE_DIAMETER_UM
             )
         ),
+        workers=sections.default_worker_count(),
+        memmap_directory=config.memmap_directory,
         **_subset(edges),
     )
 
