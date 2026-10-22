@@ -692,6 +692,51 @@ def remove_pieces_without_junction(G: nx.MultiGraph) -> dict[str, float]:
     return {"pieces": pieces, "vessels": vessels, "nodes": len(removed), "length_um": length}
 
 
+#: The dead ends :func:`remove_interior_dead_ends` takes: those inside the
+#: image the classifier marked (not one leaving it, not an island's, not one a
+#: person marked a real blind end).
+INTERIOR_DEAD_END_KINDS = (STOPS_SHORT, UNKNOWN, ARTEFACT, BROKEN)
+
+
+def remove_interior_dead_ends(G: nx.MultiGraph, kinds: Sequence[str] = INTERIOR_DEAD_END_KINDS) -> dict[str, float]:
+    """Remove, in place, the chain of every dead end whose marked kind
+    (:data:`DEAD_END_KIND`, :func:`mark_dead_end_kinds`) is one of *kinds*:
+    from its tip to the junction it hangs from. The chains are all found
+    first, on the graph as it was classified, so the answer does not depend
+    on the order of the nodes: taken one at a time, a junction left with two
+    vessels let the next chain run through it to another tip and be skipped
+    as an island's. A junction left with no vessel goes too, so a tree with
+    no vessel leaving the image goes whole. A chain holding a thick-vessel
+    bridge stays (a bridge is never a dead end's). A dead end without a kind
+    is not judged here and stays.
+
+    Harvey's marks: G1-G3 (2026-10-12) called most interior dead ends "not a
+    real vessel", the AIA patella's P1 (2026-10-20) none of 30 a real blind
+    end, and G5 (2026-10-21) 17 of 29 that stop short "stop here". On E14.5
+    this is 210 chains, 8.0 mm, 17% of the network; they carry no flow.
+
+    Returns ``{"dead_ends", "vessels", "nodes", "length_um"}`` removed.
+    """
+    from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    wanted = set(kinds)
+    chains = []
+    for tip in [n for n in G.nodes if G.degree(n) == 1 and G.nodes[n].get(DEAD_END_KIND) in wanted]:
+        nodes, edges = chain_to_junction(G, tip)
+        if G.degree(nodes[-1]) <= 1:
+            continue  # an island's: remove_pieces_without_junction's
+        if any(G.edges[a, b, key].get(IS_ZERO_RESISTANCE) for a, b, key in edges):
+            continue
+        chains.append((nodes, edges))
+    length = sum(chain_length_um(G, edges) for _nodes, edges in chains)
+    vessels = sum(len(edges) for _nodes, edges in chains)
+    for _nodes, edges in chains:
+        G.remove_edges_from(edges)
+    loose = {n for nodes, _edges in chains for n in nodes if G.degree(n) == 0}
+    G.remove_nodes_from(loose)
+    return {"dead_ends": len(chains), "vessels": vessels, "nodes": len(loose), "length_um": length}
+
+
 def dead_end_census(dead_ends: Mapping[Any, DeadEnd]) -> dict[str, int]:
     """How many dead ends of each kind, every kind listed."""
     counts = Counter(end.kind for end in dead_ends.values())
@@ -710,6 +755,7 @@ __all__ = [
     "DeadEnd",
     "FACE_REACH_RADII",
     "FACE_TOUCH_VOXELS",
+    "INTERIOR_DEAD_END_KINDS",
     "ISLAND_END",
     "LEAVES_IMAGE",
     "SOURCE_CLASSIFIER",
@@ -732,6 +778,7 @@ __all__ = [
     "open_end_nodes",
     "reclassify_dead_ends",
     "record_image_extent",
+    "remove_interior_dead_ends",
     "remove_pieces_without_junction",
     "set_dead_end_kind",
     "tip_heading",

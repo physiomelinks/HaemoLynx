@@ -1137,3 +1137,71 @@ def test_tracing_along_the_skeleton_reads_only_the_regions_voxels(monkeypatch):
     assert len(piece.paths) == 1 and piece.ends == [((20, 5, 5), (20, 194, 194))]
     (key,) = reads
     assert all(np.shape(k) == (len(region),) for k in key), "one value a voxel of the region, no box"
+
+
+# --- two-ended recovery, for a graph whose interior dead ends were removed ------
+
+
+def test_two_ended_recovery_keeps_a_vessel_joined_at_both_ends():
+    G, mask = _two_trunks_and_a_lost_capillary()
+
+    G = recover_uncovered_mask_vessels(G, _support(mask), coverage_reach_radii=0.0, two_ended=True)
+
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    assert sum(d["length"] for d in recovered) == pytest.approx(24.0, rel=0.1)
+    assert sum(1 for n in G if G.degree(n) == 1) == 4, "the trunks' own ends only"
+    assert G.graph.get("recovered_one_ended_removed", 0) == 0
+
+
+def test_two_ended_recovery_takes_back_a_branch_joined_at_one_end():
+    """Recovery as it is draws the branch as a dead end; two-ended it is
+    taken out again, and so is the node its join split the trunk at."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+
+    one_ended = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), coverage_reach_radii=0.0, two_ended=True)
+
+    assert any(d.get("recovered") for *_, d in one_ended.edges(data=True))
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+    assert sorted(G.degree(n) for n in G) in ([1, 1], [1, 1, 2])
+    assert G.graph["recovered_one_ended_removed"] >= 1
+
+
+def test_the_coverage_reach_is_handed_to_the_uncovered_mask(monkeypatch):
+    import haemolynx.graph.mask_recovery as module
+
+    seen = []
+    real = module.uncovered_mask_voxels
+
+    def spy(G, support, **kwargs):
+        seen.append(kwargs.get("cross_section_reach_radii"))
+        return real(G, support, **kwargs)
+
+    monkeypatch.setattr(module, "uncovered_mask_voxels", spy)
+    recover_uncovered_mask_vessels(_trunk_graph(), _support(_trunk_mask()), coverage_reach_radii=0.0)
+    recover_uncovered_mask_vessels(_trunk_graph(), _support(_trunk_mask()))
+
+    assert seen[0] == 0.0
+    assert seen[1] == module.CROSS_SECTION_REACH_RADII
+
+
+def test_keeping_two_ended_recovery_prunes_hanging_recovered_chains_only():
+    from haemolynx.graph.mask_recovery import keep_two_ended_recovery
+
+    G = nx.MultiGraph()
+    for node in range(7):
+        G.add_node(node, pos=np.array([0.0, float(node), 0.0]))
+    G.add_edge(0, 1, length=10.0)                     # a vessel
+    G.add_edge(1, 2, length=10.0)                     # a vessel ending blind: stays
+    G.add_edge(0, 3, length=4.0, recovered=True)      # recovered, joined at both ends
+    G.add_edge(3, 1, length=4.0, recovered=True)
+    G.add_edge(1, 4, length=5.0, recovered=True)      # recovered, hanging: two edges
+    G.add_edge(4, 5, length=6.0, recovered=True)
+    G.add_node(6, pos=np.array([0.0, 6.0, 0.0]))
+
+    removed, length = keep_two_ended_recovery(G)
+
+    assert (removed, length) == (2, pytest.approx(11.0))
+    assert sorted(G.nodes) == [0, 1, 2, 3]
+    assert G.has_edge(1, 2) and G.has_edge(0, 3) and G.has_edge(3, 1)

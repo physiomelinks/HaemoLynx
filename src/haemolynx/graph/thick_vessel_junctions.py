@@ -1288,16 +1288,27 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
             return 0
         reaching = cKDTree(near)
 
+    # Each edge's samples, kept while the edge, its path and its nodes'
+    # positions are the very objects they were: every gap filled had the
+    # whole graph sampled again, 2.8 s a time on E14.5, though a fill
+    # changes a few edges.
+    sampled: dict = {}
+
     def graph_samples():
         points, owners, arcs = [], [], []
         for u, v, key, data in G.edges(keys=True, data=True):
             if data.get(IS_ZERO_RESISTANCE) or "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
                 continue
-            path = densify_polyline(_polyline_from(G, u, v, data), max_step_um=_SAMPLE_STEP_UM)
-            along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+            made = (data, data.get("voxels"), G.nodes[u]["pos"], G.nodes[v]["pos"])
+            hit = sampled.get((u, v, key))
+            if hit is None or any(a is not b for a, b in zip(hit[0], made)):
+                path = densify_polyline(_polyline_from(G, u, v, data), max_step_um=_SAMPLE_STEP_UM)
+                along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+                hit = sampled[(u, v, key)] = (made, path, [(float(a), float(along[-1])) for a in along])
+            _made, path, edge_arcs = hit
             points.append(path)
             owners.extend([(u, v, key)] * len(path))
-            arcs.extend((float(a), float(along[-1])) for a in along)
+            arcs.extend(edge_arcs)
         if not points:
             return None, [], None, []
         stacked = np.vstack(points)

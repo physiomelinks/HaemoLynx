@@ -210,3 +210,51 @@ def test_terminal_node_accessors_return_different_shapes():
     assert [node for node, _ in pairs] == terminals
     assert isinstance(position_map, dict)
     assert set(position_map) == set(terminals)
+
+
+# --- densify_polyline: vectorised, the same floats as the loop it replaced ------
+
+
+def _densify_by_loop(points, *, max_step_um):
+    """densify_polyline as it was, point by point (the reference)."""
+    arr = np.asarray(points, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] <= 1:
+        return arr
+    dense = [arr[0]]
+    for start, end in zip(arr[:-1], arr[1:]):
+        segment = end - start
+        length = float(np.linalg.norm(segment))
+        if length <= max_step_um:
+            dense.append(end)
+            continue
+        steps = int(np.ceil(length / max_step_um))
+        for step in range(1, steps + 1):
+            dense.append(start + (step / steps) * segment)
+    return np.asarray(dense, dtype=float)
+
+
+@pytest.mark.parametrize("max_step_um", [0.25, 0.5, 0.98, 1.0, 3.0])
+def test_densify_polyline_gives_the_loops_floats_exactly(max_step_um):
+    from haemolynx.graph._helpers import densify_polyline
+
+    rng = np.random.default_rng(20261022)
+    paths = [np.cumsum(rng.normal(size=(int(rng.integers(2, 60)), 3)) * scale, axis=0)
+             for scale in (0.1, 0.5, 0.98, 1.0, 4.0, 40.0) for _ in range(40)]
+    # Steps of exactly one and two step lengths, repeated points, a voxel staircase.
+    paths.append(np.array([[0, 0, 0], [0, 0, max_step_um], [0, 0, 3 * max_step_um], [0, 0, 3 * max_step_um]], float))
+    paths.append(np.array([[0, 0, 0], [1.0, 0.98, 0.98], [2.0, 0.98, 1.96], [2.0, 1.96, 2.94]]))
+    for path in paths:
+        expected = _densify_by_loop(path, max_step_um=max_step_um)
+        got = densify_polyline(path, max_step_um=max_step_um)
+        assert got.shape == expected.shape
+        assert np.array_equal(got, expected)
+
+
+def test_densify_polyline_leaves_a_point_or_an_empty_path_as_it_is():
+    from haemolynx.graph._helpers import densify_polyline
+
+    one = np.array([[1.0, 2.0, 3.0]])
+    assert np.array_equal(densify_polyline(one, max_step_um=0.5), one)
+    assert densify_polyline(np.empty((0, 3)), max_step_um=0.5).shape == (0, 3)
+    with pytest.raises(ValueError):
+        densify_polyline(one, max_step_um=0.0)

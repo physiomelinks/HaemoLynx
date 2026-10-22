@@ -32,6 +32,9 @@ def _settings(tmp_path: Path, **overrides) -> dict:
             "input_path": tmp_path / "input.tif",
             "vtk_output_prefix": tmp_path / "out" / "run",
             "plot_dir": tmp_path / "plots",
+            # These toy networks are trees whose ends lie inside the image: on by
+            # default, remove_interior_dead_ends would take them whole.
+            "remove_interior_dead_ends": False,
             **overrides,
         }
     )
@@ -435,3 +438,88 @@ def test_a_build_left_only_with_pieces_without_a_junction_says_the_setting_took_
     with pytest.raises(ValueError, match="remove_pieces_without_junction") as caught:
         build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
     assert "removal of pieces with no junction step" in str(caught.value)
+
+
+# --- remove_interior_dead_ends --------------------------------------------------
+
+
+def _ring_and_spur() -> np.ndarray:
+    """A square ring 30 um a side round a 26 um hole, and a 15 um spur off it
+    ending inside the image, 34 um from the nearest face."""
+    skeleton = np.zeros((20, 100, 100), dtype=bool)
+    skeleton[10, 20, 20:51] = skeleton[10, 50, 20:51] = True
+    skeleton[10, 20:51, 20] = skeleton[10, 20:51, 50] = True
+    skeleton[10, 51:66, 35] = True
+    return skeleton
+
+
+def test_interior_dead_ends_stay_with_the_setting_off(tmp_path):
+    skeleton = _ring_and_spur()
+    settings = _settings(tmp_path, remove_interior_dead_ends=False)
+    network = build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
+
+    G = network.graph
+    assert "interior_dead_ends_removed" not in G.graph
+    assert sum(1 for n in G if G.degree(n) == 1) == 1
+
+
+def test_interior_dead_ends_go_and_the_ring_stays_when_asked(tmp_path):
+    skeleton = _ring_and_spur()
+    settings = _settings(tmp_path, remove_interior_dead_ends=True)
+    network = build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
+
+    G = network.graph
+    assert not any(G.degree(n) == 1 for n in G)
+    assert G.graph["interior_dead_ends_removed"] == 1
+    assert G.graph["interior_dead_ends_removed_um"] == pytest.approx(15.0, abs=3.0)
+    ring = sum(float(d["length"]) for *_e, d in G.edges(data=True))
+    assert ring == pytest.approx(120.0, rel=0.1)
+    with _graph_path(tmp_path).open("rb") as f:
+        assert pickle.load(f).graph["interior_dead_ends_removed"] == 1
+
+
+def test_a_tree_with_no_vessel_leaving_the_image_goes_whole_and_the_error_says_why(tmp_path):
+    cross = _cross(80, 25, 55)  # its arms end 25 um from the faces
+    settings = _settings(tmp_path, remove_interior_dead_ends=True)
+    with pytest.raises(ValueError, match="remove_interior_dead_ends"):
+        build_network(settings, _volume(tmp_path, cross, _mask_under(cross)), SCHEMA)
+
+
+def test_the_clean_up_after_the_recovery_reads_its_own_hole_limit(tmp_path, monkeypatch):
+    import haemolynx.graph.assemble as assemble
+
+    holes = []
+    real = assemble.consolidate_lumen
+
+    def spy(G, cleanup, **kwargs):
+        holes.append(cleanup.short_loop_keep_hole_um)
+        return real(G, cleanup, **kwargs)
+
+    monkeypatch.setattr(assemble, "consolidate_lumen", spy)
+    skeleton = _ring_and_spur()
+    settings = _settings(tmp_path, remove_interior_dead_ends=True, recovery_short_loop_keep_hole_over_um=4.0)
+    build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
+
+    assert holes[-1] == 4.0
+    assert set(holes[:-1]) == {settings["short_loop_keep_hole_over_um"]}
+    assert SCHEMA["recovery_short_loop_keep_hole_over_um"].default == 5.3
+    assert SCHEMA["remove_interior_dead_ends"].default is True
+
+
+def test_the_low_ram_option_removes_and_recovers_the_same(tmp_path):
+    """The step reads the mask through the run's one MaskSupport, made low
+    memory under use_memmap_loading: the same graph either way."""
+    skeleton = _ring_and_spur()
+    graphs = []
+    for low in (False, True):
+        run = tmp_path / ("low" if low else "ram")
+        (run / "mm").mkdir(parents=True)
+        settings = _settings(run, use_memmap_loading=low, memmap_directory=run / "mm", remove_interior_dead_ends=True)
+        graphs.append(build_network(settings, _volume(run, skeleton, _mask_under(skeleton)), SCHEMA).graph)
+
+    ram, low = graphs
+    assert ram.graph["interior_dead_ends_removed"] == low.graph["interior_dead_ends_removed"] == 1
+    assert sorted(ram.nodes) == sorted(low.nodes)
+    assert sorted(ram.edges(keys=True)) == sorted(low.edges(keys=True))
+    for edge in ram.edges(keys=True):
+        assert np.array_equal(np.asarray(ram.edges[edge]["voxels"]), np.asarray(low.edges[edge]["voxels"]))

@@ -1819,6 +1819,11 @@ def _no_vessels_left_error(
         )
     if settings.get("remove_pieces_without_junction"):
         reasons.append("remove_pieces_without_junction removes every vessel with no junction on it")
+    if settings.get("remove_interior_dead_ends"):
+        reasons.append(
+            "remove_interior_dead_ends removes every dead end inside the image, so a network "
+            "with no loop and no vessel leaving the image goes whole"
+        )
     return ValueError(
         f"Graph building left no vessels. {built} Settings to check: " + "; ".join(reasons) + "."
     )
@@ -2151,6 +2156,20 @@ def build_network(
                 max_deviation=settings["centreline_max_deviation"],
                 radius_at=radius_at,
             )
+        # Interior dead ends out, the mask they leave uncovered recovered as
+        # vessels joined at both ends, and the clean-up run again (on by
+        # default: Harvey's grids G5, L1 and L2, 2026-10-21).
+        if (
+            settings.get("remove_interior_dead_ends")
+            and lumen_cleanup is not None
+            and lumen_cleanup.support is not None
+        ):
+            G = _remove_and_recover_interior_dead_ends(
+                settings, G, skeleton=skeleton, binary_mask=binary_mask, voxel_size_zyx=voxel_size_zyx,
+                radius_at=radius_at, cleanup=lumen_cleanup, thick_mask=volume.thick_vessel_mask,
+                thick_tree=thick_tree, thick_tree_radius=thick_tree_radius,
+            )
+            edges_after_step.append(("removal and recovery of interior dead ends", G.number_of_edges()))
         # Pieces with no junction (their dead ends are graph.dead_ends'
         # island ends), taken out last so no step after rejoins or re-makes
         # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
@@ -2396,6 +2415,111 @@ def _mark_dead_end_kinds(
         len(ends),
         ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in census.items() if count) or "none",
     )
+
+
+#: The edge mark on what :func:`_remove_and_recover_interior_dead_ends`'
+#: recovery drew.
+INTERIOR_RECOVERY = "interior_recovery"
+
+
+def _remove_and_recover_interior_dead_ends(
+    settings: dict,
+    G: nx.MultiGraph,
+    *,
+    skeleton: np.ndarray,
+    binary_mask: np.ndarray,
+    voxel_size_zyx,
+    radius_at,
+    cleanup: "graph.assemble.LumenCleanup",
+    thick_mask: np.ndarray | None = None,
+    thick_tree=None,
+    thick_tree_radius=None,
+) -> nx.MultiGraph:
+    """``remove_interior_dead_ends``: every interior dead end's chain out
+    (``graph.dead_ends.remove_interior_dead_ends``), the mask no centreline's
+    own radius then covers traced along the skeleton and kept only where it
+    joins the network at both ends (``mask_recovery``'s *two_ended*, coverage
+    by the radius alone), what it drew smoothed and bridged into thick
+    vessels as graph building does, the lumen clean-up run with
+    ``recovery_short_loop_keep_hole_over_um``, and the interior dead ends the
+    clean-up leaves taken out again.
+
+    Fitted to Harvey's marks on E14.5 (2026-10-21): G5 (17 of 29 dead ends
+    that stop short "stop here"), the recovery he called the best graph yet,
+    and grids L1 and L2 for the clean-up's hole limit. Not yet tried on
+    another dataset."""
+    graph.dead_ends.record_image_extent(G, skeleton.shape, voxel_size_zyx)
+    support = cleanup.support
+    _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at, support=support)
+    first = graph.dead_ends.remove_interior_dead_ends(G)
+    # What the build's own recovery drew carries the same mark: set aside, so
+    # only this recovery's edges are judged two-ended.
+    earlier = {}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if data.pop("recovered", None) is not None:
+            earlier[(u, v, key)] = True
+    G = graph.mask_recovery.recover_uncovered_mask_vessels(
+        G,
+        support,
+        attach_reach_um=float(settings["final_orphan_reconnect_threshold"]),
+        min_region_volume_um3=float(settings["recovery_min_region_volume_um3"]),
+        min_length_um=float(settings["recovery_min_length_um"]),
+        skeleton=skeleton,
+        coverage_reach_radii=0.0,
+        two_ended=True,
+    )
+    drawn = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if data.get("recovered"):
+            data[INTERIOR_RECOVERY] = True
+            drawn.append((u, v, key))
+    drawn_um = sum(float(G.edges[e].get("length") or 0.0) for e in drawn)
+    for edge in earlier:
+        if G.has_edge(*edge):
+            G.edges[edge]["recovered"] = True
+    if drawn and settings["smooth_centrelines"]:
+        graph.smooth_graph_centrelines(
+            G,
+            skeleton,
+            voxel_size_zyx=voxel_size_zyx,
+            method=settings["centreline_smoothing_method"],
+            iterations=settings["centreline_smoothing_iterations"],
+            max_deviation=settings["centreline_max_deviation"],
+            radius_at=radius_at,
+            edges=drawn,
+        )
+    if drawn and thick_mask is not None:
+        G = graph.insert_thick_vessel_junction_nodes(
+            G, thick_mask, voxel_size_zyx=voxel_size_zyx, edges=drawn, segmentation=binary_mask,
+            centreline=thick_tree, **thick_junction_bridge_arguments(settings),
+            mask_support=support, tree_radius_um=thick_tree_radius,
+        )
+    after_recovery = replace(
+        cleanup, short_loop_keep_hole_um=float(settings["recovery_short_loop_keep_hole_over_um"]), memos={}
+    )
+    G = graph.assemble.consolidate_lumen(G, after_recovery)
+    _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at, support=support)
+    second = graph.dead_ends.remove_interior_dead_ends(G)
+    if second["dead_ends"]:
+        G = graph.assemble.smart_multigraph_degree2_removal(
+            G, None, max_degree=cleanup.max_degree, debug=cleanup.debug, inside_lumen=cleanup.inside_lumen,
+        )
+        graph.thick_vessel_junctions.remove_dangling_bridges(G)
+    kept_um = sum(
+        float(data.get("length") or 0.0) for *_e, data in G.edges(data=True) if data.get(INTERIOR_RECOVERY)
+    )
+    G.graph["interior_dead_ends_removed"] = first["dead_ends"] + second["dead_ends"]
+    G.graph["interior_dead_ends_removed_um"] = first["length_um"] + second["length_um"]
+    G.graph["interior_recovery_drawn_um"] = drawn_um
+    G.graph["interior_recovery_kept_um"] = kept_um
+    logger.info(
+        "Interior dead ends: removed %d (%.0f um); recovery drew %.0f um joined at both ends, %.0f um of it "
+        "still marked after the clean-up (hole limit %.1f um), which left %d more interior dead end(s) (%.0f um), "
+        "removed too.",
+        first["dead_ends"], first["length_um"], drawn_um, kept_um, after_recovery.short_loop_keep_hole_um,
+        second["dead_ends"], second["length_um"],
+    )
+    return G
 
 
 def _record_raw_evidence(

@@ -767,17 +767,22 @@ def densify_polyline(
         return arr
     if arr.shape[0] == 1:
         return arr
-    dense: List[np.ndarray] = [arr[0]]
-    for start, end in zip(arr[:-1], arr[1:]):
-        segment = end - start
-        length = float(np.linalg.norm(segment))
-        if length <= max_step_um:
-            dense.append(end)
-            continue
-        steps = int(np.ceil(length / max_step_um))
-        for step in range(1, steps + 1):
-            dense.append(start + (step / steps) * segment)
-    return np.asarray(dense, dtype=float)
+    # Each segment's points at once: a segment no longer than the step keeps
+    # its end point as it is, a longer one gets start + (k / n) * segment for
+    # k = 1..n, the arithmetic the loop this replaced did point by point, so
+    # the same floats (norm along an axis matches norm of each row).
+    starts, ends = arr[:-1], arr[1:]
+    segments = ends - starts
+    lengths = np.linalg.norm(segments, axis=1)
+    short = lengths <= max_step_um
+    steps = np.where(short, 1, np.ceil(np.where(short, 1.0, lengths) / max_step_um)).astype(np.int64)
+    owner = np.repeat(np.arange(len(segments)), steps)
+    first = np.cumsum(steps) - steps
+    k = np.arange(int(steps.sum()), dtype=np.int64) - np.repeat(first, steps) + 1
+    fractions = k / steps[owner]
+    points = starts[owner] + fractions[:, None] * segments[owner]
+    points[short[owner]] = ends[owner[short[owner]]]
+    return np.vstack([arr[:1], points])
 
 
 class EdgeSampleIndex:

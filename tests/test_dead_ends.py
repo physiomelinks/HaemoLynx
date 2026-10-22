@@ -270,3 +270,77 @@ def test_rings_lone_nodes_and_short_pieces_with_a_junction_stay_and_long_islands
     assert set(G.nodes) == kept
     assert removed == {"pieces": 1, "vessels": 1, "nodes": 2, "length_um": pytest.approx(400.0)}
     assert de.remove_pieces_without_junction(G) == {"pieces": 0, "vessels": 0, "nodes": 0, "length_um": 0.0}
+
+
+# --- remove_interior_dead_ends -------------------------------------------------
+
+
+@pytest.mark.parametrize("make", CASES, ids=lambda make: make.__name__)
+def test_removing_interior_dead_ends_takes_exactly_the_interior_kinds_chains(make):
+    """It reads the kinds marked on the nodes: every chain whose tip is an
+    interior kind goes back to its junction, and no other node does."""
+    case = make()
+    support = MaskSupport(case.mask, VOXEL_SIZE)
+    ends = de.classify_and_mark(case.graph, extent_um=EXTENT, support=support)
+    G = case.graph
+    chains = [end.chain for end in ends.values()
+              if end.kind in de.INTERIOR_DEAD_END_KINDS and G.degree(end.junction) > 1
+              and not any(G.edges[a, b, k].get("is_zero_resistance") for a, b, k in end.chain)]
+    H = G.copy()
+    for chain in chains:
+        H.remove_edges_from(chain)
+    expected = {n for chain in chains for edge in chain for n in edge[:2] if H.degree(n) == 0}
+    before = set(G.nodes)
+
+    removed = de.remove_interior_dead_ends(G)
+
+    assert before - set(G.nodes) == expected, case.name
+    assert removed["nodes"] == len(expected) and removed["dead_ends"] == len(chains)
+    assert not any(G.nodes[n].get(de.DEAD_END_KIND) in de.INTERIOR_DEAD_END_KINDS for n in G if G.degree(n) == 1)
+
+
+def test_interior_dead_ends_go_to_their_junction_and_every_other_kind_stays():
+    from lumen_artefact_fixtures import polyline_graph
+
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    hub = (0.0, 0.0, 0.0)
+    G = polyline_graph([
+        [hub, (0, 0, 10)], [(0, 0, 10), (0, 0, 20)],     # stops short: two edges through a degree-2 node
+        [hub, (0, 10, 0)],                                 # leaves the image
+        [hub, (0, -10, 0)],                                # a person's real blind end
+        [hub, (0, 0, -10)],                                # unknown, but its chain is a bridge
+        [hub, (10, 0, 0)],                                 # no kind marked: not judged
+    ])
+    kinds = {(0.0, 0.0, 20.0): de.STOPS_SHORT, (0.0, 10.0, 0.0): de.LEAVES_IMAGE,
+             (0.0, -10.0, 0.0): de.BLIND, (0.0, 0.0, -10.0): de.UNKNOWN}
+    for node, kind in kinds.items():
+        G.nodes[node][de.DEAD_END_KIND] = kind
+    for *_e, data in G.edges((0.0, 0.0, -10.0), data=True):
+        data[IS_ZERO_RESISTANCE] = True
+
+    removed = de.remove_interior_dead_ends(G)
+
+    assert removed == {"dead_ends": 1, "vessels": 2, "nodes": 2, "length_um": pytest.approx(20.0)}
+    assert (0.0, 0.0, 10.0) not in G and (0.0, 0.0, 20.0) not in G
+    assert hub in G and G.degree(hub) == 4
+    assert de.remove_interior_dead_ends(G)["dead_ends"] == 0
+
+
+def test_a_tree_loses_every_interior_chain_whatever_the_node_order():
+    """Taken one at a time, the third arm of a star ran through the hub left
+    with two vessels and was skipped as an island's, and which arms went hung
+    on the node order."""
+    from lumen_artefact_fixtures import polyline_graph
+
+    hub = (0.0, 0.0, 0.0)
+    arms = [(0, 0, 10), (0, 10, 0), (0, 0, -10), (0, -10, 0)]
+    for order in (arms, arms[::-1]):
+        G = polyline_graph([[hub, arm] for arm in order])
+        for arm in order:
+            G.nodes[tuple(float(c) for c in arm)][de.DEAD_END_KIND] = de.UNKNOWN
+
+        removed = de.remove_interior_dead_ends(G)
+
+        assert removed == {"dead_ends": 4, "vessels": 4, "nodes": 5, "length_um": pytest.approx(40.0)}
+        assert G.number_of_nodes() == 0

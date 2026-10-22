@@ -3209,6 +3209,46 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="remove_interior_dead_ends",
+            kind="bool",
+            default=True,
+            help=(
+                "At the end of graph building, remove every dead end inside the image "
+                "(classed stops short, broken, artefact or unknown: not one leaving the "
+                "image, not an island's), back to the junction it hangs from; then trace "
+                "the segmented vessels the graph no longer covers, keeping only those that "
+                "join the network at both ends, run the lumen clean-up with "
+                "recovery_short_loop_keep_hole_over_um, and remove the interior dead ends "
+                "it leaves. Harvey's marks called most interior dead ends not a vessel "
+                "(grids G1-G3, P1, G5); on E14.5 they were 17% of the network and carried "
+                "no flow; recovery drew 6.5 mm back as vessels joined at both ends, 8.0 mm "
+                "having gone (before its clean-up). On by default since 2026-10-21 (Harvey). "
+                "A network with no loop and no vessel leaving the image goes whole. No "
+                "effect without the segmented mask or with bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="recovery_short_loop_keep_hole_over_um",
+            kind="float",
+            default=5.3,
+            help=(
+                "short_loop_keep_hole_over_um for the lumen clean-up remove_interior_dead_ends "
+                "runs after its recovery: a short loop round a tissue hole wider than this "
+                "is kept. Most loops recovery closes are real: at the 10 um limit the rule "
+                "broke a real loop 16 times in 24 (Harvey's grid L1); at 5.3 um it was right "
+                "19 times in 29 on a fresh grid (L2), against 13 at 10 um and 16 keeping "
+                "every loop. Below 5.3 um it is about even. 0 breaks every short loop"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_graph_building", "bridge_require_mask_support", "remove_interior_dead_ends"),
+            advanced=True,
+        ),
+        Setting(
             name="recover_uncovered_mask_vessels",
             kind="bool",
             default=True,

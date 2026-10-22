@@ -999,10 +999,23 @@ def recover_uncovered_mask_vessels(
     min_length_um: float = DEFAULT_MIN_LENGTH_UM,
     margin_um: float = SAME_LUMEN_MARGIN_UM,
     skeleton: np.ndarray | None = None,
+    coverage_reach_radii: float = CROSS_SECTION_REACH_RADII,
+    two_ended: bool = False,
 ) -> nx.MultiGraph:
     """Add, in place, a centreline through each piece of *support*'s mask
     the graph does not cover (:func:`uncovered_mask_voxels`), joined to the
     network.
+
+    *coverage_reach_radii* is how far across its lumen a centreline covers
+    the mask (``uncovered_mask_voxels``' *cross_section_reach_radii*); 0 is
+    its own radius alone. *two_ended* keeps only what joins the network at
+    both ends: recovered edges left hanging from a dead end are taken out
+    again, until none is (:func:`keep_two_ended_recovery`). Both are for a
+    graph whose interior dead ends were removed first
+    (``dead_ends.remove_interior_dead_ends``): followed out to 4 radii a
+    lumen counts the mask beside a neighbour as covered, and recovery as it
+    is draws mostly dead ends -- on E14.5, 1,376 of the 2,024 edges it drew
+    there (2026-10-21).
 
     With *skeleton* -- the run's own skeleton, voxel-indexed like the mask --
     a piece's centreline is the skeleton where it runs through the piece,
@@ -1047,7 +1060,9 @@ def recover_uncovered_mask_vessels(
             f"the skeleton's shape {tuple(np.shape(skeleton))} is not the mask's "
             f"{tuple(support.mask.shape)}: recovery reads one at the other's voxels"
         )
-    uncovered = uncovered_mask_voxels(G, support, margin_um=margin_um)
+    uncovered = uncovered_mask_voxels(
+        G, support, margin_um=margin_um, cross_section_reach_radii=coverage_reach_radii
+    )
     if not len(uncovered):
         return G
     index, radii = _centreline_samples(G, support)
@@ -1232,6 +1247,13 @@ def recover_uncovered_mask_vessels(
             pieces += 1
     for node in list(G.nodes):
         G.nodes[node].pop("_recovery_split", None)
+    if two_ended:
+        hanging, hanging_um = keep_two_ended_recovery(G)
+        G.graph["recovered_one_ended_removed"] = int(G.graph.get("recovered_one_ended_removed", 0)) + hanging
+        logger.info(
+            "Mask recovery, two-ended: took out %d recovered edge(s), %.0f um, joined to the network "
+            "at one end only", hanging, hanging_um,
+        )
     G.graph["recovered_joins"] = int(G.graph.get("recovered_joins", 0)) + joins
     G.graph["recovered_dead_ends_removed"] = int(G.graph.get("recovered_dead_ends_removed", 0)) + dead_ends
     logger.info(
@@ -1243,6 +1265,32 @@ def recover_uncovered_mask_vessels(
         loops_in_lumen, dead_ends,
     )
     return G
+
+
+def keep_two_ended_recovery(G: nx.MultiGraph) -> tuple[int, float]:
+    """Take out, in place, every recovered edge (``recovered=True``) hanging
+    from a dead end, again and again until none is: what stays of recovery
+    joins the network at both ends. Dead ends on edges recovery did not draw
+    stay. Returns how many edges went, and their length (um)."""
+    removed = 0
+    length = 0.0
+    while True:
+        tips = [
+            node for node in G.nodes
+            if G.degree(node) == 1
+            and all(data.get("recovered") for *_e, data in G.edges(node, data=True))
+        ]
+        if not tips:
+            return removed, length
+        for node in tips:
+            if node not in G or G.degree(node) != 1:
+                continue
+            for u, v, key, data in list(G.edges(node, keys=True, data=True)):
+                length += float(data.get("length") or 0.0)
+                G.remove_edge(u, v, key)
+                removed += 1
+            G.remove_node(node)
+        G.remove_nodes_from([node for node in list(G.nodes) if G.degree(node) == 0])
 
 
 #: An edge this far out of the mask, or further, is the floating strand:
@@ -1290,6 +1338,7 @@ __all__ = [
     "DEFAULT_MIN_REGION_VOLUME_UM3",
     "REGION_SAMPLE_VOXELS",
     "UncoveredRegion",
+    "keep_two_ended_recovery",
     "recover_uncovered_mask_vessels",
     "remove_edges_off_the_mask",
     "uncovered_mask_regions",

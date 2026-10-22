@@ -697,6 +697,12 @@ are only caught locally.
   section diameter methods use) once there are `_WORKER_MIN_SAMPLES`; the outline is per sample
   and identical with any of that (E14.5's uncovered scan went 108 -> 18 s, bit for bit). Without
   a mask, or with both settings off, the two steps leave the graph as it is.
+  `recover_uncovered_mask_vessels(coverage_reach_radii=, two_ended=)` (2026-10-21): the first is
+  `uncovered_mask_voxels`' cross-section reach (0: a centreline's own radius covers), the second
+  takes recovered edges left hanging from a dead end out again until none is
+  (`keep_two_ended_recovery`, `G.graph["recovered_one_ended_removed"]`); both for
+  `remove_interior_dead_ends` -- after removing E14.5's interior dead ends, recovery as it is
+  drew 1,376 of its 2,024 edges as dead ends.
 - **One reader of the mask a run** (2026-10-18, for `use_memmap_loading` on large stacks) —
   `build_network` makes one `preprocessing.MaskSupport` over the binary mask and hands it to graph
   building (`build_graph_from_skeleton(mask_support=)`), both clean-ups after it, the thick-vessel
@@ -868,6 +874,37 @@ are only caught locally.
   `G.graph["pieces_without_junction_removed"]` / `_um`). Harvey's AIA patella grid P1
   (`outputs/patella_dead_end_review/`) marked 11 of 14 such pieces specks and 3 real vessel the
   segmentation cut off, and none of 30 patella dead ends a real blind end.
+  `remove_interior_dead_ends` (Graph tab, **on by default** since 2026-10-22, Harvey;
+  `recovery_short_loop_keep_hole_over_um`, 5.3 um, behind the same Advanced button;
+  `stages._remove_and_recover_interior_dead_ends`, after `smooth_straight_steps` and before
+  the junctionless pieces): every interior dead end's chain (`stops_short`, `unknown`,
+  `artefact`, `broken`; not `leaves_image`, an island's or a person's `blind`) is removed to
+  its junction (`dead_ends.remove_interior_dead_ends`: all chains found first, so the answer
+  is order-free, and a junction left with nothing goes too -- a tree with no vessel leaving
+  the image goes whole, and the empty-build error names the setting); then mask recovery runs
+  with coverage by a centreline's own radius alone and keeps only what joins the network at
+  both ends (`recover_uncovered_mask_vessels(coverage_reach_radii=0, two_ended=True)`,
+  `keep_two_ended_recovery`); what it drew is marked `interior_recovery`, smoothed and bridged
+  into thick vessels like any vessel; the lumen clean-up runs with the 5.3 um hole limit; the
+  interior dead ends it leaves are removed a second time. Counts on the graph
+  (`interior_dead_ends_removed`, `_um`, `interior_recovery_drawn_um`, `_kept_um`). Fitted to
+  Harvey's marks on E14.5 alone (2026-10-21, `outputs/stops_short_route_review/`): G5 (a
+  trace-on along a route through the mask joined no better than never joining, 23/29 each;
+  17 of 29 `stops_short` ends "stop here"), the remove-then-recover graph he called the best
+  yet, L1 (at 10 um the short-loop rule broke a real loop 16 times in 24, 12 of 16 of them on
+  recovered strands) and the fresh L2 (5.3 um 19/29 against 13 at 10 um and 16 keeping all;
+  below 5.3 um about even). On E14.5: 211 chains, 7.4 mm, out; 6.2 mm drawn back joined at
+  both ends; 43.9 mm, 194 dead ends and 310 loops after, against 47.8 mm, 396 and 231 built.
+  The same graph under the low-RAM option (tests/test_build_network_stage.py). Not yet
+  tried on another dataset.
+  Speed, output identical (2026-10-22): `densify_polyline` is vectorised (the loop's floats,
+  pinned against it in tests/test_shared_helpers.py; 8.5x on E14.5's polylines) and
+  `_fill_tree_gaps` keeps each edge's samples between fills rather than resampling the graph
+  after each (2.8 s a fill). The step 196 -> 163 s on E14.5 (one pair); whole builds 633/658 s
+  old against 653/600/673 s new, within the machine's noise, every node, edge and attribute
+  identical, in RAM and low-RAM (`outputs/stops_short_route_review/speed_check.py`,
+  `build_check.py`). Recovery's routes (~35 s: a window's EDT and MCP each) are left: a shared
+  window changes the route.
   The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
   ends inside the tissue: drawn unsolved, grey, while exports keep its 0 -- Harvey, 2026-10-15), `closed_end`
   (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the
