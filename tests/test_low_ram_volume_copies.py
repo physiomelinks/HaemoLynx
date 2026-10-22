@@ -1004,18 +1004,31 @@ def test_low_ram_mask_dilation_is_the_distance_transforms(tmp_path, monkeypatch,
         assert np.array_equal(low, reference)
 
 
-def test_low_ram_dilation_of_an_empty_or_full_mask_is_scipys(tmp_path):
-    """scipy reads a volume with no feature as that far from one at (-1, 0, 0):
-    an empty mask "dilates" into a corner, and the same here."""
+def test_an_empty_mask_dilates_to_an_empty_mask_and_a_full_one_stays_full(tmp_path):
+    """scipy reads a volume with no feature as that far from one at (-1, 0, 0),
+    so the whole transform "dilated" an empty mask into a blob at the corner,
+    and the block path copied it: a vessel touching three faces, which stump
+    detection took for a large vessel cut off by the image. Nothing now, in
+    either mode, the 2D path included."""
+    from haemolynx.graph.large_vessel_network import find_large_vessel_mask_stump_points
     from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
 
-    for mask in (np.zeros((6, 9, 10), bool), np.ones((6, 9, 10), bool)):
-        reference = mask | (distance_transform_edt(~mask, sampling=(1.0, 0.5, 0.5)) <= 1.6)
-        plain = dilate_binary_mask_by_microns(mask, 1.6, (1.0, 0.5, 0.5))
-        low = dilate_binary_mask_by_microns(mask, 1.6, (1.0, 0.5, 0.5), low_memory=True, memmap_directory=tmp_path)
-        assert np.array_equal(plain, reference)
-        assert np.array_equal(low, reference)
-    assert dilate_binary_mask_by_microns(np.zeros((6, 9, 10), bool), 1.6, (1.0, 0.5, 0.5)).any()
+    spacing = (1.0, 0.5, 0.5)
+    empty = np.zeros((6, 9, 10), bool)
+    assert (distance_transform_edt(~empty, sampling=spacing) <= 1.6).any(), "scipy's corner, still there"
+    for dilation in (1.6, 15.0):
+        plain = dilate_binary_mask_by_microns(empty, dilation, spacing)
+        low = dilate_binary_mask_by_microns(empty, dilation, spacing, low_memory=True, memmap_directory=tmp_path)
+        assert type(plain) is np.ndarray and plain.dtype == bool and not plain.any()
+        assert isinstance(low, np.memmap) and not np.asarray(low).any()
+        assert find_large_vessel_mask_stump_points(plain, voxel_size_zyx=spacing) == []
+    assert not dilate_binary_mask_by_microns(np.zeros((9, 10), bool), 1.6, (0.5, 0.5)).any()
+
+    full = np.ones((6, 9, 10), bool)
+    assert dilate_binary_mask_by_microns(full, 1.6, spacing).all()
+    assert np.asarray(
+        dilate_binary_mask_by_microns(full, 1.6, spacing, low_memory=True, memmap_directory=tmp_path)
+    ).all()
 
 
 def test_mask_dilation_holds_no_distance_volume(tmp_path, monkeypatch):

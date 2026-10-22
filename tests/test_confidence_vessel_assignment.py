@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from haemolynx.graph import (
     select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence,
@@ -113,6 +114,39 @@ def test_quality_gate_can_trigger_conservative_mode():
     )
     assert result["conservative_mode"] is True
     assert float(result["effective_max_dilation_microns"]) == conservative_max
+
+
+@pytest.mark.parametrize("low_memory", [False, True])
+def test_an_empty_venule_mask_claims_no_terminal_at_the_volumes_corner(tmp_path, low_memory):
+    """Dilated, an empty mask used to read as a blob at voxel (0, 0, 0)
+    (scipy's distance transform of a volume with no feature), so a terminal
+    there became an outlet of a venule mask with no venule in it."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))  # beside the corner, in no mask
+    G.add_node(1, pos=np.array([5.0, 5.0, 5.0]))
+    G.add_node(2, pos=np.array([10.0, 10.0, 10.0]))  # inside the arteriole
+    G.add_edge(0, 1, length=6.9, voxels=[(1.0, 1.0, 1.0), (5.0, 5.0, 5.0)])
+    G.add_edge(1, 2, length=8.7, voxels=[(5.0, 5.0, 5.0), (10.0, 10.0, 10.0)])
+
+    arteriole_mask = np.zeros((14, 14, 14), dtype=bool)
+    arteriole_mask[8:13, 8:13, 8:13] = True
+    venule_mask = np.zeros((14, 14, 14), dtype=bool)
+
+    result = select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        max_dilation_microns=4.0,
+        confidence_margin=0.0,
+        minimum_confidence=0.0,
+        topology_penalty=0.0,
+        low_memory=low_memory,
+        memmap_directory=tmp_path,
+    )
+    assert result["input_nodes"] == [2]
+    assert 0 not in result["output_nodes"]
+    assert result["output_nodes"] == []
 
 
 def test_confidence_schema_requires_non_legacy_mode():

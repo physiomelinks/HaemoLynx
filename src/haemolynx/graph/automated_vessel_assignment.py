@@ -1280,8 +1280,13 @@ def _distance_from_mask_microns(
     *,
     voxel_size_zyx: tuple[float, float, float],
 ) -> np.ndarray:
-    """Compute physical EDT distance from binary mask (in microns)."""
+    """Compute physical EDT distance from binary mask (in microns): ``inf``
+    everywhere for an empty mask, as :func:`_distances_to_mask_microns` reads
+    it -- scipy measures such a volume from a feature just outside its
+    corner, so every dilation of it made a blob there."""
     binary_mask = mask.astype(bool, copy=False)
+    if not binary_mask.any():
+        return np.full(binary_mask.shape, np.inf)
     sampling_zyx = (
         float(voxel_size_zyx[0]),
         float(voxel_size_zyx[1]),

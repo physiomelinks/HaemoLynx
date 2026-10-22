@@ -72,6 +72,8 @@ def dilate_binary_mask_by_microns(
         return _dilate_by_block(
             binary_mask, float(dilation_microns), voxel_size_zyx, memmap_directory, on_disk=low_memory
         )
+    if not binary_mask.any():
+        return binary_mask.copy()
     distance_from_mask = distance_transform_edt(~binary_mask, sampling=voxel_size_zyx)
     return binary_mask | (distance_from_mask <= float(dilation_microns))
 
@@ -91,14 +93,11 @@ def _dilate_by_block(
         else np.array(mask, dtype=bool)
     )
     if not _any_by_slab(mask):
-        # scipy's transform of a volume with no feature reads every voxel as
-        # that far from one at index (-1, 0, 0), so the whole transform
-        # "dilates" an empty mask into a corner of the volume: the same here.
-        reach = np.minimum(blockwise_edt.reach_voxels(dilation_microns, sampling), mask.shape)
-        index = np.indices(tuple(int(r) for r in reach)).reshape(3, -1).T
-        displacement = np.column_stack([-1 - index[:, 0], -index[:, 1], -index[:, 2]])
-        near = blockwise_edt.displacement_distances(displacement, sampling) <= dilation_microns
-        out[tuple(slice(0, int(r)) for r in reach)] = near.reshape(tuple(int(r) for r in reach))
+        # Nothing to dilate. scipy's whole transform reads a volume with no
+        # feature as that far from one at index (-1, 0, 0), and so used to
+        # "dilate" an empty mask into a blob at the volume's corner -- a
+        # vessel touching three faces, which stump detection took for a
+        # large vessel cut off by the image.
         return out
 
     from scipy.ndimage import maximum_filter1d
