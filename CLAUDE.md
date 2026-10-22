@@ -850,7 +850,18 @@ are only caught locally.
   The rest gained nothing in RAM: the overlap and volume-filter clean-ups already share one
   algorithm, the surface tiles and point distances tie, and the confidence assignment keeps its
   one transform thresholded per step. The low-RAM reconnect refuses big windows (not the same
-  graph) and the low-RAM skeletonisation steps are slower.
+  graph), and the low-RAM skeletonisation steps were slower one by one on that synthetic stack.
+  **A whole E14.5 run is faster low-RAM, not slower** (2026-10-22, `56912ef4` from a `git
+  archive`, the repo-root `config.yaml` with only `use_memmap_loading` changed; four runs in the
+  order in RAM, low RAM, low RAM, in RAM; `outputs/lowram_ab/`, git-ignored): skeletonise
+  190 / 89 / 91 / 223 s, build_network 427 / 234 / 240 / 437 s, diameters 278 / 319 / 262 s
+  (no consistent difference), the other stages equal; totals 938 / 685 / 635 s. The last run
+  had two other Python processes starting during it, so its stages from Diameters on (576 s
+  there) are not counted. All four graphs identical, every attribute. Part of the gain is the
+  read-only consistency checks the low-RAM option skips (49 s in skeletonise and 104 s in
+  build_network in RAM), the rest Lee thinning by component (9 vs 57 s), the blockwise wall
+  transform (1 vs 21 s), mask recovery (50 vs 86 s) and the lumen clean-up (2-3x). Peaks: 6.1 GB
+  in RAM; 2.6 GB low RAM in the main process, 4.4-4.5 GB with skeletonise's workers.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the
