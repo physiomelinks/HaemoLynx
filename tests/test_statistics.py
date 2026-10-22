@@ -31,6 +31,7 @@ from haemolynx.statistics import (
     compute_k_core_structure,
     export_branch_order_statistics_to_csv,
 )
+from haemolynx.statistics.shape import box_counting_fractal_dimension
 
 
 def _straight_edge(G, u, v, branch_order):
@@ -186,6 +187,79 @@ def test_fractal_dimension_centreline_sees_the_polyline_the_node_only_one_misses
     )
     assert straight_result["Fractal Dimension (Centreline)"] != pytest.approx(
         zigzag_result["Fractal Dimension (Centreline)"], abs=1e-9
+    )
+
+
+def _unit_lattice(*sides: int) -> np.ndarray:
+    """Points 1 um apart filling a box of *sides* (z, y, x), a side of 1 flat."""
+    axes = [np.arange(float(n)) for n in sides]
+    return np.column_stack([a.ravel() for a in np.meshgrid(*axes, indexing="ij")])
+
+
+def _sierpinski_triangle(depth: int) -> np.ndarray:
+    """The corners of a depth-*depth* Sierpinski triangle, 1 um apart, in the
+    z = 0 plane: dimension log 3 / log 2."""
+    corners = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, np.sqrt(3.0) / 2.0]])
+    points = np.zeros((1, 2))
+    for _ in range(depth):
+        points = np.concatenate([(points + corner) / 2.0 for corner in corners])
+    points *= 2**depth
+    return np.column_stack([np.zeros(len(points)), points])
+
+
+@pytest.mark.parametrize(
+    ("shape", "points", "expected", "tolerance"),
+    [
+        ("line", _unit_lattice(1, 1, 400), 1.0, 0.05),
+        ("plane", _unit_lattice(1, 80, 80), 2.0, 0.15),
+        # A solid this small reads low: boxes at its faces are part empty.
+        ("solid", _unit_lattice(40, 40, 40), 3.0, 0.3),
+        ("sierpinski", _sierpinski_triangle(8), np.log(3.0) / np.log(2.0), 0.05),
+    ],
+)
+def test_box_counting_fractal_dimension_reads_known_dimensions(
+    shape, points, expected, tolerance
+):
+    """Known answers, not just keys: a line is 1, a plane 2, a solid 3 and a
+    Sierpinski triangle log 3 / log 2, each fitted cleanly. The bands do not
+    overlap, so a dimension read off the wrong slope cannot pass as its
+    neighbour."""
+    fit = box_counting_fractal_dimension(points)
+
+    assert fit["dimension"] == pytest.approx(expected, abs=tolerance), shape
+    assert fit["r_squared"] > 0.98
+    assert fit["box_min_um"] == pytest.approx(2.0)
+    assert fit["sizes"] >= 10
+
+
+def test_box_counting_fractal_dimension_needs_no_axis_alignment():
+    """A line along the cube's diagonal reads as one along an axis."""
+    t = np.arange(400.0)
+    diagonal = np.column_stack([t, t, t]) / np.sqrt(3.0)
+
+    assert box_counting_fractal_dimension(diagonal)["dimension"] == pytest.approx(
+        1.0, abs=0.05
+    )
+
+
+def test_a_straight_vessels_centreline_has_dimension_one():
+    """Through the statistics entry point: one straight 300 um vessel, its
+    centreline resampled every micron, is one-dimensional, and the report
+    gives the fit and its box sizes beside it."""
+    ends = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 300.0)}
+    G = nx.Graph()
+    for node, pos in ends.items():
+        G.add_node(node, pos=pos)
+    G.add_edge(0, 1, voxels=[ends[0], ends[1]])
+
+    result = compute_fractal_dimension(G, ends)
+
+    assert result["Fractal Dimension (Centreline)"] == pytest.approx(1.0, abs=0.05)
+    assert result["Fractal Dimension (Centreline) R^2"] > 0.98
+    assert result["Fractal Dimension (Centreline) Box Sizes (microns)"].startswith("2-")
+    # Two node positions have no scaling range to fit.
+    assert result["Fractal Dimension (Node Positions) R^2"] == (
+        "N/A (no scaling range to fit)"
     )
 
 
