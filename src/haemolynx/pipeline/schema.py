@@ -3219,8 +3219,8 @@ SCHEMA = Schema(
                 "the segmented vessels the graph no longer covers, keeping only those that "
                 "join the network at both ends, run the lumen clean-up with "
                 "recovery_short_loop_keep_hole_over_um, and remove the interior dead ends "
-                "it leaves. Harvey's marks called most interior dead ends not a vessel "
-                "(grids G1-G3, P1, G5); on E14.5 they were 17% of the network and carried "
+                "it leaves. Harvey's marks called most interior dead ends not a vessel; "
+                "on E14.5 they were 17% of the network and carried "
                 "no flow; recovery drew 6.5 mm back as vessels joined at both ends, 8.0 mm "
                 "having gone (before its clean-up). Fitted on E14.5 alone, so off by "
                 "default: on the nerve test crop it took a fifth of the network's length. "
@@ -3239,8 +3239,8 @@ SCHEMA = Schema(
                 "short_loop_keep_hole_over_um for the lumen clean-up remove_interior_dead_ends "
                 "runs after its recovery: a short loop round a tissue hole wider than this "
                 "is kept. Most loops recovery closes are real: at the 10 um limit the rule "
-                "broke a real loop 16 times in 24 (Harvey's grid L1); at 5.3 um it was right "
-                "19 times in 29 on a fresh grid (L2), against 13 at 10 um and 16 keeping "
+                "broke a real loop 16 times in 24; at 5.3 um it was right "
+                "19 times in 29 on fresh examples, against 13 at 10 um and 16 keeping "
                 "every loop. Below 5.3 um it is about even. 0 breaks every short loop"
             ),
             section=_PIPELINE_STAGES,
@@ -3317,7 +3317,7 @@ SCHEMA = Schema(
                 "Break every loop of the network up to this long round, taking out "
                 "the side nearest the vessel wall, whatever the segmentation says of "
                 "it: on E14.5 nine in ten loops under 200 um closed inside one vessel "
-                "(Harvey's grids I and I2, 55 of 60), and the in-lumen rule found none "
+                "(55 of 60), and the in-lumen rule found none "
                 "of them. Costs about one real loop in twelve; the Short loops review "
                 "list is where a wrong side is put back. 0 leaves short loops to that "
                 "list. No effect without the segmented mask or with "
@@ -3356,8 +3356,8 @@ SCHEMA = Schema(
                 "when the tissue hole it runs round is wider than this: the median "
                 "background crossed by lines drawn across the loop, side to opposite side. "
                 "On E14.5 loops round a hole over 10 um were real 29 times in 32, and loops "
-                "round a smaller one false 24 times in 28 (Harvey's grids Q and Q2, 60 of "
-                "the rule's breaks). 0 breaks every short loop. retrace_lost_skeleton "
+                "round a smaller one false 24 times in 28 (60 of the rule's breaks). "
+                "0 breaks every short loop. retrace_lost_skeleton "
                 "reads the same limit. No effect while remove_short_loops_under_um is 0 "
                 "and retrace_lost_skeleton is off"
             ),
@@ -3380,8 +3380,8 @@ SCHEMA = Schema(
                 "places, and joined wherever else it meets the graph round a hole as wide, "
                 "never beside a vessel in the same lumen. On E14.5 such stretches were "
                 "vessels 9 times in 9, and stretches closing a loop round a smaller hole were "
-                "not 17 times in 21 (Harvey's grid N, 30 of them); of the 21 it then drew, "
-                "Harvey kept 19 (grid N2). No effect while short_loop_keep_hole_over_um is 0"
+                "not 17 times in 21; of the 21 it then drew, "
+                "Harvey kept 19. No effect while short_loop_keep_hole_over_um is 0"
             ),
             section=_PIPELINE_STAGES,
             requires=("do_graph_building", "bridge_require_mask_support"),
