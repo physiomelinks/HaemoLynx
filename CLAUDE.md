@@ -83,7 +83,8 @@ haemolynx/
 │   │                       #   constriction_strategy (which strategy a run uses),
 │   │                       #   pericyte_comparison; perturbations.py (typed settings overrides
 │   │                       #   to re-solve for) and what they run: arteriole, capillary,
-│   │                       #   capillary_block, pericyte_sweep, pericyte_geometry_sweep,
+│   │                       #   capillary_block (+ capillary_block_mask: the vessels a mask's
+│   │                       #   blobs sit in), pericyte_sweep, pericyte_geometry_sweep,
 │   │                       #   sweep_flows (per-grid-point flows for the viewer);
 │   │                       #   open_ends.py (the boundary condition on vessels leaving
 │   │                       #   the image, open_end_model)
@@ -348,7 +349,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_tree.py` (the large-stack tree and the join's bounded last resort; digests of the in-RAM skeleton), `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
-| Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
+| Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_capillary_block_mask.py` (which vessels a mask's blobs block, the perturbation, its checks), `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_exact_betweenness.py` (the parallel pass `==` networkx on every shape, weighting and scaling; the fallbacks), `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, one-to-one matching by name, every reason an image is left out, median/mean per subject, Wilcoxon/paired t by hand, Harvey's AIA names) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
@@ -1213,9 +1214,21 @@ are only caught locally.
   Perturbation summaries' `equivalent_resistance` is that network resistance, not the two-point one.
 - **`haemodynamics/perturbations.py`** — a perturbation is a named, typed settings override
   (`PerturbationSpec`) that `pipeline/stages.py`'s `run_perturbations` re-solves a copy of the
-  solved network for, writing into `{name}_{type}` under `perturbation_output_dir`. Thirteen types
+  solved network for, writing into `{name}_{type}` under `perturbation_output_dir`. Fourteen types
   plus `none` (`PERTURBATION_TYPES`): arteriole / pericyte / combined diameter changes, capillary
   blocks, and sweeps over dilation, inlet pressure, pericyte spacing or length.
+  **Capillary blocks by mask** (`capillary_block_mask`, 2026-10-22,
+  `haemodynamics/capillary_block_mask.py`): the vessels to block come from a mask of blobs
+  (`capillary_block_mask_path`, placed on the run's grid as the pericyte mask is). Each blob is a
+  block on the vessels when at least `capillary_block_mask_min_overlap_fraction` (0.5) of its
+  voxels lie in the run's segmentation (`network.volume.image`, read at the blob's voxels; without
+  one the graph's lumens stand in, with a warning); each such voxel belongs to the vessel whose
+  centreline is nearest, within its radius plus a voxel's diagonal, bridges never;
+  `capillary_block_mask_vessels_per_block` blocks the vessel holding most of the blob
+  (`largest_overlap`) or every one it lies in. The occlusion, zeroing and comparison are the
+  capillary block's (`perturbations.is_capillary_block`, `CAPILLARY_BLOCK_TYPES`), one draw;
+  `{name}_mask_blocks.csv` lists every blob and why one blocks nothing. A batch refuses it (one
+  mask for every image). Not yet tried on a real mask of blocks.
   `SETTINGS_FOR_TYPE` says which settings each type reads; an override outside it is reported as
   unused and not applied. `INCOMPARABLE_OVERRIDES` (viscosity law, the raw image's stain, haematocrit,
   haematocrit model) are refused, because they would move every resistance and the difference

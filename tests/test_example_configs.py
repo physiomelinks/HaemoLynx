@@ -192,6 +192,10 @@ PERTURBATION_RUNS_NAMES = frozenset(
         "capillary_block_seed",
         "capillary_block_replicates",
         "capillary_block_vessel_ids",
+        "capillary_block_mask_path",
+        "capillary_block_mask_h5_dataset_name",
+        "capillary_block_mask_min_overlap_fraction",
+        "capillary_block_mask_vessels_per_block",
         "capillary_block_resistance_factor",
         "capillary_block_hypoperfusion_fraction",
     }

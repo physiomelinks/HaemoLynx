@@ -118,6 +118,7 @@ HIDE_WHEN_UNMET_PARENTS = frozenset(
 #: *of*. A dataset name means nothing unless that file is HDF5, so its row
 #: shows only while the path names one.
 H5_DATASET_SETTINGS: dict[str, str] = {
+    "capillary_block_mask_h5_dataset_name": "capillary_block_mask_path",
     "cell_mask_h5_dataset_name": "cell_mask_path",
     "measurement_3d_vessel_mask_h5_dataset_name": "measurement_3d_vessel_mask_path",
     "pericyte_mask_h5_dataset_name": "pericyte_mask_path",

@@ -106,6 +106,7 @@ PERTURBATION_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
         "arteriole and pericyte constriction/dilation"
     ),
     "capillary_block": "capillary blocks",
+    "capillary_block_mask": "capillary blocks by mask",
 }
 
 #: GUI row labels for bidirectional diameter / tone settings. Schema ``name``
@@ -133,6 +134,10 @@ SETTING_DISPLAY_LABELS: Mapping[str, str] = {
     "capillary_block_probability": "Fraction of those vessels to block",
     "capillary_block_seed": "Block selection seed",
     "capillary_block_vessel_ids": "Vessel IDs to block (branchID)",
+    "capillary_block_mask_path": "Mask of blocks",
+    "capillary_block_mask_h5_dataset_name": "Block mask H5 dataset",
+    "capillary_block_mask_min_overlap_fraction": "Block on a vessel at overlap of",
+    "capillary_block_mask_vessels_per_block": "Vessels each block blocks",
     "capillary_block_resistance_factor": "Blocked resistance factor",
     "capillary_block_hypoperfusion_fraction": "Hypoperfused at flow loss of",
 }

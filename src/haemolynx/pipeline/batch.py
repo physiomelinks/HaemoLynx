@@ -160,6 +160,14 @@ def check_batch(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
                 f"{name} is off: each image's saved result is looked for in its own "
                 "output folder, and an image with none fails."
             )
+    if settings.get("run_perturbations"):
+        for entry in settings.get("perturbations") or ():
+            if isinstance(entry, Mapping) and str(entry.get("type")) == "capillary_block_mask":
+                report.add_error(
+                    f"perturbation '{entry.get('name')}' blocks from one mask of blocks, "
+                    "which every image in the batch would read. Remove it from the batch's "
+                    "perturbations."
+                )
     if settings.get("mid_run_postprocessing"):
         report.add_warning(
             "mid_run_postprocessing is on, but a batch cannot pause for hand edits: "

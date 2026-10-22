@@ -303,6 +303,27 @@ CAPILLARY_BLOCK = {
         "capillary_block_probability": 0.5,
     },
 }
+
+def _capillary_block_mask_file() -> Path:
+    """A mask of one block on the first B01 vessel, written once: the
+    entries here are module constants, so the file cannot be a tmp_path's.
+    Without a segmentation the graph's lumens stand in for the vessels."""
+    import tempfile
+
+    import tifffile
+
+    mask = np.zeros((1, 1, len(BRANCH_ORDERS) * int(EDGE_LENGTH_UM) + 1), dtype=np.uint8)
+    mask[0, 0, 600:603] = 1
+    path = Path(tempfile.mkdtemp(prefix="haemolynx_block_mask_")) / "blocks.tif"
+    tifffile.imwrite(str(path), mask)
+    return path
+
+
+CAPILLARY_BLOCK_MASK = {
+    "name": "capillary_stall_mask",
+    "type": "capillary_block_mask",
+    "overrides": {"capillary_block_mask_path": str(_capillary_block_mask_file())},
+}
 NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
 
 #: One worked entry per type, keyed by the type it exercises. What the guards
@@ -325,6 +346,7 @@ ENTRY_FOR_TYPE: dict[str, dict] = {
     "pericyte_diameter_change": PERICYTE_TONE,
     "arteriole_and_pericyte_diameter_change": ARTERIOLE_AND_PERICYTE,
     "capillary_block": CAPILLARY_BLOCK,
+    "capillary_block_mask": CAPILLARY_BLOCK_MASK,
 }
 
 #: One entry of every single re-solve type (not `none`, not a sweep): the ones

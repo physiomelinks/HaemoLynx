@@ -56,6 +56,7 @@ from haemolynx.haemodynamics.haematocrit_distribution import (
 )
 from haemolynx.haemodynamics.perturbations import (
     PerturbationSpec,
+    is_capillary_block,
     is_sweep_perturbation,
     perturbation_folder_name,
     perturbation_output_dir,
@@ -5585,9 +5586,14 @@ CAPILLARY_BLOCK_ORDER_COLUMNS = (
 )
 
 
-def _capillary_block_seeds(settings: Mapping[str, Any]) -> list[int | None]:
+def _capillary_block_seeds(
+    settings: Mapping[str, Any], perturbation_type: str = "capillary_block"
+) -> list[int | None]:
     """The seed of every draw of a capillary block: one, unless the vessels are
-    drawn at random and ``capillary_block_replicates`` asks for more."""
+    drawn at random and ``capillary_block_replicates`` asks for more. A block
+    read from a mask draws nothing: one draw, no seed."""
+    if perturbation_type == "capillary_block_mask":
+        return [None]
     count = 1
     if settings["capillary_block_selection"] == "branch_order_probability":
         count = int(settings.get("capillary_block_replicates") or 1)
@@ -5600,18 +5606,24 @@ def _block_capillaries(
     schema: Schema,
     *,
     seed: int | None,
+    chosen: tuple[list, dict[str, Any]] | None = None,
 ) -> tuple[list, dict[str, Any], Callable[[], None] | None]:
     """Block one draw's vessels on *G*: ``(blocked vessels, how they were
     chosen, and -- under a distributed haematocrit -- the closure that redoes
-    the resistances from each edge's updated haematocrit, else None)``."""
-    blocked_edges, block_summary = haemodynamics.resolve_blocked_vessels(
-        G,
-        selection=settings["capillary_block_selection"],
-        branch_orders=_listed(settings["capillary_block_branch_orders"]),
-        probability=float(settings["capillary_block_probability"]),
-        seed=seed,
-        vessel_ids=_listed(settings["capillary_block_vessel_ids"]),
-    )
+    the resistances from each edge's updated haematocrit, else None)``.
+    *chosen* is ``(blocked vessels, summary)`` found already (a block mask's);
+    without it the settings' selection draws them."""
+    if chosen is not None:
+        blocked_edges, block_summary = list(chosen[0]), dict(chosen[1])
+    else:
+        blocked_edges, block_summary = haemodynamics.resolve_blocked_vessels(
+            G,
+            selection=settings["capillary_block_selection"],
+            branch_orders=_listed(settings["capillary_block_branch_orders"]),
+            probability=float(settings["capillary_block_probability"]),
+            seed=seed,
+            vessel_ids=_listed(settings["capillary_block_vessel_ids"]),
+        )
     block_factor = float(settings["capillary_block_resistance_factor"])
     haemodynamics.block_vessels(G, blocked_edges, block_factor)
     if not _distributes_haematocrit(settings):
@@ -5669,6 +5681,93 @@ def _capillary_block_replicates(
 #: Columns of a capillary block's `<name>_block_replicates.csv`, before the
 #: comparison metrics: one row per draw.
 CAPILLARY_BLOCK_REPLICATE_COLUMNS = ("draw", "seed", "blocked_vessels")
+
+#: Columns of a mask capillary block's `<name>_mask_blocks.csv`: one row per
+#: blob of the mask, blocking or not (`reason` says why not).
+CAPILLARY_BLOCK_MASK_COLUMNS = (
+    "block",
+    "voxels",
+    "volume_um3",
+    "centroid_z_um",
+    "centroid_y_um",
+    "centroid_x_um",
+    "voxels_in_vessels",
+    "overlap_fraction",
+    "blocks",
+    "blocked_branch_ids",
+    "vessel_voxels",
+    "reason",
+)
+
+
+def _capillary_blocks_from_mask(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    *,
+    image: np.ndarray | None,
+    output_dir: Path,
+    name: str,
+) -> tuple[tuple[list, dict[str, Any]], Path]:
+    """The vessels a block mask's blobs block on *G*, with how they were
+    found, and the per-blob CSV written into *output_dir*. *image* is the
+    run's segmentation on the network's grid; without it the graph's lumens
+    stand in, with a warning."""
+    from haemolynx.haemodynamics.capillary_block_mask import (
+        blocks_from_mask,
+        load_capillary_block_mask,
+    )
+
+    mask_path = settings.get("capillary_block_mask_path")
+    if mask_path in (None, ""):
+        raise ValueError(
+            f"perturbation '{name}' names no capillary_block_mask_path: set it to the "
+            "mask of blocks"
+        )
+    block_mask, mask_voxel_size_zyx = load_capillary_block_mask(
+        mask_path,
+        G,
+        h5_dataset_name=settings.get("capillary_block_mask_h5_dataset_name"),
+        axis_order=settings.get("image_axis_order", io.CANONICAL_AXIS_ORDER),
+        voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+        voxel_size_policy=settings.get("voxel_size_policy", "auto"),
+    )
+    if image is None:
+        logger.warning(
+            f"Perturbation '{name}': no segmented image to read the blocks against, so "
+            "the graph's own lumens (each vessel's centreline and diameter) stand in for "
+            "the vessel mask."
+        )
+    blocked, summary, blocks = blocks_from_mask(
+        G,
+        block_mask,
+        mask_voxel_size_zyx,
+        vessel_mask=image,
+        min_overlap_fraction=float(settings["capillary_block_mask_min_overlap_fraction"]),
+        vessels_per_block=str(settings["capillary_block_mask_vessels_per_block"]),
+    )
+    summary["capillary_block_mask_path"] = Path(mask_path).as_posix()
+    path = output_dir / f"{name}_mask_blocks.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(CAPILLARY_BLOCK_MASK_COLUMNS))
+        writer.writeheader()
+        for block in blocks:
+            writer.writerow(
+                {
+                    "block": block.number,
+                    "voxels": block.voxels,
+                    "volume_um3": block.volume_um3,
+                    "centroid_z_um": block.centroid_um[0],
+                    "centroid_y_um": block.centroid_um[1],
+                    "centroid_x_um": block.centroid_um[2],
+                    "voxels_in_vessels": block.voxels_in_vessels,
+                    "overlap_fraction": block.overlap_fraction,
+                    "blocks": block.blocks,
+                    "blocked_branch_ids": json.dumps(block.blocked_branch_ids),
+                    "vessel_voxels": json.dumps(block.vessel_voxels),
+                    "reason": block.reason,
+                }
+            )
+    return (blocked, summary), path
 
 
 def _write_capillary_block_comparison(
@@ -5732,8 +5831,10 @@ def _write_capillary_block_comparison(
         writer = csv.writer(handle)
         writer.writerow(CAPILLARY_BLOCK_COMPARISON_COLUMNS)
         for key in ("selection", "branch_orders", "probability", "seed",
-                    "candidate_vessels", "vessel_ids", "blocked_vessels",
-                    "resistance_factor"):
+                    "candidate_vessels", "vessel_ids", "capillary_block_mask_path",
+                    "mask_blocks", "mask_blocks_on_vessels", "mask_blocks_below_overlap",
+                    "mask_blocks_off_graph", "min_overlap_fraction", "vessels_per_block",
+                    "vessel_mask_source", "blocked_vessels", "resistance_factor"):
             if key in selection_summary:
                 value = selection_summary[key]
                 writer.writerow(
@@ -6024,10 +6125,22 @@ def _perturb_one(
             # scaled_table it already closed over.
             set_resistances_for_constriction_strategy(G, **constriction_kwargs)
             apply_baseline_overrides(G, perturbed, _poiseuille_model_for(perturbed))
-    elif spec.type == "capillary_block":
-        block_seeds = _capillary_block_seeds(perturbed)
+    elif is_capillary_block(spec.type):
+        block_seeds = _capillary_block_seeds(perturbed, spec.type)
+        chosen = None
+        if spec.type == "capillary_block_mask":
+            chosen, blocks_path = _capillary_blocks_from_mask(
+                G, perturbed, image=image, output_dir=result.output_dir, name=spec.name
+            )
+            result.outputs.append(blocks_path)
+            logger.info(
+                f"Perturbation '{spec.name}': {chosen[1]['mask_blocks_on_vessels']} of the "
+                f"mask's {chosen[1]['mask_blocks']} block(s) lie on vessels "
+                f"(at least {chosen[1]['min_overlap_fraction']:.0%} inside the "
+                f"{chosen[1]['vessel_mask_source'].replace('_', ' ')})."
+            )
         blocked_edges, block_summary, recompute_resistances = _block_capillaries(
-            G, perturbed, schema, seed=block_seeds[0]
+            G, perturbed, schema, seed=block_seeds[0], chosen=chosen
         )
         summary.update(block_summary)
         summary["resistance_factor"] = float(perturbed["capillary_block_resistance_factor"])
@@ -6060,7 +6173,7 @@ def _perturb_one(
         solved = _solve_network(
             G, perturbed, boundaries, recompute_resistances=recompute_resistances
         )
-        if spec.type == "capillary_block":
+        if is_capillary_block(spec.type):
             # The blocked vessels, and every vessel fed only through one,
             # carry the block's leak and nothing else: exactly 0 on this
             # network, so its statistics, its vessels layer and its
@@ -6091,7 +6204,7 @@ def _perturb_one(
             settings=perturbed,
             overrides=overrides,
         )
-    if spec.type == "capillary_block":
+    if is_capillary_block(spec.type):
         compared_against = model.graph if baseline_graph is None else baseline_graph
         hypoperfusion = float(perturbed["capillary_block_hypoperfusion_fraction"])
         replicates = None

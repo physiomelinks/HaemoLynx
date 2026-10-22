@@ -6388,6 +6388,61 @@ SCHEMA = Schema(
             section=_PERTURBATION_RUNS,
             requires=("capillary_block_selection=vessel_ids",),
         ),
+        # A capillary block read from a mask (capillary_block_mask; see
+        # haemodynamics.capillary_block_mask): the blocks are blobs of a mask,
+        # and the occlusion is the capillary block's.
+        Setting(
+            name="capillary_block_mask_path",
+            kind="path",
+            default=None,
+            help=(
+                "Mask of the blocks: blobs on an otherwise empty volume, on the "
+                "segmented image's grid; each blob (connected component) is one "
+                "block, and blocks the vessel it lies in"
+            ),
+            section=_PERTURBATION_RUNS,
+            # Only a capillary_block_mask entry reads it, and preflight says so
+            # when one names none; set, it must be there.
+            must_exist=True,
+            placeholder="none (name it on the perturbation)",
+        ),
+        Setting(
+            name="capillary_block_mask_h5_dataset_name",
+            kind="str",
+            default=None,
+            help="H5 dataset name inside the capillary block mask file; ignored for TIFF masks",
+            section=_PERTURBATION_RUNS,
+            advanced=True,
+        ),
+        Setting(
+            name="capillary_block_mask_min_overlap_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "A blob blocks a vessel when at least this fraction of its voxels "
+                "lie inside the segmented vessels (the run's segmented image); a "
+                "blob mostly outside them blocks nothing"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        Setting(
+            name="capillary_block_mask_vessels_per_block",
+            kind="choice",
+            default="largest_overlap",
+            help=(
+                "Which vessels a blob on the vessels blocks: the one vessel holding "
+                "most of its voxels (largest_overlap), or every vessel any of its "
+                "voxels lie in (every_overlapped_vessel) -- a blob at a junction "
+                "can lie in several. A voxel lies in the vessel whose centreline "
+                "is nearest, within that vessel's radius plus a voxel"
+            ),
+            section=_PERTURBATION_RUNS,
+            choices=("largest_overlap", "every_overlapped_vessel"),
+            advanced=True,
+        ),
         Setting(
             name="capillary_block_resistance_factor",
             kind="float",

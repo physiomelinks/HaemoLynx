@@ -980,6 +980,14 @@ perturbation_runs:
   capillary_block_replicates: 1
   # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
   capillary_block_vessel_ids: []
+  # Mask of the blocks: blobs on an otherwise empty volume, on the segmented image's grid; each blob (connected component) is one block, and blocks the vessel it lies in  [must exist if set]
+  capillary_block_mask_path: null
+  # H5 dataset name inside the capillary block mask file; ignored for TIFF masks
+  capillary_block_mask_h5_dataset_name: null
+  # A blob blocks a vessel when at least this fraction of its voxels lie inside the segmented vessels (the run's segmented image); a blob mostly outside them blocks nothing  [fraction; range 0.0..1.0]
+  capillary_block_mask_min_overlap_fraction: 0.5
+  # Which vessels a blob on the vessels blocks: the one vessel holding most of its voxels (largest_overlap), or every vessel any of its voxels lie in (every_overlapped_vessel) -- a blob at a junction can lie in several. A voxel lies in the vessel whose centreline is nearest, within that vessel's radius plus a voxel  [one of: largest_overlap, every_overlapped_vessel]
+  capillary_block_mask_vessels_per_block: largest_overlap
   # Multiply a blocked vessel's resistance by this -- near infinite, so it carries about a millionth of its flow, but still solvable where removing it would cut part of the network off from every inlet and outlet  [range 1.0..]
   capillary_block_resistance_factor: 1000000.0
   # In the comparison with the baseline, count another vessel as hypoperfused when its flow falls by at least this fraction  [fraction; range 0.0..1.0]

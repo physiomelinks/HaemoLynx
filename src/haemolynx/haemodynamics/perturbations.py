@@ -47,12 +47,15 @@ __all__ = [
     "PERICYTE_SPACING_SWEEP_SETTINGS",
     "PERICYTE_LENGTH_SWEEP_SETTINGS",
     "ARTERIOLE_DILATION_SWEEP_SETTINGS",
+    "CAPILLARY_BLOCK_MASK_SETTINGS",
     "CAPILLARY_BLOCK_SETTINGS",
+    "CAPILLARY_BLOCK_TYPES",
     "CAPILLARY_DILATION_SWEEP_SETTINGS",
     "PRESSURE_SWEEP_SETTINGS",
     "SETTINGS_FOR_TYPE",
     "SWEEP_PERTURBATION_TYPES",
     "PerturbationSpec",
+    "is_capillary_block",
     "is_sweep_perturbation",
     "places_pericytes",
     "perturbation_folder_name",
@@ -82,6 +85,7 @@ PERTURBATION_TYPES: tuple[str, ...] = (
     "pericyte_diameter_change",
     "arteriole_and_pericyte_diameter_change",
     "capillary_block",
+    "capillary_block_mask",
 )
 
 #: Length, spacing, probability, base tone and per-order overrides every
@@ -186,6 +190,29 @@ CAPILLARY_BLOCK_SETTINGS: tuple[str, ...] = (
     "capillary_block_hypoperfusion_fraction",
 )
 
+#: What a capillary block read from a mask reads: the mask of the blocks,
+#: when one of its blobs counts as on a vessel and which vessels it then
+#: blocks, and the occlusion and comparison settings every block shares.
+CAPILLARY_BLOCK_MASK_SETTINGS: tuple[str, ...] = (
+    "capillary_block_mask_path",
+    "capillary_block_mask_h5_dataset_name",
+    "capillary_block_mask_min_overlap_fraction",
+    "capillary_block_mask_vessels_per_block",
+    "capillary_block_resistance_factor",
+    "capillary_block_hypoperfusion_fraction",
+)
+
+#: The types that block vessels and compare the blocked network with the
+#: baseline (haemodynamics.capillary_block): they differ only in how the
+#: vessels are chosen.
+CAPILLARY_BLOCK_TYPES: frozenset[str] = frozenset({"capillary_block", "capillary_block_mask"})
+
+
+def is_capillary_block(perturbation_type: Any) -> bool:
+    """Whether a perturbation of *perturbation_type* blocks vessels."""
+    return str(perturbation_type) in CAPILLARY_BLOCK_TYPES
+
+
 #: Inlet-pressure axes for a pressure sweep.
 PRESSURE_SWEEP_SETTINGS: tuple[str, ...] = (
     "inlet_pressure_min_pa",
@@ -260,6 +287,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
         *PERICYTE_CONSTRICTION_SETTINGS,
     ),
     "capillary_block": CAPILLARY_BLOCK_SETTINGS,
+    "capillary_block_mask": CAPILLARY_BLOCK_MASK_SETTINGS,
 }
 
 #: Settings a perturbation may not override, because changing one of them
@@ -639,6 +667,13 @@ def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) ->
     sweep axis whose max is below its min, or a capillary block that would
     have nothing to block."""
     merged = {**values, **spec.applied_overrides(schema)}
+    if spec.type == "capillary_block_mask":
+        if merged.get("capillary_block_mask_path") in (None, ""):
+            return [
+                f"perturbation '{spec.name}' blocks the vessels a mask's blobs sit in "
+                "but names no mask: set capillary_block_mask_path to the mask of blocks"
+            ]
+        return []
     if spec.type != "capillary_block":
         problems = []
         read = settings_for_perturbation_type(spec.type)

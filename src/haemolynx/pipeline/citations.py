@@ -133,7 +133,10 @@ def _used_red_cell_transport(settings: Mapping[str, Any]) -> bool:
     if not settings.get("run_perturbations"):
         return False
     entries = settings.get("perturbations") or ()
-    return any(str(entry.get("type")) == "capillary_block" for entry in entries)
+    return any(
+        str(entry.get("type")) in ("capillary_block", "capillary_block_mask")
+        for entry in entries
+    )
 
 
 def _used_open_end_estimate(settings: Mapping[str, Any]) -> bool:
