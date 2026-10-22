@@ -1168,6 +1168,36 @@ def test_two_ended_recovery_takes_back_a_branch_joined_at_one_end():
     assert G.graph["recovered_one_ended_removed"] >= 1
 
 
+def test_vessels_an_earlier_recovery_drew_keep_their_mark_when_the_interior_recovery_splits_them():
+    """build_network's interior recovery sets the build's own ``recovered``
+    mark aside, so only its own edges are judged two-ended, and puts it back
+    after. Its joins split the trunks: kept as (u, v, key), the mark came back
+    on neither piece of a split trunk."""
+    from haemolynx.pipeline.stages import (
+        _RECOVERED_BEFORE,
+        _restore_earlier_recovery,
+        _set_aside_earlier_recovery,
+    )
+
+    G, mask = _two_trunks_and_a_lost_capillary()
+    for *_edge, data in G.edges(keys=True, data=True):
+        data["recovered"] = True  # as if the build's own recovery drew both trunks
+
+    _set_aside_earlier_recovery(G)
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+    G = recover_uncovered_mask_vessels(G, _support(mask), coverage_reach_radii=0.0, two_ended=True)
+    drawn = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    _restore_earlier_recovery(G)
+
+    assert sum(d["length"] for d in drawn) == pytest.approx(24.0, rel=0.1), "the capillary alone is new"
+    assert sum(1 for n in G if G.degree(n) == 3) == 2, "each trunk was split where the capillary joins"
+    trunk_pieces = [d for *_, d in G.edges(data=True) if not any(d is e for e in drawn)]
+    assert len(trunk_pieces) == 4
+    assert all(d.get("recovered") is True for d in trunk_pieces)
+    assert sum(d["length"] for d in trunk_pieces) == pytest.approx(118.0, abs=2.0)
+    assert not any(_RECOVERED_BEFORE in d for *_, d in G.edges(data=True))
+
+
 def test_the_coverage_reach_is_handed_to_the_uncovered_mask(monkeypatch):
     import haemolynx.graph.mask_recovery as module
 

@@ -2423,6 +2423,31 @@ def _mark_dead_end_kinds(
 INTERIOR_RECOVERY = "interior_recovery"
 
 
+#: Where :func:`_set_aside_earlier_recovery` keeps the build's own
+#: ``recovered`` mark while the interior recovery runs.
+_RECOVERED_BEFORE = "_recovered_before_interior_recovery"
+
+
+def _set_aside_earlier_recovery(G: nx.MultiGraph) -> None:
+    """Move the ``recovered`` mark of what the build's own recovery drew to
+    :data:`_RECOVERED_BEFORE`, so the interior recovery judges only its own
+    edges two-ended. An attribute, not a list of edges: that recovery joins
+    by splitting vessels, and the pieces of a split edge copy its attributes
+    under new keys -- kept as ``(u, v, key)``, a split earlier-recovered
+    vessel came back unmarked."""
+    for *_edge, data in G.edges(keys=True, data=True):
+        if data.get("recovered") is not None:
+            data[_RECOVERED_BEFORE] = data.pop("recovered")
+
+
+def _restore_earlier_recovery(G: nx.MultiGraph) -> None:
+    """Put back what :func:`_set_aside_earlier_recovery` set aside, on every
+    piece the interior recovery split it into."""
+    for *_edge, data in G.edges(keys=True, data=True):
+        if _RECOVERED_BEFORE in data:
+            data["recovered"] = data.pop(_RECOVERED_BEFORE)
+
+
 def _remove_and_recover_interior_dead_ends(
     settings: dict,
     G: nx.MultiGraph,
@@ -2453,12 +2478,7 @@ def _remove_and_recover_interior_dead_ends(
     support = cleanup.support
     _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at, support=support)
     first = graph.dead_ends.remove_interior_dead_ends(G)
-    # What the build's own recovery drew carries the same mark: set aside, so
-    # only this recovery's edges are judged two-ended.
-    earlier = {}
-    for u, v, key, data in G.edges(keys=True, data=True):
-        if data.pop("recovered", None) is not None:
-            earlier[(u, v, key)] = True
+    _set_aside_earlier_recovery(G)
     G = graph.mask_recovery.recover_uncovered_mask_vessels(
         G,
         support,
@@ -2475,9 +2495,7 @@ def _remove_and_recover_interior_dead_ends(
             data[INTERIOR_RECOVERY] = True
             drawn.append((u, v, key))
     drawn_um = sum(float(G.edges[e].get("length") or 0.0) for e in drawn)
-    for edge in earlier:
-        if G.has_edge(*edge):
-            G.edges[edge]["recovered"] = True
+    _restore_earlier_recovery(G)
     if drawn and settings["smooth_centrelines"]:
         graph.smooth_graph_centrelines(
             G,
@@ -4488,14 +4506,7 @@ def _take_edited_terminal_roles(
         name = f"{role}_nodes"
         nodes = list(edited[role])
         before = list(getattr(boundaries, name))
-        kept = getattr(boundaries, name)
-        kept[:] = nodes
-        in_settings = settings.get(name)
-        if isinstance(in_settings, list):
-            if in_settings is not kept:
-                in_settings[:] = nodes
-        else:
-            settings[name] = list(nodes)
+        _set_boundary_list(settings, boundaries, name, nodes)
         added = [n for n in nodes if n not in before]
         removed = [n for n in before if n not in nodes]
         if added or removed:
