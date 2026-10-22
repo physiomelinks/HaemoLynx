@@ -101,6 +101,68 @@ def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def ilastik_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Each ilastik project this run segments with, as ``(classifier setting,
+    vessel-label setting)``: the main image's while ilastik segments it
+    (``stages.ilastik_segments``), and each vessel-mask role's arteriole (or
+    global) classifier, with its venule one when that is set, while ilastik
+    makes that role's masks."""
+    from haemolynx.io.automated_vessel_assignment import VESSEL_MASK_SETTINGS
+    from haemolynx.pipeline.stages import ilastik_segments
+
+    pairs: list[tuple[str, str]] = []
+    if ilastik_segments(settings):
+        pairs.append(("ilastik_classifier_path", "ilastik_vessel_label"))
+    for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items():
+        if not (settings.get(flag) and vessel_masks_in_use(settings, role)):
+            continue
+        names = VESSEL_MASK_SETTINGS[role]
+        pairs.append(
+            (names["ilastik_arteriole_classifier_path"], names["ilastik_arteriole_vessel_label"])
+        )
+        if settings.get(names["ilastik_venule_classifier_path"]) not in (None, ""):
+            pairs.append(
+                (names["ilastik_venule_classifier_path"], names["ilastik_venule_vessel_label"])
+            )
+    return pairs
+
+
+def check_ilastik_vessel_labels(settings: Mapping[str, Any]) -> CheckReport:
+    """Each ilastik project the run segments with must have its vessel label
+    named, and the name must be one of the project's labels: its "Simple
+    Segmentation" export numbers the labels 1 to N, and which is the vessel
+    cannot be read from the numbers. The project's labels are read from the
+    ``.ilp``; a project whose labels cannot be read takes a label number,
+    with a warning. A missing project is reported by its own setting."""
+    from haemolynx.io.ilastik import describe_labels, ilastik_label_names, resolve_vessel_label
+
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    for classifier_setting, label_setting in ilastik_classifiers_in_effect(settings):
+        project = settings.get(classifier_setting)
+        if project in (None, "") or not Path(project).is_file():
+            continue
+        names = ilastik_label_names(project)
+        if names is None:
+            report.add_warning(
+                f"{classifier_setting}: no label names could be read from {project} (it is "
+                f"not an ilastik pixel-classification project); {label_setting} must be a "
+                "label number."
+            )
+        try:
+            number = resolve_vessel_label(
+                settings.get(label_setting), names, setting=label_setting, project=project
+            )
+        except ValueError as error:
+            report.add_error(str(error))
+            continue
+        name = f" ({names[number - 1]!r})" if names else ""
+        listed = f"; its labels are {describe_labels(names)}" if names else ""
+        report.add_pass(label_setting, f"label {number}{name} of {Path(project).name}{listed}")
+    return report
+
+
 #: Stem tokens that strongly suggest a large-vessel mask was pointed at
 #: ``input_path``. Skeletonising that file yields a network that only exists
 #: inside that mask — cut-at-large-vessel then has almost nothing exterior to keep.
@@ -893,6 +955,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_synthetic_template(settings))
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
+    report.extend(check_ilastik_vessel_labels(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
     report.extend(check_global_vessel_masks(settings))

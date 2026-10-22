@@ -15,6 +15,7 @@ instead, set in the config file::
     use_ilastik_segmentation: true
     raw_image_path: examples/images/carotid.tif
     ilastik_classifier_path: <your trained .ilp>
+    ilastik_vessel_label: <the vessel label's name in it, or its number>
 
 Training the classifier stays manual, in the ilastik GUI. Either way the image
 files live outside the repository, so a run needs that data on disk; the

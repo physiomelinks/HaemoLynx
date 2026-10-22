@@ -519,6 +519,8 @@ def segment(
             output_path=ilastik_segmented_path,
             ilastik_executable=settings["ilastik_executable"],
             timeout=settings["ilastik_timeout_seconds"],
+            vessel_label=settings.get("ilastik_vessel_label"),
+            label_setting="ilastik_vessel_label",
             reuse_existing=bool(settings.get("ilastik_reuse_existing_output", False)),
             poll=progress.alive if progress is not None else None,
         )

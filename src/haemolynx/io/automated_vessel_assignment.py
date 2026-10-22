@@ -212,6 +212,8 @@ def _vessel_mask_config(mask_role: Literal["large", "small"]) -> dict[str, str]:
         "ilastik_venule_image_param": names["ilastik_unsegmented_venule_path"],
         "ilastik_arteriole_classifier_param": names["ilastik_arteriole_classifier_path"],
         "ilastik_venule_classifier_param": names["ilastik_venule_classifier_path"],
+        "ilastik_arteriole_label_param": names["ilastik_arteriole_vessel_label"],
+        "ilastik_venule_label_param": names["ilastik_venule_vessel_label"],
         "arteriole_mask_attr": f"{mask_role}_arteriole_mask",
         "venule_mask_attr": f"{mask_role}_venule_mask",
         "disabled_message": _DISABLED_MESSAGES[mask_role],
@@ -291,6 +293,8 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "ilastik_unsegmented_venule_path": "ilastik_unsegmented_venule_image_path",
         "ilastik_arteriole_classifier_path": "ilastik_arteriole_classifier_path",
         "ilastik_venule_classifier_path": "ilastik_venule_classifier_path",
+        "ilastik_arteriole_vessel_label": "ilastik_arteriole_vessel_label",
+        "ilastik_venule_vessel_label": "ilastik_venule_vessel_label",
         "dilation_microns": "large_vessel_mask_dilation_microns",
         "min_component_volume_um3": "large_vessel_min_component_volume_um3",
         "swap_minority_components": "large_vessel_swap_minority_components",
@@ -316,6 +320,8 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "ilastik_unsegmented_venule_path": "ilastik_unsegmented_small_venule_image_path",
         "ilastik_arteriole_classifier_path": "ilastik_small_arteriole_classifier_path",
         "ilastik_venule_classifier_path": "ilastik_small_venule_classifier_path",
+        "ilastik_arteriole_vessel_label": "ilastik_small_arteriole_vessel_label",
+        "ilastik_venule_vessel_label": "ilastik_small_venule_vessel_label",
         "min_component_volume_um3": "small_vessel_min_component_volume_um3",
         "swap_minority_components": "small_vessel_swap_minority_components",
         "swap_max_size_ratio": "small_vessel_swap_max_size_ratio",
@@ -376,6 +382,8 @@ def load_and_validate_vessel_masks(
     ilastik_unsegmented_venule_path: str | Path | None = None,
     ilastik_arteriole_classifier_path: str | Path | None = None,
     ilastik_venule_classifier_path: str | Path | None = None,
+    ilastik_arteriole_vessel_label: object = None,
+    ilastik_venule_vessel_label: object = None,
     ilastik_output_dir: str | Path | None = None,
     ilastik_output_suffix: str = ".tif",
     ilastik_executable: str | None = None,
@@ -480,6 +488,8 @@ def load_and_validate_vessel_masks(
             output_path=segmented_arteriole_path,
             ilastik_executable=ilastik_executable,
             timeout=ilastik_timeout_seconds,
+            vessel_label=ilastik_arteriole_vessel_label,
+            label_setting=config["ilastik_arteriole_label_param"],
             reuse_existing=bool(ilastik_reuse_existing_output),
         )
         if global_mask:
@@ -506,6 +516,8 @@ def load_and_validate_vessel_masks(
                 output_path=segmented_venule_path,
                 ilastik_executable=ilastik_executable,
                 timeout=ilastik_timeout_seconds,
+                vessel_label=ilastik_venule_vessel_label,
+                label_setting=config["ilastik_venule_label_param"],
                 reuse_existing=bool(ilastik_reuse_existing_output),
             )
             logger.info(

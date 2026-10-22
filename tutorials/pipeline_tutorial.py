@@ -281,7 +281,8 @@ print(f"Inline stage plots enabled: {SHOW_STAGE_PLOTS and in_jupyter()}")
 # 
 # 1. Set `RAW_IMAGE_PATH` to your raw TIFF.
 # 2. Set `ILASTIK_CLASSIFIER_PATH` to your `.ilp` file.
-# 3. Set `RUN_STAGE_0_ILASTIK = True` and run the cell.
+# 3. Set `ilastik_vessel_label` to the name of your vessel label in the project (`Label 1` above), or its number. The export numbers the labels, and which is the vessel cannot be told from the numbers; preflight lists the project's labels if this is wrong.
+# 4. Set `RUN_STAGE_0_ILASTIK = True` and run the cell.
 # 
 # Output is written to `SEGMENTED_OUTPUT_PATH`. Then enable **your mask in Stage 1** (`USE_CUSTOM_SEGMENTED_IMAGE = True`) and run Stages 1–6.
 # 
@@ -305,6 +306,7 @@ if RUN_STAGE_0_ILASTIK:
             "use_ilastik_segmentation": True,
             "raw_image_path": Path("/path/to/your/raw_microscopy.tif"),
             "ilastik_classifier_path": Path("/path/to/your_pixel_classifier.ilp"),
+            "ilastik_vessel_label": "Label 1",  # the vessel label's name in the project, or its number
             "ilastik_executable": os.environ.get("ILASTIK_EXECUTABLE", "ilastik"),
             "ilastik_output_dir": OUTPUT_DIR / "segmentation",
         }

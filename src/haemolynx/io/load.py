@@ -246,6 +246,33 @@ def _finite_range(arr: np.ndarray, *, use_memmap: bool) -> tuple[float, float] |
 ILASTIK_BACKGROUND_LABEL = 2
 
 
+#: The label sets :func:`_warn_minority_guess` has warned about, so a mask
+#: read by several steps of a run is warned about once.
+_MINORITY_GUESSES_WARNED: set[tuple] = set()
+
+
+def _warn_minority_guess(values: np.ndarray, counts: np.ndarray, fg_value) -> None:
+    """Say that a mask of several labels was read with its rarest label as
+    vessel: a guess, wrong wherever vessels are the majority (a crop inside a
+    large vessel, or a dense bed). ilastik's own outputs never reach it, being
+    binarised at their named vessel label (``io.ilastik``)."""
+    key = (tuple(values.tolist()), tuple(counts.tolist()))
+    if key in _MINORITY_GUESSES_WARNED:
+        return
+    _MINORITY_GUESSES_WARNED.add(key)
+    total = max(int(counts.sum()), 1)
+    held = ", ".join(
+        f"{value} ({100.0 * count / total:.1f}%)" for value, count in zip(values.tolist(), counts.tolist())
+    )
+    logger.warning(
+        "A mask holding the labels %s was read with the rarest, %s, as vessel: a guess. "
+        "If vessels are the majority the mask is inside out; save it as 0 for background "
+        "and 1 for vessel.",
+        held,
+        fg_value,
+    )
+
+
 def _single_value_rule(value, shape: tuple[int, ...]):
     """The rule for an integer volume holding one value only: empty for 0 and
     for :data:`ILASTIK_BACKGROUND_LABEL` (an ilastik export that found no
@@ -297,6 +324,7 @@ def _binarization_rule(arr: np.ndarray, *, use_memmap: bool):
         # Use the minority class as foreground (e.g. 1/2 encoded masks).
         if values.size == 2:
             fg_value = values[int(np.argmin(counts))]
+            _warn_minority_guess(values, counts, fg_value)
             return lambda a: a == fg_value
         # For very small integer label sets, pick the least frequent non-zero
         # class as foreground and treat zero as background when present.
@@ -307,6 +335,7 @@ def _binarization_rule(arr: np.ndarray, *, use_memmap: bool):
                     [counts[np.where(values == v)[0][0]] for v in nonzero_values]
                 )
                 fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
+                _warn_minority_guess(values, counts, fg_value)
                 return lambda a: a == fg_value
         arr_min = int(values.min())
         arr_max = int(values.max())

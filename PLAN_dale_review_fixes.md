@@ -175,6 +175,16 @@ are expected.
 
 ## Item 4: ilastik output, with an explicit vessel label and provenance-checked reuse
 
+**Done 2026-10-22, as planned below, with three additions found against the real ilastik
+(1.4.1rc2, Harvey's claudin project):** ilastik is run `--readonly`, so a headless run never
+saves the project the sidecar records by its bytes; it is passed `--output_format` from the
+suffix, since without it ilastik writes the project's saved format (HDF5 by default) whatever
+the name says; and a multipage TIFF comes back `.tiff` whatever extension it was given, so
+the runner looks for that name (a `.tif` output was never found before). Each output is
+binarised in place to 0/1 rather than by `== label` at every reader, so all of them read it
+alike. A failed run that exits 0 now quotes ilastik's last lines. SHA-256 runs at ~300 MB/s
+here: about 3.5 s for a 1 GB project, once per process.
+
 **4a. What I found (wrong vessel class)**
 - `run_ilastik_headless_segmentation` exports `Simple Segmentation` (ilastik.py:162), which
   writes label indices 1..N.

@@ -412,6 +412,20 @@ SCHEMA = Schema(
             must_exist=True,
         ),
         Setting(
+            name="ilastik_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the ilastik project as the vessel: one of the "
+                "project's label names, or its number (1 for the first label made "
+                "in ilastik). Every other label is background. Preflight lists the "
+                "project's labels"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_ilastik_segmentation",),
+        ),
+        Setting(
             name="ilastik_executable",
             kind="str",
             default="ilastik.exe",
@@ -437,8 +451,10 @@ SCHEMA = Schema(
             default=True,
             help=(
                 "Skip ilastik when its output for an image already exists and "
-                "is newer than both the image and the project file, and use "
-                "that output. Turn off to segment again on every run"
+                "its record beside it ({output}.haemolynx.json) says it was made "
+                "from this image, unchanged, by a project with the same contents, "
+                "at the same vessel label, and use that output. Turn off to "
+                "segment again on every run"
             ),
             section=_INPUT_AND_SEGMENTATION,
             advanced=True,
@@ -1086,6 +1102,25 @@ SCHEMA = Schema(
             must_exist=True,
         ),
         Setting(
+            name="ilastik_arteriole_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the arteriole classifier as the arteriole (or, "
+                "with no venule classifier, as every large vessel): one of the "
+                "project's label names, or its number (1 for the first label made "
+                "in ilastik). Every other label is background. Preflight lists the "
+                "project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
+        ),
+        Setting(
             name="ilastik_venule_classifier_path",
             kind="path",
             default=None,
@@ -1102,6 +1137,25 @@ SCHEMA = Schema(
                 "use_ilastik_large_vessel_segmentation",
             ),
             must_exist=True,
+        ),
+        Setting(
+            name="ilastik_venule_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the venule classifier as the venule: one of the "
+                "project's label names, or its number (1 for the first label made "
+                "in ilastik). Every other label is background. Preflight lists the "
+                "project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+                "ilastik_venule_classifier_path",
+            ),
         ),
         Setting(
             # Split from automated_vessel_assignment: the masks drive the
@@ -1765,6 +1819,25 @@ SCHEMA = Schema(
             must_exist=True,
         ),
         Setting(
+            name="ilastik_small_arteriole_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the small arteriole classifier as the small "
+                "arteriole (or, with no small venule classifier, as every small "
+                "vessel): one of the project's label names, or its number (1 for "
+                "the first label made in ilastik). Every other label is background. "
+                "Preflight lists the project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+        ),
+        Setting(
             name="ilastik_small_venule_classifier_path",
             kind="path",
             default=None,
@@ -1781,6 +1854,25 @@ SCHEMA = Schema(
                 "use_ilastik_small_vessel_segmentation",
             ),
             must_exist=True,
+        ),
+        Setting(
+            name="ilastik_small_venule_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the small venule classifier as the small "
+                "venule: one of the project's label names, or its number (1 for the "
+                "first label made in ilastik). Every other label is background. "
+                "Preflight lists the project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+                "ilastik_small_venule_classifier_path",
+            ),
         ),
         Setting(
             name="small_vessel_mask_min_overlap_fraction",

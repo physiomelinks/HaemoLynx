@@ -1,6 +1,26 @@
-"""Utilities for running ilastik segmentation in headless mode."""
+"""Utilities for running ilastik segmentation in headless mode.
+
+ilastik's "Simple Segmentation" export gives each voxel the number of its most
+probable label, 1 to N in the order the project's labels were made. Which of
+those is the vessel is the project's business, not something the export's
+values can tell: a two-label output is ``{1, 2}`` whichever label the vessels
+are, and where vessels fill most of a volume the minority is the background.
+So the vessel label is named (:func:`resolve_vessel_label`, against the label
+names the ``.ilp`` holds), and each output is rewritten as a 0/1 mask
+(:func:`binarise_ilastik_output`) that every reader of a segmented image reads
+the same way.
+
+Whether an output already made can stand for this run is decided by a sidecar
+written beside it (``<output>.haemolynx.json``, :func:`ilastik_provenance`):
+the project's SHA-256, the input image's path, size and modification time,
+and the vessel label. File times alone could not decide it: copying a file
+keeps its modification time on Windows, so a colleague's project copied in,
+older than the output, was never run.
+"""
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import queue
@@ -9,7 +29,9 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -20,25 +42,294 @@ POLL_INTERVAL_SECONDS = 0.5
 #: How many of ilastik's last output lines a failure message quotes.
 _TAIL_LINES = 40
 
+#: What ilastik is asked to export: each voxel the 1-based number of its most
+#: probable label.
+EXPORT_SOURCE = "Simple Segmentation"
 
-def ilastik_output_is_up_to_date(
-    output_path: str | Path, *sources: str | Path
-) -> bool:
-    """Whether *output_path* exists and is newer than every one of *sources*.
+#: ilastik's export format for each output suffix, and the extension ilastik
+#: gives that format's files. Without ``--output_format`` ilastik writes the
+#: format saved in the project (HDF5 unless changed there), and it replaces
+#: whatever extension it is given with the format's own: ``.tif`` comes back
+#: ``.tiff``.
+OUTPUT_FORMATS = {
+    ".tif": ("multipage tiff", ".tiff"),
+    ".tiff": ("multipage tiff", ".tiff"),
+    ".h5": ("hdf5", ".h5"),
+}
 
-    The same rule ``make`` uses: an output is current when nothing it was made
-    from has changed since. A source that does not exist cannot be compared,
-    so the answer is then False and ilastik runs (and reports the missing file).
+#: Where a pixel-classification project keeps its label names, label 1 first.
+LABEL_NAMES_DATASET = "PixelClassification/LabelNames"
+
+#: Appended to an output's file name for the sidecar recording how it was made.
+SIDECAR_SUFFIX = ".haemolynx.json"
+
+#: The sidecar's layout. A sidecar of any other version is not trusted.
+PROVENANCE_VERSION = 1
+
+#: The fields of a sidecar that must match this run's for its output to be
+#: reused (the rest are there for a person reading it).
+_PROVENANCE_KEYS = ("version", "export_source", "project_sha256", "input", "vessel_label")
+
+_SHA256_CHUNK_BYTES = 8 * 1024 * 1024
+
+#: SHA-256 of files already hashed in this process, keyed on path, size and
+#: modification time, so one project is hashed once per run, not per mask.
+_SHA256_MEMO: dict[tuple[str, int, int], str] = {}
+
+
+def ilastik_label_names(project_path: str | Path) -> list[str] | None:
+    """The label names a pixel-classification project was trained with,
+    label 1 first, read from the ``.ilp`` (an HDF5 file). None when there are
+    none to read: not an HDF5 file, or not a pixel-classification project."""
+    try:
+        import h5py
+
+        with h5py.File(project_path, "r") as project:
+            names = project[LABEL_NAMES_DATASET][()]
+    except (OSError, KeyError, ValueError, TypeError):
+        return None
+    return [
+        name.decode("utf-8", "replace") if isinstance(name, bytes) else str(name)
+        for name in np.atleast_1d(names).tolist()
+    ]
+
+
+def describe_labels(names: Sequence[str]) -> str:
+    """``1 ('Vessel'), 2 ('Background')``: each label as a setting may name it."""
+    return ", ".join(f"{number} ({name!r})" for number, name in enumerate(names, start=1))
+
+
+def resolve_vessel_label(
+    label: object,
+    names: Sequence[str] | None,
+    *,
+    setting: str = "vessel_label",
+    project: str | Path | None = None,
+) -> int:
+    """The number (1-based) the export gives the vessel label.
+
+    *label* is one of the project's label *names* (exactly, else ignoring
+    case when that picks one), or a label's number. With *names* None (the
+    project's could not be read) only a number is accepted. Anything else
+    raises ``ValueError`` naming *setting* and listing the labels there are.
     """
+    where = f" in {Path(project).name}" if project is not None else ""
+    choices = (
+        f"one of the project's labels: {describe_labels(names)}"
+        if names
+        else "a label number (1 for the first label made in ilastik)"
+    )
+    text = "" if label is None else str(label).strip()
+    if not text:
+        raise ValueError(
+            f"{setting} is not set: which label{where} is the vessel cannot be read from "
+            f"ilastik's output. Fix: set {setting} to {choices}."
+        )
+    if names:
+        if text in names:
+            return list(names).index(text) + 1
+        folded = [name.casefold() for name in names]
+        if folded.count(text.casefold()) == 1:
+            return folded.index(text.casefold()) + 1
+    try:
+        number = int(text)
+    except ValueError:
+        number = None
+    if number is not None and number >= 1 and (not names or number <= len(names)):
+        return number
+    raise ValueError(
+        f"{setting}={text!r} is not a label{where}. Fix: set it to {choices}."
+    )
+
+
+def file_sha256(path: str | Path) -> str:
+    """The SHA-256 of *path*'s bytes, remembered while its size and
+    modification time stay the same."""
+    path = Path(path)
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    known = _SHA256_MEMO.get(key)
+    if known is not None:
+        return known
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(_SHA256_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    _SHA256_MEMO[key] = digest.hexdigest()
+    return _SHA256_MEMO[key]
+
+
+def sidecar_path(output_path: str | Path) -> Path:
+    """Where the record of how *output_path* was made is kept."""
+    output_path = Path(output_path)
+    return output_path.with_name(output_path.name + SIDECAR_SUFFIX)
+
+
+def _file_identity(path: Path) -> dict:
+    stat = path.stat()
+    return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def ilastik_provenance(
+    input_image_path: str | Path,
+    classifier_path: str | Path,
+    vessel_label: int,
+    *,
+    label_names: Sequence[str] | None = None,
+) -> dict:
+    """What an output made from *input_image_path* by *classifier_path*,
+    binarised at *vessel_label*, depends on: the project by its bytes, the
+    input by path, size and modification time (hashing a raw volume of many
+    GB on every run would cost more than the segmentation it saves)."""
+    classifier_path = Path(classifier_path)
+    record = {
+        "version": PROVENANCE_VERSION,
+        "export_source": EXPORT_SOURCE,
+        "project_sha256": file_sha256(classifier_path),
+        "input": _file_identity(Path(input_image_path)),
+        "vessel_label": int(vessel_label),
+        "project": str(classifier_path.resolve()),
+    }
+    if label_names and 1 <= vessel_label <= len(label_names):
+        record["vessel_label_name"] = label_names[vessel_label - 1]
+    return record
+
+
+def ilastik_output_is_current(output_path: str | Path, provenance: dict) -> tuple[bool, str]:
+    """Whether the output at *output_path* was made as *provenance* says this
+    run would make it, and why not: its sidecar must record the same project,
+    input, export and vessel label, and the output must be the file the
+    sidecar was written for (unchanged in size and time since)."""
     output_path = Path(output_path)
     if not output_path.is_file():
-        return False
-    made = output_path.stat().st_mtime
-    for source in sources:
-        source = Path(source)
-        if not source.exists() or source.stat().st_mtime > made:
-            return False
-    return True
+        return False, "there is no output yet"
+    sidecar = sidecar_path(output_path)
+    try:
+        recorded = json.loads(sidecar.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, (
+            f"it has no {sidecar.name} saying how it was made (it was made before "
+            "HaemoLynx recorded that, or by hand)"
+        )
+    except (OSError, ValueError):
+        return False, f"its record {sidecar.name} cannot be read"
+    if not isinstance(recorded, dict):
+        return False, f"its record {sidecar.name} cannot be read"
+    reasons = {
+        "version": "it was recorded by another version of HaemoLynx",
+        "export_source": "it is another kind of ilastik export",
+        "project_sha256": "the ilastik project is not the one it was made with",
+        "input": "the input image has changed (path, size or modification time)",
+        "vessel_label": "it was binarised at another vessel label",
+    }
+    for key in _PROVENANCE_KEYS:
+        if recorded.get(key) != provenance.get(key):
+            return False, reasons[key]
+    output = recorded.get("output")
+    stat = output_path.stat()
+    if not isinstance(output, dict) or (output.get("size"), output.get("mtime_ns")) != (
+        stat.st_size,
+        stat.st_mtime_ns,
+    ):
+        return False, "the output file has changed since it was made"
+    return True, ""
+
+
+def _write_sidecar(output_path: Path, provenance: dict, *, vessel_voxels: int, voxels: int) -> None:
+    stat = output_path.stat()
+    record = dict(provenance)
+    record["output"] = {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "vessel_voxels": int(vessel_voxels),
+        "voxels": int(voxels),
+    }
+    sidecar_path(output_path).write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+
+def _binarise_volume(volume, label: int, *, description: str) -> tuple[int, int]:
+    """Rewrite *volume* (writable, indexed along axis 0) as ``volume == label``
+    in its own dtype, a slab at a time. Counted first, so a volume holding no
+    voxel of *label* raises with it as ilastik wrote it."""
+    from haemolynx.preprocessing.memmap_support import slab_step
+
+    shape = tuple(volume.shape)
+    step = slab_step(shape) if shape else 1
+    tally: dict[int, int] = {}
+    for start in range(0, shape[0] if shape else 1, step):
+        slab = np.asarray(volume[start:start + step] if shape else volume[()])
+        values, counts = np.unique(slab, return_counts=True)
+        for value, count in zip(values.tolist(), counts.tolist()):
+            tally[value] = tally.get(value, 0) + count
+    vessel = tally.get(label, 0)
+    voxels = sum(tally.values())
+    if vessel == 0:
+        held = ", ".join(str(value) for value in sorted(tally)) or "nothing"
+        raise ValueError(
+            f"{description} holds no voxel of the vessel label {label} (it holds {held}): "
+            "the classifier found no vessel, or the vessel label setting names the wrong label."
+        )
+    for start in range(0, shape[0] if shape else 1, step):
+        index = slice(start, start + step) if shape else ()
+        slab = np.asarray(volume[index])
+        volume[index] = (slab == label).astype(slab.dtype)
+    return vessel, voxels
+
+
+def binarise_ilastik_output(path: str | Path, label: int) -> tuple[int, int]:
+    """Rewrite ilastik's Simple Segmentation export at *path* in place as a
+    0/1 mask: 1 where it holds *label*, 0 elsewhere, in the same file, shape,
+    dtype and metadata. Returns ``(vessel voxels, voxels)``.
+
+    A volume holding no voxel of *label* raises ``ValueError`` and is left as
+    ilastik wrote it: read as a mask it would be empty, or -- before the
+    label was named -- solid vessel.
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".h5":
+        import h5py
+
+        datasets: list = []
+        with h5py.File(path, "r+") as handle:
+            handle.visititems(
+                lambda _name, item: datasets.append(item)
+                if isinstance(item, h5py.Dataset) and np.issubdtype(item.dtype, np.integer)
+                else None
+            )
+            if not datasets:
+                raise ValueError(f"ilastik's output {path} holds no integer dataset to binarise.")
+            vessel = voxels = 0
+            for dataset in datasets:
+                counted = _binarise_volume(
+                    dataset, label, description=f"ilastik's output {path} ({dataset.name})"
+                )
+                vessel, voxels = vessel + counted[0], voxels + counted[1]
+        return vessel, voxels
+
+    import tifffile
+
+    try:
+        volume = tifffile.memmap(path, mode="r+")
+    except ValueError:
+        # Not one contiguous, uncompressed block (ilastik's own OME-TIFF is):
+        # read whole and written again with the same axes.
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            data = series.asarray()
+            axes = series.axes
+            ome = tif.is_ome
+        counted = _binarise_volume(data, label, description=f"ilastik's output {path}")
+        tifffile.imwrite(
+            path, data, ome=ome, photometric="minisblack", metadata={"axes": axes}, software="ilastik"
+        )
+        return counted
+    try:
+        counted = _binarise_volume(volume, label, description=f"ilastik's output {path}")
+        volume.flush()
+    finally:
+        del volume
+    return counted
 
 
 def _kill_process_tree(process: subprocess.Popen) -> None:
@@ -87,10 +378,13 @@ def run_ilastik_headless_segmentation(
     ilastik_executable: str | Path = "ilastik.exe",
     timeout: float | None = None,
     *,
+    vessel_label: object,
+    label_setting: str = "vessel_label",
     reuse_existing: bool = False,
     poll: Optional[Callable[[], None]] = None,
 ) -> Path:
-    """Run ilastik headless segmentation for a single image.
+    """Run ilastik headless segmentation for a single image, and leave its
+    output as a 0/1 vessel mask.
 
     Parameters
     ----------
@@ -107,10 +401,20 @@ def run_ilastik_headless_segmentation(
         seconds. ``None`` (this function's own default) waits forever; the
         pipeline itself always passes ``ilastik_timeout_seconds`` so a hung
         or misconfigured ilastik process cannot block a run indefinitely.
+    vessel_label:
+        Which of the project's labels is the vessel: a label name, or its
+        number (1 for the first label made). Resolved against the names the
+        ``.ilp`` holds (:func:`resolve_vessel_label`); the output is rewritten
+        as 1 where ilastik gave that label and 0 elsewhere
+        (:func:`binarise_ilastik_output`).
+    label_setting:
+        The setting *vessel_label* came from, named in its errors.
     reuse_existing:
-        Return *output_path* without running ilastik when it already exists
-        and is newer than both the image and the project -- a segmentation of
-        this image with this classifier has been made since either changed.
+        Return *output_path* without running ilastik when its sidecar
+        (:func:`sidecar_path`) says it was made from this image, by a project
+        with these bytes, at this vessel label, and it has not changed since
+        (:func:`ilastik_output_is_current`). An output with no sidecar, or
+        another, is segmented again, with a warning saying why.
     poll:
         Called about every :data:`POLL_INTERVAL_SECONDS` while ilastik runs.
         Whatever it raises stops the run: ilastik (and anything it started) is
@@ -131,35 +435,54 @@ def run_ilastik_headless_segmentation(
         raise FileNotFoundError(f"Classifier/project file not found: {classifier_path}")
 
     output_suffix = output_path.suffix.lower()
-    if output_suffix not in {".tif", ".tiff", ".h5"}:
+    if output_suffix not in OUTPUT_FORMATS:
         raise ValueError(
             "Unsupported ilastik output extension. "
             "Use one of: .tif, .tiff, .h5"
         )
 
-    if reuse_existing and ilastik_output_is_up_to_date(
-        output_path, input_image_path, classifier_path
-    ):
-        logger.info(
-            "Reusing ilastik output %s: it is newer than both %s and %s. "
-            "Delete it, or turn off ilastik_reuse_existing_output, to segment again.",
-            output_path,
-            input_image_path.name,
-            classifier_path.name,
-        )
-        return output_path
+    label_names = ilastik_label_names(classifier_path)
+    label = resolve_vessel_label(
+        vessel_label, label_names, setting=label_setting, project=classifier_path
+    )
+    provenance = ilastik_provenance(
+        input_image_path, classifier_path, label, label_names=label_names
+    )
+    if reuse_existing:
+        current, reason = ilastik_output_is_current(output_path, provenance)
+        if current:
+            logger.info(
+                "Reusing ilastik output %s: made from %s by this %s (same SHA-256), vessel "
+                "label %d. Delete it, or turn off ilastik_reuse_existing_output, to segment again.",
+                output_path,
+                input_image_path.name,
+                classifier_path.name,
+                label,
+            )
+            return output_path
+        if output_path.exists():
+            logger.warning("Segmenting %s again: %s.", output_path, reason)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # An old output left in place would be returned as this run's if ilastik
-    # exited cleanly without writing one.
+    # exited cleanly without writing one, and its record would vouch for it.
     output_path.unlink(missing_ok=True)
+    sidecar_path(output_path).unlink(missing_ok=True)
+    export_format, export_extension = OUTPUT_FORMATS[output_suffix]
+    # The name ilastik writes to, moved to *output_path* afterwards: one an
+    # earlier run left there would be moved in the same way.
+    generated_path = output_path.parent / f"{input_image_path.stem}{export_extension}"
+    generated_path.unlink(missing_ok=True)
     # ilastik expects output placeholders in the pattern string.
-    output_pattern = str(output_path.parent / f"{{nickname}}{output_suffix}")
+    output_pattern = str(output_path.parent / f"{{nickname}}{export_extension}")
     command = [
         str(ilastik_executable),
         "--headless",
+        # Never save the project: the sidecar records its bytes.
+        "--readonly",
         f"--project={classifier_path}",
-        "--export_source=Simple Segmentation",
+        f"--export_source={EXPORT_SOURCE}",
+        f"--output_format={export_format}",
         f"--output_filename_format={output_pattern}",
         str(input_image_path),
     ]
@@ -249,13 +572,25 @@ def run_ilastik_headless_segmentation(
             "Last output:\n" + "\n".join(tail)
         )
 
-    generated_path = output_path.parent / f"{input_image_path.stem}{output_suffix}"
     if generated_path.exists():
         if generated_path != output_path:
             generated_path.replace(output_path)
     if not output_path.exists():
+        # ilastik can fail and still exit 0 (a feature scale too large for
+        # the image), so what it said last is the explanation.
         raise RuntimeError(
             "ilastik finished, but no output file was found at "
-            f"'{output_path}'. Expected generated path: '{generated_path}'."
+            f"'{output_path}'. Expected generated path: '{generated_path}'.\n"
+            "Last output:\n" + "\n".join(tail)
         )
+    vessel_voxels, voxels = binarise_ilastik_output(output_path, label)
+    _write_sidecar(output_path, provenance, vessel_voxels=vessel_voxels, voxels=voxels)
+    name = provenance.get("vessel_label_name")
+    logger.info(
+        "ilastik output %s binarised at vessel label %d%s: %.1f%% of its voxels are vessel.",
+        output_path,
+        label,
+        f" ({name!r})" if name else "",
+        100.0 * vessel_voxels / max(voxels, 1),
+    )
     return output_path

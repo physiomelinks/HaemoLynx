@@ -36,11 +36,13 @@ input_and_segmentation:
   use_ilastik_segmentation: false
   # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
   ilastik_classifier_path: classifiers/nerve_classifier.ilp
+  # Read this label of the ilastik project as the vessel: one of the project's label names, or its number (1 for the first label made in ilastik). Every other label is background. Preflight lists the project's labels  [needs use_ilastik_segmentation]
+  ilastik_vessel_label: null
   # Run this ilastik executable name or path in headless mode
   ilastik_executable: ilastik.exe
   # Kill an ilastik headless run that takes longer than this. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
   ilastik_timeout_seconds: 7200.0
-  # Skip ilastik when its output for an image already exists and is newer than both the image and the project file, and use that output. Turn off to segment again on every run
+  # Skip ilastik when its output for an image already exists and its record beside it ({output}.haemolynx.json) says it was made from this image, unchanged, by a project with the same contents, at the same vessel label, and use that output. Turn off to segment again on every run
   ilastik_reuse_existing_output: true
   # Write ilastik-generated segmentations into this directory, as {image stem}_segmented for the main image and {image stem}_{large|small}_{arteriole|venule}_segmented for the vessel masks, so one raw stack segmented by several classifiers keeps every output
   ilastik_output_dir: examples/outputs/segmentations
@@ -143,8 +145,12 @@ vessel_masks:
   ilastik_unsegmented_venule_image_path: images/large_venule_mask.tif
   # Use this trained ilastik project to segment arterioles -- or, with no venule classifier entered, every large vessel, as a global mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
   ilastik_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
+  # Read this label of the arteriole classifier as the arteriole (or, with no venule classifier, as every large vessel): one of the project's label names, or its number (1 for the first label made in ilastik). Every other label is background. Preflight lists the project's labels  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
+  ilastik_arteriole_vessel_label: null
   # Use this trained ilastik project to segment venules. Leave it empty to read what the arteriole/global classifier segments as a global mask of every large vessel  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist if set]
   ilastik_venule_classifier_path: null
+  # Read this label of the venule classifier as the venule: one of the project's label names, or its number (1 for the first label made in ilastik). Every other label is background. Preflight lists the project's labels  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation and ilastik_venule_classifier_path]
+  ilastik_venule_vessel_label: null
   # Choose the inlet and outlet nodes where the large arteriole and venule masks meet the network's open ends. Off: set them on the Inlet and Outlet tabs, while the masks still drive the large-vessel treatment  [needs use_large_vessel_masks and automated_vessel_assignment]
   inlets_outlets_from_vessel_masks: true
   # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
@@ -223,8 +229,12 @@ vessel_masks:
   ilastik_unsegmented_small_venule_image_path: images/small_venule_mask.tif
   # Use this trained ilastik project to segment small arterioles -- or, with no small venule classifier entered, every small vessel, as a global mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
   ilastik_small_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
+  # Read this label of the small arteriole classifier as the small arteriole (or, with no small venule classifier, as every small vessel): one of the project's label names, or its number (1 for the first label made in ilastik). Every other label is background. Preflight lists the project's labels  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
+  ilastik_small_arteriole_vessel_label: null
   # Use this trained ilastik project to segment small venules. Leave it empty to read what the arteriole/global classifier segments as a global mask of every small vessel  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist if set]
   ilastik_small_venule_classifier_path: null
+  # Read this label of the small venule classifier as the small venule: one of the project's label names, or its number (1 for the first label made in ilastik). Every other label is background. Preflight lists the project's labels  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation and ilastik_small_venule_classifier_path]
+  ilastik_small_venule_vessel_label: null
   # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
   # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then at 1 µm and in 5 µm steps up to this value, each edge keeping the label of the first step that reaches it; the boundary nodes are read from the final labels. There is no separate load-time small-vessel dilation setting  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]

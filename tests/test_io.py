@@ -357,18 +357,38 @@ def test_an_ome_header_without_a_pixels_element_gives_no_sizes(ome_xml):
 # These run a real process: a small Python stand-in for ilastik behind a
 # ``.bat`` (Windows) or shell (POSIX) wrapper, which is also what ilastik's own
 # launcher is -- so killing the process *tree* on a stop is what is tested.
+# Like ilastik it writes a Simple Segmentation: 1 the vessel, 2 the rest, with
+# the vessel the *majority* (three quarters of the voxels), which is where a
+# guess at the vessel label goes wrong.
 
-_FAKE_ILASTIK = r'''
-import os, sys, time
+_FAKE_ILASTIK = r"""
+import json, os, sys, time
+import numpy as np
 mode = os.environ.get("FAKE_ILASTIK_MODE", "ok")
 pattern = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--output_filename_format="))
 image = sys.argv[-1]
 nickname = os.path.splitext(os.path.basename(image))[0]
+if os.environ.get("FAKE_ILASTIK_ARGS"):
+    with open(os.environ["FAKE_ILASTIK_ARGS"], "w") as f:
+        json.dump(sys.argv[1:], f)
+if os.environ.get("FAKE_ILASTIK_RUNS"):
+    with open(os.environ["FAKE_ILASTIK_RUNS"], "a") as f:
+        f.write(".")
 print("fake ilastik starting", flush=True)
-if mode == "ok":
+if mode in ("ok", "one_class"):
     print("predicting 50%", flush=True)
-    with open(pattern.replace("{nickname}", nickname), "wb") as out:
-        out.write(b"segmented")
+    labels = np.full((4, 6, 8), 2, dtype=np.uint8)
+    if mode == "ok":
+        labels[:3] = 1
+    out = pattern.replace("{nickname}", nickname)
+    if out.endswith(".h5"):
+        import h5py
+        with h5py.File(out, "w") as h:
+            d = h.create_dataset("exported_data", data=labels[..., None])
+            d.attrs["axistags"] = "zyxc axistags"
+    else:
+        import tifffile
+        tifffile.imwrite(out, labels, ome=True, metadata={"axes": "ZYX"}, software="ilastik")
     print("done", flush=True)
 elif mode == "fail":
     print("ERROR: project file is broken", flush=True)
@@ -381,7 +401,11 @@ elif mode == "hang":
         with open(beat, "a") as f:
             f.write(".")
         time.sleep(0.05)
-'''
+"""
+
+#: The voxels the fake writes, and how many of them are its vessel label 1.
+_FAKE_VOXELS = 4 * 6 * 8
+_FAKE_VESSEL_VOXELS = 3 * 6 * 8
 
 
 def _fake_ilastik(tmp_path):
@@ -402,12 +426,35 @@ def _fake_ilastik(tmp_path):
     return wrapper
 
 
-def _ilastik_inputs(tmp_path):
+def _ilastik_project(path, label_names=("Vessel", "Background")):
+    """A file built like an ilastik pixel-classification project, as far as
+    its label names go."""
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as project:
+        project.create_dataset(
+            "PixelClassification/LabelNames",
+            data=[name.encode() for name in label_names],
+            dtype=h5py.string_dtype(),
+        )
+    return path
+
+
+def _ilastik_inputs(tmp_path, suffix=".tif"):
     image = tmp_path / "raw.tif"
     image.write_bytes(b"not a real tiff, never opened by this function")
-    project = tmp_path / "classifier.ilp"
-    project.write_bytes(b"not a real project, never opened by this function")
-    return image, project, tmp_path / "out" / "raw_segmented.tif"
+    project = _ilastik_project(tmp_path / "classifier.ilp")
+    return image, project, tmp_path / "out" / f"raw_segmented{suffix}"
+
+
+def _read_output(path):
+    if Path(path).suffix == ".h5":
+        import h5py
+
+        with h5py.File(path, "r") as handle:
+            return handle["exported_data"][()]
+    import tifffile
+
+    return tifffile.imread(path)
 
 
 def _stopped_growing(path, *, settle=0.6):
@@ -420,53 +467,135 @@ def _stopped_growing(path, *, settle=0.6):
     return path.stat().st_size == before
 
 
-def test_ilastik_output_is_moved_to_the_requested_name(tmp_path, monkeypatch):
+def _segment(tmp_path, image, project, output, **kwargs):
     from haemolynx.io.ilastik import run_ilastik_headless_segmentation
 
-    image, project, output = _ilastik_inputs(tmp_path)
-    monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
-
-    produced = run_ilastik_headless_segmentation(
-        image, project, output, ilastik_executable=_fake_ilastik(tmp_path)
+    kwargs.setdefault("vessel_label", "Vessel")
+    return run_ilastik_headless_segmentation(
+        image, project, output, ilastik_executable=_fake_ilastik(tmp_path), **kwargs
     )
 
+
+@pytest.mark.parametrize("suffix", [".tif", ".h5"])
+def test_ilastik_output_is_moved_and_binarised_at_the_vessel_label(tmp_path, monkeypatch, suffix):
+    """Regression: a {1, 2} export was read with its minority as vessel, so an
+    output where vessels are the majority came back inside out."""
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    image, project, output = _ilastik_inputs(tmp_path, suffix)
+    monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
+
+    produced = _segment(tmp_path, image, project, output)
+
     assert produced == output
-    assert output.read_bytes() == b"segmented"
-    assert not (output.parent / "raw.tif").exists()
+    assert sorted(path.name for path in output.parent.iterdir()) == [
+        output.name, output.name + ".haemolynx.json"
+    ]
+    written = _read_output(output)
+    assert set(np.unique(written).tolist()) == {0, 1}
+    mask = _to_binary_volume_for_skeletonization(np.squeeze(written))
+    assert int(mask.sum()) == _FAKE_VESSEL_VOXELS
+    assert mask[:3].all() and not mask[3:].any()
+
+
+def test_the_vessel_label_may_be_the_second_label_by_name_or_number(tmp_path, monkeypatch):
+    image, project, output = _ilastik_inputs(tmp_path)
+    _ilastik_project(project, ("Background", "Vessel"))
+    monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
+
+    _segment(tmp_path, image, project, output, vessel_label="vessel")
+    by_name = _read_output(output)
+    _segment(tmp_path, image, project, output, vessel_label=2)
+
+    assert int(by_name.sum()) == _FAKE_VOXELS - _FAKE_VESSEL_VOXELS
+    np.testing.assert_array_equal(_read_output(output), by_name)
+
+
+def test_ilastik_is_asked_for_the_format_its_file_name_says_and_never_saves_the_project(
+    tmp_path, monkeypatch
+):
+    """Without --output_format ilastik writes the project's saved export format
+    (HDF5 unless changed), and it gives the file that format's extension
+    whatever it was asked for (a multipage TIFF is always .tiff); without
+    --readonly a headless run may save the project, changing the bytes its
+    outputs are recorded by."""
+    import json
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    arguments = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
+    monkeypatch.setenv("FAKE_ILASTIK_ARGS", str(arguments))
+
+    _segment(tmp_path, image, project, output)
+
+    passed = json.loads(arguments.read_text())
+    assert "--readonly" in passed
+    assert "--output_format=multipage tiff" in passed
+    assert "--export_source=Simple Segmentation" in passed
+    (pattern,) = [a for a in passed if a.startswith("--output_filename_format=")]
+    assert pattern.endswith("{nickname}.tiff")
+
+
+def test_an_output_with_no_voxel_of_the_vessel_label_raises_and_is_left_as_written(
+    tmp_path, monkeypatch
+):
+    """Regression: a one-class output (2 everywhere) read as solid vessel."""
+    from haemolynx.io.ilastik import sidecar_path
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    monkeypatch.setenv("FAKE_ILASTIK_MODE", "one_class")
+
+    with pytest.raises(ValueError, match="no voxel of the vessel label 1"):
+        _segment(tmp_path, image, project, output)
+
+    assert (_read_output(output) == 2).all()
+    assert not sidecar_path(output).exists()
+
+
+def test_an_unknown_vessel_label_is_refused_before_ilastik_runs(tmp_path, monkeypatch):
+    import subprocess
+
+    image, project, output = _ilastik_inputs(tmp_path)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("ilastik was started with a label the project lacks")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    for label in (None, "Lumen", 3, 0):
+        with pytest.raises(
+            ValueError, match=r"ilastik_vessel_label.*1 \('Vessel'\), 2 \('Background'\)"
+        ):
+            _segment(
+                tmp_path, image, project, output,
+                vessel_label=label, label_setting="ilastik_vessel_label",
+            )
 
 
 def test_ilastik_output_lines_reach_the_log_as_they_arrive(tmp_path, monkeypatch, caplog):
     """A long segmentation shows its progress, not nothing until it ends."""
     import logging
 
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
-
     image, project, output = _ilastik_inputs(tmp_path)
     monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
 
     with caplog.at_level(logging.INFO, logger="haemolynx.io.ilastik"):
-        run_ilastik_headless_segmentation(
-            image, project, output, ilastik_executable=_fake_ilastik(tmp_path)
-        )
+        _segment(tmp_path, image, project, output)
 
     logged = [record.getMessage() for record in caplog.records]
     assert "[ilastik] fake ilastik starting" in logged
     assert "[ilastik] predicting 50%" in logged
+    assert any("binarised at vessel label 1 ('Vessel'): 75.0%" in line for line in logged)
 
 
 def test_ilastik_timeout_kills_the_process_and_raises_an_actionable_error(tmp_path, monkeypatch):
     """A hung ilastik is killed -- the whole tree -- not left running."""
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
-
     image, project, output = _ilastik_inputs(tmp_path)
     beat = tmp_path / "beat.txt"
     monkeypatch.setenv("FAKE_ILASTIK_MODE", "hang")
     monkeypatch.setenv("FAKE_ILASTIK_BEAT", str(beat))
 
     with pytest.raises(RuntimeError, match="ilastik_timeout_seconds"):
-        run_ilastik_headless_segmentation(
-            image, project, output, ilastik_executable=_fake_ilastik(tmp_path), timeout=1.5
-        )
+        _segment(tmp_path, image, project, output, timeout=1.5)
 
     assert beat.exists()
     assert _stopped_growing(beat)
@@ -474,8 +603,6 @@ def test_ilastik_timeout_kills_the_process_and_raises_an_actionable_error(tmp_pa
 
 def test_a_poll_that_raises_stops_ilastik_and_propagates(tmp_path, monkeypatch):
     """How the panel's stop reaches a segmentation that can take hours."""
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
-
     image, project, output = _ilastik_inputs(tmp_path)
     beat = tmp_path / "beat.txt"
     monkeypatch.setenv("FAKE_ILASTIK_MODE", "hang")
@@ -491,25 +618,18 @@ def test_a_poll_that_raises_stops_ilastik_and_propagates(tmp_path, monkeypatch):
             raise Stopped()
 
     with pytest.raises(Stopped):
-        run_ilastik_headless_segmentation(
-            image, project, output, ilastik_executable=_fake_ilastik(tmp_path),
-            timeout=60.0, poll=poll,
-        )
+        _segment(tmp_path, image, project, output, timeout=60.0, poll=poll)
 
     assert len(polls) == 3
     assert _stopped_growing(beat)
 
 
 def test_a_failing_ilastik_reports_its_exit_code_and_last_output(tmp_path, monkeypatch):
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
-
     image, project, output = _ilastik_inputs(tmp_path)
     monkeypatch.setenv("FAKE_ILASTIK_MODE", "fail")
 
     with pytest.raises(RuntimeError, match="exit code 3") as raised:
-        run_ilastik_headless_segmentation(
-            image, project, output, ilastik_executable=_fake_ilastik(tmp_path)
-        )
+        _segment(tmp_path, image, project, output)
 
     assert "project file is broken" in str(raised.value)
 
@@ -517,17 +637,15 @@ def test_a_failing_ilastik_reports_its_exit_code_and_last_output(tmp_path, monke
 def test_an_old_output_is_not_returned_when_ilastik_writes_nothing(tmp_path, monkeypatch):
     """Regression: a stale segmentation passed for this run's if ilastik exited
     cleanly without writing one."""
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
-
     image, project, output = _ilastik_inputs(tmp_path)
     output.parent.mkdir(parents=True)
     output.write_bytes(b"from an earlier run")
+    # And under the name ilastik itself writes, before it is moved.
+    (output.parent / "raw.tiff").write_bytes(b"from an earlier failed run")
     monkeypatch.setenv("FAKE_ILASTIK_MODE", "silent")
 
     with pytest.raises(RuntimeError, match="no output file"):
-        run_ilastik_headless_segmentation(
-            image, project, output, ilastik_executable=_fake_ilastik(tmp_path)
-        )
+        _segment(tmp_path, image, project, output)
 
 
 def test_missing_ilastik_executable_names_the_real_setting(tmp_path):
@@ -542,10 +660,14 @@ def test_missing_ilastik_executable_names_the_real_setting(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="ilastik_executable") as raised:
         run_ilastik_headless_segmentation(
-            image, project, output, ilastik_executable=tmp_path / "no_such_ilastik.exe"
+            image, project, output,
+            ilastik_executable=tmp_path / "no_such_ilastik.exe", vessel_label=1,
         )
 
     assert "ILASTIK_EXECUTABLE" not in str(raised.value)
+
+
+# --- reusing an output: the sidecar ------------------------------------------
 
 
 def _age(path, seconds):
@@ -556,80 +678,189 @@ def _age(path, seconds):
     os.utime(path, (then, then))
 
 
-def test_an_up_to_date_output_is_reused_without_running_ilastik(tmp_path, monkeypatch):
-    import subprocess
-
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
-
-    image, project, output = _ilastik_inputs(tmp_path)
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"made earlier")
-    _age(image, 100)
-    _age(project, 100)
-
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("ilastik was started although its output is current")
-
-    monkeypatch.setattr(subprocess, "Popen", refuse)
-
-    produced = run_ilastik_headless_segmentation(
-        image, project, output, ilastik_executable="ilastik.exe", reuse_existing=True
-    )
-
-    assert produced == output
-    assert output.read_bytes() == b"made earlier"
-
-
-@pytest.mark.parametrize("changed", ["image", "project"])
-def test_an_output_older_than_its_image_or_project_is_made_again(tmp_path, monkeypatch, changed):
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
-
-    image, project, output = _ilastik_inputs(tmp_path)
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"made earlier")
-    _age(output, 100)
-    _age(image if changed == "project" else project, 200)
+def _count_runs(tmp_path, monkeypatch):
+    runs = tmp_path / "runs.txt"
     monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
-
-    run_ilastik_headless_segmentation(
-        image, project, output, ilastik_executable=_fake_ilastik(tmp_path), reuse_existing=True
-    )
-
-    assert output.read_bytes() == b"segmented"
+    monkeypatch.setenv("FAKE_ILASTIK_RUNS", str(runs))
+    return lambda: len(runs.read_text()) if runs.exists() else 0
 
 
-def test_reuse_is_off_unless_asked_for(tmp_path, monkeypatch):
-    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
+def test_an_output_made_by_this_project_is_reused_without_running_ilastik(tmp_path, monkeypatch):
+    import json
+
+    from haemolynx.io.ilastik import file_sha256, sidecar_path
 
     image, project, output = _ilastik_inputs(tmp_path)
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"made earlier")
-    _age(image, 100)
-    _age(project, 100)
-    monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
+    runs = _count_runs(tmp_path, monkeypatch)
 
-    run_ilastik_headless_segmentation(
-        image, project, output, ilastik_executable=_fake_ilastik(tmp_path)
-    )
+    _segment(tmp_path, image, project, output, reuse_existing=True)
+    made = output.read_bytes()
+    _segment(tmp_path, image, project, output, reuse_existing=True)
 
-    assert output.read_bytes() == b"segmented"
+    assert runs() == 1
+    assert output.read_bytes() == made
+    record = json.loads(sidecar_path(output).read_text())
+    assert record["project_sha256"] == file_sha256(project)
+    assert record["vessel_label"] == 1 and record["vessel_label_name"] == "Vessel"
+    assert record["output"]["vessel_voxels"] == _FAKE_VESSEL_VOXELS
 
 
-def test_ilastik_output_is_up_to_date_needs_every_source_older(tmp_path):
-    from haemolynx.io.ilastik import ilastik_output_is_up_to_date
+def test_a_project_copied_in_with_an_older_time_is_run_again(tmp_path, monkeypatch, caplog):
+    """Regression: reuse was decided by file times, and copying a file keeps
+    its modification time on Windows, so a colleague's project, older than
+    the output, was never run."""
+    import logging
 
     image, project, output = _ilastik_inputs(tmp_path)
-    assert not ilastik_output_is_up_to_date(output, image, project)
+    runs = _count_runs(tmp_path, monkeypatch)
+    _segment(tmp_path, image, project, output, reuse_existing=True)
 
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"x")
-    _age(image, 100)
-    _age(project, 100)
-    assert ilastik_output_is_up_to_date(output, image, project)
+    _ilastik_project(project, ("Vessel", "Background", "Wall"))
+    _age(project, 10_000)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.io.ilastik"):
+        _segment(tmp_path, image, project, output, reuse_existing=True)
 
-    _age(output, 200)
-    assert not ilastik_output_is_up_to_date(output, image, project)
-    assert not ilastik_output_is_up_to_date(output, tmp_path / "missing.tif")
+    assert runs() == 2
+    assert any(
+        "project is not the one it was made with" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_the_same_project_touched_again_is_still_reused(tmp_path, monkeypatch):
+    import os
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    runs = _count_runs(tmp_path, monkeypatch)
+    _segment(tmp_path, image, project, output, reuse_existing=True)
+
+    os.utime(project)  # newer than the output, the same bytes
+    _segment(tmp_path, image, project, output, reuse_existing=True)
+
+    assert runs() == 1
+
+
+@pytest.mark.parametrize("change", ["no sidecar", "image", "label", "output", "reuse off"])
+def test_an_output_that_cannot_vouch_for_this_run_is_made_again(tmp_path, monkeypatch, change):
+    from haemolynx.io.ilastik import sidecar_path
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    runs = _count_runs(tmp_path, monkeypatch)
+    _segment(tmp_path, image, project, output, reuse_existing=True)
+
+    label = "Vessel"
+    reuse = True
+    if change == "no sidecar":
+        sidecar_path(output).unlink()  # made before HaemoLynx recorded it
+    elif change == "image":
+        image.write_bytes(b"another raw stack")
+    elif change == "label":
+        label = "Background"
+    elif change == "output":
+        output.write_bytes(output.read_bytes() + b"\0")
+    else:
+        reuse = False
+    _segment(tmp_path, image, project, output, reuse_existing=reuse, vessel_label=label)
+
+    assert runs() == 2
+
+
+def test_ilastik_output_is_current_says_why_not(tmp_path):
+    from haemolynx.io.ilastik import ilastik_output_is_current
+
+    current, reason = ilastik_output_is_current(tmp_path / "missing.tif", {})
+    assert not current and reason == "there is no output yet"
+    (tmp_path / "out.tif").write_bytes(b"x")
+    current, reason = ilastik_output_is_current(tmp_path / "out.tif", {})
+    assert not current and "out.tif.haemolynx.json" in reason
+
+
+# --- the vessel label and the binarisation, without ilastik ------------------
+
+
+def test_resolve_vessel_label_reads_names_then_numbers():
+    from haemolynx.io.ilastik import resolve_vessel_label
+
+    names = ["Background", "Vessel", "vessel wall"]
+    assert resolve_vessel_label("Vessel", names) == 2
+    assert resolve_vessel_label(" VESSEL WALL ", names) == 3
+    assert resolve_vessel_label("1", names) == 1
+    assert resolve_vessel_label(3, names) == 3
+    assert resolve_vessel_label(7, None) == 7
+    for bad in ("", None, "Lumen", 4, 0, -1, "2.5"):
+        with pytest.raises(ValueError, match="my_label"):
+            resolve_vessel_label(bad, names, setting="my_label")
+    with pytest.raises(ValueError, match="a label number"):
+        resolve_vessel_label("Vessel", None)
+
+
+def test_resolve_vessel_label_prefers_an_exact_name_over_a_number():
+    from haemolynx.io.ilastik import resolve_vessel_label
+
+    assert resolve_vessel_label("2", ["2", "1"]) == 1
+
+
+def test_label_names_are_read_from_the_project_or_none(tmp_path):
+    from haemolynx.io.ilastik import ilastik_label_names
+
+    assert ilastik_label_names(_ilastik_project(tmp_path / "p.ilp", ("A", "B"))) == ["A", "B"]
+    (tmp_path / "junk.ilp").write_bytes(b"not hdf5")
+    assert ilastik_label_names(tmp_path / "junk.ilp") is None
+    assert ilastik_label_names(tmp_path / "missing.ilp") is None
+
+
+def test_a_compressed_tiff_is_binarised_with_its_axes_kept(tmp_path):
+    import tifffile
+
+    from haemolynx.io.ilastik import binarise_ilastik_output
+
+    labels = np.full((3, 4, 5), 1, dtype=np.uint8)
+    labels[0] = 2
+    path = tmp_path / "seg.tif"
+    tifffile.imwrite(
+        path, labels, compression="zlib", photometric="minisblack", metadata={"axes": "ZYX"}
+    )
+
+    assert binarise_ilastik_output(path, 1) == (40, 60)
+    with tifffile.TiffFile(path) as tif:
+        assert tif.series[0].axes == "ZYX"
+        written = tif.asarray()
+    assert written.dtype == np.uint8
+    np.testing.assert_array_equal(written, (labels == 1).astype(np.uint8))
+
+
+def test_an_h5_output_keeps_its_dataset_and_attributes(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    from haemolynx.io.ilastik import binarise_ilastik_output
+
+    path = tmp_path / "seg.h5"
+    labels = np.array([[[1, 2], [2, 3]]], dtype=np.uint8)[..., None]
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("exported_data", data=labels).attrs["axistags"] = "tags"
+
+    assert binarise_ilastik_output(path, 2) == (2, 4)
+    with h5py.File(path, "r") as handle:
+        assert handle["exported_data"].attrs["axistags"] == "tags"
+        np.testing.assert_array_equal(handle["exported_data"][()], (labels == 2).astype(np.uint8))
+
+
+def test_the_minority_guess_for_a_mask_of_two_labels_is_warned_about_once(caplog):
+    import logging
+
+    from haemolynx.io import load
+
+    load._MINORITY_GUESSES_WARNED.clear()
+    mask = np.full((4, 4, 4), 2, dtype=np.uint8)
+    mask[0] = 1
+    with caplog.at_level(logging.WARNING, logger="haemolynx.io.load"):
+        first = load._to_binary_volume_for_skeletonization(mask)
+        load._to_binary_volume_for_skeletonization(mask)
+        load._to_binary_volume_for_skeletonization((mask == 1).astype(np.uint8))
+
+    guesses = [r.getMessage() for r in caplog.records if "a guess" in r.getMessage()]
+    assert len(guesses) == 1
+    assert "1 (25.0%), 2 (75.0%)" in guesses[0] and "rarest, 1," in guesses[0]
+    assert int(first.sum()) == 16
 
 
 # --- H5 exports with a channel axis (ilastik) -------------------------------
