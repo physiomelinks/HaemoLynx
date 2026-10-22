@@ -14,6 +14,7 @@ import tracemalloc
 import networkx as nx
 import numpy as np
 import pytest
+from scipy.ndimage import distance_transform_edt
 
 from haemolynx.graph import thick_vessel_junctions as tvj
 from haemolynx.preprocessing import memmap_support
@@ -992,10 +993,15 @@ def test_low_ram_mask_dilation_is_the_distance_transforms(tmp_path, monkeypatch,
     mask = _blobs((14, 26, 30), rng.uniform(0.005, 0.2), 1.0, seed)
     spacing = [(1.0, 1.0, 1.0), (0.98, 0.98, 0.98), (2.0, 0.41, 0.41)][seed % 3]
     for dilation in (0.5, 0.98, 1.96, 3.0, 4.9):
+        # The whole transform both modes made before the in-RAM run took the
+        # blocks too (faster, a quarter of the memory).
+        reference = mask | (distance_transform_edt(~mask, sampling=spacing) <= dilation)
         plain = dilate_binary_mask_by_microns(mask, dilation, spacing)
         low = dilate_binary_mask_by_microns(mask, dilation, spacing, low_memory=True, memmap_directory=tmp_path)
         assert isinstance(low, np.memmap)
-        assert np.array_equal(low, plain)
+        assert type(plain) is np.ndarray
+        assert np.array_equal(plain, reference)
+        assert np.array_equal(low, reference)
 
 
 def test_low_ram_dilation_of_an_empty_or_full_mask_is_scipys(tmp_path):
@@ -1004,17 +1010,21 @@ def test_low_ram_dilation_of_an_empty_or_full_mask_is_scipys(tmp_path):
     from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
 
     for mask in (np.zeros((6, 9, 10), bool), np.ones((6, 9, 10), bool)):
+        reference = mask | (distance_transform_edt(~mask, sampling=(1.0, 0.5, 0.5)) <= 1.6)
         plain = dilate_binary_mask_by_microns(mask, 1.6, (1.0, 0.5, 0.5))
         low = dilate_binary_mask_by_microns(mask, 1.6, (1.0, 0.5, 0.5), low_memory=True, memmap_directory=tmp_path)
-        assert np.array_equal(low, plain)
+        assert np.array_equal(plain, reference)
+        assert np.array_equal(low, reference)
     assert dilate_binary_mask_by_microns(np.zeros((6, 9, 10), bool), 1.6, (1.0, 0.5, 0.5)).any()
 
 
-def test_low_ram_mask_dilation_holds_no_volume(tmp_path, monkeypatch):
+def test_mask_dilation_holds_no_distance_volume(tmp_path, monkeypatch):
+    """Four times the stack, the same vessels: the low-RAM peak stays a
+    block's feature transform, and the in-RAM one is the mask returned (a
+    byte a voxel), not a float64 distance volume (8 bytes a voxel and
+    scipy's working arrays), which both modes made before."""
     from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
 
-    """Four times the stack, the same vessels: the same peak (a block's
-    feature transform), where the whole transform's grows with it."""
     monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 60_000)
 
     def peaks(depth):
@@ -1030,11 +1040,10 @@ def test_low_ram_mask_dilation_holds_no_volume(tmp_path, monkeypatch):
                 tracemalloc.stop()
         return mask.size, measured
 
-    _small, (_whole, small_low) = peaks(40)
-    big, (big_whole, big_low) = peaks(160)
-    assert big_whole >= 8 * big  # a float64 distance volume
+    _small, (_in_ram, small_low) = peaks(40)
+    big, (big_in_ram, big_low) = peaks(160)
+    assert big_in_ram < 3 * big
     assert big_low < 1.5 * small_low
-    assert big_low < 0.1 * big_whole
 
 
 def test_low_ram_confidence_assignment_dilates_as_before(tmp_path, monkeypatch):
@@ -1124,6 +1133,84 @@ def test_low_ram_small_mask_continuity_is_the_in_ram_one(tmp_path, monkeypatch, 
         }
 
     assert without_times(low["stats"]) == without_times(plain["stats"])
+
+
+class _WholeTransform:
+    """The whole-volume transform the in-RAM continuity read before
+    :class:`~haemolynx.graph.mask_continuity._DistanceAt` replaced it."""
+
+    def __init__(self, volume, *, feature_value, sampling, memmap_directory=None):
+        values = np.asarray(volume[tuple(slice(None) for _ in volume.shape)], dtype=bool)
+        self.distances = distance_transform_edt(values != bool(feature_value), sampling=sampling)
+
+    def __getitem__(self, index):
+        return self.distances[index]
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_in_ram_small_mask_continuity_is_the_whole_transforms(monkeypatch, seed):
+    """Normal runs read continuity's distances at the voxels its gates ask
+    about too (four times faster, an eighth of the memory): the same masks
+    and the same decisions as the whole transforms it made before."""
+    from haemolynx.graph import enforce_small_vessel_mask_continuity
+    from haemolynx.graph import mask_continuity
+
+    rng = np.random.default_rng(100 + seed)
+    spacing = np.array([[1.5, 0.5, 0.5], [0.98, 0.98, 0.98], [1.0, 1.0, 1.0], [2.0, 0.41, 0.41]][seed % 4])
+    shape = (16, 44, 48)
+    small_art = _broken_tubes(shape, rng, 5, 1.4, spacing)
+    small_ven = _broken_tubes(shape, rng, 5, 1.4, spacing) & ~small_art
+    large_art = _broken_tubes(shape, rng, 1, 2.6, spacing) & ~small_art & ~small_ven
+    large_ven = _broken_tubes(shape, rng, 1, 2.6, spacing) & ~small_art & ~small_ven & ~large_art
+    kwargs = dict(
+        small_arteriole_mask=small_art, small_venule_mask=small_ven,
+        large_arteriole_mask=large_art if seed % 2 else None, large_venule_mask=large_ven if seed % 3 else None,
+        voxel_size_zyx=tuple(spacing), enforce_cylinder_only=bool(seed % 2), min_cylindricality=0.3,
+        max_bridge_distance_microns=12.0, corridor_max_distance_microns=6.0,
+        opposite_exclusion_distance_microns=1.5, min_facing_cosine=0.5, max_axis_angle_degrees=60.0,
+        max_radius_ratio=4.0,
+    )
+    # No GPU is asked for, so none is looked for.
+    monkeypatch.setattr(mask_continuity, "_init_gpu_edt_backend", lambda: pytest.fail("looked for a GPU"))
+    pointwise = enforce_small_vessel_mask_continuity(**kwargs)
+    monkeypatch.setattr(mask_continuity, "_DistanceAt", _WholeTransform)
+    whole = enforce_small_vessel_mask_continuity(**kwargs)
+
+    for key in ("small_arteriole_mask", "small_venule_mask"):
+        assert type(pointwise[key]) is np.ndarray
+        assert np.array_equal(pointwise[key], whole[key])
+
+    def without_times(stats):
+        return {
+            k: ({kk: vv for kk, vv in v.items() if "elapsed" not in kk} if isinstance(v, dict) else v)
+            for k, v in stats.items()
+        }
+
+    assert without_times(pointwise["stats"]) == without_times(whole["stats"])
+    if seed in (0, 1):
+        assert sum(pointwise["stats"][kind]["accepted_bridges"] for kind in ("arteriole", "venule")) > 0
+
+
+def test_continuity_asked_for_a_gpu_without_one_reads_pointwise(monkeypatch):
+    """*use_gpu_acceleration* with no GPU: the pointwise reads, not a CPU
+    whole transform -- the same masks either way."""
+    from haemolynx.graph import enforce_small_vessel_mask_continuity
+    from haemolynx.graph import mask_continuity
+
+    rng = np.random.default_rng(3)
+    spacing = (1.5, 0.5, 0.5)
+    small_art = _broken_tubes((14, 40, 44), rng, 4, 1.4, np.asarray(spacing))
+    small_ven = _broken_tubes((14, 40, 44), rng, 4, 1.4, np.asarray(spacing)) & ~small_art
+    kwargs = dict(
+        small_arteriole_mask=small_art, small_venule_mask=small_ven,
+        large_arteriole_mask=None, large_venule_mask=None, voxel_size_zyx=spacing,
+    )
+    monkeypatch.setattr(mask_continuity, "_init_gpu_edt_backend", lambda: False)
+    monkeypatch.setattr(mask_continuity, "_edt", lambda *a, **k: pytest.fail("made a whole transform"))
+    asked = enforce_small_vessel_mask_continuity(use_gpu_acceleration=True, **kwargs)
+    plain = enforce_small_vessel_mask_continuity(**kwargs)
+    for key in ("small_arteriole_mask", "small_venule_mask"):
+        assert np.array_equal(asked[key], plain[key])
 
 
 def test_continuity_distance_reader_is_scipys_transform():

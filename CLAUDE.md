@@ -838,6 +838,18 @@ are only caught locally.
   stump). Private peaks: the boundaries 7.2 -> 2.1 GB (C) and 7.4 -> 2.3 GB (D); skeletonise,
   which loads the dilated large masks for the restriction, 5.0 -> 1.8 GB (B, C); build_network
   unchanged (2.9-3.2 GB). Times not compared: a shared machine.
+  **Two of these in every run** (2026-10-22): timed in RAM against the low-RAM path on one
+  commit, only continuity's pointwise distances and the block dilation were faster, so normal
+  runs use them too, keeping their results in RAM (`low_memory` now only puts them on disk):
+  on a 60 M-voxel synthetic stack continuity 52-60 s and 2.9 GB -> 13 s and 0.5 GB, a 2 um
+  dilation 33 -> 21 s median of three (noisy) and 2.9 -> 0.76 GB. Continuity still makes the
+  whole transforms when `use_gpu_mask_continuity_acceleration` finds a GPU. The same masks as
+  `94d26a26`'s in-RAM path on 484 random cases (80 continuity, 74 drawing bridges; 404
+  dilations), pinned against scipy's whole transforms in `tests/test_low_ram_volume_copies.py`.
+  The rest gained nothing in RAM: the overlap and volume-filter clean-ups already share one
+  algorithm, the surface tiles and point distances tie, and the confidence assignment keeps its
+  one transform thresholded per step. The low-RAM reconnect refuses big windows (not the same
+  graph) and the low-RAM skeletonisation steps are slower.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the

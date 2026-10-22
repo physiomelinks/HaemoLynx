@@ -396,9 +396,9 @@ def _attempt_cylinder_bridge(
     used to come with a volume of zeros."""
     if enforce_cylinder_only:
         if float(source["linearity"]) < float(min_cylindricality):
-            return False, np.zeros(shape, dtype=bool), "source_not_cylindrical"
+            return False, None, "source_not_cylindrical"
         if float(target["linearity"]) < float(min_cylindricality):
-            return False, np.zeros(shape, dtype=bool), "target_not_cylindrical"
+            return False, None, "target_not_cylindrical"
 
     source_endpoints = source["endpoints_zyx"]
     target_endpoints = target["endpoints_zyx"]
@@ -417,17 +417,17 @@ def _attempt_cylinder_bridge(
             best_distance = dist_microns
             best_pair = (p0, p1)
     if best_pair is None:
-        return False, np.zeros(shape, dtype=bool), "no_endpoint_pair"
+        return False, None, "no_endpoint_pair"
     p0_best, p1_best = best_pair
     if best_distance > float(max_bridge_distance_microns):
-        return False, np.zeros(shape, dtype=bool), "bridge_too_long"
+        return False, None, "bridge_too_long"
 
     if enforce_cylinder_only:
         # In microns, like the principal axes it is compared with.
         v = (p1_best - p0_best).astype(float) * spacing[0]
         v_norm = float(np.linalg.norm(v))
         if v_norm <= 1e-9:
-            return False, np.zeros(shape, dtype=bool), "degenerate_endpoint_vector"
+            return False, None, "degenerate_endpoint_vector"
         v_hat = v / v_norm
         source_axis = np.asarray(source["principal_axis_zyx"], dtype=float)
         target_axis = np.asarray(target["principal_axis_zyx"], dtype=float)
@@ -440,24 +440,24 @@ def _attempt_cylinder_bridge(
         target_facing = float(np.dot(target_axis, -v_hat))
         facing_threshold = float(min_facing_cosine)
         if source_facing < facing_threshold or target_facing < facing_threshold:
-            return False, np.zeros(shape, dtype=bool), "endpoint_facing_mismatch"
+            return False, None, "endpoint_facing_mismatch"
 
         angle = _axis_angle_deg(
             np.asarray(source["principal_axis_zyx"], dtype=float),
             np.asarray(target["principal_axis_zyx"], dtype=float),
         )
         if angle > float(max_axis_angle_degrees):
-            return False, np.zeros(shape, dtype=bool), "axis_mismatch"
+            return False, None, "axis_mismatch"
         src_r = max(1e-6, float(source["median_radius_microns"]))
         tgt_r = max(1e-6, float(target["median_radius_microns"]))
         ratio = max(src_r, tgt_r) / min(src_r, tgt_r)
         if ratio > float(max_radius_ratio):
-            return False, np.zeros(shape, dtype=bool), "radius_ratio_mismatch"
+            return False, None, "radius_ratio_mismatch"
 
     line_zyx = _line_indices_zyx(p0_best, p1_best)
     line_zyx = _clip_indices_to_shape(line_zyx, shape)
     if line_zyx.size == 0:
-        return False, np.zeros(shape, dtype=bool), "empty_line"
+        return False, None, "empty_line"
 
     line_local_zyx = _global_to_local_indices_zyx(line_zyx, roi_bbox_zyx)
     same_d = dist_to_same_type_microns[
@@ -471,9 +471,9 @@ def _attempt_cylinder_bridge(
         line_local_zyx[:, 2],
     ]
     if np.any(opposite_d < float(opposite_exclusion_distance_microns)):
-        return False, np.zeros(shape, dtype=bool), "cross_type_exclusion"
+        return False, None, "cross_type_exclusion"
     if np.any(same_d > float(corridor_max_distance_microns)):
-        return False, np.zeros(shape, dtype=bool), "outside_same_type_corridor"
+        return False, None, "outside_same_type_corridor"
 
     voxel_scale = min(float(v) for v in sampling_zyx)
     avg_radius_microns = 0.5 * (
@@ -510,13 +510,16 @@ def _enforce_type_locked_continuity_for_small_mask(
     low_memory: bool = False,
     memmap_directory=None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """*low_memory* (the low-RAM option): no distance transform of a volume
-    (each is read at the voxels the gates ask about, :class:`_DistanceAt`),
-    no volume per bridge tried, *opposite_mask* may be a :class:`_Union`,
-    and the mask returned is on disk in *memmap_directory*."""
+    """No distance transform of a volume: each is read at the voxels the
+    gates ask about (:class:`_DistanceAt`), which was also four times faster
+    in RAM, with the same masks -- unless *use_gpu_acceleration* finds a GPU,
+    which makes the whole transforms there. *low_memory* (the low-RAM
+    option): *opposite_mask* may be a :class:`_Union`, and the mask returned
+    is on disk in *memmap_directory*."""
     total_start_s = time.perf_counter()
     small_binary = small_mask.astype(bool, copy=False)
     sampling_zyx = _voxel_size_zyx_to_sampling_zyx(voxel_size_zyx)
+    whole_transforms = bool(use_gpu_acceleration) and not low_memory and _init_gpu_edt_backend()
     if low_memory:
         has_large = large_mask is not None and _mask_bounds(large_mask) is not None
         large_binary = (
@@ -525,9 +528,6 @@ def _enforce_type_locked_continuity_for_small_mask(
             else large_mask.astype(bool, copy=False)
         )
         opposite_binary = opposite_mask
-
-        def inside_distance(mask):
-            return _DistanceAt(mask, feature_value=False, sampling=sampling_zyx)
     else:
         large_binary = (
             np.zeros_like(small_binary, dtype=bool)
@@ -537,8 +537,10 @@ def _enforce_type_locked_continuity_for_small_mask(
         has_large = bool(np.any(large_binary))
         opposite_binary = opposite_mask.astype(bool, copy=False)
 
-        def inside_distance(mask):
-            return _edt(mask, sampling_zyx=sampling_zyx, use_gpu_acceleration=bool(use_gpu_acceleration))
+    def inside_distance(mask):
+        if whole_transforms:
+            return _edt(mask, sampling_zyx=sampling_zyx, use_gpu_acceleration=True)
+        return _DistanceAt(mask, feature_value=False, sampling=sampling_zyx)
     edt_inside_small = inside_distance(small_binary)
     small_desc = _component_descriptors(
         small_binary, edt_inside_small, sampling_zyx=sampling_zyx
@@ -700,7 +702,7 @@ def _enforce_type_locked_continuity_for_small_mask(
         int(y_slice.stop) - int(y_slice.start),
         int(x_slice.stop) - int(x_slice.start),
     )
-    if low_memory:
+    if not whole_transforms:
         # Read at each bridge line's voxels; the features, as the transforms
         # of the box below see them, are the mask voxels inside the box.
         same_type = _Union(small_binary[roi_bbox_zyx], None if large_mask is None else large_binary[roi_bbox_zyx])
@@ -717,12 +719,12 @@ def _enforce_type_locked_continuity_for_small_mask(
         dist_to_same_type = _edt(
             ~(small_binary | large_binary)[z_slice, y_slice, x_slice],
             sampling_zyx=sampling_zyx,
-            use_gpu_acceleration=bool(use_gpu_acceleration),
+            use_gpu_acceleration=True,
         )
         dist_to_opposite_type = _edt(
             ~opposite_binary[z_slice, y_slice, x_slice],
             sampling_zyx=sampling_zyx,
-            use_gpu_acceleration=bool(use_gpu_acceleration),
+            use_gpu_acceleration=True,
         )
     distance_setup_elapsed_s = time.perf_counter() - distance_setup_start_s
     attempted = 0
@@ -820,11 +822,13 @@ def enforce_small_vessel_mask_continuity(
     - small arteriole -> large arteriole
     - small arteriole -> small arteriole
 
-    *low_memory* (the low-RAM option) makes no distance transform of a
-    volume, no volume per bridge tried and no union of masks: the
-    distances are read at the voxels the gates ask about, a bridge is drawn
-    in its own box, the other type's masks are read together where asked,
-    and the masks returned are on disk in *memmap_directory*. The same masks.
+    No distance transform of a volume and no volume per bridge tried: the
+    distances are read at the voxels the gates ask about and a bridge is
+    drawn in its own box (a GPU, under *use_gpu_acceleration*, makes the
+    whole transforms instead). *low_memory* (the low-RAM option) makes no
+    union of masks either -- the other type's masks are read together where
+    asked -- and the masks returned are on disk in *memmap_directory*. The
+    same masks.
     """
     art_small = small_arteriole_mask.astype(bool, copy=False)
     ven_small = small_venule_mask.astype(bool, copy=False)
