@@ -29,7 +29,7 @@ confirming.
 | 7 | [Memory and scale](#7-memory-and-scale--memory) | **4** | peak memory per stage measured on the fixtures, E14.5 and Nerve, but not Mason SM or the brain (6a); no stated requirements (6b); the default solvers do not scale (6c) |
 | 8 | [Usability](#8-usability--usability) | **4** | no task list walked through (6a); defaults untested end to end (6b); no undo (6c) |
 | 9 | [Visualisation](#9-visualisation--visual) | **4** | figures without units (6a); tube frame rate not measured (6c); mixed dpi (6d) |
-| 10 | [Exports](#10-exports--export) | **3** | blind-end vessels keep a flow of exactly 0 in the VTK, flagged, not blank: a decision (4b) |
+| 10 | [Exports](#10-exports--export) | **5** | no data dictionary of the exported files, columns and arrays (6a); VTK arrays and perturbation CSV columns carry no units (6b) |
 | 11 | [Documentation and help](#11-documentation-and-help--docs) | **4** | help pages empty, 0 of 10, for Harvey to write (6a); guide skips Post processing and Perturbations (6b) |
 | 12 | [Robustness](#12-robustness--robust) | **4** | no edge-case suite through every stage (6a); open review bugs (6b) |
 | 13 | [Reproducibility](#13-reproducibility--repro) | **5** | no end-to-end identity test (6c) |
@@ -37,8 +37,8 @@ confirming.
 | 15 | [Installation and packaging](#15-installation-and-packaging--package) | **4** | still 0.1.0 after 457 commits, no CHANGELOG (6a) |
 | 16 | [Code maintainability](#16-code-maintainability--code) | **3** | Cleanup plan Phase 2 unfinished (4c) |
 
-**Headline: the lowest score is 3** (exports, testing, maintainability).
-The mean is 4.0. The release gate needs every aspect at 7 or more, and the science aspects at 8.
+**Headline: the lowest score is 3** (testing, maintainability).
+The mean is 4.1. The release gate needs every aspect at 7 or more, and the science aspects at 8.
 
 Most of these scores are low because **nothing has been measured, not because the work is
 poor**. The test suite is large (6,064 tests) and checks the analytic cases well. What is
@@ -57,9 +57,9 @@ This order follows the gate, which is set by the lowest aspects, and favours the
    4 and reproducibility from 4 to 5. The fixtures, E14.5 and Nerve were measured the same day
    at `9b679b8`. `memory.6a` and `speed.6a` still need Mason SM and the brain, whose inputs are
    not on this machine.
-3. **Fix the VTK export** (`export.4b`, `export.6d`, `export.6c`): blank flow for unsolved
-   vessels, add diameter and the solved flag, and stamp the version. This is item 5 of
-   `PLAN_dale_review_fixes.md`. It takes exports from 3 to 4 or 5.
+3. ~~**Fix the VTK export** (`export.4b`, `export.6d`, `export.6c`)~~. Done 2026-10-22: blank
+   flow where no inlet and outlet reach, a flagged exact 0 behind dead ends (Harvey's call),
+   diameter and the solved flag, and the version stamped. Exports went from 3 to 5.
 4. **Record a full suite run**, GUI and slow tests included, at the current commit (`tests.4c`),
    and start measuring coverage (`tests.6a`). It takes testing from 3 to 4.
 5. **Finish Cleanup plan Phase 2**: the three renames (`code.4c`). It takes maintainability from
@@ -340,7 +340,7 @@ haematocrit, constriction and perturbations.
 |---|---|---|---|---|
 | export.2a | A | A run writes VTK and CSV. | ✓ | `vtk_io.py:116-217`, `csv_export.py` |
 | export.4a | A | Tests read every export back and check its content. | ✓ | `test_vtk_io.py` (23), `test_statistics.py:785`, `test_tissue_volume.py:380`, `test_perturbation_outputs.py`, `test_gui_run_snapshot.py` |
-| export.4b | R | No export can be misread: unsolved vessels' flows are blank, not numbers. | ✗ | Since `b6d9210` the VTK blanks flows and pressures where no inlet and outlet reach (`no_boundary`), and writes `flow_solved` and `flow_state` on every vessel (`test_vtk_io.py:310`). Vessels behind dead ends inside the tissue keep the model's answer, no flow: `flow_abs`, `flow_signed` and `pressure_drop` exactly 0, set after the solve, every perturbation re-solve and every sweep point (before, the solve's rounding, up to 5e-20 m^3/s on E14.5), flagged `flow_solved=0`, `flow_state=blind_end` or `closed_end` (`0c6d13b`, `test_open_ends.py:244`, `:265`, `:290`; the dead-end plan's D4). Harvey decides whether that counts as blank |
+| export.4b | R | No export can be misread: unsolved vessels' flows are blank, not numbers. | ✓ | Since `b6d9210` the VTK blanks flows and pressures where no inlet and outlet reach (`no_boundary`), and writes `flow_solved` and `flow_state` on every vessel (`test_vtk_io.py:310`). Vessels behind dead ends inside the tissue keep the model's answer, no flow: `flow_abs`, `flow_signed` and `pressure_drop` exactly 0, set after the solve, every perturbation re-solve and every sweep point (before, the solve's rounding, up to 5e-20 m^3/s on E14.5), flagged `flow_solved=0`, `flow_state=blind_end` or `closed_end` (`0c6d13b`, `test_open_ends.py:244`, `:265`, `:290`; the dead-end plan's D4). Harvey, 2026-10-22: a flow of exactly 0 with `flow_solved=0` and `flow_state=blind_end`/`closed_end` counts as blank |
 | export.6a | R | A data dictionary documents every exported file, column or array, and unit. | ✗ | None. The README and the guide do not describe the outputs |
 | export.6b | A | Units are present and consistent everywhere, VTK arrays and perturbation CSVs included. | ✗ | VTK arrays have no units. Perturbation resistance and flow columns have none |
 | export.6c | A | Outputs carry the HaemoLynx version, the commit and the settings used, with a config beside them. | ✓ | The VTK vessels file carries the version, viscosity law, diameter basis, haematocrit and open-end model in its field data (`test_vtk_io.py:310`, `b6d9210`). Since 2026-10-15 the run manifest beside every run's outputs carries the version, the commit and the settings, with `{stem}_run_settings.yaml` as the config (`test_pipeline_provenance.py:92`, `:169`, `:519`). Read as the output folder: the VTK and CSV files do not each carry the commit |
@@ -472,3 +472,4 @@ Add a row for every scoring, and for every change to a check or a target.
 | 2026-10-15 | `30fd455` | Claude | `stats.8a` passes. The statistics are cross-checked against skan, maskel and VesselVio on the dense capillary bed and on E14.5 (`scripts/stats_cross_check.py`, `tests/test_stats_cross_check.py`). VesselVio is GPL, so it is run as its own program and only its output files are read. Where the definitions coincide the numbers agree within 2.5%. Each other difference is pinned to the HaemoLynx step that makes it. The E14.5 run also measured that 27% of HaemoLynx's cleaned skeleton lies outside every vessel it draws, which belongs to `graph.6c`. No score change: statistics stays 5 on `stats.6a` and `stats.6b`. |
 | 2026-10-18 | after `6f05617` | Claude | Low-RAM graph building and diameters (`use_memmap_loading`): one `MaskSupport` a run (one packing of the mask, one surface tree), packed point lookups, the thick tree's inscribed radius measured once and block by block, mask recovery tracing from a piece's own voxels, and unreleased temp memmaps deleted once dropped. E14.5 low-RAM, three runs each from `git archive`s (`outputs/lrb/`, git-ignored): graphs identical before and after diameters; `build_network` 225 -> 233 s median, within the machine's noise; thick split 14.4 -> 9.9 s. On a 210 M-voxel synthetic stack the tree radius peak went 425 -> 72 MB and a long recovered piece 1,419 -> 1 MB. Evidence for `memory.4a` and `speed.4b`; no check changes, no score change. |
 | 2026-10-20 | after `3bdb785` | Claude | Low-RAM option without whole-volume copies (`0f3f5f3`, `b6c602a`, `3bdb785`; for a 5.5 G-voxel stack on 33 GB): the lumen radius from surface tiles, the thick tree handed on as its voxels, slab labels and `ForegroundLabels` in place of int32 label volumes, the vessel masks cleaned onto disk, continuity's distance transforms read where asked, the arteriole/venule unions read where asked or written a slab at a time, the vessel-mask dilation a block at a time. The same answers: 60 results of the changed functions and random fixtures against `a82c7e9`, and E14.5 low-RAM from `git archive`s (`outputs/lvc/e14/`, `outputs/lvc/e14b/`, git-ignored): the skeleton, the built graph and the graph after diameters, and in four boundary runs every mask, boundary list and graph, identical node for node, edge for edge, every attribute. Private peaks on E14.5: skeletonise 2.74 -> 2.30 GB, build_network 3.32 -> 2.98 GB, boundaries 2.61 -> 2.01 GB, and with the boundary stage's mask steps on 7.2-7.4 -> 2.1-2.3 GB; per step on a 120 M-voxel synthetic stack, e.g. the overlap clean-up 2,064 -> 409 MB, a 2 um dilation 5,608 -> 580 MB, continuity 2,712 -> 207 MB. Evidence for `memory.4a`; no check changes, no score change (`memory.8a` still wants a recorded Mason SM or brain run, `memory.10a` three volume sizes and E14.5 in 16 GB). |
+| 2026-10-22 | `1a9c2ebc` | Harvey | `export.4b` passes: Harvey decided that a flow of exactly 0 with `flow_solved=0` and `flow_state=blind_end`/`closed_end` counts as blank (the code is `0c6d13b`'s). Level 4 is complete, and two of level 6's four checks pass (6c, 6d), so Exports 3 → 5, mean 4.0 → 4.1. The headline stays 3 (testing, maintainability). |
