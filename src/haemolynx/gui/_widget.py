@@ -5083,6 +5083,11 @@ class _ColourScale:
             box.editingFinished.connect(self._apply_typed)
         self.bar = QLabel()
         self.bar.setFixedHeight(COLORBAR_SIZE[1])
+        # Stretched to whatever width the row has: held at the pixmap's own
+        # 150 px, it set the floor of the whole left tab, and every control
+        # in it ran past the tab's edge.
+        self.bar.setMinimumWidth(16)
+        self.bar.setScaledContents(True)
         self.bar.setPixmap(_colorbar_pixmap())
         row.addWidget(self.low)
         row.addWidget(self.bar, 1)
@@ -5275,7 +5280,7 @@ class _ShownVesselsColourScale(_ColourScale):
     """
 
     def __init__(self, viewer, on_resize=None) -> None:
-        from qtpy.QtWidgets import QFormLayout, QLabel, QWidget
+        from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
 
         from haemolynx.gui.chrome_tooltips import COLOUR_RANGE_TOOLTIPS
 
@@ -5292,11 +5297,15 @@ class _ShownVesselsColourScale(_ColourScale):
             (self.trim_button, "fit_trim"), (self.in_viewer, "canvas"),
         ):
             widget.setToolTip(COLOUR_RANGE_TOOLTIPS[key])
+        # The label above, as the Z-depth filter's is: beside the boxes and
+        # the canvas checkbox it made this row wider than a narrow tab.
         self.row = QWidget()
         self.row.setObjectName("haemolynx_colour_range_row")
-        form = QFormLayout(self.row)
-        form.setContentsMargins(0, 0, 0, 0)
-        form.addRow(self.label, self.native)
+        stack = QVBoxLayout(self.row)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(2)
+        stack.addWidget(self.label)
+        stack.addWidget(self.native)
         self.row.setVisible(False)
 
     def _layer(self):
@@ -15561,11 +15570,15 @@ def settings_widget(napari_viewer=None):
     display_group = QGroupBox("Display")
     display_group.setObjectName("haemolynx_display_group")
     display_form = QFormLayout(display_group)
+    # The label above its sliders, not beside them: beside, it took a third
+    # of a narrow tab from the min and max bars.
     z_depth_row = QWidget()
     z_depth_row.setObjectName("haemolynx_z_depth_row")
-    z_depth_form = QFormLayout(z_depth_row)
-    z_depth_form.setContentsMargins(0, 0, 0, 0)
-    z_depth_form.addRow(z_depth_label, z_depth_slider)
+    z_depth_layout = QVBoxLayout(z_depth_row)
+    z_depth_layout.setContentsMargins(0, 0, 0, 0)
+    z_depth_layout.setSpacing(2)
+    z_depth_layout.addWidget(z_depth_label)
+    z_depth_layout.addWidget(z_depth_slider)
     display_form.addRow(z_depth_row)
     vessel_draw_row = QWidget()
     vessel_draw_row.setObjectName("haemolynx_vessel_draw_row")

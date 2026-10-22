@@ -474,6 +474,41 @@ def test_z_depth_labels_show_the_selected_microns(make_napari_viewer):
     assert slider.edge_labels() == ("2.5 µm", "5 µm")
 
 
+def test_the_view_tab_fits_its_width_with_a_run_shown(make_napari_viewer):
+    """Regression: once a run coloured the vessels, the colour range's 150 px
+    bar beside its label held the view panel at 439 px in a 286 px tab, so
+    the Z-depth min and max bars ran past the tab's edge. The Z-depth and
+    colour range labels sit above their controls."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    main_window = viewer.window._qt_window
+    main_window.resize(1400, 900)
+    dock = panel._haemolynx_view_dock
+    main_window.resizeDocks([dock], [300], Qt.Orientation.Horizontal)
+    _settle()
+
+    colour_range = panel._haemolynx_view_panel.findChild(
+        type(panel._haemolynx_view_panel), "haemolynx_colour_range_row"
+    )
+    assert colour_range is not None and not colour_range.isHidden()
+    viewport = dock.widget().viewport()
+    assert panel._haemolynx_view_panel.width() <= viewport.width()
+    slider = panel._haemolynx_z_depth_slider
+    for bar in (slider._lo, slider._hi):
+        right = bar.mapTo(viewport, bar.rect().topRight()).x()
+        assert right <= viewport.width(), (right, viewport.width())
+
+    row = panel._haemolynx_z_depth_row
+    label = row.layout().itemAt(0).widget()
+    assert label.text().startswith("Z-depth filter")
+    assert row.layout().itemAt(1).widget() is slider
+    assert label.geometry().bottom() <= slider.geometry().top()
+
+
 def test_z_depth_clips_every_layer_and_full_range_restores(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
