@@ -1112,8 +1112,13 @@ def visualize_overlay(
     vessel_opacity: float = 0.3,
     skeleton_point_size: float = 5.0,
     show: bool = True,
+    depth_peeling: bool = True,
 ) -> Any:
-    """Visualize a 3D skeleton overlaid on its parent volume mesh."""
+    """Visualize a 3D skeleton overlaid on its parent volume mesh.
+
+    ``depth_peeling`` turns on depth-peeled transparency; a failure to enable it
+    (no GL context) is logged, not raised. Pass False where there is no display.
+    """
     try:
         import pyvista as pv
     except ImportError as exc:
@@ -1123,8 +1128,7 @@ def visualize_overlay(
     plotter.set_background(background_color)
     
     # Enable depth peeling for correct transparency rendering
-    import sys
-    if "pytest" not in sys.modules:
+    if depth_peeling:
         try:
             plotter.enable_depth_peeling()
         except Exception as e:

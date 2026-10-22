@@ -91,7 +91,7 @@ def test_visualize_overlay():
     mask[2:8, 2:8, 2:8] = True
     skeleton = np.zeros((10, 10, 10), dtype=bool)
     skeleton[5, 5, 5] = True
-    plt = visualize_overlay(mask, skeleton, title="Test", show=False)
+    plt = visualize_overlay(mask, skeleton, title="Test", show=False, depth_peeling=False)
     assert plt is not None
 
 
