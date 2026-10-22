@@ -91,9 +91,9 @@ def _four_way_page(viewer, *, junction_correction: bool, graph=None, settings=No
     report = SimpleNamespace(value="")
     regenerated: list = []
     stops: list = []
-    #: What the panel would say: a run paused here, one finished, whether a
-    #: run started when asked.
-    run = SimpleNamespace(paused=False, complete=True, starts=True)
+    #: What the panel would say: a run paused here, whether a run started
+    #: when asked.
+    run = SimpleNamespace(paused=False, starts=True)
 
     def regenerate(graph, stop_after=None):
         regenerated.append(graph)
@@ -109,7 +109,6 @@ def _four_way_page(viewer, *, junction_correction: bool, graph=None, settings=No
         running=lambda: False,
         settings=settings,
         paused=lambda: run.paused,
-        complete=lambda: run.complete,
     )
     controls.refresh()
     controls.review_choice.setCurrentText(JUNCTIONS if junction_correction else NO_LIST)
@@ -717,7 +716,7 @@ def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
     c.scan_button.click()
     c.split_button.click()
     edited = c.state.graph
-    c.regenerate_button.click()
+    c.regenerate_graph_button.click()
 
     assert page.regenerated == [edited]
     assert page.stops == [None], "after a finished run: on to the end"
@@ -732,7 +731,7 @@ def test_regenerate_hands_over_a_traced_vessel_with_its_cut_vessels(page):
     c.add_button.click()
     _click(page, (10.0, 10.0, 0.0))  # halfway along 1 -> 5
     _click(page, (20.0, -10.0, 0.0))  # node 3
-    c.regenerate_button.click()
+    c.regenerate_graph_button.click()
 
     (graph,) = page.regenerated
     assert graph.number_of_edges() == 8
@@ -750,23 +749,30 @@ def test_the_hand_over_buttons_wait_for_something_to_hand_over(page):
     assert c.regenerate_graph_button.toolTip() and c.continue_button.toolTip()
     c.scan_button.click()
     assert not c.regenerate_graph_button.isEnabled(), "nothing edited yet"
-    assert not c.regenerate_button.isEnabled()
     assert not c.continue_button.isEnabled(), "no run is paused"
 
     c.split_button.click()
 
     assert c.regenerate_graph_button.isEnabled()
-    assert c.regenerate_button.isEnabled()
     assert "Regenerate graph" in c.commit_status.text()
+
+
+def test_the_page_hands_over_through_regenerate_graph_and_continue_alone(page):
+    """"Regenerate from the edited network" did what Regenerate graph does
+    after a finished run, and was clickable only when Regenerate graph was."""
+    from qtpy.QtWidgets import QPushButton
+
+    texts = {b.text() for b in page.controls.page.findChildren(QPushButton)}
+    assert {"Regenerate graph", "Continue"} <= texts
+    assert "Regenerate from the edited network" not in texts
 
 
 def test_regenerate_graph_while_paused_keeps_the_run_paused(page):
     c = page.controls
-    page.run.paused, page.run.complete = True, False
+    page.run.paused = True
     c.scan_button.click()
     c.split_button.click()
     assert c.continue_button.isEnabled()
-    assert not c.regenerate_button.isEnabled(), "Continue, not this, while paused"
     edited = c.state.graph
 
     c.regenerate_graph_button.click()
@@ -788,7 +794,7 @@ def test_regenerate_graph_after_a_finished_run_re_solves_to_the_end(page):
 
 def test_continue_carries_a_paused_run_on_with_the_edits(page):
     c = page.controls
-    page.run.paused, page.run.complete = True, False
+    page.run.paused = True
     c.refresh()
     c.scan_button.click()
     c.split_button.click()
@@ -953,7 +959,6 @@ def _loop_page(viewer, tmp_path, *, loop_review: bool = True):
         running=lambda: False,
         settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
         paused=lambda: False,
-        complete=lambda: True,
     )
     controls.refresh()
     controls.review_choice.setCurrentText(LOOPS if loop_review else NO_LIST)
@@ -1400,7 +1405,7 @@ def test_the_scan_after_a_regenerate_says_what_it_changed(page):
     keys = edge_keys(c.state.graph)
     c.branch_ids.setText(str(next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})))
     c.delete_ids_button.click()
-    c.regenerate_button.click()
+    c.regenerate_graph_button.click()
     (edited,) = page.regenerated
 
     # The regenerated run puts a new network in the viewer.

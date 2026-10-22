@@ -1147,7 +1147,7 @@ are only caught locally.
   the same rule as `remove_disconnected`; the boundary lists are trimmed to the pruned graph when
   the `post_process` stage runs. Its Regenerate graph runs
   the `post_process` stage alone (edits in line, Haemodynamics rerun) while a run is paused there
-  (`gui/run_state.py`), else goes on to Export like Regenerate from the edited network; Continue
+  (`gui/run_state.py`), else goes on to Export; Continue
   carries a paused run on. A `.haemorun` saved in the old order (Post processing before
   Haemodynamics) is reordered on load (`gui/run_snapshot.py`'s `with_post_process_checkpoint`).
   Plus what a run reports through:

@@ -776,11 +776,6 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Every change made in this tab, oldest first, with the branchIDs as "
         "they were when it was made; the same lines go to the napari log"
     ),
-    "regenerate": (
-        "After a finished run: bring the edits in line with the rest of the "
-        "network, rerun Haemodynamics on the edited network, then Perturbations "
-        "and Export, so the 3D view and outputs catch up with the edits"
-    ),
     "regenerate_graph": (
         "Bring the edits in line with the rest of the network -- branch orders "
         "assigned again, each edited vessel's length measured along its path and "

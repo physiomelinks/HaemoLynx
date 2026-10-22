@@ -10276,7 +10276,7 @@ class _GraphEditorWindow:
 
 #: The Post processing stage's tab, between Haemodynamics and Perturbations.
 #: Its page is its own (no setting rows), and it has no "Run from this stage": its
-#: Regenerate graph / Continue / Regenerate from the edited network are that.
+#: Regenerate graph / Continue are that.
 POST_PROCESSING_TAB = post_processing_tab_title()
 
 #: How wide a box, in microns, zooming to a junction fits on screen.
@@ -10357,7 +10357,7 @@ def _camera_vector_to_zyx(viewer, vector) -> np.ndarray | None:
 
 def _post_processing_controls(
     viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
-    paused=None, complete=None,
+    paused=None,
 ):
     """The "7. Post processing" page: fix the solved network by hand.
 
@@ -10367,16 +10367,15 @@ def _post_processing_controls(
     or the end) and says whether it started, *running* says whether a run is
     under way and *settings* (optional) returns the panel's settings -- where
     Add vessel finds the raw data file and the run's centreline smoothing.
-    *paused* says whether a run is paused here (Mid-run postprocessing) and
-    *complete* whether one has been past here. Callables, because the panel
-    builds them before what they read.
+    *paused* says whether a run is paused here (Mid-run postprocessing).
+    Callables, because the panel builds them before what they read.
 
-    Three buttons at the foot of the page take the edits on. Regenerate graph
+    Two buttons at the foot of the page take the edits on. Regenerate graph
     brings them in line -- branch orders, lengths, diameters by the run's own
     methods, thick-vessel bridges -- and reruns Haemodynamics on the edited
     network (the pipeline's ``post_process`` stage); when a run is paused
     here it stays paused, and after a finished run it goes on through
-    Perturbations to Export, as Regenerate from the edited network does.
+    Perturbations to Export.
     Continue, while paused, does the same and carries the run on.
 
     The page edits one working copy of the graph: the junction table's
@@ -10736,9 +10735,6 @@ def _post_processing_controls(
     connectivity_row.addWidget(connectivity_map_button)
     connectivity_layout.addLayout(connectivity_row)
     connectivity_layout.addWidget(connectivity_status)
-    regenerate_button = QPushButton("Regenerate from the edited network")
-    regenerate_button.setObjectName("haemolynx_post_processing_regenerate")
-    regenerate_button.setToolTip(tips["regenerate"])
     regenerate_graph_button = QPushButton("Regenerate graph")
     regenerate_graph_button.setObjectName("haemolynx_post_processing_regenerate_graph")
     regenerate_graph_button.setToolTip(tips["regenerate_graph"])
@@ -10931,10 +10927,7 @@ def _post_processing_controls(
     layout.addWidget(prune_button)
     layout.addWidget(QLabel("What was changed:"))
     layout.addWidget(log_box)
-    row = QHBoxLayout()
-    row.addWidget(regenerate_graph_button)
-    row.addWidget(regenerate_button)
-    layout.addLayout(row)
+    layout.addWidget(regenerate_graph_button)
     layout.addWidget(commit_status)
     layout.addWidget(continue_button)
 
@@ -11163,14 +11156,12 @@ def _post_processing_controls(
         return bool(paused()) if paused is not None else False
 
     def refresh_buttons() -> None:
-        """Which of the three hand-over buttons applies now, and why."""
+        """Which of the two hand-over buttons applies now, and why."""
         busy = bool(running())
         held = is_paused()
-        finished = bool(complete()) if complete is not None else False
         pending = has_pending_edits(state.graph)
         regenerate_graph_button.setEnabled(not busy and pending)
         continue_button.setEnabled(not busy and held)
-        regenerate_button.setEnabled(not busy and pending and finished and not held)
         if busy:
             text = "A run is going."
         elif held and pending:
@@ -12726,26 +12717,6 @@ def _post_processing_controls(
         status.setText(waiting)
         refresh_buttons()
 
-    def on_regenerate() -> None:
-        """After a finished run: the edits in line, Haemodynamics rerun on
-        them, then Perturbations to Export."""
-        if state.graph is None:
-            status.setText("Scan the network first; there is nothing edited to regenerate from.")
-            return
-        if running():
-            report.value = ALREADY_RUNNING
-            return
-        hand_over(
-            state.graph,
-            stop_after=None,
-            note=(
-                f"Regenerating from the edited network: the edits in line, "
-                f"Haemodynamics rerun on it, then Perturbations to Export "
-                f"({state.graph.number_of_edges()} vessels)"
-            ),
-            waiting="Regenerating from the edited network; scan again once it finishes.",
-        )
-
     def on_regenerate_graph() -> None:
         """The edits in line and Haemodynamics rerun; paused, the run stays
         paused, else it goes on to Export."""
@@ -12849,12 +12820,11 @@ def _post_processing_controls(
     trace_source.currentTextChanged.connect(on_trace_source_changed)
     delete_ids_button.clicked.connect(on_delete_ids)
     branch_ids.returnPressed.connect(on_delete_ids)
-    regenerate_button.clicked.connect(on_regenerate)
     regenerate_graph_button.clicked.connect(on_regenerate_graph)
     continue_button.clicked.connect(on_continue)
     # Off until there is something to take on; the panel refreshes them once
-    # what `running`, `paused` and `complete` read exists.
-    for button in (regenerate_graph_button, continue_button, regenerate_button):
+    # what `running` and `paused` read exists.
+    for button in (regenerate_graph_button, continue_button):
         button.setEnabled(False)
 
     def forget() -> None:
@@ -12927,7 +12897,6 @@ def _post_processing_controls(
         connectivity_map_button=connectivity_map_button,
         connectivity_status=connectivity_status,
         open_connectivity_map=open_connectivity_map,
-        regenerate_button=regenerate_button,
         log_box=log_box,
         status=status,
         edit_status=edit_status,
@@ -13085,7 +13054,6 @@ def settings_widget(napari_viewer=None):
         running=lambda: run_state.running,
         settings=lambda: _settings(),
         paused=lambda: run_state.paused,
-        complete=lambda: not run_state.paused and checkpoints.has(POST_PROCESS),
     )
     pages[POST_PROCESS] = lambda _summary, _names: post_processing.page
 
