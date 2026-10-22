@@ -112,7 +112,9 @@ haemolynx/
 │   │                       #   measures per class -- large/small arterioles, capillaries,
 │   │                       #   small/large venules, or a global run's large/small vessels),
 │   │                       #   batch_comparison.py (a batch's statistics side by side:
-│   │                       #   each image, each condition's summary, two conditions tested)
+│   │                       #   each image, each condition's summary, two conditions tested),
+│   │                       #   glossary.py (every statistic's definition and unit: the CSVs'
+│   │                       #   Unit/Notes, docs/statistics_glossary.md; a new statistic needs a term)
 │   ├── optimisation/       # "Optimise settings": search.py (segmentation cleanup,
 │   │                       #   Skeletonise and Graph settings), fwhm_search.py (FWHM
 │   │                       #   settings), candidates/metrics (+ fwhm_ variants), report,
@@ -223,37 +225,48 @@ haemolynx/
 
 Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts. Outputs are named `{image stem}_segmented` for the main image and `{image stem}_{large|small}_{arteriole|venule}_segmented` for the masks: the arteriole and venule classifiers are usually run on the one raw stack, and with one name the venule run overwrote the arteriole's (or, reusing existing output, read it back as its own).
 
+**The vessel label is named, and reuse is by provenance** (2026-10-22, `PLAN_dale_review_fixes.md`
+item 4, `io/ilastik.py`). Simple Segmentation numbers the labels 1 to N, so a two-label output is
+`{1, 2}` whichever is the vessel; it used to be read with its minority as vessel (inside out where
+vessels are the majority) and a one-class output as solid vessel. Each classifier now has its own
+label setting -- `ilastik_vessel_label`, `ilastik_arteriole_vessel_label`,
+`ilastik_venule_vessel_label`, `ilastik_small_arteriole_vessel_label`,
+`ilastik_small_venule_vessel_label` -- a label name or number, **no default**: preflight
+(`checks.check_ilastik_vessel_labels`) reads the project's `PixelClassification/LabelNames` and
+refuses an unset or unknown label, listing the labels. `run_ilastik_headless_segmentation(vessel_label=)`
+rewrites the output in place as 0/1 at that label (`binarise_ilastik_output`; a one-class output
+raises and is left as written), so every reader of a segmented image reads it alike, and writes
+`{output}.haemolynx.json` beside it: the project's SHA-256, the input's path, size and
+modification time, the label, the output's size and time. `ilastik_reuse_existing_output` reuses
+an output only when that record matches (`ilastik_output_is_current`); file times alone reused
+outputs of a different project copied in with an older time. An output with no record (made
+before this) is segmented again once. ilastik is run `--readonly` with `--output_format` from the
+suffix (without it ilastik writes the project's saved format, HDF5 by default), and it names a
+multipage TIFF `.tiff` whatever it is asked for, which is where the runner looks. Checked by hand
+on Windows with ilastik 1.4.1rc2 and Harvey's claudin project (2026-10-22). The generic loader
+still guesses the minority for a user-supplied mask of two labels, now with a warning once per
+label set (`io.load._warn_minority_guess`).
+
 Users may also supply **pre-segmented** masks only (no ilastik call) — typical for tutorial data and many tests.
 
-**One raw image per run** (2026-10-13). The Input tab's `raw_image_path`, `raw_image_channel` and
+**One raw image per run.** The Input tab's `raw_image_path`, `raw_image_channel` and
 `raw_image_stain` are the only raw image a run reads: ilastik segments it, the Diameters stage
 measures from it (`measure_diameters_from_raw_image`), Check segmented image and the optimisers
 compare against it, and the tissue volume falls back to it. `raw_image_stain` is `auto`,
-`plasma_column` (a lumen label such as dextran) or `endothelial` (the wall round the lumen, such
-as claudin-5); auto reads it from the image (`preprocessing/raw_stain.py`'s `read_raw_stain`:
-brightness at the mask's edge against the middle of its widest vessels, the one rule: the
-raw-evidence calibration in `build_network` decides through it too, and records the answer on
-the graph (`G.graph["raw_image_stain"]`, with the reading), which the Diameters stage takes
-rather than reading the image again -- it reads the image only when the build could not tell,
-cut to the run's crop box, and hands the volume on to the measurement so the file is loaded
-once), and the stain picks the diameter method: FWHM for a plasma column, the endothelial ring
-fit for a wall. A raw image that is set is read by `build_network` whatever else is on, so
-preflight treats a missing one, or a composite without `raw_image_channel`, as an error.
-**The raw image is optional** (2026-10-13): with none entered, every setting that reads it is
-out of effect whatever its switch says -- `use_ilastik_segmentation` (the segmented image is
-read instead; an error only when there is none), `measure_diameters_from_raw_image` (the
-diameter chain starts at the mask), the raw evidence -- through `stages.raw_image_is_set`,
-`ilastik_segments` and `measures_diameters_from_raw_image`, and preflight warns rather than
-fails. Those settings, and `raw_image_channel` / `raw_image_stain`, declare
+`plasma_column` (a lumen label such as dextran) or `endothelial` (the wall, such as claudin-5). Auto
+is read once, by `preprocessing/raw_stain.py`'s `read_raw_stain` in `build_network`, and recorded as
+`G.graph["raw_image_stain"]` for the Diameters stage. The stain picks the diameter method: FWHM for
+a plasma column, the endothelial ring fit for a wall. A raw image that is set is read whatever
+else is on, so preflight treats a missing one, or a composite without `raw_image_channel`, as an
+error.
+**The raw image is optional**: with none entered, every setting that reads it is out of effect
+whatever its switch says (`stages.raw_image_is_set`, `ilastik_segments`,
+`measures_diameters_from_raw_image`), and preflight warns rather than fails. Those settings declare
 `requires=("raw_image_path",)`: a `requires` entry may name a path setting (set / unset,
-`parsers.schema.PREREQUISITE_GATE_KINDS`), and the panel **greys** a row whose own path gate is
-unset rather than hiding it (`gui/form.py`'s `hidden_by`), while the rows nested under it hide
-as under any switch not in effect. A `!gate` rule holds while the gate is out of effect, so the
-segmented-image row stays when ilastik is ticked with no raw image (`form.unmet_chain`,
-`Schema._prerequisite_in_effect`).
-The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`/`_channel`,
-`endothelial_image_path`/`_channel`, `use_fwhm_edge_diameters`, `use_endothelial_diameters`,
-`diameter_basis`) still load, moved together by `Setting.migrates`/`migrate` (`Schema.upgrade`).
+`parsers.schema.PREREQUISITE_GATE_KINDS`). The panel **greys** a row whose own path gate is unset
+rather than hiding it (`gui/form.py`'s `hidden_by`), and a `!gate` rule holds while the gate is out
+of effect (`form.unmet_chain`, `Schema._prerequisite_in_effect`). The settings it replaced still
+load, through `Setting.migrates` / `Schema.upgrade`. History: `docs/notes/inputs.md`.
 
 ---
 
@@ -265,7 +278,7 @@ The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`
 3. **Graph build** — `graph.build_graph_from_skeleton` (thirteen topology steps in `graph/assemble.py`), then `graph.smooth_graph_centrelines`  
 4. **Boundary & branch order** — manual volume/coordinates or mask-based assignment; `graph.assign_vessel_branch_orders` / hierarchical orders  
 5. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`), with the boundary condition `open_end_model` puts on vessels leaving the image (`haemodynamics/open_ends.py`)  
-6. **Post processing (hand edits)** — on the *solved* network: `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, mask tags and the boundary nodes those tags give where the edits touched them (the small-mask arteriole/venule boundary nodes and the Large_Art/Large_Ven hand-off nodes), branch orders over the whole network (a piece an edit cuts off from the inlets loses its orders), the kinds of the dead ends the edits left (judged against the segmentation as the build judged every dead end), diameters by the run's own methods (only the edited vessels are measured), zero-resistance bridges where one opens into a thick vessel; it also reads each vessel the edits drew against the segmentation as graph building reads its bridges (`graph.record_drawn_vessel_support` with `preprocessing.MaskSupport` at the run's bridge limits: `drawn_mask_fraction`, `drawn_background_run_um`, `drawn_beside_vessel` on the edge, `drawn_vessels` in the summary, the panel's log line and the hover's "drawn vessel" line), a diagnostic only -- Harvey draws vessels where the segmentation is missing, so nothing is refused; then `solve_post_processed` reruns the haemodynamics on the edited network (network handling, resistances, solve). A no-op on an unedited network, which is not solved again. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="solve")`) and Continue resumes at it  
+6. **Post processing (hand edits)** — on the *solved* network: `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, mask tags and the boundary nodes they give where the edits touched, branch orders over the whole network, the kinds of the dead ends the edits left, diameters of the edited vessels only (by the run's own methods), zero-resistance bridges into thick vessels. It also records how each drawn vessel sits in the segmentation (`graph.record_drawn_vessel_support`: `drawn_mask_fraction`, `drawn_background_run_um`, `drawn_beside_vessel`), a diagnostic only: Harvey draws vessels where the segmentation is missing, so nothing is refused. Then `solve_post_processed` reruns the haemodynamics on the edited network. A no-op on an unedited network, which is not solved again. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="solve")`) and Continue resumes at it. Details: `docs/notes/pipeline_and_post_processing.md`.  
 7. **Perturbations (optional)** — `run_perturbations` re-solves copies of the solved network, once per configured entry in `perturbations` (see `haemodynamics/perturbations.py`)  
 8. **Export & stats** — `visualization.graph_to_vtk`, the tissue volume from the raw image (`measure_tissue_volume`, optional), `statistics.compute_comprehensive_vessel_statistics` (with the selected network analyses), vascular communities
 
@@ -274,25 +287,18 @@ The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`
 `run_perturbations`, `export_results`. The vessel masks (step 2) are loaded at the start of `build_network`, and the
 statistics, network analyses and communities (step 8) all run inside `export_results`.
 
-**A synthetic network instead of an image** (`network_source=synthetic`, 2026-10-18,
-`PLAN_synthetic_network.md`): the Input tab's `Input` choice draws a network matched to a previous
-image run's `.haemorun` (`synthetic_template_path`; `synthetic_template_source` reads its saved
-statistics report, or per-vessel distributions off its graph; `synthetic_seed`, `synthetic_scale`,
-`synthetic_interior_dead_ends` behind the Advanced button). `segment` reads and checks the template
-(`synthetic.load_template`, remembered per file so preflight's `check_synthetic_template` and the
-stage read it once; a template saved with a needed statistic off is refused naming the
-`statistics_*` toggle), `skeletonise` returns an empty `SkeletonisedVolume(synthetic=True)`,
-`build_network` draws the graph (`synthetic.generate_network`: trees grown to the branch-order
-table under Murray's law, a capillary bed built to the capillary count, loop count and dead-end
-count exactly; `{template}_synthetic_graph.pkl`), `assign_boundaries` takes the roles the generator
-marked (`synthetic.boundary_nodes`; the Boundaries role tabs are greyed), the drawn widths are kept
-(`diameter_source="synthetic"`, which stamping never replaces) and everything from Diameters on
-runs as for an image. Every image-only Input row requires `network_source=segmented_image`, every
-mask switch reads as off (`graph.vessel_masks_in_use`), `raw_image_is_set` is False, and every
-output is named `{template stem}_synthetic` (`pipeline/naming.py`'s `run_stem`, the one answer).
-Export writes `{stem}_template_comparison.csv` and a `synthetic_comparison` report section: each
-characteristic, template against synthetic, with the band the generator is held to (`compare.py`).
-A synthetic run's `.haemorun` is refused as a template.
+**A synthetic network instead of an image** (`network_source=synthetic`, `PLAN_synthetic_network.md`):
+the Input tab's `Input` choice draws a network matched to a previous image run's `.haemorun`
+(`synthetic_template_path`; `synthetic_template_source`: its saved statistics report, or
+distributions off its graph). `segment` reads and checks the template (`synthetic.load_template`; a
+template missing a needed statistic is refused, naming the `statistics_*` toggle), `skeletonise`
+returns an empty `SkeletonisedVolume(synthetic=True)`, `build_network` draws the graph
+(`synthetic.generate_network`), `assign_boundaries` takes the roles the generator marked, the drawn
+widths are kept (`diameter_source="synthetic"`), and everything from Diameters on runs as for an
+image. Every image-only Input row requires `network_source=segmented_image`, every mask switch reads
+as off, `raw_image_is_set` is False, and every output is named `{template stem}_synthetic`
+(`pipeline/naming.py`'s `run_stem`, the one answer). Export writes `{stem}_template_comparison.csv`
+and a `synthetic_comparison` report section. A synthetic run's `.haemorun` is refused as a template.
 
 The production-style entry point is `examples/resistance_network_pipeline.py` (`image_to_model_pipeline`). The tutorial (`tutorials/pipeline_tutorial.ipynb`) documents segmentation as a prerequisite stage and runs on pre-segmented fixture data by default.
 
@@ -350,7 +356,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_capillary_block_mask.py` (which vessels a mask's blobs block, the perturbation, its checks), `test_sweep_flow_layers.py` |
-| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_exact_betweenness.py` (the parallel pass `==` networkx on every shape, weighting and scaling; the fallbacks), `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, one-to-one matching by name, every reason an image is left out, median/mean per subject, Wilcoxon/paired t by hand, Harvey's AIA names) |
+| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `test_statistics_glossary.py` (every row of a run with every statistic on has a term, a definition and a unit; the units a run decides; older CSVs read back alike; the page up to date), `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_exact_betweenness.py` (the parallel pass `==` networkx on every shape, weighting and scaling; the fallbacks), `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, one-to-one matching by name, every reason an image is left out, median/mean per subject, Wilcoxon/paired t by hand, Harvey's AIA names) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off) |
@@ -446,69 +452,40 @@ are only caught locally.
   reappears; NetworkX algorithms must be passed an explicit `weight="length"` / `weight="resistance"`
   rather than relying on their `"weight"` default.
 - **Open ends** — a dead end that leaves the image is open in the tissue; `open_end_model`
-  chooses its boundary condition: `estimated` (**default** since 2026-10-12, decision D1 of
-  PLAN_dead_ends.md; Fry et al. 2012: pressures chosen to keep the network near a target
-  pressure and wall shear stress, taken from the closed solve, so an open end may feed the
-  network as well as drain it), `closed` (the behaviour before), `terminal_resistance` (drains to
-  the outlet pressure through k times its own vessel's resistance) or `outlet`. On E14.5 the
-  estimate fed 30% as much blood in through 39 open ends as the designated inlets did, drained
-  through 29, and agreed with closed on 86% of flow directions but with the drain-only models on
-  only 56-65%; network resistance moved under 8% across all five
-  (`outputs/open_end_sensitivity_e14/`). Like the viscosity law it moves every flow, so **flows
-  are not comparable across open-end models**; perturbations may not override it and solve with
-  the baseline's conditions (kept on the graph, `G.graph["open_end_conditions"]`). See
-  `haemodynamics/open_ends.py` below.
+  chooses its boundary condition: `estimated` (**default**; Fry et al. 2012: pressures that keep
+  the network near a target pressure and wall shear stress, so an open end may feed the network
+  as well as drain it), `closed`, `terminal_resistance` (drains to the outlet pressure through k
+  times its own vessel's resistance) or `outlet`. Like the viscosity law it moves every flow, so
+  **flows are not comparable across open-end models**; perturbations may not override it and solve
+  with the baseline's conditions (`G.graph["open_end_conditions"]`). See `haemodynamics/open_ends.py`
+  below; the E14.5 comparison is in `docs/notes/diameters_and_haemodynamics.md`.
 - **Viscosity model** — selectable, and the choice changes every resistance a run produces, so
   **resistances are not comparable across laws or across diameter bases**. The graph records both
   in `G.graph["viscosity_law"]` / `["diameter_basis"]`. All of it is in
-  `haemodynamics/viscosity.py`.
-  - The question that decides the answer is **which diameter you measured**, not which law you
-    prefer. A diameter basis is `plasma_column` — the channel the fluid occupies, what a plasma
-    stain images — or `endothelial` (formerly `anatomical`, which still loads:
-    `normalise_diameter_basis`), wall to wall, including the ~1.1 µm endothelial surface layer.
-    The run's basis is **what the segmented vessels are**: `segmentation_source` on the Input
-    tab, beside the segmented image (`plasma_column` by default; `endothelial` for a mask of the
-    wall, `anatomical` an alias), read everywhere through `viscosity.run_diameter_basis` — the
-    stage's apply config, a perturbation's model, the sweeps' strategy arguments — and recorded
-    as `G.graph["diameter_basis"]`. Every diameter the segmentation gave (the mask's width, the
-    class medians, the table) is on it. A diameter read from the raw image carries the basis
-    *that* measurement read on its edge (`poiseuille.EDGE_DIAMETER_BASIS`, by
-    `MEASUREMENT_DIAMETER_BASIS`): FWHM and the raw section `plasma_column`, the endothelial
-    fit `endothelial`, whatever the segmentation is; a class median carries the basis of its
-    widths. The retired `diameter_basis` setting reads into `segmentation_source`
-    (`replaces`), and a perturbation may not override either (`INCOMPARABLE_OVERRIDES`).
-  - `viscosity_law="pries"` (**default**) is Pries et al., fitted 3.3–1978 µm, continuous across
-    the whole tree, no placeholder and no warning. Reads the basis: `plasma_column` selects
-    the *in vitro* (tube) form, Pries, Neuhaus & Gaehtgens 1992; `endothelial` the 1994 *in
-    vivo* form, fitted to rat mesenteric networks against wall-to-wall diameters. The in vivo
-    form's `(D/(D−1.1))²` factors stand for the ~1.1 µm endothelial surface layer, and it is far
-    above the in vitro form in the smallest vessels (8.6× at 5 µm, 4.4× at 10 µm), so applying it
-    to a plasma-column diameter counts the layer the measurement already left out.
-  - **The in vitro form was wrong until 2026-10-13**: it used the in vivo law's
-    `μ₀.₄₅ = 6·exp(−0.085D)+…` where Pries 1992 has `220·exp(−1.3D)+…` — 3.4× too viscous at
-    5 µm, 2.9× at 10 µm, converging above 60 µm. Plasma-column runs before then overstate
-    capillary resistance by that much. Every form is now pinned to its published equations
-    (Pries & Secomb 2005 eqs 5–11, Secomb & Pries 2013 eqs 3–7) in `tests/test_viscosity_laws.py`.
-  - `pries_viscosity_form` (Haemodynamics tab, behind the Advanced button under the law) holds
-    every vessel to one form whatever its basis: `in_vivo_1994`, `in_vitro_1992`, or
-    `in_vivo_2005`, Pries & Secomb's 2005 model — the in vitro law at the diameter an
-    endothelial surface layer leaves free (`D − 2W_ph`), times `(D/D_eff)⁴`, the layer's
-    thickness depending on diameter and haematocrit (`viscosity.pries_secomb_2005_layer_um`);
-    like 1994 it reads a diameter as wall to wall. `auto` (default) keeps the basis choice above.
-    It resolves to a law name (`pries_in_vivo_2005`, …) through `viscosity.run_viscosity_law`,
-    which every settings reader uses, so the graph's `viscosity_law` says which form ran; a
-    perturbation may not override it. Secomb's own NetFlow still uses the 1994 law, with `D`
-    scaled by `(92/MCV)^⅓` for red-cell size and rat plasma at 1.05 cP; HaemoLynx does neither
-    (plasma is 1.2 mPa·s).
-  - `viscosity_law="capillary_power_law"` is the law used before: `µ(d) = 3.0 mPa·s · (5 µm/d)^1.647`
-    up to 7 µm, then a constant 3.5 mPa·s, raising `haemodynamics.PlaceholderViscosityWarning`
-    between 7 and 100 µm. Kept for comparison with earlier results. It matches neither Pries
-    form — 1.1–1.7× the in vitro law over 3–7 µm, a fifth of the in vivo one — and its slope
-    crosses below plasma viscosity at 8.7 µm.
-  - `viscosity_law="constant"` is plasma everywhere, for separating geometry effects from
-    viscosity ones.
-  - Switching from the power law to Pries in vitro **lowers capillary resistance** (0.59× at
-    5 µm). `tests/test_viscosity_laws.py` pins the ratios at each diameter.
+  `haemodynamics/viscosity.py`, and every form is pinned to its published equations in
+  `tests/test_viscosity_laws.py`.
+  - What decides the answer is **which diameter was measured**: `plasma_column` (the channel the
+    fluid occupies, what a plasma stain images) or `endothelial` (wall to wall; `anatomical` still
+    loads, `normalise_diameter_basis`). The run's basis is **what the segmented vessels are**:
+    `segmentation_source` on the Input tab, read everywhere through `viscosity.run_diameter_basis`.
+    A diameter read from the raw image carries the basis of *that* measurement on its edge
+    (`poiseuille.EDGE_DIAMETER_BASIS`, by `MEASUREMENT_DIAMETER_BASIS`: FWHM and the raw section
+    `plasma_column`, the endothelial fit `endothelial`), and `edge_diameter_basis` is read wherever
+    a vessel's viscosity is computed. A perturbation may override neither (`INCOMPARABLE_OVERRIDES`).
+  - `viscosity_law="pries"` (**default**): the basis picks the form, `plasma_column` the *in vitro*
+    law (Pries, Neuhaus & Gaehtgens 1992) and `endothelial` the 1994 *in vivo* law, whose
+    `(D/(D−1.1))²` factors stand for the ~1.1 µm endothelial surface layer (applied to a
+    plasma-column diameter it counts that layer twice). `pries_viscosity_form` (behind the Advanced
+    button under the law) holds every vessel to one form (`in_vivo_1994`, `in_vitro_1992`,
+    `in_vivo_2005`) or `auto`; it resolves through `viscosity.run_viscosity_law`, so the graph's
+    `viscosity_law` names the form that ran. Plasma is 1.2 mPa·s, with no red-cell-size scaling
+    (unlike Secomb's NetFlow).
+  - `viscosity_law="capillary_power_law"` is the earlier law, kept for comparison (raises
+    `haemodynamics.PlaceholderViscosityWarning` between 7 and 100 µm); `"constant"` is plasma
+    everywhere, for separating geometry from viscosity.
+  - The in vitro form was wrong until 2026-10-13 (it used the in vivo `μ₀.₄₅`): plasma-column runs
+    before then overstate capillary resistance, 3.4× at 5 µm. The ratios between the laws are in
+    `docs/notes/diameters_and_haemodynamics.md`.
 - **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via
   `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`. Both loaders skeletonize
   through the one `io.load._skeletonize_loaded_volume` helper, which binarizes, skeletonizes **and
@@ -520,660 +497,262 @@ are only caught locally.
 
 ## Key modules (quick reference)
 
+Each entry says what a module is for and the rules a change to it must keep. Why a rule or
+default is what it is (the marked grids it was fitted on, benchmarks, E14.5 and patella numbers)
+is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each heading below.
+**Keep entries here short:** a new measurement history goes in `docs/notes/` or the matching
+`PLAN_*.md`, not in this file.
+
+### Inputs and vessel masks (`docs/notes/vessel_masks_and_boundaries.md`, `downsample_and_crop.md`)
+
 - **`io/axis_order.py`** — canonical `(z, y, x)` convention: `normalize_axis_order`, `apply_axis_order`
   (transposes an input volume to canonical order), `voxel_size_zyx_from_xyz` / `voxel_size_xyz_from_zyx`.
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
-- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.* A mask with no voxel spacing of its own (an ilastik export) takes the main image's under the `auto` policy rather than failing the alignment check on 1 µm. The masks loaded last are kept per role, packed one bit a voxel (`_LOADED_MASKS`, `clear_vessel_mask_cache`), keyed on the files' identity and every cleanup setting, so a run that reads them twice (skeletonise's `skeleton_thick_vessel_restrict_to_mask`, then `build_network`) loads and cleans them once and gets a fresh array each time. The opposite-attached cleanup (`graph/large_vessels.py`) reads each component's distance to the other mask at its surface voxels (`_component_distances_to_mask`), not from a whole-volume transform.
-  **Global masks** (2026-10-18): a role given its arteriole/global mask with no venule mask (the venule paths and venule classifiers default to unset; under ilastik the venule classifier decides) loads as one mask of every vessel of that size, `(mask, None, voxel size, None)`. `vessel_masks_are_global(settings)` is the one test (masks in use, as `graph.vessel_masks_in_use`); once any role is global the run classes every vessel by size alone: `assign_boundaries` cuts nothing and chooses no inlets, outlets, Large tier or small-vessel boundaries from the masks (`inlets_outlets_from_vessel_masks` and `assigns_large_vessel_branch_orders` read False; the Inlet/Outlet tabs choose), tags each vessel `graph.GLOBAL_MASK_CLASS` "large"/"small" by overlap (`graph.tag_vessels_in_global_masks`, at the roles' `*_vessel_mask_min_overlap_fraction`, with the small-mask gap fill), and `_assign_branch_orders` writes `Unknown_Large` / `Unknown_Small` / `Unknown_Cap` instead of branch orders (`graph.assign_unknown_vessel_classes`); post-processing re-tags edited vessels. A role still given a pair beside a global one is read as their union. The diameter table has the three labels; `Unknown_Cap` is a capillary to the pericyte strategies and statistics; to the pericyte strategies the other two are unassigned, while statistics' vessel types (`statistics.bifurcation.branch_order_category`) class them `large_vessel` / `small_vessel` (`GLOBAL_MASK_CATEGORIES`), on neither the arterial nor the venous side, so every breakdown by vessel type and the Vessel Classes section compare them apart. The thick-vessel restriction reads a global mask as it does a pair. Preflight: `check_global_vessel_masks`.
-  **Masks found by file name** (2026-10-18, `io/vessel_mask_discovery.py`'s `find_vessel_masks`): ticking "Use large vessel masks" or the small masks' switch (in effect, `graph.vessel_masks_in_use`, and not under ilastik) -- or changing `input_path` / `raw_image_path` while one is -- makes the panel look in those images' folders and fill the role's mask rows (`gui/vessel_mask_search.py`, hooked in `_widget.py`'s `search_for_vessel_masks`). A name is read by whole words (split at punctuation, spaces and capitals), only those it adds to the image's name: `large`/`small`, and `arteriole(s)`/`artery`/`arteries` or `venule(s)`/`vein(s)`; a size with no type, or both, is a global mask (the venule row is emptied); a type with no size is a large mask while no file beside the image says `large` (any one that does decides the large masks alone), never a small one (Harvey, 2026-10-18: his E14.5 exports are `..._Simple Segmentation_arteriole.tiff` / `_Vein.tiff`). Every other word must be in the image's name too, apart from `mask`, `segmented`, `Simple Segmentation` and the like, so another image's mask is not taken; probability maps and `raw` files are skipped; the closest name (words shared from the start) wins, a tie is named and left. A pair beats a global mask. A row holding an existing file the user chose keeps its whole role; an empty row, a missing file or what the panel filled itself is replaced. Loading a config or a `.haemorun` never searches (`restoring_settings`). Not run outside the panel: a config's paths are used as written.
-- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).* Overlap fractions are read vectorised (`_in_bounds_voxel_indices`; the per-point loop took 7 s per half-million samples). The small-vessel progressive dilation (`small_vessel_mask_dilation_microns`) gives each edge the label of the first step that reaches it and judges the unlabelled ones again at every step, reading each sample's distance to each mask once from the mask's surface -- it used to lock *every* edge, unlabelled ones included, at the first step that labelled anything, so once 0 µm found one edge the dilation did nothing, and it built two whole-volume float64 transforms whatever the schedule; the boundary nodes come from the final labels. A terminal the large-vessel cut made carries `CUT_FROM_LARGE_VESSEL` (`graph/cut_at_large_vessel_volumes.py`), the mask it was cut off at, and every selector (plain, progressive, confidence) counts it as inside that mask: it sits one sample *outside*, so the default run (cut on, 0 µm dilation) found no inlet at all.
-- **`graph/large_vessel_network.py`** — the `mask_stump` method: an inlet/outlet where a large-vessel mask is cut off by the image's edge. Not every face contact is a stump. A component below `large_vessel_stump_min_component_fraction` (5%) of the mask's largest is a speck the classifier left at the face (E14.5's arteriole mask: 468 components, the vessel one of them, the next 0.5% of it); a contact whose footprint spans more than `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (4) times the disc of its own inscribed radius is a vessel lying *along* the face -- the pial vessels against the top of the E14.5 stack read 5-27, the real stumps at the x faces 1.6-3.0 (one dataset, one reader, not a marked grid). Together those seeded 8 inlets and 11 outlets on E14.5, each snapped 11-36 µm to a capillary tip; each stump now snaps to the end of its own vessel at its face (`_own_face_end`, 2026-10-21): a terminal within `STUMP_SNAP_OFFSET_UM` (6 um) of the stump's own mask component and that plus the vessel's radius of the face, the first 50 um of its vessel at least half within 6 um of the component (not a capillary ending beside it), inside the component first, then nearest the stump's centroid; so two stumps give two nodes. It used to take the nearest terminal inside the whole mask, anywhere: on E14.5 the large masks (the Composite ilastik export) and the network (Claudin) are two segmentations, the three large vessels' centrelines leave their masks 2.0-5.8 um before the face, and the inlet snapped 354 um to an arm tip (270, not 3984) and both vein stumps to one node ~100 um away (7070, not 2310 and 2594) -- silently, since the far-snap warning took the network's extent from that one candidate. A stump with no such end still takes the nearest terminal inside the mask, now with a `BoundaryCoordinateWarning` naming its face and the distance. Checked on E14.5 only, not a marked grid (`outputs/terminal_node_review/`).
-- **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`: whether an inlet's or outlet's own edges touch the small mask of its class, read through `voxel_size_zyx` (edge voxels are microns, the mask is voxel-indexed; rounding microns to indices read the wrong voxels on every non-unit stack). In `assign_boundaries` the large mask of the class counts as coverage when the large vessels stay in the network (the inlet then sits on the large arteriole, which the small arteriole mask never covers, so the fallback fired on every such run), and `small_vessel_boundary_fallback_to_hop_distance` *adds* the hop neighbours of the seeds that are uncovered to the boundary nodes the masks found -- it used to replace the whole list with every inlet's hop neighbours.
-- **Vessel-mask switches** (`graph/boundaries.py`'s `vessel_masks_in_use`, `inlets_outlets_from_vessel_masks`, `assigns_large_vessel_branch_orders`) — the one answer to whether a role's masks are used: `automated_vessel_assignment` *and* the role's own switch (and, for the Large_Art/Large_Ven tier, the cut off). A switch left ticked under one the user unticked is hidden in the panel but keeps its value, and read raw it carried on: the Inlet/Outlet tabs stayed greyed, the run assigned from masks it had not loaded (or, resumed on the Boundaries tab, from the resumed run's), and preflight failed on switches nobody could see. So mask loading, `assign_boundaries`, a resumed network (`stages._vessel_masks_now_in_use`), preflight, the citations and the panel's greying all ask these, never the flags (`tests/test_vessel_mask_switches.py`).
-- **The Large_Art/Large_Ven tier** (`graph/branch_order.py`'s `assign_hierarchical_branch_orders`, 2026-10-18) — `assign_boundaries` tags each vessel lying in a large mask (`graph.LARGE_MASK_VESSEL_TYPE`, `tag_large_mask_vessel_types`, from the large masks' labelling), and the tier is the tagged vessels connected to an inlet/outlet through tagged ones, numbered along them. It used to be a search stopped at every large boundary node -- and every junction where a side branch leaves the large vessel is one -- so on E14.5 only the inlet's own vessel was Large_Art; and Art, started at all those nodes and stopped only by arteriole boundary nodes, crossed the bed through capillaries leaving the arteriole directly into the large vein (the outlet's vessel was Art11). Art/Ven now start at the hand-off nodes (where a vessel leaves the tier) and take only side branches that close off at arteriole/venule boundary nodes without touching the bed's far side (outlets, venule boundary nodes, the Large_Ven tier for Art); a capillary leaving a large vessel is B, counted from it. `capillary_bed_joins` feeds from the same nodes: `capillary_start_nodes(..., graph=G)` adds the nodes where a `Large_Art` vessel meets a `B` one to the feeds, and `Large_Ven` meeting `B` to the drains (`large_tier_capillary_hand_offs`, read from the orders on the bridge-contracted graph the statistics see, since they get no large boundary nodes); with no Large labels the feeds and drains are the boundary nodes alone, as before. A tagged fragment not joined to the inlet/outlet through the mask stays out of the tier; an empty tier asked for warns (`MissingLargeVesselTierWarning`) and leaves Art/Ven as without one; with no large boundary nodes nothing changes. With the large masks alone -- no arteriole/venule boundary nodes, so no hierarchical mode -- the Large tiers still run (`graph.assign_large_tier_branch_orders`, summary mode `large_tier`, 2026-10-21) and every other vessel is B, counted from the inlets and the Large_Art hand-offs; `capillary_start_nodes` adds the hand-offs there too, and strict assignment no longer counts the Large tier as wanting small vessels. A run that expects arteriole/venule boundary nodes (small masks, or a manual pick) and gets an empty list warns, strict or not (`MissingSmallVesselAssignmentWarning`, naming the empty lists and what was assigned instead): without strict it fell back in silence, and small masks finding no venule boundary node lost the Art tier too. Such a run used to fall back to B orders from the inlets (E14.5's large arteriole was B01; with the fixed snap it gives 32 Large_Art and 75 Large_Ven vessels). `post_process` tags the vessels a hand edit made by the same rule (`graph.tag_edges_in_large_vessel_masks`: `large_vessel_mask_min_overlap_fraction`, the gap fill, judged beside the other vessels' tags, which stay); a drawn vessel used to carry no tag, so one drawn in the large arteriole ended the tier there, and a split piece or merge outside the mask kept the tag it copied. E14.5 (derived small masks, `outputs/vessel_classes_check/Bf/`): Large_Art 38 of the 48 arteriole-mask vessels, Large_Ven 67 of 79. The small Art/Ven tiers stopped at their first side branch the same way (the small masks' labelling makes every junction where a capillary leaves a small vessel a boundary node, not only where its mask ends); `assign_boundaries` now also tags each vessel in a small mask (`graph.SMALL_MASK_VESSEL_TYPE`, `tag_small_mask_vessel_types`, cleared on a run whose boundary nodes are not from the small masks), and Art/Ven, with or without a Large tier, run on from where their search stopped along the vessels tagged in their own small mask, never across a capillary, counted along the whole tier from its inlets or hand-offs (`_run_on_along_small_mask`). Boundary nodes picked by hand carry no tags, so those tiers still end at them. Measured only on stand-in masks (E14.5 has no small masks: `make_masks.py`'s pieces of segmented vessel >= 10 um): 6 more Art and 46 more Ven vessels on Bf's graph; nobody has checked it on real small masks (Mason's, on the E: drive). `post_process` tags the vessels a hand edit makes in the small masks too (below).
-- **Small-mask boundary nodes after hand edits** (2026-10-18) — `assign_boundaries` keeps the small-mask labelling its arteriole/venule boundary nodes were read from on the vessels (`graph.SMALL_MASK_VESSEL_TYPE`, `tag_small_mask_vessel_types`; cleared when the small masks do not drive the boundaries -- `mask_vessel_type` is a diagnostic the large labelling also writes). `post_process` tags the edited vessels by the same rule (`graph.tag_edges_in_small_vessel_masks`: `small_vessel_mask_min_overlap_fraction`, the dilation steps, the gap fill, beside the other vessels' tags) and re-judges only the nodes the edits touched (`graph.touched_nodes`: the edited vessels' ends and the nodes a deletion took a vessel from, which `delete_vessels`, `merge_junctions` and the prune record as `post_processing.TOUCHED`): a boundary node by the tags (`graph.boundary_nodes_from_small_mask_tags`) or by the hop-distance fallback placed on the edited network, so a vessel drawn from an inlet the masks miss ends at one. Every other boundary node stays, a list is never emptied (hierarchical orders would end), and without the masks or the tags it warns and keeps the lists. The masks reach a panel Regenerate through the checkpoints (`PipelineResume.small_*_mask`), and the lists post processing leaves are recorded on its checkpoint (`post_processed["boundary_nodes"]`), so a second round starts from them. Manual boundary methods and global masks are untouched. Caveat: the fallback counts hops, so splitting an uncovered inlet's vessel moves its fallback node to the split. The Large_Art/Large_Ven hand-off lists (`large_arteriole_boundary_nodes`, `large_venule_boundary_nodes`) are re-judged at the touched nodes the same way, on the large-mask tags (`graph.boundary_nodes_from_mask_tags`, the Boundaries stage's rule on either tag; `_reassign_large_vessel_boundaries`): they used to be only trimmed to the nodes still in the graph, so a vessel drawn off the large arteriole at p left the settings and the checkpoint saying [a1, a2] while the tier's hand-offs were a1, p, a2 (the orders were right -- the tier is read from the tags, the list only says whether it is tried -- but the checkpoint and the synthetic template's boundary counts read the list). A list is never emptied here either. Under global masks (`io.vessel_masks_are_global`) post processing re-tags the edited vessels by overlap and classes them Unknown_Large/Small/Cap with the rest, pinned in `test_global_vessel_masks.py`.
-- **Dead ends and cut-off pieces after hand edits** (2026-10-18) — `post_process` classifies the dead ends among the touched nodes against the run's segmentation (`_mark_touched_dead_end_kinds`: a `MaskSupport` over `network.volume.image`, `graph.dead_ends.reclassify_dead_ends`), as `build_network` classified every dead end; it used to classify none, so the end of a drawn vessel, or the one a deletion left, had no `dead_end_kind` and the open-end boundary condition, `FLOW_STATE` and the VTK fell back to `node_leaves_image`'s distance rule -- a vessel drawn to 7 um short of a face with the segmented vessel running on through it was not an open end -- and a node a vessel was drawn from kept the mark it had at degree 1. A touched node that is a dead end no longer loses the classifier's mark; a person's review mark (`blind`) stays whatever its degree, since the edit can be undone and nothing reads it meanwhile. Without a network, a synthetic one or an empty segmentation nothing is judged. And `graph.branch_order.assign_branch_orders` now pops `branch_order` from an edge the search from the inlets does not reach (it already did from bridges): after a deletion cut a piece off, its vessels kept the orders they had (B04, and the table's 4 um with them); a fresh build gives such a piece none. The stamp has no table entry for a vessel with no order, so the diameter it had stays, counted `unset`. The hierarchical passes skip (not pop) the edges another pass writes (`included_edges`/`excluded_edges`), so only an edge no pass reaches loses its order.
-- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS` (thirteen of them).
-  The last, `consolidate_lumen`, repeats until a round changes nothing: degree-2 merging, then
-  with the mask edges mostly off it, the second of two edges through one lumen
-  (`lumen_loops.remove_parallel_edges_in_lumen`, which never takes out an edge whose loss would
-  cut vessels off -- `cuts_off_vessels`), loops inside one lumen, the stretches of an edge
-  doubled beside another that the whole-edge pair rule leaves (`graph/doubled_stretches.py`:
-  a dead end cut back to where it leaves its vessel, a fork zipped to where its edges part, a
-  mid-edge stretch cut out and its remainders joined to the edge kept -- rewired, never
-  deleted whole, bridges never touched; every run the report counts, since grids H and H2
-  (2026-10-12) found no mask measure that tells one vessel drawn twice from two touching, and
-  the doubling only the wider vessel's side sees is left to the review list), dangling bridges,
-  and the stub prune; "nothing changed" counts the centreline length. `lumen_cleanup(keep_apart=)`
-  hands both the pair rule and the stretch step a caller's evidence beyond the mask (a raw-image
-  test, `PLAN_raw_confirmation.md`) for what to leave alone. `lumen_cleanup(along_thick_centreline=)`
-  (`build_network` passes it whenever the run has a thick-vessel region:
-  `thick_vessel_junctions.ThickCentreline.along_um`, the µm of a polyline on the region's
-  centreline tree within the split's own tolerance) makes the pair, in-lumen loop and stretch
-  rules keep, of two strands in one lumen, the one with 3 um more on the tree
-  (`lumen_loops._removal_order`, `THICK_CENTRELINE_LEAD_UM`) -- unless the other is a vessel of
-  its own beside the thick one: its median lumen radius at least
-  `VESSEL_BESIDE_THICK_RADIUS_UM` (2.3 um) and lying outside the kept strand's lumen
-  (`_vessel_beside`), when both stay. Judged by the wall alone, the strand on the tree
-  went as often as not -- an edge running on past the thick vessel into narrower ones averages
-  nearer the wall -- and the thick vessels came out broken (Harvey's Forclaude.haemorun, E14.5,
-  2026-10-15: the graph followed 95% of the tree after skeletonisation and 84.7% built).
-  Calibrated on Harvey's grids W-Z (2026-10-15, `outputs/thick_vessel_breaks/GRID_*.md`): the
-  first version (c13ea37, the short-loop rule and the stub prune given it too) was right at 11
-  of 21 marked places, no better than marking all one way; every place it restored 7 um or more
-  of the tree was right (12/12 over grids W and X), but keeping the tree strand let the pair and
-  loop rules take capillaries beside it, the short-loop preference and the stub prune's keep
-  were wrong wherever they decided (grid W), and grids Y and Z (50 removals beside a kept thick
-  centreline, marked keep or remove) fitted the beside-vessel test, 39/50 left out against 28
-  for removing all. As now: 73 of 98 marks across the four grids against 55 for the plain build;
-  the tree followed 88.5% on E14.5, 3 more loops (95 -> 98). Not yet checked on a fresh grid. Run once in
-  a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
-  pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
-  settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds
-  (`lumen_cleanup_max_rounds`, 12 by default, `CONSOLIDATION_MAX_ROUNDS`): pairs in one lumen 124 -> 9 (all kept by the guard), loops
-  inside one lumen 12 -> 0, at a cost of 1.9 points of mask coverage and ~35 s. A round after
-  the first re-judges only what changed: the pair check keeps each edge's verdict between rounds
-  (`diagnose_parallel_duplicates_in_lumen(memo=)`; an edge is judged again only when it, or a
-  centreline within the reach it is judged over, was added, changed or removed -- its verdict
-  reads nothing else), and the lumen-radius lookup graph building makes remembers the voxels it
-  has measured (`pointwise_distance.FeatureDistance(remember=)`, up to `LUMEN_RADII_REMEMBERED`;
-  off by default, since the low-RAM blockwise EDT visits each voxel once and would only pay its
-  memory). On E14.5 the build went 339 -> 255 s with the graph unchanged node for node. Mask
-  recovery is now the slow step (~134 s): routing its joins through the mask and finding the
-  uncovered mask, not tracing its pieces (Lee thinning there is ~5 s).
-- **Downsample on import** (`io/downsample.py`, 2026-10-18) — two Input tab choices, each
-  `none`/`2x`/`4x`/`8x`/`16x`: `segmented_image_downsample` (under `segmentation_source`) and
-  `raw_image_downsample` (under `raw_image_stain`). The segmented image is reduced as it is
-  loaded, after `crop_on_import`'s box is cut -- binarised first, then by block *majority* (a coarse
-  voxel is vessel when at least half its block was; 2026-10-19: reduced as read, block max let
-  ilastik's 1/2 labels' background win every partial block, an erosion, and on binary masks max
-  widened every vessel ~a coarse voxel and merged neighbours) -- the blocks chosen per axis from the
-  run's voxel size so a coarse z axis is reduced by less (`axis_downsample_factors`, the rule the
-  optimiser's own "Optimisation downsampling" uses: one definition, `optimisation/search.py`
-  imports it), and the run's voxel size is the reduced grid's -- `SkeletonisedVolume.downsample`,
-  `G.graph["downsample_on_import"]` (`record_on_graph`: the image's `Downsample` and the raw
-  factor, refreshed from the settings at `build_network`, `assign_diameters`, `post_process` and
-  `export_results`). Every volume read beside the image is placed on the grid by that record:
-  the large/small vessel masks (`load_and_validate_vessel_masks(downsample=)`, majority too, the
-  mask's own voxel size scaled with it, the cache keyed on it), the pericyte and cell masks
-  (`mask_volume_like_graph`: crop, then block max), and the raw image (`raw_volume_like_graph`:
-  crop, then block mean -- FWHM/endothelial/raw section, the stain reading, the raw evidence, the
-  tissue volume, the panel's checks and Add-vessel tracing). **The raw image has to lie on the
-  segmentation's grid** (every reader compares the two voxel for voxel), so the raw choice only
-  changes anything when it is *coarser*: a finer one is read at the segmented image's factor, a
-  coarser one is reduced by its own blocks and each coarse voxel spread over the grid
-  (`spread_onto_grid`: blockier, no smaller); preflight warns either way
-  (`checks.check_downsample_on_import`), and ilastik reads the whole raw file regardless. The
-  `voxel_size_override_xyz` is the image's as read and is scaled too; `load_volume_for_skeletonise`
-  then returns the reduced grid's voxel size already resolved (status `RUN_GRID_SOURCE`), which
-  `run_voxel_size_xyz` takes as it is -- the panel's check/optimise and preflight read through it.
-  A saved skeleton at another factor is refused as one from another crop box is. The skeleton
-  clean-up's voxel counts (`stages.SKELETON_VOXEL_SETTINGS`) keep their physical size on the grid
-  (`skeleton_voxel_settings_on_grid`: divided by the finest axis's factor, half up, at least 1).
-  Measured on E14.5 (`outputs/ds2/`, 2026-10-19, built network against the full-resolution one,
-  share of its length within max(3 um, lumen radius); a one-voxel shift of the image gives 93.5%):
-  2x 63.9% before, 72.6% after (69.1% from the majority alone); 4x 30.1% -> 52.4%. What is
-  still lost is thin vessels (r < 2.5 um: 36% -> 53% kept, 91% under the shift) and short dead
-  ends, mostly at Lee thinning on the coarse grid; block max keeps more thin ones at 4x but a
-  third of its graph is then false joins. The optimiser's own downsampling keeps block max. Positions: a
-  coarse voxel's index times its voxel size is where the first voxel of its block was, so the
-  crop record's offset is measured in the source grid's voxel size. Not yet tried on a real stack.
-  **A crop is binarised as the whole file reads** (2026-10-20): which value is vessel (the
-  minority of an ilastik 1/2 export) is decided from every value the whole file holds, counted a
-  slab at a time (`io.load.mask_binarization_rule`), then applied to the box as it is cut
-  (`crop_volume(binarise=)`); the segmented image's rule is kept per file
-  (`stages._segmented_image_binarization_rule`). Decided on the box, a box holding only label 2
-  read as solid vessel and one where vessel is the majority came back inside out. The vessel,
-  pericyte and cell masks were already binarised whole before the cut. A file holding one value
-  only is read explicitly, with a warning: 0 and 2 (ilastik background) empty, any other value
-  vessel everywhere -- it was `> 0`, so Harvey's `28_3_d_ipsi_FITC_Simple Segmentation_large.h5`,
-  label 2 in all 17.1 G voxels, loaded as one solid large vessel and every vessel of the run was
-  classed Unknown_Large. Pinned in `tests/test_crop_on_import.py`.
+- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`,
+  `load_and_validate_vessel_masks` (includes the ilastik path for large/small masks). *Despite the
+  name, this is I/O, not graph assignment.* A mask with no voxel spacing of its own (an ilastik
+  export) takes the main image's under the `auto` policy. The masks loaded last are cached per
+  role, packed one bit a voxel and keyed on the files and every cleanup setting (`_LOADED_MASKS`,
+  `clear_vessel_mask_cache`); each read gets a fresh array.
+  - **Global masks**: a role given its arteriole/global mask and no venule mask loads as one mask
+    of every vessel of that size, `(mask, None, voxel size, None)`. `vessel_masks_are_global(settings)`
+    is the one test. Once any role is global the run classes vessels by size alone: no inlets,
+    outlets, Large tier or small boundaries from the masks, vessels tagged `graph.GLOBAL_MASK_CLASS`
+    by overlap, and `Unknown_Large` / `Unknown_Small` / `Unknown_Cap` in place of branch orders
+    (`graph.assign_unknown_vessel_classes`). Statistics class them `large_vessel` / `small_vessel`
+    (`GLOBAL_MASK_CATEGORIES`), on neither side. Preflight: `check_global_vessel_masks`.
+  - **Masks found by file name** (`io/vessel_mask_discovery.py`'s `find_vessel_masks`, driven by
+    `gui/vessel_mask_search.py`): ticking a mask switch, or changing the image paths while one is
+    on, fills the role's rows from files beside the images, read by whole words (`large`/`small`,
+    arteriole/venule synonyms). Ties are named, never guessed; a row holding a file the user
+    chose keeps its role; loading a config or `.haemorun` never searches; nothing searches
+    outside the panel.
+- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks:
+  `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`.
+  *Same filename as the io module but a different concern* (see Cleanup plan). A terminal the
+  large-vessel cut made carries `CUT_FROM_LARGE_VESSEL` and every selector counts it as inside
+  that mask. The progressive dilation (`small_vessel_mask_dilation_microns`) labels each edge at
+  the first step that reaches it and re-judges unlabelled ones at every step.
+- **`graph/large_vessel_network.py`** — the `mask_stump` method: inlets/outlets where a large mask
+  is cut by an image face. A component under `large_vessel_stump_min_component_fraction` of the
+  largest, or a contact wider than `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (a vessel lying along the
+  face), is no stump. Each stump snaps to the end of its own vessel at its face (`_own_face_end`),
+  else to the nearest terminal in the mask with a `BoundaryCoordinateWarning`. Checked on E14.5
+  only, not a marked grid.
+- **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`, read through
+  `voxel_size_zyx` (edge voxels are microns, masks voxel-indexed). The large mask of the class
+  counts as coverage when large vessels stay in the network, and
+  `small_vessel_boundary_fallback_to_hop_distance` *adds* hop neighbours of uncovered seeds to the
+  masks' boundary nodes; it never replaces the list.
+- **Vessel-mask switches** (`graph/boundaries.py`'s `vessel_masks_in_use`,
+  `inlets_outlets_from_vessel_masks`, `assigns_large_vessel_branch_orders`) — the one answer to
+  whether a role's masks are used. A switch hidden under one the user unticked keeps its value, so
+  mask loading, `assign_boundaries`, a resumed network, preflight, the citations and the panel's
+  greying all ask these, **never the raw flags** (`tests/test_vessel_mask_switches.py`).
+- **Branch-order tiers** (`graph/branch_order.py`) — the Large_Art/Large_Ven tier is the vessels
+  tagged in a large mask (`graph.LARGE_MASK_VESSEL_TYPE`) that connect to an inlet/outlet through
+  tagged vessels. Art/Ven start at the hand-off nodes where a vessel leaves that tier, and run on
+  along vessels tagged in their own small mask (`graph.SMALL_MASK_VESSEL_TYPE`,
+  `_run_on_along_small_mask`), never across a capillary. A capillary leaving a large vessel is B,
+  counted from it. With large masks alone the tiers still run (`assign_large_tier_branch_orders`,
+  mode `large_tier`). `capillary_start_nodes(..., graph=G)` adds the Large_Art/B and Large_Ven/B
+  hand-offs to the feeds and drains. An empty tier or boundary list the run expected warns
+  (`MissingLargeVesselTierWarning`, `MissingSmallVesselAssignmentWarning`). The small-mask tiers
+  have only been measured on stand-in masks.
+- **Boundary nodes after hand edits** — `post_process` tags the vessels an edit made by the same
+  overlap rules (`tag_edges_in_large_vessel_masks`, `tag_edges_in_small_vessel_masks`) and
+  re-judges boundary nodes only at the nodes the edits touched (`graph.touched_nodes`,
+  `post_processing.TOUCHED`), through `_reassign_large_vessel_boundaries` /
+  `_reassign_small_vessel_boundaries`. A list is never emptied. The masks reach a Regenerate through
+  `PipelineResume`, and the lists post processing leaves are on its checkpoint.
+- **Downsample on import** (`io/downsample.py`) — `segmented_image_downsample` and
+  `raw_image_downsample` (`none`/`2x`/`4x`/`8x`/`16x`). The segmented image is reduced after the crop,
+  binarised first, by block **majority**, with blocks per axis from the voxel size
+  (`axis_downsample_factors`, also the optimiser's). The record is `G.graph["downsample_on_import"]`,
+  and every volume read beside the image is placed on that grid by it: vessel masks by majority,
+  pericyte/cell masks by max (`mask_volume_like_graph`), the raw image by mean
+  (`raw_volume_like_graph`). **The raw image must lie on the segmentation's grid**: a finer raw
+  factor is read at the segmented one, a coarser one spread back (`spread_onto_grid`), and preflight
+  warns either way. The skeleton clean-up's voxel counts keep their physical size
+  (`skeleton_voxel_settings_on_grid`). A saved skeleton at another factor is refused.
+- **Crop on import** (`io/crop.py`) — the box and every volume read beside the image are cut to it,
+  and the box is kept on the graph. Which value is vessel is decided from the *whole file*
+  (`io.load.mask_binarization_rule`, applied by `crop_volume(binarise=)`), never from the box. A
+  file holding one value is read explicitly, with a warning: 0 and 2 (ilastik background) are
+  empty, any other value is vessel (`tests/test_crop_on_import.py`).
+
+### Graph building (`docs/notes/graph_building.md`, `low_ram.md`)
+
+- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after
+  each topology step, one per label in `STEP_LABELS` (thirteen of them). The last,
+  `consolidate_lumen`, repeats until a round changes nothing (at most `lumen_cleanup_max_rounds`):
+  degree-2 merging, the second of two edges through one lumen
+  (`lumen_loops.remove_parallel_edges_in_lumen`, never one whose loss cuts vessels off), loops
+  inside one lumen, short loops, doubled stretches (`graph/doubled_stretches.py`: rewired, never
+  deleted whole, bridges never touched), dangling bridges, the stub prune. `lumen_cleanup` builds
+  what it reads from the build's own settings; `keep_apart=` takes a caller's evidence beyond the
+  mask, and `along_thick_centreline=` makes the rules keep the strand on a thick vessel's
+  centreline tree unless the other is a vessel of its own beside it (`_vessel_beside`).
+  `build_network` runs the clean-up again after smoothing and after the thick-vessel split:
+  nothing is the last step. Rounds after the first re-judge only what changed
+  (`diagnose_parallel_duplicates_in_lumen(memo=)`, `FeatureDistance(remember=)`) and must give the
+  same graph as judging everything.
 - **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
-  on by default) — with the segmented mask, nothing that joins two pieces of skeleton or graph
-  (closing and `bridge_gaps`, a bundle hub's links, `connect_skeleton_components`, and graph
-  building's gap, optimise and orphan reconnects through `graph/reconnect.py`'s `MaskBridges`)
-  is drawn across background: a bridge follows a route through the mask (`route_through_mask`)
-  crossing at most `bridge_max_background_gap_um` (2 µm) in one run — a dropout in the
-  segmentation, not tissue between two vessels — with `bridge_min_mask_fraction` of it in the
-  mask unless all its background adds up to no more than that run. A path beside a vessel
-  already in the same lumen is refused too (`MaskSupport.shadows`, the ends excluded so a branch
-  meeting its parent is not one), so no reconnect draws one segmented vessel twice; a bridge
-  too short to leave anything judged once those ends are left out (in a lumen 6 um round, any
-  under 14 um) is judged at its middle -- only where a reconnect draws a bridge
-  (`judge_short_at_middle`: `MaskBridges`, the skeleton gate, the thick-vessel wall join), not in mask recovery or the
-  doubled-stretch rule, where on E14.5 it cost 1.1 points of mask coverage. The gap, optimise
-  and orphan reconnects judge the 80-degree turn on the path drawn, not the chord
-  (`MaskBridges.bridge(ends=, max_turn_deg=)`): on E14.5 that and the middle sample refused 13
-  more gap bridges, all 13 marked right by Harvey (grid R, 2026-10-14). A segmentation not the
-  skeleton's shape raises (`check_mask_shape`), and the three bridging settings require no
-  stage, so a run loading its saved skeleton keeps them;
-  `graph.diagnose_lumen_artefacts` reports any pair that does -- with loops inside one lumen and
-  dead ends by kind, each judged as its whole chain to its junction as the stub prune judges it
-  (short by the chain's length; its tip in another lumen only if not in one of its own chain's,
-  a thick-vessel bridge included) -- in `build_network`'s graph checks, on the graph that is saved. A graph bridge records `bridge_kind` and `bridge_background_um`. Closing and gap
-  filling held to the mask can grow a thin vessel into a rod Lee thinning erases outright, so a
-  piece of skeleton thinned away entirely is put back as it was. The stub prunes judge a dead end
-  as its whole chain, tip to the junction it hangs from (length summed, the parent radius read at
-  that junction; piece by piece, a long dead end in short pieces was worn away), and read the mask
-  too (`prune.prune_vascular_stubs`): a stub mostly off it, ending inside its parent's lumen, or
-  never more than its own radius outside another centreline's lumen (`STUB_PROTRUSION_RADII`, with
-  `lumen_radius_at`: a hair along a vessel's wall, which the tip-to-junction test misses)
-  goes whatever its length, and one whose tip the mask runs on past is held to
-  `min_stub_length` as well, while a blind sprout keeps the radius rule
-  (`min_stub_length_radius_multiple`, 3 radii by default: at 1.5, 3 um on a capillary, Lee's
-  blind spurs stayed -- 1,037 of E14.5's 1,234 dead ends).
-- **`graph/mask_recovery.py`** — `recover_uncovered_mask_vessels` (`recover_uncovered_mask_vessels`,
-  on by default; its own step after the orphan reconnect, then `consolidate_lumen`):
-  the mask no centreline's lumen covers (`uncovered_mask_voxels`: within a sample's radius, or
-  inside its lumen's cross-section, followed out in 32 directions across the vessel to the wall,
-  at most `CROSS_SECTION_REACH_RADII` = 4 radii, and only while the mask is also there a radius
-  ahead and behind -- so a flattened lumen's far side is covered, while a branch narrower than
-  its vessel stops the outline at the wall; on E14.5 79% of the mask the radius rule alone left
-  uncovered was that far side, and recovery traced it as second strands), in pieces of at least
-  `recovery_min_region_volume_um3` and wider than a voxel and a half, traced along the run's own
-  skeleton (the build passes it: `skeleton=`; a piece the skeleton does not run through is left
-  alone, and only a caller passing none Lee-thins the mask again -- on E14.5, 2026-10-13, two
-  thirds of what re-thinning drew lay where the skeleton has nothing, combs across wide lumens
-  the clean-up then took out) and joined to
-  the network through the mask where an end lies within `final_orphan_reconnect_threshold` of a
-  covered lumen. Never an island, never across background, never beside an existing vessel,
-  and never a loop inside one lumen: after a strand's first join (nearest end first), a further
-  join, or a traced path closing a ring, is kept only when the loop it closes runs round tissue
-  -- its chords cross more than a dropout (`bridge_max_background_gap_um`) of background
-  (`lumen_loops.loop_inside_one_lumen`). Joining every free end made tangles of short loops (on
-  E14.5, 3,232 under 30 µm against 101 before the step). Its duplicate check and node ids are
-  kept indexed (`EdgeSampleIndex.added_near`, `_NodeIds`): scanned per path, they were 95% of
-  the step's time. The join loop reads each strand's edges from the strand's own nodes, keeps
-  the samples recovered so far in trees that double in size (`_RecoveredSamples`: loose until
-  `_LOOSE_SAMPLES`, then merged) rather than one tree rebuilt per strand, and groups the
-  uncovered mask by labelling a slab of slices at a time (`_components`) rather than a KD-tree
-  pair search: on a 43,000-edge skeletal-muscle crop the whole-graph scan and the rebuild were
-  three quarters of the step, and the pair search holds 13 pairs a voxel, gigabytes on a large
-  stack. The cross-section outline (`_follow_rays`) follows each ray only to its first
-  voxel out, with the samples sorted by reach so a chunk is not kept going by its widest vessel,
-  reads the mask as bits (`preprocessing.PackedMask`: 2 GB for a 16 G-voxel stack, in RAM, which
-  every `MaskSupport.inside` switches to after `PACK_AFTER_POINTS` lookups) and spreads its chunks
-  over worker processes (`preprocessing.shared_volume_tasks.run_volume_tasks`, the pool the
-  section diameter methods use) once there are `_WORKER_MIN_SAMPLES`; the outline is per sample
-  and identical with any of that (E14.5's uncovered scan went 108 -> 18 s, bit for bit). Without
-  a mask, or with both settings off, the two steps leave the graph as it is.
-  `recover_uncovered_mask_vessels(coverage_reach_radii=, two_ended=)` (2026-10-21): the first is
-  `uncovered_mask_voxels`' cross-section reach (0: a centreline's own radius covers), the second
-  takes recovered edges left hanging from a dead end out again until none is
-  (`keep_two_ended_recovery`, `G.graph["recovered_one_ended_removed"]`); both for
-  `remove_interior_dead_ends` -- after removing E14.5's interior dead ends, recovery as it is
-  drew 1,376 of its 2,024 edges as dead ends.
-- **One reader of the mask a run** (2026-10-18, for `use_memmap_loading` on large stacks) —
-  `build_network` makes one `preprocessing.MaskSupport` over the binary mask and hands it to graph
-  building (`build_graph_from_skeleton(mask_support=)`), both clean-ups after it, the thick-vessel
-  split (`insert_thick_vessel_junction_nodes(mask_support=)`, under its own limits through
-  `MaskSupport.limited_to`) and the dead-end marks: the mask is packed to bits once and one
-  surface KD-tree is built a run, where each step packed it again and the split's wall join built
-  a second tree. Once packed, every point-in-mask read uses the bits: the lumen test of degree-2
-  merging and collapse (`mask_lumen_test(support=)`, `MaskSupport.lookup_volume`), the lumen
-  radius's "is this voxel background" (`FeatureDistance(packed=)`, set by the support when it
-  measures the very same array), and the EDT diameters' section planes and radii on a memmapped
-  mask. The same answers, from RAM rather than a disk page read at random -- which only pays once
-  the mask is out of the page cache: on E14.5 (75 M voxels, cached) a lookup cost ~30 ns either
-  way. The thick tree's inscribed radius is measured once (`ThickCentreline.radius_um` ->
-  `tree_radius_um=`) and a block of its box at a time, reading only blocks within 60 um of a point
-  (`_inscribed_radius_um`); mask recovery traces a piece along the skeleton from the piece's own
-  voxels (`_trace_skeleton_in_region`, skan's paths from the coordinate graph `graph.build` builds)
-  rather than a padded window round it. Both bit for bit; on a 210 M-voxel stack (traced numpy
-  peak) the radius went 425 -> 72 MB and a 24,000-voxel diagonal piece 1,419 -> 1 MB
-  (`outputs/lrb/peaks.py`, git-ignored). E14.5 low-RAM, three runs each from a `git archive`
-  (`outputs/lrb/bench.py`): every graph identical to the old code's, node for node, edge for edge,
-  every attribute, before and after diameters; `build_network` 225 -> 233 s median, within the
-  machine's noise (the in-build clean-up ranged 49-140 s on both, 74.3 s each under the profiler
-  back to back), the thick-vessel split 14.4 -> 9.9 s (every run), diameters unchanged (EDT
-  86 -> 88 s); built again on `6f05617` with the skeleton re-trace, identical, 218 -> 209 s. The skeleton A* helpers in `graph/_helpers.py` and degree-2's overlap count read
-  the skeleton a voxel at a time but no pipeline step calls them.
-  Temp files: a `new_memmap_array` array nobody releases has its file deleted once it and its
-  views are gone (`weakref.finalize`; on Windows, which keeps a mapped file, at the next
-  `new_memmap_array` or at exit). Unreleased were the skeleton `skeletonise` hands on, the float32
-  raw image the raw evidence and the Diameters stage load (two 301 MB files a low-RAM E14.5 run,
-  a volume's worth of float32 each on any stack) and the volumes tests compare -- 2,806 files in
-  one machine's `%TEMP%`. Killing a run still leaves its files.
-  **No whole-volume copies under the low-RAM option** (2026-10-19, for a 5.5 G-voxel stack on
-  33 GB; the centreline tree's CSR, the join's last resort, Lee tiling and the dense solvers are
-  separate): every step below gives the run bit for bit, and its tests are in
-  `tests/test_low_ram_volume_copies.py` beside the modules' own. Reconnect's routing workers
-  start with one OpenMP/BLAS thread (`reconnect._routing_environment`: threadpoolctl holds only
-  in the parent, and each worker's OpenBLAS committed ~659 MB, which ran an E14.5 build out of
-  paging file) and are at most `shared_volume_tasks.default_worker_count()`. The lumen radius
-  reads tiles of the surface (`FeatureDistance(by_block=True)`, through
-  `MaskSupport(low_memory=)` and `mask_radius_sampler(low_memory=)`: a k-d tree per 96-voxel
-  tile, made when a query first needs it, least recently used dropped past 256 MB or, when
-  memory is free, past a quarter of it shared by every such lookup alive
-  (`SURFACE_TILE_MEMORY_FRACTION`, read again each 64 MB: 256 MB alone held a tenth of the
-  uncropped patella's 2.4 GB of tiles and mask recovery remade tiles all step), searched ring
-  by ring until the best is no further than the nearest voxel unsearched) instead of one tree
-  over the whole surface (~69 B a surface voxel, 7-9 GB). A tile is made from the packed bits
-  a byte at a time (`PackedMask.box`), its surface by a separable 3x3x3 dilation
-  (`pointwise_distance._dilate_box`, scipy's own answer) and its tree unbalanced and
-  uncompacted (twice as fast to build and query; the tree only narrows candidates, so the same
-  distances). Skeletonisation hands on the thick
-  tree it drew as its voxels (`SkeletonisedVolume.thick_vessel_centreline`,
-  `thick_vessel_centreline_voxels`, `edt_ridge_voxels`), which the split, `ThickCentreline` and
-  post-processing take in place of a volume of it, so `build_network` neither redraws it (a
-  volume of zeros and a Dijkstra over every fat voxel) nor holds a volume for it. The gated
-  skeleton is drawn on disk; the region cache and the vessel-mask cache unpack a slab at a time
-  onto disk (`memmap_support.unpack_bits_by_slab`), and a cached "no region" is a broadcast
-  False. Components whose sizes, membership or voxels are wanted come from slabs, not an int32
-  label memmap (22 GB of dirty pages each, which emptied the page cache on a patella run):
-  `skeleton._SlabComponents` for the fraction filter, the connectivity stats, both
-  small-component drops, the bridging and `skeletonize_by_component` (each component's mask
-  written as the slabs pass its box and thinned once its last plane is read). The thin-arm join
-  looks component numbers up at the skeleton's voxels only, int32; a bridge's new fat voxels take
-  theirs along the bridge drawn (two 26-adjacent voxels of one mask share its component:
-  `thick_vessels._numbers_carried_along`, from the arm voxel it starts at and the tree voxel it
-  stopped against), and only a voxel neither reaches is read from its slab labelled again as it
-  was (`slab_labels.NumbersAnywhere`; read voxel by voxel, those reads were four fifths of the
-  patella's join, 2026-10-20). It held 16 B a fat voxel, twice.
-  Every `label` of a whole vessel or pericyte mask is `slab_labels.ForegroundLabels` (each
-  foreground voxel's key and int32 number, 12 B a foreground voxel, numbered as `label` numbers;
-  scipy's own volume is 8 B a voxel from 2**31 voxels): the volume filter, the minority swap,
-  the opposite-attached and overlap clean-ups (the last ~130 GB on 5.5 G voxels), the stump
-  points, the small-mask redefinition, the continuity descriptors, the quality metric and the
-  pericyte centroids (scipy's `center_of_mass` is a C-order bincount, done on the foreground);
-  the masks are read and cleaned onto disk (`load_and_validate_vessel_masks(use_memmap=)`).
-  Post-processing binarises the segmentation once, on disk, for its three readers and one
-  support (`stages._PostProcessSegmentation`); the overlay projection counts and maxes a slab at
-  a time; mask recovery's worker bits go to the run's `memmap_directory`
-  (`MaskSupport.memmap_directory`), not `%TEMP%`. Checked against `4c96e9c5`
-  (`outputs/lvc/old_vs_new.py`, git-ignored: 60 results of the changed functions, dtypes too,
-  identical) and on E14.5 (low-RAM, skeletonise through diameters, `outputs/lvc/e14/bench.py`,
-  a `git archive` of `a82c7e9` against this commit: the skeleton, the built graph and the graph
-  after diameters identical, node for node, edge for edge, every attribute; private peaks
-  skeletonise 2.74 -> 2.30 GB, build_network 3.32 -> 2.98 GB, boundaries 2.61 -> 2.01 GB; the
-  radius sampler 3.8 s -> 0 and the tree build_network drew 5.9 s -> 0; skeletonise 643 -> 792 s
-  and build_network 207 -> 187 s, one run each with other jobs holding most of the RAM, so not
-  a timing). Peaks, old -> new, on a 120 M-voxel synthetic
-  stack, each in a fresh process (`outputs/lvc/peaks.py`, private bytes; the new ones are a
-  32 M-voxel slab's work and do not grow with the stack, the old ones do): a routing worker
-  627 -> 16 MB (20 cores); lumen radius, 20,000 lookups, 154 -> 44 MB; the tree build_network
-  drew, 363 MB and 8.8 s -> nothing; region cache read 244 -> 62 MB; connectivity stats 458 MB
-  of label file -> 372 MB in RAM and no file; Lee by component 572 MB of temp files -> 368 MB
-  and the result's file; the vessel-mask volume filter 1,376 -> 252 MB; the overlap clean-up
-  2,064 MB and 41 s -> 409 MB and 4.4 s; post-processing's binarisations 574 MB and 5.2 s ->
-  367 MB and 1.3 s; the projection 344 -> 367 MB (no smaller at this size, constant past it).
-  The gated skeleton (1 B a voxel) and the join's lookups (16 B a fat voxel, twice: 4.6 GB on
-  the patella's 144 M) are gone from RAM by construction.
-  Coordinates that stand in for `np.argwhere` (`ForegroundLabels.coords` / `component_coords`,
-  the skeleton's slab components, the thick tree's voxels) are laid out as it lays them out,
-  Fortran order (the transpose of the index arrays): a BLAS product of them rounds by the
-  layout, and C-ordered rows moved a small-mask continuity bridge (one piece's principal axis
-  flipped sign; fixed in `b6c602a`, pinned in the volume-copies tests). Since then, also under
-  the low-RAM option: small-mask continuity reads its four distance transforms at the voxels
-  its gates ask about (`mask_continuity._DistanceAt`: the lumen radius's tiles, and scipy's
-  "no feature" reading -- every voxel that far from one at index (-1, 0, 0) -- where a mask is
-  empty), draws a bridge in its own box (`_bridge_box_from_line`; a rejected candidate used to
-  come with a volume of zeros) and reads the other type's masks together where asked; the
-  arteriole | venule unions are read where asked (`memmap_support.MaskUnion`: the large-vessel
-  cut, the small-mask redefinition's labelling) or written on disk a slab at a time
-  (`as_global_vessel_mask(use_memmap=)`, the thick-vessel restriction), and the quality gate
-  counts its overlap a slab at a time; a vessel mask's dilation is compared with its radius a
-  block at a time (`dilate_binary_mask_by_microns(low_memory=)`, through the loader and each
-  step of the confidence assignment) -- scipy's own transform also "dilates" an empty mask into
-  the volume's corner, and so does this; and segmentation cleanup's reconnect labels its
-  components a slab at a time (`ForegroundLabels`, read by boxes) instead of an int32 label
-  file. Identical to `a82c7e9` on random fixtures (`outputs/lvc/continuity_check.py`,
-  `union_check.py`). The small-mask progressive dilation and the hand-edit tags read their
-  distances from the surface's tiles too (`_distances_to_mask_microns(low_memory=)`). Peaks,
-  `b6c602a` -> `3bdb785`, on the same 120 M-voxel stack (`outputs/lvc/peaks2.py`, traced numpy,
-  the same answers): continuity (on 40 M voxels of it) 2,712 MB and 62 s -> 207 MB and 6.4 s; a
-  2 um dilation 5,608 MB and 33 s -> 580 MB and 20 s (only voxels with mask inside the reach's
-  box are measured); the union's 1 B a voxel goes to disk; the reconnect's label file (4 B a
-  voxel: 744 -> 515 MB of temp files) is gone, its RAM peak unchanged at 2.0 GB -- the blockwise
-  EDT's block, whose float64 transform is still a file (8 B a voxel). E14.5 low-RAM, a `git
-  archive` of `b6c602a` against it with `3bdb785`'s changes (`outputs/lvc/e14b/`, git-ignored,
-  stopped after the boundaries, the small masks `make_masks.py`'s stand-ins): four runs reaching
-  every one of these steps but the hand-edit tags -- A the cleanup's reconnect (12 bridges), the
-  thick restriction over all four masks and a 2 um dilation on load; B a global small mask (the
-  large pair read as their union); C the cut, the confidence assignment, the redefinition (5
-  pieces moved) and continuity (0 of 11 bridges); D the cut, the legacy progressive dilation
-  and continuity (4 of 77 bridges) -- gave the skeleton, the thick region, the built graph,
-  every mask after the boundaries, every boundary list and the graph after them identical, node
-  for node, edge for edge, every attribute (A stops in both at the large venule mask's missing
-  stump). Private peaks: the boundaries 7.2 -> 2.1 GB (C) and 7.4 -> 2.3 GB (D); skeletonise,
-  which loads the dilated large masks for the restriction, 5.0 -> 1.8 GB (B, C); build_network
-  unchanged (2.9-3.2 GB). Times not compared: a shared machine.
-  **Two of these in every run** (2026-10-22): timed in RAM against the low-RAM path on one
-  commit, only continuity's pointwise distances and the block dilation were faster, so normal
-  runs use them too, keeping their results in RAM (`low_memory` now only puts them on disk):
-  on a 60 M-voxel synthetic stack continuity 52-60 s and 2.9 GB -> 13 s and 0.5 GB, a 2 um
-  dilation 33 -> 21 s median of three (noisy) and 2.9 -> 0.76 GB. Continuity still makes the
-  whole transforms when `use_gpu_mask_continuity_acceleration` finds a GPU. The same masks as
-  `94d26a26`'s in-RAM path on 484 random cases (80 continuity, 74 drawing bridges; 404
-  dilations), pinned against scipy's whole transforms in `tests/test_low_ram_volume_copies.py`.
-  The rest gained nothing in RAM: the overlap and volume-filter clean-ups already share one
-  algorithm, the surface tiles and point distances tie, and the confidence assignment keeps its
-  one transform thresholded per step. The low-RAM reconnect refuses big windows (not the same
-  graph), and the low-RAM skeletonisation steps were slower one by one on that synthetic stack.
-  **A whole E14.5 run is faster low-RAM, not slower** (2026-10-22, `56912ef4` from a `git
-  archive`, the repo-root `config.yaml` with only `use_memmap_loading` changed; four runs in the
-  order in RAM, low RAM, low RAM, in RAM; `outputs/lowram_ab/`, git-ignored): skeletonise
-  190 / 89 / 91 / 223 s, build_network 427 / 234 / 240 / 437 s, diameters 278 / 319 / 262 s
-  (no consistent difference), the other stages equal; totals 938 / 685 / 635 s. The last run
-  had two other Python processes starting during it, so its stages from Diameters on (576 s
-  there) are not counted. All four graphs identical, every attribute. Part of the gain is the
-  read-only consistency checks the low-RAM option skips (49 s in skeletonise and 104 s in
-  build_network in RAM), the rest Lee thinning by component (9 vs 57 s), the blockwise wall
-  transform (1 vs 21 s), mask recovery (50 vs 86 s) and the lumen clean-up (2-3x). Peaks: 6.1 GB
-  in RAM; 2.6 GB low RAM in the main process, 4.4-4.5 GB with skeletonise's workers.
-- **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
-  (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
-  `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the
-  straight join within `FACING_MAX_TURN_DEG` (60°) of each end's heading, read along its whole
-  chain back to the junction -- are joined across up to that gap, though it is more than a
-  dropout, because one vessel broken by the segmentation is the one case where crossing more
-  background is the vessel. One stretch of background only (never a third vessel), each end at
-  least 3 µm long, the gap no longer than the two together, not beside a vessel in the same
-  lumen, closest pairs first. Rare by design: of E14.5's 284 dead-end pairs within 10 µm, 143
-  were siblings off one junction, 57 side by side and only 15 pointed at each other.
-- **`graph/dead_ends.py`** — what each dead end (degree-1 node) is, the one definition every
-  module asks (PLAN_dead_ends.md): judged as its whole chain (`chain_to_junction`, the prune's
-  walk), it is `leaves_image` (its tip touches a face, or the segmented vessel runs on from it to
-  a face within `FACE_REACH_RADII` of its radius: `leaves_image`), `island_end`, `artefact` (off
-  the mask, inside a neighbouring lumen, beside a vessel, under the prune's radius rule),
-  `stops_short` (the mask runs on past it), `broken` (another vessel straight ahead across one
-  stretch of background, or a lumen it ends in, that is not one of its neighbours -- 2+ junctions
-  away, the One centreline session's marks), `blind` (a person said so: `set_dead_end_kind`,
-  kept through reclassifying) or `unknown`. These are first proposals. Harvey marked grids
-  G1-G3 (`scripts/dead_end_review/`) on 2026-10-12, and no rule reached 90%. The face rule
-  scored 24/30, against 23 by distance and 20 for all one way. Most ends were marked "not a real
-  vessel", and no measure separated those. So the kinds only label and list, and every repair
-  below stays off. `build_network` marks every dead end's kind on
-  its node (`dead_end_kind`) and the image extent on the graph (`image_extent_um`), so stages
-  without the mask -- boundaries, the solve, statistics, the VTK -- read the same answer
-  (`node_leaves_image`, `open_end_nodes`); `post_process` judges the dead ends the hand edits
-  left the same way (`reclassify_dead_ends`, over the touched nodes alone: a touched node that
-  is a dead end no longer loses the classifier's kind, a person's stays). Diagnostics, the
-  review lists and the boundary review all classify through it; a fixed `image_face_margin_um` is only a caller's explicit choice.
-  `remove_pieces_without_junction` (Graph tab, off by default, 2026-10-20) removes every piece
-  with no junction at the end of graph building, before the kinds are marked and the graph is
-  saved (`remove_pieces_without_junction`: the chains whose dead ends are `island_end`, any
-  length, anywhere; rings and lone nodes stay; the count and length go on
-  `G.graph["pieces_without_junction_removed"]` / `_um`). Harvey's AIA patella grid P1
-  (`outputs/patella_dead_end_review/`) marked 11 of 14 such pieces specks and 3 real vessel the
-  segmentation cut off, and none of 30 patella dead ends a real blind end.
-  `remove_interior_dead_ends` (Graph tab, off by default -- on from 2026-10-22, turned off
-  again the same day by Harvey: on the nerve test crop it took 26 chains, 129 -> 87 vessels and
-  5,477 -> 4,404 um, and the seven-vessel fixture 10 vessels -> 1;
-  `recovery_short_loop_keep_hole_over_um`, 5.3 um, behind the same Advanced button;
-  `stages._remove_and_recover_interior_dead_ends`, after `smooth_straight_steps` and before
-  the junctionless pieces): every interior dead end's chain (`stops_short`, `unknown`,
-  `artefact`, `broken`; not `leaves_image`, an island's or a person's `blind`) is removed to
-  its junction (`dead_ends.remove_interior_dead_ends`: all chains found first, so the answer
-  is order-free, and a junction left with nothing goes too -- a tree with no vessel leaving
-  the image goes whole, and the empty-build error names the setting); then mask recovery runs
-  with coverage by a centreline's own radius alone and keeps only what joins the network at
-  both ends (`recover_uncovered_mask_vessels(coverage_reach_radii=0, two_ended=True)`,
-  `keep_two_ended_recovery`); what it drew is marked `interior_recovery`, smoothed and bridged
-  into thick vessels like any vessel; the lumen clean-up runs with the 5.3 um hole limit; the
-  interior dead ends it leaves are removed a second time. Counts on the graph
-  (`interior_dead_ends_removed`, `_um`, `interior_recovery_drawn_um`, `_kept_um`). Fitted to
-  Harvey's marks on E14.5 alone (2026-10-21, `outputs/stops_short_route_review/`): G5 (a
-  trace-on along a route through the mask joined no better than never joining, 23/29 each;
-  17 of 29 `stops_short` ends "stop here"), the remove-then-recover graph he called the best
-  yet, L1 (at 10 um the short-loop rule broke a real loop 16 times in 24, 12 of 16 of them on
-  recovered strands) and the fresh L2 (5.3 um 19/29 against 13 at 10 um and 16 keeping all;
-  below 5.3 um about even). On E14.5: 211 chains, 7.4 mm, out; 6.2 mm drawn back joined at
-  both ends; 43.9 mm, 194 dead ends and 310 loops after, against 47.8 mm, 396 and 231 built.
-  The same graph under the low-RAM option (tests/test_build_network_stage.py). Not yet
-  tried on another dataset.
-  Speed, output identical (2026-10-22): `densify_polyline` is vectorised (the loop's floats,
-  pinned against it in tests/test_shared_helpers.py; 8.5x on E14.5's polylines) and
-  `_fill_tree_gaps` keeps each edge's samples between fills rather than resampling the graph
-  after each (2.8 s a fill). The step 196 -> 163 s on E14.5 (one pair); whole builds 633/658 s
-  old against 653/600/673 s new, within the machine's noise, every node, edge and attribute
-  identical, in RAM and low-RAM (`outputs/stops_short_route_review/speed_check.py`,
-  `build_check.py`). Recovery's routes (~35 s: a window's EDT and MCP each) are left: a shared
-  window changes the route.
-  The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
-  ends inside the tissue: drawn unsolved, grey, while exports keep its 0 -- Harvey, 2026-10-15), `closed_end`
-  (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the
-  only flows exports blank, `graph.flow_is_undefined`). The solve, each perturbation re-solve
-  and each sweep point then set `blind_end` and `closed_end` flows and pressure drops to exactly
-  0, not the solve's rounding (`graph.zero_flows_behind_dead_ends`: call it after any new
-  `set_edge_flows` on a marked graph). In the viewer (2026-10-21, after Harvey read arrows on
-  dead-end vessels as a fault): the vessels from an open end the solve gave a condition to its
-  junction hover as "Solved: fed/drains through an open end ({model})"
-  (`gui/branch_hover.open_end_chain_text`, from `G.graph["open_end_conditions"]` and the node
-  pressures); a node's hover says "open end: leaves the image" only where `node_leaves_image`,
-  else "dead end: {kind}" (`node_end_text`, the nodes layers' `end` column) -- every degree-1
-  node read "open end"; and no flow arrow is drawn on a vessel at or below the statistics' floor
-  for carrying flow (`visualization.flow_direction.flow_arrow_floor`, `carrying_floor`: 1e-9 of
-  the largest), where its sign is rounding. On E14.5 that hides no arrow: the open ends' arrows
-  are real flow (`estimated` fed through 34, drained through 53), the least 1.7e-20 m^3/s, 1.6e-8
-  of the largest -- small, not rounding.
-  `graph/dead_end_extension.py` holds the
-  repairs the grids gate, each off until then: `extend_dead_ends_to_faces`,
-  `trace_on_dead_ends`, `join_dead_ends_to_vessel_sides` (run in the facing-join step), with
-  `stub_face_protection` and `boundary_open_end_test` choosing `leaves_image` over the old
-  distances. Morphology (closing, opening) reads past an image face as the vessel running on
-  (`memmap_support.at_faces_as_beyond`), so no vessel the image cut is trimmed at the face.
-- **`haemodynamics/open_ends.py`** — `open_end_conditions(model, G, ...)`: the boundary condition
-  on dead ends leaving the image (in a piece with a designated inlet or outlet). Every model
-  becomes conductances to two ghost nodes held at the inlet and the outlet pressure
-  (`augment`), never added to the graph: `terminal_resistance` drains to the outlet level,
-  `outlet` holds the end at it, and `estimated` (Fry et al. 2012, a constrained least squares
-  over the free pressures with flow directions iterated until those of the vessels carrying flow
-  settle) becomes, exactly, the conductance carrying each end's estimated flow at its estimated
-  pressure -- so the baseline reproduces the estimate and perturbations and sweeps (whose unit
-  solve scales with the drop) keep it. The baseline keeps its conditions on the graph; every
-  solver path (the solve stage, the haematocrit loop, `_solve_network`, `solve_sweep_point`)
-  augments with them. `scripts/open_end_sensitivity.py` re-solves one network under each model.
-- **`graph/lumen_loops.py`** — `remove_loops_inside_one_lumen`, run in every round of
-  `consolidate_lumen` whenever `bridge_require_mask_support` has a mask:
-  Lee thinning keeps the mask's topology, so every tunnel through a vessel comes back as a ring,
-  and graph building closes more loops inside one segmented vessel. Each edge's shortest loop
-  (within `LOOP_SEARCH_UM`) is tested by `loop_inside_one_lumen` -- at least half its antipodal
-  chords crossing no more than a dropout of background -- and one inside a lumen loses its arc
-  (the run of edges between two places the network meets it) nearest the wall, so the vessel's
-  middle is what stays and no spur is left; a ring the network meets once goes whole. A loop
-  round tissue stays however short. Removing the longest arc instead kept rim strands and left
-  80k more voxels of E14.5 uncovered.
-- **Short loops** (`lumen_loops.remove_short_loops`, `remove_short_loops_under_um`, **200 µm, on by
-  default** since 2026-10-13) — in every `consolidate_lumen` round, after the in-lumen loop step,
-  every loop up to that long round loses its arc nearest the wall whatever the mask says of it.
-  Harvey's grids I and I2 (`outputs/loop_review/FIT_I*.md`, judged on the claudin-5 channel):
-  55 of 60 short loops of E14.5 close inside one vessel, the in-lumen rule found none of them
-  (the background it reads between the two sides as tissue was not tissue there), and no
-  measure of the mask or the raw image found the five real ones (46-179 µm) -- so the rule is
-  the trivial one, right 92-93 % at the cost of one real loop in twelve. Except round a wide
-  hole (`short_loop_keep_hole_over_um`, **10 µm** by default since 2026-10-15): a loop whose
-  hole -- `lumen_loops.loop_hole_um`, the median background its antipodal chords cross,
-  `loop_measures`' `chord_bg_median_um` -- is wider is left alone. Grids Q and Q2
-  (`outputs/loop_break_review/FIT_Q*.md`, 60 of the rule's breaks on E14.5, each drawn with
-  the side it took): where a side should go it took the right one every time, but most
-  loops round a wide hole were real, and breaking one merged it with its neighbour into a
-  longer loop that was broken in turn (44% of the first pass's breaks). Over 10 µm 29 of 32
-  were real, under it 24 of 28 false: 53/60 leave-one-out against 33 all one way. Fitted on
-  Q (9.2 µm), held on Q2's big holes (21 of 26 real); grid I/I2's "real or false?" marks had
-  called 6 of 9 big-hole loops false, and the six shown again blind in Q2 all came back
-  real. E14.5 skeleton reach 68.5 -> 70.5%, 40 short loops left for the review list.
-  0 breaks every short loop. The Short loops review list shows what is left, and 0 for the
-  length leaves every short loop to it. `preprocessing/raw_evidence.py` (`RawEvidence`: the
-  raw channel read in windows where the mask is silent, calibrated once per build and kept on
-  `G.graph["raw_evidence"]`) shipped no rule: on grids H, H2 (one lumen or two), M, M2 (a
-  vessel across a gap) and I (loop holes) no raw measure beat marking everything one way
-  (`PLAN_raw_confirmation.md`).
-- **`graph/skeleton_retrace.py`** — `retrace_lost_skeleton` (`retrace_lost_skeleton`, **on by
-  default** since 2026-10-18, after grid N2; no effect while `short_loop_keep_hole_over_um` is 0,
-  which keeps no loop for its hole; `PLAN_surface_coverage.md`): after `build_network`'s
-  last clean-up (so no rule takes it again) and before `smooth_straight_steps`, a stretch of the
-  run's skeleton the graph lost is drawn back along its own skeleton when the loop it closes with
-  the graph runs round a hole wider than `short_loop_keep_hole_over_um` (the same setting and the
-  same measure, `lumen_loops.loop_hole_um`). A stretch is a 26-connected run of skeleton no
-  centreline comes within 3 um of, with at least 20 um of skeleton (`piece_length_um`, so a
-  coarse z axis counts length, not voxels), half of it in the mask (80% refused 4 of the vessels
-  Harvey drew as missing, at 69-78%), half of it further than two
-  lumen radii + 3 um from every centreline, meeting reached skeleton in two places; it is drawn
-  between the two contacts farthest apart through it (not the whole tangle), joined by splitting
-  the nearest vessel (never a bridge). Only the two short joins face the bridge gate: the route
-  between is the run's own skeleton, which crosses 3-10 um dropouts of E14.5's raw mask along
-  vessels grid N marked V. Never beside a vessel in the same lumen (`duplicates_existing_vessel`).
-  Each further place the piece meets the graph is then joined along its skeleton under the same
-  tests, the hole read on the loop that join closes (`_join_place`, edge mark `retraced_join`):
-  every join Harvey added on grid N2 ran that way, but the hole test draws only 1 of his 4 -- a
-  join closing a loop round the large vessel's own lumen reads a hole of ~0. Edges carry
-  `retraced` and `retraced_hole_um`, and `build_network` smooths them.
-  `judge_lost_skeleton` says, read-only, what it would do with each piece and why (`Retrace`,
-  the `REFUSED_*` reasons). Harvey's grid N (2026-10-18, 30 of the pool): every piece round a
-  hole over 10.3 um was a vessel (9/9), 17 of 21 round a smaller one were not; at the 10 um
-  limit (fitted on Q/Q2, not N) 25/30 against 17 for all X; the pair and in-lumen loop rules,
-  which never read hole size, had taken 12 of the 13 V. Grid N2 (the 21 vessels it drew on
-  E14.5): 19 V, 1 X, 1 unsure; 10 of the 11 at no grid N place V; 6 of the 7 a pair in one lumen
-  by the mask V. A* routes (Add vessel's mask and raw tracers) matched Harvey's drawn routes no
-  better than the skeleton (48% vs 41-42% of his lines), so the skeleton route stays. Harvey then
-  drew every vessel the surface still lacked (68 strokes, 1.7 mm): 62% of it has skeleton under
-  it, which the hole and separation tests leave out (the drawn pieces mostly close loops round
-  holes under 10 um), and 38% has none, beside the large vessels (the thick-vessel gate); of 504
-  lost surface pieces only the mask share separated cleanly, so it is half, not 80%
-  (`outputs/surface_review/missing_*.py`). On E14.5 (the 2026-10-16 run): 35 re-traced edges,
-  1.35 mm, 49 s; skeleton reach 71.3 -> 73.6% (67.0 -> 70.0% on the surface beside the large
-  vessels), mask covered 74.5 -> 75.4%, 30.8% of Harvey's missing length covered (26.1% at 80%);
-  pairs in one lumen by the mask 4 -> 14, short loops 42 -> 63, dead ends unchanged.
-- **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each
-  centreline and **re-measures `length`**, which moves every resistance (a path stepping voxel to
-  voxel comes back ~7% longer than the vessel it traces). It is *not* one of the `STEP_LABELS` —
-  it runs in `pipeline/stages.py`'s `build_network`, after the topology steps and before the graph
-  is pickled — so a caller assembling a graph by hand gets no smoothing unless it asks.
-  `build_network` then runs `consolidate_lumen` again on the smoothed curves (smoothing alone
-  turned E14.5's 2 loops inside one lumen into 12), and once more after the thick-vessel split
-  (the split alone made 7, through its bridges): nothing is the last step. The clean-up knows a
-  bridge -- never merged with a vessel at a degree-2 node, a pair with one left to the loop
-  step, and one left dangling by a removal taken out
-  (`thick_vessel_junctions.remove_dangling_bridges`) -- and the split judges a flicker in
-  microns, not samples (a 1.5 um dip out of the region, sampled every 0.49 um, came back as a
-  vessel between two bridges). A smoothed
-  path is only accepted if it stays within `max_deviation` of a skeleton voxel and is no longer than
-  the path it came from; each edge records which of `smoothed` / `relaxed` / `kept_raw` /
-  `too_short` happened to it. Where the path it came from is itself off the skeleton -- a straight
-  bridge the graph build added across a gap, or the first step off a node cluster collapse moved --
-  the distance is measured from that path instead; judged against the skeleton alone, every edge
-  with a bridge was kept raw.
-- **`pipeline/stages.py`** — one function per stage (`segment`, `skeletonise`, `build_network`,
-  `assign_boundaries`, `assign_diameters`, `build_haemodynamic_model`, `solve`, `post_process`,
-  `run_perturbations`, `export_results`), each taking settings plus the previous stage's
-  dataclass, so a caller can run them one at a time and intervene. `run_pipeline_stages` is the
-  orchestrator that runs all ten in order and returns the graph; its `start_from` / `resume`
-  arguments let the panel re-run from a chosen stage using a saved run's state instead of
-  recomputing the earlier ones, and `stop_after` ends a run after a named stage (how the panel
-  pauses for post-processing). `PipelineResume` carries every boundary list -- the
-  Large_Art/Large_Ven hand-off nodes included, which a resumed run used to lose -- and the
-  thick-vessel region. `post_process` measures only the vessels an edit marked
-  (`haemodynamics.apply.assign_edge_diameters(edges=...)`, FWHM's and EDT's own `edges=`), keeps the
-  diameter the edit gave as a provisional override, and bridges them with
-  `graph.insert_thick_vessel_junction_nodes(edges=...)`, which never re-splits an existing bridge;
-  it re-judges the boundary nodes and the dead ends at the nodes the edits touched
-  (`_reassign_large_vessel_boundaries`, `_reassign_small_vessel_boundaries`,
-  `_mark_touched_dead_end_kinds`) and assigns branch orders again over the whole network;
-  the stage then calls `solve_post_processed` (network handling, `build_haemodynamic_model`,
-  `solve` on the edited network), whose `Solution.post_processed` is what the viewer draws the
-  stage from -- only when there were edits. `apply_network_handling(settings, model, boundaries, network)` is
-  the "Network handling" box on the Haemodynamics tab (`boundary_handling` acts on every vessel no
-  inlet-to-outlet path runs along, `graph.inlet_to_outlet_vessels`: each component without both an
-  inlet and an outlet, and every dead-end branch, tree or loop hanging off a perfused one.
-  `remove_disconnected` deletes them (`graph.remove_vessels_off_inlet_outlet_paths`), logging dead
-  ends and disconnected components apart, and the boundary-node lists and resistance pair follow
-  the pruned graph; `leave_unsolved` — the default — keeps them and `solve` marks exactly those
-  vessels `graph.FLOW_SOLVED=False`, which the viewer draws
-  light grey, blanks in every flow-based colour column (`gui/results.py`'s
-  `SOLVED_FLOW_COLUMNS`) and labels Solved/Unsolved on hover; the retired
-  `remove_disconnected_io_components_after_final_assignment` checkbox still loads, through
-  `Setting.replaces`; and, with `haematocrit_junction_rule="split_junctions"`,
-  splitting every 4+ junction into bifurcations on a copy of the graph via
-  `graph.split_high_degree_junctions`, with connectors as long as the junction's vessels are wide
-  unless `haematocrit_split_connector_length_um` fixes one), run at the start of the haemodynamics
-  stage — not at the
-  end of `assign_boundaries`, where it used to be — so "Run from this stage" on that tab honours
-  it. A caller running the stages by hand calls it between `assign_diameters` and
-  `build_haemodynamic_model`, as the examples do. Because `assign_diameters` runs before the
-  removal, it samples its whole-image calibrations (the FWHM/raw-section PSF, the endothelial
-  wall, the FWHM decoy check) only from the vessels `remove_disconnected` will keep
-  (`edges_network_handling_keeps` → `assign_edge_diameters(calibration_edges=)`), and the viewer
-  redraws the FWHM line layers from the solved network (`gui/results.py`'s `_fwhm_line_layers`).
-- **`pipeline/progress.py`** — `STAGES`, the run's stages in order (the panel draws one tab
-  per entry and a progress bar counts them — one list, not two). It has eleven entries for ten
-  stage functions: `solve` has no tab of its own (it shares **6. Haemodynamics**), and
-  **9. Additional measurements** is a tab with no stage function (its settings are read by
-  `export_results`). **7. Post processing** (`post_process`, between Haemodynamics and
-  Perturbations, so the network is edited solved) has no settings: its tab is its own page (`gui/_widget.py`'s
-  `_post_processing_controls`), with no "Run from this stage". Its Review dropdown
-  (`gui/post_processing.REVIEW_LISTS`) chooses the one list Scan network makes -- only that
-  one, so a scan does no more work than it needs -- optionally only within a radius of the
-  view centre; None, the default, lists, marks and zooms to nothing. Each item a list rings
-  (and each 4+ junction) is magenta, ring and vessels (the `listed` status), the chosen one
-  cyan (`marker_colours`); with no edit armed, a click on a ring chooses its item without
-  moving the camera (`marker_under_click`, `marker_pick_um`). "4+ junctions" shows the
-  junction list, table and Delete/Leave/Split buttons. The other thirteen are
-  `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
-  shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),
-  hairpin vessels, dead ends by kind (`graph.classify_dead_ends`, the lumen-artefact report's
-  dead ends; Trace on from the tip starts Add vessel there; a Show filter lists one kind,
-  `gui/post_processing.DEAD_END_SHOW`, and shown pieces with no junction get "Remove all N
-  listed pieces", `remove_listed_pieces`: each deleted through `delete_vessels` with its own
-  decision and CSV row, skipping one a vessel was drawn onto since the scan and refusing one
-  holding a boundary node), two vessels in one lumen, facing
-  dead ends the join left open (`facing_ends.facing_dead_end_pairs`, with why; Join the two
-  ends), segmented vessels without a centreline (`mask_recovery.uncovered_mask_regions`),
-  unsolved pieces (`graph.unsolved_pieces`), flow against the branch orders, flow outliers,
-  boundary-node issues, terminal nodes (`find_terminal_nodes`: the inlets, the outlets, then
-  dead ends leaving the image widest first, then the other dead ends; Make inlet / Make outlet /
-  Remove inlet/outlet, `graph.set_terminal_role`: the lists kept on the graph as
-  `post_processing.BOUNDARY_ROLES`, the graph marked pending, the last inlet or outlet never
-  removed; `post_process` takes them in place of the run's, `_take_edited_terminal_roles`, and
-  draws the boundary-nodes layer again), unmeasured diameters and diameter jumps (Set diameter,
-  `graph.set_vessel_diameter`: an override, the vessel *not* marked edited, so `post_process`
-  does not measure it again and replace it). The four that read the segmented image run off
-  the GUI thread, and after an edit only drop what it took away (the list says it may be out
-  of date); the others are made again. Their thresholds only decide what is listed. Each
-  decision is a `ReviewDecision`, matched by kind and centre, kept with the run (the
-  `.haemorun`'s `review_decisions`) and appended to `{stem}_{kind}_review.csv` with the item's
-  measures, so a rule can be fitted to the marks later; the scan after a regenerate says what
-  it changed (`network_summary` / `summary_change`). "Short loops" lists the short loops still to review
-  (`graph.short_loops`, up to `lumen_loops.LOOP_SEARCH_UM` round), shortest first: picking one
-  zooms to it -- in its own plane in 3D (`gui/post_processing.loop_view`) -- and lists its sides
-  (`lumen_loops.loop_sides`, cut where vessels or boundary nodes meet it), and Delete this side
-  (`graph.delete_loop_side`) or Keep decides it. A decision is a `LoopReview`, matched to a loop
-  by centre and length rather than node ids (deleting a side renumbers the edges beside it),
-  kept with the run (the `.haemorun`'s `loop_reviews`) so a kept loop is not listed again, and
-  appended to `{stem}_loop_review.csv` beside the VTK output with `lumen_loops.loop_measures`,
-  so a rule can be fitted to the marks later. Its
-  "Prune disconnected and dead-end branches" button (`graph.prune_disconnected_branches`) applies
-  the same rule as `remove_disconnected`; the boundary lists are trimmed to the pruned graph when
-  the `post_process` stage runs. Its Regenerate graph runs
-  the `post_process` stage alone (edits in line, Haemodynamics rerun) while a run is paused there
-  (`gui/run_state.py`), else goes on to Export; Continue
-  carries a paused run on. A `.haemorun` saved in the old order (Post processing before
-  Haemodynamics) is reordered on load (`gui/run_snapshot.py`'s `with_post_process_checkpoint`).
-  Plus what a run reports through:
-  `run_pipeline_stages(settings, schema, progress=callback)` hands the callback a `ProgressEvent`
-  as each stage starts, finishes or fails, and one per topology step inside graph building.
-  `log_progress` is the ready-made console consumer; the napari panel's bars are the other one.
-  Nothing here imports a GUI or a progress-bar library — the callback is the whole mechanism.
-  A finished or failed stage's event carries its wall time (`ProgressEvent.seconds`), which
-  `log_progress` writes on its line, so the panel's run log shows every stage's time.
-- **`pipeline/provenance.py`** — every run writes `{stem}_run_manifest.json` into its output
-  folder (`vtk_output_prefix`'s), with `{stem}_run_settings.yaml` beside it (a config `--config`
-  loads): the settings after `Schema.upgrade` as the run *started*, the version, the git commit
-  and dirty paths (null for a wheel, or with no git; read once per process, since a long-lived
-  panel runs the code it imported), Python, platform and key dependency versions, each input
-  file's size, mtime and sha256 (whole up to 64 MiB, above that 32 evenly spaced 1 MiB blocks:
-  `checksum_method` says which), and each stage's start, end, wall time and peak RSS. Peak
-  memory uses the standard library (psutil is not a dependency): exact for a stage that raised
-  the process peak, else sampled every 0.2 s (`MEMORY_METHOD`); Windows has no worker-process
-  figure. `run_pipeline_stages` records through `record_run`, and the two hand-written examples
-  wrap their stages in it. A failed run writes one too (`status: "failed"`, the error, the
-  stages finished); a run that fails in its first stage writes none. Writing it never fails a run.
+  on by default) — with the segmented mask, nothing that joins pieces of skeleton or graph
+  (closing and `bridge_gaps`, bundle hub links, `connect_skeleton_components`, `graph/reconnect.py`'s
+  `MaskBridges`) is drawn across background. A bridge follows a route through the mask
+  (`route_through_mask`) crossing at most `bridge_max_background_gap_um` in one run, with
+  `bridge_min_mask_fraction` of it in the mask, and never beside a vessel already in the same lumen
+  (`MaskSupport.shadows`). The reconnects judge their turn on the path drawn, not the chord. A mask
+  not the skeleton's shape raises (`check_mask_shape`). Graph bridges record `bridge_kind` and
+  `bridge_background_um`. Skeleton thinned away entirely by closing is put back. The stub prunes
+  judge a dead end as its whole chain to its junction and read the mask
+  (`prune.prune_vascular_stubs`, `min_stub_length_radius_multiple`).
+- **`graph/mask_recovery.py`** — `recover_uncovered_mask_vessels` (on by default; after the orphan
+  reconnect): mask no centreline's lumen covers (`uncovered_mask_voxels`, the cross-section reach
+  `CROSS_SECTION_REACH_RADII`), in pieces of at least `recovery_min_region_volume_um3`, is traced
+  along the run's own skeleton and joined to the network through the mask. Never an island, never
+  across background, never beside an existing vessel, never a loop inside one lumen
+  (`lumen_loops.loop_inside_one_lumen`). `coverage_reach_radii=` and `two_ended=` serve
+  `remove_interior_dead_ends`. Its worker processes, packed reads and indexes must leave the
+  result identical.
+- **`graph/facing_ends.py`** — `join_facing_dead_ends` (after mask recovery,
+  `facing_dead_end_max_gap_um`, 0 off): two dead ends heading for each other within
+  `FACING_MAX_TURN_DEG`, across one stretch of background only, are joined though the gap is more
+  than a dropout.
+- **`graph/lumen_loops.py`** — `remove_loops_inside_one_lumen`, each round of `consolidate_lumen`
+  with a mask: a loop whose antipodal chords mostly cross no more than a dropout loses its arc
+  nearest the wall; a loop round tissue stays however short. **Short loops**
+  (`remove_short_loops`, `remove_short_loops_under_um`, 200 µm, on): every loop that short loses
+  its arc nearest the wall whatever the mask says, except round a hole wider than
+  `short_loop_keep_hole_over_um` (10 µm; `loop_hole_um`). 0 leaves every short loop to the review
+  list. `preprocessing/raw_evidence.py` (`RawEvidence`) ships no rule: no raw measure beat marking
+  all one way.
+- **`graph/skeleton_retrace.py`** — `retrace_lost_skeleton` (on; inert while
+  `short_loop_keep_hole_over_um` is 0): after the last clean-up, skeleton the graph lost that would
+  close a loop round a hole wider than `short_loop_keep_hole_over_um` is drawn back along its own
+  skeleton, joined by splitting the nearest vessel (never a bridge), marked `retraced` /
+  `retraced_join`. `judge_lost_skeleton` says read-only what it would do with each piece and why.
+- **`graph/smoothing.py`** — `smooth_graph_centrelines` takes the voxel staircase out of each
+  centreline and **re-measures `length`**, which moves every resistance. It is *not* one of the
+  `STEP_LABELS`: it runs in `build_network` before the graph is pickled, so a caller assembling a
+  graph by hand gets no smoothing unless it asks. A smoothed path must stay within `max_deviation`
+  of a skeleton voxel (or of the path it came from, where that is off the skeleton) and be no
+  longer; each edge records `smoothed` / `relaxed` / `kept_raw` / `too_short`. A bridge is never
+  merged with a vessel at a degree-2 node.
+- **One reader of the mask a run** — `build_network` makes one `preprocessing.MaskSupport` and
+  hands it to graph building (`mask_support=`), both clean-ups, the thick-vessel split
+  (`MaskSupport.limited_to`) and the dead-end marks; a new step reading the mask there takes it
+  rather than packing its own. Under `use_memmap_loading` (the low-RAM option) no step makes a
+  whole-volume copy: components through `slab_labels.ForegroundLabels` and slab components,
+  distances through `FeatureDistance(by_block=True)` tiles or `blockwise_edt`, unions through
+  `memmap_support.MaskUnion`, scratch arrays through `new_memmap_array` (its files are deleted once
+  unreferenced). Every such path gives the in-RAM result **bit for bit**
+  (`tests/test_low_ram_volume_copies.py`, `test_low_ram_*.py`); coordinates standing in for
+  `np.argwhere` keep its Fortran layout, since BLAS rounds by layout. Routing workers start with
+  one OpenMP/BLAS thread (`reconnect._routing_environment`).
+
+### Dead ends and open ends (`docs/notes/dead_ends_and_open_ends.md`, `PLAN_dead_ends.md`)
+
+- **`graph/dead_ends.py`** — the one definition of what each dead end (degree-1 node) is, judged
+  as its whole chain (`chain_to_junction`): `leaves_image`, `island_end`, `artefact`,
+  `stops_short`, `broken`, `blind` (a person's mark: `set_dead_end_kind`, kept through
+  reclassifying) or `unknown`. Every module asks it. `build_network` writes `dead_end_kind` on each
+  dead end and `image_extent_um` on the graph, so stages without the mask read the same answer
+  (`node_leaves_image`, `open_end_nodes`); `post_process` reclassifies only the touched nodes
+  (`reclassify_dead_ends`). No rule reached 90% on Harvey's grids, so the kinds only label and
+  list, and every repair in `graph/dead_end_extension.py` stays off. `remove_pieces_without_junction`
+  and `remove_interior_dead_ends` (Graph tab) are off by default.
+- **Flow states** — the solve writes `graph.FLOW_STATE` (`solved`, `blind_end`, `closed_end`,
+  `no_boundary`) beside `FLOW_SOLVED`. `blind_end` and `closed_end` flows and drops are exactly 0:
+  **call `graph.zero_flows_behind_dead_ends` after any new `set_edge_flows` on a marked graph.**
+  Only `no_boundary` flows are blanked in exports (`graph.flow_is_undefined`). The viewer draws no
+  flow arrow at or below `visualization.flow_direction.flow_arrow_floor`.
+- **Pieces cut off by an edit** — `graph.branch_order.assign_branch_orders` pops `branch_order`
+  from an edge the search from the inlets does not reach.
+- **`haemodynamics/open_ends.py`** — `open_end_conditions(model, G, ...)`: every model becomes
+  conductances to two ghost nodes at the inlet and outlet pressure (`augment`), never added to the
+  graph; `estimated` reproduces its estimate exactly. The baseline keeps its conditions on the
+  graph, and **every solver path augments with them** (the solve stage, the haematocrit loop,
+  `_solve_network`, `solve_sweep_point`). `scripts/open_end_sensitivity.py` compares the models.
+
+### Thick vessels (`docs/notes/thick_vessels.md`, `PLAN_thick_vessel_bridges.md`, `PLAN_bridging.md`)
+
+- **`preprocessing/thick_vessels.py`** — `use_thick_vessel_skeletonisation`: the fat region (an
+  inscribed-radius gate) gets a centreline *tree* instead of Lee's medial sheet, and the thin arms
+  fused to it are joined onto it (`_join_thin_arms_to_fat_ridge`: each arm aims at the tree as it
+  was before any arm joined). `thick_vessel_braid_guard.py` flags braids left. The region is cached
+  beside the saved skeleton, one bit a voxel, keyed on a digest of the mask and the settings that
+  decide it (`thick_vessel_region_cache.py`). Under the low-RAM option it matches the in-RAM
+  skeleton bit for bit, with one set of workers shared across its passes
+  (`shared_volume_tasks.kept_workers`). `skeleton_thick_vessel_large_stack_tree`
+  (`thick_vessel_tree.py`, off, low-RAM only) builds the tree without the per-voxel graph; it draws
+  the same arms, so it does not keep a network's narrower vessels (waiting on a grid).
+- **`graph/thick_vessel_junctions.py`** (`build_network`'s last step; `post_process` for edited
+  vessels) — Harvey's rules: a thick vessel is its centreline alone, and every vessel opening into
+  it is joined by one `IS_ZERO_RESISTANCE` bridge, straight from where it leaves the thick region
+  to the centreline. A bridge is never a dead end nor attached to one, and nothing is ever cut off.
+  The centreline is the tree found again from the region. Around that: gaps in the graph's thick
+  centreline are drawn from the tree (`thick_vessel_fill_centreline_gaps`, on), dead ends at the
+  wall are drawn on to it (`join_dead_ends_at_walls`), a bridge carrying a centreline's end on is a
+  taper and stays vessel (`THICK_TAPER`), forks are bridged (`bridge_forks`), centreline ends are
+  extended through the segmentation (`thick_vessel_extend_centreline_ends`, on, not yet checked on
+  a fresh grid), and blind vessels beyond a bridge the stub prune would take go with it. Bridges
+  are not measured (the widest diameter at their ends, `diameter_source="bridge"`), get no branch
+  order, and statistics contract them (`contract_bridges`).
+
+### Pipeline (`docs/notes/pipeline_and_post_processing.md`)
+
+- **`pipeline/stages.py`** — one function per stage, each taking settings plus the previous
+  stage's dataclass, so a caller can run them one at a time and intervene. `run_pipeline_stages`
+  runs all ten and returns the graph; `start_from` / `resume` re-run from a stage on a saved run's
+  state (`PipelineResume` carries every boundary list and the thick region), `stop_after` ends after
+  a named stage. `post_process` measures only the vessels an edit marked
+  (`assign_edge_diameters(edges=...)`), bridges them (`insert_thick_vessel_junction_nodes(edges=...)`),
+  re-judges boundary nodes and dead ends at the touched nodes, assigns branch orders over the whole
+  network, then `solve_post_processed`. `apply_network_handling(settings, model, boundaries, network)`
+  is the Haemodynamics tab's "Network handling": `boundary_handling` acts on every vessel no
+  inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`) — `leave_unsolved` (default)
+  marks them `FLOW_SOLVED=False`, `remove_disconnected` deletes them — and
+  `haematocrit_junction_rule="split_junctions"` splits 4+ junctions on a copy. It runs at the start
+  of the haemodynamics stage; a caller running stages by hand calls it between `assign_diameters`
+  and `build_haemodynamic_model`. The diameter calibrations sample only the vessels it will keep
+  (`edges_network_handling_keeps`).
+- **`pipeline/progress.py`** — `STAGES`, the run's stages in order (one tab each, one progress bar
+  over them): eleven entries for ten stage functions (`solve` shares **6. Haemodynamics**;
+  **9. Additional measurements** has no function). `run_pipeline_stages(settings, schema, progress=callback)`
+  hands the callback a `ProgressEvent` as each stage starts, finishes (with `seconds`) or fails, and
+  one per topology step; `log_progress` is the console consumer. Nothing here imports a GUI.
+  **7. Post processing** has no settings: its Review lists (`gui/post_processing.REVIEW_LISTS`) are
+  `graph/network_review.py`'s read-only finders, one list per scan. Each decision is a
+  `ReviewDecision` or `LoopReview`, matched by position rather than node ids, kept in the
+  `.haemorun` and appended to `{stem}_{kind}_review.csv` with its measures, so a rule can be fitted
+  to the marks later. Edits go through `graph/post_processing.py` and `graph/edit.py`; a `.haemorun`
+  in the old stage order is reordered on load (`with_post_process_checkpoint`).
+- **`pipeline/provenance.py`** — every run writes `{stem}_run_manifest.json` and
+  `{stem}_run_settings.yaml` (a config `--config` loads) into its output folder: the settings after
+  `Schema.upgrade` as the run started, version, git commit and dirty paths, environment, each input
+  file's size, mtime and sha256, each stage's times and peak RSS. A failed run writes one too
+  (`status: "failed"`). Writing it never fails a run.
 - **`pipeline/checks.py`** — `preflight(settings, schema)`, the pre-run checklist: the schema's own
   checks (`parsers/checks.py`) plus what only this pipeline knows — the artefact a skipped stage
   must have left behind, and whether the ilastik executable can be found. The examples call it
   before doing any work and exit if it fails.
-- **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from raw TIFF (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`; neither is re-exported from `haemolynx.haemodynamics`, so import them from the module). *“automated” is a misnomer; this is diameter estimation.* `haemodynamics/edt_diameter.py` is the cross-check: each edge's diameter from the mask's own cross-section. Between them, `haemodynamics/raw_section.py` (`use_raw_section_fallback`, **off by default**) fits the raw image's whole cross-section as a PSF-blurred lumen on the edges FWHM failed on, so the diameter chain is FWHM → raw section → mask → class median → table (`stamp_edge_diameters`); the class median (`diameter_class_median_min_edges`, default 3) is the median measured diameter of the run's edges with the same `branch_order` label, so a large arteriole the table has no entry for is not modelled at `default_diameter`. Accurate on clean synthetic data, including z-running vessels FWHM cannot read; on a speckled real stack it reads the halo round a vessel, which is why it is opt-in. FWHM itself can fit one bright speck cleanly on such a stack, so an edge needs `fwhm_min_accepted_samples` (default 2) accepted samples, and `haemodynamics/fwhm_decoys.py` (`fwhm_decoy_check`, on by default) re-measures a sample of FWHM's vessels moved into vessel-free tissue: it reports FWHM's false-positive rate and speck-width range on the run's own image and flags widths in that range (`fwhm_in_speck_width_range`). Its counterpart, `haemodynamics/fwhm_planted.py`, asks whether FWHM reads the *right* width: it draws vessels of known width (the real neighbour's mask width ± a quarter, blurred by the image PSF, as bright and as noisy as the image) into a copy of the raw image beside sampled ones, and the "Optimise FWHM settings" search scores every trial on their mean relative error (`fwhm_metrics.PLANTED_ERROR_WEIGHT`), which is what lets it tune the profile model, sampling direction, averaging, spacing, accepted samples and aggregation (its `measurement_model` group, skipped without the run's segmentation). With `fwhm_demote_flagged_edges` (on by default) a flagged width, or one disagreeing with the mask's own past `edt_fwhm_disagreement_warn_ratio`, is set aside (`fwhm_demoted`) and its edge takes the next source; FWHM holds each profile's blur at one image PSF shared with the raw-section fit (`fwhm_fix_blur_to_image_psf`). `haemodynamics/endothelial.py` is the alternative first source, used when `measure_diameters_from_raw_image` is on and the raw image is an endothelial stain (`raw_image_stain`; FWHM takes a plasma column, so one setting chooses between them): the internal diameter inside the wall ring, fitted with the blur and wall thickness estimated from the image's wide vessels; its chain is endothelium → mask → class median → table. Its widths run wall to wall, so the edge carries `diameter_basis="endothelial"` (`poiseuille.EDGE_DIAMETER_BASIS`) and its viscosity takes that form of the law while the rest of the network keeps the run's basis -- `edge_diameter_basis` is read wherever a vessel's viscosity is computed. `haemodynamics/sections.py` holds what the section methods share, including `run_edge_tasks`, which spreads independent per-edge work over worker processes reading one memory-mapped volume.
+
+### Diameters and haemodynamics (`docs/notes/diameters_and_haemodynamics.md`)
+
+- **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from the raw image
+  (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`; neither is
+  re-exported, so import them from the module). *"automated" is a misnomer.* The diameter chain is
+  FWHM → raw section (`raw_section.py`, `use_raw_section_fallback`, off) → mask (`edt_diameter.py`,
+  reading the run's segmented input) → class median (`diameter_class_median_min_edges`) → table
+  (`stamp_edge_diameters`). For an endothelial stain `endothelial.py` takes FWHM's place
+  (endothelium → mask → class median → table), and its edges carry `diameter_basis="endothelial"`.
+  FWHM's guards: `fwhm_min_accepted_samples`, the decoy check (`fwhm_decoys.py`,
+  `fwhm_decoy_check`), demotion of flagged widths (`fwhm_demote_flagged_edges`), blur held at the
+  image PSF (`fwhm_fix_blur_to_image_psf`); `fwhm_planted.py` scores accuracy for the FWHM
+  optimiser. `sections.py`'s `run_edge_tasks` spreads per-edge work over workers reading one
+  memory-mapped volume.
 - **`haemodynamics/constriction.py`** — the constriction model: diameter profile around a site,
   the resistance integral, and `apply_constriction_sites`, the only place a constricted edge's
   resistance is computed. A strategy supplies *where* the sites are (`ConstrictionSites`);
@@ -1197,315 +776,76 @@ are only caught locally.
   or those edges revert to full vessels and the change is reported as the perturbation's effect.
 - **`haemodynamics/viscosity.py`** / **`haematocrit_distribution.py`** — the viscosity laws (see
   *Viscosity model* above) and, with `haematocrit_model="distributed_iterative"`, a per-edge
-  discharge haematocrit from Pries & Secomb's phase-separation law (their 2005 A, B and
-  X0 = 0.964(1 − H_D)/D_F), iterated with the flow solve and under-relaxed each pass as Secomb's
-  NetFlow does, or a daughter near the skimming threshold oscillates instead of converging.
-  The law covers one vessel dividing in two; `haematocrit_junction_rule` decides every other
-  junction: `no_separation` (default, NetFlow's `dishem.cpp`), `sequential_bifurcations`
-  (`dishem_generalized.cpp`, outflows taken largest flow first) or `split_junctions` (the network
-  is split, see `apply_network_handling` above). The default, `"fixed"`, uses one `haematocrit`
-  everywhere. The loop ends with one more flow solve from the resistances its last pass left
-  (`final_solve=True`), so a vessel's flow is its pressure drop over its reported resistance even
-  when it stops unconverged; a caller that re-solves itself passes `final_solve=False`.
-- **`haemodynamics/resistance.py`** — the flow solve and the two-point resistance, each with a
-  setting on the Haemodynamics tab's Advanced button. `haemodynamics_solver` (`dense` default, as
-  before, or `sparse`) is how *every* flow solve holds the network — baseline, haematocrit passes,
-  perturbations, sweeps (`build_conductance_matrix_from_graph(solver=)`; the solves take either
-  matrix): dense is N × N, peaking at 42 N² bytes (16.8 GB at 20,000 nodes, measured
-  2026-10-15; the help text used to say 3.2 GB), sparse stores the vessels and factorises by
-  sparse LU, same pressures to rounding. `equivalent_resistance_solver` (`eigendecomposition`
-  default, as before, peaking at 49 N² bytes, or `sparse`: `calc_two_point_resistance_sparse`,
-  one solve, `inf` between unconnected nodes) finds the two-point resistance between the first
-  inlet and the first outlet. Either dense solver the run will use is warned about when its
-  estimate passes half the free memory (`warn_about_dense_solver_memory`, `dense_solver_memory_bytes`,
-  `available_memory_bytes`: psutil, else `/proc/meminfo` or `GlobalMemoryStatusEx`), from
-  `build_network` as soon as the node count is known and again from `solve` before the matrices
-  are made; preflight has no node count. Those per-N² figures are pinned against traced
-  allocations in `tests/test_flow_solvers.py`, so a solve that gains an N × N copy fails there.
-  The solve also reports `Solution.network_resistance`, pressure drop over total inflow through
-  every inlet (`network_resistance`); both go in the statistics CSV's Haemodynamics section.
-  Perturbation summaries' `equivalent_resistance` is that network resistance, not the two-point one.
+  discharge haematocrit from Pries & Secomb's phase-separation law, iterated with the flow solve
+  and under-relaxed each pass. `haematocrit_junction_rule` decides every junction that is not one
+  vessel dividing in two: `no_separation` (default), `sequential_bifurcations` or
+  `split_junctions`. The default `"fixed"` uses one `haematocrit` everywhere. The loop ends with one
+  more solve (`final_solve=True`), so a vessel's flow is its drop over its reported resistance; a
+  caller that re-solves itself passes `final_solve=False`.
+- **`haemodynamics/resistance.py`** — the flow solve and the two-point resistance.
+  `haemodynamics_solver` (`dense` default, or `sparse`) is how *every* flow solve holds the network
+  (`build_conductance_matrix_from_graph(solver=)`); `equivalent_resistance_solver`
+  (`eigendecomposition` default, or `sparse`, `inf` between unconnected nodes). A dense solver is
+  warned about when its estimate passes half the free memory (`warn_about_dense_solver_memory`,
+  from `build_network` and `solve`). The per-N² memory figures are pinned in
+  `tests/test_flow_solvers.py`, so a solve that gains an N × N copy fails there.
+  `Solution.network_resistance` is the drop over total inflow; perturbation summaries'
+  `equivalent_resistance` is that, not the two-point one.
 - **`haemodynamics/perturbations.py`** — a perturbation is a named, typed settings override
-  (`PerturbationSpec`) that `pipeline/stages.py`'s `run_perturbations` re-solves a copy of the
-  solved network for, writing into `{name}_{type}` under `perturbation_output_dir`. Fourteen types
-  plus `none` (`PERTURBATION_TYPES`): arteriole / pericyte / combined diameter changes, capillary
-  blocks, and sweeps over dilation, inlet pressure, pericyte spacing or length.
-  **Capillary blocks by mask** (`capillary_block_mask`, 2026-10-22,
-  `haemodynamics/capillary_block_mask.py`): the vessels to block come from a mask of blobs
-  (`capillary_block_mask_path`, placed on the run's grid as the pericyte mask is). Each blob is a
-  block on the vessels when at least `capillary_block_mask_min_overlap_fraction` (0.5) of its
-  voxels lie in the run's segmentation (`network.volume.image`, read at the blob's voxels; without
-  one the graph's lumens stand in, with a warning); each such voxel belongs to the vessel whose
-  centreline is nearest, within its radius plus a voxel's diagonal, bridges never;
-  `capillary_block_mask_vessels_per_block` blocks the vessel holding most of the blob
-  (`largest_overlap`) or every one it lies in. The occlusion, zeroing and comparison are the
-  capillary block's (`perturbations.is_capillary_block`, `CAPILLARY_BLOCK_TYPES`), one draw;
-  `{name}_mask_blocks.csv` lists every blob and why one blocks nothing. A batch refuses it (one
-  mask for every image). Not yet tried on a real mask of blocks.
-  `SETTINGS_FOR_TYPE` says which settings each type reads; an override outside it is reported as
-  unused and not applied. `INCOMPARABLE_OVERRIDES` (viscosity law, the raw image's stain, haematocrit,
-  haematocrit model) are refused, because they would move every resistance and the difference
-  against the baseline would not be the perturbation's effect. A single re-solve writes
-  summary/edges/statistics CSVs and plots; a sweep writes its grid CSV and curves, and keeps
-  per-point flows (`sweep_flows.py`) so the viewer's slider can swap them without N graph copies.
+  (`PerturbationSpec`) that `run_perturbations` re-solves a copy of the solved network for, written
+  into `{name}_{type}` under `perturbation_output_dir`. `PERTURBATION_TYPES` lists them;
+  `SETTINGS_FOR_TYPE` says which settings each reads (an override outside it is reported unused and
+  not applied); `INCOMPARABLE_OVERRIDES` (viscosity law, raw stain, haematocrit, haematocrit model)
+  are refused. The capillary blocks (`CAPILLARY_BLOCK_TYPES`, `is_capillary_block`; including
+  `capillary_block_mask`, `haemodynamics/capillary_block_mask.py`) zero the stopped vessels' flows
+  after every re-solve (`capillary_block.zero_stopped_vessel_flows`). A sweep writes its grid CSV
+  and curves and keeps per-point flows (`sweep_flows.py`) instead of N graph copies.
+- **`haemodynamics/red_cells.py`** — tube haematocrit, red-cell velocity, flux and spacing on each
+  vessel carrying flow, *predicted* from the flow and the discharge haematocrit by the Fahraeus
+  relation (Pries et al. 1990) and red-cell conservation, with `red_cell_volume_fl` the mean cell
+  volume. Predictions, never measurements: they carry every error of the flow.
+
+### Statistics (`docs/notes/statistics.md`)
+
 - **Network analyses** (`statistics/inlet_outlet_routes.py`, `transit_time.py`,
-  `flux_heterogeneity.py`, `territories.py`,
-  `capillary_bed_joins.py`, `current_flow.py`, `occlusion.py`, `loops.py`, `strahler.py`,
-  `spectral.py`) — each a
-  `statistics_*` toggle in the schema's *Connectivity/Network Analysis* section, run inside
-  `compute_comprehensive_vessel_statistics`. They add rows to the statistics CSV, and most also
-  write per-vessel edge attributes that the vessels layer offers as colour options (declared in
-  `gui/results.py`'s `OPTIONAL_EDGE_COLUMNS`). An analysis that cannot run (no inlets/outlets, no
-  solved flow) writes nothing, so its colour option stays absent. `statistics_route_weighting`
-  picks the conductance model (topology / length / resistance) the Laplacian-based ones share
-  through `_flow_system.py`. `capillary_bed_joins` splits the capillaries into one bed per feed
-  (the nodes the B orders count from, `graph.branch_order.capillary_start_nodes`), takes each
-  bed's join order as the lowest B order on a watershed vessel with another bed, censors a bed
-  that never joins (leaves the image / drains to a venule / ends blind), and reports a
-  Kaplan-Meier median plus the `remove_short_loops_under_um` the graph was built with (that rule
-  removes the earliest joins); its per-bed table goes to `<stem>_capillary_bed_joins.csv` beside
-  the statistics CSV, for between-dataset tests (log-rank, a reseeded-feed null) outside the package.
-  `flux_heterogeneity` (2026-10-19, for the stall work of `PLAN_stall_artifacts.md`): over the
-  vessels *carrying* flow -- the solve reached them (`vessel_classes.carries_flow`) and their
-  flow is above `CARRYING_FLOOR_FRACTION` (1e-9) of the network's largest, the block
-  comparison's own floor, imported from there -- the CV (sample SD / mean) of flow and of mean
-  velocity, for the capillaries and for every vessel, and the flowing share of the network by
-  count, length and volume (a cylinder per vessel), with rows by vessel type; it writes
-  `vessel_velocity_um_s` on each carrying vessel. **The red cells** (2026-10-20,
-  `haemodynamics/red_cells.py`): on each carrying vessel it also writes `tube_haematocrit`,
-  `red_cell_velocity_um_s`, `red_cell_flux_per_s` and `red_cell_linear_density_per_mm`,
-  predicted from the flow and the discharge haematocrit -- the vessel's own
-  `discharge_haematocrit` under `distributed_iterative`, else the run's `G.graph["haematocrit"]`
-  -- by the Fahraeus relation of Pries, Secomb, Gaehtgens & Gross 1990 (`H_T/H_D = H_D + (1 -
-  H_D)(1 + 1.7 e^{-0.415 D} - 0.6 e^{-0.011 D})`, held at 1 below 2.58 um where the fit runs
-  above it) and red-cell conservation (flux `Q H_D / V`, cell velocity `v_mean H_D / H_T`,
-  spacing `H_T A / V`), with `red_cell_volume_fl` (Haemodynamics tab, under the haematocrit;
-  50 fL, a mouse's; rat ~57, human ~90) the mean cell volume `V`; the report gets the same mean /
-  SD / CV rows for the flux and the red-cell velocity, the mean tube haematocrit and spacing, by
-  group and by vessel type, `Red Cell Volume (fL)` and `Haematocrit Source`, and the block
-  comparison the four CVs `_baseline` / `_blocked`. With one haematocrit the flux CV *is* the
-  flow CV. Predictions, never measurements: they carry every error of the flow (the assumed
-  pressure drop, the diameters, the viscosity law, what the segmentation missed; `flow.10a` is
-  still unticked) and the haematocrit model's; cited through `_used_red_cell_transport`.
-  `compare_block_to_baseline` reports the same
-  rows `_baseline` / `_blocked`, and counts the blocked network's *stopped* vessels
-  (`stopped_vessels`, `stopped_vessel_length_um`): the blocked ones and, through
-  `inlet_to_outlet_vessels`, every vessel fed only through one
-  (`capillary_block.stopped_vessels`), whose leak -- a millionth of its flow at the default
-  factor -- is above the floor. After a capillary block's re-solve, the first draw's and every
-  replicate's, the stage sets `flow_abs`, `flow_signed` and `flow_abs_log10` to exactly 0 on
-  the perturbation graph's stopped vessels (`capillary_block.zero_stopped_vessel_flows`,
-  2026-10-19; the pressures stay, since the drop across a block is real), so the perturbation's
-  own statistics CSV, its edges CSV, its vessels layer and `flow_change_vs_baseline` (0 on a
-  stopped vessel) agree with the comparison -- which zeroes the same on its copies, for a blocked
-  network solved by hand. `vessel_classes.carries_flow` reads a flow of exactly 0 as none, so the
-  Vessel Classes section's "Vessels Carrying Flow" agrees too. `compute_intercapillary_distance`
-  adds the same spacing over the carrying vessels alone (`... Between Flowing Vessels`) and the
-  ratio of the two medians.
-- **Exact betweenness** (`statistics/exact_betweenness.py`, 2026-10-20) — every exact
-  `betweenness_centrality` in `network_measures.py` goes through `exact_betweenness_centrality`:
-  full mode's per-node betweenness (the whole network and `_statistics_connected.csv`'s again)
-  and the summaries' exact branches. From `PARALLEL_BETWEENNESS_MIN_NODES` (2,000) nodes the
-  per-source searches run in `python -c` workers (networkx's own `_single_source_*` and
-  `_accumulate_*`, one OpenMP/BLAS thread, `default_worker_count()` capped by free memory), and
-  this process adds each source's increments in networkx's node order and calls its `_rescale`:
-  the same floats in the same order, so the same bits. Below the threshold, with one worker, or
-  when a worker fails, networkx runs it here. Never sampling (`k`) or another library.
-  Harvey's AIA batch graph `29_1_b_contra_FITC` (18,253 nodes, 8 workers, a busy machine):
-  414 s against networkx's ~2,950 s (timed on 300 sources, scaled); a 4,000-node piece of it
-  122.5 -> 44.7 s, every value's bits equal. `MAX_DEFAULT_WORKERS` (8) is the ceiling.
+  `flux_heterogeneity.py`, `territories.py`, `capillary_bed_joins.py`, `current_flow.py`,
+  `occlusion.py`, `loops.py`, `strahler.py`, `spectral.py`) — each a `statistics_*` toggle in the
+  schema's *Connectivity/Network Analysis* section, run inside
+  `compute_comprehensive_vessel_statistics`. They add rows to the statistics CSV, and per-vessel
+  edge attributes offered as colour options must be declared in `gui/results.py`'s
+  `OPTIONAL_EDGE_COLUMNS`. An analysis that cannot run writes nothing. `statistics_route_weighting`
+  picks the conductance model the Laplacian-based ones share through `_flow_system.py`.
+  "Carrying flow" is one definition: `vessel_classes.carries_flow` above `CARRYING_FLOOR_FRACTION`
+  of the largest flow.
+- **Exact betweenness** (`statistics/exact_betweenness.py`) — every exact
+  `betweenness_centrality` goes through `exact_betweenness_centrality`, which spreads the
+  per-source searches over workers from `PARALLEL_BETWEENNESS_MIN_NODES` nodes and gives
+  networkx's floats bit for bit. Never sampling (`k`) or another library.
 - **Vascular communities** (`graph/communities.py`) — the `compute_vascular_communities` toggle,
   independent of Statistics; when Statistics also runs, the two share one partition
   (`pipeline/stages.py`'s `shared_vascular_community_partition`) instead of computing it twice.
-- **`preprocessing/thick_vessels.py`** — `use_thick_vessel_skeletonisation`: Lee thinning of the
-  fat part of a plasma-labelled mask gives a medial *sheet* (several polylines for one vessel), so
-  the fat region (an inscribed-radius gate, not a volume gate) gets a centreline *tree* instead,
-  and the thin capillaries fused to it are joined onto that tree (`_join_thin_arms_to_fat_ridge`:
-  each arm aims at the tree as it was before any arm joined, and at an earlier arm's bridge only
-  when the tree is past the bridge cap -- aimed at whatever was nearest, a second capillary joined
-  the first one's bridge by the wall and the bridges ran side by side through the fat lumen, 21 of
-  E14.5's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
-  remain. Under the low-RAM option (2026-10-18) no step makes a distance map or label volume of
-  the stack (`blockwise_edt.py`, `slab_labels.py`) and the skeleton and region are bit for bit
-  the in-RAM ones (synthetic networks, trunks wider than 16 voxels, anisotropic, cut by the faces,
-  30k-voxel blocks); on a 300 M-voxel synthetic stack (2.7% foreground) it took 211 s at 3.9 GB
-  private, 2.6 GB above the process's start, against the old low-RAM path's >83 min (stopped). The
-  thick region is still a byte a voxel in RAM (the skeleton is drawn on disk since 2026-10-19,
-  and handed on with the tree's voxels: see **One reader of the mask a run**), and the centreline tree's
-  Dijkstra graph (built straight into CSR) is ~360 B a voxel of the largest fat component, built
-  whole; the join's last resort, ~400 B a voxel of the connected structure it walks. Its hole fill
-  labels the background a slab of planes at a time (`skeleton._fill_binary_holes_by_slab`, no label
-  volume), and the catchment's blocks run in worker processes (`blockwise_edt.near_blocks`, sized by
-  `parallel_plan` from cores and free memory): catchment 90 -> 51 s and Lee step 72 -> 35 s on that
-  stack with 14 workers, 7.5 GB with theirs counted. One set of workers serves the hole fill, every
-  pass of the region and the Lee step's catchment (`shared_volume_tasks.kept_workers`, stopped
-  before Lee thins here: a worker imports the whole package as it starts, ~17 s with a dozen at
-  once, and each pass started its own), each mapping its volumes for one task and flushing what it
-  writes; the free memory the plan and the re-check before each task read (2 GB kept free) is read
-  once this process's disk-backed volumes are written out and their pages handed back
-  (`memmap_support.release_resident_pages`): on Windows a mapped file's pages are not available
-  while in a working set or unwritten on the modified list (14.7 GB of it on the patella, emptying
-  at ~55 MB/s), so the re-check took the run's own volumes for the machine's memory and held the
-  patella's catchment to one task at a time (region 925 -> 1,296 s at `dcc41c25`; 916 s with the
-  re-check off). 75 M-voxel stack: region 132 -> 42 s (45 s in one process); 300 M: catchment
-  85 -> 25 s, both bit for bit (the patella with this not yet timed). **The large-stack tree**
-  (`skeleton_thick_vessel_large_stack_tree`, off by default, under the low-RAM option only;
-  `preprocessing/thick_vessel_tree.py`, 2026-10-19) is for a fat region that is one network
-  crossing the stack -- Harvey's patella at a 3 um gate, 111 M of its 144 M fat voxels in one
-  component, ~40 GB of that CSR. Each component's tree is built as `_component_tree` builds it
-  (root and far end, arms farthest first, the same tests), from shortest paths found over the
-  voxels themselves (`shortest_path_parents`: bucketed label-correcting, neighbours three to a
-  row by searchsorted on the sorted keys, a distance and a parent a voxel kept -- scipy's
-  distances bit for bit, ties to the lower voxel number, so a route of exactly equal cost can
-  step a voxel aside), the farthest candidate from cells re-measured only near what the tree
-  gained (`_FarthestCandidates`), and no arm cap. A component of at most
-  `EXACT_TREE_MAX_VOXELS` (4 M) keeps scipy's walk, so its tree is the in-RAM one bar the cap
-  (`tests/test_thick_vessel_tree.py`, with digests of the in-RAM skeleton from 4c96e9c5); the
-  voxels are grouped by component in one array filled as the slabs are labelled, the radius
-  read along `distances_at_points`' own block rows on up to 4 threads, small components on
-  threads, and the join's last resort bounded (`_bounded_structure_path`: a box round the
-  arm's ends, 41 voxels padding doubling, at most 64 M box voxels and 2 M searched; an arm
-  with no path is left unjoined and logged). E14.5 (Harvey's settings) with it: thick region,
-  tree and skeleton bit for bit the in-RAM ones. Patella tree step (1312 s at `1d9bf1ab`, its
-  region read back): labelling 120 s, 5,644 small components 330 s, the big one's radius
-  119 s, its shortest paths 740 s (~6.6 us a voxel; threads gave nothing there), arms 8 s;
-  peak 22.2 GB commit, 9.7 GB above the region and skeleton buffer (6 GB unthreaded), during the radius
-  (four block transforms and the domain's surface tree at once). The whole
-  `skeletonize_thickness_gated` under it (`e375545b`, region read back, skeleton on disk,
-  2026-10-20): Lee 343 s, tree 1,079 s, the thin-arm join 2,383 s for 43,254 arms (5,800
-  joined, 4,215 past the cap, 33,239 with no fat in their structure, 41 left unjoined by the
-  bounded search), 4,031 s in all at 10.25 GB peak commit; the join's own parts are in its
-  closing log line (paths 907 s, the nearest-fat tree rebuilt per bridge 552 s, the cap's radius
-  465 s, the bounded search 360 s). Before the bridge numbers were carried it ran 5.6 arms/s
-  against 20. **It draws the same arms,
-  so it does not keep a network's narrower vessels**: arms aim only at voxels of at least 0.4
-  of the component's widest radius, so the patella's 111 M-voxel component got its main path
-  and 2 arms (263,706 tree voxels in all; 68% of fat voxels over 20 um from the tree, against
-  3.5% on E14.5), and the fat voxels no arm reaches are not handed to Lee. What to do there
-  (hand them back, or aim arms by local radius) waits on Harvey and a marked grid. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
-  wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
-  (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
-  digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
-  run with the same mask and settings reads it back (`skeletonize_thickness_gated(thick_region=)`),
-  a run loading its skeleton (`do_skeletonize` off) gets it too, where it used to get none and
-  make no bridges, and `post_process` finding it again for a resumed run keeps what it finds;
-  a mask with no thick region is remembered as well. `graph/thick_vessel_junctions.py` (`build_network`'s last step, and `post_process` for
-  hand-edited vessels) then makes the bridges, by Harvey's rules: a thick vessel is its centreline
-  alone, and every vessel opening into it is joined by one `IS_ZERO_RESISTANCE` bridge, straight
-  from where it leaves the thick region (the segmentation within the margin of the large-vessel
-  body: the thick vessel's segmented boundary) to the centreline; a bridge is never a dead end nor
-  attached to one. The centreline is the tree `skeletonize_edt_ridge` draws through the region,
-  found again from the region (9 s on E14.5, so nothing new is carried through resume or a
-  `.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid; in post-processing only a gap an edited vessel reaches, as far as its bridge would look, and what is drawn is marked edited so the stage measures it); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
-  near it counts only if long enough (3 um at an edge's end, 6 um within). Every edge reaching the
-  region is labelled outside / centreline / inside: inside stretches joined through their nodes
-  that lead out of the region and meet the centreline, or come within one lumen radius of it, are
-  removed and each exit gets a straight bridge to where the stretch met the centreline (else the
-  nearest centreline point, within 2 radii + 5 um); a stretch that only skims the region's edge
-  stays vessel, and the thick vessel's own path where its centreline strays off the tree (the
-  shortest way between two places a stretch meets the centreline, or a stretch that never leads
-  out) stays as it is. Stretches under 2 um are flicker. Nothing is ever cut off: a stretch whose
-  removal would disconnect anything is left as it was. A vessel beyond a bridge that ends blind
-  inside the image goes with its bridge (one running out of the image stays) when the stub prune
-  would take it as a stub too: shorter than `min_stub_length` and than
-  `min_stub_length_radius_multiple` times the thick vessel's lumen radius at the tree point
-  nearest the bridge (`_remove_blind_vessels_beyond_bridges(stub_length_um=)`; Harvey's grid Y,
-  2026-10-15: the four marked keep were 34-154 um, stretches of the thick vessel itself and long
-  capillaries, the two marked remove 6 and 16 um). On E14.5: 150
-  bridges, each from the region's boundary to the centreline (median length 1.24 lumen radii),
-  every one leading to a junction or the image's edge, against the old rule's 360 inside pieces of
-  which 44 were radius-shaped; 42 blind vessels (529 um) removed. Bridges are not measured
-  (`assign_edge_diameters` runs on the vessels alone; a bridge takes the widest diameter at its
-  ends, `diameter_source="bridge"`), get no branch order and are no step in one
-  (`graph/branch_order.py`), and statistics contract them (`contract_bridges`: the vessel meets
-  the thick centreline directly, sharing the graph's attribute dicts so per-vessel results land on
-  it) and report them on their own rows. See `PLAN_thick_vessel_bridges.md`. Three cases since,
-  from Harvey's examples (2026-10-13, `PLAN_bridging.md` F1-F1c): a dead end stopping within
-  `WALL_JOIN_REACH_UM` (10 um) of the thick lumen and heading for it (the gap bridges' 80-degree,
-  3 um rule, judged on the path drawn as for the reconnects, `reconnect.path_continues_ends`)
-  is first drawn on through the mask to the thick centreline, under the bridge gate and
-  the same-lumen guard (a short join judged at its middle) and the loop guards, never closing a loop shorter than the run's
-  `remove_short_loops_under_um` round a hole no wider than `short_loop_keep_hole_over_um`
-  -- one the clean-up would break (on E14.5 all 10 short loops the build left ran through such
-  a join), then bridged like any vessel (`join_dead_ends_at_walls`; the
-  edge records `joined_at_thick_wall_um`) -- skeletonisation often ends a thin arm at the wall;
-  a bridge carrying a thick centreline's end on along its own line (`TAPER_MIN_COSINE`, 45
-  degrees), the one most along it at each end, is the thick vessel narrowing and stays vessel
-  (an elbow at the end keeps its bridge, and so does a side vessel leaving the same end), marked
-  `THICK_TAPER` so the clean-up after the split leaves it alone as it does a bridge (never one of
-  a pair in one lumen, a doubled stretch or a short loop's side; degree-2 merging keeps a taper
-  apart from a vessel as it does a bridge, `taper_meets_vessel`: merged, the mark spread along
-  the whole vessel and on with every merge, and dropped, the clean-up rewired E14.5's tapers as
-  second strands); and at a fork of the thick centreline an arm at most
-  `FORK_BRANCH_MAX_RADIUS_FRACTION` (0.8) of the trunk's radius gets a bridge over its stretch
-  inside the trunk's lumen (`bridge_forks`). `thick_vessel_extend_centreline_ends`
-  (`extend_thick_ends`, **on by default** since 2026-10-20, Harvey's call; not yet checked on a
-  fresh grid): where the graph's
-  thick centreline stops at a dead end while the segmented vessel runs on, it is drawn on, along
-  the tree where the tree runs on with no graph beside it, then through the segmentation (a
-  centre-seeking route leaving within 60 degrees of its heading) to the first vessel or dead end
-  within `EXTEND_REACH_UM` (40 um); an image face reached first means the vessel leaves the image
-  and nothing is drawn (`_extend_thick_centreline_ends`, edge mark `EXTENDED_UM`). At grid W's
-  16, 20 and 23 the tree ended where the graph did, so following the tree alone could not make
-  Harvey's joins. Grid Y (`outputs/thick_vessel_breaks/GRID_Y_extension.md`, all 18 such
-  places on E14.5's two segmentations): 17/18 against 14 for drawing every one, wrong at a 4 um
-  step out to a face; leave-one-out about 15-16, the reach resting on one example. On Harvey's
-  E14.5 Claudin segmentation (2026-10-20, rebuilt from his run's skeleton) it drew 12 thick
-  centrelines on: dead ends in vessels of 5 um radius or more 124 -> 116, `stops_short` 102 -> 96.
+- **`statistics/three_dim_distances.py`** — cell-to-vessel distances (`measurement_3d_to_cell_mask`,
+  run last in `export_results`): the gap between voxelised volumes, so a cell touching a vessel is
+  0 µm from it, with `vessel_contact`. The vessels are `measurement_3d_vessel_mask_path` if set,
+  else the run's segmentation, else the graph's tubes; the vessel named is the one whose lumen the
+  nearest vessel point lies in, never a bridge. Preflight checks shape and voxel size
+  (`checks.check_cell_mask_measurement`). An optional path of this kind is `Setting.optional_path`
+  (unset falls back, set must exist).
+- **`statistics/tissue_volume.py`** — `measure_tissue_volume` (Additional measurements tab, off by
+  default): the tissue in the raw image (`tissue_raw_tiff_path`, else `raw_image_path`) as a closed
+  surface mesh, so vessel density can divide by tissue rather than the bounding box. Measured once
+  per network (`stages.tissue_measurement`, cached on `VesselNetwork.tissue`) so perturbations
+  divide by the same tissue as the baseline; writes `{stem}_tissue_volume.csv` and
+  `{stem}_tissue_surface.vtp`.
+
+### Optimisation, exports and the panel (`docs/notes/gui.md`)
+
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
   FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself
   (`candidates.py`), trials are scored by pure functions (`metrics.py`), and the result is a
   config file plus a readable report (`report.py`). **Check segmented image** is
   `preprocessing/segmentation_quality.py` + `segmentation_raw_comparison.py`.
-- **`gui/run_snapshot.py`** / **`gui/stage_checkpoints.py`** — save a finished run to a
-  `.haemorun` file and load it back; keep per-stage snapshots so a tab can re-run from its stage
-  (`run_pipeline_stages(start_from=..., resume=...)`) without rebuilding everything before it.
-  Save run captures the run on the GUI thread and writes it on a worker (`save_run_file(background=True)`;
-  Save and Load are greyed until it is done). The write is gzip level 1 (`COMPRESS_LEVEL`), into a `.part`
-  file moved over the name once complete. The volumes the checkpoints and the results share are
-  pickled once, and the checkpoints' graphs, private copies already, are not copied again. gzip's
-  default level 9 took 12.6 s on one E14.5-sized binary mask, against 0.44 s at level 1. A whole E14.5
-  run (1 GB pickled, 2026-10-15) went from 297 s with the panel frozen to 8 s in the background, and
-  its file from 80 to 104 MB. Level 6 would take 27 s and save 18 MB of that, and level 3 9 s to save 8 MB.
-- **`statistics/three_dim_distances.py`** — cell-to-vessel distances (`measurement_3d_to_cell_mask`,
-  run last in `export_results`). Each object in the cell mask gets its gap to the vessels, and its
-  centroid's: the distance between the two as voxelised volumes, each voxel the box it fills, so a
-  cell touching a vessel is 0 um from it (voxel centre to centre it read one voxel step, the z step
-  along z), with `vessel_contact` saying `separate` / `touching` / `overlapping` / `inside`. The
-  vessels are `measurement_3d_vessel_mask_path` if set, else the run's own segmentation
-  (`network.volume.image`), and only without either the graph's tubes of each edge's `diameter_um`
-  -- until 2026-10-15 the default was the graph's centrelines, a vessel radius too far. The vessel
-  named is the one whose lumen the nearest vessel point lies in (`_VesselIdentity`: least
-  `|p - c| - r(c)` over centreline voxels, `r` the lumen radius there), never a bridge -- the
-  nearest centreline named a capillary running past a wide vessel's wall. Each mask's voxel size is
-  resolved as the vessel masks' are (none of its own takes the run's), and preflight checks shape
-  and voxel size from the TIFF headers (`checks.check_cell_mask_measurement`), since a mismatch
-  used to stop the run at its end. The vessel mask of its own is optional: `must_exist` with a
-  `placeholder`, which `parsers.check_settings` reads as unset falls back, set must be there
-  (`Setting.optional_path`; `must_exist` alone made preflight demand it on every run measuring
-  to the segmentation, and without it the panel opened a save dialogue for it). The same
-  rule covers `tissue_raw_tiff_path`. `measurement_3d_reference_image_path` (it only checked a shape)
-  is retired, and so is `edt_mask_path` (2026-10-18): the EDT widths read the run's segmented
-  input (`stages.segmented_input_path`), since a box of their own carried another dataset's mask
-  into runs. Objects are read from their bounding boxes in both paths (in RAM, a whole-volume
-  `labels == id` per object took 16.5 s for 397 cells on 4 M voxels; now 0.6 s).
-- **`statistics/tissue_volume.py`** — `measure_tissue_volume` (`measure_tissue_volume` on the
-  Additional measurements tab, off by default): the tissue in the raw image (`tissue_raw_tiff_path`,
-  else the run's raw image, `raw_image_path`) as a closed surface mesh, so vessel density can divide by tissue rather
-  than by the box the network spans, which counts the image's empty space. Block-averaged onto a
-  ~4 µm working grid with the vessel voxels left out of the threshold (else Otsu splits vessels
-  from everything else), split by Otsu/Li/triangle or a manual intensity, and the surface placed
-  **halfway between the two classes' median levels** — where a blurred edge is, whatever the
-  blur. Vessel voxels then read as the tissue's own level in the normalised-convolution smoothing
-  (leaving them out pulls the edge inward), and marching cubes runs through the smoothed field,
-  closed on the image faces. `pipeline/stages.py`'s `tissue_measurement` measures it once per
-  network (cached on `VesselNetwork.tissue`, keyed on the settings, the raw file and the
-  segmentation) so the perturbations' statistics divide by the same tissue as the baseline's;
-  `export_results` writes `{stem}_tissue_volume.csv` and `{stem}_tissue_surface.vtp` and hands
-  it to the viewer on `Solution.tissue` (`gui/results.py`'s `TISSUE_SURFACE` Surface layer).
-  Smoothing rounds convex tissue edges by about `tissue_smoothing_sigma_um`; a stack with no
-  empty space at all logs a warning, since an automatic split then cuts the tissue itself.
 - **`visualization/geometry.py`** — `edge_polyline`: an edge's `voxels` (or its two node positions)
   turned into a polyline that runs `u`→`v` and touches both nodes. The VTK export, the pericyte
   point derivation and two plotly writers each answered that separately, and drew vessels in
@@ -1515,191 +855,55 @@ are only caught locally.
   `log_view.py` (the only two that touch Qt, and only inside functions): settings in,
   layer specs out, layer data in, settings out, nothing importing napari. `rectangle_from_box` and
   `box_from_rectangle` are exact inverses, which is what lets an edited layer *be* the setting.
-- **`gui/layout.py`** — where each row sits on its tab. Most tabs get one box per schema section;
-  Input, Boundaries, Diameters, Haemodynamics and Export are grouped by hand (`TAB_BOXES`). Every
-  `advanced` setting goes behind an Advanced button anchored on the innermost ordinary row it
-  needs (so buttons nest as the settings do: the FWHM decoy check under "Do FWHM measurement",
-  under "Measure diameters from the raw image"), placed after that row's subtree; a child of an advanced toggle
-  shares its button. Buttons start closed and show how many hidden settings differ from where the
-  panel started (`changed_settings`). The panel follows each row's whole prerequisite chain
-  (`form.prerequisite_chain`), not only its own `requires`, so a row never outlives the toggle
-  above it. `_widget.py`'s `_AdvancedDisclosure` draws a button; tests open them all with
+- **`gui/run_snapshot.py`** / **`gui/stage_checkpoints.py`** — save a finished run to a `.haemorun`
+  and load it back; keep per-stage snapshots so a tab can re-run from its stage. Save captures on
+  the GUI thread and writes on a worker (`save_run_file(background=True)`), gzip level 1
+  (`COMPRESS_LEVEL`) into a `.part` file moved over the name once complete.
+- **`gui/layout.py`** — where each row sits on its tab: one box per schema section, or grouped by
+  hand (`TAB_BOXES`). Every `advanced` setting goes behind an Advanced button anchored on the
+  innermost ordinary row it needs, so buttons nest as the settings do. The panel follows each row's
+  whole prerequisite chain (`form.prerequisite_chain`). Tests open every button with
   `panel._haemolynx_expand_advanced()`.
-- **Statistics tab** (`gui/statistics_view.py`, `_widget.py`'s `_StatisticsPanel`) — the
-  left panel's second tab of four (HaemoLynx view, Statistics, Layer list, Layer controls, as
-  wide as each other: `LEFT_PANEL_TABS`). `export_results` leaves what it measured on the graph,
-  `G.graph[pipeline.stages.STATISTICS_REPORT]` = `{"mode", "csv", "sections"}`: one section per
-  statistic measure that ran (`statistics.compute_vessel_statistics_by_measure`, which
-  `compute_comprehensive_vessel_statistics` flattens, rows and order unchanged), then the
-  resistances, branch orders, weighted betweenness and communities, and the tissue volume. On
-  the graph it goes wherever the graph goes (checkpoints, `.haemorun`); `run_pipeline_stages`
-  drops it from a resumed network, and an export with nothing to report removes it. The tab draws
-  a button per section, its rows built and shown only while pressed, and refreshes after every
-  stage drawn, from a run's returned graph (shown in the viewer or not) and on Clear; a section
-  open before a rerun stays open. Full mode's per-node rows are cut at `MAX_ROWS`.
-- **`gui/layer_sets.py`** — what the view panel's "Showing" menu swaps: the baseline network or one
-  perturbation's (vessels, nodes, flow direction, pericytes, vessel tubes), every other network
-  hidden, and which kinds of layer were on carried across (`carried_roles`: a kind the network
-  being left has no layer of -- the baseline's pericytes, usually -- keeps the answer the swap
-  before carried). A perturbation's `LayerSpec`s carry
-  `layer_set=<its name>`, stored in the layer's `OURS` tag; the baseline's are `None`. The shown
-  network is the one `_sync_vessel_tubes` draws as tubes or lines. A sweep perturbation's grid
-  sliders sit in the view panel's Sweep box (not docks of their own) and show only while that
-  perturbation is the one shown. Every perturbation type in `PERICYTE_PERTURBATION_TYPES`
-  (`haemodynamics/perturbations.py`) gets a hidden `HaemoLynx {name} pericytes` Points layer from
-  the edges' `pericyte_centers_um`, which all three constriction strategies record; a sweep
-  records each grid point's sites on its `SweepFlowGrid` (`pericyte_sites`, since spacing and
-  length sweeps move them), and the same sliders swap them in (`_apply_sweep_points`). The view panel's "Colour by" menu (`_VesselColourMenu` in
-  `_widget.py`) colours the shown network's vessels Vectors layer — tubes take their colours from
-  it — through `_choose_colour_by`, the same path as the layer controls' own Colour by. Below it,
-  "Colour range" (`_ShownVesselsColourScale`) is the layer controls' range, Fit buttons and canvas
-  colour bar for the same network: each network keeps its own range, a range typed or fitted on a
-  sweep survives its slider (`USER_CONTRAST_LIMITS`), and the canvas bar sits on whichever layer
-  draws the shown network -- in Tubes mode the tube Surface, given the vessels' colormap and range
-  (`_sync_canvas_colour_bar`), since napari draws no bar for a hidden layer. Under it,
-  five "Show" checkboxes (`VIEW_TOGGLES`: flow-direction arrows, nodes, terminal nodes, skeleton,
-  segmented image) turn one layer each on and off without finding it in the layer list:
-  `toggle_layer_name` says which -- arrows and nodes are the shown network's, terminal nodes is
-  the run's boundary-nodes layer (inlets, outlets, arteriole/venule boundary nodes), skeleton its
-  skeleton and segmented image its `IMAGE` layer -- and
-  `toggle_states` what each box shows. A box mirrors its layer (the layer's own `visible` event
-  ticks it back; no layer greys it out), so it never fights the eye icon.
+- **Statistics tab** (`gui/statistics_view.py`, `_widget.py`'s `_StatisticsPanel`) —
+  `export_results` leaves what it measured on the graph as
+  `G.graph[pipeline.stages.STATISTICS_REPORT]` (`{"mode", "csv", "sections"}`, one section per
+  measure, from `statistics.compute_vessel_statistics_by_measure`); the tab draws a button per
+  section. `run_pipeline_stages` drops the report from a resumed network.
+- **`gui/layer_sets.py`** — what the view panel's "Showing" menu swaps: the baseline network or
+  one perturbation's, every other hidden. A perturbation's `LayerSpec`s carry `layer_set=<its name>`
+  (stored in the layer's `OURS` tag); the baseline's are `None`. Sweep sliders sit in the view
+  panel's Sweep box. "Colour by", "Colour range" and the "Show" checkboxes (`VIEW_TOGGLES`) act on
+  the shown network through the same paths as the layer controls, and a box mirrors its layer's
+  `visible` rather than fighting the eye icon.
 - **`gui/vessel_tubes.py`** — the vessel tube mesh, display only (the graph and its diameters are
-  untouched): `vessel_tube_mesh(vectors, features)` is what `_sync_vessel_tubes` calls, reading
-  `diameter_um`, `edge_index` and `is_zero_resistance` (`gui/results.py`'s `_mark_bridges`).
-  `tubes_from_vectors` draws one closed, smooth-shaded tube per chain of vessels through degree-2
-  nodes, and through a junction whose two widest vessels carry each other straight on with every
-  other vessel there narrower (`_carried_straight_on`; drawn as two, their rounded ends overlapped
-  in a seam across a thick vessel, Harvey 2026-10-15), each ring still carrying its own vessel's
-  step so colours and hover split per edge; rounded
-  ends close it only at terminals and junctions. Mid-vessel a vessel is its own diameter; within
-  min(L/2, 2r) of each end it eases (smoothstep) to the node's radius: the length-weighted mean of
-  the two vessels at a degree-2 node, min(own, widest other) at a junction, so a wide vessel's end
-  never stands out of its narrower daughters as a ball. Drawn diameters are clipped to ½–2× the
-  length-weighted median of the chain and the vessels carrying it straight on through junctions. A
-  zero-resistance bridge is not vessel, and is drawn so: `gui/results.py` cuts its rows on the
-  vessels layer into dashes (`dash_polyline`, `BRIDGE_DASH_UM` / `BRIDGE_GAP_UM`, at least two), so
-  lines show it dashed, and the tubes leave it out of the chains -- the vessel ends cut square where
-  it meets the lumen (only the narrower: a thick centreline's end the bridge reaches stays rounded,
-  `_bridge_starts`), the thick vessel runs on through the junction the bridge made -- drawing each
-  dash as its own flat-ended piece at `BRIDGE_RADIUS_FRACTION` (½) of the narrowest vessel the
-  bridge meets; its hover says what it is (`branch_hover.BRIDGE_LINE`). Rings are spaced a third of the local
-  radius (at least three per vessel) along the centreline smoothed with the ends pinned; bends
-  tighter than 1.1 r get extra local passes, and where adjacent rings would still cross the ring's
-  radius is cut (`_FOLD_MARGIN`): voxel staircases, snapped ends and tight bends used to make the
-  tube pinch, bulge and fold. `tube_mesh(..., quality=)` is driven by the "render quality" slider
-  on a tubes layer's own controls, which only sets the sides round the tube (`TUBE_QUALITY_SIDES`);
-  the level is the session's, shared by every tubes layer. `vessel_tube_mesh(..., diameter=)` is
-  the "Tube diameter" choice, on the view panel and on the same controls (`set_tube_diameter`, also
-  the session's): `per_vessel` (default) as above, or `uniform`, every vessel `uniform_diameter_um`
-  across whatever its `diameter_um`, which stays as it was. That width is the µm box shown beside
-  the choice while it is Uniform (`set_tube_uniform_diameter`; 4 µm to start, 0.5-1000 µm).
-- **Batch run** (2026-10-19, `PLAN_batch_run.md`) — the pipeline once per segmented image in a
-  folder. `io/batch_matching.py`'s `match_batch(BatchFolders(segmented, raw=, large=, small=),
-  sizes)`: the images are the segmented folder's image files that are no mask, probability map
-  or raw image of another file there (`batch_inputs`); the raw image is read by the mask rule
-  without role words (its identifying words, channel names such as `C1-` left out, all in the
-  segmented name: `read_raw_name`); masks in the segmented folder by `find_vessel_masks`'s rule
-  (now with `folders=`/`exclude=`); a mask folder of its own says the size, so each file there
-  goes to the image sharing most of its name from the start, global unless it names a vessel
-  type (`mask_owners`: Harvey's `..._Simple Segmentation_intermediate.h5`). A blank folder is
-  the segmented one. Ties are named, never guessed (`BatchMatch.choose`, `choose_alike`).
-  `pipeline/batch.py`: `item_settings` (the image's files, every output folder in
-  `{output}/{segmented stem}/`, no mid-run pause), `check_batch` (refuses node IDs, synthetic,
-  ilastik, a single pericyte/cell/tissue file in effect; warns on coordinates),
-  `batch_preflight`. `gui/batch_run.py`'s `run_batch` runs them in turn with a fresh
-  `ResultLayers` + `StageCheckpoints` each and writes `{stem}/{stem}.haemorun`; a failure is
-  recorded and the batch goes on, `batch_summary.csv` is rewritten after every image,
-  `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
-  haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
-  [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE] [--paired-aggregate none|median|mean]]] [--exclude-section S ...] [--compare-only]`;
-  every image passes its checks or nothing runs. Its log lines carry the time
-  (`configure_console_logging(timestamps=True)`), so each step's time reads off a batch log.
-  **Conditions and the batch's statistics** (2026-10-19, `statistics/batch_comparison.py`): up
-  to two conditions, each one or more phrases (comma-separated) a file name holds, ignoring case
-  (`BatchConditions`: an image in both or neither is left out of the test; two conditions alike
-  fail the checks). Once the images are done (or cancelled), `run_batch` reads back each image
-  that ran or was skipped as done -- its `{stem}_statistics.csv` and `{stem}_branch_statistics.csv`
-  (numbers only: no Metadata, no per-node rows named by node ID, no text, lists or N/A; a branch
-  order is a section `Branch Order BO3`) -- one value per image, and writes beside the summary
-  `batch_statistics_by_image.csv` (a column per image, with its condition),
-  `batch_statistics_summary.csv` (per metric, each condition and All images: N, mean, SD, SEM,
-  median, quartiles, IQR, min, max, range, CV) and, with two conditions,
-  `batch_condition_comparison.csv`: each condition's N, median, mean and range, the difference
-  and ratio of medians (B - A), a two-sided Mann-Whitney U (one image one sample; scipy's exact
-  test for small samples without ties) with Benjamini-Hochberg q over every metric tested, the
-  smallest p the test can reach at those N (0.1 at 3 against 3: a note says no difference can
-  reach 0.05), the rank-biserial r, and Welch's t with Hedges' g beside it; a metric with fewer
-  than 2 images in a condition or one value everywhere is listed, not tested. Writing them never
-  fails the batch (`batch_run.write_statistics`). The window's Condition A/B boxes fill a
-  Condition column as typed, and its Compare statistics button (and `--compare-only`) writes
-  them from the images already in the output folder, running nothing. Images of one animal are
-  not independent samples, so the comparison is a choice (the window's Comparison menu,
-  `--paired`): independent images (above) or **paired by subject**: each image with the image
-  of the other condition whose name is most alike once the condition phrase is taken out of both
-  (Harvey, 2026-10-19: pair on the terms given, by similar names, not on one batch's naming).
-  Only images of one subject pair -- the part of the name before the phrase, separators trimmed,
-  case ignored (`28_3_d_contra_FITC` is `28_3_d`), or a `--subject-pattern` regular expression's
-  first group (`^(\d+_\d+)` reads the animal, `28_3`); within a subject one image a side pair,
-  and more are matched one to one, closest first (`BatchConditions.name_words`: the most words in
-  common from the start, then anywhere; `E14_WT_1` with `E14_KO_1`), a tie left out, never
-  guessed. `--paired-aggregate median|mean` (the window's "Several images of a subject") instead
-  pairs each subject's median or mean over all its images in a condition, metric by metric
-  (Harvey's AIA batch by animal: 3 pairs, smallest p 0.25). `BatchConditions.pairing` leaves out,
-  with its reason, every image in neither or both conditions, with no subject the pattern reads,
-  with no partner, or in a tie. The pairs (with the images in each value) and every image left
-  out go in `batch_condition_pairs.csv` (the table's Condition cell says the same as you type);
-  the comparison is then over the pairs: the Wilcoxon signed-rank test (zero
-  differences dropped) with Benjamini-Hochberg q, W+, the smallest p it can reach (2 / 2^n: 0.5
-  at 2 pairs, so nothing reaches 0.05 below 6), the matched-pairs rank-biserial r, and the paired
-  t with Cohen's dz. The summary still covers every image of each condition.
-  **Sections left out** (2026-10-20): `--exclude-section "Dead Ends"` (repeatable or
-  comma-separated; `write_batch_statistics(exclude_sections=)`, `run_batch` / `write_statistics`'s
-  keyword, `BatchSetup.exclude_sections`, the window's "Leave out sections" row) drops those
-  sections and their subsections (`Strahler Network` takes `Strahler Network > Orders > 1`;
-  ignoring case, `excluded_section`) from all three CSVs before anything is summarised or
-  tested, so the Benjamini-Hochberg q is over the metrics left; a name matching no section is
-  said in the message, and a batch records them in `batch_settings.yaml`
-  (`# batch_exclude_sections:`). For Harvey's AIA contra/ipsi batch, whose patella dead ends are
-  segmentation fragments (his P1 marks: none a real blind end): rebuilt from its per-image CSVs
-  with `exclude_sections="Dead Ends"` it gives `outputs/aia_all8`'s hand-edited CSVs byte for
-  byte, and without it the originals in `with_dead_ends/`.
-  In the panel: the Input tab's Batch run button (above the Input row) opens
-  `_widget.py`'s `_BatchRunWindow` (folders, the matched table with ticks and tie choices,
-  Check, Use this batch, Leave batch run; double-click a finished row to load its
-  `.haemorun`). While a batch is set (`batch_mode.setup`, a `gui/batch_run.BatchSetup`, panel
-  state, not settings) the six path rows it fills show "Batch run" inside the row
-  (`_show_batch_row`, from `apply_prerequisites`; the rows' values are untouched) and Run
-  pipeline runs `on_run_batch` -> `_run_batch_in_background`: nothing is drawn.
-- **`synthetic/`** (2026-10-18) — a network drawn to a previous run. `template.py`'s
-  `NetworkTemplate` is the characteristics a generator draws to and a comparison scores against:
-  the box and voxel size, the inlets and outlets by face, the boundary-node counts, per-class and
-  per-order counts, lengths, diameters and tortuosity, the daughter angle, the Murray exponent, the
-  intercapillary distance, loops, dead ends by kind. `template_from_statistics` reads a
-  `.haemorun`'s saved report through the one reader `template_from_report` (a missing section
-  raises `TemplateError` naming its `statistics_*` toggles, `SECTION_TOGGLES`); `template_from_graph`
-  measures the same sections off the graph with the statistics modules and adds per-vessel
-  `Samples`; `load_template(path, source)` is memoised on the file. `generate.py` draws it: roots on
-  the template's faces, `trees.py` grows each side one generation at a time with the order table's
-  counts exact (bifurcations, a trifurcation only when an odd count forces one), Murray exact at
-  every junction with the asymmetry fitted to the table's fall in diameter, daughter angles round
-  the template's; `bed.py` works the capillary bed's degree sequence out from the handshake lemma
-  (`degree_sequence_targets`: capillary count, loops and dead ends exact together; when they cannot
-  be, loops give, never dead ends), lays a jittered lattice, takes Delaunay candidates near the
-  template's mean chord, fills greedily, reroutes (`augment`), repairs connectivity along Delaunay
-  edges, merges degree-2 vertices, sets the dead ends nearest the faces on them; `polylines.py`
-  bends each vessel to its length with a `sin^2` envelope so it leaves its nodes along the chord
-  (the angles the statistics read); blind ends sit at their chain lengths. `validate_synthetic_graph`
-  pins the contract (int ids, `pos`/`voxels` in um, `length` the polyline's, `diameter_source=
-  "synthetic"`, no `branch_order`, no degree-2 node, `dead_end_kind` on every dead end, connected).
-  `compare.py`: exact rows (box, endpoints, tree-order counts), banded rows (counts, lengths,
-  diameters, tortuosity, loops, dead ends) and compare-only rows (capillary orders, the
-  network-wide Murray median, emergence angles, loop-length percentiles); the CSV and the report
-  section. On `tests/synthetic_fixtures.py`'s template: 54-55 of 55 banded rows within band across
-  seeds; a 10,000-vessel template draws in ~5 s. Not yet checked against a real run's template.
+  untouched): `vessel_tube_mesh(vectors, features)` is what `_sync_vessel_tubes` calls. A
+  zero-resistance bridge is not vessel and is drawn so (dashed lines, `dash_polyline`; thin flat
+  dashes among the tubes). Render quality and the tube-diameter choice (`per_vessel` or `uniform`)
+  are session-wide.
+
+### Batch runs and synthetic networks (`docs/notes/batch_run.md`, `synthetic.md`)
+
+- **Batch run** (`PLAN_batch_run.md`) — the pipeline once per segmented image in a folder.
+  `io/batch_matching.py`'s `match_batch` pairs each image with its raw image and masks by name;
+  ties are named, never guessed. `pipeline/batch.py`: `item_settings` (each image's files and its
+  own output folder), `check_batch` (refuses what cannot be per-image: node IDs, synthetic, ilastik,
+  a single pericyte/cell/tissue file), `batch_preflight`. `gui/batch_run.py`'s `run_batch` runs
+  them in turn with fresh state each, records a failure and goes on, rewrites `batch_summary.csv`
+  after every image; every image passes its checks or nothing runs. Headless:
+  `python -m haemolynx.gui.batch_run` (`batch_run_cli.py`). Conditions and the batch's statistics
+  (`statistics/batch_comparison.py`): independent images (Mann-Whitney, Benjamini-Hochberg) or
+  paired by subject (Wilcoxon), with `--exclude-section`. In the panel, a set batch is panel state
+  (`batch_mode.setup`), not settings.
+- **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
+  `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
+  (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic.
+  `validate_synthetic_graph` pins the graph contract (int ids, `pos`/`voxels` in µm, `length` the
+  polyline's, `diameter_source="synthetic"`, no degree-2 node, `dead_end_kind` on every dead end,
+  connected).
 - **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
   checked against the schema at import, so a preset cannot quietly set something that no longer
   exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.
+---
 
 ---
 
@@ -1752,6 +956,7 @@ loop runs through the mask did.
 - Force-pushing `main`/`master` or amending pushed commits unless explicitly requested.
 - Expanding scope into unrelated refactors when fixing a targeted issue.
 - Raising a release-review score without evidence in its row, or moving a check's target to make it pass (see **Release review** below).
+- Adding dated benchmarks, grid results or E14.5 numbers to this file: they go in `docs/notes/` or the matching `PLAN_*.md` (see **Key modules**).
 
 ---
 
@@ -1811,112 +1016,21 @@ Rules for agents:
 
 # Cleanup plan (TEMPORARY — delete this whole section once implemented)
 
-> **Status:** partly implemented — Phases 0, 1 and 3 are done, Phase 4 nearly (only the README
-> note is left), Phase 2 one rename of four. This is a living checklist. Tick items as PRs land, and
-> **remove this entire section** when every phase is done. Until then, treat the descriptions above
-> as the *current* state and the items below as the *target* state.
->
-> **Baseline (Windows):** the suite has grown from 1,188 to **3,794 tests collected under
-> `pytest -m "not slow"`** (4,041 in total, 166 test files) as of 2026-09-25; a fresh full-run pass
-> count has not been recorded since. Record one before starting Phase 2, and re-run it (and the
-> full `pytest`, including `slow`/`integration`) after **every** rename; no phase may reduce the
-> green count. Every behaviour change needs a test (see Testing policy above).
+> **Status:** Phases 0, 1 and 3 are done, Phase 4 all but the README note, Phase 2 one rename of
+> four. The finished items and the findings behind the plan are in `docs/notes/cleanup_plan.md`.
+> Record a full-run pass count before starting Phase 2, and re-run the full `pytest` (including
+> `slow`/`integration`) after **every** rename; no phase may reduce the green count. Tick items as
+> they land, and **remove this entire section** when every one is done.
 
-### Goals
-Remove duplication, kill dead code, give modules names that match what they do, and make the
-examples thin — without regressing the test suite. Work in small, reviewable phases on `devel`,
-running tests between each.
-
-### Findings driving this plan
-- **Two files named `automated_vessel_assignment.py`** (`io/` = mask loading, `graph/` = terminal-node
-  assignment). No shared code — just a confusing name collision.
-- **`haemodynamics/automated.py`** is FWHM diameter measurement, not “automation”.
-- ~~**`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
-  `create_merged_edge_attributes_simple` / `_full` in `__all__` — neither is imported, so
-  `from haemolynx.graph import *` raises `AttributeError`.~~ **DONE** — see Phase 1.
-- ~~**Dependency drift:** `requirements.txt` and `pyproject.toml` disagree.~~ **DONE** —
-  `requirements.txt` is deleted; `pyproject.toml` is the only source.
-- ~~**Dead code:** `examples/OLD/` (two pre-refactor scripts, imported by nothing).~~ **DONE** — deleted.
-- ~~The settings/preset system (`resistance_pipeline_settings.py` + `presets.py` + `preflight.py` +
-  `wizard.py`) is **not** duplicated — it’s a clean layered design.~~ **SUPERSEDED** — those four
-  files are gone. The constants became schema declarations in `pipeline/schema.py`, `preflight`
-  became `pipeline/checks.py`, the override engine became `parsers/cli.py` + `parsers/config.py`,
-  and all that is left beside the examples is `pipeline_presets.py`. The wizard was dropped: the
-  generated config file, which documents every setting inline, does its job.
-- **`examples/carotid_image_to_model.py`** was orphaned and could not even be imported
-  (`PLOT_DIR` undefined; `__main__` passed an argument the entry point did not take) — **fixed**:
-  it survives as a 91-line runner over `carotid_schema.py` + `carotid_config.yaml`, calling
-  `haemolynx.pipeline.run_pipeline_stages` like the other examples. Dale’s segmentation work slots
-  into its `use_ilastik_segmentation` path.
-
-### Phase 0 — Housekeeping & safety net (lowest risk)
-- [x] Delete `examples/OLD/`.
-- [x] Confirm `.gitignore` covers both `.venv/` **and** `venv/`, plus `__pycache__/`, `examples/outputs/`,
-      `examples/plots/`, `tutorials/outputs/`, `tutorials/plots/`, `tests/outputs/`, `tests/plots/`,
-      `examples/images/`. (None are tracked today — keep it that way.) All ten are listed, plus
-      `/outputs/` and `/plots/` for a run started from the repository root.
-- [x] Make dependencies single-source: `requirements.txt` deleted, `pyproject.toml` authoritative.
-      `pytest` lives in the `dev` extra only and `ipykernel` moved to a new `notebook` extra.
-- [x] Run full `pytest`. Commit.
-
-### Phase 1 — Fix the `graph/__init__.py` star-import bug — **DONE**
-- [x] Remove the duplicate `create_merged_edge_attributes` import; reconcile `__all__` with what is
-      actually imported. The phantom `_simple`/`_full` names are gone, the duplicate import is gone,
-      and `from haemolynx.graph import *` succeeds.
-- [x] Add a regression test that does `from haemolynx.graph import *` and asserts every name in
-      `__all__` is importable, and the same guard for the other subpackages. It landed as
-      `tests/test_public_api.py` (not the `test_graph_public_api.py` this plan proposed, because it
-      guards every subpackage and not just `graph`), and it also catches duplicates in `__all__` and
-      modules whose name is not a valid identifier.
-- [x] Run full `pytest`. Commit.
-
-### Phase 2 — Rename modules for clarity (mechanical, test-guarded)
-Rename + update all imports in `src/`, `examples/`, `tests/`, and the `__init__.py` re-exports.
-Keep the **public function names** the same so the API surface doesn’t move; only file/module names change.
-- [ ] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`.
-- [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`.
-- [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py`. It now has many more
-      importers than when this item was written: in `src/`, `haemodynamics/__init__.py`, `apply.py`,
-      `edt_diameter.py`, `statistics/three_dim_distances.py`, `preprocessing/segmentation_quality.py`,
-      `optimisation/__init__.py`, `fwhm_search.py`, `fwhm_candidates.py` and `gui/_widget.py`; plus
-      about eight test files (some patch `haemodynamics.automated.<name>` by string, which a plain
-      import search misses — grep for the dotted path too).
-- [x] `statistics/3D_distances.py` → `statistics/three_dim_distances.py`; the `importlib` hack in
-      `statistics/__init__.py` is gone, replaced by a normal
-      `from .three_dim_distances import ...`. `tests/test_3d_distances.py` →
-      `tests/test_three_dim_distances.py`.
-- [ ] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
-
-### Phase 3 — De-duplicate the whole-brain workflow — **DONE**
-- [x] The stage runner moved to `src/haemolynx/pipeline/` (a package: `schema`, `settings`, `checks`,
-      `stages`, `progress`), so examples share it instead of forking it.
-- [x] The pressure/boundary-flow solve and the pericyte dilation sweep moved to
-      `src/haemolynx/haemodynamics/pericyte_sweep.py`; the curve plots to
-      `src/haemolynx/visualization/dilation_curves.py`.
-- [x] `resistance_network_pipeline_for_Alice.py` (1,795 lines) and root-level `AlicePaper.py` are
-      replaced by `examples/brain_network_pipeline.py` (84 lines) plus `brain_pipeline_config.yaml`.
-      "Alice" is gone from the names; the sweep is described by what it does.
-- [x] `tests/test_alice.py` → `tests/test_pericyte_sweep.py`, driving the extracted module.
-
-### Phase 4 — Thin out the examples / consolidate config (larger, do last)
-- [x] Stage orchestration lifted into `src/haemolynx/pipeline/`; the example is now config + CLI
-      glue (1,282 → 107 lines) and `brain_network_pipeline.py` (84 lines) runs the same stages.
-- [x] Split `run_pipeline_stages` into one function per stage. `pipeline/stages.py` has eight —
-      `segment`, `skeletonise`, `build_network`, `assign_boundaries`, `assign_diameters`,
-      `build_haemodynamic_model`, `solve`, `export_results` — each taking `settings` first and the
-      previous stage's dataclass after it. A ninth, `run_perturbations`, has since joined them, and
-      `run_pipeline_stages` has grown to ~115 lines with `start_from`/`resume` for re-running from
-      a stage. Per-stage *unit* tests are still thin: `segment`, `skeletonise` and
-      `run_perturbations` have files of their own (`tests/test_segment_stage.py`,
-      `test_skeletonise_stage.py`, `test_perturbation_stage.py`), and the rest are reached through
-      `tests/test_pipeline_invariants.py` and the integration runs.
-- [ ] Add a short “preset system” note to the README (schema declarations → preset dicts → CLI/YAML
-      overrides), since the layering isn’t obvious from filenames. The README does not mention
-      presets at all today.
-- [x] ~~Populate `examples/local_presets.py` with one realistic example preset.~~ Dropped: the stub is
-      gone, and `examples/pipeline_presets.py` ships nine worked presets validated against the schema.
-
-### When done
-- [ ] Full `pytest` (incl. `slow`/`integration`) green; tutorial notebook still exports & runs.
-- [ ] Update the **Repository layout** and **Key modules** sections above to the new names, drop the
-      “Note”/misnomer caveats, and **delete this entire Cleanup plan section.**
+- [ ] **Phase 2 renames** — file/module names only, public function names unchanged; `git mv`, one
+      commit per rename, imports updated in `src/`, `examples/`, `tests/` and the `__init__.py`
+      re-exports:
+  - [ ] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`
+  - [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`
+  - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py` (many importers; some tests
+        patch `haemodynamics.automated.<name>` by string, so grep the dotted path too)
+- [ ] **Phase 4** — a short "preset system" note in the README (schema declarations → preset dicts →
+      CLI/YAML overrides); the README does not mention presets today.
+- [ ] **When done** — full `pytest` green, the tutorial notebook still exports and runs; update the
+      Repository layout and Key modules sections to the new names, drop the misnomer caveats, and
+      delete this section.
