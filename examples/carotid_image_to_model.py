@@ -1993,7 +1993,7 @@ def carotid_image_to_model(image_path: Path | str,
                         if test_G.number_of_nodes() == 0 or test_G.number_of_edges() == 0:
                             return None # Prune
                             
-                        bench_results = benchmarking.run_all_benchmarks(test_G, chunk_binary_mask, voxel_size_xyz)
+                        bench_results = benchmarking.run_all_benchmarks(test_G, chunk_binary_mask, voxel_size_xyz, metrics=auto_tuner.SKELETON_LOSS_METRICS)
                         return bench_results
 
                     best_params = auto_tuner.run_optuna_skeleton_optimization(
@@ -2066,7 +2066,7 @@ def carotid_image_to_model(image_path: Path | str,
                         return None # Prune
                         
                     # 3. Evaluate Benchmarks
-                    bench_results = benchmarking.run_all_benchmarks(test_G, binary, voxel_size_xyz)
+                    bench_results = benchmarking.run_all_benchmarks(test_G, binary, voxel_size_xyz, metrics=auto_tuner.SKELETON_LOSS_METRICS)
                     return bench_results
     
                 # Run Optuna

@@ -7,6 +7,7 @@ import optuna
 from optuna.trial import FixedTrial
 from ImageLynx.statistics.auto_tuner import (
     DEFAULT_SAMPLER_SEED,
+    SKELETON_LOSS_METRICS,
     PreprocessingObjective,
     SkeletonObjective,
     run_optuna_preprocessing_optimization,
@@ -677,3 +678,38 @@ def test_the_saved_yaml_holds_no_entropy_values_when_entropy_is_off(tmp_path: Pa
         _recording_preprocessing_eval([]), n_trials=5, output_dir=tmp_path, seed=7)
     saved = yaml.safe_load((tmp_path / "best_preprocessing_params.yaml").read_text())
     assert not SHANNON_KEYS & set(saved["PreprocessingConfig"])
+
+
+def test_skeleton_loss_metrics_run_on_a_graph_with_no_diameters():
+    """Tuner graphs come straight from the graph build, before any diameter is measured.
+
+    Centricity raises on such a graph, so the tuner asks run_all_benchmarks for the metrics
+    its loss reads, and only those.
+    """
+    import networkx as nx
+    import numpy as np
+    import ImageLynx.statistics.benchmarking as bench
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, pts=[(z, 10, 10) for z in range(20)])
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[:, 8:13, 8:13] = True
+
+    results = bench.run_all_benchmarks(G, mask, (1.0, 1.0, 1.0), metrics=SKELETON_LOSS_METRICS)
+
+    assert set(results) == set(SKELETON_LOSS_METRICS)
+
+
+def test_skeleton_loss_reads_nothing_outside_its_named_metrics():
+    full = {
+        "volumetric": {"dice_coefficient": 0.4},
+        "completeness": {"orphaned_volume_fraction": 0.3},
+        "centricity": {"mean_centricity_error_um": 9.0},
+        "topology": {"graph_fundamental_loops": 50, "terminal_node_ratio": 0.9},
+    }
+    named_only = {name: full[name] for name in SKELETON_LOSS_METRICS}
+    objective = SkeletonObjective(lambda kwargs: None)
+
+    assert objective._calculate_loss(full) == objective._calculate_loss(named_only)
+    # 0.4 Dice and 0.3 orphaned: (1 - 0.4) * 100 + 0.3 * 100.
+    assert objective._calculate_loss(named_only) == pytest.approx(90.0)

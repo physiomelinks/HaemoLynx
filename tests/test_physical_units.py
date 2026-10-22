@@ -14,6 +14,7 @@ import pytest
 from ImageLynx.graph.boundaries import select_boundary_terminal_nodes
 from ImageLynx.specimens import PROCESSING_VOXEL_UM
 from ImageLynx.statistics.benchmarking import (
+    evaluate_centerline_centricity,
     evaluate_completeness_and_overpruning,
     redilate_skeleton_to_volume,
 )
@@ -88,6 +89,24 @@ def test_evaluate_completeness_and_overpruning_round_trips_anisotropic_spacing()
     assert result["orphaned_volume_fraction"] < 0.05, (
         "tissue appears orphaned because the skeleton was drawn at the wrong coordinates: "
         f"{result['orphaned_volume_fraction']:.3f}"
+    )
+
+
+def test_evaluate_centerline_centricity_divides_physical_coordinates_by_the_spacing():
+    """Centricity reads the mask's EDT at each centreline point, so the point must be a voxel.
+
+    Truncating the physical coordinate reads the EDT at (9, 18, 18), (11, 18, 18), ... outside
+    the tube, where the distance to the wall is 0: a mean error of 4.0 um, the whole radius.
+    """
+    G = _centreline_graph(diameter_um=8.0)
+    mask = redilate_skeleton_to_volume(G, SHAPE, SPACING)
+
+    result = evaluate_centerline_centricity(G, mask, SPACING)
+
+    # On the axis the EDT reads a mean error of 0.17 um against the 4 um radius.
+    assert result["mean_centricity_error_um"] < 1.0, (
+        "centricity read the EDT away from the centreline: "
+        f"{result['mean_centricity_error_um']:.2f} um"
     )
 
 

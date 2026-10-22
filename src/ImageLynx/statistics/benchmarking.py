@@ -2,7 +2,7 @@ import logging
 import numpy as np
 import networkx as nx
 from scipy import ndimage
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, List, Optional, Sequence, Tuple
 import math
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,31 @@ def evaluate_volumetric_reconstruction(G: nx.MultiGraph, binary_mask: np.ndarray
         "reconstructed_volume_fraction": float(volume_recon / max(1, volume_mask))
     }
 
+def _edge_voxel_indices(u: Any, v: Any, key: Any, data: Dict[str, Any], shape: Tuple[int, int, int], voxel_size_xyz: Tuple[float, float, float]) -> List[Tuple[int, int, int]]:
+    """An edge's centreline points as voxel indices into a volume of `shape`.
+
+    Raises on an edge with no points, or a point outside the volume: dropping either would
+    let the metric score a centreline it never looked at.
+    """
+    pts = data.get("pts")
+    if pts is None or len(pts) == 0:
+        pts = data.get("voxels")
+    if pts is None or len(pts) == 0:
+        raise ValueError(f"Edge {(u, v, key)} has no centreline points (neither 'pts' nor 'voxels').")
+
+    vz, vy, vx = voxel_size_xyz
+    indices = []
+    for pt in pts:
+        # Physical -> voxel index; see redilate_skeleton_to_volume for the same conversion.
+        z, y, x = (int(round(pt[0] / vz)), int(round(pt[1] / vy)), int(round(pt[2] / vx)))
+        if not (0 <= z < shape[0] and 0 <= y < shape[1] and 0 <= x < shape[2]):
+            raise ValueError(
+                f"Edge {(u, v, key)} has a point {tuple(pt)} at voxel {(z, y, x)}, "
+                f"outside the volume of shape {tuple(shape)}."
+            )
+        indices.append((z, y, x))
+    return indices
+
 def evaluate_centerline_centricity(G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_xyz: Tuple[float, float, float]) -> Dict[str, float]:
     """
     Computes Euclidean Distance Transform on the mask and checks how perfectly
@@ -85,32 +110,32 @@ def evaluate_centerline_centricity(G: nx.MultiGraph, binary_mask: np.ndarray, vo
     # scipy EDT uses voxel counts. We scale by voxel size.
     sampling = (voxel_size_xyz[0], voxel_size_xyz[1], voxel_size_xyz[2])
     edt = ndimage.distance_transform_edt(binary_mask, sampling=sampling)
-    
+
     centricity_errors = []
     
     for u, v, key, data in G.edges(keys=True, data=True):
-        pts = data.get("pts")
-        if pts is None or len(pts) == 0:
-            pts = data.get("voxels")
-        if pts is None or len(pts) == 0:
-            continue
-            
-        diameter_um = data.get("fwhm_diameter_um")
-        if diameter_um is None or diameter_um <= 0:
-            continue
+        indices = _edge_voxel_indices(u, v, key, data, edt.shape, voxel_size_xyz)
+
+        # assigned_diameter_um, not fwhm_diameter_um: the frozen edt_radius path never writes
+        # the FWHM key, so reading it skipped every edge and scored a perfect 0.0.
+        diameter_um = data.get("assigned_diameter_um")
+        if diameter_um is None or not diameter_um > 0:
+            raise ValueError(
+                f"Edge {(u, v, key)} has no usable assigned_diameter_um ({diameter_um!r}); "
+                "centricity cannot compare its centreline against a radius."
+            )
             
         expected_radius = diameter_um / 2.0
         
-        for pt in pts:
-            z, y, x = int(pt[0]), int(pt[1]), int(pt[2])
-            if 0 <= z < edt.shape[0] and 0 <= y < edt.shape[1] and 0 <= x < edt.shape[2]:
-                actual_distance_to_wall = edt[z, y, x]
-                # Error is the absolute difference between the EDT ridge and the assigned radius
-                error = abs(actual_distance_to_wall - expected_radius)
-                centricity_errors.append(error)
+        for z, y, x in indices:
+            actual_distance_to_wall = edt[z, y, x]
+            # Error is the absolute difference between the EDT ridge and the assigned radius
+            error = abs(actual_distance_to_wall - expected_radius)
+            centricity_errors.append(error)
                 
     if not centricity_errors:
-        return {"mean_centricity_error_um": 0.0, "median_centricity_error_um": 0.0}
+        # An error of 0.0 would read as a perfectly centred skeleton.
+        raise ValueError("Centricity has no centreline samples: the graph has no edge points to measure.")
         
     return {
         "mean_centricity_error_um": float(np.mean(centricity_errors)),
@@ -191,17 +216,9 @@ def evaluate_completeness_and_overpruning(G: nx.MultiGraph, binary_mask: np.ndar
     
     # Create a blank volume and draw ONLY the skeleton centerline points (1 voxel thick)
     skeleton_volume = np.zeros_like(binary_mask)
-    vz, vy, vx = voxel_size_xyz
     for u, v, key, data in G.edges(keys=True, data=True):
-        pts = data.get("pts")
-        if pts is None or len(pts) == 0:
-            pts = data.get("voxels", [])
-
-        for pt in pts:
-            # Physical -> voxel index; see redilate_skeleton_to_volume for the same conversion.
-            z, y, x = (int(round(pt[0] / vz)), int(round(pt[1] / vy)), int(round(pt[2] / vx)))
-            if 0 <= z < skeleton_volume.shape[0] and 0 <= y < skeleton_volume.shape[1] and 0 <= x < skeleton_volume.shape[2]:
-                skeleton_volume[z, y, x] = True
+        for z, y, x in _edge_voxel_indices(u, v, key, data, skeleton_volume.shape, voxel_size_xyz):
+            skeleton_volume[z, y, x] = True
                 
     # Calculate EDT outward from the skeleton
     sampling = (voxel_size_xyz[0], voxel_size_xyz[1], voxel_size_xyz[2])
@@ -212,7 +229,8 @@ def evaluate_completeness_and_overpruning(G: nx.MultiGraph, binary_mask: np.ndar
     tissue_distances = distance_from_skeleton[binary_mask]
     
     if len(tissue_distances) == 0:
-        return {"orphaned_volume_fraction": 0.0}
+        # A fraction of 0.0 would read as nothing orphaned.
+        raise ValueError("Orphaned volume is undefined: the binary mask is empty.")
         
     # Any tissue voxel that is further away from the skeleton than the largest expected vessel radius
     # is considered "orphaned" (meaning a branch was pruned that shouldn't have been).
@@ -225,36 +243,33 @@ def evaluate_completeness_and_overpruning(G: nx.MultiGraph, binary_mask: np.ndar
         "max_distance_to_skeleton_um": float(np.max(tissue_distances))
     }
 
-def run_all_benchmarks(G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_xyz: Tuple[float, float, float]) -> Dict[str, Any]:
-    """Executes the complete benchmarking suite."""
+_METRIC_FUNCTIONS = {
+    "volumetric": evaluate_volumetric_reconstruction,
+    "centricity": evaluate_centerline_centricity,
+    "topology": lambda G, binary_mask, voxel_size_xyz: evaluate_topological_preservation(G, binary_mask),
+    "completeness": evaluate_completeness_and_overpruning,
+}
+BENCHMARK_METRICS = tuple(_METRIC_FUNCTIONS)
+
+def run_all_benchmarks(
+    G: nx.MultiGraph,
+    binary_mask: np.ndarray,
+    voxel_size_xyz: Tuple[float, float, float],
+    metrics: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Executes the benchmarking suite: every metric in BENCHMARK_METRICS, or only `metrics`.
+
+    A metric that raises is not caught. Catching it dropped that metric's key, and the
+    auto-tuner reads a missing key as a default score.
+    """
+    if metrics is None:
+        metrics = BENCHMARK_METRICS
+    unknown = [name for name in metrics if name not in BENCHMARK_METRICS]
+    if unknown:
+        raise ValueError(f"Unknown benchmark metric(s) {unknown}; choose from {BENCHMARK_METRICS}.")
+
     logger.info("=== Starting Skeletonization Benchmarking Suite ===")
-    
-    results = {}
-    
-    # 1. Volumetric
-    try:
-        results["volumetric"] = evaluate_volumetric_reconstruction(G, binary_mask, voxel_size_xyz)
-    except Exception as e:
-        logger.error(f"Failed Volumetric Benchmark: {e}")
-        
-    # 2. Centricity
-    try:
-        results["centricity"] = evaluate_centerline_centricity(G, binary_mask, voxel_size_xyz)
-    except Exception as e:
-        logger.error(f"Failed Centricity Benchmark: {e}")
-        
-    # 3. Topology
-    try:
-        results["topology"] = evaluate_topological_preservation(G, binary_mask)
-    except Exception as e:
-        logger.error(f"Failed Topology Benchmark: {e}")
-        
-    # 4. Completeness
-    try:
-        results["completeness"] = evaluate_completeness_and_overpruning(G, binary_mask, voxel_size_xyz)
-    except Exception as e:
-        logger.error(f"Failed Completeness Benchmark: {e}")
-        
+    results = {name: _METRIC_FUNCTIONS[name](G, binary_mask, voxel_size_xyz) for name in metrics}
     logger.info("=== Benchmarking Suite Complete ===")
     return results
 

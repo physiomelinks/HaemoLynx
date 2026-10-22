@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # noise. Pass seed=None to draw an independent search trajectory.
 DEFAULT_SAMPLER_SEED = 42
 
+# The benchmark metrics SkeletonObjective._calculate_loss reads. The skeleton tuner's callbacks
+# pass these to run_all_benchmarks: tuner graphs carry no diameters yet, and centricity raises
+# on an edge without one.
+SKELETON_LOSS_METRICS = ("volumetric", "completeness")
+
 class SkeletonObjective:
     """Optuna objective function for tuning skeletonization parameters."""
     

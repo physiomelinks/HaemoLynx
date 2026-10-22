@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import networkx as nx
 import ImageLynx.statistics.benchmarking as bench
 
@@ -114,16 +115,17 @@ def test_empty_binary_mask():
     mask = np.zeros((10, 10, 10), dtype=bool)
     voxel_size = (1.0, 1.0, 1.0)
     
-    # Should safely return 0.0 without ZeroDivisionError
+    # Dice and Jaccard of 0.0 are the worst score, so returning them is honest.
     res_vol = bench.evaluate_volumetric_reconstruction(G, mask, voxel_size)
     assert res_vol["dice_coefficient"] == 0.0
     assert res_vol["jaccard_index"] == 0.0
-    
-    res_cen = bench.evaluate_centerline_centricity(G, mask, voxel_size)
-    assert res_cen["mean_centricity_error_um"] == 0.0
-    
-    res_comp = bench.evaluate_completeness_and_overpruning(G, mask, voxel_size)
-    assert res_comp["orphaned_volume_fraction"] == 0.0
+
+    # Centricity and orphaned volume of 0.0 would read as a perfect score, so they raise.
+    with pytest.raises(ValueError, match="no centreline samples"):
+        bench.evaluate_centerline_centricity(G, mask, voxel_size)
+
+    with pytest.raises(ValueError, match="mask is empty"):
+        bench.evaluate_completeness_and_overpruning(G, mask, voxel_size)
 
 def test_advanced_preprocessing_metrics():
     """Validates the Euler Characteristic and Surface-Area-to-Volume Ratio (Compactness)."""
@@ -176,3 +178,87 @@ def test_advanced_topological_health_metrics():
     
     res_bad = bench.evaluate_topological_preservation(G, mask)
     assert res_bad["degree3_bifurcation_ratio"] == 0.0 # No degree 3 nodes anymore!
+
+POINT_METRICS = [bench.evaluate_centerline_centricity, bench.evaluate_completeness_and_overpruning]
+
+
+def _tube_and_mask():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, pts=[(z, 10, 10) for z in range(20)], assigned_diameter_um=8.0)
+    return G, bench.redilate_skeleton_to_volume(G, (20, 20, 20), (1.0, 1.0, 1.0))
+
+
+def test_centricity_measures_against_the_assigned_diameter():
+    """The frozen edt_radius path writes assigned_diameter_um, never fwhm_diameter_um."""
+    G, mask = _tube_and_mask()
+
+    results = bench.evaluate_centerline_centricity(G, mask, (1.0, 1.0, 1.0))
+
+    # On the axis the voxelised tube's EDT reads sqrt(17) = 4.12 um against a 4 um radius:
+    # an error of 0.12 um.
+    assert 0.0 < results["mean_centricity_error_um"] < 0.5
+
+
+@pytest.mark.parametrize("diameter", [None, 0.0, -2.0], ids=["missing", "zero", "negative"])
+def test_centricity_raises_on_an_edge_without_a_usable_diameter(diameter):
+    G, _ = _tube_and_mask()
+    attrs = {"fwhm_diameter_um": 8.0}  # present but not what centricity reads
+    if diameter is not None:
+        attrs["assigned_diameter_um"] = diameter
+    G.add_edge(1, 2, key=0, pts=[(z, 10, 10) for z in range(5)], **attrs)
+    mask = bench.redilate_skeleton_to_volume(G, (20, 20, 20), (1.0, 1.0, 1.0))
+
+    with pytest.raises(ValueError, match=r"\(1, 2, 0\).*assigned_diameter_um"):
+        bench.evaluate_centerline_centricity(G, mask, (1.0, 1.0, 1.0))
+
+
+@pytest.mark.parametrize("metric", POINT_METRICS, ids=lambda f: f.__name__)
+def test_point_metrics_raise_on_an_edge_with_no_points(metric):
+    G, mask = _tube_and_mask()
+    G.add_edge(1, 2, key=0, pts=[], voxels=[], assigned_diameter_um=8.0)
+
+    with pytest.raises(ValueError, match=r"\(1, 2, 0\).*no centreline points"):
+        metric(G, mask, (1.0, 1.0, 1.0))
+
+
+@pytest.mark.parametrize("metric", POINT_METRICS, ids=lambda f: f.__name__)
+def test_point_metrics_raise_on_a_point_outside_the_volume(metric):
+    G, mask = _tube_and_mask()
+    G.add_edge(1, 2, key=0, pts=[(19, 10, 10), (25, 10, 10)], assigned_diameter_um=8.0)
+
+    with pytest.raises(ValueError, match=r"\(1, 2, 0\).*outside the volume"):
+        metric(G, mask, (1.0, 1.0, 1.0))
+
+
+def test_run_all_benchmarks_lets_a_metric_error_reach_the_caller():
+    """The suite used to log each metric's error and carry on, dropping that metric's key."""
+    G = nx.MultiGraph()
+    mask = np.zeros((10, 10, 10), dtype=bool)
+
+    with pytest.raises(ValueError, match="no centreline samples"):
+        bench.run_all_benchmarks(G, mask, (1.0, 1.0, 1.0))
+
+
+def test_run_all_benchmarks_runs_only_the_named_metrics():
+    """The tuner names the two metrics its loss reads; its graphs carry no diameters yet."""
+    G, mask = _tube_and_mask()
+    del G.edges[0, 1, 0]["assigned_diameter_um"]  # centricity would raise on this graph
+
+    results = bench.run_all_benchmarks(G, mask, (1.0, 1.0, 1.0), metrics=("volumetric", "completeness"))
+
+    assert set(results) == {"volumetric", "completeness"}
+
+
+def test_run_all_benchmarks_runs_all_four_by_default():
+    G, mask = _tube_and_mask()
+
+    results = bench.run_all_benchmarks(G, mask, (1.0, 1.0, 1.0))
+
+    assert set(results) == {"volumetric", "centricity", "topology", "completeness"}
+
+
+def test_run_all_benchmarks_raises_on_an_unknown_metric_name():
+    G, mask = _tube_and_mask()
+
+    with pytest.raises(ValueError, match="'dice'"):
+        bench.run_all_benchmarks(G, mask, (1.0, 1.0, 1.0), metrics=("volumetric", "dice"))
