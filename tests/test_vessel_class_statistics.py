@@ -411,7 +411,7 @@ def test_export_writes_each_class_to_the_statistics_csv_and_the_statistics_tab(t
 
     for title in HIERARCHICAL_TITLES:
         assert f"Vessel Classes > {title},Vessel Count," in csv_text
-    assert "Vessel Classes > Capillaries,Total Length,24,microns" in csv_text
+    assert "Vessel Classes > Capillaries,Total Length,24,um," in csv_text
     report = statistics_report(G)
     assert "vessel_classes" in report["sections"]
     section = next(s for s in statistics_sections(report) if s.key == "vessel_classes")

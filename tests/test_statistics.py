@@ -932,9 +932,9 @@ def test_export_statistics_to_csv(tmp_path):
     assert output_csv.exists()
     text = output_csv.read_text(encoding="utf-8")
     assert "Section,Metric,Value,Unit,Notes" in text
-    assert "Average Edge Length,10,microns" in text
-    assert "Path Efficiency Pair Coverage,50.00%,,Fraction of all node-pairs included." in text
-    assert "nested,Community Count,2,," in text
+    assert "Average Edge Length,10,um,Total Edge Length divided by Total Edges: the mean vessel length." in text
+    assert "Path Efficiency Pair Coverage,0.5,fraction,Node pairs measured over all node pairs." in text
+    assert "nested,Community Count,2,count," in text
 
 
 def test_compute_branch_order_statistics_sorted_and_aggregated():
@@ -1061,9 +1061,9 @@ def test_export_branch_order_statistics_to_csv(tmp_path):
     assert out_csv.exists()
     text = out_csv.read_text(encoding="utf-8")
     assert (
-        "Branch Order,Edge Count,Mean Length (microns),Mean Tortuosity Index,"
+        "Branch Order,Edge Count,Mean Length (um),Mean Tortuosity Index,"
         "Mean Emergence Angle (degrees),Mean Pressure Drop (Pa),"
-        "Total Pressure Drop (Pa),Mean Diameter (microns),"
+        "Total Pressure Drop (Pa),Mean Diameter (um),"
         "Diameter Coefficient of Variation,Notes"
     ) in text
     assert (

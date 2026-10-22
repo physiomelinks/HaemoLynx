@@ -270,8 +270,8 @@ def test_statistics_csv_comparison_ignores_the_export_timestamp(tmp_path):
     by_name = {row.name: row for row in rows}
 
     assert not any("Exported At" in name for name in by_name)
-    assert by_name["Network / Total Length [microns]"].delta == pytest.approx(5.0)
-    assert by_name["Network / Total Length [microns]"].flagged is True
+    assert by_name["Network / Total Length [um]"].delta == pytest.approx(5.0)
+    assert by_name["Network / Total Length [um]"].flagged is True
     assert by_name["Metadata / Metric Count"].flagged is False
 
 

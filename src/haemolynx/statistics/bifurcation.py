@@ -675,12 +675,12 @@ def export_branch_order_statistics_to_csv(
             [
                 "Branch Order",
                 "Edge Count",
-                "Mean Length (microns)",
+                "Mean Length (um)",
                 "Mean Tortuosity Index",
                 "Mean Emergence Angle (degrees)",
                 "Mean Pressure Drop (Pa)",
                 "Total Pressure Drop (Pa)",
-                "Mean Diameter (microns)",
+                "Mean Diameter (um)",
                 "Diameter Coefficient of Variation",
                 "Notes",
             ]

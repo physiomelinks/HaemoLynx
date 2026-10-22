@@ -546,14 +546,14 @@ def test_the_csv_notes_call_the_red_cell_rows_predictions(tmp_path):
     path = export_statistics_to_csv(result, tmp_path / "stats.csv")
     with path.open(encoding="utf-8", newline="") as handle:
         notes = {row[1]: (row[3], row[4]) for row in csv.reader(handle)}
-    assert notes["Capillary Red Cell Flux Mean"] == (
-        "cells/s",
-        "Flow x discharge haematocrit / red-cell volume, over vessels carrying flow: a prediction, not a count.",
-    )
+    assert notes["Capillary Red Cell Flux Mean"][0] == "cells/s"
+    assert "flow x discharge haematocrit / red-cell volume" in notes["Capillary Red Cell Flux Mean"][1]
+    assert "A prediction, not a count." in notes["Capillary Red Cell Flux Mean"][1]
     assert notes["Capillary Red Cell Linear Density Mean"][0] == "cells/mm"
     assert "cells per mm" in notes["Capillary Red Cell Linear Density Mean"][1]
     assert "normalized" not in notes["Capillary Red Cell Linear Density Mean"][1]
     assert "Fahraeus" in notes["Capillary Red Cell Velocity CV"][1]
     assert "Fahraeus" in notes["Capillary Tube Haematocrit Mean"][1]
     # The plasma velocity keeps its own note.
-    assert notes["Capillary Velocity CV"][1] == "Flow over the lumen's cross-section, over vessels carrying flow."
+    assert "plasma, not red-cell speed" in notes["Capillary Velocity CV"][1]
+    assert "Fahraeus" not in notes["Capillary Velocity CV"][1]

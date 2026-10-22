@@ -55,6 +55,8 @@ from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
+from . import glossary
+
 logger = logging.getLogger(__name__)
 
 BY_IMAGE_FILENAME = "batch_statistics_by_image.csv"
@@ -482,17 +484,28 @@ def _wide_csv_fields():
 
 
 def read_statistics_csv(path: Path | str) -> dict[MetricKey, float]:
-    """The numbers in one ``{stem}_statistics.csv``, by (section, metric, unit)."""
+    """The numbers in one ``{stem}_statistics.csv``, by (section, metric, unit).
+
+    The metric and unit are read through the statistics glossary
+    (:func:`~haemolynx.statistics.glossary.csv_metric_and_unit`), so a file
+    written before every row had its unit lines up with one written after.
+    """
     values: dict[MetricKey, float] = {}
     with _wide_csv_fields(), Path(path).open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            section = (row.get("Section") or "").strip()
-            metric = (row.get("Metric") or "").strip()
-            if not metric or section in _SKIPPED_SECTIONS or _NODE_ID_METRIC.match(metric):
-                continue
-            value = _number(row.get("Value"))
-            if value is not None:
-                _keep(values, (section, metric, (row.get("Unit") or "").strip()), value)
+        rows = list(csv.DictReader(handle))
+    by_name = {}
+    for row in rows:
+        name, _metric, _unit = glossary.csv_metric_and_unit(row.get("Metric") or "", row.get("Unit") or "")
+        by_name[name] = row.get("Value")
+    for row in rows:
+        section = (row.get("Section") or "").strip()
+        metric = (row.get("Metric") or "").strip()
+        if not metric or section in _SKIPPED_SECTIONS or _NODE_ID_METRIC.match(metric):
+            continue
+        value = _number(row.get("Value"))
+        if value is not None:
+            _name, metric, unit = glossary.csv_metric_and_unit(metric, row.get("Unit") or "", by_name)
+            _keep(values, (section, metric, unit), value)
     return values
 
 
@@ -508,8 +521,9 @@ def read_branch_statistics_csv(path: Path | str) -> dict[MetricKey, float]:
         columns = []
         for name in header[1:]:
             unit = _UNIT.search(name)
+            unit_text = unit.group(1).strip() if unit else ""
             columns.append(
-                (_UNIT.sub("", name).strip(), unit.group(1).strip() if unit else "")
+                (_UNIT.sub("", name).strip(), glossary.canonical_unit(unit_text) or unit_text)
             )
         for row in reader:
             if not row or not row[0].strip() or row[0].lstrip().startswith("#"):

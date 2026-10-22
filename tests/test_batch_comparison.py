@@ -123,10 +123,10 @@ def test_only_numbers_are_read_from_a_statistics_csv(tmp_path):
     )
     values = read_statistics_csv(path)
     assert values == {
-        ("Core Statistics", "Total Nodes", ""): 12.0,
-        ("Core Statistics", "Total Edge Length", "microns"): 340.5,
+        ("Core Statistics", "Total Nodes", "count"): 12.0,
+        ("Core Statistics", "Total Edge Length", "um"): 340.5,
         ("Core Statistics", "Pair Coverage", ""): pytest.approx(0.25),
-        ("Strahler Network > Orders > 1", "Element Count", ""): 7.0,
+        ("Strahler Network > Orders > 1", "Element Count", "count"): 7.0,
     }
 
 
@@ -159,8 +159,8 @@ def test_each_branch_order_is_a_section(tmp_path):
     )
     values = read_branch_statistics_csv(path)
     assert values[("Branch Order BO1", "Edge Count", "")] == 9.0
-    assert values[("Branch Order BO1", "Mean Length", "microns")] == 11.5
-    assert values[("Branch Order BO1", "Mean Diameter", "microns")] == 5.0
+    assert values[("Branch Order BO1", "Mean Length", "um")] == 11.5
+    assert values[("Branch Order BO1", "Mean Diameter", "um")] == 5.0
     assert ("Branch Order BO1", "Mean Emergence Angle", "degrees") not in values
     assert not any(metric == "Notes" for _section, metric, _unit in values)
     assert not any(section.startswith("Branch Order #") for section, _m, _u in values)
@@ -285,7 +285,7 @@ def test_two_conditions_write_by_image_summary_and_comparison(tmp_path):
     ]
     assert by_image[1] == ["", "Condition", "", "WT", "WT", "WT", "KO", "KO", "KO", ""]
     length_row = next(row for row in by_image if row[1] == "Total Edge Length")
-    assert length_row[2] == "microns"
+    assert length_row[2] == "um"
     assert length_row[3:] == ["100", "110", "120", "210", "220", "230", "150"]
     assert not any(row[1] == "Path Efficiency" for row in by_image)
     assert any(row[0] == "Branch Order BO1" and row[1] == "Mean Length" for row in by_image)
@@ -647,8 +647,8 @@ def test_a_statistics_csv_with_a_field_past_csvs_default_limit_is_read(tmp_path)
         tmp_path / "a_statistics.csv",
     )
     values = read_statistics_csv(path)
-    assert values[("Core Statistics", "Total Nodes", "")] == 12.0
-    assert values[("Core Statistics", "Average Degree", "")] == 2.5
+    assert values[("Core Statistics", "Total Nodes", "count")] == 12.0
+    assert values[("Core Statistics", "Average Degree", "dimensionless")] == 2.5
     assert csv.field_size_limit() == 131_072  # put back for everyone else
 
 
@@ -661,7 +661,7 @@ def test_a_branch_statistics_csv_with_a_wide_field_is_read(tmp_path):
     )
     assert read_branch_statistics_csv(path) == {
         ("Branch Order BO1", "Edge Count", ""): 9.0,
-        ("Branch Order BO1", "Mean Length", "microns"): 11.5,
+        ("Branch Order BO1", "Mean Length", "um"): 11.5,
     }
     assert csv.field_size_limit() == 131_072
 
