@@ -204,6 +204,21 @@ def _joined(texts: list[str], braces: str) -> str:
     return f"{braces[0]}{body}, …{braces[1]} ({len(texts):,} items)"
 
 
+#: Where a label may break a word too long for the tab: after each path
+#: separator and underscore, so a file path or a setting's name wraps
+#: instead of holding the tab wider than its dock.
+_BREAK_AFTER = ("/", "\\", "_")
+ZERO_WIDTH_SPACE = "​"
+
+
+def breakable(text: str) -> str:
+    """*text* with a zero-width space after each path separator and
+    underscore, which a word-wrapping label may break at."""
+    for character in _BREAK_AFTER:
+        text = text.replace(character, character + ZERO_WIDTH_SPACE)
+    return text
+
+
 def statistics_summary(report: Mapping[str, Any] | None, statistics_tab: str) -> str:
     """The line above the buttons: what the report is, or how to get one.
     *statistics_tab* is the title of the tab the Statistics setting is on."""

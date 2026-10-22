@@ -585,6 +585,7 @@ class _StatisticsPanel:
         from qtpy.QtWidgets import QPushButton
 
         from haemolynx.gui.statistics_view import (
+            breakable,
             section_tooltip,
             statistics_sections,
             statistics_summary,
@@ -594,7 +595,7 @@ class _StatisticsPanel:
             return
         self._shown = True
         self.report = report
-        self.summary.setText(statistics_summary(report, self.statistics_tab))
+        self.summary.setText(breakable(statistics_summary(report, self.statistics_tab)))
         for widget in (*self.buttons.values(), *self.bodies.values()):
             self._sections_layout.removeWidget(widget)
             widget.setParent(None)
@@ -645,23 +646,25 @@ class _StatisticsPanel:
         from qtpy.QtCore import Qt
         from qtpy.QtWidgets import QGridLayout, QLabel, QWidget
 
+        from haemolynx.gui.statistics_view import breakable
+
         body = QWidget()
         body.setObjectName("haemolynx_statistics_rows")
         grid = QGridLayout(body)
         grid.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 6)
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(2)
-        grid.setColumnStretch(0, 3)
-        grid.setColumnStretch(1, 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
         for line, row in enumerate(rows):
-            name = QLabel(row.name)
+            name = QLabel(breakable(row.name))
             name.setWordWrap(True)
             name.setContentsMargins(ADVANCED_INDENT_PX * row.depth, 0, 0, 0)
             if row.heading:
                 name.setStyleSheet("font-weight: bold;")
                 grid.addWidget(name, line, 0, 1, 2)
                 continue
-            value = QLabel(row.value)
+            value = QLabel(breakable(row.value))
             value.setWordWrap(True)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             grid.addWidget(name, line, 0, Qt.AlignmentFlag.AlignTop)
@@ -670,6 +673,8 @@ class _StatisticsPanel:
 
     def rows_shown(self, key: str) -> list[tuple[str, str]]:
         """Section *key*'s (name, value) lines as drawn, headings with no value."""
+        from haemolynx.gui.statistics_view import ZERO_WIDTH_SPACE
+
         body = self.bodies.get(key)
         if body is None:
             return []
@@ -677,7 +682,8 @@ class _StatisticsPanel:
         lines: dict[int, list[str]] = {}
         for index in range(grid.count()):
             line, column, _rows, _columns = grid.getItemPosition(index)
-            lines.setdefault(line, ["", ""])[column] = grid.itemAt(index).widget().text()
+            text = grid.itemAt(index).widget().text().replace(ZERO_WIDTH_SPACE, "")
+            lines.setdefault(line, ["", ""])[column] = text
         return [tuple(lines[line]) for line in sorted(lines)]
 
 

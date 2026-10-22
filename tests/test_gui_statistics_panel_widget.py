@@ -19,7 +19,11 @@ from haemolynx.gui._widget import (  # noqa: E402
     settings_widget,
 )
 from haemolynx.gui.results import ResultLayers  # noqa: E402
-from haemolynx.gui.statistics_view import section_tooltip, statistics_sections  # noqa: E402
+from haemolynx.gui.statistics_view import (  # noqa: E402
+    ZERO_WIDTH_SPACE,
+    section_tooltip,
+    statistics_sections,
+)
 from haemolynx.pipeline.stages import HAEMODYNAMICS_SECTION, STATISTICS_REPORT  # noqa: E402
 from test_gui_view_panel import _left_tabs, _settle  # noqa: E402
 
@@ -71,6 +75,27 @@ def test_the_statistics_tab_is_second_on_the_left_and_empty_before_a_run(make_na
     assert stats.buttons == {}
     assert stats.summary.text().startswith("No statistics yet")
     assert "9. Additional measurements" in stats.summary.text()
+
+
+def test_a_long_csv_path_and_every_open_section_fit_the_dock(make_napari_viewer):
+    """The summary's path wraps and the rows' values sit halfway across, so
+    nothing holds the panel wider than its dock (an unbroken path did, and
+    the right of every value was cut off)."""
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    stats = panel._haemolynx_statistics_panel
+    deep = "\\".join(["C:", "Users", "someone", "Documents", "GitHub", "ImageLynx"] + ["outputs"] * 8)
+    report = dict(FIRST, csv=deep + "\\a_very_long_run_name_statistics.csv")
+    _show_network_with(panel, viewer, report)
+    for key in list(stats.buttons):
+        stats.toggle(key, True)
+    _settle()
+
+    scroll = panel._haemolynx_statistics_dock.widget()
+    assert stats.widget.minimumSizeHint().width() <= scroll.viewport().width()
+    assert stats.widget.width() <= scroll.viewport().width()
+    grid = stats.bodies["basic"].layout()
+    assert grid.columnStretch(0) == grid.columnStretch(1)
 
 
 def test_a_button_per_section_each_hiding_its_results_until_pressed(make_napari_viewer):
@@ -209,7 +234,8 @@ def test_a_real_run_fills_the_tab_and_a_rerun_of_the_statistics_updates_it(
     keys = list(stats.buttons)
     assert {"basic", "murray_law", "dead_ends", "branch_orders"} <= set(keys)
     assert keys.index("basic") < keys.index("murray_law") < keys.index("branch_orders")
-    assert stats.summary.text().endswith(f"Saved to {stats.report['csv']}")
+    summary = stats.summary.text().replace(ZERO_WIDTH_SPACE, "")
+    assert summary.endswith(f"Saved to {stats.report['csv']}")
     assert Path(stats.report["csv"]).name == "seven_vessel_noisy_3d_statistics.csv"
     assert Path(stats.report["csv"]).is_file()
     stats.buttons["basic"].click()

@@ -10,7 +10,9 @@ from haemolynx.gui.statistics_view import (
     MAX_LIST_ITEMS,
     MAX_ROWS,
     OTHER_SECTIONS,
+    ZERO_WIDTH_SPACE,
     StatisticRow,
+    breakable,
     section_title,
     section_tooltip,
     statistics_report,
@@ -115,6 +117,16 @@ def test_no_report_no_buttons_and_a_note_saying_where_statistics_are_turned_on()
         note = statistics_summary(report, TAB)
         assert note.startswith("No statistics yet")
         assert TAB in note
+
+
+def test_a_path_or_a_name_with_underscores_may_break_after_each_separator():
+    """A word-wrapping label breaks only between words: an unbroken CSV path
+    held the Statistics tab wider than its dock, cutting its right side off."""
+    z = ZERO_WIDTH_SPACE
+    assert breakable(r"C:\out\run_statistics.csv") == f"C:\\{z}out\\{z}run_{z}statistics.csv"
+    assert breakable("out/run.csv") == f"out/{z}run.csv"
+    assert breakable("Total Nodes") == "Total Nodes"
+    assert breakable("greedy_modularity").replace(z, "") == "greedy_modularity"
 
 
 def test_the_summary_counts_the_results_and_says_the_mode_and_the_csv():
