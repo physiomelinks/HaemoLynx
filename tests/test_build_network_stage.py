@@ -32,9 +32,6 @@ def _settings(tmp_path: Path, **overrides) -> dict:
             "input_path": tmp_path / "input.tif",
             "vtk_output_prefix": tmp_path / "out" / "run",
             "plot_dir": tmp_path / "plots",
-            # These toy networks are trees whose ends lie inside the image: on by
-            # default, remove_interior_dead_ends would take them whole.
-            "remove_interior_dead_ends": False,
             **overrides,
         }
     )
@@ -503,7 +500,7 @@ def test_the_clean_up_after_the_recovery_reads_its_own_hole_limit(tmp_path, monk
     assert holes[-1] == 4.0
     assert set(holes[:-1]) == {settings["short_loop_keep_hole_over_um"]}
     assert SCHEMA["recovery_short_loop_keep_hole_over_um"].default == 5.3
-    assert SCHEMA["remove_interior_dead_ends"].default is True
+    assert SCHEMA["remove_interior_dead_ends"].default is False
 
 
 def test_the_low_ram_option_removes_and_recovers_the_same(tmp_path):

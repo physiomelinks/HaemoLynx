@@ -887,7 +887,9 @@ are only caught locally.
   `G.graph["pieces_without_junction_removed"]` / `_um`). Harvey's AIA patella grid P1
   (`outputs/patella_dead_end_review/`) marked 11 of 14 such pieces specks and 3 real vessel the
   segmentation cut off, and none of 30 patella dead ends a real blind end.
-  `remove_interior_dead_ends` (Graph tab, **on by default** since 2026-10-22, Harvey;
+  `remove_interior_dead_ends` (Graph tab, off by default -- on from 2026-10-22, turned off
+  again the same day by Harvey: on the nerve test crop it took 26 chains, 129 -> 87 vessels and
+  5,477 -> 4,404 um, and the seven-vessel fixture 10 vessels -> 1;
   `recovery_short_loop_keep_hole_over_um`, 5.3 um, behind the same Advanced button;
   `stages._remove_and_recover_interior_dead_ends`, after `smooth_straight_steps` and before
   the junctionless pieces): every interior dead end's chain (`stops_short`, `unknown`,

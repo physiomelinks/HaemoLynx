@@ -509,9 +509,6 @@ def _stage_settings(tmp_path: Path, mask_path: Path, **overrides) -> dict:
             "vtk_output_prefix": tmp_path / "run" / "network",
             "plot_dir": tmp_path / "plots",
             "do_skeletonize": True,
-            # These toy networks are trees whose ends lie inside the image: on by
-            # default, remove_interior_dead_ends would take them whole.
-            "remove_interior_dead_ends": False,
             **overrides,
         }
     )

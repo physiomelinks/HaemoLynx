@@ -2158,8 +2158,8 @@ def build_network(
                 radius_at=radius_at,
             )
         # Interior dead ends out, the mask they leave uncovered recovered as
-        # vessels joined at both ends, and the clean-up run again (on by
-        # default: Harvey's grids G5, L1 and L2, 2026-10-21).
+        # vessels joined at both ends, and the clean-up run again (Harvey's
+        # grids G5, L1 and L2, 2026-10-21; off by default).
         if (
             settings.get("remove_interior_dead_ends")
             and lumen_cleanup is not None

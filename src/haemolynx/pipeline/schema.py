@@ -3211,7 +3211,7 @@ SCHEMA = Schema(
         Setting(
             name="remove_interior_dead_ends",
             kind="bool",
-            default=True,
+            default=False,
             help=(
                 "At the end of graph building, remove every dead end inside the image "
                 "(classed stops short, broken, artefact or unknown: not one leaving the "
@@ -3222,7 +3222,8 @@ SCHEMA = Schema(
                 "it leaves. Harvey's marks called most interior dead ends not a vessel "
                 "(grids G1-G3, P1, G5); on E14.5 they were 17% of the network and carried "
                 "no flow; recovery drew 6.5 mm back as vessels joined at both ends, 8.0 mm "
-                "having gone (before its clean-up). On by default since 2026-10-21 (Harvey). "
+                "having gone (before its clean-up). Fitted on E14.5 alone, so off by "
+                "default: on the nerve test crop it took a fifth of the network's length. "
                 "A network with no loop and no vessel leaving the image goes whole. No "
                 "effect without the segmented mask or with bridge_require_mask_support off"
             ),

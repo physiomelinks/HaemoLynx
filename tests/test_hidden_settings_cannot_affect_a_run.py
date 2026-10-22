@@ -177,9 +177,6 @@ def _base_values(tmp_dir: Path, **extra) -> dict:
             "input_path": tmp_dir / "input.tif",
             "vtk_output_prefix": tmp_dir / "out" / "run",
             "plot_dir": tmp_dir / "plots",
-            # These toy networks are trees whose ends lie inside the image: on by
-            # default, remove_interior_dead_ends would take them whole.
-            "remove_interior_dead_ends": False,
         }
     )
     values.update(extra)
