@@ -82,6 +82,17 @@ _BRANCH_ID_LINE = "branchID: {branch_id}"
 #: chosen: what its dashes are.
 BRIDGE_LINE = "zero-resistance bridge: artificial, inside a thick vessel's lumen"
 
+#: What ``flow_solution`` reads on a solved vessel between an open end the
+#: solve gave a boundary condition and its junction, by whether blood enters
+#: the network there (*fed*) or leaves it (*drained*); ``{model}`` is the
+#: run's ``open_end_model``. Its flow is set by that condition, not by an inlet
+#: or outlet (Harvey, 2026-10-21: arrows on dead ends read as a fault).
+OPEN_END_FLOW_TEXT = {
+    "fed": "Solved: fed through an open end ({model})",
+    "drained": "Solved: drains through an open end ({model})",
+    None: "Solved: through an open end ({model})",
+}
+
 #: Pickup radius in data coordinates (µm). Matches the old midpoint-circle
 #: diameter of 2 so a branch is still easy to hit, but the target is the
 #: polyline rather than a marker beside it.
@@ -167,6 +178,49 @@ def _metric_value(
     return number
 
 
+def open_end_chain_text(graph: Any) -> dict[tuple[Any, Any, Any], str]:
+    """``flow_solution`` text for the vessels from each open end the solve
+    gave a condition (``G.graph["open_end_conditions"]``) to its junction,
+    keyed ``(u, v, key)`` both ways round; empty for a graph with none."""
+    from haemolynx.graph.dead_ends import chain_to_junction
+    from haemolynx.haemodynamics.open_ends import GRAPH_RECORD, OpenEndConditions
+
+    graph_record = getattr(graph, "graph", {}).get(GRAPH_RECORD)
+    conditions = OpenEndConditions.from_record(graph_record)
+    if not conditions or not getattr(graph, "is_multigraph", lambda: False)():
+        return {}
+    texts: dict[tuple[Any, Any, Any], str] = {}
+    for tip in conditions.nodes:
+        if tip not in graph or graph.degree(tip) != 1:
+            continue
+        nodes, edges = chain_to_junction(graph, tip)
+        side = None
+        try:
+            drop = float(graph.nodes[tip]["pressure"]) - float(graph.nodes[nodes[-1]]["pressure"])
+            if np.isfinite(drop) and drop != 0.0:
+                side = "fed" if drop > 0.0 else "drained"
+        except (KeyError, TypeError, ValueError, IndexError):
+            pass
+        text = OPEN_END_FLOW_TEXT[side].format(model=conditions.model)
+        for a, b, key in edges:
+            texts[(a, b, key)] = texts[(b, a, key)] = text
+    return texts
+
+
+def node_end_text(graph: Any, node: Any) -> str:
+    """What a dead end is, for its node's hover: ``open end`` where it leaves
+    the image (:func:`~haemolynx.graph.dead_ends.node_leaves_image`), else
+    ``dead end`` with its kind; empty for a node that is no dead end."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, node_leaves_image
+
+    if node not in graph or graph.degree(node) != 1:
+        return ""
+    if node_leaves_image(graph, node):
+        return "open end: leaves the image"
+    kind = graph.nodes[node].get(DEAD_END_KIND)
+    return f"dead end: {str(kind).replace('_', ' ')}" if kind else "dead end"
+
+
 def available_branch_hover_metrics(graph: Any) -> tuple[str, ...]:
     """Optional metrics this graph can offer, in declared order.
 
@@ -224,11 +278,13 @@ def format_node_tooltip(
     position: Sequence[float],
     degree: Any = None,
     pressure: Any = None,
+    end: Any = None,
 ) -> str:
     """Hover text for one graph node: its ID first, as the node ID lists take it.
 
-    Then how many vessels meet there (an open end is where a vessel ends, the
-    kind of node an inlet or outlet usually is), its (z, y, x) position in
+    Then how many vessels meet there, and at a dead end what it is (*end*,
+    :func:`node_end_text`: an open end leaves the image, any other is a dead
+    end -- every one used to read "open end"), its (z, y, x) position in
     microns, and its pressure once the network is solved.
     """
     lines = [f"Node ID: {node_id}"]
@@ -237,7 +293,11 @@ def format_node_tooltip(
     except (TypeError, ValueError):
         count = None
     if count is not None:
-        lines.append(f"Vessels: {count}" + (" (open end)" if count == 1 else ""))
+        if count == 1:
+            text = str(end).strip() if isinstance(end, str) else ""
+            lines.append(f"Vessels: 1 ({text or 'dead end'})")
+        else:
+            lines.append(f"Vessels: {count}")
     z, y, x = (float(v) for v in list(position)[-3:])
     lines.append(f"z, y, x: {z:.1f}, {y:.1f}, {x:.1f} um")
     try:
@@ -292,6 +352,7 @@ def branch_hover_rows(
     tooltips: list[str] = []
     bridges: list[bool] = []
     columns: dict[str, list[Any]] = {metric: [] for metric in BRANCH_HOVER_METRICS}
+    open_end_text = open_end_chain_text(graph)
 
     for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
         try:
@@ -303,6 +364,8 @@ def branch_hover_rows(
             metric: _metric_value(graph, u, v, data, metric)
             for metric in BRANCH_HOVER_METRICS
         }
+        if values["flow_solution"] == FLOW_SOLUTION_TEXT[True] and (u, v, _key) in open_end_text:
+            values["flow_solution"] = open_end_text[(u, v, _key)]
         branch_ids.append(branch_id)
         bridges.append(bool(data.get(IS_ZERO_RESISTANCE)))
         tooltips.append(format_branch_tooltip(branch_id, values, chosen, bridge=bridges[-1]))

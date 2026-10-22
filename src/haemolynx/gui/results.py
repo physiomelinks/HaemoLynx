@@ -1165,6 +1165,14 @@ def available_edge_columns(
     return present
 
 
+def node_end_texts(graph: Any, ids: Sequence[Any]) -> np.ndarray:
+    """Each node's dead-end text for its hover (``gui.branch_hover.node_end_text``:
+    an open end leaving the image, another dead end and its kind, or empty)."""
+    from haemolynx.gui.branch_hover import node_end_text
+
+    return np.asarray([node_end_text(graph, node) for node in ids], dtype=object)
+
+
 def node_points(
     graph: Any, node_ids: Sequence[Any] | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1317,16 +1325,17 @@ def _flow_direction_drawable_edge_index(graph: Any) -> np.ndarray:
     If a later arrow-geometry step drops an edge, the caller must compare
     lengths before attaching hover columns.
     """
-    from haemolynx.visualization.flow_direction import edge_flow_direction_sign
+    from haemolynx.visualization.flow_direction import edge_flow_direction_sign, flow_arrow_floor
 
     kept: list[int] = []
     drawable = 0
+    floor = flow_arrow_floor(graph)
     for _u, _v, _key, data in _iter_edges(graph):
         try:
             edge_polyline(graph, _u, _v, data)
         except ValueError:
             continue
-        if edge_flow_direction_sign(data) is not None:
+        if edge_flow_direction_sign(data, min_abs_flow=floor) is not None:
             kept.append(drawable)
         drawable += 1
     return np.asarray(kept, dtype=int)
@@ -1739,7 +1748,7 @@ class ResultLayers:
                 name=NODES,
                 data=points,
                 features={
-                    "node_id": ids,
+                    "node_id": ids, "end": node_end_texts(graph, ids),
                     "degree": degrees,
                     "pressure": np.full(len(ids), np.nan),
                 },
@@ -1920,7 +1929,7 @@ class ResultLayers:
                     # vessel columns are: napari's layer controls read the
                     # column list once, so a column the solve adds later would
                     # never reach the dropdown on the left.
-                    features={"node_id": ids, "degree": degrees,
+                    features={"node_id": ids, "end": node_end_texts(graph, ids), "degree": degrees,
                               "pressure": np.full(len(ids), np.nan)},
                     colour_by="degree", colour_kind="continuous",
                     contrast_limits=_limits(degrees),
@@ -1998,7 +2007,7 @@ class ResultLayers:
                         name=NODES,
                         data=points,
                         features={
-                            "node_id": ids,
+                            "node_id": ids, "end": node_end_texts(self._graph, ids),
                             "degree": degrees,
                             "pressure": np.full(len(ids), np.nan),
                         },
@@ -2019,6 +2028,7 @@ class ResultLayers:
                         data=np.empty((0, 3), dtype=float),
                         features={
                             "node_id": np.asarray([], dtype=object),
+                            "end": np.asarray([], dtype=object),
                             "degree": np.asarray([], dtype=float),
                             "pressure": np.asarray([], dtype=float),
                         },
@@ -2241,7 +2251,7 @@ class ResultLayers:
                 layers.append(
                     LayerSpec(
                         kind="points", name=NODES, data=points,
-                        features={"node_id": ids, "pressure": values,
+                        features={"node_id": ids, "end": node_end_texts(self._graph, ids), "pressure": values,
                                   "degree": np.asarray(
                                       [self._graph.degree(n) for n in ids], dtype=float)},
                         colour_by="pressure", colour_kind="continuous",
@@ -2348,7 +2358,7 @@ class ResultLayers:
                     kind="points",
                     name=nodes_name,
                     data=points,
-                    features={"node_id": ids, "pressure": pressures,
+                    features={"node_id": ids, "end": node_end_texts(graph, ids), "pressure": pressures,
                               "degree": np.asarray(
                                   [graph.degree(node_id) for node_id in ids],
                                   dtype=float)},

@@ -223,7 +223,7 @@ def test_flow_direction_components_finite_in_features():
     graph.add_edge(
         0, 1, key=0,
         voxels=[[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]],
-        flow_signed=1e-16, flow_abs=1e-16,
+        flow_signed=1e-6, flow_abs=1e-6,  # small, but above the arrow floor
     )
     graph.add_edge(
         1, 2, key=0,
@@ -765,3 +765,26 @@ def test_colour_by_change_resets_colormap_to_the_column_default(make_napari_view
     controls._haemolynx_feature.native.setCurrentText("flow_dir_rgb")
     assert layer.edge_color_mode == "direct"
     assert controls._haemolynx_colormap.shown is False
+
+
+def test_no_arrow_on_a_vessel_whose_flow_is_below_the_carrying_floor():
+    """A flow whose sign is rounding gets no arrow. The floor is the
+    statistics' own for carrying flow."""
+    from haemolynx.gui.results import _flow_direction_drawable_edge_index
+    from haemolynx.statistics.flux_heterogeneity import CARRYING_FLOOR_FRACTION
+    from haemolynx.visualization.flow_direction import flow_arrow_floor
+
+    graph = nx.MultiGraph()
+    for node, x in enumerate((0.0, 5.0, 10.0, 15.0)):
+        graph.add_node(node, pos=np.array([0.0, 0.0, x]))
+    for u, flow in ((0, 1e-9), (1, 1e-20), (2, -5e-19)):  # the floor: 1e-18
+        graph.add_edge(
+            u, u + 1, key=0, voxels=[graph.nodes[u]["pos"], graph.nodes[u + 1]["pos"]],
+            flow_signed=flow, flow_abs=abs(flow),
+        )
+
+    vectors, features = flow_direction_vectors(graph)
+
+    assert flow_arrow_floor(graph) == pytest.approx(CARRYING_FLOOR_FRACTION * 1e-9)
+    assert len(vectors) == 1 and features["flow_signed"].tolist() == [1e-9]
+    assert _flow_direction_drawable_edge_index(graph).tolist() == [0], "hover rows match the arrows"

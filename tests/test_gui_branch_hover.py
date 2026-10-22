@@ -618,10 +618,88 @@ def test_flow_direction_layer_carries_the_same_tooltip_table():
 def test_a_node_tooltip_leads_with_its_id():
     from haemolynx.gui.branch_hover import format_node_tooltip
 
-    assert format_node_tooltip(3316, (214.0, 5.26, 2.94), degree=1.0).splitlines() == [
-        "Node ID: 3316", "Vessels: 1 (open end)", "z, y, x: 214.0, 5.3, 2.9 um",
+    assert format_node_tooltip(
+        3316, (214.0, 5.26, 2.94), degree=1.0, end="open end: leaves the image"
+    ).splitlines() == [
+        "Node ID: 3316", "Vessels: 1 (open end: leaves the image)", "z, y, x: 214.0, 5.3, 2.9 um",
     ]
     assert format_node_tooltip("7", (1, 2, 3), degree=3, pressure=float("nan")).splitlines() == [
         "Node ID: 7", "Vessels: 3", "z, y, x: 1.0, 2.0, 3.0 um",
     ]
     assert format_node_tooltip(7, (1, 2, 3), pressure=1234.5).splitlines()[-1].startswith("Pressure: ")
+
+
+# --- open ends and dead ends -----------------------------------------------------
+
+
+def _network_with_an_open_end_and_a_blind_end(tip_pressure: float) -> nx.MultiGraph:
+    """Inlet 0 and outlet 2 meet at 1; an open end 4 (leaving the image, given
+    a condition) hangs off 1 through 3, and a blind end 5 too."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND
+    from haemolynx.graph.prune import FLOW_SOLVED, FLOW_STATE
+    from haemolynx.haemodynamics.open_ends import GRAPH_RECORD, OpenEndConditions
+
+    pos = {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 5, 10), 4: (0, 10, 10), 5: (0, -5, 10)}
+    pressure = {0: 4500.0, 1: 3000.0, 2: 1000.0, 3: (3000.0 + tip_pressure) / 2, 4: tip_pressure, 5: 3000.0}
+    G = nx.MultiGraph()
+    for node, p in pos.items():
+        G.add_node(node, pos=tuple(float(c) for c in p), pressure=pressure[node])
+    for u, v in [(0, 1), (1, 2), (1, 3), (3, 4), (1, 5)]:
+        blind = v == 5
+        G.add_edge(
+            u, v, voxels=[G.nodes[u]["pos"], G.nodes[v]["pos"]], length=5.0,
+            flow_abs=0.0 if blind else 1e-12, flow_signed=0.0 if blind else 1e-12,
+            **{FLOW_SOLVED: not blind, FLOW_STATE: "blind_end" if blind else "solved"},
+        )
+    G.nodes[4][DEAD_END_KIND] = "leaves_image"
+    G.nodes[5][DEAD_END_KIND] = "stops_short"
+    G.graph[GRAPH_RECORD] = OpenEndConditions(model="estimated", to_outlet={4: 1e-15}).to_record()
+    return G
+
+
+@pytest.mark.parametrize(
+    "tip_pressure, side", [(2000.0, "drains"), (3500.0, "fed")], ids=["draining", "feeding"]
+)
+def test_the_vessels_to_an_open_end_say_their_flow_is_set_there(tip_pressure, side):
+    """Harvey (2026-10-21): arrows on dead-end vessels read as a fault. Those
+    vessels end at an open end the solve gave a pressure, and their hover
+    said only "Solved"."""
+    from haemolynx.gui.branch_hover import branch_hover_rows
+
+    G = _network_with_an_open_end_and_a_blind_end(tip_pressure)
+
+    _ids, features = branch_hover_rows(G, ["flow_solution"])
+
+    text = dict(zip([(u, v) for u, v, _k in G.edges(keys=True)], features["flow_solution"]))
+    through = f"Solved: {side} through an open end (estimated)"
+    assert text[(1, 3)] == text[(3, 4)] == through
+    assert text[(0, 1)] == text[(1, 2)] == "Solved"
+    assert text[(1, 5)] == "Unsolved: behind a dead end"
+
+
+def test_a_graph_without_open_end_conditions_keeps_solved():
+    from haemolynx.gui.branch_hover import branch_hover_rows
+    from haemolynx.haemodynamics.open_ends import GRAPH_RECORD
+
+    G = _network_with_an_open_end_and_a_blind_end(2000.0)
+    del G.graph[GRAPH_RECORD]
+
+    _ids, features = branch_hover_rows(G, ["flow_solution"])
+
+    assert sorted(set(features["flow_solution"])) == ["Solved", "Unsolved: behind a dead end"]
+
+
+def test_only_a_dead_end_leaving_the_image_is_called_an_open_end():
+    """Every degree-1 node's hover said "(open end)", blind ends included."""
+    from haemolynx.gui.branch_hover import format_node_tooltip, node_end_text
+    from haemolynx.gui.results import node_end_texts
+
+    G = _network_with_an_open_end_and_a_blind_end(2000.0)
+
+    assert list(node_end_texts(G, [1, 4, 5])) == [
+        "", "open end: leaves the image", "dead end: stops short",
+    ]
+    assert format_node_tooltip(5, (0, -5, 10), degree=1, end=node_end_text(G, 5)).splitlines()[1] == (
+        "Vessels: 1 (dead end: stops short)"
+    )
+    assert format_node_tooltip(5, (0, -5, 10), degree=1).splitlines()[1] == "Vessels: 1 (dead end)"

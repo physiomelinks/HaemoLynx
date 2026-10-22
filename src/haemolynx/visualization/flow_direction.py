@@ -23,6 +23,7 @@ from haemolynx.visualization.geometry import edge_polyline
 
 __all__ = [
     "edge_flow_direction_sign",
+    "flow_arrow_floor",
     "edge_flow_arrow_zyx",
     "edge_flow_direction_columns",
     "flow_direction_vectors",
@@ -39,6 +40,7 @@ def edge_flow_direction_sign(
     signed_flow_attr: str = "flow_signed",
     direction_attr: str = "edge_direction",
     positive_flow_means_u_to_v: bool = True,
+    min_abs_flow: float = 0.0,
 ) -> Optional[int]:
     """Infer edge direction sign (+1 for u->v, -1 for v->u, None unknown).
 
@@ -47,7 +49,9 @@ def edge_flow_direction_sign(
     2) string labels on ``direction_attr`` (e.g. ``u_to_v`` / ``v_to_u``)
 
     None for a vessel the solve left unsolved (``FLOW_SOLVED`` False): it
-    carries no flow, so it has no direction.
+    carries no flow, so it has no direction. None too for a numeric flow no
+    larger than *min_abs_flow* (:func:`flow_arrow_floor`): its sign is the
+    solve's rounding, not a direction.
     """
     if edge_data.get(FLOW_SOLVED) is False:
         return None
@@ -55,6 +59,8 @@ def edge_flow_direction_sign(
     if flow_val is not None:
         try:
             flow_float = float(flow_val)
+            if np.isfinite(flow_float) and abs(flow_float) <= float(min_abs_flow):
+                return None
             if np.isfinite(flow_float) and flow_float != 0.0:
                 if flow_float > 0.0:
                     return 1 if positive_flow_means_u_to_v else -1
@@ -274,6 +280,18 @@ def edge_flow_direction_columns(
     }
 
 
+def flow_arrow_floor(graph: Any) -> float:
+    """The flow (m^3/s) a vessel must exceed to get an arrow: the statistics'
+    own floor for carrying flow
+    (:func:`haemolynx.statistics.flux_heterogeneity.carrying_floor`, 1e-9 of
+    the network's largest), below which a flow's sign is the solve's rounding.
+    On E14.5 (2026-10-21) it hides none: the least flow, 1.7e-20 m^3/s at an
+    open end, is 1.6e-8 of the largest."""
+    from haemolynx.statistics.flux_heterogeneity import carrying_floor
+
+    return carrying_floor(graph)
+
+
 def flow_direction_vectors(
     graph: Any,
     *,
@@ -284,7 +302,8 @@ def flow_direction_vectors(
     arrow_offset_scale: float = 0.08,
     flow_abs_attr: str = "flow_abs",
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    """One mid-edge arrow per directed edge, plus features for colouring.
+    """One mid-edge arrow per directed edge carrying flow above
+    :func:`flow_arrow_floor`, plus features for colouring.
 
     Returns
     -------
@@ -298,6 +317,7 @@ def flow_direction_vectors(
         3D RGB direction map). Empty dict when there are no arrows.
     """
     directed: list[tuple[np.ndarray, int, float, float]] = []
+    floor = flow_arrow_floor(graph)
     for u, v, _key, data in _iter_edges(graph):
         try:
             points = edge_polyline(graph, u, v, data)
@@ -308,6 +328,7 @@ def flow_direction_vectors(
             signed_flow_attr=signed_flow_attr,
             direction_attr=direction_attr,
             positive_flow_means_u_to_v=positive_flow_means_u_to_v,
+            min_abs_flow=floor,
         )
         if direction_sign is None:
             continue

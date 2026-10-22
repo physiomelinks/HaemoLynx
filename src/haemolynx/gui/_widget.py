@@ -5946,7 +5946,7 @@ def _show_node_tooltip(layer, index: int) -> bool:
         position = np.asarray(layer.data[int(index)], dtype=float)
     except (IndexError, KeyError, TypeError, ValueError):
         return False
-    extra = {name: features[name][int(index)] for name in ("degree", "pressure")
+    extra = {name: features[name][int(index)] for name in ("degree", "pressure", "end")
              if name in features}
     QToolTip.showText(QCursor.pos(), format_node_tooltip(node_id, position, **extra))
     return True

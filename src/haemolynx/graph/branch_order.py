@@ -961,6 +961,30 @@ def assign_vessel_branch_orders(
             MissingSmallVesselAssignmentWarning,
             stacklevel=2,
         )
+    elif expects_hierarchical and not use_hierarchical:
+        # Without strict assignment this fell back in silence: small masks
+        # finding no venule boundary node left a run with no Art tier either.
+        empty = [
+            name
+            for name, nodes in (
+                ("outlet_nodes", outlet_nodes),
+                ("arteriole_boundary_nodes", arteriole_boundary_nodes),
+                ("venule_boundary_nodes", venule_boundary_nodes),
+            )
+            if not nodes
+        ]
+        warnings.warn(
+            "Arteriole and venule boundary nodes were expected (small-vessel masks or "
+            f"a manual pick), but {', '.join(empty)} came out empty, so there is no "
+            "Art*/Ven* tier on either side: "
+            + (
+                "Large_Art/Large_Ven along the large masks and capillary B* orders beside them."
+                if large_tier_only
+                else "capillary B* orders from the inlets only."
+            ),
+            MissingSmallVesselAssignmentWarning,
+            stacklevel=2,
+        )
 
     if use_hierarchical:
         branch_results = assign_hierarchical_branch_orders(

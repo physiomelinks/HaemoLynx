@@ -303,7 +303,8 @@ def test_hovering_a_node_shows_its_id_before_the_vessel_under_it(make_napari_vie
         "Node ID: 1", "Vessels: 2", "z, y, x: 10.0, 0.0, 0.0 um",
     ]
     _branch_hover_viewer_mouse_move(viewer, _fake_event((30.0, 0.0, 0.0)))
-    assert shown[-1].splitlines()[:2] == ["Node ID: 3", "Vessels: 1 (open end)"]
+    # A dead end the graph never classed as leaving the image is no open end.
+    assert shown[-1].splitlines()[:2] == ["Node ID: 3", "Vessels: 1 (dead end)"]
 
     # Between nodes, the vessel.
     _branch_hover_viewer_mouse_move(viewer, _fake_event((15.0, 0.0, 0.0)))

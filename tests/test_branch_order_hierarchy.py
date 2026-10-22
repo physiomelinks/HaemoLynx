@@ -1203,3 +1203,23 @@ def test_the_large_tier_follows_the_large_masks_alone_through_a_run(tmp_path):
     ]
     assert [label("a1", "s1"), label("s1", "w1"), label("w1", "v1")] == ["B01", "B02", "B03"]
     assert [label("a2", "c"), label("c", "v2")] == ["B01", "B02"]
+
+
+def test_small_masks_finding_no_venule_boundary_node_warn_what_is_left():
+    """Without strict assignment the run fell back in silence, and lost the
+    Art tier the arteriole side had found too."""
+    G, nodes = _capillaries_from_large_arteriole_to_large_vein()
+    nodes = dict(nodes, venule_boundary_nodes=[])
+
+    with pytest.warns(MissingSmallVesselAssignmentWarning, match=r"venule_boundary_nodes came out empty.*Large_Art/Large_Ven"):
+        summary = assign_vessel_branch_orders(G, **nodes, expects_hierarchical=True)
+
+    assert summary["mode"] == "large_tier"
+
+
+def test_a_run_expecting_no_small_vessels_gets_no_such_warning():
+    G, nodes = _large_vessels_without_small_ones()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MissingSmallVesselAssignmentWarning)
+        assign_vessel_branch_orders(G, **nodes)
