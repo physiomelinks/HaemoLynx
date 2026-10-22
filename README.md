@@ -32,6 +32,10 @@ saying how close each characteristic came.
 run, what the panel shows, colouring results, running from the command line,
 and changing settings.
 
+**[docs/export_dictionary.md](docs/export_dictionary.md)** says what every file a
+run writes holds, column by column, with units; the statistics rows are in
+**[docs/statistics_glossary.md](docs/statistics_glossary.md)**.
+
 ## Developing
 
 Work against a local checkout, with napari running the code you are editing:

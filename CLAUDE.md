@@ -168,7 +168,10 @@ haemolynx/
 │                           #   (what a run used, and how to cite it), provenance.py (the
 │                           #   run manifest beside every run's outputs), naming.py (the
 │                           #   one stem a run's outputs carry: run_stem), batch.py (one
-│                           #   image's settings in a batch, and the batch checks); public:
+│                           #   image's settings in a batch, and the batch checks),
+│                           #   export_dictionary.py (every output file's columns, arrays and
+│                           #   units: docs/export_dictionary.md; a new output column needs an
+│                           #   entry); public:
 │                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
@@ -360,7 +363,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off) |
-| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals) |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_export_dictionary.py` (every output's documented columns are its writer's, units in VTK field data and CSV names, the page up to date), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals) |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py`, `test_prefixed_settings.py` (every `fwhm_` / `skeleton_` / `segmentation_cleanup_` setting a parameter of its function or read by name) |
 | `src/haemolynx/synthetic/` | `tests/test_synthetic_template.py` (both sources, every refusal, JSON, scaling), `test_synthetic_generate.py` (the graph contract, determinism, the exact counts, the acceptance test against `tests/synthetic_fixtures.py`'s hand-set template, the polyline bender, the bed's arithmetic), `test_synthetic_compare.py`, `test_synthetic_stage.py` (each stage under `network_source=synthetic`, a whole run, preflight), `test_pipeline_naming.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
@@ -491,6 +494,11 @@ are only caught locally.
   through the one `io.load._skeletonize_loaded_volume` helper, which binarizes, skeletonizes **and
   fills holes**: the TIFF and H5 paths had drifted apart on that last step, so one volume saved in
   two formats produced two different graphs. Anything that adds a third loader calls the same helper.
+- **Output units** — a column CSV carries each column's unit in its name (`_um`, `_pa`, `_m3_s`,
+  `_pa_s_per_m3`: `pipeline/export_dictionary.UNIT_SUFFIXES`); a VTK array keeps its name and gets
+  its unit in `visualization/vtk_io.ARRAY_UNITS`, written to the file's field data. A new output
+  file, column or array needs its entry in `pipeline/export_dictionary.py`, and the page written
+  again (`python -m haemolynx.pipeline.export_dictionary`).
 - **Comments** — only for non-obvious domain logic; prefer self-explanatory code.
 
 ---

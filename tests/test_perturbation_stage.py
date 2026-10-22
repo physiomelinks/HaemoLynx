@@ -1446,7 +1446,7 @@ def test_a_sweep_point_re_equilibrates_haematocrit_like_the_same_single_change(t
     single, sweep = run.results
     assert single.ok and sweep.ok, (single.error, sweep.error)
     (row,) = _sweep_rows(sweep)
-    assert float(row["total_inlet_flow"]) == pytest.approx(
+    assert float(row["total_inlet_flow_m3_s"]) == pytest.approx(
         single.summary["total_inlet_flow"], rel=1e-6
     )
     report = sweep.summary["haematocrit_distribution"]
@@ -1532,7 +1532,7 @@ def test_perturbations_divide_a_trifurcation_by_the_runs_junction_rule(tmp_path,
     (row,) = _sweep_rows(sweep)
     # abs=0: these flows are ~1e-12 m^3/s, inside approx's default absolute
     # tolerance, which would pass any two of them.
-    assert float(row["total_inlet_flow"]) == pytest.approx(
+    assert float(row["total_inlet_flow_m3_s"]) == pytest.approx(
         single.summary["total_inlet_flow"], rel=1e-6, abs=0
     )
 
@@ -1626,7 +1626,7 @@ def test_a_whole_branch_sweeps_zero_point_is_the_baseline_even_with_a_bridge(
     result = run.results[0]
     assert result.error is None, result.error
     (zero,) = [row for row in _sweep_rows(result) if float(row["dilation_percent"]) == 0]
-    assert float(zero["equivalent_resistance"]) == pytest.approx(
+    assert float(zero["equivalent_resistance_pa_s_per_m3"]) == pytest.approx(
         run.baseline["equivalent_resistance"], rel=1e-9
     )
 
@@ -1645,8 +1645,8 @@ def test_a_pericyte_sweep_keeps_a_thick_vessel_bridge_negligible(tmp_path, entry
     arteriole = float(_model().graph[0][1][0]["resistance"])
     for plain_row, bridged_row in zip(_sweep_rows(plain), _sweep_rows(bridged)):
         # The bridge takes (at least most of) the arteriole's resistance out.
-        assert float(bridged_row["equivalent_resistance"]) < (
-            float(plain_row["equivalent_resistance"]) - 0.8 * arteriole
+        assert float(bridged_row["equivalent_resistance_pa_s_per_m3"]) < (
+            float(plain_row["equivalent_resistance_pa_s_per_m3"]) - 0.8 * arteriole
         )
 
 

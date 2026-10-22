@@ -150,30 +150,30 @@ _EXPECTED_DETAILS = [
     {
         "Object ID": "1", "Object Name": "Object_0001", "Voxel Count": "8",
         "Centroid Z (voxel)": "2.5", "Centroid Y (voxel)": "2.5", "Centroid X (voxel)": "2.5",
-        "Centroid Z (microns)": "2.5", "Centroid Y (microns)": "2.5", "Centroid X (microns)": "2.5",
+        "Centroid Z (um)": "2.5", "Centroid Y (um)": "2.5", "Centroid X (um)": "2.5",
         "Vessel Contact": "separate", "Vessel Overlap Voxel Count": "0",
-        "Edge-to-Vessel Distance (microns)": "1",
-        "Edge-to-Vessel Nearest Coordinate (z,y,x microns)": "(2, 2, 5)",
+        "Edge-to-Vessel Distance (um)": "1",
+        "Edge-to-Vessel Nearest Coordinate (z,y,x um)": "(2, 2, 5)",
         "Edge-to-Vessel Nearest Graph Edge Label ID": "1",
         "Edge-to-Vessel Nearest Branch Order": "B01",
-        "Centroid-to-Vessel Distance (microns)": "2",
-        "Delta Distance (Centroid-Edge) (microns)": "1",
-        "Centroid-to-Vessel Nearest Coordinate (z,y,x microns)": "(2, 2, 5)",
+        "Centroid-to-Vessel Distance (um)": "2",
+        "Delta Distance (Centroid-Edge) (um)": "1",
+        "Centroid-to-Vessel Nearest Coordinate (z,y,x um)": "(2, 2, 5)",
         "Centroid-to-Vessel Nearest Graph Edge Label ID": "1",
         "Centroid-to-Vessel Nearest Branch Order": "B01",
     },
     {
         "Object ID": "2", "Object Name": "Object_0002", "Voxel Count": "8",
         "Centroid Z (voxel)": "11.5", "Centroid Y (voxel)": "11.5", "Centroid X (voxel)": "12.5",
-        "Centroid Z (microns)": "11.5", "Centroid Y (microns)": "11.5", "Centroid X (microns)": "12.5",
+        "Centroid Z (um)": "11.5", "Centroid Y (um)": "11.5", "Centroid X (um)": "12.5",
         "Vessel Contact": "separate", "Vessel Overlap Voxel Count": "0",
-        "Edge-to-Vessel Distance (microns)": "1",
-        "Edge-to-Vessel Nearest Coordinate (z,y,x microns)": "(12, 12, 10)",
+        "Edge-to-Vessel Distance (um)": "1",
+        "Edge-to-Vessel Nearest Coordinate (z,y,x um)": "(12, 12, 10)",
         "Edge-to-Vessel Nearest Graph Edge Label ID": "2",
         "Edge-to-Vessel Nearest Branch Order": "Art1",
-        "Centroid-to-Vessel Distance (microns)": "2",
-        "Delta Distance (Centroid-Edge) (microns)": "1",
-        "Centroid-to-Vessel Nearest Coordinate (z,y,x microns)": "(12, 12, 10)",
+        "Centroid-to-Vessel Distance (um)": "2",
+        "Delta Distance (Centroid-Edge) (um)": "1",
+        "Centroid-to-Vessel Nearest Coordinate (z,y,x um)": "(12, 12, 10)",
         "Centroid-to-Vessel Nearest Graph Edge Label ID": "2",
         "Centroid-to-Vessel Nearest Branch Order": "Art1",
     },
@@ -280,18 +280,18 @@ def test_microglia_like_cells_measure_from_their_processes(tmp_path: Path) -> No
 
     with Path(result["details_csv_path"]).open(newline="", encoding="utf-8") as f:
         rows = {row["Object ID"]: row for row in csv.DictReader(f)}
-    assert rows["1"]["Edge-to-Vessel Distance (microns)"] == "1"
+    assert rows["1"]["Edge-to-Vessel Distance (um)"] == "1"
     assert rows["1"]["Vessel Contact"] == "separate"
-    assert rows["1"]["Edge-to-Vessel Nearest Coordinate (z,y,x microns)"] == "(6, 6, 16)"
+    assert rows["1"]["Edge-to-Vessel Nearest Coordinate (z,y,x um)"] == "(6, 6, 16)"
     assert rows["1"]["Edge-to-Vessel Nearest Branch Order"] == "Ven1"
-    assert rows["2"]["Edge-to-Vessel Distance (microns)"] == "0"
+    assert rows["2"]["Edge-to-Vessel Distance (um)"] == "0"
     assert rows["2"]["Vessel Contact"] == "overlapping"
     assert rows["2"]["Vessel Overlap Voxel Count"] == "2"
     assert rows["2"]["Edge-to-Vessel Nearest Branch Order"] == "B02"
     # The soma is far from either vessel; its centroid is no nearer than its process.
     for row in rows.values():
-        assert float(row["Centroid-to-Vessel Distance (microns)"]) > float(
-            row["Edge-to-Vessel Distance (microns)"]
+        assert float(row["Centroid-to-Vessel Distance (um)"]) > float(
+            row["Edge-to-Vessel Distance (um)"]
         )
 
 
@@ -582,7 +582,7 @@ def test_the_export_stage_measures_to_the_runs_segmentation(tmp_path):
     """Regression: with no vessel mask of its own the stage measured to the
     graph's centreline, 4 um further than the wall."""
     row, _shape = _stage(tmp_path)
-    assert row["Edge-to-Vessel Distance (microns)"] == "0"
+    assert row["Edge-to-Vessel Distance (um)"] == "0"
     assert row["Vessel Contact"] == "touching"
     assert row["Edge-to-Vessel Nearest Branch Order"] == "Art1"
 
@@ -593,7 +593,7 @@ def test_a_vessel_mask_of_its_own_takes_the_place_of_the_segmentation(tmp_path):
         tmp_path,
         measurement_3d_vessel_mask_path=_write_mask(tmp_path / "thin_vessels.tif", thin),
     )
-    assert row["Edge-to-Vessel Distance (microns)"] == "3"
+    assert row["Edge-to-Vessel Distance (um)"] == "3"
 
 
 # --- preflight -----------------------------------------------------------------

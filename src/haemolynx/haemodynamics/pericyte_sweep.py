@@ -66,6 +66,34 @@ SWEEP_COLUMNS = (
     "equivalent_resistance",
 )
 
+#: The sweep CSVs' header for each result column that carries no unit in its
+#: name: the same name with its unit (the results themselves keep the plain
+#: names, which the plots and the viewer read).
+SWEEP_CSV_HEADERS = {
+    "total_inlet_flow": "total_inlet_flow_m3_s",
+    "total_outlet_flow": "total_outlet_flow_m3_s",
+    "flow_balance_error": "flow_balance_error_m3_s",
+    "equivalent_resistance": "equivalent_resistance_pa_s_per_m3",
+}
+
+
+def write_sweep_rows(
+    results: list[Mapping[str, Any]], columns: Sequence[str], csv_path: Path | str
+) -> Path:
+    """Write *results* to *csv_path* under *columns*, each renamed by
+    :data:`SWEEP_CSV_HEADERS`, one row per sweep point."""
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=[SWEEP_CSV_HEADERS.get(c, c) for c in columns]
+        )
+        writer.writeheader()
+        writer.writerows(
+            {SWEEP_CSV_HEADERS.get(k, k): v for k, v in row.items()} for row in results
+        )
+    return csv_path
+
 
 def solve_pressure_and_boundary_flow(
     conductance: np.ndarray,
@@ -610,13 +638,7 @@ def run_pericyte_dilation_pressure_sweep(
 
 def write_sweep_csv(results: list[Mapping[str, Any]], csv_path: Path | str) -> Path:
     """Write sweep *results* to *csv_path*, one row per sweep point."""
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(SWEEP_COLUMNS))
-        writer.writeheader()
-        writer.writerows(results)
-    return csv_path
+    return write_sweep_rows(results, SWEEP_COLUMNS, csv_path)
 
 
 def _arteriole_dilation_percents(

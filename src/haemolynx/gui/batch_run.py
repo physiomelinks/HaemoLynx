@@ -73,7 +73,7 @@ SUMMARY_COLUMNS = (
     "haemorun",
     "nodes",
     "vessels",
-    "seconds",
+    "wall_time_s",
     "peak_rss_bytes",
     "error",
 )
@@ -121,7 +121,7 @@ class BatchResult:
             "haemorun": "" if self.haemorun is None else str(self.haemorun),
             "nodes": "" if self.nodes is None else self.nodes,
             "vessels": "" if self.vessels is None else self.vessels,
-            "seconds": "" if self.seconds is None else round(self.seconds, 1),
+            "wall_time_s": "" if self.seconds is None else round(self.seconds, 1),
             "peak_rss_bytes": "" if self.peak_rss_bytes is None else self.peak_rss_bytes,
             "error": self.error,
         }

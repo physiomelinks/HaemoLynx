@@ -404,7 +404,9 @@ def test_the_perturbation_blocks_the_vessels_under_the_masks_blobs(tmp_path):
 
     (vessel,) = _read(result.output_dir / "stall_blocked_vessels.csv")
     assert int(vessel["branch_id"]) == ids["top"]
-    assert float(vessel["blocked_resistance"]) == pytest.approx(1e6 * float(vessel["baseline_resistance"]))
+    assert float(vessel["blocked_resistance_pa_s_per_m3"]) == pytest.approx(
+        1e6 * float(vessel["baseline_resistance_pa_s_per_m3"])
+    )
 
     comparison = {row["metric"]: row["value"] for row in _read(result.output_dir / "stall_block_comparison.csv")}
     assert comparison["selection"] == "mask"

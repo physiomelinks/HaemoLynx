@@ -12,7 +12,6 @@ the run's ``inlet_p_bc``. Resistances at each grid point go through
 """
 from __future__ import annotations
 
-import csv
 import logging
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
@@ -30,6 +29,7 @@ from .pericyte_sweep import (
     haematocrit_sweep_report,
     solve_sweep_point,
     sweep_rows_at_pressures,
+    write_sweep_rows,
 )
 from .poiseuille import PoiseuilleModel
 from .viscosity import run_diameter_basis, run_viscosity_law
@@ -130,13 +130,7 @@ def write_geometry_sweep_csv(
     results: list[Mapping[str, Any]], csv_path: Path | str
 ) -> Path:
     """Write geometry-sweep *results* to *csv_path*, one row per point."""
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(GEOMETRY_SWEEP_COLUMNS))
-        writer.writeheader()
-        writer.writerows(results)
-    return csv_path
+    return write_sweep_rows(results, GEOMETRY_SWEEP_COLUMNS, csv_path)
 
 
 def run_pericyte_geometry_sweep(

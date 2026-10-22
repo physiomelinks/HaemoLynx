@@ -477,8 +477,8 @@ def compare_block_to_baseline(
     q_after_total = total_inflow(blocked)
     stopped = stopped_vessels(blocked, inlets, outlets)
     summary: dict[str, Any] = {
-        "total_inflow_baseline": q_before_total,
-        "total_inflow_blocked": q_after_total,
+        "total_inflow_baseline_m3_s": q_before_total,
+        "total_inflow_blocked_m3_s": q_after_total,
         "total_inflow_percent_change": (
             (q_after_total - q_before_total) / q_before_total * 100.0
             if q_before_total
@@ -549,8 +549,8 @@ def compare_block_to_baseline(
                 "branch_order": label,
                 "vessels": row["vessels"],
                 "blocked": row["blocked"],
-                "baseline_mean_flow": before_sum / row["vessels"],
-                "blocked_mean_flow": after_sum / row["vessels"],
+                "baseline_mean_flow_m3_s": before_sum / row["vessels"],
+                "blocked_mean_flow_m3_s": after_sum / row["vessels"],
                 "mean_flow_percent_change": (
                     (after_sum - before_sum) / before_sum * 100.0 if before_sum else math.nan
                 ),

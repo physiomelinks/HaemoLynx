@@ -10,6 +10,46 @@ import networkx as nx
 from haemolynx.geometry import cumulative_lengths
 from haemolynx.visualization.geometry import edge_polyline
 
+#: The unit of every array the VTK files carry, spelled as the statistics
+#: glossary spells units ("-" is an identifier, label or text; "flag" is 0 or
+#: 1). Each file's field data repeats it as ``<array>_unit``, beside
+#: ``points_unit`` and ``points_axis_order`` for the points themselves.
+ARRAY_UNITS: Dict[str, str] = {
+    "edge_u": "-",
+    "edge_v": "-",
+    "edge_key": "-",
+    "branch_order": "-",
+    "resistance": "Pa.s/m^3",
+    "conductance": "m^3/(Pa.s)",
+    "length_um": "um",
+    "diameter_um": "um",
+    "diameter_source": "-",
+    "is_zero_resistance": "flag",
+    "flow_solved": "flag",
+    "flow_state": "-",
+    "discharge_haematocrit": "fraction",
+    "pressure_u": "Pa",
+    "pressure_v": "Pa",
+    "pressure_drop": "Pa",
+    "flow_signed": "m^3/s",
+    "flow_abs": "m^3/s",
+    "node_id": "-",
+    "dead_end_kind": "-",
+    "pressure": "Pa",
+}
+
+#: Every point of every file HaemoLynx writes is physical (z, y, x) microns.
+POINTS_UNIT = "um"
+POINTS_AXIS_ORDER = "z, y, x"
+
+
+def _write_units(mesh: Any, arrays: Iterable[str]) -> None:
+    """Field data naming the unit of each of *arrays* and of the points."""
+    mesh.field_data["points_unit"] = np.asarray([POINTS_UNIT])
+    mesh.field_data["points_axis_order"] = np.asarray([POINTS_AXIS_ORDER])
+    for name in arrays:
+        mesh.field_data[f"{name}_unit"] = np.asarray([ARRAY_UNITS[name]])
+
 
 def _point_key(point: np.ndarray, decimals: int) -> tuple[float, float, float]:
     rounded = np.round(np.asarray(point, dtype=float), decimals=decimals)
@@ -226,6 +266,7 @@ def graph_to_vtk(
                 vessel_mesh.cell_data[name] = array
     for name, value in _run_metadata(graph).items():
         vessel_mesh.field_data[name] = np.asarray([value])
+    _write_units(vessel_mesh, vessel_mesh.cell_data.keys())
     vessel_mesh.save(vessel_path)
 
     pericyte = derive_pericyte_points_from_graph(
@@ -238,6 +279,7 @@ def graph_to_vtk(
     pericyte_mesh.point_data["edge_v"] = pericyte["edge_v"]
     pericyte_mesh.point_data["edge_key"] = pericyte["edge_key"]
     pericyte_mesh.point_data["branch_order"] = pericyte["branch_order"]
+    _write_units(pericyte_mesh, pericyte_mesh.point_data.keys())
     pericyte_mesh.save(pericyte_path)
 
     node_ids: List[int] = []
@@ -262,6 +304,7 @@ def graph_to_vtk(
     node_mesh.point_data["dead_end_kind"] = np.asarray(node_kinds)
     if np.any(np.isfinite(node_pressures)):
         node_mesh.point_data["pressure"] = np.asarray(node_pressures, dtype=float)
+    _write_units(node_mesh, node_mesh.point_data.keys())
     node_mesh.save(node_path)
 
     return {
@@ -312,6 +355,7 @@ def surface_mesh_to_vtk(
     faces = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
     cells = np.hstack([np.full((len(faces), 1), 3, dtype=np.int64), faces]).ravel()
     mesh = pv.PolyData(np.asarray(vertices, dtype=float).reshape(-1, 3), cells)
+    _write_units(mesh, ())
     mesh.save(output_path)
     return output_path
 

@@ -5249,13 +5249,13 @@ PERTURBATION_EDGE_COLUMNS = (
     "branch_order",
     "length_um",
     "diameter_um",
-    "resistance",
-    "conductance",
-    "pressure_drop",
-    "flow_signed",
+    "resistance_pa_s_per_m3",
+    "conductance_m3_per_pa_s",
+    "pressure_drop_pa",
+    "flow_signed_m3_s",
     "flow_solved",
     "flow_state",
-    "baseline_resistance",
+    "baseline_resistance_pa_s_per_m3",
     "resistance_ratio",
 )
 
@@ -5266,12 +5266,12 @@ PERTURBATION_SUMMARY_COLUMNS = (
     "overrides",
     "inlet_pressure_pa",
     "outlet_pressure_pa",
-    "total_inlet_flow",
-    "total_outlet_flow",
-    "flow_balance_error",
-    "equivalent_resistance",
-    "baseline_equivalent_resistance",
-    "delta_vs_baseline",
+    "total_inlet_flow_m3_s",
+    "total_outlet_flow_m3_s",
+    "flow_balance_error_m3_s",
+    "equivalent_resistance_pa_s_per_m3",
+    "baseline_equivalent_resistance_pa_s_per_m3",
+    "delta_vs_baseline_pa_s_per_m3",
     "percent_change_vs_baseline",
 )
 
@@ -5478,14 +5478,14 @@ def _write_perturbation_csvs(
                 "overrides": json.dumps(plain_values(overrides), sort_keys=True),
                 "inlet_pressure_pa": float(settings["inlet_p_bc"]),
                 "outlet_pressure_pa": float(settings["outlet_p_bc"]),
-                "total_inlet_flow": solved["total_inlet_flow"],
-                "total_outlet_flow": solved["total_outlet_flow"],
-                "flow_balance_error": (
+                "total_inlet_flow_m3_s": solved["total_inlet_flow"],
+                "total_outlet_flow_m3_s": solved["total_outlet_flow"],
+                "flow_balance_error_m3_s": (
                     solved["total_inlet_flow"] + solved["total_outlet_flow"]
                 ),
-                "equivalent_resistance": equivalent,
-                "baseline_equivalent_resistance": baseline_equivalent,
-                "delta_vs_baseline": delta,
+                "equivalent_resistance_pa_s_per_m3": equivalent,
+                "baseline_equivalent_resistance_pa_s_per_m3": baseline_equivalent,
+                "delta_vs_baseline_pa_s_per_m3": delta,
                 "percent_change_vs_baseline": (
                     delta / baseline_equivalent * 100.0
                     if baseline_equivalent
@@ -5515,13 +5515,13 @@ def _write_perturbation_csvs(
                     "branch_order": data.get("branch_order"),
                     "length_um": data.get("length"),
                     "diameter_um": data.get("diameter_um"),
-                    "resistance": now,
-                    "conductance": data.get("conductance"),
-                    "pressure_drop": None if undefined else data.get("pressure_drop"),
-                    "flow_signed": None if undefined else data.get("flow_signed"),
+                    "resistance_pa_s_per_m3": now,
+                    "conductance_m3_per_pa_s": data.get("conductance"),
+                    "pressure_drop_pa": None if undefined else data.get("pressure_drop"),
+                    "flow_signed_m3_s": None if undefined else data.get("flow_signed"),
                     "flow_solved": data.get(graph.FLOW_SOLVED),
                     "flow_state": data.get(graph.FLOW_STATE),
-                    "baseline_resistance": was,
+                    "baseline_resistance_pa_s_per_m3": was,
                     "resistance_ratio": (
                         float(now) / float(was) if was and now is not None else None
                     ),
@@ -5580,18 +5580,18 @@ CAPILLARY_BLOCK_VESSEL_COLUMNS = (
     "branch_order",
     "length_um",
     "diameter_um",
-    "baseline_resistance",
-    "blocked_resistance",
-    "baseline_flow_abs",
-    "blocked_flow_abs",
+    "baseline_resistance_pa_s_per_m3",
+    "blocked_resistance_pa_s_per_m3",
+    "baseline_flow_abs_m3_s",
+    "blocked_flow_abs_m3_s",
 )
 #: Columns of a capillary block's `<name>_flow_by_branch_order.csv`, in order.
 CAPILLARY_BLOCK_ORDER_COLUMNS = (
     "branch_order",
     "vessels",
     "blocked",
-    "baseline_mean_flow",
-    "blocked_mean_flow",
+    "baseline_mean_flow_m3_s",
+    "blocked_mean_flow_m3_s",
     "mean_flow_percent_change",
     "hypoperfused",
     "hypoperfused_length_um",
@@ -5831,10 +5831,10 @@ def _write_capillary_block_comparison(
                     "branch_order": data.get("branch_order"),
                     "length_um": data.get("length"),
                     "diameter_um": data.get("diameter_um"),
-                    "baseline_resistance": before.get("resistance"),
-                    "blocked_resistance": data.get("resistance"),
-                    "baseline_flow_abs": before.get("flow_abs"),
-                    "blocked_flow_abs": data.get("flow_abs"),
+                    "baseline_resistance_pa_s_per_m3": before.get("resistance"),
+                    "blocked_resistance_pa_s_per_m3": data.get("resistance"),
+                    "baseline_flow_abs_m3_s": before.get("flow_abs"),
+                    "blocked_flow_abs_m3_s": data.get("flow_abs"),
                 }
             )
     result.outputs.append(vessels_path)

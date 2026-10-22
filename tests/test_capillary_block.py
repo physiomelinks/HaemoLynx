@@ -434,7 +434,9 @@ def test_the_perturbation_blocks_listed_vessels_and_writes_the_comparison(tmp_pa
 
     (vessel,) = _read(result.output_dir / "stall_blocked_vessels.csv")
     assert (vessel["branch_id"], vessel["u"], vessel["v"]) == ("1", "1", "2")
-    assert float(vessel["blocked_resistance"]) == pytest.approx(1e6 * float(vessel["baseline_resistance"]))
+    assert float(vessel["blocked_resistance_pa_s_per_m3"]) == pytest.approx(
+        1e6 * float(vessel["baseline_resistance_pa_s_per_m3"])
+    )
 
     comparison = {row["metric"]: row["value"] for row in _read(result.output_dir / "stall_block_comparison.csv")}
     assert comparison["selection"] == "vessel_ids"
@@ -443,7 +445,9 @@ def test_the_perturbation_blocks_listed_vessels_and_writes_the_comparison(tmp_pa
     assert int(comparison["hypoperfused_vessels"]) == 1
 
     (summary,) = _read(result.output_dir / "stall_summary.csv")
-    assert float(summary["equivalent_resistance"]) > float(summary["baseline_equivalent_resistance"])
+    assert float(summary["equivalent_resistance_pa_s_per_m3"]) > float(
+        summary["baseline_equivalent_resistance_pa_s_per_m3"]
+    )
 
     # The perturbation's own network carries the colour columns; the baseline
     # the run goes on to export is exactly as it arrived.
@@ -490,12 +494,12 @@ def test_the_perturbations_own_network_carries_no_flow_on_its_stopped_vessels(tm
 
     # The edges CSV and the blocked-vessels CSV write the zeros, with the drops.
     edges = {(row["u"], row["v"]): row for row in _read(result.output_dir / "stall_edges.csv")}
-    assert float(edges[("1", "2")]["flow_signed"]) == 0.0
-    assert float(edges[("2", "3")]["flow_signed"]) == 0.0
-    assert float(edges[("1", "2")]["pressure_drop"]) == pytest.approx(50.0, abs=1e-3)
+    assert float(edges[("1", "2")]["flow_signed_m3_s"]) == 0.0
+    assert float(edges[("2", "3")]["flow_signed_m3_s"]) == 0.0
+    assert float(edges[("1", "2")]["pressure_drop_pa"]) == pytest.approx(50.0, abs=1e-3)
     (vessel,) = _read(result.output_dir / "stall_blocked_vessels.csv")
-    assert float(vessel["blocked_flow_abs"]) == 0.0
-    assert float(vessel["baseline_flow_abs"]) > 0
+    assert float(vessel["blocked_flow_abs_m3_s"]) == 0.0
+    assert float(vessel["baseline_flow_abs_m3_s"]) > 0
 
     # The perturbation's own statistics count four vessels (two capillaries)
     # carrying flow, as the comparison does; so do the vessel classes and
