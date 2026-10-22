@@ -64,7 +64,10 @@ __all__ = [
     "ACTION_JOIN",
     "ACTION_KEEP",
     "ACTION_LABELS",
+    "ACTION_MAKE_INLET",
+    "ACTION_MAKE_OUTLET",
     "ACTION_MERGE",
+    "ACTION_REMOVE_TERMINAL",
     "ACTION_SET_DIAMETER",
     "ACTION_TRACE_ON",
     "action_applies",
@@ -1213,6 +1216,10 @@ ACTION_KEEP = "keep"
 ACTION_JOIN_AHEAD = "join_ahead"
 ACTION_MARK_BLIND = "mark_blind"
 ACTION_MARK_OPEN = "mark_open"
+#: The terminal-node list's own buttons: give a node a role, or take it away.
+ACTION_MAKE_INLET = "make_inlet"
+ACTION_MAKE_OUTLET = "make_outlet"
+ACTION_REMOVE_TERMINAL = "remove_terminal"
 ACTION_LABELS = {
     ACTION_DELETE_SELECTED: "Delete selected vessels",
     ACTION_DELETE_ITEM: "Delete all its vessels",
@@ -1224,14 +1231,18 @@ ACTION_LABELS = {
     ACTION_JOIN_AHEAD: "Join to the vessel ahead",
     ACTION_MARK_BLIND: "Mark as a real blind end",
     ACTION_MARK_OPEN: "Mark as leaving the image",
+    ACTION_MAKE_INLET: "Make inlet",
+    ACTION_MAKE_OUTLET: "Make outlet",
+    ACTION_REMOVE_TERMINAL: "Remove inlet/outlet",
 }
 
 
 def action_applies(item: Any, action: str) -> bool:
     """Whether *action* can do anything for review *item*: a dead end joins
     the vessel ahead only when one was found ahead of it, and is not marked
-    as what it already is. Every other action applies to any item its list
-    offers it for."""
+    as what it already is; a terminal node is not made what it already is,
+    and only an inlet or an outlet has a role to remove. Every other action
+    applies to any item its list offers it for."""
     from haemolynx.graph.dead_ends import BLIND, LEAVES_IMAGE
 
     measures = getattr(item, "measures", None) or {}
@@ -1241,6 +1252,12 @@ def action_applies(item: Any, action: str) -> bool:
         return measures.get("kind") != BLIND
     if action == ACTION_MARK_OPEN:
         return measures.get("kind") != LEAVES_IMAGE
+    if action == ACTION_MAKE_INLET:
+        return measures.get("role") != "inlet"
+    if action == ACTION_MAKE_OUTLET:
+        return measures.get("role") != "outlet"
+    if action == ACTION_REMOVE_TERMINAL:
+        return measures.get("role") in ("inlet", "outlet")
     return True
 
 
@@ -1283,6 +1300,8 @@ def _review_lists() -> tuple[ReviewList, ...]:
                    (ACTION_DELETE_SELECTED, ACTION_KEEP)),
         ReviewList(nr.FLOW_OUTLIERS, "Flow outliers", (NEEDS_FLOW,), (ACTION_SET_DIAMETER, ACTION_KEEP)),
         ReviewList(nr.BOUNDARY_NODES, "Boundary nodes", (NEEDS_BOUNDARIES,), (ACTION_KEEP,)),
+        ReviewList(nr.TERMINAL_NODES, "Terminal nodes (add or remove inlets and outlets)", (),
+                   (ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP)),
         ReviewList(nr.UNMEASURED_DIAMETERS, "Unmeasured diameters", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
         ReviewList(nr.DIAMETER_JUMPS, "Diameter jumps", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
     )
@@ -1341,6 +1360,14 @@ def review_label(item: Any, number: int) -> str:
         )
     elif kind == nr.BOUNDARY_NODES:
         text = f"Node {nodes} ({m.get('role') or 'no role'}): {m.get('issue')}"
+    elif kind == nr.TERMINAL_NODES:
+        where = (
+            "leaves the image" if m.get("leaves_image")
+            else f"{_g(m.get('depth_um'))} µm inside" if m.get("depth_um") is not None
+            else "inside"
+        )
+        width = f", {_g(m.get('diameter_um'))} µm wide" if m.get("diameter_um") is not None else ""
+        text = f"Node {nodes} ({m.get('role') or 'dead end'}): {where}{width}"
     elif kind == nr.UNMEASURED_DIAMETERS:
         share = m.get("flow_share")
         text = f"{m.get('diameter_source') or 'flagged'} width" + (
@@ -1849,6 +1876,8 @@ def find_review_items(
         return nr.find_flow_outliers(graph)
     if key == nr.BOUNDARY_NODES:
         return nr.find_boundary_issues(graph, roles, extent_um=extent_um)
+    if key == nr.TERMINAL_NODES:
+        return nr.find_terminal_nodes(graph, roles, extent_um=extent_um)
     if key == nr.UNMEASURED_DIAMETERS:
         return nr.find_unmeasured_diameters(graph, inlets)
     if key == nr.DIAMETER_JUMPS:

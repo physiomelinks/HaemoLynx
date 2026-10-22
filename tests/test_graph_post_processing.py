@@ -1080,3 +1080,93 @@ def test_setting_a_diameter_refuses_a_bad_width_or_vessel_and_changes_nothing():
         set_vessel_diameter(G, [(1, 10, 0), (1, 99, 0)], 4.0)
     assert G.edges[1, 10, 0]["diameter_um"] == 6.0
     assert not has_pending_edits(G)
+
+
+# --- set_terminal_role (the Terminal nodes list's edit) ----------------------
+
+from haemolynx.graph import boundary_roles_with_edits, clear_edit_marks, set_terminal_role  # noqa: E402
+from haemolynx.graph.post_processing import BOUNDARY_ROLES  # noqa: E402
+
+
+def _terminal_chain() -> tuple[nx.MultiGraph, dict]:
+    """0 - 1 - 2 - 3 with a side vessel 1 - 9; inlet 0, outlet 3, and an
+    arteriole boundary node the role change must leave alone."""
+    G = _network(
+        {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 0, 30), 9: (0, 10, 10)},
+        [(0, 1), (1, 2), (2, 3), (1, 9)],
+        diameter_um=5.0,
+    )
+    return G, {"inlet": (0,), "outlet": (3,), "arteriole_boundary": (1,)}
+
+
+def test_making_a_dead_end_an_inlet_keeps_the_lists_on_the_graph_and_marks_it_pending():
+    G, roles = _terminal_chain()
+    before = sorted(map(str, G.edges(keys=True, data=True)))
+
+    now = set_terminal_role(G, roles, 9, "inlet")
+
+    assert now == {"inlet": (0, 9), "outlet": (3,), "arteriole_boundary": (1,)}
+    assert G.graph[BOUNDARY_ROLES] == {"inlet": [0, 9], "outlet": [3]}
+    assert has_pending_edits(G)
+    # The network itself is not changed, and nothing is marked for measuring.
+    assert sorted(map(str, G.edges(keys=True, data=True))) == before
+    assert roles["inlet"] == (0,), "the caller's lists are not written to"
+
+
+def test_a_node_is_an_inlet_or_an_outlet_never_both():
+    G, roles = _terminal_chain()
+    set_terminal_role(G, roles, 9, "inlet")
+
+    # Made an outlet, it is an inlet no longer; the caller's own roles are
+    # read with the earlier change on top.
+    now = set_terminal_role(G, roles, 9, "outlet")
+
+    assert now["inlet"] == (0,) and now["outlet"] == (3, 9)
+    assert boundary_roles_with_edits(roles, G) == now
+
+
+def test_the_last_inlet_or_outlet_cannot_be_removed_until_another_is_made():
+    G, roles = _terminal_chain()
+    with pytest.raises(ValueError, match="only inlet"):
+        set_terminal_role(G, roles, 0, None)
+    with pytest.raises(ValueError, match="only outlet"):
+        set_terminal_role(G, roles, 3, "inlet")
+    assert BOUNDARY_ROLES not in G.graph and not has_pending_edits(G)
+
+    set_terminal_role(G, roles, 9, "inlet")
+    now = set_terminal_role(G, roles, 0, None)
+
+    assert now["inlet"] == (9,)
+    assert G.graph[BOUNDARY_ROLES]["inlet"] == [9]
+
+
+def test_an_inlet_no_longer_in_the_graph_does_not_count_as_one_left():
+    G, roles = _terminal_chain()
+    roles = {**roles, "inlet": (0, 77)}  # 77: deleted by an earlier edit
+    with pytest.raises(ValueError, match="only inlet"):
+        set_terminal_role(G, roles, 0, None)
+
+
+def test_giving_a_node_the_role_it_has_changes_nothing():
+    G, roles = _terminal_chain()
+    assert set_terminal_role(G, roles, 0, "inlet") == roles
+    assert set_terminal_role(G, roles, 2, None) == roles
+    assert BOUNDARY_ROLES not in G.graph and not has_pending_edits(G)
+
+
+def test_a_junction_may_be_given_a_role_but_not_a_node_or_role_that_does_not_exist():
+    G, roles = _terminal_chain()
+    assert set_terminal_role(G, roles, 1, "outlet")["outlet"] == (3, 1)
+    with pytest.raises(ValueError, match="not in the network"):
+        set_terminal_role(G, roles, 42, "inlet")
+    with pytest.raises(ValueError, match="not a terminal role"):
+        set_terminal_role(G, roles, 9, "arteriole_boundary")
+
+
+def test_clearing_the_edit_marks_forgets_the_lists():
+    G, roles = _terminal_chain()
+    set_terminal_role(G, roles, 9, "outlet")
+    clear_edit_marks(G)
+    assert BOUNDARY_ROLES not in G.graph
+    assert boundary_roles_with_edits(roles, G) == roles
+    assert boundary_roles_with_edits(None, None) == {}

@@ -1677,3 +1677,55 @@ def test_the_edits_readers_share_one_binarised_segmentation_and_one_support(tmp_
     assert sorted((min(u, v), max(u, v)) for u, v in out.graph.edges()) == sorted(
         (min(u, v), max(u, v)) for u, v in expected.graph.edges()
     )
+
+
+# --- inlets and outlets set by hand (the Terminal nodes list) -----------------
+
+from haemolynx.graph import set_terminal_role  # noqa: E402
+from haemolynx.graph.post_processing import BOUNDARY_ROLES  # noqa: E402
+
+
+def _chain_roles():
+    return {"inlet": (0,), "outlet": (LAST,), "arteriole_boundary": (0,), "venule_boundary": (LAST,)}
+
+
+def test_an_outlet_set_by_hand_replaces_the_runs_lists_and_the_resistance_pair(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    set_terminal_role(G, _chain_roles(), 2, "outlet")
+    set_terminal_role(G, _chain_roles(), LAST, None)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert boundaries.outlet_nodes == [2] and run_settings["outlet_nodes"] == [2]
+    assert boundaries.inlet_nodes == [0] and run_settings["inlet_nodes"] == [0]
+    assert boundaries.resistance_node_pair == (0, 2)
+    assert out.results["post_process"]["boundary_nodes"]["outlet_nodes"] == [2]
+    assert out.results["post_process"]["edited_vessels"] == 0
+    # The lists are taken once: the marks are cleared with the others.
+    assert BOUNDARY_ROLES not in out.graph.graph
+    assert not has_pending_edits(out.graph)
+
+
+def test_the_network_is_solved_between_the_inlets_and_outlets_set_by_hand(tmp_path, monkeypatch):
+    """Making the chain's middle node an outlet holds it at the outlet
+    pressure: blood leaves there, and the vessels beyond it, between two
+    outlets, carry none."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+    edited = copy.deepcopy(paused)
+    set_terminal_role(edited, _chain_roles(), 2, "outlet")
+    assert abs(paused.edges[2, 3, 0]["flow_signed"]) > 0
+
+    run_settings = _settings(tmp_path)
+    solved = run_pipeline_stages(
+        run_settings,
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(edited),
+    )
+
+    assert solved.nodes[2]["pressure"] == pytest.approx(float(run_settings["outlet_p_bc"]))
+    assert abs(solved.edges[0, 1, 0]["flow_signed"]) > 0
+    assert solved.edges[2, 3, 0]["flow_abs"] == pytest.approx(0.0, abs=1e-12 * solved.edges[0, 1, 0]["flow_abs"])
+    assert sorted(run_settings["outlet_nodes"]) == [2, LAST]

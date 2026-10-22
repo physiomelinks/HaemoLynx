@@ -408,3 +408,65 @@ def test_z_range_around_covers_the_slices_within_reach():
     assert nr.z_range_around((20.0, 0.0, 0.0), 5.0, (2.0, 1.0, 1.0), depth=100) == (7, 14)
     assert nr.z_range_around((2.0, 0.0, 0.0), 50.0, (1.0, 1.0, 1.0), depth=30) == (0, 30)
     assert nr.z_range_around((2.0, 0.0, 0.0), 0.0, (1.0, 1.0, 1.0), depth=30) is None
+
+
+# --- terminal nodes ---------------------------------------------------------------------
+
+
+def _terminal_network():
+    """Image 100 um across. A trunk 0-1-2-3-5 from the x = 0 face to the
+    x = 99 face, inlet 0 and outlet 5; off it an interior dead end 4, open
+    ends 7 (6 um wide) and 9 (10 um wide) at the y faces, and a lone vessel
+    10-11 with a dead end at each end."""
+    G = _graph({0: (50, 50, 0), 1: (50, 50, 20), 2: (50, 50, 40), 3: (50, 50, 60), 5: (50, 50, 99),
+                4: (50, 30, 20), 7: (50, 99, 40), 9: (50, 0, 60), 10: (10, 10, 10), 11: (10, 10, 30)})
+    for u, v in ((0, 1), (1, 2), (2, 3), (3, 5)):
+        _vessel(G, u, v, diameter_um=12.0)
+    _vessel(G, 1, 4, diameter_um=4.0)
+    _vessel(G, 2, 7, diameter_um=6.0)
+    _vessel(G, 3, 9, diameter_um=10.0)
+    _vessel(G, 10, 11, diameter_um=8.0)
+    return G
+
+
+def test_terminal_nodes_list_inlets_outlets_then_open_ends_widest_first_then_other_dead_ends():
+    G = _terminal_network()
+    before = _unchanged(G)
+    roles = {"inlet": [0], "outlet": [5], "arteriole_boundary": [4]}
+
+    items = nr.find_terminal_nodes(G, roles, extent_um=(100, 100, 100))
+
+    assert _unchanged(G) == before
+    assert [item.nodes[0] for item in items] == [0, 5, 9, 7, 4]
+    assert all(item.kind == nr.TERMINAL_NODES for item in items)
+    assert [item.measures["role"] for item in items] == ["inlet", "outlet", "", "", ""]
+    assert [item.measures["leaves_image"] for item in items] == [True, True, True, True, False]
+    assert [item.measures["diameter_um"] for item in items] == [12.0, 12.0, 10.0, 6.0, 4.0]
+    assert items[4].measures["other_roles"] == "arteriole_boundary"
+    assert items[4].measures["depth_um"] == pytest.approx(20.0)
+    assert items[2].centre_um == pytest.approx((50.0, 0.0, 60.0))
+    assert "open end" in items[2].why and "inside the image" in items[4].why
+    assert items[0].why.startswith("Node 0 is an inlet")
+
+
+def test_a_terminal_role_on_a_junction_or_inside_the_image_is_listed_saying_so():
+    G = _terminal_network()
+    items = nr.find_terminal_nodes(G, {"inlet": [0], "outlet": [2]}, extent_um=(100, 100, 100))
+
+    outlet = items[1]
+    assert outlet.nodes == (2,) and outlet.measures["role"] == "outlet"
+    assert outlet.measures["vessels"] == 3
+    assert "3 vessels meet there" in outlet.why
+    assert outlet.measures["leaves_image"] is False
+    # Node 5 is no boundary node now: an open end like the others.
+    assert [item.nodes[0] for item in items[2:]] == [5, 9, 7, 4]
+
+
+def test_terminal_nodes_read_the_flow_through_their_vessel_when_solved():
+    G = _terminal_network()
+    for u, v, k, data in G.edges(keys=True, data=True):
+        data["flow_abs"] = 2.0 if {u, v} <= {0, 1, 2, 3, 5} else 0.5
+    items = nr.find_terminal_nodes(G, {"inlet": [0], "outlet": [5]}, extent_um=(100, 100, 100))
+    shares = {item.nodes[0]: item.measures["flow_share"] for item in items}
+    assert shares[0] == pytest.approx(1.0)
+    assert shares[9] == pytest.approx(0.25)

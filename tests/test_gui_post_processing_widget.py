@@ -1603,3 +1603,53 @@ def test_dead_ends_filtered_to_pieces_with_no_junction_can_all_be_removed(make_n
     c.dead_end_show.setCurrentText("All kinds")
     assert c.review_items.count() == 1, "the spur is still listed, the removed piece is not"
     assert c.remove_pieces_button.isHidden()
+
+
+# --- Terminal nodes: inlets and outlets added and removed by hand ------------------
+
+from haemolynx.graph.post_processing import BOUNDARY_ROLES  # noqa: E402
+from haemolynx.gui.post_processing import (  # noqa: E402
+    ACTION_MAKE_INLET,
+    ACTION_MAKE_OUTLET,
+    ACTION_REMOVE_TERMINAL,
+)
+
+TERMINALS = "Terminal nodes (add or remove inlets and outlets)"
+
+
+def test_a_dead_end_made_an_outlet_is_kept_on_the_graph_for_regenerate(make_napari_viewer, tmp_path):
+    page = _review_page(make_napari_viewer(), tmp_path)
+    c = page.controls
+    c.review_choice.setCurrentText(TERMINALS)
+    c.scan_button.click()
+    assert [c.review_items.item(i).text().split(":")[0] for i in range(c.review_items.count())] == [
+        "1. Node 0 (inlet)", "2. Node 4 (outlet)", "3. Node 5 (dead end)",
+    ]
+    assert _shown_buttons(c) == {ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP}
+    # The only inlet: no role to make it again, and taking it away is refused.
+    assert not c.review_buttons[ACTION_MAKE_INLET].isEnabled()
+    c.review_buttons[ACTION_REMOVE_TERMINAL].click()
+    assert "only inlet" in c.review_summary.text()
+    assert BOUNDARY_ROLES not in c.state.graph.graph and not c.regenerate_graph_button.isEnabled()
+
+    c.review_items.setCurrentRow(2)
+    c.review_buttons[ACTION_MAKE_OUTLET].click()
+
+    assert c.state.outlets == (4, 5) and c.state.inlets == (0,)
+    assert 5 in c.state.protected, "an outlet cannot be deleted by a later edit"
+    assert c.state.graph.graph[BOUNDARY_ROLES] == {"inlet": [0], "outlet": [4, 5]}
+    assert c.regenerate_graph_button.isEnabled()
+    (row,) = _csv_rows(tmp_path / "run_terminal_nodes_review.csv")
+    assert row["decision"] == "made an outlet" and row["nodes"] == "5" and row["role"] == ""
+    assert "Node 5 made an outlet: 1 inlet(s), 2 outlet(s)" in c.log_box.toPlainText()
+
+    # A scan reads the roles back off the graph, not the run's own lists.
+    c.scan_button.click()
+    assert c.review_items.item(2).text().startswith("3. Node 5 (outlet)")
+    c.review_items.setCurrentRow(1)
+    c.review_buttons[ACTION_REMOVE_TERMINAL].click()
+    assert c.state.outlets == (5,)
+
+    c.regenerate_graph_button.click()
+
+    assert page.regenerated[-1].graph[BOUNDARY_ROLES] == {"inlet": [0], "outlet": [5]}

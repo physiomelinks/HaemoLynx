@@ -63,6 +63,8 @@ BRANCH_HOVER = f"{PREFIX}branch hover"
 FLOW_DIRECTION = f"{PREFIX}flow direction"
 NODES = f"{PREFIX}nodes"
 BOUNDARY_NODES = f"{PREFIX}boundary nodes"
+#: The roles :data:`BOUNDARY_NODES` draws, as its ``role`` column names them.
+BOUNDARY_ROLE_NAMES = ("inlet", "outlet", "arteriole_boundary", "venule_boundary")
 PERICYTES = f"{PREFIX}pericytes"
 IMAGE = f"{PREFIX}image"
 SKELETON = f"{PREFIX}skeleton"
@@ -2038,37 +2040,10 @@ class ResultLayers:
                         },
                     )
                 )
-            positions: list[np.ndarray] = []
-            labels: list[str] = []
-            boundary_ids: list[Any] = []
-            for role, node_ids in roles.items():
-                role_points, kept = node_points(self._graph, list(node_ids))
-                if len(role_points):
-                    positions.append(role_points)
-                    labels.extend([role] * len(kept))
-                    boundary_ids.extend(kept.tolist())
-            if positions:
-                role_column = np.asarray(labels, dtype=object)
-                layers.append(
-                    LayerSpec(
-                        kind="points", name=BOUNDARY_NODES,
-                        data=np.concatenate(positions, axis=0),
-                        features={"role": role_column,
-                                  "node_id": np.asarray(boundary_ids, dtype=object)},
-                        colour_by="role", colour_kind="categorical",
-                        colour_cycle=role_colours(),
-                        options={
-                            "size": BOUNDARY_NODE_POINT_SIZE,
-                            "out_of_slice_display": True,
-                            **ON_TOP_POINTS_OPTIONS,
-                        },
-                        # Start hidden -- this is the only stage that ever
-                        # builds this layer, so there is no later spec whose
-                        # own visible=True would need to preserve a user
-                        # toggle (see the matching NODES comment above).
-                        visible=False,
-                    )
-                )
+            # Start hidden -- only Post processing draws this layer again,
+            # and its spec is visible=True so it keeps a user's toggle (see
+            # the matching NODES comment above).
+            layers.extend(self._boundary_nodes_layer(roles, visible=False))
 
         # The large masks as cleaned and the small masks as boundary labelling
         # read them; each replaces the as-loaded layer of the same name.
@@ -2167,6 +2142,37 @@ class ResultLayers:
             note=note,
         )
 
+    def _boundary_nodes_layer(self, roles: Mapping[str, Any], *, visible: bool) -> list[LayerSpec]:
+        """The :data:`BOUNDARY_NODES` layer of *roles* (node ids by role) on
+        the remembered graph; none when no node of any role is in it."""
+        positions: list[np.ndarray] = []
+        labels: list[str] = []
+        boundary_ids: list[Any] = []
+        for role, node_ids in roles.items():
+            role_points, kept = node_points(self._graph, list(node_ids))
+            if len(role_points):
+                positions.append(role_points)
+                labels.extend([role] * len(kept))
+                boundary_ids.extend(kept.tolist())
+        if not positions:
+            return []
+        return [
+            LayerSpec(
+                kind="points", name=BOUNDARY_NODES,
+                data=np.concatenate(positions, axis=0),
+                features={"role": np.asarray(labels, dtype=object),
+                          "node_id": np.asarray(boundary_ids, dtype=object)},
+                colour_by="role", colour_kind="categorical",
+                colour_cycle=role_colours(),
+                options={
+                    "size": BOUNDARY_NODE_POINT_SIZE,
+                    "out_of_slice_display": True,
+                    **ON_TOP_POINTS_OPTIONS,
+                },
+                visible=visible,
+            )
+        ]
+
     def _from_post_process(self, output: Any) -> StageLayers:
         """The network as Post processing left it: the edited vessels in line,
         split into bridges where they open into a thick vessel, and its
@@ -2189,6 +2195,13 @@ class ResultLayers:
                 stage="post_process", title=_title_for("post_process"), note="No edits."
             )
         solved = self._from_solve(output)
+        # The boundary nodes as post processing left them: inlets and outlets
+        # set by hand, the mask's boundary nodes re-judged at the edits.
+        lists = done.get("boundary_nodes") or {}
+        boundary_layer = self._boundary_nodes_layer(
+            {role: lists.get(f"{role}_nodes") or () for role in BOUNDARY_ROLE_NAMES},
+            visible=True,
+        ) if lists else []
         note = f"{done.get('edited_vessels', 0)} edited vessel(s) in line"
         if done.get("diameters"):
             measured = {name: count for name, count in done["diameters"].items() if count}
@@ -2198,7 +2211,7 @@ class ResultLayers:
         return StageLayers(
             stage="post_process",
             title=_title_for("post_process"),
-            layers=solved.layers,
+            layers=(*solved.layers, *boundary_layer),
             note=f"{note}; solved again. {solved.note}",
         )
 

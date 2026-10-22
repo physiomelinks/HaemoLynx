@@ -52,7 +52,10 @@ shortest first, each split into the sides a person chooses between, and
 For the other review lists (:mod:`haemolynx.graph.network_review`):
 :func:`merge_junctions` makes two junctions a sliver apart one, and
 :func:`set_vessel_diameter` gives vessels a width by hand that Regenerate
-keeps (the vessels are not marked for measuring again).
+keeps (the vessels are not marked for measuring again), and
+:func:`set_terminal_role` makes a node an inlet or an outlet, or neither --
+the lists kept on the graph (:data:`BOUNDARY_ROLES`) until Regenerate takes
+them to the stage.
 """
 from __future__ import annotations
 
@@ -71,6 +74,7 @@ from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 __all__ = [
     "APPLIED",
+    "BOUNDARY_ROLES",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "DRAWN_BACKGROUND_RUN_UM",
     "DRAWN_BESIDE_VESSEL",
@@ -83,11 +87,13 @@ __all__ = [
     "PENDING",
     "SPLIT_SNAP_UM",
     "ShortLoop",
+    "TERMINAL_ROLES",
     "TOUCHED",
     "TracedVessel",
     "VesselEnd",
     "add_traced_vessel",
     "add_vessel_between",
+    "boundary_roles_with_edits",
     "clear_edit_marks",
     "delete_loop_side",
     "delete_vessels",
@@ -102,6 +108,7 @@ __all__ = [
     "merge_junctions",
     "prune_disconnected_branches",
     "record_drawn_vessel_support",
+    "set_terminal_role",
     "set_vessel_diameter",
     "short_loops",
     "smooth_traced_path",
@@ -130,6 +137,12 @@ TOUCHED = "post_processing_touched_nodes"
 #: Graph attribute: edits made here were brought into this network (set by the
 #: ``post_process`` stage, and kept) -- work a rerun from an earlier stage drops.
 APPLIED = "post_processing_applied"
+#: Graph attribute: the inlet and outlet lists as :func:`set_terminal_role`
+#: left them since the last regenerate, ``{"inlet": [...], "outlet": [...]}``
+#: -- what the ``post_process`` stage takes in place of the run's own.
+BOUNDARY_ROLES = "post_processing_boundary_roles"
+#: The roles :func:`set_terminal_role` gives and takes away.
+TERMINAL_ROLES = ("inlet", "outlet")
 
 #: Length of the connector vessel :func:`split_junction` inserts.
 DEFAULT_SPLIT_CONNECTOR_LENGTH_UM = 15.0
@@ -236,6 +249,68 @@ def clear_edit_marks(G: nx.MultiGraph) -> None:
         data.pop(EDITED, None)
     G.graph.pop(PENDING, None)
     G.graph.pop(TOUCHED, None)
+    G.graph.pop(BOUNDARY_ROLES, None)
+
+
+def boundary_roles_with_edits(
+    roles: Mapping[str, Iterable[Any]] | None, G: nx.MultiGraph | None
+) -> dict[str, tuple[Any, ...]]:
+    """*roles* -- the boundary nodes by role (``"inlet"``, ``"outlet"``,
+    ``"arteriole_boundary"`` ...) as the run has them -- with the inlets and
+    outlets :func:`set_terminal_role` changed on *G* since the last
+    regenerate in place of their own."""
+    current = {str(role): tuple(nodes or ()) for role, nodes in (roles or {}).items()}
+    edited = G.graph.get(BOUNDARY_ROLES) if G is not None else None
+    for role in TERMINAL_ROLES:
+        if edited and role in edited:
+            current[role] = tuple(edited[role])
+    return current
+
+
+def set_terminal_role(
+    G: nx.MultiGraph,
+    roles: Mapping[str, Iterable[Any]] | None,
+    node: Any,
+    role: str | None,
+) -> dict[str, tuple[Any, ...]]:
+    """Make *node* an inlet or an outlet (*role*), or neither (None).
+
+    *roles* are the boundary nodes by role as the run has them; the role is
+    changed on top of whatever earlier calls changed on *G*
+    (:func:`boundary_roles_with_edits`). A node is an inlet or an outlet,
+    never both: made an outlet, it is an inlet no longer. Any node may be
+    given a role -- a junction included, as a ``node_ids`` boundary may be --
+    though a dead end leaving the image is what one usually is.
+
+    The new inlet and outlet lists are kept on *G* (:data:`BOUNDARY_ROLES`)
+    and *G* is marked :data:`PENDING`, so Regenerate takes them to the
+    ``post_process`` stage, which solves the network between them; the
+    network itself is not changed. Taking away the last inlet or the last
+    outlet still in *G* raises ``ValueError``: there would be nothing to
+    solve between, so the new one is made first. Returns the boundary roles
+    as they now are.
+    """
+    if role is not None and role not in TERMINAL_ROLES:
+        raise ValueError(f"{role!r} is not a terminal role: one of {TERMINAL_ROLES} or None.")
+    if node not in G:
+        raise ValueError(f"Node {node} is not in the network.")
+    current = boundary_roles_with_edits(roles, G)
+    lists = {name: [n for n in current.get(name, ()) if n != node] for name in TERMINAL_ROLES}
+    if role is not None:
+        lists[role].append(node)
+    for name in TERMINAL_ROLES:
+        had = any(n in G for n in current.get(name, ()))
+        if had and not any(n in G for n in lists[name]):
+            raise ValueError(
+                f"Node {node} is the only {name}: the network would have none left to solve "
+                f"between. Make another node an {name} first."
+            )
+    if all(tuple(lists[name]) == tuple(current.get(name, ())) for name in TERMINAL_ROLES):
+        return current
+    G.graph[BOUNDARY_ROLES] = {name: list(lists[name]) for name in TERMINAL_ROLES}
+    G.graph[PENDING] = True
+    current.update({name: tuple(lists[name]) for name in TERMINAL_ROLES})
+    return current
 
 
 def _is_bridge(data: Mapping[str, Any]) -> bool:

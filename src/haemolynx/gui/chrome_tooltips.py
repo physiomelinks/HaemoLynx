@@ -591,7 +591,8 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "review_choice": (
         "Which list Scan network makes: junctions where four or more vessels "
         "meet, short loops, or one of the checks on the network's geometry, "
-        "segmentation, flow, boundaries and diameters. None lists nothing "
+        "segmentation, flow, boundaries and diameters, or the terminal nodes "
+        "to make inlets and outlets or take the role from. None lists nothing "
         "and leaves the network to edit by clicking"
     ),
     "region": (
@@ -653,6 +654,21 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Say the chosen dead end is a vessel leaving the image. It becomes an "
         "open end: with an open_end_model other than closed, the next solve "
         "gives it a boundary condition"
+    ),
+    "review_make_inlet": (
+        "Make the chosen terminal node an inlet (an outlet no longer, if it "
+        "was one). Regenerate graph solves the network with it, and the "
+        "decision is written to the decisions CSV"
+    ),
+    "review_make_outlet": (
+        "Make the chosen terminal node an outlet (an inlet no longer, if it "
+        "was one). Regenerate graph solves the network with it, and the "
+        "decision is written to the decisions CSV"
+    ),
+    "review_remove_terminal": (
+        "Take the chosen node off the inlets or outlets; a dead end leaving "
+        "the image is then an open end in the solve (open_end_model). The "
+        "last inlet or outlet cannot be removed: make another one first"
     ),
     "review_join": (
         "Join the chosen pair of dead ends with a vessel traced between "

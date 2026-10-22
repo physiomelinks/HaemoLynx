@@ -1095,7 +1095,7 @@ are only caught locally.
   (and each 4+ junction) is magenta, ring and vessels (the `listed` status), the chosen one
   cyan (`marker_colours`); with no edit armed, a click on a ring chooses its item without
   moving the camera (`marker_under_click`, `marker_pick_um`). "4+ junctions" shows the
-  junction list, table and Delete/Leave/Split buttons. The other twelve are
+  junction list, table and Delete/Leave/Split buttons. The other thirteen are
   `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
   shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),
   hairpin vessels, dead ends by kind (`graph.classify_dead_ends`, the lumen-artefact report's
@@ -1107,7 +1107,12 @@ are only caught locally.
   dead ends the join left open (`facing_ends.facing_dead_end_pairs`, with why; Join the two
   ends), segmented vessels without a centreline (`mask_recovery.uncovered_mask_regions`),
   unsolved pieces (`graph.unsolved_pieces`), flow against the branch orders, flow outliers,
-  boundary-node issues, unmeasured diameters and diameter jumps (Set diameter,
+  boundary-node issues, terminal nodes (`find_terminal_nodes`: the inlets, the outlets, then
+  dead ends leaving the image widest first, then the other dead ends; Make inlet / Make outlet /
+  Remove inlet/outlet, `graph.set_terminal_role`: the lists kept on the graph as
+  `post_processing.BOUNDARY_ROLES`, the graph marked pending, the last inlet or outlet never
+  removed; `post_process` takes them in place of the run's, `_take_edited_terminal_roles`, and
+  draws the boundary-nodes layer again), unmeasured diameters and diameter jumps (Set diameter,
   `graph.set_vessel_diameter`: an override, the vessel *not* marked edited, so `post_process`
   does not measure it again and replace it). The four that read the segmented image run off
   the GUI thread, and after an edit only drop what it took away (the list says it may be out

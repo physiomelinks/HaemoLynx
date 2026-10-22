@@ -32,6 +32,7 @@ __all__ = [
     "FLOW_OUTLIERS",
     "HAIRPINS",
     "REVIEW_KINDS",
+    "TERMINAL_NODES",
     "ReviewItem",
     "TWO_IN_ONE_LUMEN",
     "UNCOVERED_MASK",
@@ -45,6 +46,7 @@ __all__ = [
     "find_flow_against_branch_order",
     "find_flow_outliers",
     "find_hairpins",
+    "find_terminal_nodes",
     "find_two_in_one_lumen",
     "find_uncovered_mask",
     "find_unmeasured_diameters",
@@ -67,6 +69,7 @@ UNSOLVED_PIECES = "unsolved_pieces"
 FLOW_AGAINST_ORDER = "flow_against_order"
 FLOW_OUTLIERS = "flow_outliers"
 BOUNDARY_NODES = "boundary_nodes"
+TERMINAL_NODES = "terminal_nodes"
 UNMEASURED_DIAMETERS = "unmeasured_diameters"
 DIAMETER_JUMPS = "diameter_jumps"
 #: Every kind a finder here returns, in the order the dropdown lists them.
@@ -81,6 +84,7 @@ REVIEW_KINDS = (
     FLOW_AGAINST_ORDER,
     FLOW_OUTLIERS,
     BOUNDARY_NODES,
+    TERMINAL_NODES,
     UNMEASURED_DIAMETERS,
     DIAMETER_JUMPS,
 )
@@ -651,6 +655,130 @@ def find_flow_outliers(
     return items
 
 
+def _face_readers(
+    G: nx.MultiGraph,
+    pos: Mapping[Any, np.ndarray],
+    extent_um: Sequence[float] | None,
+    image_face_margin_um: float | None,
+):
+    """Two readers of where a node lies against the image's faces: its depth
+    inside the image in microns, and whether it leaves the image (None when
+    neither can be told). A dead end leaves it by the one definition
+    (:func:`haemolynx.graph.dead_ends.node_leaves_image`); any other node
+    when it sits on a face. *image_face_margin_um*, when given, replaces both
+    with a fixed distance."""
+    from .dead_ends import graph_image_extent_um, leaves_image, node_leaves_image
+
+    extent = np.asarray(extent_um, dtype=float) if extent_um is not None else graph_image_extent_um(G)
+
+    def depth(node) -> float | None:
+        if extent is None or node not in pos:
+            return None
+        return float(np.min(np.minimum(pos[node], extent - pos[node])))
+
+    def leaves(node) -> bool | None:
+        if image_face_margin_um is not None:
+            inside = depth(node)
+            return None if inside is None else inside <= float(image_face_margin_um)
+        if G.degree(node) != 1:
+            # Not a dead end: whether it at least sits on a face.
+            if extent is None or node not in pos:
+                return None
+            return leaves_image(pos[node], extent, voxel_size_zyx=G.graph.get("image_voxel_size_zyx"))[0]
+        if extent is None and G.nodes[node].get("dead_end_kind") is None:
+            return None
+        return node_leaves_image(G, node, extent)
+
+    return depth, leaves
+
+
+def find_terminal_nodes(
+    G: nx.MultiGraph,
+    roles: Mapping[str, Iterable[Any]],
+    *,
+    extent_um: Sequence[float] | None = None,
+) -> list[ReviewItem]:
+    """The terminal nodes, for a person to make one an inlet or an outlet or
+    take the role away: the inlets, then the outlets, then the dead ends
+    leaving the image that are neither -- the vessels the image cut, where
+    blood can come in or go out -- then every other dead end; the dead ends
+    widest first. A vessel with a dead end at both ends (a piece on its own)
+    is left out: nothing flows through it whatever its ends are. *roles* maps
+    ``"inlet"``, ``"outlet"`` and the other boundary roles to their nodes.
+
+    Whether a dead end leaves the image is the one definition
+    (:func:`haemolynx.graph.dead_ends.node_leaves_image`), against the
+    image's extent *extent_um* or the graph's own."""
+    pos = _node_pos(G)
+    name = _namer(G)
+    inlets = [n for n in dict.fromkeys(roles.get("inlet") or ()) if n in G]
+    outlets = [n for n in dict.fromkeys(roles.get("outlet") or ()) if n in G and n not in inlets]
+    others: dict[Any, list[str]] = {}
+    for role, nodes in roles.items():
+        if role in ("inlet", "outlet"):
+            continue
+        for node in nodes or ():
+            others.setdefault(node, []).append(str(role))
+    depth, leaves = _face_readers(G, pos, extent_um, None)
+    reference = flow_reference(G, inlets)
+
+    def item(node, order: int, role: str) -> tuple[tuple, ReviewItem]:
+        edges = tuple(dict.fromkeys(name(a, b, k) for a, b, k in G.edges(node, keys=True)))
+        widths = [w for w in (_diameter(G.edges[e]) for e in edges) if w is not None]
+        flows = [s for s in (_flow_share(G.edges[e], reference) for e in edges if _is_solved(G.edges[e]))
+                 if s is not None]
+        out = leaves(node)
+        inside = depth(node)
+        kind = G.nodes[node].get("dead_end_kind")
+        where = (
+            "leaving the image" if out
+            else f"{inside:.3g} µm inside the image" if inside is not None
+            else "where the image's faces are not known"
+        )
+        if role:
+            why = f"Node {node} is an {role}, {where}"
+            if G.degree(node) != 1:
+                why += f"; not a dead end: {G.degree(node)} vessels meet there"
+            why += "."
+        elif out:
+            why = (f"Node {node} is a dead end {where}, neither inlet nor outlet: the vessel the image cut "
+                   "is an open end in the solve (open_end_model) unless it is made one.")
+        else:
+            why = f"Node {node} is a dead end {where}" + (f" ({str(kind).replace('_', ' ')})." if kind else ".")
+        widest = max(widths) if widths else None
+        found = ReviewItem(
+            kind=TERMINAL_NODES,
+            nodes=(node,),
+            edges=edges,
+            centre_um=_centre([pos[node]]) if node in pos else _centre(_points(G, edges, pos)),
+            why=why,
+            measures={
+                "role": role,
+                "other_roles": ";".join(others.get(node, ())),
+                "vessels": G.degree(node),
+                "leaves_image": out,
+                "dead_end_kind": kind,
+                "depth_um": inside,
+                "diameter_um": widest,
+                "flow_share": max(flows) if flows else None,
+            },
+            points_um=_points(G, edges, pos, extra=[pos[node]] if node in pos else ()),
+        )
+        return (order, -(widest or 0.0)), found
+
+    ranked = [item(node, 0, "inlet") for node in inlets] + [item(node, 1, "outlet") for node in outlets]
+    for node in G.nodes:
+        if node in inlets or node in outlets or G.degree(node) != 1:
+            continue
+        (_a, other, _k), = G.edges(node, keys=True)
+        if G.degree(other) == 1:
+            continue
+        ranked.append(item(node, 2 if leaves(node) else 3, ""))
+    # Inlets and outlets keep their lists' order; the dead ends go widest first.
+    ranked.sort(key=lambda pair: pair[0] if pair[0][0] >= 2 else (pair[0][0], 0.0))
+    return [found for _key, found in ranked]
+
+
 def find_boundary_issues(
     G: nx.MultiGraph,
     roles: Mapping[str, Iterable[Any]],
@@ -672,8 +800,6 @@ def find_boundary_issues(
     run marked one, else its distance to a face, the image's extent
     *extent_um* or the graph's own). *image_face_margin_um*, when given,
     replaces it with a fixed distance."""
-    from .dead_ends import graph_image_extent_um, leaves_image, node_leaves_image
-
     pos = _node_pos(G)
     name = _namer(G)
     role_of: dict[Any, str] = {}
@@ -681,25 +807,7 @@ def find_boundary_issues(
         for node in nodes or ():
             role_of.setdefault(node, str(role))
     ends = [n for n in (*(roles.get("inlet") or ()), *(roles.get("outlet") or ())) if n in G]
-    extent = np.asarray(extent_um, dtype=float) if extent_um is not None else graph_image_extent_um(G)
-
-    def depth(node) -> float | None:
-        if extent is None or node not in pos:
-            return None
-        return float(np.min(np.minimum(pos[node], extent - pos[node])))
-
-    def leaves(node) -> bool | None:
-        if image_face_margin_um is not None:
-            inside = depth(node)
-            return None if inside is None else inside <= float(image_face_margin_um)
-        if G.degree(node) != 1:
-            # Not a dead end: whether it at least sits on a face.
-            if extent is None or node not in pos:
-                return None
-            return leaves_image(pos[node], extent, voxel_size_zyx=G.graph.get("image_voxel_size_zyx"))[0]
-        if extent is None and G.nodes[node].get("dead_end_kind") is None:
-            return None
-        return node_leaves_image(G, node, extent)
+    depth, leaves = _face_readers(G, pos, extent_um, image_face_margin_um)
 
     reference = flow_reference(G, roles.get("inlet") or ())
     found: list[tuple[int, ReviewItem]] = []

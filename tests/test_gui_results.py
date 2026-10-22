@@ -2731,3 +2731,31 @@ def test_export_results_draws_no_tissue_surface_when_none_was_measured():
         group = built(graph).stage_finished("export_results", output)
         assert TISSUE_SURFACE not in {spec.name for spec in group.layers}
         assert "Tissue" not in group.note
+
+
+def test_post_processing_draws_the_boundary_nodes_it_left_keeping_the_layers_toggle():
+    """Inlets and outlets set by hand on the Terminal nodes list are drawn
+    with the solve: the boundary-nodes layer as the stage left the lists.
+    Its spec is visible, so the viewer keeps whether the layer was shown."""
+    results = ResultLayers()
+    graph = a_graph()
+    results.stage_finished("build_network", network(graph))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph, inlet_nodes=[0], outlet_nodes=[3]))
+    solution = _post_processed_solution(graph, 0)
+    solution.post_processed["boundary_nodes"] = {
+        "inlet_nodes": [0], "outlet_nodes": [3, 2], "arteriole_boundary_nodes": [],
+        "venule_boundary_nodes": [], "large_arteriole_boundary_nodes": [1],
+        "large_venule_boundary_nodes": [],
+    }
+
+    group = results.stage_finished("post_process", solution)
+
+    boundaries = spec_named(group, BOUNDARY_NODES)
+    assert list(boundaries.features["role"]) == ["inlet", "outlet", "outlet"]
+    assert list(boundaries.features["node_id"]) == [0, 3, 2]
+    assert boundaries.visible is True
+    assert np.allclose(boundaries.data, [[0.0, 0.0, 0.0], [30.0, 0.0, 0.0], [20.0, 0.0, 0.0]])
+    # Without the lists (an older stage output) no boundary layer is drawn again.
+    del solution.post_processed["boundary_nodes"]
+    group = results.stage_finished("post_process", solution)
+    assert BOUNDARY_NODES not in [spec.name for spec in group.layers]

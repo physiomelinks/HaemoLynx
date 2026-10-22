@@ -4471,6 +4471,43 @@ def _trim_boundary_lists(
         logger.info(f"Re-selected resistance node pair: {boundaries.resistance_node_pair}")
 
 
+def _take_edited_terminal_roles(
+    settings: dict, boundaries: BoundaryNodes, G: nx.MultiGraph
+) -> None:
+    """The inlets and outlets the Post processing tab set by hand
+    (``graph.set_terminal_role``, kept on *G*), on *boundaries* and in
+    *settings* in place of the run's own; the resistance node pair is picked
+    again when either of its nodes lost its role."""
+    edited = G.graph.get(graph.post_processing.BOUNDARY_ROLES)
+    if not edited:
+        return
+    for role in graph.post_processing.TERMINAL_ROLES:
+        if role not in edited:
+            continue
+        name = f"{role}_nodes"
+        nodes = list(edited[role])
+        before = list(getattr(boundaries, name))
+        kept = getattr(boundaries, name)
+        kept[:] = nodes
+        in_settings = settings.get(name)
+        if isinstance(in_settings, list):
+            if in_settings is not kept:
+                in_settings[:] = nodes
+        else:
+            settings[name] = list(nodes)
+        added = [n for n in nodes if n not in before]
+        removed = [n for n in before if n not in nodes]
+        if added or removed:
+            logger.info(f"Post processing: {role} nodes set by hand: added {added}, removed {removed}.")
+    pair = boundaries.resistance_node_pair
+    if pair is None or pair[0] not in boundaries.inlet_nodes or pair[1] not in boundaries.outlet_nodes:
+        boundaries.resistance_node_pair = (
+            (boundaries.inlet_nodes[0], boundaries.outlet_nodes[0])
+            if boundaries.inlet_nodes and boundaries.outlet_nodes
+            else None
+        )
+
+
 def post_process(
     settings: dict,
     model: HaemodynamicModel,
@@ -4490,7 +4527,9 @@ def post_process(
     this does to those vessels what the stages before Haemodynamics did to
     every vessel:
 
-    1. the boundary-node lists follow the graph -- a prune can drop an inlet;
+    1. the boundary-node lists follow the graph -- a prune can drop an inlet
+       -- and the inlets and outlets set by hand on the tab's Terminal nodes
+       list replace the run's (:func:`_take_edited_terminal_roles`);
     2. an edited vessel that opens into a thick vessel is split where it
        enters, the part inside a zero-resistance bridge
        (:func:`_bridge_edited_vessels`);
@@ -4543,6 +4582,7 @@ def post_process(
         # The edited vessels are measured from the raw image read as
         # raw_image_downsample now says.
         _record_downsample(G, settings, network.volume)
+    _take_edited_terminal_roles(settings, boundaries, G)
     had_inlets, had_outlets = bool(boundaries.inlet_nodes), bool(boundaries.outlet_nodes)
     _trim_boundary_lists(settings, boundaries, G)
     if (had_inlets and not boundaries.inlet_nodes) or (had_outlets and not boundaries.outlet_nodes):

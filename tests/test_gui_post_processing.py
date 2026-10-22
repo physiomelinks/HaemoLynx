@@ -1012,3 +1012,57 @@ def test_a_listed_piece_that_holds_a_boundary_node_or_got_a_junction_stays():
     G.add_edge(middle, (10.0, 30.0, 40.0), voxels=[list(middle), [10.0, 30.0, 40.0]], length=28.3)
     joined = remove_listed_pieces(G, [island])
     assert joined.pieces == 0 and joined.skipped == 1 and tip in G
+
+
+# --- Terminal nodes: make an inlet or an outlet, or take the role away ----------------
+
+
+def test_a_terminal_node_is_offered_only_the_roles_it_does_not_have():
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_KEEP,
+        ACTION_MAKE_INLET,
+        ACTION_MAKE_OUTLET,
+        ACTION_REMOVE_TERMINAL,
+        REVIEW_LIST_BY_KEY,
+        action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_KEY[nr.TERMINAL_NODES]
+    assert entry.actions == (ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP)
+    assert entry.needs == () and not entry.uses_mask
+
+    inlet, outlet, dead_end = (SimpleNamespace(measures={"role": role}) for role in ("inlet", "outlet", ""))
+    offered = {
+        name: [a for a in entry.actions if action_applies(item, a)]
+        for name, item in (("inlet", inlet), ("outlet", outlet), ("dead end", dead_end))
+    }
+    assert offered == {
+        "inlet": [ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP],
+        "outlet": [ACTION_MAKE_INLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP],
+        "dead end": [ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_KEEP],
+    }
+
+
+def test_a_terminal_node_reads_as_its_role_where_it_is_and_how_wide():
+    assert review_label(
+        _item(nr.TERMINAL_NODES, nodes=(7,), role="inlet", leaves_image=True, diameter_um=12.0), 1
+    ) == "1. Node 7 (inlet): leaves the image, 12 µm wide"
+    assert review_label(
+        _item(nr.TERMINAL_NODES, nodes=(4,), role="", leaves_image=False, depth_um=20.0), 2
+    ) == "2. Node 4 (dead end): 20 µm inside"
+
+
+def test_the_terminal_node_list_is_made_from_the_roles_and_the_image_size():
+    G = nx.MultiGraph()
+    for node, pos in {0: (5, 5, 0), 1: (5, 5, 5), 2: (5, 5, 9), 3: (5, 0, 5)}.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in ((0, 1), (1, 2), (1, 3)):
+        G.add_edge(u, v, voxels=[G.nodes[u]["pos"].tolist(), G.nodes[v]["pos"].tolist()], length=5.0)
+
+    items = find_review_items(
+        nr.TERMINAL_NODES, G, roles={"inlet": (0,), "outlet": (2,)}, extent_um=(10.0, 10.0, 10.0)
+    )
+
+    assert [(item.nodes[0], item.measures["role"]) for item in items] == [(0, "inlet"), (2, "outlet"), (3, "")]

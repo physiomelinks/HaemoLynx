@@ -10419,6 +10419,7 @@ def _post_processing_controls(
         IntensityCostField,
         VesselEnd,
         add_traced_vessel,
+        boundary_roles_with_edits,
         connectivity_rows,
         delete_loop_side,
         delete_vessels,
@@ -10428,6 +10429,7 @@ def _post_processing_controls(
         merge_junctions,
         prune_disconnected_branches,
         record_drawn_vessel_support,
+        set_terminal_role,
         set_vessel_diameter,
         short_loops,
         split_junction,
@@ -10452,9 +10454,12 @@ def _post_processing_controls(
         ACTION_JOIN_AHEAD,
         ACTION_KEEP,
         ACTION_LABELS,
+        ACTION_MAKE_INLET,
+        ACTION_MAKE_OUTLET,
         ACTION_MARK_BLIND,
         ACTION_MARK_OPEN,
         ACTION_MERGE,
+        ACTION_REMOVE_TERMINAL,
         ACTION_SET_DIAMETER,
         ACTION_TRACE_ON,
         DEAD_END_SHOW,
@@ -10888,6 +10893,10 @@ def _post_processing_controls(
         row.addWidget(review_buttons[action])
     review_layout.addLayout(row)
     row = QHBoxLayout()
+    for action in (ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
     row.addWidget(review_buttons[ACTION_SET_DIAMETER])
     row.addWidget(review_diameter)
     row.addWidget(review_buttons[ACTION_KEEP])
@@ -11215,7 +11224,9 @@ def _post_processing_controls(
         if graph is None:
             status.setText("Nothing to check yet: run the pipeline through at least Boundaries first.")
             return
-        roles = boundary_roles() or {}
+        # The inlets and outlets the Terminal nodes list set since the last
+        # regenerate are kept on the graph, until the stage takes them.
+        roles = boundary_roles_with_edits(boundary_roles(), graph)
         state.inlets = tuple(roles.get("inlet", ()) or ())
         state.outlets = tuple(roles.get("outlet", ()) or ())
         state.protected = frozenset(n for nodes in roles.values() for n in (nodes or ()))
@@ -12105,6 +12116,34 @@ def _post_processing_controls(
         fill_review(state.review_row)
         review_summary.setText(review_counts() + written)
 
+    def on_review_set_terminal_role(role) -> None:
+        """Make the chosen terminal node an inlet or an outlet, or neither
+        (graph.set_terminal_role): the lists are kept on the tab's graph, and
+        Regenerate graph solves the network between them."""
+        item = chosen_item()
+        if item is None:
+            return
+        node = item.nodes[0]
+        if node not in state.graph:
+            review_summary.setText(f"Node {node} is no longer in the network: scan the network again.")
+            return
+        words = f"made an {role}" if role else "taken off the inlets and outlets"
+        review, row = record_for(item, words)
+        try:
+            roles = set_terminal_role(state.graph, review_roles(), node, role)
+        except ValueError as error:
+            review_summary.setText(str(error))
+            return
+        state.inlets = tuple(roles.get("inlet", ()) or ())
+        state.outlets = tuple(roles.get("outlet", ()) or ())
+        state.protected = frozenset(n for nodes in roles.values() for n in (nodes or ()))
+        written = keep_record(review, row)
+        text = f"Node {node} {words}: {len(state.inlets)} inlet(s), {len(state.outlets)} outlet(s)"
+        log_edit(text)
+        # Redrawn like any edit, so the viewer holds the tab's graph and a
+        # scan before Regenerate keeps the lists on it.
+        after_review_edit(text, written)
+
     def on_review_join_ahead() -> None:
         item = chosen_item()
         if item is None:
@@ -12777,6 +12816,9 @@ def _post_processing_controls(
         lambda: on_review_mark_dead_end("leaves_image", "leaving the image")
     )
     review_buttons[ACTION_SET_DIAMETER].clicked.connect(on_review_set_diameter)
+    review_buttons[ACTION_MAKE_INLET].clicked.connect(lambda: on_review_set_terminal_role("inlet"))
+    review_buttons[ACTION_MAKE_OUTLET].clicked.connect(lambda: on_review_set_terminal_role("outlet"))
+    review_buttons[ACTION_REMOVE_TERMINAL].clicked.connect(lambda: on_review_set_terminal_role(None))
     dead_end_show.currentTextChanged.connect(on_dead_end_show_changed)
     remove_pieces_button.clicked.connect(on_remove_listed_pieces)
     refresh_review_buttons()
