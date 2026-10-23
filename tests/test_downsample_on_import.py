@@ -410,6 +410,57 @@ def test_the_skeleton_voxel_counts_keep_their_physical_size_on_the_reduced_grid(
     assert stages.skeleton_voxel_settings_on_grid(settings, anisotropic)["skeleton_bundle_scan_size"] == 2
 
 
+def test_voxel_counts_chosen_on_the_reduced_grid_come_back_as_the_image_as_read_counts_them():
+    """The settings optimiser searches on the run's grid: a count it kept is
+    the user's own again (1 on the 2x grid is the 1 or 2 set, never 2 for a
+    set 1), and one it moved is multiplied back up."""
+    down = downsample_for(2, STACK, (1.0, 1.0, 1.0))
+    settings = {
+        "skeleton_closing_radius": 1,
+        "skeleton_bridge_gap_size": 3,
+        "skeleton_min_branch_length": 3,
+        "skeleton_max_bridge_distance": 4,
+        "skeleton_bundle_scan_size": 9,
+        "skeleton_bundle_hub_min_spacing": 0,
+    }
+    on_grid = stages.skeleton_voxel_settings_on_grid(settings, down)
+    # Kept, every one: each comes back as set.
+    kept = {**settings, **on_grid}
+    assert stages.skeleton_voxel_settings_from_grid(kept, settings, down) == settings
+    # Moved: twice the grid's count.
+    moved = {**kept, "skeleton_bridge_gap_size": 4, "skeleton_bundle_scan_size": 3, "skeleton_bundle_hub_min_spacing": 1}
+    restored = stages.skeleton_voxel_settings_from_grid(moved, settings, down)
+    assert restored["skeleton_bridge_gap_size"] == 8
+    assert restored["skeleton_bundle_scan_size"] == 6
+    assert restored["skeleton_bundle_hub_min_spacing"] == 2
+    assert restored["skeleton_closing_radius"] == 1
+    # Only the finest axis's reduction counts, as on the way in.
+    anisotropic = downsample_for(4, STACK, (2.0, 0.5, 0.5))
+    assert stages.skeleton_voxel_settings_from_grid(
+        {"skeleton_bundle_scan_size": 3}, settings, anisotropic
+    ) == {"skeleton_bundle_scan_size": 12}
+    assert stages.skeleton_voxel_settings_from_grid(moved, settings, None) == {}
+    assert stages.skeleton_voxel_settings_from_grid(moved, settings, downsample_for(1, STACK, (1.0, 1.0, 1.0))) == {}
+
+
+def test_the_image_on_the_run_grid_is_what_skeletonise_reads(tmp_path):
+    """`load_volume_on_run_grid`, which the settings optimiser starts from,
+    gives the image, grid, box and reduction `skeletonise` itself reads."""
+    settings = _run_settings(
+        tmp_path, crop_on_import=True, crop_method="coordinates",
+        crop_start_xyz=(0, 10, 0), crop_end_xyz=(35, 29, 11),
+    )
+    volume = stages.skeletonise(dict(settings), stages.segment(dict(settings)))
+
+    local = dict(settings)
+    on_grid = stages.load_volume_on_run_grid(local, stages.segment(local).input_format)
+
+    assert np.array_equal(on_grid.image != 0, volume.image != 0)
+    assert on_grid.voxel_size_xyz == volume.voxel_size_xyz == (2.0, 2.0, 2.0)
+    assert on_grid.crop == volume.crop
+    assert on_grid.downsample == volume.downsample
+
+
 def test_the_skeleton_clean_up_runs_with_the_counts_on_the_reduced_grid(tmp_path, monkeypatch):
     import functools
 

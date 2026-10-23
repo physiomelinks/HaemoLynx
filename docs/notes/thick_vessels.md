@@ -75,7 +75,9 @@ wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
 digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
 run with the same mask and settings reads it back (`skeletonize_thickness_gated(thick_region=)`),
 a run loading its skeleton (`do_skeletonize` off) gets it too, where it used to get none and
-make no bridges, and `post_process` finding it again for a resumed run keeps what it finds;
+make no bridges (with segmentation cleanup on it missed until 2026-10-23: the loaded image was
+not cleaned, so its digest was not the fresh run's; both now go through
+`stages._mask_skeleton_is_made_from`), and `post_process` finding it again for a resumed run keeps what it finds;
 a mask with no thick region is remembered as well. `graph/thick_vessel_junctions.py` (`build_network`'s last step, and `post_process` for
 hand-edited vessels) then makes the bridges, by Harvey's rules: a thick vessel is its centreline
 alone, and every vessel opening into it is joined by one `IS_ZERO_RESISTANCE` bridge, straight
