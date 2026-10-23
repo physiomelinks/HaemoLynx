@@ -2,9 +2,9 @@
 
 > **Status (2026-10-23):** Phase 0 measured on E14.5 at `405364d7` (see **Measured**): A5, and
 > A10 and B7 (both found in Phase 0), are the largest drifts. Phase 3 is pushed (`9328c668`).
-> Phase 2 is done on branch `claude/optimiser-phase2` (A1, A2, A5, A9, A10; a trial's E14.5
-> skeleton now equals the run's), not yet committed. Findings were first read
-> in the code at `666cafe8`. Decisions D1-D5 are Harvey's.
+> Phase 2 is pushed (`f1184f25`: A1, A2, A5, A9, A10; a trial's E14.5 skeleton now equals the
+> run's), and Optimise settings re-measured on E14.5 after it. Findings were first read in the
+> code at `666cafe8`. Decisions D1-D6 are Harvey's.
 
 ## Context
 
@@ -205,8 +205,9 @@ The largest change; it alters what the graph sweeps choose.
 0 → 1 → 2 → 3 → 4 → 5. Phase 3 needs nothing from 1-2 and can run beside them in its own session.
 Phases 1-3 fix plain bugs and are cheap; Phase 4 is where the chosen settings move, and goes
 last so its effect is measured on its own. After Phase 0 (2026-10-23): Phase 0 is done, Phase 3 is
-under way in its own session, and A5 in Phase 2 is the next most valuable change; the chosen
-settings will move with it alone (R1 turned thick vessels off because of it).
+under way in its own session, and A5 in Phase 2 is the next most valuable change. After Phase 2
+(pushed as `f1184f25`): the search still turns thick vessels off on E14.5, now because of what the
+on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
 
 ## Verification
 
@@ -234,6 +235,10 @@ settings will move with it alone (R1 turned thick vessels off because of it).
 - **D5. Cost of Phase 4.** If the finish makes a 4x E14.5 search more than twice as slow (Phase 0
   says), Auto will pick coarser grids. Recommend accepting it and letting the time model say so;
   the alternative, finishing only some groups' trials, breaks Principle 2.
+- **D6. What the thick-vessel on/off sweep scores** (found re-running R1 after Phase 2). It keeps
+  whichever raw skeleton has the larger connected share, so on E14.5 thick vessels go off by 0.966
+  against 0.953 even with the run's restriction. Keep it; or calibrate a measure on a marked grid
+  of thick vessels (a sheet or a centreline), which is what the toggle is for.
 
 ## Risks
 
@@ -353,7 +358,7 @@ run's steps after building (no split, thick vessels off): build 1,172 edges / 45
 ends; smoothing 42,192 um; clean-up 1,128 / 41,689 / 228; retrace 1,198 / 43,145; smoothing and
 straight steps 43,001.
 
-### Phase 2 (2026-10-23, branch `claude/optimiser-phase2` on `9328c668`, E14.5 MCA)
+### Phase 2 (2026-10-23, pushed as `f1184f25`, E14.5 MCA)
 
 A1, A2, A5, A9 and A10 done. A trial set up as the panel now sets it up
 (`stages.load_volume_on_run_grid`, the run's whole settings, voxel counts on the run's grid,
@@ -367,8 +372,53 @@ skeletons the Phase 0 runs saved (`harness/phase2_check.py`, on the worktree's s
 
 Not done from Phase 2: the report's list of pass-through settings that differ from their
 defaults; it needs the fallback table that Phase 1's shared builders give, so it moves there.
-The search's own chosen settings on E14.5 have not been measured again since the fix (R1 turned
-thick vessels off because of A5).
+
+### Optimise settings again, at `f1184f25` (2026-10-23, E14.5 MCA)
+
+R1 run again as the panel now runs it (`harness/optimiser_rerun.py`, snapshot `../c2`): the same
+config, raw image (Claudin, read as endothelial) as the cleanup guard, Auto, every group, one
+pass; now with the run's grid, its whole settings and its thick-vessel restriction (444,606
+voxels). Against Phase 0's R1 (`harness/compare_r1.py`; settings either run moved):
+
+| setting | starting value | chosen at `405364d7` | chosen at `f1184f25` |
+|---|---|---|---|
+| `use_thick_vessel_skeletonisation` | True | False | False |
+| `segmentation_cleanup` / `_remove_small_volumes` | off / off | on / on | on / on |
+| `segmentation_cleanup_remove_small_min_volume_um3` | 5 | 46.1 | 46.1 |
+| `skeleton_bundle_scan_size` / `_hub_min_spacing` | 9 / 4 | 18 / 9 | 9 / 4 |
+| `skeleton_bundle_max_connections_per_hub` | 8 | 12 | 12 |
+| `skeleton_min_component_percent` | 0 | 1 | 1 |
+| `cluster_collapse_method` | direction_aware | distance_only | persistence |
+| `cluster_collapse_persistence_search_multiple` | 3 | 3 | 5 |
+| `min_stub_length_radius_multiple` | 3 | 3 | 2 |
+
+| scorecard | start, `405364d7` | chosen, `405364d7` | start, `f1184f25` | chosen, `f1184f25` |
+|---|---|---|---|---|
+| mask score (0-10) | 5.995 | 6.019 | 5.995 | 6.019 |
+| input vessels the skeleton reaches | 0.577 | 0.016 | 0.504 | 0.016 |
+| input mask the skeleton runs through | 0.407 | 0.564 | 0.618 | 0.562 |
+| largest connected share of the skeleton | 0.903 | 1.0 | 0.961 | 1.0 |
+| skeleton the graph traces | 0.965 | 0.740 | 0.693 | 0.797 |
+| graph components | 62 | 1 | 47 | 1 |
+| self-loops, cartwheel hubs | 0, 0 | 0, 0 | 0, 0 | 0, 0 |
+
+- **The starting end is now the run's own.** At `405364d7` the scorecard's start was measured on the
+  unrestricted thick skeleton: 0.407 of the mask run through, against 0.618 for the run's skeleton.
+- **Thick vessels still go off, but no longer because of A5.** The on/off sweep scores only the
+  largest connected share of the raw skeleton: confined as the run confines it, on 0.953 and off
+  0.966 (Phase 0, unconfined: 0.884 and 0.961). That measure does not see what the thick path is
+  for, one centreline through a fat vessel instead of Lee's sheet; changing it is a question for
+  a marked grid (Principle 4, D6), so it is recorded, not changed.
+- **The graph-side choices moved**: collapse by persistence (search multiple 5) where Phase 0 chose
+  distance_only, a stub multiple of 2 where Phase 0 kept 3, and bundle refinement keeping its scan
+  size and hub spacing where Phase 0 doubled them. With thick vessels off these trials start from
+  the run's own plain skeleton, holes filled (A10), built with the run's settings (A2).
+- **Still one component kept**: `skeleton_min_component_percent` 0 -> 1 takes the graph from 47
+  components to 1 and the input vessels the skeleton reaches from 0.50 to 0.016, as in Phase 0.
+  Unchanged observation; whether E14.5's islands are vessels is a grid question.
+- **Time**: 1,356 s against Auto's estimate of 1,229 s (Phase 0: 2,643 s against 703 s); thick
+  gating 13 s (72 s). Phase 0's run shared the machine with the Phase 3 session's suites, this one
+  with a peer's small pytest, so not all of the difference is Phase 2's.
 
 **Two pipeline findings outside this plan:**
 - A run that reuses its saved skeleton (`do_skeletonize` off) gets the segmented image uncleaned
