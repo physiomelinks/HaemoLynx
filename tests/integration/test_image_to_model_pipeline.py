@@ -69,6 +69,7 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
         output_p_bc=500.0,
         min_stub_length=3.0,
         visualize_results=False,
+        show_plots_in_ide=False,
         visualize_vtk=False,
     )
 
@@ -146,6 +147,7 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
         output_p_bc=500.0,
         min_stub_length=3.0,
         visualize_results=False,
+        show_plots_in_ide=False,
         visualize_vtk=False,
     )
 
@@ -240,6 +242,7 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             output_p_bc=500.0,
             min_stub_length=3.0,
             visualize_results=False,
+            show_plots_in_ide=False,
             visualize_vtk=False,
             do_pericyte_constriction=True,
             use_pericyte_mask_constriction=False,
@@ -335,6 +338,7 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
             output_p_bc=500.0,
             min_stub_length=3.0,
             visualize_results=False,
+            show_plots_in_ide=False,
             visualize_vtk=False,
         )
     finally:

@@ -4,6 +4,7 @@ matplotlib.use("Agg")
 
 import pytest
 import numpy as np
+import plotly.graph_objects as go
 
 from ImageLynx.visualization import (
     plot_node_degree_distribution,
@@ -13,6 +14,8 @@ from ImageLynx.visualization import (
     visualize_volume_vedo,
     visualize_overlay,
     visualize_overlay_vedo,
+    visualize_3d_plotly,
+    visualize_3d_plotly_vessel_types,
 )
 from ImageLynx.visualization._helpers import (
     sort_branch_orders_numerically,
@@ -104,3 +107,13 @@ def test_visualize_overlay_vedo():
     skeleton[5, 5, 5] = True
     plt = visualize_overlay_vedo(mask, skeleton, title="Test", show=False)
     assert plt is not None
+
+
+@pytest.mark.plotting
+@pytest.mark.parametrize("plot", [visualize_3d_plotly, visualize_3d_plotly_vessel_types])
+@pytest.mark.parametrize("show", [True, False])
+def test_plotly_3d_calls_fig_show_only_when_asked(plot, show, multigraph_with_branch_order, monkeypatch):
+    shown = []
+    monkeypatch.setattr(go.Figure, "show", lambda self, *a, **k: shown.append(self))
+    fig = plot(multigraph_with_branch_order, show=show)
+    assert shown == ([fig] if show else [])

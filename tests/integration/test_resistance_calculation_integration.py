@@ -525,6 +525,7 @@ def _base_pipeline_kwargs(
         input_p_bc=INPUT_PRESSURE_PA,
         output_p_bc=OUTPUT_PRESSURE_PA,
         visualize_results=False,
+        show_plots_in_ide=False,
         visualize_vtk=False,
         statistics_mode="fast",
     )
