@@ -799,6 +799,45 @@ def run_voxel_size_xyz(
     )
 
 
+@dataclass(frozen=True)
+class RunGridVolume:
+    """The segmented image as :func:`skeletonise` reads it before it
+    skeletonises: cut to the ``crop_on_import`` box and reduced by
+    ``segmented_image_downsample``, with the voxel size of the grid that
+    leaves, and the box and the reduction themselves, which whatever is read
+    beside the image (the vessel masks, the raw image) is put through too."""
+
+    image: np.ndarray
+    #: ``(x, y, z)`` microns of the run's grid, resolved as ``skeletonise`` resolves it.
+    voxel_size_xyz: tuple[float, float, float]
+    voxel_size_source: str
+    crop: CropBox | None
+    downsample: Downsample | None
+
+
+def load_volume_on_run_grid(settings: dict, input_format: str) -> RunGridVolume:
+    """What :func:`skeletonise` reads, without skeletonising it: for the
+    settings optimiser, whose trials must start from the run's mask and grid
+    and confine the thick-vessel region as the run does
+    (:func:`thick_vessel_restriction_mask` needs the box and the reduction)."""
+    image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
+        settings, input_format
+    )
+    voxel_size, source = resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size,
+        metadata_status=voxel_meta_status,
+        voxel_size_override_xyz=settings["voxel_size_override_xyz"],
+        voxel_size_policy=settings["voxel_size_policy"],
+    )
+    return RunGridVolume(
+        image=image,
+        voxel_size_xyz=_run_voxel_size_on_grid(voxel_size, downsample),
+        voxel_size_source=source,
+        crop=crop,
+        downsample=downsample,
+    )
+
+
 #: The binarisation rule last decided on a whole segmented image, keyed on
 #: the file's identity and the volume as read: deciding it reads every voxel
 #: (a minute or two on a 17 G-voxel stack), and a run may load the image
@@ -993,6 +1032,32 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     return scaled
 
 
+def skeleton_voxel_settings_from_grid(
+    chosen: Mapping[str, Any], settings: Mapping[str, Any], downsample: Downsample | None
+) -> dict:
+    """:func:`skeleton_voxel_settings_on_grid` the other way: the
+    :data:`SKELETON_VOXEL_SETTINGS` in *chosen*, counted on *downsample*'s
+    grid, as the image as read counts them. One a run on that grid would
+    have used for its setting in *settings* comes back as set; another is
+    multiplied back up by the finest axis's reduction. For the settings
+    optimiser, which searches on the run's grid. Empty without a reduction."""
+    if downsample is None or downsample.is_identity:
+        return {}
+    finest = int(np.argmin(downsample.source_voxel_size_zyx))
+    factor = int(downsample.axis_factors_zyx[finest])
+    on_grid = skeleton_voxel_settings_on_grid(settings, downsample)
+    restored = {}
+    for name in SKELETON_VOXEL_SETTINGS:
+        value = chosen.get(name)
+        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if name in on_grid and value == on_grid[name]:
+            restored[name] = settings[name]
+        else:
+            restored[name] = int(round(value * factor))
+    return restored
+
+
 def _run_voxel_size_on_grid(voxel_size_xyz, downsample: Downsample | None):
     """A resolved ``(x, y, z)`` voxel size of the image as read, on the grid
     the run is on: scaled by *downsample* when there is one."""
@@ -1013,7 +1078,7 @@ def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[
     }
 
 
-def _thick_vessel_restriction_mask(
+def thick_vessel_restriction_mask(
     binary_image: np.ndarray,
     settings: dict,
     voxel_size_xyz,
@@ -1041,6 +1106,9 @@ def _thick_vessel_restriction_mask(
     *crop* is the ``crop_on_import`` box *binary_image* was cut to, which the
     masks are cut to as well, and *downsample* how it was reduced after that
     (``segmented_image_downsample``), which they are too.
+
+    Public for the settings optimiser, whose thick-vessel trials are confined
+    to the same voxels (see :func:`load_volume_on_run_grid`).
     """
     choice = str(settings["skeleton_thick_vessel_restrict_to_mask"]).strip().lower()
     if choice == "off":
@@ -1136,7 +1204,7 @@ def _thick_region_arguments(
         "voxel_size_zyx": io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz)),
         "fill_mask_holes": bool(settings["skeleton_fill_mask_holes_before_thickness"]),
         "wall_absorption_um": settings["skeleton_thick_vessel_wall_absorption_um"],
-        "restrict_thick_to_mask": _thick_vessel_restriction_mask(
+        "restrict_thick_to_mask": thick_vessel_restriction_mask(
             binary, settings, voxel_size_xyz, crop, downsample
         ),
         "use_memmap": settings["use_memmap_loading"],

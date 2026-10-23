@@ -141,7 +141,7 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_thick_vessel_large_stack_tree",
             # Declared under Vessel masks (they name which masks), but it is
             # this stage's thickness gate that reads them -- see
-            # stages._thick_vessel_restriction_mask -- so their rows sit
+            # stages.thick_vessel_restriction_mask -- so their rows sit
             # beside the thick-vessel settings they change.
             "skeleton_thick_vessel_restrict_to_mask",
             "skeleton_thick_vessel_restrict_to_mask_warn_below",

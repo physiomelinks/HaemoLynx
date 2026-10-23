@@ -853,7 +853,13 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
   FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself
   (`candidates.py`), trials are scored by pure functions (`metrics.py`), and the result is a
-  config file plus a readable report (`report.py`). **Check segmented image** is
+  config file plus a readable report (`report.py`). **A trial skeletonises as the run does**
+  (`PLAN_optimisers.md`): the panel hands the search the run's grid
+  (`stages.load_volume_on_run_grid`), its whole settings, voxel counts on that grid
+  (`skeleton_voxel_settings_on_grid` in, `_from_grid` out) and its thick-vessel restriction
+  (`stages.thick_vessel_restriction_mask`); plain trials go through
+  `io.load._skeletonize_loaded_volume`. `tests/test_optimisation_search.py` pins a trial's
+  skeleton `==` `skeletonise`'s. **Check segmented image** is
   `preprocessing/segmentation_quality.py` + `segmentation_raw_comparison.py`.
 - **`visualization/geometry.py`** — `edge_polyline`: an edge's `voxels` (or its two node positions)
   turned into a polyline that runs `u`→`v` and touches both nodes. The VTK export, the pericyte

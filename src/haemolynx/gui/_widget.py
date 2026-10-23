@@ -6749,6 +6749,22 @@ def _load_raw_reference_image_or_none(
         return None, f"{type(error).__name__}: {error}"
 
 
+def _thick_restriction_or_none(
+    local_settings: dict[str, Any], binary_mask: "np.ndarray", volume
+) -> "tuple[np.ndarray | None, str | None]":
+    """``(restriction, None)``: the vessel masks a run confines its
+    thick-vessel region to (``pipeline.stages.thick_vessel_restriction_mask``,
+    ``None`` while ``skeleton_thick_vessel_restrict_to_mask`` is off), on
+    *volume*'s grid -- or ``(None, reason)`` when they cannot be read, so the
+    search still runs, unconfined, and says so."""
+    try:
+        return pipeline_stages.thick_vessel_restriction_mask(
+            binary_mask, local_settings, volume.voxel_size_xyz, volume.crop, volume.downsample
+        ), None
+    except Exception as error:  # noqa: BLE001 - degrade, never fail the caller
+        return None, f"{type(error).__name__}: {error}"
+
+
 def _cancellable_progress_bridge(run_state: "RunState", bars: "OptimiseProgressBars"):
     """The cancel-flag/progress-bridge plumbing every "Optimise ..."
     background run needs, shared by `_run_optimisation_in_background` and
@@ -6859,16 +6875,24 @@ def _run_optimisation_in_background(
 
     @thread_worker
     def run():
+        from dataclasses import replace
+
         local_settings = dict(settings)
         inputs = segment(local_settings)
-        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
-            local_settings, inputs.input_format
-        )
-        voxel_size_xyz, _source = run_voxel_size_xyz(
-            local_settings, metadata_voxel_size, voxel_meta_status
-        )
-        raw_mask = _to_binary_volume_for_skeletonization(image)
-        starting_values = {name: local_settings[name] for name in OPTIMISE_SETTING_NAMES}
+        # What a run's skeletonise reads: the image on the run's grid, and the
+        # box and reduction it came through, which the vessel masks the run
+        # confines its thick-vessel region to come through too.
+        volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+        voxel_size_xyz = volume.voxel_size_xyz
+        raw_mask = _to_binary_volume_for_skeletonization(volume.image)
+        # The run's whole settings: the search changes only the ones it
+        # tunes and builds every trial with the rest as a run would. Voxel
+        # counts go in on the run's grid, as a run counts them there.
+        starting_values = {
+            **local_settings,
+            **pipeline_stages.skeleton_voxel_settings_on_grid(local_settings, volume.downsample),
+        }
+        restriction, restriction_error = _thick_restriction_or_none(local_settings, raw_mask, volume)
 
         # Optional: the Input tab's raw image, which "Check segmented image"
         # reads too -- when present, guards the
@@ -6880,7 +6904,7 @@ def _run_optimisation_in_background(
         raw_image, raw_image_error = _load_raw_reference_image_or_none(
             local_settings,
             expected_shape=raw_mask.shape,
-            downsample=(voxel_meta_status or {}).get("downsample"),
+            downsample=volume.downsample,
             voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
         )
         raw_image_stain = "plasma_column"
@@ -6903,8 +6927,17 @@ def _run_optimisation_in_background(
             raw_image=raw_image,
             raw_image_stain=raw_image_stain,
             max_passes=max_passes,
+            thick_restriction_mask=restriction,
         )
-        return result, local_settings["input_path"], raw_image_error
+        # Voxel counts back from the run's grid to the image as read, as the
+        # rows hold them.
+        result = replace(result, settings={
+            **result.settings,
+            **pipeline_stages.skeleton_voxel_settings_from_grid(
+                result.settings, local_settings, volume.downsample
+            ),
+        })
+        return result, local_settings["input_path"], raw_image_error, restriction_error
 
     def finished(payload) -> None:
         if not still_ours():
@@ -6914,7 +6947,7 @@ def _run_optimisation_in_background(
         if cancel_flag["cancelled"]:
             report.value = FINISHED_FIRST
             return
-        result, input_path, raw_image_error = payload
+        result, input_path, raw_image_error, restriction_error = payload
 
         def apply_result() -> None:
             for name, value in result.settings.items():
@@ -6955,7 +6988,11 @@ def _run_optimisation_in_background(
         raw_note = (
             f" Raw-image cross-check skipped: {raw_image_error}" if raw_image_error else ""
         )
-        report.value = propose(result, apply_result) + wrote_note + raw_note
+        restriction_note = (
+            f" Thick-vessel trials ran unconfined, the vessel masks unread: {restriction_error}"
+            if restriction_error else ""
+        )
+        report.value = propose(result, apply_result) + wrote_note + raw_note + restriction_note
 
     def failed(error: Exception) -> None:
         if not still_ours():

@@ -1169,7 +1169,7 @@ def test_optimise_settings_auto_downsample_uses_the_time_budget_resolver(monkeyp
 
     recorded = {}
 
-    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, starting_values):
+    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, starting_values, restriction=None):
         recorded["target_seconds"] = target_seconds
         recorded["use_thick_vessel_skeletonisation"] = starting_values["use_thick_vessel_skeletonisation"]
         return search_module._AutoDownsample(
@@ -1217,7 +1217,7 @@ def test_optimise_settings_downsample_rescales_voxel_settings_but_not_micron_one
     # rescaling logic in `optimise_skeleton_and_graph_settings` itself is
     # under test here, not any group's own decision-making.
     class _FakeSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column", thick_restriction_mask=None):
             self.mask = mask
             self.voxel_size_xyz_seen = voxel_size_xyz
             self.current = dict(starting_values)
@@ -1252,7 +1252,7 @@ def test_optimise_settings_downsample_scales_the_voxel_size_the_search_sees(monk
     seen = {}
 
     class _FakeSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column", thick_restriction_mask=None):
             seen["mask_shape"] = mask.shape
             seen["voxel_size_xyz"] = voxel_size_xyz
             self.current = dict(starting_values)
@@ -1951,7 +1951,7 @@ def test_a_downsampled_search_that_changes_nothing_returns_the_starting_values(m
     import haemolynx.optimisation.search as search_module
 
     class _KeepingSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column", thick_restriction_mask=None):
             self.current = dict(starting_values)
             self.trials = []
             self.groups_run = list(search_module.GROUP_NAMES)
@@ -1986,7 +1986,7 @@ def test_the_raw_images_stain_reaches_the_search(monkeypatch, stain):
     seen = {}
 
     class _RecordingSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column", thick_restriction_mask=None):
             seen["stain"] = raw_image_stain
             self.current = dict(starting_values)
             self.trials = []
@@ -2033,7 +2033,7 @@ def test_auto_times_the_search_on_the_grid_it_will_search(monkeypatch):
 
     probed = []
 
-    def recording_probe(raw_mask, voxel_size_zyx, *, factor, starting_values=None):
+    def recording_probe(raw_mask, voxel_size_zyx, *, factor, starting_values=None, restriction=None):
         probed.append(factor)
         return search_module._SearchTimeModel({"graph": 0.001}, probe_voxels=raw_mask.size / 8)
 
@@ -2232,7 +2232,7 @@ def test_a_search_ending_worse_than_it_started_says_so(monkeypatch):
     class _DestructiveSearch:
         """Ends with a whisker radius that erases every capillary."""
 
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column", thick_restriction_mask=None):
             self.current = dict(starting_values)
             self.trials = []
             self.groups_run = list(search_module.GROUP_NAMES)
@@ -2270,3 +2270,173 @@ def test_a_scorecard_that_cannot_be_measured_does_not_fail_the_search(monkeypatc
     )
     assert result.scorecard == ()
     assert result.settings
+
+
+# ---------------------------------------------------------------------------
+# A trial skeletonises as the run does (PLAN_optimisers.md, Phase 2: A5, A9, A10)
+# ---------------------------------------------------------------------------
+def _run_and_trial(tmp_path, mask, *, thick_restriction=True, **overrides):
+    """The cleaned skeleton ``pipeline.stages.skeletonise`` makes of *mask*
+    with *overrides*, and the cleaned skeleton of the first trial of a search
+    set up as the panel sets it up: the run's grid, the run's whole settings,
+    and the run's thick-vessel restriction (none, with *thick_restriction*
+    false). Also returns the restriction."""
+    from test_skeletonise_stage import _write_mask, settings_for
+
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.optimisation.search import _Search
+    from haemolynx.pipeline import stages
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    settings = settings_for(tmp_path, _write_mask(tmp_path, mask), **overrides)
+    run = stages.skeletonise(dict(settings), stages.segment(dict(settings)))
+    local = dict(settings)
+    volume = stages.load_volume_on_run_grid(local, stages.segment(local).input_format)
+    binary = _to_binary_volume_for_skeletonization(volume.image)
+    restriction = (
+        stages.thick_vessel_restriction_mask(
+            binary, local, volume.voxel_size_xyz, volume.crop, volume.downsample
+        )
+        if thick_restriction
+        else None
+    )
+    search = _Search(binary, volume.voxel_size_xyz, local, None, thick_restriction_mask=restriction)
+    search.raw_skeleton = search._raw_skeleton_trial({})
+    trial = np.asarray(search._preprocess_trial({}), dtype=bool)
+    return np.asarray(run.skeleton, dtype=bool), trial, restriction
+
+
+def test_a_thick_trial_confines_its_region_to_the_runs_vessel_masks(tmp_path, monkeypatch):
+    """Regression (A5): a trial's thick region took no notice of
+    ``skeleton_thick_vessel_restrict_to_mask``, so on E14.5 it was 99.8% of
+    the mask where the run's was 12%. Given the run's restriction, a trial
+    makes the run's skeleton voxel for voxel."""
+    import haemolynx.io as io_module
+    from test_thick_vessel_skeletonisation import plasma_labelled_object
+
+    mask, fat_roi = plasma_labelled_object(8.0)
+    # A large-vessel mask over half the trunk: the run's thick body is that half.
+    large = fat_roi.copy()
+    large[:, :, mask.shape[2] // 2:] = False
+    monkeypatch.setattr(
+        io_module, "load_and_validate_vessel_masks",
+        lambda **kwargs: (large, None, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)),
+    )
+    overrides = dict(use_thick_vessel_skeletonisation=True, skeleton_thick_vessel_restrict_to_mask="large")
+
+    run_skeleton, trial_skeleton, restriction = _run_and_trial(tmp_path / "confined", mask, **overrides)
+    assert restriction is not None and restriction.any()
+    assert np.array_equal(trial_skeleton, run_skeleton)
+
+    # Unconfined, as every trial was before: not the run's skeleton.
+    _run, unconfined, _none = _run_and_trial(
+        tmp_path / "unconfined", mask, thick_restriction=False, **overrides
+    )
+    assert not np.array_equal(unconfined, run_skeleton)
+
+
+def test_a_plain_trial_fills_the_skeletons_holes_as_the_run_does(tmp_path):
+    """Regression (A10): a plain-Lee trial skeletonised with
+    ``skeletonize_volume`` and skipped the hole fill every loader's
+    ``_skeletonize_loaded_volume`` does -- on E14.5's cleaned mask the fill
+    adds half again to the raw skeleton. A hollow shell's Lee skeleton is a
+    closed surface, which the fill makes solid; a vessel leaves each side."""
+    from haemolynx import preprocessing
+
+    zz, yy, xx = np.indices((30, 30, 60))
+    radius = np.sqrt((zz - 15) ** 2 + (yy - 15) ** 2 + (xx - 30) ** 2)
+    shell = (radius >= 8) & (radius <= 11)
+    vessels = (np.hypot(zz - 15, yy - 15) <= 2.5) & ((xx < 22) | (xx > 38)) & (xx >= 2) & (xx <= 57)
+    mask = shell | vessels
+    lee = preprocessing.skeletonize_volume(mask).astype(bool)
+    assert int(lee.sum()) < int(preprocessing.fill_binary_holes(lee).sum())  # the fixture's point
+
+    run_skeleton, trial_skeleton, _restriction = _run_and_trial(tmp_path, mask)
+    assert run_skeleton.any()
+    assert np.array_equal(trial_skeleton, run_skeleton)
+
+
+def test_a_deselected_cleanup_group_still_cleans_the_mask_as_the_run_does():
+    """Regression (A9): with the cleanup group deselected, the search read
+    the mask uncleaned, though the user's switch and a toggle were on and a
+    run cleans it. A speck the run's cleanup removes stays out of the search."""
+    from haemolynx import preprocessing
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    speck = np.zeros_like(mask)
+    speck[2:4, 2:4, 26:28] = True
+    starting = {
+        **_DEFAULT_STARTING_VALUES,
+        "segmentation_cleanup": True,
+        "segmentation_cleanup_remove_small_volumes": True,
+        "segmentation_cleanup_remove_small_min_volume_um3": 20.0,
+    }
+    cleaned, _raw = preprocessing.clean_segmented_mask_for_skeletonisation(
+        mask | speck, voxel_size_zyx=(1.0, 1.0, 1.0),
+        remove_small_volumes=True, remove_small_min_volume_um3=20.0,
+    )
+    assert not cleaned[speck].any()  # the run's cleanup takes the speck
+
+    search = _Search(
+        mask | speck, (1.0, 1.0, 1.0), starting, None, enabled_groups=["min_branch_length"],
+    )
+    search.run()
+    assert np.array_equal(search.raw_mask, cleaned)
+
+    # With the switch off a run reads the mask as it is, and so does the search.
+    search = _Search(
+        mask | speck, (1.0, 1.0, 1.0), {**starting, "segmentation_cleanup": False}, None,
+        enabled_groups=["min_branch_length"],
+    )
+    search.run()
+    assert np.array_equal(search.raw_mask, mask | speck)
+
+
+def test_the_thick_restriction_must_match_the_mask_shape():
+    with pytest.raises(ValueError, match="thick_restriction_mask shape"):
+        optimise_skeleton_and_graph_settings(
+            _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+            starting_values=_DEFAULT_STARTING_VALUES, downsample_factor=1,
+            thick_restriction_mask=np.zeros((3, 3, 3), dtype=bool),
+        )
+
+
+def test_the_thick_restriction_is_reduced_onto_the_search_grid_by_block_majority():
+    from haemolynx.optimisation.search import _downsample_restriction
+
+    restriction = np.zeros((4, 4, 4), dtype=bool)
+    restriction[:2, :2, :2] = True  # one whole 2x2x2 block
+    restriction[2, 2, 2] = True  # one voxel of eight in another
+    reduced = _downsample_restriction(restriction, 2, (1.0, 1.0, 1.0))
+    assert reduced.shape == (2, 2, 2)
+    assert reduced[0, 0, 0] and not reduced[1, 1, 1]
+    assert _downsample_restriction(None, 2, (1.0, 1.0, 1.0)) is None
+    assert np.array_equal(_downsample_restriction(restriction, 1, (1.0, 1.0, 1.0)), restriction)
+
+
+def test_a_search_on_a_coarser_grid_confines_its_thick_trials_too(monkeypatch):
+    """The restriction reaches every thick trial of a search on a reduced
+    grid, reduced to that grid."""
+    import haemolynx.optimisation.search as search_module
+    from haemolynx import preprocessing as preprocessing_module
+
+    mask = _y_shaped_vessel(shape=(32, 32, 32))
+    restriction = np.zeros_like(mask)
+    restriction[:, :16, :] = mask[:, :16, :]
+    seen = []
+    real = preprocessing_module.skeletonize_thickness_gated
+
+    def spy(binary, **kwargs):
+        seen.append(kwargs.get("restrict_thick_to_mask"))
+        return real(binary, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+    optimise_skeleton_and_graph_settings(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values={**_DEFAULT_STARTING_VALUES, "use_thick_vessel_skeletonisation": True},
+        downsample_factor=2, groups=["thick_vessel_gating"], thick_restriction_mask=restriction,
+    )
+    expected = search_module._downsample_restriction(restriction, 2, (1.0, 1.0, 1.0))
+    assert seen
+    assert all(r is not None and np.array_equal(r, expected) for r in seen)

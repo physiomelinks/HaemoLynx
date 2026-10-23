@@ -1,0 +1,380 @@
+# Plan: the two optimisers, in line with the pipeline as it now runs (2026-10-23)
+
+> **Status (2026-10-23):** Phase 0 measured on E14.5 at `405364d7` (see **Measured**): A5, and
+> A10 and B7 (both found in Phase 0), are the largest drifts. Phase 3 is pushed (`9328c668`).
+> Phase 2 is done on branch `claude/optimiser-phase2` (A1, A2, A5, A9, A10; a trial's E14.5
+> skeleton now equals the run's), not yet committed. Findings were first read
+> in the code at `666cafe8`. Decisions D1-D5 are Harvey's.
+
+## Context
+
+The panel has two optimisers:
+
+- **Optimise settings** (Input tab): `optimisation/search.py`'s
+  `optimise_skeleton_and_graph_settings`, a coordinate-descent search over 54 segmentation
+  cleanup, Skeletonise and Graph settings (`OPTIMISE_SETTING_NAMES`), each candidate scored by
+  running the real cleanup, skeletonisation, skeleton cleaning and graph building on the mask.
+- **Optimise FWHM settings** (Diameters tab): `optimisation/fwhm_search.py`'s
+  `optimise_fwhm_settings`, the same search over 34 FWHM settings (`FWHM_SETTING_NAMES`), scored
+  by measuring a sample of the run's own vessels in the raw image, with decoys and planted
+  vessels.
+
+Both were last brought in line on 2026-10-18 (`612f0cba`, downsample on import). Since then, and
+before, the pipeline has grown steps the optimisers never run: the clean-up after smoothing, the
+thick-vessel split and its bridges, the lost-skeleton retrace, the dead-end kinds, the one
+`MaskSupport` per run, network handling's calibration edges, the FWHM mask stop. A trial is meant
+to be "the real pipeline call for this candidate"; today it is a partial copy of it, kept by hand.
+
+**The aim:** a trial scores the network, or the widths, that a real run with the same settings
+would make, through the same functions the run calls, so the two cannot drift apart again.
+
+## What was found
+
+### A. Optimise settings (`search.py`)
+
+| # | What | Where | Effect |
+|---|------|-------|--------|
+| A1 | **Downsample on import is ignored for voxel counts.** The search gets the mask already reduced (`load_volume_for_skeletonise`), but the six voxel-counted skeleton settings go in as the user set them, on the image as read. A run divides them by the import factor (`stages.skeleton_voxel_settings_on_grid`); the search does not, and writes its result back on the reduced grid, which the run then divides again. | `_widget.py:6870`, `search.py:2600` | At 2x, a closing radius of 2 is searched as 4 source voxels, and a chosen 2 runs as 1. Wrong in both directions. |
+| A2 | **Only the 54 swept settings reach the search.** The panel passes `{name: settings[name] for name in OPTIMISE_SETTING_NAMES}`; every other setting a step reads falls back to the module's own default: `bridge_require_mask_support`, `bridge_max_background_gap_um`, `bridge_min_mask_fraction`, `skeleton_bridge_min_facing_cosine`, `recover_uncovered_mask_vessels`, `recovery_*`, `facing_dead_end_max_gap_um`, `remove_short_loops_under_um`, `short_loop_keep_hole_over_um`, `cartwheel_hub_*`. | `_widget.py:6870`, `search.py:856-1001` | Checked: identical to the run at schema defaults. Wrong as soon as a user changes one (short loops off, recovery off, bridge gates loosened): the search scores graphs built under settings the run will not use. |
+| A3 | **`_graph_kwargs` is a hand copy of `stages.graph_build_arguments`** and lacks 7 of its arguments: `cluster_collapse_direction_aware_min_degree` / `_tangent_length_um` (from `cartwheel_hub_*`), `stub_face_protection`, `lumen_cleanup_max_rounds`, `extend_dead_ends_to_faces`, `trace_on_dead_ends`, `join_dead_ends_to_vessel_sides`. `_skeleton_kwargs`, `_thick_vessel_kwargs` and `_cleanup_kwargs` are copies too (the cleanup one matches today). | `search.py:856-1001` vs `stages.py:1734` | Any of these changed by the user is invisible to the search; any argument added to the pipeline later is missed silently. |
+| A4 | **The graph a trial scores stops at `build_graph_from_skeleton`.** A run (`build_network`) then smooths with the mask radius (`radius_at`), runs `consolidate_lumen` again, splits at thick vessels (`insert_thick_vessel_junction_nodes`) and consolidates again, retraces lost skeleton, smooths straight steps, optionally removes interior dead ends and pieces without a junction, and marks dead-end kinds. Graph building itself also gets `along_thick_centreline` and `mask_support` in a run, not in a trial. | `search.py:2257`, `stages.py:1990-2313` | The reconnect, collapse, stub and smoothing sweeps judge a graph the run never saves. Smoothing in particular: a run's tolerance is the larger of `centreline_max_deviation` and a fraction of the vessel radius (`smoothing.edge_tolerance_um`), a trial's is `centreline_max_deviation` alone, so the `centreline_max_deviation` sweep is scored on a different rule. |
+| A5 | **(The largest drift on E14.5; see Measured.)** **Thick-vessel gating ignores the run's restriction mask** (`_thick_vessel_restriction_mask`, documented in `_thick_vessel_kwargs` as deliberate) and `skeleton_thick_vessel_large_stack_tree`. | `search.py:895` | With large-vessel masks restricting the thick region, the search tunes the thick-vessel radius and refinement for a region the run will not have. |
+| A6 | **Low RAM is not honoured.** The panel binarises the whole mask in RAM (`_widget.py:6869`) and reads the whole raw image (`_load_raw_reference_image_or_none`), whatever `use_memmap_loading` says; only then does Auto reduce. | `_widget.py:6700-6870` | On the patella or BigSM stacks this is the in-RAM path the low-RAM option exists to avoid (memory: 48 GB on BigSM). |
+| A7 | **Panel gating.** Optimise settings runs on `input_path` under `network_source=synthetic` (no gate); in batch mode it acts on the Input tab's one image (`PLAN_batch_run.md`'s status notes it is not greyed); with ilastik on and no `input_path` it refuses even when a current ilastik output exists. | `_widget.py:14586` | Confusing at best; under synthetic it optimises for an image the run does not read. |
+| A9 | **A deselected cleanup group skips the run's cleanup** (corrected 2026-10-23; first written the other way round). Inside the cleanup group, trials and the returned settings agree: the group turns `segmentation_cleanup` on when it keeps a toggle. But with the group deselected the search never cleans the mask at all, even with the user's switch and a toggle on, which a run applies (`stages.skeletonise`). | `search.py` `_run_one_pass` | Latent: E14.5's config has every toggle off. |
+| A10 | **The plain skeleton skips the run's hole fill** (found in Phase 0). A trial makes the plain-Lee skeleton with `preprocessing.skeletonize_volume`; a run with `io.load._skeletonize_loaded_volume`, which also fills holes (CLAUDE.md: every loader goes through it). | `search.py:1125` (`_raw_skeleton`) | On E14.5 with thick vessels off, the fill adds 50,441 voxels to the raw skeleton (+49%), and the cleaned skeletons then differ by 25,481 voxels (see **Measured**). |
+| A8 | **Stale words.** `optimisation/__init__.py` says the search never imports `haemolynx.io` (it imports `io.downsample` and `io.load`; `fwhm_search` imports `io.downsample`), "all ten" groups (eleven) and "all seven" FWHM groups (eight). `_SEARCH_STEP_CALLS`, Auto's time model, was counted before the short-loop rule and the retrace. | `__init__.py`, `search.py:320` | Misleads the next reader; Auto's estimate may no longer hold. |
+
+### B. Optimise FWHM settings (`fwhm_search.py`)
+
+| # | What | Where | Effect |
+|---|------|-------|--------|
+| B1 | **Trials do not pass the segmentation to the measurement.** A run calls `measure_edge_diameters_fwhm_from_raw_tiff(..., vessel_mask=...)` (`apply._measure_fwhm_diameters`), so with `fwhm_stop_at_other_vessels_in_mask` on (the default) each profile stops at a neighbouring vessel in the mask. `_FwhmSearch._measure` passes no mask. | `fwhm_search.py:495`, `apply.py:394` | Every trial measures differently from the run it is choosing settings for, most where vessels lie close together. |
+| B2 | **The run's widths leak into trials.** The panel hands the optimiser `copy_graph(results._graph)`, whose edges carry the run's FWHM results. An edge that fails in a trial keeps the run's `fwhm_diameter_um` and `fwhm_diameter_samples_um` (`haemodynamics/fwhm_diameter.py`, formerly `automated.py`, rewrites only `fwhm_status` on a failure). `_checked_trial` counts measured edges by `fwhm_diameter_um > 0` for the decoy report, and the regression guard's diameters read `fwhm_diameter_samples_um` from every edge (`fwhm_search.py:581`). | `_widget.py:13851`, `fwhm_search.py:548, 581` | A setting that makes edges fail is credited with the run's widths for them. `fwhm_metrics` itself reads `fwhm_status`, so the main score is right; the guards are not. The pipeline's `_start_measurement_afresh` exists for exactly this. |
+| B3 | **Sample and PSF drawn from every edge.** The run never measures zero-resistance bridges (`assign_edge_diameters` sets them apart) and, with `boundary_handling=remove_disconnected`, calibrates only on `edges_network_handling_keeps`. The optimiser's `_representative_subgraph(G, ...)` and `image_psf_from_settings(G, ...)` take every edge. | `fwhm_search.py:982, 1010`, `apply.py:692-725` | Bridges (straight segments inside a thick vessel) and vessels about to be removed are measured and scored, and shape the PSF the trials hold the blur at. |
+| B4 | **Its own copy of the measurement call.** `_measure` builds the call itself; the run's `_measure_fwhm_diameters` also passes `use_memmap`, `memmap_directory`, the graph's `image_voxel_size_zyx` and the axis order from its config. | `fwhm_search.py:495` | Same drift risk as A3. |
+| B5 | **Run switches not honoured.** Trials always run the decoy check and demotion, whatever `fwhm_decoy_check` / `fwhm_demote_flagged_edges` say, and use `fwhm_decoys.DECOY_SAMPLE_SIZE` rather than `fwhm_decoy_check_sample_size`. | `fwhm_search.py:456-553` | Arguably right for scoring (see D3); the sample size is not. |
+| B6 | **The raw-section fallback is unseen.** With `use_raw_section_fallback` on, vessels FWHM fails are measured by the fallback; the optimiser's coverage term does not know. | — | Report-only gap. |
+| B7 | **The sample is measured as a graph of its own** (found in Phase 0). `_representative_subgraph` returns `G.edge_subgraph(sample)`, and each trial measures that alone, so the neighbouring vessels and junctions FWHM reads round each sampled vessel are missing. | `fwhm_search.py:263, 518` | The largest FWHM drift on E14.5 (see **Measured**): measured as a subgraph, 25 of 47 widths match the run's; measured inside the whole vessel graph with `edges=`, all 47 do, at the same cost. |
+
+## Principles
+
+1. **One function, two callers.** Every settings-to-arguments map and every post-build step has one
+   home, in the pipeline; the optimisers call it. No second copy, however small (the precedent:
+   `visualization/geometry.edge_polyline`, `stages.graph_build_arguments`).
+2. **A trial is the run.** A trial's graph is `build_network`'s graph for those settings on the
+   search grid; a trial's widths are `assign_edge_diameters`' FWHM widths on those edges. Pinned
+   by equality tests, not tolerances.
+3. **Every setting reaches the search; only the swept ones move.** The search reads the run's
+   whole settings; `OPTIMISE_SETTING_NAMES` / `FWHM_SETTING_NAMES` say only what it may change.
+4. **No new objective without a marked grid.** Making a trial match the run changes no measure
+   and needs no grid. Changing *what a sweep minimises* (penalising dead ends, loops) decides what
+   a structure is, so it follows CLAUDE.md's marked-grid rules; until then such counts go on the
+   scorecard as measures only. Phase 0 also checks that no swept setting's default came from a
+   marked grid (a grid-fixed value must not be re-tuned by a proxy cost).
+5. **Measure the drift before fixing it**, so each phase's effect on the chosen settings is known
+   and reported.
+
+## Phases
+
+### Phase 0 — Measure the drift (no behaviour change)
+
+- A harness under `outputs/optimiser_alignment/` (git-ignored; a `__main__` guard, since spawn
+  workers re-run an unguarded script). On E14.5 MCA at its saved config (the reproduction recipe
+  in memory), for the starting settings and for the settings the optimiser chooses today:
+  - `build_network`'s graph against the optimiser's trial graph (`_Search._build_graph` plus its
+    smoothing), at factor 1 and at the factor Auto picks: edges, total length, components,
+    skeleton coverage, dead ends by kind, loops inside one lumen, the lumen-artefact report.
+  - FWHM: trial widths against `assign_edge_diameters`' widths on the same sampled edges, with
+    and without the vessel mask (B1), and with the run's results left on the template (B2).
+  - The optimiser's chosen settings with A2's pass-through settings at a non-default value
+    (`remove_short_loops_under_um=0`, `recover_uncovered_mask_vessels=False`).
+- Check Harvey's batch (processes, free RAM) before any run over 2 GB.
+- Record the numbers in this file under **Measured**, with commit and dataset.
+
+### Phase 1 — Shared argument builders (pipeline, no behaviour change)
+
+- In `pipeline/stages.py`, beside `graph_build_arguments` (D1): public
+  `segmentation_cleanup_arguments(settings)`, `skeleton_cleanup_arguments(settings, downsample)`
+  (the `skeleton_` prefix, the percentage, the bridge gates, tiling, and
+  `skeleton_voxel_settings_on_grid`), `thick_skeleton_arguments(settings, binary, voxel_size_xyz,
+  crop, downsample)` (today's `_thick_region_arguments` plus the refinement knobs and the
+  large-stack tree), `smoothing_arguments(settings)` and `lumen_cleanup_arguments(settings, ...)`.
+  `skeletonise` and `build_network` call them.
+- `search.py` drops `_cleanup_kwargs`, `_skeleton_kwargs`, `_thick_vessel_kwargs` and
+  `_graph_kwargs` and calls these. Fixes A3.
+- Tests: every argument `skeletonise` / `build_network` pass reaches a trial (monkeypatch the
+  step, compare the keyword arguments of a run and of a trial at the same settings).
+
+### Phase 2 — Every setting reaches the search; downsample on import; the skeleton a run makes (A1, A2, A5, A9, A10)
+
+- **A5 first** (Phase 0: the largest drift, and cheap): the panel builds the run's restriction
+  mask (`stages._thick_region_arguments(...)["restrict_thick_to_mask"]`, made public) and passes
+  it in; the search reduces it onto its grid by block majority and hands it to every thick
+  trial. Pinned by the Phase 0 check: with it, a trial's skeleton equals the run's on E14.5
+  (0 voxels differ) and the thick trials are 4x faster.
+- **A9**: with the cleanup group deselected, the search cleans the mask whenever a run would
+  (`segmentation_cleanup` and a toggle on).
+- **A10**: the plain trial skeleton goes through `io.load._skeletonize_loaded_volume`, as a run's
+  does. Pinned by the Phase 0 check: the run's raw skeleton through the trial's clean-up equals
+  the run's saved skeleton (0 voxels differ).
+
+- The panel passes the run's whole settings as `starting_values`; the search keeps deciding only
+  `OPTIMISE_SETTING_NAMES`. The function's docstring and `OptimisationResult` say so.
+- Downsample on import: the search takes the import `Downsample` record and puts the starting voxel
+  counts on the import grid by `skeleton_voxel_settings_on_grid` (one rule) before its own
+  `_to_search_grid`; on the way out, a moved value goes back to voxels of the image as read, a kept
+  one is returned as the user had it (`_to_full_resolution`'s rule, through the combined factor).
+- The report lists the pass-through settings that differ from their defaults, so a reader knows
+  what the search was judged under.
+- Tests (`test_optimisation_search.py`, `test_downsample_on_import.py`): at 2x import, a closing
+  radius of 2 is searched as 1 and comes back 2 when kept; a moved value comes back in source
+  voxels; with `remove_short_loops_under_um=0` a trial graph keeps a short loop it otherwise
+  breaks; the panel's `starting_values` hold every schema setting.
+
+### Phase 3 — FWHM trials measure what the run measures (B1-B7)
+
+Started 2026-10-23 in its own session ("Fix FWHM optimiser bugs (Phase 3)"), with B7 sent on
+after Phase 0 found it.
+
+Independent of Phases 1-2.
+
+- **Sample:** from the vessels the run measures: no `IS_ZERO_RESISTANCE` bridge, and only
+  `edges_network_handling_keeps` (the panel has the boundaries checkpoint). One public helper,
+  used by `assign_edge_diameters` and the optimiser. The PSF estimate takes the same edges.
+- **Fresh template:** before any trial, the sample is cleared of the run's measurements by the
+  pipeline's own rule (`_start_measurement_afresh`, made public), keeping or re-measuring
+  `edt_diameter_um`, which the decoys and the diameter guess read. Fixes B2.
+- **One call:** trials measure through the run's `_measure_fwhm_diameters` (made public), so they
+  get the vessel mask, memmap, voxel size and axis order as a run does. Fixes B1, B4.
+- **In the whole graph:** a trial measures the sampled vessels inside the whole vessel graph
+  (`edges=`), never a subgraph of them, so each sees the neighbours a run sees. Fixes B7.
+- **Switches:** honour `fwhm_decoy_check_sample_size`; decoys and demotion as D3 decides.
+- **Report:** the share of sampled vessels FWHM leaves to the raw-section fallback when that is on
+  (B6), measure only.
+- Tests (`test_fwhm_optimisation_search.py`): trial widths `==` `assign_edge_diameters`' widths on
+  the same edges and settings, mask stop on; a template carrying run widths on an edge that fails
+  scores it failed and leaves it out of the decoy list and the regression guard; bridges and
+  removed vessels never sampled; the decoy sample size followed.
+
+### Phase 4 — The graph a trial scores is the run's (A4)
+
+The largest change; it alters what the graph sweeps choose.
+
+- Split `build_network`'s graph work into two public functions it calls, with no change to its
+  output (E14.5's graph identical before and after, by the reproduction recipe, plus the suite):
+  - `network_context(settings, binary_mask, voxel_size_zyx, thick_vessel_mask, ...)`: the
+    `radius_at` sampler, the run's one `MaskSupport`, the thick centreline tree and
+    `along_thick_centreline`, built once.
+  - `finish_network_graph(G, skeleton, settings, context)`: smoothing (with `radius_at`), the
+    clean-up after it, the thick-vessel split and the clean-up after that, the retrace, straight
+    steps, the optional interior dead-end removal and junctionless pieces, dead-end kinds.
+- The search builds the context once per mask (again after segmentation cleanup moves it), passes
+  `mask_support` and `along_thick_centreline` into graph building, and scores every graph group on
+  `finish_network_graph(build(...))`. The smoothing group sweeps the smoothing settings through the
+  same finish. The trial cache keys on the settings the finish reads.
+- The thickness-gated trial skeleton returns its thick region (`return_thick_mask=True`), which
+  feeds the finish's split (the restriction mask itself arrives in Phase 2).
+- Auto's time model gains a timed "finish" step and `_SEARCH_STEP_CALLS` is counted again on
+  E14.5 at 4x and 16x (the test pinning the model's arithmetic is updated, its rule kept).
+- Scorecard, measures only (Principle 4): dead ends by kind, loops inside one lumen, the
+  lumen-artefact report's counts.
+- Tests: on `tests/dense_capillary_fixtures.py` and a thick-vessel fixture, a trial's graph equals
+  `build_network`'s at the same settings (node positions, edge voxels, lengths); a thick vessel
+  restricted by a large mask gives the trial the run's region.
+
+### Phase 5 — Panel, low RAM, words (A6-A8)
+
+- Grey **Optimise settings** under `network_source=synthetic` and in batch mode, and **Optimise
+  FWHM settings** under synthetic, each with its reason in the hover text (`chrome_tooltips.py`;
+  hover text, not the help menu). With ilastik on and no `input_path`, use the ilastik output
+  when `ilastik_output_is_current` says it is the current one; never run ilastik from the button.
+- Low RAM: under `use_memmap_loading` the mask is binarised and reduced without a whole in-RAM
+  copy (check `block_reduce_volume` on a memmap first), the raw image is read through
+  `raw_volume_cache`, and "Off" (factor 1) is refused with a message when the mask will not fit
+  in free memory.
+- Words: `optimisation/__init__.py`'s dependency list and group counts; CLAUDE.md's
+  *Optimisation* entry gains its rule ("trials go through the pipeline's own argument builders
+  and `finish_network_graph`; a new step there reaches the optimiser for free"); the history in
+  `docs/notes/gui.md`.
+- Tests: `test_gui_optimise_settings_widget.py`, `test_gui_fwhm_optimise_widget.py` (greying,
+  the ilastik output used), `test_gui_tooltips.py`.
+
+## Order
+
+0 → 1 → 2 → 3 → 4 → 5. Phase 3 needs nothing from 1-2 and can run beside them in its own session.
+Phases 1-3 fix plain bugs and are cheap; Phase 4 is where the chosen settings move, and goes
+last so its effect is measured on its own. After Phase 0 (2026-10-23): Phase 0 is done, Phase 3 is
+under way in its own session, and A5 in Phase 2 is the next most valuable change; the chosen
+settings will move with it alone (R1 turned thick vessels off because of it).
+
+## Verification
+
+- After each phase: `pytest -m "not slow and not gui"` (13-28 min here), the touched GUI tests in
+  the background, the slow optimiser tests, on the final source (no `src` edits mid-run).
+- The Phase 0 harness again after Phases 2, 3 and 4: trial graph `==` `build_network`'s at factor
+  1; FWHM trial widths `==` the run's; the chosen settings before and after, reported with how
+  much each moved and the scorecard.
+- `build_network`'s E14.5 graph unchanged by Phase 1 and the split in Phase 4.
+
+## Decisions needed (Harvey)
+
+- **D1. Where the shared builders live.** Recommend `pipeline/stages.py`, where
+  `graph_build_arguments` already is; the optimisers then import the pipeline (no cycle: the
+  pipeline does not import them). The alternative, a light module both import, keeps the
+  optimisers' import small but moves code out of the stage it belongs to.
+- **D2. The search's own reduction.** It keeps block max (`docs/notes/downsample_and_crop.md`)
+  while import uses block majority. Recommend keeping max (the search finds settings, it is not a
+  run) and saying so in the report; or match import's majority.
+- **D3. Decoys and demotion in FWHM scoring.** Recommend scoring with both on whatever the run's
+  switches say (a loose setting must never win by measuring specks), honouring the sample size,
+  and saying so in the report; or follow the run's switches.
+- **D4. An optimiser for the endothelial ring fit.** None exists; the FWHM button is hidden for an
+  endothelial stain, correctly. Out of scope here; a plan of its own if wanted.
+- **D5. Cost of Phase 4.** If the finish makes a 4x E14.5 search more than twice as slow (Phase 0
+  says), Auto will pick coarser grids. Recommend accepting it and letting the time model say so;
+  the alternative, finishing only some groups' trials, breaks Principle 2.
+
+## Risks
+
+- Phase 4 makes trials slower; on big stacks Auto then resolves fewer vessels.
+- The chosen settings move once trials see the finish; a user's earlier optimised config will
+  differ from a new one. The report says which settings moved and why.
+- Peer sessions edit this checkout: targeted edits, commits through a private index (memory).
+- No `RELEASE_REVIEW.md` row scores the optimisers today; this plan changes no score.
+
+## Out of scope
+
+An endothelial optimiser (D4); optimising once for a whole batch; new objectives on dead ends or
+loops before a marked grid; sweeping settings that marked grids fixed; help-menu text.
+
+## Measured
+
+### Phase 0 (2026-10-23, commit `405364d7`, E14.5 MCA)
+
+From a `git archive` of `405364d7` (`outputs/optimiser_alignment/code`), with the harness in
+`outputs/optimiser_alignment/harness/` (git-ignored; `summarise.py` prints these tables from the
+JSON beside each run). The data is the repo-root `config.yaml` as it stands: Claudin `Simple
+Segmentation` mask (287 x 512 x 512, 7.31 M vessel voxels), voxel (z, y, x) = (1.0, 0.98, 0.98) um,
+thick vessels on and restricted to the large masks (`skeleton_thick_vessel_restrict_to_mask:
+large`), cleanup off, no downsample or crop. The machine was shared with Harvey's idle panel, a
+peer's pytest and, from 12:40, the Phase 3 session's suites, so timings are upper bounds.
+
+**The graph (A2-A5).** The run (`segment`, `skeletonise`, `build_network`) against one optimiser
+trial fed as the panel feeds it today (the 54 swept settings; `_raw_skeleton`,
+`preprocess_skeleton_for_graph`, `build_graph_from_skeleton`, smoothing), and the trial's graph code
+on the run's own skeleton:
+
+| measure | run, after build | run, saved | trial | trial code on the run's skeleton |
+|---|---|---|---|---|
+| edges | 1,370 | 1,406 | 573 | 1,352 |
+| centreline um | 52,006 | 47,813 | 29,857 | 47,506 |
+| components | 54 | 53 | 75 | 54 |
+| dead ends | 456 | 396 | 399 | 447 |
+| junctions | 705 | 706 | 247 | 699 |
+| run's skeleton traced | 0.669 | 0.660 | 0.103 | 0.663 |
+| mask covered | 0.808 | 0.822 | 0.679 | 0.817 |
+| short loops | 68 | 89 | 1 | 82 |
+| pairs in one lumen | 11 | 15 | 0 | 2 |
+| thick-vessel bridges | 0 | 64 | 0 | 0 |
+| dead ends: unknown / stops_short / island / leaves image / artefact / broken | 112 / 120 / 96 / 95 / 28 / 5 | 94 / 96 / 94 / 91 / 17 / 4 | 66 / 110 / 132 / 83 / 8 / 0 | 98 / 117 / 96 / 92 / 39 / 5 |
+
+Within 2 um: 45% of the run's saved centreline lies near the trial's (72% the other way); 96-97%
+near the trial code's graph on the run's skeleton (both ways).
+
+- **A5 is the whole skeleton drift.** The trial's skeleton has 25,641 voxels to the run's 56,961,
+  70,678 of them differing. Unrestricted, the thick region a trial finds is 7.30 M voxels, **99.8%
+  of the mask**; the run's, restricted, is 0.88 M (12.0%). Made again with the run's restriction
+  mask (`stages._thick_region_arguments`), the trial's skeleton equals the run's: **0 voxels
+  differ**, in 160 s against 704 s unrestricted. So on E14.5 every skeleton and graph sweep today
+  judges a centreline tree drawn through the whole mask.
+- **A3/A4 on the same skeleton** are smaller but real: the saved graph has 51 fewer dead ends (396
+  against 447), 54 more edges, 64 bridges and 7 more short loops. The run's own steps after graph
+  building, in order (edges / um / dead ends): build 1,370 / 52,006 / 456; smoothing 1,370 / 47,787 /
+  456; clean-up 1,321 / 47,303 / 436; thick-vessel split 1,393 / 47,110 / 398; clean-up 1,356 /
+  46,833 / 397; retrace 1,406 / 47,935 / 396; smoothing of the retraced 47,831; straight steps
+  47,813. The split alone removes 38 dead ends, which is what the stub sweep scores on.
+- **A1** (arithmetic, on this config): with a 2x downsample on import, a run uses
+  `skeleton_bridge_gap_size` 2, `skeleton_min_branch_length` 2, `skeleton_max_bridge_distance` 2,
+  `skeleton_bundle_scan_size` 5 and `skeleton_bundle_hub_min_spacing` 2 (set: 3, 3, 4, 9, 4); the
+  optimiser would search them as set. `skeleton_closing_radius` 1 stays 1.
+
+**FWHM (B1-B3, B7).** Dextran (channel 0) read as a plasma column, so FWHM runs; the run's Diameters
+call (`apply.assign_edge_diameters`, 504-635 s) measured 470 of 1,406 edges. The optimiser's
+200-edge sample of that graph, measured as a trial does today (T0) and with each fix:
+
+| trial | measured by both | trial only | equal to the run | within 1% | p90 error | max error |
+|---|---|---|---|---|---|---|
+| T0 today: run results left on, no mask, PSF from every edge | 47 | 11 | 21 | 27 | 36% | 62% |
+| T1 run results stripped | 47 | 11 | 21 | 27 | 36% | 62% |
+| T2 + vessel mask | 47 | 12 | 25 | 28 | 39% | 62% |
+| T3 + the run's PSF | 47 | 12 | 25 | 28 | 39% | 62% |
+| T4 the sample measured inside the whole vessel graph (`edges=`), mask, run's PSF | 47 | 0 | **47** | 47 | 0 | 0 |
+| T5 as T4 without the mask | 47 | 0 | 35 | 42 | 1% | 23% |
+
+- **B7 is the largest FWHM drift**: measured as a subgraph of its own, a sample matches the run on
+  25 of 47 widths and gives 12 vessels the run fails a width; inside the whole graph, all 47 match
+  and the 12 fail, at the same cost (34 s against 33 s).
+- **B1** on its own (T5 against T4): 12 of 47 widths change, by up to 23%.
+- **B2** shows only once a candidate fails vessels the run measured: with `fwhm_min_fit_r2` 0.995
+  the trial measures 0 vessels, yet today hands the decoy report 47 "measured" vessels and the
+  regression guard 212 widths, all the run's; stripped, 0 and 0.
+- **B3**: 29 of the 200 sampled edges are bridges (14.5%, against 4.6% of the graph): they carry no
+  `edt_diameter_um`, so `_sample_buckets` puts them in its no-width bucket, which gets an equal
+  share. None is measured, so they only take sample slots. The PSF is the same with or without
+  them here (sigma z, y, x = 2.47, 1.01, 1.01 um).
+
+**What Optimise settings chooses today (R1)**, as the panel calls it: Auto chose 2x (the resolution
+cap; typical radius 5.3 um), estimated 703 s and took 2,643 s (3.8x; the machine was loaded). It
+moved 9 settings, among them `use_thick_vessel_skeletonisation` True -> False (consistent with A5:
+unrestricted, the thick skeleton is a tree through the whole mask, so off scores better), cleanup on
+with small volumes under 46 um3 removed, the bundle scan 9 -> 18, `cluster_collapse_method`
+direction_aware -> distance_only, and `skeleton_min_component_percent` 0 -> 1. Its own scorecard:
+graph components 62 -> 1, input vessels the skeleton reaches 0.58 -> 0.016, skeleton the graph
+traces 0.97 -> 0.74, mask the skeleton runs through 0.41 -> 0.56. The component sweep maximises the
+largest connected share and guards only a second component of 80% of the largest, so it drops every
+island; whether E14.5's islands are noise or vessels is a marked-grid question, not an alignment
+one, and is left as an observation. Slowest groups: stub length 658 s, collapse 465 s, gap
+bridging 393 s, reconnect 373 s.
+
+**A2 on the chosen settings (R2)**: the same search given the run's whole settings, for a user with
+`remove_short_loops_under_um` 0 and `recover_uncovered_mask_vessels` off (which today's panel
+never passes, so that user gets R1). It chose the same settings but one:
+`min_stub_length_radius_multiple` 2.0 where R1 kept 3.0 (2,167 s, estimated 477 s).
+
+**The graph again, at R1's chosen settings** (thick vessels off, cleanup on): the trial made as
+the search makes it, on the cleaned mask (equal to the run's). The skeletons still differ, by
+25,481 voxels (trial 63,541, run 53,832): **A10**. On the same cleaned mask, whole-volume and
+per-component Lee agree exactly (103,809 voxels), and the run's hole fill adds 50,441 (+49%); the
+run's raw skeleton put through the trial's clean-up equals the run's saved skeleton (0 differ).
+The graphs (run saved / trial): edges 1,198 / 1,146; um 43,001 / 42,258; dead ends 228 / 244;
+short loops 110 / 81; mask covered 0.795 / 0.786; 90-92% of each within 2 um of the other. The
+run's steps after building (no split, thick vessels off): build 1,172 edges / 45,921 um / 246 dead
+ends; smoothing 42,192 um; clean-up 1,128 / 41,689 / 228; retrace 1,198 / 43,145; smoothing and
+straight steps 43,001.
+
+### Phase 2 (2026-10-23, branch `claude/optimiser-phase2` on `9328c668`, E14.5 MCA)
+
+A1, A2, A5, A9 and A10 done. A trial set up as the panel now sets it up
+(`stages.load_volume_on_run_grid`, the run's whole settings, voxel counts on the run's grid,
+`stages.thick_vessel_restriction_mask`, the cleanup when it is in effect), against the
+skeletons the Phase 0 runs saved (`harness/phase2_check.py`, on the worktree's source):
+
+| config | run's skeleton | trial's | differing | trial |
+|---|---|---|---|---|
+| `run_base`: thick vessels on, restricted to the large masks | 56,961 | 56,961 | **0** | 125 s (704 s unrestricted) |
+| `run_chosen`: R1's settings, thick vessels off, cleanup on | 53,832 | 53,832 | **0** | 97 s |
+
+Not done from Phase 2: the report's list of pass-through settings that differ from their
+defaults; it needs the fallback table that Phase 1's shared builders give, so it moves there.
+The search's own chosen settings on E14.5 have not been measured again since the fix (R1 turned
+thick vessels off because of A5).
+
+**Two pipeline findings outside this plan:**
+- A run that reuses its saved skeleton (`do_skeletonize` off) gets the segmented image uncleaned
+  (`stages.skeletonise`, the loaded-skeleton branch, reads `_load_and_crop_volume` and never
+  applies `segmentation_cleanup`), so with cleanup on its `build_network` reads a different mask
+  from a fresh run with the same settings.
+- `io.load._skeletonize_loaded_volume`'s docstring calls the hole fill "a no-op on the normal
+  case"; on E14.5's cleaned Claudin mask with plain Lee it adds 49% to the raw skeleton. Whether
+  that is right is a question for a grid, not this plan.
