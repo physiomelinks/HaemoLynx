@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import h5py
 import numpy as np
 import pytest
 
@@ -11,15 +12,27 @@ def _no_crop():
     """The mocked probability field is not cropped, so the anatomy must not be either."""
     return SkeletonConfig(sub_volume_percentage=1.0)
 
+def _anatomy_h5(path, volume):
+    """A stand-in for a specimen's Ilastik input: zyxc, channel 0 the grayscale.
+
+    The other two channels hold different values, so a read of the wrong channel shows.
+    """
+    volume = np.asarray(volume, dtype=np.float32)
+    data = np.stack([volume, volume + 1000.0, np.full_like(volume, -1.0)], axis=-1)
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("data", data=data)
+    return path
+
+
 def test_grid_preview_writes_the_five_preview_vtis(tmp_path):
     """With chunk_fraction < 1.0 the grid preview writes five VTI files, then exits."""
     # We will mock pv.ImageData().save to verify how many times it was called and what paths
-    
+
     # We can't easily mock the entire pipeline end-to-end without a real image,
-    # so let's just mock _load_raw_probability_field and io.load_3d_tif.
-    
+    # so let's just mock _load_raw_probability_field and give the run a small anatomy file.
+    anatomy_path = _anatomy_h5(tmp_path / "anatomy.h5", np.zeros((10, 10, 10)))
+
     with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
-         patch('ImageLynx.io.load_3d_tif') as mock_load_tif, \
          patch('pyvista.ImageData.save') as mock_save, \
          patch('carotid_image_to_model.sys.exit') as mock_exit:
          
@@ -27,8 +40,6 @@ def test_grid_preview_writes_the_five_preview_vtis(tmp_path):
          mock_prob = np.zeros((10, 10, 10), dtype=np.float32)
          mock_entropy = np.zeros((10, 10, 10), dtype=np.float32)
          mock_load_prob.return_value = (mock_prob, mock_entropy)
-         
-         mock_load_tif.side_effect = [np.zeros((10, 10, 10), dtype=np.float32)]
          
          # Mock sys.exit to actually halt execution like a real exit
          mock_exit.side_effect = Exception("sys.exit was called")
@@ -39,10 +50,8 @@ def test_grid_preview_writes_the_five_preview_vtis(tmp_path):
          # Run orchestrator
          with pytest.raises(Exception, match="sys.exit was called"):
              carotid_image_to_model(image_path="dummy.tif", pipeline_config=config,
-                                    skel_config=_no_crop())
-         
-         assert mock_load_tif.call_count == 1
-         
+                                    skel_config=_no_crop(), anatomy_path=anatomy_path)
+
          # Should save 5 VTK files: RawAnatomy (Global + Sub), RawProbability, GridPreview, ShannonEntropy
          assert mock_save.call_count == 5
          
@@ -63,19 +72,18 @@ def test_dual_anatomy_export_alignment_real(tmp_path):
     import pyvista as pv
 
     anatomy = np.arange(100 ** 3, dtype=np.float32).reshape(100, 100, 100)
+    anatomy_path = _anatomy_h5(tmp_path / "anatomy.h5", anatomy)
     saved = {}
 
     def record(self, filename, *args, **kwargs):
         saved[Path(filename).name] = self
 
     with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
-         patch('ImageLynx.io.load_3d_tif') as mock_load_tif, \
          patch.object(pv.ImageData, 'save', autospec=True, side_effect=record), \
          patch('carotid_image_to_model.sys.exit') as mock_exit:
 
          # The probability field arrives already cut to the ROI.
          mock_load_prob.return_value = (np.zeros((50, 50, 50), dtype=np.float32), None)
-         mock_load_tif.side_effect = [anatomy]
          mock_exit.side_effect = Exception("sys.exit was called")
 
          config = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
@@ -83,7 +91,8 @@ def test_dual_anatomy_export_alignment_real(tmp_path):
          skel_config = SkeletonConfig(sub_volume_voxels=(50, 50, 50))
 
          with pytest.raises(Exception, match="sys.exit was called"):
-             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config, skel_config=skel_config)
+             carotid_image_to_model(image_path="dummy.tif", pipeline_config=config, skel_config=skel_config,
+                                    anatomy_path=anatomy_path)
 
     global_vti = saved["resistance_network_raw_anatomy_global.vti"]
     sub_vti = saved["resistance_network_raw_anatomy_subvolume.vti"]
@@ -100,26 +109,25 @@ def test_a_sub_volume_of_the_wrong_size_is_refused_not_zero_filled(tmp_path):
     """The anatomy sub-volume used to become all zeros when its size differed from the
     probability field's, and the export's try/except turned any error into a printed warning.
     """
+    # No crop, so the sub-volume is the whole 60^3 anatomy.
+    anatomy_path = _anatomy_h5(tmp_path / "anatomy.h5", np.zeros((60, 60, 60)))
     with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
-         patch('ImageLynx.io.load_3d_tif') as mock_load_tif, \
          patch('pyvista.ImageData.save'), \
          patch('carotid_image_to_model.sys.exit') as mock_exit:
 
          mock_load_prob.return_value = (np.zeros((50, 50, 50), dtype=np.float32), None)
-         # No crop, so the sub-volume is the whole 60^3 anatomy.
-         mock_load_tif.side_effect = [np.zeros((60, 60, 60), dtype=np.float32)]
          mock_exit.side_effect = Exception("sys.exit was called")
 
          config = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
                                  vtk_output_prefix=tmp_path / "resistance_network")
          with pytest.raises(ValueError, match=r"\(60, 60, 60\).*\(50, 50, 50\)"):
              carotid_image_to_model(image_path="dummy.tif", pipeline_config=config,
-                                    skel_config=_no_crop())
+                                    skel_config=_no_crop(), anatomy_path=anatomy_path)
 
 def test_early_termination_toggle(tmp_path):
     """Verify sys.exit is called based on export_grid_preview toggle."""
+    anatomy_path = _anatomy_h5(tmp_path / "anatomy.h5", np.zeros((10, 10, 10)))
     with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
-         patch('ImageLynx.io.load_3d_tif') as mock_load_tif, \
          patch('pyvista.ImageData.save'), \
          patch('carotid_image_to_model.sys.exit') as mock_exit, \
          patch('ImageLynx.pipeline.map_reduce.map_reduce_pipeline') as mock_mr, \
@@ -128,8 +136,6 @@ def test_early_termination_toggle(tmp_path):
          mock_prob = np.zeros((10, 10, 10), dtype=np.float32)
          mock_load_prob.return_value = (mock_prob, None)
          # Both runs export the anatomy: chunk_fraction < 1 writes the preview files either way.
-         mock_load_tif.return_value = np.zeros((10, 10, 10), dtype=np.float32)
-         
          mock_exit.side_effect = Exception("sys.exit was called")
          
          # Run WITH export_grid_preview
@@ -137,7 +143,7 @@ def test_early_termination_toggle(tmp_path):
                                       vtk_output_prefix=tmp_path / "resistance_network")
          with pytest.raises(Exception, match="sys.exit was called"):
              carotid_image_to_model(image_path="dummy.tif", pipeline_config=config_exit,
-                                    skel_config=_no_crop())
+                                    skel_config=_no_crop(), anatomy_path=anatomy_path)
          
          assert mock_exit.call_count == 1
          
@@ -153,10 +159,78 @@ def test_early_termination_toggle(tmp_path):
                                           vtk_output_prefix=tmp_path / "resistance_network")
          try:
              carotid_image_to_model(image_path="dummy.tif", pipeline_config=config_continue,
-                                    skel_config=_no_crop())
+                                    skel_config=_no_crop(), anatomy_path=anatomy_path)
          except Exception:
              pass # We only care that it proceeded past the sys.exit block
          
          assert mock_exit.call_count == 0
          # Ensure it proceeded to Phase 2 and Phase 3 (map_reduce_pipeline called twice)
          assert mock_mr.call_count == 2
+
+
+def test_the_export_reads_the_runs_own_image_not_wky_as(tmp_path):
+    """A chunked run on SHR-C exports SHR-C's grayscale: channel 0 of the file it was given.
+
+    The module's RAW_IMAGE_PATH is WKY-A's image. The file below is the only anatomy given to
+    the run and its three channels differ, so reading any other file or channel fails the
+    comparison.
+    """
+    import pyvista as pv
+    from ImageLynx import specimens
+
+    shr_c = specimens.get_specimen("SHR-C")
+    volume = np.arange(12 * 14 * 16, dtype=np.float32).reshape(12, 14, 16)
+    anatomy_path = _anatomy_h5(tmp_path / shr_c.ilastik_input_path.name, volume)
+    saved = {}
+
+    def record(self, filename, *args, **kwargs):
+        saved[Path(filename).name] = self
+
+    with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
+         patch.object(pv.ImageData, 'save', autospec=True, side_effect=record), \
+         patch('carotid_image_to_model.sys.exit') as mock_exit:
+        mock_load_prob.return_value = (np.zeros(volume.shape, dtype=np.float32), None)
+        mock_exit.side_effect = Exception("sys.exit was called")
+        config = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
+                                vtk_output_prefix=tmp_path / "resistance_network")
+        with pytest.raises(Exception, match="sys.exit was called"):
+            carotid_image_to_model(image_path="dummy.h5", pipeline_config=config,
+                                   skel_config=_no_crop(), anatomy_path=anatomy_path)
+
+    np.testing.assert_array_equal(
+        saved["resistance_network_raw_anatomy_global.vti"].point_data["RawAnatomy"],
+        volume.flatten(order="F"))
+
+
+def test_a_chunked_run_without_an_anatomy_path_is_refused(tmp_path):
+    """No anatomy_path means no guess: the export does not fall back to WKY-A's image."""
+    with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
+         patch('pyvista.ImageData.save') as mock_save:
+        mock_load_prob.return_value = (np.zeros((10, 10, 10), dtype=np.float32), None)
+        config = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
+                                vtk_output_prefix=tmp_path / "resistance_network")
+        with pytest.raises(ValueError, match="anatomy_path"):
+            carotid_image_to_model(image_path="dummy.tif", pipeline_config=config,
+                                   skel_config=_no_crop())
+    assert mock_save.call_count == 0
+
+
+def test_an_absent_anatomy_file_is_named_in_the_error(tmp_path):
+    missing = tmp_path / "SHR-C_vessels_ilastik.h5"
+    with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
+         patch('pyvista.ImageData.save') as mock_save:
+        mock_load_prob.return_value = (np.zeros((10, 10, 10), dtype=np.float32), None)
+        config = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
+                                vtk_output_prefix=tmp_path / "resistance_network")
+        with pytest.raises(FileNotFoundError, match="SHR-C_vessels_ilastik.h5"):
+            carotid_image_to_model(image_path="dummy.tif", pipeline_config=config,
+                                   skel_config=_no_crop(), anatomy_path=missing)
+    assert mock_save.call_count == 0
+
+
+def test_main_hands_the_active_specimens_ilastik_input_to_the_pipeline():
+    """The CLI entry point passes the chosen specimen's own image as the anatomy."""
+    import carotid_image_to_model as module
+
+    source = Path(module.__file__).read_text()
+    assert "anatomy_path=active_specimen.ilastik_input_path" in source

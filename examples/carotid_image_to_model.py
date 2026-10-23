@@ -57,7 +57,9 @@ ILASTIK_PROJECT_PATH = specimens.POOLED_CLASSIFIER
 RAW_IMAGE_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_input_images"
 ILASTIK_OUTPUT_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images"
 
-# Paths for multi-input Ilastik features (e.g., Raw + Frangi)
+# Paths for multi-input Ilastik features (e.g., Raw + Frangi). These are WKY-A's files and are
+# read only by the in-script Ilastik run (RUN_ILASTIK, off). The anatomy export of a chunked run
+# does not read them: it takes the run's own image through carotid_image_to_model(anatomy_path=).
 RAW_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vessels.tif"
 FRANGI_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map.tif"
 
@@ -1683,6 +1685,26 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     if vis_config.visualize_results:
         _visualize_final_results(G, image, starting_nodes, vis_config)
 
+def _load_anatomy_channel(anatomy_path):
+    """Channel 0 of the run's own Ilastik input, as a zyx array; raise when it cannot be read.
+
+    Channel 0 is the background-subtracted grayscale scaled to [0, 1], not the acquisition's
+    raw intensity; the other channels are vesselness filters. The path comes from the caller
+    (the active specimen's ``ilastik_input_path``) and is never guessed.
+    """
+    if anatomy_path is None:
+        raise ValueError(
+            "A chunked run (chunk_fraction < 1) writes the raw anatomy preview and needs the "
+            "run's own image: pass anatomy_path (Specimen.ilastik_input_path). No other "
+            "specimen's image is substituted.")
+    anatomy_path = Path(anatomy_path)
+    if not anatomy_path.exists():
+        raise FileNotFoundError(f"The anatomy image {anatomy_path} does not exist.")
+    import h5py
+    with h5py.File(anatomy_path, "r") as handle:
+        return np.asarray(handle["data"][..., 0], dtype=np.float32)
+
+
 def carotid_image_to_model(image_path: Path | str, 
                            pre_config: PreprocessingConfig = None,
                            skel_config: SkeletonConfig = None,
@@ -1690,11 +1712,17 @@ def carotid_image_to_model(image_path: Path | str,
                            hemo_config: HaemodynamicsConfig = None,
                            perf_config: PerfusionConfig = None,
                            vis_config: VisualizationConfig = None,
-                           pipeline_config: PipelineConfig = None) -> None:
+                           pipeline_config: PipelineConfig = None,
+                           anatomy_path: Path | str | None = None) -> None:
     """
     Main orchestrator for the ImageLynx Carotid Pipeline.
     This pipeline executes image preprocessing, skeletonization, topological graph optimization,
     and hemodynamic simulation in sequential order using the provided configurations.
+
+    ``anatomy_path`` is the run's own Ilastik input (``Specimen.ilastik_input_path``: zyxc HDF5,
+    channel 0 the background-subtracted grayscale in [0, 1]). A chunked run
+    (``chunk_fraction < 1``) writes it as the ``RawAnatomy`` preview field and raises when it is
+    not given or is absent; no other specimen's image stands in for it.
     """
     if pre_config is None: pre_config = PreprocessingConfig()
     if skel_config is None: skel_config = SkeletonConfig()
@@ -1772,8 +1800,7 @@ def carotid_image_to_model(image_path: Path | str,
         if getattr(pipeline_config, 'chunk_fraction', None) is not None and pipeline_config.chunk_fraction < 1.0:
             import pyvista as pv
             from ImageLynx.graph.tiling import generate_evenly_distributed_bounding_boxes
-            import ImageLynx.io as io
-            
+
             print(f"\n--- Generating Map-Reduce Grid Preview (fraction={pipeline_config.chunk_fraction}) ---")
             spacing = _resolve_voxel_size(image_path, input_format)
             
@@ -1790,7 +1817,7 @@ def carotid_image_to_model(image_path: Path | str,
                 if x2 - 1 >= 0 and x2 - 1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x2-1] = 255
             
             # Export Dual Raw Anatomy Fields
-            raw_anatomy_global = io.load_3d_tif(RAW_IMAGE_PATH, lazy=False)
+            raw_anatomy_global = _load_anatomy_channel(anatomy_path)
             
             # 1. Global Volume Export
             vtk_vol_anat_global = pv.ImageData()
@@ -1935,7 +1962,6 @@ def carotid_image_to_model(image_path: Path | str,
         if getattr(pipeline_config, 'exit_after_mask', False):
             import sys
             import pyvista as pv
-            import ImageLynx.io as io
             print(f"\n--- Exporting Globally Stitched Vessel Mask ---")
             spacing = _resolve_voxel_size(image_path, input_format)
             
@@ -2467,5 +2493,6 @@ if __name__ == "__main__":
         hemo_config=hemo_config,
         perf_config=perf_config,
         vis_config=vis_config,
-        pipeline_config=pipeline_config
+        pipeline_config=pipeline_config,
+        anatomy_path=active_specimen.ilastik_input_path,
     )
