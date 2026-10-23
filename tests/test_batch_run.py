@@ -610,3 +610,133 @@ def test_a_batch_leaves_its_sections_out_and_records_them(tmp_path, schema, monk
     assert [row["Section"] for row in comparison] == ["Core Statistics", "Core Statistics"]
     settings_file = (out / "batch_settings.yaml").read_text(encoding="utf-8")
     assert "# batch_exclude_sections: Dead Ends" in settings_file
+
+
+# -- what the table says before a batch ----------------------------------------
+
+
+def test_the_table_says_which_images_a_batch_would_skip(tmp_path, schema, monkeypatch):
+    from dataclasses import replace
+
+    from haemolynx.gui.batch_run import (
+        DONE_BEFORE_RERUN,
+        DONE_BEFORE_SKIPPED,
+        READY,
+        BatchSetup,
+        stems_done_before,
+        table_rows,
+    )
+
+    folders, matches = _batch(tmp_path, "A_seg", "B_seg")
+    out = tmp_path / "out"
+    done = haemorun_path(out, matches[0])
+    done.parent.mkdir(parents=True)
+    done.write_bytes(b"earlier")
+    assert stems_done_before(out, matches) == {"A_seg"}
+
+    setup = BatchSetup(
+        folders=folders,
+        output_root=out,
+        matches=tuple(matches),
+        done_before=stems_done_before(out, matches),
+    )
+    assert [row[-1] for row in table_rows(setup)] == [DONE_BEFORE_SKIPPED, READY]
+    assert [row[-1] for row in table_rows(replace(setup, skip_done=False))] == [
+        DONE_BEFORE_RERUN, READY
+    ]
+    # This batch's own news comes first: a failed check, or what it came to.
+    checked = replace(setup, checked={"A_seg": "", "B_seg": ""})
+    assert [row[-1] for row in table_rows(checked)] == [DONE_BEFORE_SKIPPED, f"{READY} (checked)"]
+    ran = replace(setup, checked={"A_seg": DONE, "B_seg": "FAILED to check"})
+    assert [row[-1] for row in table_rows(ran)] == [DONE, "FAILED to check"]
+
+
+def test_the_last_batchs_statuses_are_read_back_from_its_summary(tmp_path, schema, monkeypatch):
+    from haemolynx.gui.batch_run import BatchSetup, read_summary_statuses, stems_done_before, table_rows
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([], fail={"A_seg"}, cancel={"B_seg"}))
+    folders, matches = _batch(tmp_path, "A_seg", "B_seg", "C_seg")
+    out = tmp_path / "out"
+    run_batch(_values(schema, tmp_path), schema, matches, out)
+    statuses = read_summary_statuses(out)
+    assert statuses == {
+        "A_seg": "failed: ValueError: A_seg is broken",
+        "B_seg": CANCELLED,
+        "C_seg": NOT_RUN,
+    }
+    setup = BatchSetup(
+        folders=folders,
+        output_root=out,
+        matches=tuple(matches),
+        done_before=stems_done_before(out, matches),
+        last_statuses=statuses,
+    )
+    assert [row[-1] for row in table_rows(setup)] == [
+        "last batch: failed: ValueError: A_seg is broken",
+        "last batch: cancelled",
+        "last batch: not run",
+    ]
+    assert read_summary_statuses(tmp_path / "nowhere") == {}
+
+
+def test_an_image_the_last_batch_never_finished_says_so(tmp_path):
+    from haemolynx.gui.batch_run import RUNNING, match_status
+
+    _folders, (match,) = _batch(tmp_path, "A_seg")
+    assert match_status(match, last=RUNNING) == "last batch: stopped while running"
+    # A .haemorun there says more than the summary does.
+    assert match_status(match, done_before=True, last=RUNNING).startswith("done before")
+
+
+def test_a_result_says_its_error_with_its_status(tmp_path):
+    from haemolynx.gui.batch_run import BatchResult
+
+    _folders, (match,) = _batch(tmp_path, "A_seg")
+    assert BatchResult(match, status=DONE).status_text() == DONE
+    assert BatchResult(match, status=FAILED, error="ValueError: x").status_text() == "failed: ValueError: x"
+
+
+# -- conditions with Statistics off ------------------------------------------------
+
+
+def test_conditions_with_statistics_off_warn_but_do_not_stop_the_batch(tmp_path, schema):
+    from dataclasses import replace
+
+    from haemolynx.gui.batch_run import BatchSetup, check_setup, statistics_warning
+    from haemolynx.statistics.batch_comparison import BatchConditions
+
+    folders, matches = _batch(tmp_path, "WT_1", "KO_1")
+    setup = BatchSetup(
+        folders=folders,
+        output_root=tmp_path / "out",
+        matches=tuple(matches),
+        conditions=BatchConditions.from_text("WT", "KO"),
+    )
+    values = _values(schema, tmp_path)
+    assert values["statistics"] is False
+    checked, lines = check_setup(values, schema, setup)
+    assert any(line.startswith("    warning: Statistics is off") for line in lines)
+    assert "Statistics is off" not in " ".join(checked.checked.values())
+
+    _checked, lines = check_setup({**values, "statistics": True}, schema, setup)
+    assert not any("Statistics is off" in line for line in lines)
+    no_conditions = replace(setup, conditions=BatchConditions())
+    _checked, lines = check_setup(values, schema, no_conditions)
+    assert not any("Statistics is off" in line for line in lines)
+    assert statistics_warning(values, None) == ""
+
+
+def test_the_command_line_warns_of_conditions_with_statistics_off(tmp_path, schema, monkeypatch, capsys):
+    from haemolynx.pipeline.provenance import write_settings_yaml
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    for stem in ("WT_1", "KO_1"):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    argv = ["--config", str(config), "--segmented", str(folder), "--dry-run"]
+    assert main(argv + ["--condition-a", "WT", "--condition-b", "KO"]) == 0
+    assert "warning: Statistics is off" in capsys.readouterr().out
+    assert main(argv) == 0
+    assert "Statistics is off" not in capsys.readouterr().out

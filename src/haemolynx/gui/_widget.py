@@ -6521,14 +6521,28 @@ def _run_in_background(
 
 
 def _run_batch_in_background(
-    values, schema, setup, report, button, bars=None, state=None, log=None, on_done=None
+    values,
+    schema,
+    setup,
+    report,
+    button,
+    bars=None,
+    state=None,
+    log=None,
+    on_done=None,
+    on_item=None,
+    on_stopped=None,
 ):
     """Run a batch (:func:`haemolynx.gui.batch_run.run_batch`) off the GUI
     thread: the bars follow each image's stages in turn, the report says which
-    image is running, and *on_done* gets the batch's summary. Nothing is drawn;
-    each image's ``.haemorun`` opens with Load run. Stopped as a run is."""
+    image is running, *on_item* gets each :class:`~haemolynx.gui.batch_run.BatchResult`
+    as its image starts and ends, and *on_done* the batch's summary; *on_stopped*
+    is called once the batch is over, however it ended. All on the GUI thread.
+    Nothing is drawn; each image's ``.haemorun`` opens with Load run. Stopped
+    as a run is."""
     from napari.qt.threading import thread_worker
 
+    from haemolynx.gui.batch_run import RUNNING as RUNNING_IMAGE
     from haemolynx.gui.batch_run import run_batch
 
     run_state = state if state is not None else RunState()
@@ -6549,10 +6563,12 @@ def _run_batch_in_background(
         if cancel_flag["cancelled"]:
             return
         index, total, result = update
-        if result.status == "running":
+        if result.status == RUNNING_IMAGE:
             if bars is not None:
                 bars.start()
             report.value = f"Batch image {index + 1} of {total}: {result.match.stem}..."
+        if on_item is not None:
+            on_item(result)
 
     bridge.event.connect(progressed)
     # The layers signal is free: a batch draws nothing. It carries each
@@ -6609,6 +6625,8 @@ def _run_batch_in_background(
             capture.attachment = None
         if log is not None:
             log.stop()
+        if on_stopped is not None:
+            on_stopped()
         if not still_ours() or not run_state.running:
             return
         run_state.stopped()
@@ -9859,6 +9877,7 @@ class _BatchRunWindow:
         self.skip_done = QCheckBox("Skip images whose folder already has a .haemorun")
         self.skip_done.setChecked(True)
         self.skip_done.setToolTip(tips["skip_done"])
+        self.skip_done.toggled.connect(lambda *_: self._skip_done_changed())
         layout.addWidget(self.skip_done)
 
         self.table = QTableWidget(0, len(TABLE_COLUMNS))
@@ -9938,9 +9957,9 @@ class _BatchRunWindow:
                 value = getattr(setup.folders, key)
                 self.fields[key].setText("" if value is None else str(value))
             self.fields["output"].setText(str(setup.output_root))
-            self.skip_done.setChecked(setup.skip_done)
             self._filling = True
             try:
+                self.skip_done.setChecked(setup.skip_done)
                 for key, condition in zip(
                     ("condition_a", "condition_b"), (setup.conditions.a, setup.conditions.b)
                 ):
@@ -9988,6 +10007,15 @@ class _BatchRunWindow:
         if self._filling or self.setup is None:
             return
         self.setup = replace(self.setup, exclude_sections=self._excluded_sections())
+
+    def _skip_done_changed(self) -> None:
+        """The images done before: skipped, or run again, as the box says."""
+        from dataclasses import replace
+
+        if self._filling or self.setup is None:
+            return
+        self.setup = replace(self.setup, skip_done=self.skip_done.isChecked())
+        self._fill_table()
 
     def _refresh_design_rows(self) -> None:
         from haemolynx.statistics.batch_comparison import PAIRED
@@ -10051,7 +10079,7 @@ class _BatchRunWindow:
         """Match the folders' images; says why not in the window when it cannot."""
         from dataclasses import replace
 
-        from haemolynx.gui.batch_run import BatchSetup
+        from haemolynx.gui.batch_run import BatchSetup, read_summary_statuses, stems_done_before
         from haemolynx.io.batch_matching import match_batch
 
         self._refresh_mask_rows()
@@ -10074,6 +10102,8 @@ class _BatchRunWindow:
             skip_done=self.skip_done.isChecked(),
             conditions=self._conditions(),
             exclude_sections=self._excluded_sections(),
+            done_before=stems_done_before(output, matches),
+            last_statuses=read_summary_statuses(output),
         )
         self.setup = setup
         self._fill_table()
@@ -10138,6 +10168,18 @@ class _BatchRunWindow:
         """The batch as it ended: each image's status in the table."""
         self.setup = setup
         self._fill_table()
+
+    def show_progress(self, setup, stem: str) -> None:
+        """The batch as it runs: each image's status so far, and the row of
+        *stem* (the image that started or ended) in view."""
+        self.setup = setup
+        self._fill_table()
+        for row, match in enumerate(setup.matches):
+            if match.stem == stem:
+                item = self.table.item(row, 1)
+                if item is not None:
+                    self.table.scrollToItem(item)
+                break
 
     # -- the table -------------------------------------------------------
 
@@ -13074,7 +13116,9 @@ def settings_widget(napari_viewer=None):
     #: Run pipeline runs the one image the Input tab names), and the "Batch
     #: run" text shown in each path row it fills -- predeclared, since
     #: `apply_prerequisites` reads them from its first call.
-    batch_mode = SimpleNamespace(setup=None)
+    #: The batch Run pipeline runs (None: the Input tab's one image), and
+    #: whether one is running now.
+    batch_mode = SimpleNamespace(setup=None, running=False)
     batch_row_labels: dict[str, Any] = {}
     #: The Input tab's boxes by key, so the chrome built further down (the
     #: check and optimise buttons) can join the box it belongs to.
@@ -13835,6 +13879,9 @@ def settings_widget(napari_viewer=None):
         if run_state.running:
             report.value = ALREADY_RUNNING
             return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
         if view.results is None or getattr(view.results, "_graph", None) is None:
             report.value = (
                 "Nothing to optimise yet: run the pipeline through at least Graph first."
@@ -14238,7 +14285,14 @@ def settings_widget(napari_viewer=None):
     #: while a batch is set, Run pipeline runs it and the rows it fills say so.
     from qtpy.QtWidgets import QLabel as _QLabel
 
-    from haemolynx.gui.batch_run import BATCH_BUTTON_TEXT, BATCH_ROW_FOLDERS, BATCH_ROW_TEXT
+    from haemolynx.gui.batch_run import (
+        BATCH_BUTTON_TEXT,
+        BATCH_ROW_FOLDERS,
+        BATCH_ROW_TEXT,
+        BATCH_RUNNING_NO_LOAD,
+        LEFT_BATCH_FOR_RUN,
+        SINGLE_IMAGE_IN_BATCH,
+    )
     from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS
 
     for _name in BATCH_ROW_FOLDERS:
@@ -14260,10 +14314,27 @@ def settings_widget(napari_viewer=None):
     #: The window, made the first time it is asked for.
     batch_window: list[Any] = [None]
 
+    #: What acts on the one image the Input tab names, with its own hover
+    #: text: off while a batch is set. Save run stays on: it saves the run
+    #: shown, which is never the batch's.
+    single_image_buttons = [
+        (button, button.tooltip)
+        for button in (check_image_button, optimise_button, optimise_fwhm_button)
+    ]
+
+    def refresh_batch_controls() -> None:
+        """Grey what acts on one image while a batch is set, saying why."""
+        batched = batch_mode.setup is not None
+        for button, tooltip in single_image_buttons:
+            button.enabled = not batched
+            button.tooltip = SINGLE_IMAGE_IN_BATCH if batched else tooltip
+        refresh_revert_buttons()
+
     def use_batch(setup) -> None:
         batch_mode.setup = setup
         batch_button.text = setup.button_text()
         apply_prerequisites()
+        refresh_batch_controls()
         report.value = (
             f"{setup.button_text()} set up: Run pipeline runs each with these settings, "
             f"into {setup.output_root}"
@@ -14273,6 +14344,7 @@ def settings_widget(napari_viewer=None):
         batch_mode.setup = None
         batch_button.text = BATCH_BUTTON_TEXT
         apply_prerequisites()
+        refresh_batch_controls()
         report.value = "Left the batch run: Run pipeline runs the image the Input tab names."
 
     def open_batch_window() -> None:
@@ -14587,6 +14659,9 @@ def settings_widget(napari_viewer=None):
         if run_state.running:
             report.value = ALREADY_RUNNING
             return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
         values = current_values()
         input_path = values.get("input_path")
         if not input_path or not Path(input_path).is_file():
@@ -14616,6 +14691,9 @@ def settings_widget(napari_viewer=None):
         if run_state.running:
             report.value = ALREADY_RUNNING
             return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
         values = current_values()
         input_path = values.get("input_path")
         if not input_path or not Path(input_path).is_file():
@@ -14629,17 +14707,47 @@ def settings_widget(napari_viewer=None):
         )
 
     def on_check() -> None:
+        if batch_mode.setup is not None:
+            on_check_batch()
+            return
         result = preflight(_settings(), schema)
         lines = [f"FAILED: {message}" for message in result.errors]
         lines += [f"warning: {message}" for message in result.warnings]
         report.value = "\n".join(lines) if lines else "All checks passed."
 
+    def on_check_batch() -> None:
+        """Run checks with a batch set: every ticked image's, as the Batch run
+        window's Check does, rather than the Input tab's one image's."""
+        from haemolynx.gui.batch_run import check_setup
+
+        if not batch_mode.setup.selected():
+            report.value = "No image is ticked in the Batch run window."
+            return
+        try:
+            setup, lines = check_setup(current_values(), schema, batch_mode.setup)
+        except Exception as error:  # noqa: BLE001 - reported in the panel
+            report.value = f"Could not read settings:\n{error}"
+            return
+        batch_mode.setup = setup
+        if batch_window[0] is not None:
+            batch_window[0].show_finished(setup)
+        failing = sum(bool(error) for error in setup.checked.values())
+        lines.append(
+            f"Checks failed for {failing} image(s)."
+            if failing
+            else f"All {len(setup.checked)} ticked image(s) passed their checks."
+        )
+        report.value = "\n".join(lines)
+
     def refresh_revert_buttons() -> None:
-        """Enable each tab's run-from button only when its previous stage is saved."""
+        """Enable each tab's run-from button only when its previous stage is
+        saved, and never while a batch is set: it runs one image."""
+        batched = batch_mode.setup is not None
         for title, button in revert_buttons.items():
             button.enabled = (
-                not run_state.running and can_revert_from(title, checkpoints)
+                not run_state.running and not batched and can_revert_from(title, checkpoints)
             )
+            button.tooltip = SINGLE_IMAGE_IN_BATCH if batched else REVERT_STAGE_TOOLTIP
 
     def _restore_skip_toggles() -> bool:
         """Put skeletonize / graph-building / FWHM back to the user's values."""
@@ -14696,16 +14804,30 @@ def settings_widget(napari_viewer=None):
         on_clear(ask=False)
         log_view.set_level(VERBOSE_LEVEL if values.get("verbose_logging") else DEFAULT_LEVEL)
         show_log()
+        # This batch's images, as each starts and ends: the window's table
+        # shows them as they come, and when it is opened mid-batch.
+        statuses: dict[str, str] = {}
+
+        def item_changed(result) -> None:
+            statuses[result.match.stem] = result.status_text()
+            if batch_mode.setup is None:
+                return
+            batch_mode.setup = _replace(batch_mode.setup, checked=dict(statuses))
+            if batch_window[0] is not None:
+                batch_window[0].show_progress(batch_mode.setup, result.match.stem)
 
         def batch_finished(summary) -> None:
-            statuses = {
-                result.match.stem: result.status + (f": {result.error}" if result.error else "")
-                for result in summary.results
-            }
-            batch_mode.setup = _replace(setup, checked=statuses)
+            statuses.update({result.match.stem: result.status_text() for result in summary.results})
+            if batch_mode.setup is None:  # the batch run was left while it ran
+                return
+            batch_mode.setup = _replace(batch_mode.setup, checked=dict(statuses))
             if batch_window[0] is not None:
                 batch_window[0].show_finished(batch_mode.setup)
 
+        def batch_stopped() -> None:
+            batch_mode.running = False
+
+        batch_mode.running = True
         _run_batch_in_background(
             values,
             schema,
@@ -14716,6 +14838,8 @@ def settings_widget(napari_viewer=None):
             state=run_state,
             log=log_view,
             on_done=batch_finished,
+            on_item=item_changed,
+            on_stopped=batch_stopped,
         )
         refresh_revert_buttons()
 
@@ -15031,6 +15155,9 @@ def settings_widget(napari_viewer=None):
         from haemolynx.gui.post_processing import edits_lost_by_running_from
         from haemolynx.gui.stage_checkpoints import tab_start_stage
 
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
         post_processed = checkpoints.get(POST_PROCESS)
         if edits_lost_by_running_from(
             tab_start_stage(tab_title),
@@ -15372,7 +15499,12 @@ def settings_widget(napari_viewer=None):
         bars.reset()
 
     def load_run_file(path: Path | str) -> bool:
-        """Replace the current session with the run stored at *path*."""
+        """Replace the current session with the run stored at *path*. Refused
+        while a batch runs (it would stop the batch); a batch set is left, since
+        the run shown is then one image's."""
+        if batch_mode.running:
+            report.value = BATCH_RUNNING_NO_LOAD
+            return False
         try:
             snapshot = read_run_snapshot(path)
         except Exception as error:
@@ -15384,6 +15516,9 @@ def settings_widget(napari_viewer=None):
         for moved in relocated:
             logger.info("Loaded run: %s moved from %s to %s", moved.name, moved.old, moved.new)
         _strip_session_for_load()
+        left_batch = batch_mode.setup is not None
+        if left_batch:
+            leave_batch()
         # The review decisions came with the run: its kept loops and items
         # are not listed again.
         post_processing.state.loop_reviews = list(snapshot.loop_reviews)
@@ -15446,6 +15581,8 @@ def settings_widget(napari_viewer=None):
             )
         if resume_note:
             report.value += f" {resume_note}"
+        if left_batch:
+            report.value += f" {LEFT_BATCH_FOR_RUN}"
         if snapshot.paused_after is not None:
             # Saved while paused: pick it up where it stopped, Continue ready.
             run_state.paused_after = snapshot.paused_after
@@ -15923,6 +16060,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_fwhm_sample = fwhm_sample_dropdown
     panel._haemolynx_optimise_fwhm_passes = fwhm_passes_spinbox
     panel._haemolynx_check_image_button = check_image_button
+    panel._haemolynx_run_checks = on_check
     panel._haemolynx_batch = SimpleNamespace(
         button=batch_button,
         mode=batch_mode,

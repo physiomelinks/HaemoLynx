@@ -936,8 +936,9 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
-def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
-    """Every pre-run check, printed as a checklist.
+def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True) -> CheckReport:
+    """Every pre-run check, printed as a checklist (unless *echo* is False:
+    a batch checks every image and reports them itself).
 
     Called for you by the examples before a run starts; call it yourself to
     check a configuration without running anything.
@@ -970,5 +971,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_crop_on_import(settings))
     report.extend(check_downsample_on_import(settings))
     report.extend(check_cell_mask_measurement(settings))
-    report.print("Preflight")
+    if echo:
+        report.print("Preflight")
     return report

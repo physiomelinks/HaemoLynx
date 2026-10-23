@@ -59,6 +59,7 @@ FAILED = "failed"
 SKIPPED = "skipped (done before)"
 CANCELLED = "cancelled"
 NOT_RUN = "not run"
+RUNNING = "running"
 
 SUMMARY_COLUMNS = (
     "stem",
@@ -100,6 +101,10 @@ class BatchResult:
     seconds: float | None = None
     peak_rss_bytes: int | None = None
     error: str = ""
+
+    def status_text(self) -> str:
+        """Its status, and its error after a colon when it failed."""
+        return f"{self.status}: {self.error}" if self.error else self.status
 
     def row(self) -> dict[str, Any]:
         settings = self.match.settings()
@@ -316,7 +321,7 @@ def run_batch(
     """Run *values* (the panel's form values) on each of *matches*, in order.
 
     *on_item* is called with ``(index, total, result)`` as each image starts
-    (status ``"running"``) and once it is done. *check_cancelled* raises
+    (status :data:`RUNNING`) and once it is done. *check_cancelled* raises
     :class:`~haemolynx.gui.run_state.RunCancelled` (or anything) to stop the
     batch; the image running stops at its next stage and is recorded as
     cancelled, the rest as not run. With *skip_done*, an image whose
@@ -360,7 +365,7 @@ def run_batch(
                 on_item(index, total, result)
             continue
         settings = item_settings(values, match, output_root)
-        result.status = "running"
+        result.status = RUNNING
         if on_item is not None:
             on_item(index, total, result)
         logger.info("=== Batch image %d of %d: %s ===", index + 1, total, match.stem)
@@ -405,6 +410,42 @@ def run_batch(
     return summary
 
 
+def read_summary_statuses(output_root: Path | str) -> dict[str, str]:
+    """Each image's status in *output_root*'s ``batch_summary.csv`` (with its
+    error), by stem: what the last batch there came to. Empty when there is
+    no summary or it cannot be read."""
+    path = Path(output_root) / SUMMARY_FILENAME
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return {}
+    statuses: dict[str, str] = {}
+    for row in rows:
+        stem, status = row.get("stem"), row.get("status")
+        if stem and status:
+            error = row.get("error") or ""
+            statuses[stem] = f"{status}: {error}" if error else status
+    return statuses
+
+
+def stems_done_before(output_root: Path | str, matches: Sequence[BatchMatch]) -> frozenset[str]:
+    """The stems of *matches* whose ``.haemorun`` is already in *output_root*:
+    the images a batch run with Skip done would skip."""
+    return frozenset(match.stem for match in matches if haemorun_path(output_root, match).is_file())
+
+
+def statistics_warning(values: Mapping[str, Any], conditions: BatchConditions | None) -> str:
+    """Why the conditions will compare nothing, or "": with Statistics off no
+    image writes the statistics the batch's comparison reads."""
+    if conditions is None or not conditions.conditions or values.get("statistics"):
+        return ""
+    return (
+        "Statistics is off, so no image writes the statistics the conditions are "
+        "compared on: turn on Statistics, or the batch writes no comparison."
+    )
+
+
 def write_statistics(
     output_root: Path | str,
     stems: Sequence[str],
@@ -439,6 +480,22 @@ BATCH_ROW_FOLDERS = {
 BATCH_ROW_TEXT = "Batch run"
 BATCH_BUTTON_TEXT = "Batch run"
 
+#: Why Check segmented image, the optimisers and Run from this stage are off
+#: while a batch is set: each acts on the one image the Input tab names.
+SINGLE_IMAGE_IN_BATCH = (
+    "This acts on one image, and a batch is set: open Batch run and press "
+    "Leave batch run to use it"
+)
+#: Load run while a batch runs would stop the batch.
+BATCH_RUNNING_NO_LOAD = (
+    "A batch is running: open its images once it is done, or Cancel it first."
+)
+#: What Load run adds when it leaves the batch run to show one image.
+LEFT_BATCH_FOR_RUN = (
+    "The batch run was left to show this one image: Batch run, then Use this "
+    "batch, goes back to it."
+)
+
 #: The table's columns.
 TABLE_COLUMNS = (
     "Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Condition", "Status",
@@ -464,6 +521,10 @@ class BatchSetup:
     conditions: BatchConditions = field(default_factory=BatchConditions)
     #: Statistics sections the comparison leaves out ("Dead Ends").
     exclude_sections: tuple[str, ...] = ()
+    #: Stems whose ``.haemorun`` was in the output folder when matched.
+    done_before: frozenset[str] = frozenset()
+    #: Each image's status in the output folder's last ``batch_summary.csv``.
+    last_statuses: Mapping[str, str] = field(default_factory=dict)
 
     def selected(self) -> list[BatchMatch]:
         return [match for match in self.matches if match.stem not in self.unticked]
@@ -505,13 +566,35 @@ def _mask_cell(found) -> str:
     return "none found"
 
 
-def match_status(match: BatchMatch, checked: Mapping[str, str] | None = None) -> str:
-    """What the table says of *match*: its first problem, its checks' first
-    error, or ready."""
+DONE_BEFORE_SKIPPED = "done before: will be skipped"
+DONE_BEFORE_RERUN = "done before: runs again"
+
+
+def match_status(
+    match: BatchMatch,
+    checked: Mapping[str, str] | None = None,
+    *,
+    done_before: bool = False,
+    skip_done: bool = True,
+    last: str = "",
+) -> str:
+    """What the table says of *match*: its first problem; its checks' first
+    error or what it came to in this batch (*checked*); that its
+    ``.haemorun`` is there already (*done_before*), so Skip done skips it;
+    what the output folder's last batch said of it (*last*); or ready."""
     if match.problems:
         return match.problems[0]
-    if checked and match.stem in checked:
-        return checked[match.stem] or f"{READY} (checked)"
+    result = (checked or {}).get(match.stem)
+    if result:
+        return result
+    if done_before:
+        return DONE_BEFORE_SKIPPED if skip_done else DONE_BEFORE_RERUN
+    if result == "":
+        return f"{READY} (checked)"
+    if last == RUNNING:
+        return "last batch: stopped while running"
+    if last:
+        return f"last batch: {last}"
     return READY
 
 
@@ -554,7 +637,13 @@ def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:
                 _mask_cell(match.masks.get("large")),
                 _mask_cell(match.masks.get("small")),
                 condition_cell(setup, match),
-                match_status(match, setup.checked),
+                match_status(
+                    match,
+                    setup.checked,
+                    done_before=match.stem in setup.done_before,
+                    skip_done=setup.skip_done,
+                    last=setup.last_statuses.get(match.stem, ""),
+                ),
             )
         )
     return rows
@@ -587,6 +676,9 @@ def check_setup(
         lines.append(f"Conditions: {setup.condition_counts()}.")
         if problem:
             lines.append(f"    FAILED: {problem}")
+        warning = statistics_warning(base, setup.conditions)
+        if warning:
+            lines.append(f"    warning: {warning}")
     for match in setup.selected():
         report = batch_preflight(base, match, setup.output_root, schema)
         checked[match.stem] = report.errors[0] if report.errors else ""
@@ -619,13 +711,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "BATCH_ROW_FOLDERS",
     "BATCH_ROW_TEXT",
+    "BATCH_RUNNING_NO_LOAD",
     "BatchResult",
     "BatchSetup",
     "BatchSummary",
     "CANCELLED",
     "DONE",
+    "DONE_BEFORE_RERUN",
+    "DONE_BEFORE_SKIPPED",
     "FAILED",
+    "LEFT_BATCH_FOR_RUN",
     "NOT_RUN",
+    "RUNNING",
+    "SINGLE_IMAGE_IN_BATCH",
     "SKIPPED",
     "SUMMARY_FILENAME",
     "TABLE_COLUMNS",
@@ -634,9 +732,12 @@ __all__ = [
     "haemorun_path",
     "match_status",
     "main",
+    "read_summary_statuses",
     "run_batch",
     "run_image",
     "selected_matches",
+    "statistics_warning",
+    "stems_done_before",
     "table_rows",
     "tied_cells",
     "write_statistics",

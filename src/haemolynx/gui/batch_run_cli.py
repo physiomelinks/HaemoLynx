@@ -143,6 +143,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(written.message if written is not None else "No images.")
         return 0 if written is not None and written.written else 1
+    warning = batch_run.statistics_warning(values, conditions)
+    if warning:
+        print(f"warning: {warning}")
     failing = []
     for match in matches:
         report = batch_preflight(values, match, output_root, schema)

@@ -902,7 +902,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `python -m haemolynx.gui.batch_run` (`batch_run_cli.py`). Conditions and the batch's statistics
   (`statistics/batch_comparison.py`): independent images (Mann-Whitney, Benjamini-Hochberg) or
   paired by subject (Wilcoxon), with `--exclude-section`. In the panel, a set batch is panel state
-  (`batch_mode.setup`), not settings.
+  (`batch_mode.setup`), not settings. Each image's checks refuse an output path past Windows'
+  limit while long paths are off (`check_output_path_lengths`). A set batch greys what acts on one
+  image (Check segmented image, the optimisers, Run from this stage); Load run leaves it, and is
+  refused while a batch runs.
 - **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic.

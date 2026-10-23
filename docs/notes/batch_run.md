@@ -81,3 +81,20 @@ Check, Use this batch, Leave batch run; double-click a finished row to load its
 state, not settings) the six path rows it fills show "Batch run" inside the row
 (`_show_batch_row`, from `apply_prerequisites`; the rows' values are untouched) and Run
 pipeline runs `on_run_batch` -> `_run_batch_in_background`: nothing is drawn.
+
+
+**Phase 1 of `PLAN_batch_panel.md`** (2026-10-23). A demo batch in a long folder lost a stage
+checkpoint pickle at 260 characters; the `.haemorun` was whole, since checkpoints are kept in
+memory and the pickles beside it are side files nothing reads back. Measured on Windows 11 with
+long paths off: a file path of 260 characters and a folder path of 248 are refused. Each image's
+checks now refuse a longer one (`pipeline/batch.py`'s `check_output_path_lengths`, an error by
+Harvey's choice), counting each stage's checkpoint, the `.haemorun`'s `.part`, the export
+dictionary's run-folder files these settings write (`WRITTEN_WHILE`; figures not counted) and
+each perturbation's folder. The window's table says which images a batch with Skip done would
+skip (`stems_done_before`) and what the folder's last `batch_summary.csv` said of the rest
+(`read_summary_statuses`), and follows a running batch image by image. Conditions with
+Statistics off warn (`statistics_warning`). In the panel a set batch greys Check segmented
+image, both optimisers and Run from this stage, and Run checks checks every ticked image. Save
+run stays on: it saves the run shown. Load run was found to cancel a running batch (it stops the
+live run), so it is refused while one runs, and otherwise leaves the batch set. A batch left while
+it ran is no longer set again when it ends.

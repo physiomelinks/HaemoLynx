@@ -163,6 +163,11 @@ _PLOTS = "the plot folder (plot_dir)"
 _PERTURBATION = "the perturbation's folder: perturbation_output_dir/{name}_{type}"
 _BATCH = "the batch's output folder"
 
+#: The run's own folder and a perturbation's, as :attr:`OutputFile.where`
+#: spells them (a batch checks how long its paths there will be).
+RUN_FOLDER = _RUN
+PERTURBATION_FOLDER = _PERTURBATION
+
 _VTK_POINTS = (
     f"Points are physical ({POINTS_AXIS_ORDER}) microns, as node positions are; "
     f"field data ``points_unit`` ({POINTS_UNIT}) and ``points_axis_order`` say so, "
@@ -784,6 +789,8 @@ __all__ = [
     "EXPORT_DICTIONARY_PAGE",
     "FILES",
     "OutputFile",
+    "PERTURBATION_FOLDER",
+    "RUN_FOLDER",
     "UNITS",
     "UNIT_SUFFIXES",
     "export_dictionary_markdown",

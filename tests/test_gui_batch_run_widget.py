@@ -333,3 +333,203 @@ def test_sections_typed_in_the_window_are_left_out_of_compare_and_the_batch(pane
     window.exclude_sections.setText("")
     batch.open()
     assert window.exclude_sections.text() == "dead ends"
+
+
+# -- one image's controls while a batch is set --------------------------------
+
+
+def _single_image_buttons(panel):
+    return [
+        panel._haemolynx_check_image_button,
+        panel._haemolynx_optimise_button,
+        panel._haemolynx_optimise_fwhm_button,
+    ]
+
+
+def test_a_batch_greys_what_acts_on_one_image_and_leaving_restores_it(panel, tmp_path):
+    from haemolynx.gui.batch_run import SINGLE_IMAGE_IN_BATCH
+    from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
+
+    batch = panel._haemolynx_batch
+    buttons = _single_image_buttons(panel)
+    before = [(button.enabled, button.tooltip) for button in buttons]
+    assert all(enabled for enabled, _tooltip in before)
+
+    batch.use(_setup(tmp_path, "A_seg"))
+    for button in buttons:
+        assert not button.enabled
+        assert button.tooltip == SINGLE_IMAGE_IN_BATCH
+    for revert in panel._haemolynx_revert_buttons.values():
+        assert not revert.enabled
+        assert revert.tooltip == SINGLE_IMAGE_IN_BATCH
+    assert panel._haemolynx_save_run_button.tooltip != SINGLE_IMAGE_IN_BATCH
+
+    batch.leave()
+    assert [(button.enabled, button.tooltip) for button in buttons] == before
+    for revert in panel._haemolynx_revert_buttons.values():
+        assert revert.tooltip == REVERT_STAGE_TOOLTIP
+
+
+def test_one_images_actions_refuse_while_a_batch_is_set(panel, tmp_path, monkeypatch):
+    """Greyed, but a script (or a button another run re-enabled) can still
+    press them: each refuses, and nothing starts."""
+    from haemolynx.gui.batch_run import SINGLE_IMAGE_IN_BATCH
+
+    started = []
+    for name in (
+        "_run_segmentation_quality_check_in_background",
+        "_run_optimisation_in_background",
+        "_run_fwhm_optimisation_in_background",
+        "_run_in_background",
+        "_run_batch_in_background",
+    ):
+        monkeypatch.setattr(widget_mod, name, lambda *args, **kwargs: started.append(args))
+    panel._haemolynx_batch.use(_setup(tmp_path, "A_seg"))
+    for button in [*_single_image_buttons(panel), *panel._haemolynx_revert_buttons.values()]:
+        panel._haemolynx_run_checks()  # the report says something else first
+        assert panel._haemolynx_report() != SINGLE_IMAGE_IN_BATCH
+        button.changed.emit(True)
+        assert panel._haemolynx_report() == SINGLE_IMAGE_IN_BATCH
+    assert started == []
+
+
+def test_run_checks_with_a_batch_checks_every_ticked_image(panel, tmp_path):
+    panel._haemolynx_batch.use(_setup(tmp_path, "A_seg", "B_seg"))
+    panel._haemolynx_run_checks()
+    report = panel._haemolynx_report()
+    assert "ok: A_seg" in report and "ok: B_seg" in report
+    assert report.endswith("All 2 ticked image(s) passed their checks.")
+    assert panel._haemolynx_batch.mode.setup.checked == {"A_seg": "", "B_seg": ""}
+
+
+# -- the window during and after a batch --------------------------------------
+
+
+def test_the_window_follows_the_batch_as_it_runs(panel, tmp_path, monkeypatch):
+    from haemolynx.gui.batch_run import DONE, RUNNING, BatchResult, BatchSummary
+
+    batch = panel._haemolynx_batch
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_batch_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    setup = _setup(tmp_path, "A_seg", "B_seg")
+    batch.open()
+    window = batch.window[0]
+    window.fields["segmented"].setText(str(setup.folders.segmented))
+    window.fields["output"].setText(str(setup.output_root))
+    assert window.match()
+    window.use()
+    panel._haemolynx_run()
+    (callbacks,) = started
+    assert batch.mode.running
+
+    first, second = batch.mode.setup.matches
+    column = window.table.columnCount() - 1
+    callbacks["on_item"](BatchResult(first, status=RUNNING))
+    assert window.table.item(0, column).text() == RUNNING
+    assert batch.mode.setup.checked == {"A_seg": RUNNING}
+    callbacks["on_item"](BatchResult(first, status=DONE))
+    callbacks["on_item"](BatchResult(second, status=RUNNING))
+    assert [window.table.item(row, column).text() for row in (0, 1)] == [DONE, RUNNING]
+
+    summary = BatchSummary(setup.output_root, [BatchResult(first, status=DONE), BatchResult(second, status=DONE)])
+    callbacks["on_done"](summary)
+    callbacks["on_stopped"]()
+    assert not batch.mode.running
+    assert [window.table.item(row, column).text() for row in (0, 1)] == [DONE, DONE]
+
+
+def test_a_batch_left_while_it_ran_is_not_set_again_when_it_ends(panel, tmp_path, monkeypatch):
+    from haemolynx.gui.batch_run import BatchSummary
+
+    batch = panel._haemolynx_batch
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_batch_in_background", lambda *args, **kwargs: started.append(kwargs)
+    )
+    batch.use(_setup(tmp_path, "A_seg"))
+    panel._haemolynx_run()
+    batch.leave()
+    started[0]["on_done"](BatchSummary(tmp_path / "out", []))
+    assert batch.mode.setup is None
+    assert batch.button.text == "Batch run"
+
+
+def test_the_window_says_which_images_were_done_before(panel, tmp_path):
+    from haemolynx.gui.batch_run import DONE_BEFORE_RERUN, DONE_BEFORE_SKIPPED, READY, haemorun_path
+
+    batch = panel._haemolynx_batch
+    setup = _setup(tmp_path, "A_seg", "B_seg")
+    done = haemorun_path(setup.output_root, setup.matches[0])
+    done.parent.mkdir(parents=True)
+    done.write_bytes(b"earlier")
+    batch.open()
+    window = batch.window[0]
+    window.fields["segmented"].setText(str(setup.folders.segmented))
+    window.fields["output"].setText(str(setup.output_root))
+    assert window.match()
+    column = window.table.columnCount() - 1
+    assert [window.table.item(row, column).text() for row in (0, 1)] == [DONE_BEFORE_SKIPPED, READY]
+    window.skip_done.setChecked(False)
+    assert window.table.item(0, column).text() == DONE_BEFORE_RERUN
+    assert window.setup.skip_done is False
+
+
+# -- Load run and a batch -----------------------------------------------------
+
+
+def _saved_run(tmp_path: Path) -> Path:
+    from test_gui_results import a_graph, built, network
+
+    from haemolynx.gui.results import StageLayers
+    from haemolynx.gui.run_snapshot import capture_run, write_run_snapshot
+    from haemolynx.gui.stage_checkpoints import StageCheckpoints
+
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = {"input_path": tmp_path / "stack.tif", "vtk_output_prefix": tmp_path / "out" / "stack"}
+    (tmp_path / "out").mkdir(exist_ok=True)
+    results.stage_finished("build_network", network(a_graph(resistance=4.0)))
+    checkpoints.record(
+        "build_network",
+        StageLayers(stage="build_network", title="3. Graph", note="done"),
+        results,
+        settings=settings,
+    )
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    return write_run_snapshot(tmp_path / "one.haemorun", snapshot)
+
+
+def test_load_run_is_refused_while_a_batch_runs(panel, tmp_path, monkeypatch):
+    """Loading a run stops the live one: an overnight batch would be lost to
+    a double-click on a finished image."""
+    from haemolynx.gui.batch_run import BATCH_RUNNING_NO_LOAD
+
+    batch = panel._haemolynx_batch
+    monkeypatch.setattr(widget_mod, "_run_batch_in_background", lambda *args, **kwargs: None)
+    batch.use(_setup(tmp_path, "A_seg"))
+    panel._haemolynx_run()
+    assert batch.mode.running
+    cancelled = []
+    monkeypatch.setattr(panel._haemolynx_run_state, "cancel", lambda: cancelled.append(True))
+    assert panel._haemolynx_load_run(_saved_run(tmp_path)) is False
+    assert panel._haemolynx_report() == BATCH_RUNNING_NO_LOAD
+    assert cancelled == []
+    assert batch.mode.setup is not None
+
+
+def test_loading_a_run_leaves_the_batch_set(panel, tmp_path):
+    from haemolynx.gui.batch_run import LEFT_BATCH_FOR_RUN
+
+    batch = panel._haemolynx_batch
+    batch.use(_setup(tmp_path, "A_seg"))
+    assert panel._haemolynx_load_run(_saved_run(tmp_path)) is True
+    assert batch.mode.setup is None
+    assert batch.button.text == "Batch run"
+    assert LEFT_BATCH_FOR_RUN in panel._haemolynx_report()
+    assert all(button.enabled for button in _single_image_buttons(panel))
+    for label in batch.labels.values():
+        assert label.isHidden()

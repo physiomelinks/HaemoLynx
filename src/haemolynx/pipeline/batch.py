@@ -8,14 +8,18 @@ for one image: its own input files, and every output folder moved into
 something in one image that would mean something else, or nothing, in the
 next -- node IDs, a single pericyte or cell mask -- so the batch refuses them
 before anything runs. :func:`batch_preflight` is the run's own preflight with
-those checks added, per image.
+those checks added, per image, and :func:`check_output_path_lengths`: a batch
+names every file after its image twice (``{output}/{stem}/{stem}_...``), and
+Windows refuses a path past its limit while long paths are off.
 
 Pure: settings in, settings and reports out.
 """
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from haemolynx.graph.boundaries import (
     BOUNDARY_ROLE_SETTINGS,
@@ -190,16 +194,176 @@ def check_batch_item(match: BatchMatch, settings: Mapping[str, Any]) -> CheckRep
     return report
 
 
+#: Windows' longest file path and longest folder path, in characters, while
+#: long paths are off (a folder keeps room for an 8.3 file name). Measured on
+#: Windows 11, 2026-10-23: a 260-character file and a 248-character folder
+#: are refused.
+WINDOWS_MAX_FILE_PATH = 259
+WINDOWS_MAX_FOLDER_PATH = 247
+
+
+def path_length_limits() -> tuple[int, int] | None:
+    """``(file, folder)``: the longest paths this system writes, or None when
+    it has no such limit (not Windows, or Windows with long paths on)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem"
+        ) as key:
+            enabled, _kind = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except OSError:
+        enabled = 0
+    return None if enabled else (WINDOWS_MAX_FILE_PATH, WINDOWS_MAX_FOLDER_PATH)
+
+
+#: The run folder's files that are written only while a setting is on, by the
+#: suffix after ``{stem}`` (or a perturbation's ``{name}``); every other file
+#: the export dictionary lists there is written by every run.
+WRITTEN_WHILE = {
+    "_statistics.csv": "statistics",
+    "_statistics_connected.csv": "statistics",
+    "_branch_statistics.csv": "statistics",
+    "_capillary_bed_joins.csv": "statistics",
+    "_betweenness_communities_resistance.json": "statistics",
+    "_betweenness_communities_edge_length.json": "statistics",
+    "_betweenness_communities_edge_flow.json": "statistics",
+    "_cell_to_vessel_3d_dual_distances.csv": "measurement_3d_to_cell_mask",
+    "_cell_to_vessel_3d_dual_distances_summary.csv": "measurement_3d_to_cell_mask",
+    "_tissue_volume.csv": "measure_tissue_volume",
+    "_tissue_surface.vtp": "measure_tissue_volume",
+}
+
+#: Files no batch run writes: a synthetic network's (refused in a batch) and
+#: those written by hand in the panel's Post processing tab.
+NOT_WRITTEN_BY_A_BATCH = (
+    "_template_comparison.csv",
+    "_connectivity.csv",
+    "_loop_review.csv",
+    "_{kind}_review.csv",
+)
+
+
+def _documented_names(
+    where: str, placeholder: str, settings: Mapping[str, Any]
+) -> list[str]:
+    """The file names :mod:`~haemolynx.pipeline.export_dictionary` gives for
+    *where* that start with *placeholder* (``{stem}``, ``{name}``) and that a
+    batch run on *settings* writes. A wildcard stands for each name in
+    :data:`WRITTEN_WHILE` it matches."""
+    from fnmatch import fnmatchcase
+
+    from haemolynx.pipeline.export_dictionary import FILES
+
+    names: list[str] = []
+    for entry in FILES:
+        if entry.where != where:
+            continue
+        for name in entry.name.split(", "):
+            if not name.startswith(f"{placeholder}_"):
+                continue
+            pattern = name[len(placeholder):]
+            suffixes = (
+                [suffix for suffix in WRITTEN_WHILE if fnmatchcase(suffix, pattern)]
+                if "*" in pattern
+                else [pattern]
+            )
+            for suffix in suffixes:
+                if suffix in NOT_WRITTEN_BY_A_BATCH:
+                    continue
+                gate = WRITTEN_WHILE.get(suffix)
+                if gate is None or settings.get(gate):
+                    names.append(placeholder + suffix)
+    return names
+
+
+def output_paths(settings: Mapping[str, Any]) -> tuple[list[Path], list[Path]]:
+    """``(files, folders)`` one image's run writes, from its
+    :func:`item_settings`: each stage's checkpoint, its ``.haemorun`` (as the
+    ``.part`` it is written to first), the ``{stem}_`` files the export
+    dictionary lists for the run's folder that these settings write, and each
+    perturbation's in its own folder. Figures are left out: their names are
+    not fixed."""
+    from haemolynx.gui.run_snapshot import SUFFIX
+    from haemolynx.gui.stage_checkpoints import checkpoint_pickle_path
+    from haemolynx.haemodynamics.perturbations import (
+        perturbation_folder_name,
+        perturbation_output_dir,
+    )
+    from haemolynx.pipeline.export_dictionary import PERTURBATION_FOLDER, RUN_FOLDER
+    from haemolynx.pipeline.naming import run_stem
+    from haemolynx.pipeline.progress import STAGES
+
+    stem = run_stem(settings)
+    prefix = settings.get("vtk_output_prefix")
+    if stem is None or prefix in (None, ""):
+        return [], []
+    folder = Path(os.path.abspath(Path(prefix).parent))
+    run_names = _documented_names(RUN_FOLDER, "{stem}", settings)
+    files = [checkpoint_pickle_path(folder, stem, stage.call) for stage in STAGES if stage.call]
+    files.append(folder / f"{stem}{SUFFIX}.part")
+    files.extend(folder / name.replace("{stem}", stem) for name in run_names)
+    folders = [folder]
+    for setting in OUTPUT_FOLDERS:
+        if settings.get(setting) not in (None, ""):
+            folders.append(Path(os.path.abspath(settings[setting])))
+    if settings.get("run_perturbations"):
+        root = Path(os.path.abspath(perturbation_output_dir(settings)))
+        names = _documented_names(PERTURBATION_FOLDER, "{name}", settings)
+        for entry in settings.get("perturbations") or ():
+            if not isinstance(entry, Mapping) or not entry.get("name"):
+                continue
+            name = str(entry["name"])
+            own = root / perturbation_folder_name(name, str(entry.get("type") or ""))
+            folders.append(own)
+            files.extend(own / item.replace("{name}", name) for item in names)
+    return files, folders
+
+
+def _longest(paths: Iterable[Path]) -> Path | None:
+    return max(paths, key=lambda path: len(str(path)), default=None)
+
+
+def check_output_path_lengths(
+    settings: Mapping[str, Any], limits: tuple[int, int] | None = None
+) -> CheckReport:
+    """An error when one image's longest output file or folder
+    (:func:`output_paths` of its :func:`item_settings`) is longer than
+    *limits* (``(file, folder)``, by default :func:`path_length_limits`):
+    Windows would refuse it, some writers only log that, and the run would go
+    on without the file."""
+    report = CheckReport()
+    limits = path_length_limits() if limits is None else limits
+    if limits is None:
+        return report
+    files, folders = output_paths(settings)
+    for kind, longest, limit in (
+        ("file", _longest(files), limits[0]),
+        ("folder", _longest(folders), limits[1]),
+    ):
+        if longest is not None and len(str(longest)) > limit:
+            report.add_error(
+                f"This image's outputs need a {len(str(longest))}-character {kind} path, "
+                f"longer than Windows allows ({limit}) while long paths are off: "
+                f"{longest}. Choose a shorter output folder, or turn on Windows long paths."
+            )
+    return report
+
+
 def batch_preflight(
     base: Mapping[str, Any], match: BatchMatch, output_root: Path | str, schema: Schema
 ) -> CheckReport:
-    """One image's preflight: the run's own, the batch's and the match's."""
+    """One image's preflight: the run's own, the batch's and the match's, and
+    whether its output paths fit. Printed by its caller, not here."""
     from haemolynx.pipeline.checks import preflight
 
     settings = item_settings(base, match, output_root)
     report = check_batch_item(match, base)
     report.extend(check_batch(base, schema))
-    report.extend(preflight(settings, schema))
+    report.extend(check_output_path_lengths(settings))
+    report.extend(preflight(settings, schema, echo=False))
     return report
 
 
@@ -207,11 +371,18 @@ __all__ = [
     "DEFAULT_PREFIX_NAME",
     "OUTPUT_FOLDERS",
     "PER_IMAGE_FILES",
+    "NOT_WRITTEN_BY_A_BATCH",
+    "WINDOWS_MAX_FILE_PATH",
+    "WINDOWS_MAX_FOLDER_PATH",
+    "WRITTEN_WHILE",
     "batch_mask_sizes",
     "batch_preflight",
     "check_batch",
     "check_batch_item",
+    "check_output_path_lengths",
     "default_output_root",
     "image_output_folder",
     "item_settings",
+    "output_paths",
+    "path_length_limits",
 ]
