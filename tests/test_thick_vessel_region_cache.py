@@ -163,3 +163,14 @@ def test_low_ram_read_back_holds_no_volume_in_ram(tmp_path, monkeypatch):
 
     assert peak() > 1.5 * volume, "in RAM: the bytes and the booleans"
     assert peak(use_memmap=True, memmap_directory=tmp_path) < 0.4 * volume
+
+
+def test_discarding_the_entry_removes_both_files(tmp_path):
+    cache = ThickVesselRegionCache(tmp_path / "E14_thick_vessel_region")
+    mask = _mask()
+    cache.store("key", mask, mask.shape)
+    assert cache.sidecar.is_file() and cache.packed.is_file()
+    assert set(cache.discard()) == {cache.sidecar, cache.packed}
+    assert not cache.sidecar.exists() and not cache.packed.exists()
+    assert cache.lookup("key") == (False, None)
+    assert cache.discard() == ()

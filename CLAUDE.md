@@ -905,7 +905,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`batch_mode.setup`), not settings. Each image's checks refuse an output path past Windows'
   limit while long paths are off (`check_output_path_lengths`). A set batch greys what acts on one
   image (Check segmented image, the optimisers, Run from this stage); Load run leaves it, and is
-  refused while a batch runs.
+  refused while a batch runs. Each image's on-disk caches (its decompressed input, checkpoint
+  pickles, thick-vessel region) are deleted once it ends (`batch_run.clear_image_caches`).
 - **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic.

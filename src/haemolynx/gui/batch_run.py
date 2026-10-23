@@ -101,6 +101,8 @@ class BatchResult:
     seconds: float | None = None
     peak_rss_bytes: int | None = None
     error: str = ""
+    #: The failure's traceback (the summary CSV keeps only *error*).
+    error_detail: str = ""
 
     def status_text(self) -> str:
         """Its status, and its error after a colon when it failed."""
@@ -140,6 +142,8 @@ class BatchSummary:
     results: list[BatchResult] = field(default_factory=list)
     #: The batch's statistics, written once its images are done.
     statistics: BatchStatisticsFiles | None = None
+    #: Whether it stopped after an image because it was asked to.
+    stopped: bool = False
 
     @property
     def csv_path(self) -> Path:
@@ -154,6 +158,13 @@ class BatchSummary:
             if self.count(status):
                 parts.append(f"{self.count(status)} {status}")
         message = f"Batch: {', '.join(parts)}. Summary: {self.csv_path}"
+        if self.stopped:
+            message += "\nStopped after an image, as asked."
+        if self.count(FAILED) or self.count(CANCELLED) or self.count(NOT_RUN):
+            message += (
+                "\nOnly a finished image saves a .haemorun, so running the batch again with "
+                "Skip done on runs just the ones that failed or did not run."
+            )
         if self.statistics is not None and self.statistics.message:
             message += "\n" + self.statistics.message
         return message
@@ -194,7 +205,71 @@ def _replace(source: Path, target: Path) -> None:
             time.sleep(_REPLACE_WAIT_S)
 
 
+def format_duration(seconds: float | None) -> str:
+    """``"under a minute"``, ``"41 min"`` or ``"1 h 50 min"``; "" for none."""
+    if seconds is None:
+        return ""
+    minutes = int(round(seconds / 60))
+    if minutes < 1:
+        return "under a minute"
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes} min" if minutes else f"{hours} h"
+
+
+def format_bytes(count: int | None) -> str:
+    """``"3.2 GB"``, ``"640 MB"``; "" for none."""
+    if count is None:
+        return ""
+    if count >= 1024**3:
+        return f"{count / 1024**3:.1f} GB"
+    return f"{count / 1024**2:.0f} MB"
+
+
+def figure_cells(
+    seconds: float | None, peak_rss_bytes: int | None, vessels: int | None
+) -> tuple[str, str, str]:
+    """The table's Time, Peak RAM and Vessels cells for one image."""
+    return (
+        format_duration(seconds),
+        format_bytes(peak_rss_bytes),
+        "" if vessels is None else f"{vessels:,}",
+    )
+
+
+def batch_progress_text(
+    results: Sequence[BatchResult], *, elapsed_s: float, running_elapsed_s: float = 0.0
+) -> str:
+    """One line on a batch as it runs: ``"Image 3 of 12: E14_MCA -- 2 done, 0
+    failed, 41 min so far, about 1 h 50 min left"``. *results* are the
+    batch's images in order, as far as they have got; *elapsed_s* is the
+    batch's time so far and *running_elapsed_s* the running image's. The
+    estimate is the mean time of the images this batch ran to the end, so
+    there is none until one has."""
+    total = len(results)
+    running = [index for index, result in enumerate(results) if result.status == RUNNING]
+    done = [result for result in results if result.status == DONE and result.seconds is not None]
+    failed = sum(result.status == FAILED for result in results)
+    head = (
+        f"Image {running[0] + 1} of {total}: {results[running[0]].match.stem}"
+        if running
+        else f"{total} image{'' if total == 1 else 's'}"
+    )
+    parts = [f"{len(done)} done", f"{failed} failed", f"{format_duration(elapsed_s)} so far"]
+    if done:
+        mean = sum(result.seconds for result in done) / len(done)
+        waiting = sum(result.status == NOT_RUN for result in results)
+        left = mean * waiting + (max(mean - running_elapsed_s, 0.0) if running else 0.0)
+        parts.append(f"about {format_duration(left)} left" if left >= 30 else "nearly done")
+    return f"{head} -- {', '.join(parts)}"
+
+
 def _peak_rss(settings: Mapping[str, Any], stem: str) -> int | None:
+    """The image's own peak memory: the largest of its stages' peaks in its
+    run manifest. Not the manifest's ``peak_rss_bytes``: that is the
+    process's, and a batch runs every image in one process, so after the
+    first image it is the largest of this and every earlier one's."""
     from haemolynx.pipeline.provenance import MANIFEST_SUFFIX
 
     prefix = settings.get("vtk_output_prefix")
@@ -206,6 +281,14 @@ def _peak_rss(settings: Mapping[str, Any], stem: str) -> int | None:
         )
     except (OSError, ValueError):
         return None
+    stages = manifest.get("stages") if isinstance(manifest, dict) else None
+    peaks = [
+        stage.get("peak_rss_bytes")
+        for stage in (stages if isinstance(stages, list) else ())
+        if isinstance(stage, dict) and isinstance(stage.get("peak_rss_bytes"), int)
+    ]
+    if peaks:
+        return max(peaks)
     peak = manifest.get("peak_rss_bytes")
     return peak if isinstance(peak, int) else None
 
@@ -269,6 +352,55 @@ def run_image(
     return graph
 
 
+def clear_image_caches(values: Mapping[str, Any], schema: Schema) -> tuple[Path, ...]:
+    """Delete what one image's run (its form *values*) left on disk that no
+    later image of the batch reads; returns the files removed. Never raises.
+
+    - its decompressed input in ``memmap_directory`` (the low-RAM option's
+      :func:`~haemolynx.io.discard_cached_raw_volume`);
+    - scratch volumes Windows kept while they were mapped
+      (:func:`~haemolynx.preprocessing.memmap_support.delete_dropped_memmap_files`);
+    - its stage checkpoint pickles: its ``.haemorun`` holds every stage, and
+      Load run writes what a later Run from this stage needs;
+    - its thick-vessel region cache: only a run of this same image reads it.
+
+    Its outputs -- the skeleton, graph and voxel size a skipped stage loads
+    among them -- stay.
+    """
+    from haemolynx.gui.stage_checkpoints import (
+        discard_cached_artefacts,
+        output_dir_from_prefix,
+        stems_for_cached_artefacts,
+    )
+    from haemolynx.io import discard_cached_raw_volume
+    from haemolynx.pipeline.settings import resolve_settings
+    from haemolynx.pipeline.stages import thick_vessel_region_cache
+    from haemolynx.preprocessing.memmap_support import delete_dropped_memmap_files
+
+    removed: list[Path] = []
+    try:
+        settings = resolve_settings(dict(values), schema=schema, config_path=None)
+        left = delete_dropped_memmap_files()
+        if left:
+            logger.info("%d scratch volume file(s) are still in use and stay for now.", left)
+        if settings.get("use_memmap_loading") and settings.get("memmap_directory"):
+            removed += discard_cached_raw_volume(
+                settings["input_path"],
+                axis_order=settings["image_axis_order"],
+                memmap_directory=settings["memmap_directory"],
+            )
+        output_dir = output_dir_from_prefix(settings.get("vtk_output_prefix"))
+        if output_dir is not None:
+            for stem in stems_for_cached_artefacts(settings):
+                removed += discard_cached_artefacts(output_dir, stem)
+            removed += thick_vessel_region_cache(settings, output_dir).discard()
+    except Exception:  # noqa: BLE001 - a cache left on disk never stops a batch
+        logger.exception("could not clear this image's cached files")
+    if removed:
+        logger.info("Cleared %d cached file(s) this image left on disk.", len(removed))
+    return tuple(removed)
+
+
 def write_batch_settings(
     values: Mapping[str, Any],
     schema: Schema,
@@ -317,6 +449,8 @@ def run_batch(
     skip_done: bool = True,
     conditions: BatchConditions | None = None,
     exclude_sections: Sequence[str] = (),
+    clear_caches: bool = True,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> BatchSummary:
     """Run *values* (the panel's form values) on each of *matches*, in order.
 
@@ -325,7 +459,11 @@ def run_batch(
     :class:`~haemolynx.gui.run_state.RunCancelled` (or anything) to stop the
     batch; the image running stops at its next stage and is recorded as
     cancelled, the rest as not run. With *skip_done*, an image whose
-    ``.haemorun`` is already there is not run again.
+    ``.haemorun`` is already there is not run again. With *clear_caches*,
+    each image's cached files are deleted once it ends (:func:`clear_image_caches`).
+    *stop_requested* is asked before each image: once it says True, the batch
+    stops there, the image that was running having finished and been saved,
+    and the rest are recorded as not run.
 
     Once the images are done (or the batch is cancelled), the statistics of
     every image that ran or was skipped as done are written side by side,
@@ -354,6 +492,10 @@ def run_batch(
     cancelled = False
     for index, result in enumerate(summary.results):
         if cancelled:
+            break
+        if stop_requested is not None and stop_requested():
+            summary.stopped = True
+            logger.info("Batch stopped before image %d of %d, as asked.", index + 1, total)
             break
         match = result.match
         target = haemorun_path(output_root, match)
@@ -384,9 +526,8 @@ def run_batch(
         except Exception as error:  # noqa: BLE001 - one image never ends the batch
             result.status = FAILED
             result.error = f"{type(error).__name__}: {error}"
-            logger.error(
-                "Batch image %s failed:\n%s", match.stem, traceback.format_exc()
-            )
+            result.error_detail = traceback.format_exc()
+            logger.error("Batch image %s failed:\n%s", match.stem, result.error_detail)
         else:
             result.status = DONE
             result.haemorun = target
@@ -397,6 +538,8 @@ def run_batch(
             result.seconds = time.perf_counter() - start
             result.peak_rss_bytes = _peak_rss(settings, match.stem)
             clear_vessel_mask_cache()
+            if clear_caches:
+                clear_image_caches(settings, schema)
         summary.write()
         if on_item is not None:
             on_item(index, total, result)
@@ -410,18 +553,42 @@ def run_batch(
     return summary
 
 
+def _summary_rows(output_root: Path | str) -> list[dict[str, str]]:
+    try:
+        with (Path(output_root) / SUMMARY_FILENAME).open(newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return []
+
+
+def read_summary_figures(output_root: Path | str) -> dict[str, tuple[str, str, str]]:
+    """Each image's Time, Peak RAM and Vessels cells from *output_root*'s
+    ``batch_summary.csv``, by stem (images that ran there)."""
+
+    def number(text: str | None, kind):
+        try:
+            return kind(float(text)) if text not in (None, "") else None
+        except ValueError:
+            return None
+
+    figures = {}
+    for row in _summary_rows(output_root):
+        cells = figure_cells(
+            number(row.get("wall_time_s"), float),
+            number(row.get("peak_rss_bytes"), int),
+            number(row.get("vessels"), int),
+        )
+        if row.get("stem") and any(cells):
+            figures[row["stem"]] = cells
+    return figures
+
+
 def read_summary_statuses(output_root: Path | str) -> dict[str, str]:
     """Each image's status in *output_root*'s ``batch_summary.csv`` (with its
     error), by stem: what the last batch there came to. Empty when there is
     no summary or it cannot be read."""
-    path = Path(output_root) / SUMMARY_FILENAME
-    try:
-        with path.open(newline="", encoding="utf-8") as handle:
-            rows = list(csv.DictReader(handle))
-    except (OSError, UnicodeDecodeError, csv.Error):
-        return {}
     statuses: dict[str, str] = {}
-    for row in rows:
+    for row in _summary_rows(output_root):
         stem, status = row.get("stem"), row.get("status")
         if stem and status:
             error = row.get("error") or ""
@@ -498,7 +665,8 @@ LEFT_BATCH_FOR_RUN = (
 
 #: The table's columns.
 TABLE_COLUMNS = (
-    "Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Condition", "Status",
+    "Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Condition",
+    "Time", "Peak RAM", "Vessels", "Status",
 )
 READY = "ready"
 
@@ -525,6 +693,11 @@ class BatchSetup:
     done_before: frozenset[str] = frozenset()
     #: Each image's status in the output folder's last ``batch_summary.csv``.
     last_statuses: Mapping[str, str] = field(default_factory=dict)
+    #: Each image's Time, Peak RAM and Vessels cells (:func:`figure_cells`):
+    #: this batch's, else the last summary's.
+    figures: Mapping[str, tuple[str, str, str]] = field(default_factory=dict)
+    #: Each failed image's traceback from this batch, for Show error.
+    error_details: Mapping[str, str] = field(default_factory=dict)
 
     def selected(self) -> list[BatchMatch]:
         return [match for match in self.matches if match.stem not in self.unticked]
@@ -540,6 +713,16 @@ class BatchSetup:
     def condition_counts(self) -> str:
         """``"3 in WT, 3 in KO, 1 in neither"`` over the ticked images."""
         return self.conditions.describe(match.stem for match in self.selected())
+
+    def only(self, stem: str) -> "BatchSetup":
+        """The batch of the one image *stem*, run whether or not it was done
+        before: what Run again runs."""
+        return replace(
+            self,
+            unticked=frozenset(match.stem for match in self.matches if match.stem != stem),
+            skip_done=False,
+            checked={},
+        )
 
     def choose(self, role: str, path: Path, match: BatchMatch) -> "BatchSetup":
         """Every image's tie in *role* chosen as *path* was for *match*."""
@@ -637,6 +820,7 @@ def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:
                 _mask_cell(match.masks.get("large")),
                 _mask_cell(match.masks.get("small")),
                 condition_cell(setup, match),
+                *setup.figures.get(match.stem, ("", "", "")),
                 match_status(
                     match,
                     setup.checked,
@@ -664,8 +848,9 @@ def check_setup(
     values: Mapping[str, Any], schema: Schema, setup: BatchSetup
 ) -> tuple[BatchSetup, list[str]]:
     """Every selected image's checks (:func:`~haemolynx.pipeline.batch.batch_preflight`)
-    on the resolved *values*: the setup with each image's result, and a line
-    per image for the report."""
+    on the resolved *values*: the setup with each image's result, and which
+    images are done now (a batch since the folders were matched made more),
+    and a line per image for the report."""
     from haemolynx.pipeline.settings import resolve_settings
 
     base = resolve_settings(dict(values), schema=schema, config_path=None)
@@ -687,7 +872,156 @@ def check_setup(
         lines.extend(f"    warning: {message}" for message in report.warnings)
     if problem:
         checked = {stem: error or problem for stem, error in checked.items()}
-    return replace(setup, checked=checked), lines
+    done = stems_done_before(setup.output_root, setup.matches)
+    return replace(setup, checked=checked, done_before=done), lines
+
+
+#: The comparison CSV's columns the window shows, by how their names start
+#: (the condition labels are in the rest): the metric, each condition's N
+#: and median, the difference, the test's P, the q-value and the note.
+COMPARISON_VIEW_COLUMNS = (
+    "Section", "Metric", "Unit", "N ", "Median ", "Difference of medians",
+    "Median of paired differences", "P (", "Q (", "Note",
+)
+
+
+def comparison_tested(header: Sequence[str], rows: Sequence[Sequence[str]]) -> int:
+    """How many of :func:`comparison_table`'s rows were tested: those with a q."""
+    column = next((i for i, name in enumerate(header) if name.startswith("Q (")), None)
+    return 0 if column is None else sum(bool(row[column]) for row in rows)
+
+
+def comparison_table(output_root: Path | str) -> tuple[list[str], list[list[str]]]:
+    """The batch's ``batch_condition_comparison.csv`` as the window shows it:
+    the columns of :data:`COMPARISON_VIEW_COLUMNS` (the first P only: the
+    rank test's), most significant first by q (untested metrics last), and
+    the numbers rounded. ``([], [])`` when there is none."""
+    from haemolynx.statistics.batch_comparison import COMPARISON_FILENAME
+
+    try:
+        with (Path(output_root) / COMPARISON_FILENAME).open(newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle)
+            header = next(reader)
+            rows = list(reader)
+    except (OSError, StopIteration, UnicodeDecodeError, csv.Error):
+        return [], []
+    keep: list[int] = []
+    for index, name in enumerate(header):
+        if not name.startswith(COMPARISON_VIEW_COLUMNS):
+            continue
+        if name.startswith("P (") and any(header[i].startswith("P (") for i in keep):
+            continue
+        keep.append(index)
+    q_column = next((i for i in keep if header[i].startswith("Q (")), None)
+
+    def q_of(row: list[str]) -> float:
+        try:
+            value = float(row[q_column]) if q_column is not None else float("nan")
+        except (ValueError, IndexError):
+            value = float("nan")
+        return float("inf") if value != value else value
+
+    def cell(text: str) -> str:
+        try:
+            value = float(text)
+        except ValueError:
+            return text
+        if value != value:
+            return ""
+        return f"{value:.3g}" if abs(value) < 1e4 else f"{value:,.0f}"
+
+    rows.sort(key=q_of)
+    return [header[i] for i in keep], [[cell(row[i]) if i < len(row) else "" for i in keep] for row in rows]
+
+
+@dataclass(frozen=True)
+class BatchRecord:
+    """A batch as its ``batch_settings.yaml`` records it: its folders,
+    conditions and the statistics sections it left out, and the file, whose
+    body is the settings it ran with (a config Load config reads)."""
+
+    path: Path
+    folders: BatchFolders
+    output_root: Path
+    conditions: BatchConditions
+    exclude_sections: tuple[str, ...] = ()
+
+
+def read_batch_settings(path: Path | str) -> BatchRecord | None:
+    """The batch :func:`write_batch_settings` recorded in *path*, read back
+    from its ``# batch_...:`` lines; None when it has none or cannot be read."""
+    from haemolynx.statistics.batch_comparison import PAIRED, parse_sections
+
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    record: dict[str, str] = {}
+    for line in lines:
+        if line.startswith("# batch_"):
+            name, _colon, value = line[len("# batch_"):].partition(":")
+            record[name.strip()] = value.strip()
+    if not record.get("segmented"):
+        return None
+
+    def folder(name: str) -> Path | None:
+        return Path(record[name]) if record.get(name) else None
+
+    paired = record.get("comparison") == PAIRED
+    return BatchRecord(
+        path=path,
+        folders=BatchFolders(
+            record["segmented"], raw=folder("raw"), large=folder("large"), small=folder("small")
+        ),
+        output_root=folder("output") or path.parent,
+        conditions=BatchConditions.from_text(
+            record.get("condition_a"),
+            record.get("condition_b"),
+            paired=paired,
+            subject_pattern=record.get("subject_pattern") if paired else None,
+            aggregate=record.get("paired_aggregate") if paired else None,
+        ),
+        exclude_sections=parse_sections(record.get("exclude_sections", "")),
+    )
+
+
+def mask_switch_hint(schema: Schema, values: Mapping[str, Any], size: str) -> str:
+    """Why a batch matches no *size* masks, and the switches (with their tab)
+    that would make it: the greyed folder row's text."""
+    from haemolynx.graph.boundaries import VESSEL_MASK_SWITCHES
+    from haemolynx.gui.form import label_for
+    from haemolynx.gui.tabs import assign_to_stages
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+
+    tabs = assign_to_stages(schema)
+    switch = VESSEL_MASK_SWITCHES[size]
+    if values.get(switch) and values.get("automated_vessel_assignment"):
+        ilastik = VESSEL_MASK_SETTINGS[size]["use_ilastik"]
+        if not values.get(ilastik):
+            return ""
+        return f"not used: ilastik makes these masks ({label_for(ilastik)}), which a batch cannot run"
+    needed = [name for name in ("automated_vessel_assignment", switch) if not values.get(name)]
+    named = " and ".join(f"'{label_for(name)}'" for name in needed)
+    where = sorted({tabs.get(name, "") for name in needed} - {""})
+    return f"not used: tick {named}" + (f" ({', '.join(where)})" if where else "")
+
+
+def settings_changed(values: Mapping[str, Any], schema: Schema) -> list[str]:
+    """The settings *values* sets other than as its default, by name, leaving
+    out the rows a batch fills for each image: what every image runs with."""
+
+    def plain(value: Any) -> Any:
+        if value in (None, ""):
+            return None
+        return str(value) if isinstance(value, Path) else value
+
+    defaults = schema.defaults()
+    return [
+        name
+        for name in schema.names
+        if name not in BATCH_ROW_FOLDERS and plain(values.get(name)) != plain(defaults.get(name))
+    ]
 
 
 def selected_matches(
@@ -712,6 +1046,7 @@ __all__ = [
     "BATCH_ROW_FOLDERS",
     "BATCH_ROW_TEXT",
     "BATCH_RUNNING_NO_LOAD",
+    "BatchRecord",
     "BatchResult",
     "BatchSetup",
     "BatchSummary",
@@ -727,15 +1062,27 @@ __all__ = [
     "SKIPPED",
     "SUMMARY_FILENAME",
     "TABLE_COLUMNS",
+    "COMPARISON_VIEW_COLUMNS",
     "check_setup",
+    "clear_image_caches",
+    "comparison_table",
+    "comparison_tested",
+    "batch_progress_text",
     "condition_cell",
+    "figure_cells",
+    "format_bytes",
+    "format_duration",
     "haemorun_path",
+    "mask_switch_hint",
     "match_status",
     "main",
+    "read_batch_settings",
+    "read_summary_figures",
     "read_summary_statuses",
     "run_batch",
     "run_image",
     "selected_matches",
+    "settings_changed",
     "statistics_warning",
     "stems_done_before",
     "table_rows",

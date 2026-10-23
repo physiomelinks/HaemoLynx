@@ -583,7 +583,7 @@ Written to the batch's output folder. One row per image of a batch run.
 | `nodes` | `count` | Nodes in its network. |
 | `vessels` | `vessels` | Vessels in its network. |
 | `wall_time_s` | `s` | Its wall time. |
-| `peak_rss_bytes` | `bytes` | Its peak memory. |
+| `peak_rss_bytes` | `bytes` | Its peak memory: the largest of its stages' peaks in its run manifest (not the process's, which in a batch includes every earlier image). |
 | `error` | `-` | The error, if it failed. |
 
 ## `batch_settings.yaml`

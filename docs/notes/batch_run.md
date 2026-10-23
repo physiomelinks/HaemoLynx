@@ -98,3 +98,30 @@ image, both optimisers and Run from this stage, and Run checks checks every tick
 run stays on: it saves the run shown. Load run was found to cancel a running batch (it stops the
 live run), so it is refused while one runs, and otherwise leaves the batch set. A batch left while
 it ran is no longer set again when it ends.
+
+**Phases 2-4 of `PLAN_batch_panel.md`, and the caches** (2026-10-23, Harvey's decisions in the
+plan). The window runs a batch itself (Run batch; Run pipeline still runs a set batch) and can
+stop it after its image (`run_batch(stop_requested=)`, `BatchSummary.stopped`). The panel's
+report and the window's status give `batch_progress_text`: the image running, done and failed
+counts, the time so far and an estimate from the mean time of the images done. The table gains
+Time, Peak RAM and Vessels, sorts by any heading, and has Tick all/none/failed and, per image,
+Open run, Open folder, Show error (the traceback, `BatchResult.error_detail`) and Run again
+(`BatchSetup.only`). A Comparison tab lists `batch_condition_comparison.csv` by q
+(`comparison_table`), with a button that opens the CSV. Folders are matched as they are typed;
+an output folder holding a `batch_settings.yaml` offers its batch (`read_batch_settings`), which
+fills the window and loads its settings into the panel. Greyed mask rows name their switches
+(`mask_switch_hint`), and a line counts the settings that differ from the defaults
+(`settings_changed`). Not done: remembering the window between napari sessions (the panel has
+no per-user store yet).
+Found on the way: Check used done-before from when the folders were matched, so after a batch it
+said "ready (checked)" of images Skip done would skip; it now reads them again. The summary's
+`peak_rss_bytes` was the manifest's process peak, which in one process includes every earlier
+image; it is now the largest of the image's own stage peaks. On the six-image demo the working
+set did grow, about 35 MB an image (440 to 619 MB): unmeasured on a real batch.
+Each image's on-disk caches go once it ends (`clear_image_caches`): its decompressed input in
+`memmap_directory`, scratch volumes Windows kept while they were mapped
+(`memmap_support.delete_dropped_memmap_files`), its stage checkpoint pickles and its
+thick-vessel region cache; its outputs stay. On a two-image low-RAM batch with thick-vessel
+skeletonisation (Windows 11), each image had left two memmap-folder files, eight checkpoints
+and a region cache; with clearing, the memmap folder is empty and the `.haemorun`, graph and
+skeleton remain. A re-run of one image now finds the thick-vessel region again.

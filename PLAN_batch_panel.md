@@ -1,11 +1,12 @@
 # Batch run panel: improvements (plan, 2026-10-23)
 
-> **Status (2026-10-23): Phase 1 implemented, not yet committed; Phases 2-4 are plans.** It
-> builds on `PLAN_batch_run.md` (implemented 2026-10-19) and leaves that plan's "Later" list
-> (ilastik batches, more per-image inputs, parallel images) for after this one. Harvey chose:
-> a path past the limit is an error (decision 1), and conditions with Statistics off are a
-> warning (decision 5). Phase 1 changed from this plan where the code showed it was wrong; see
-> "Phase 1 as built".
+> **Status (2026-10-23): Phases 1-4 implemented** (Phase 1 committed at `d4bdfd0c`; 2-4 and
+> the cache clearing not yet committed). It builds on `PLAN_batch_run.md` (implemented
+> 2026-10-19) and leaves that plan's "Later" list (ilastik batches, more per-image inputs,
+> parallel images) for after this one. Harvey's decisions are at the end. Where the code showed
+> the plan was wrong, the build changed; see "Phase 1 as built" and "Phases 2-4 as built".
+> Still to do: item 7 (measure the cache on real stacks: now cleared per image, so this is
+> only how much it held), and remembering the window between napari sessions.
 
 ## How this was looked at
 
@@ -92,6 +93,29 @@ session scratchpad, not the repo. Nothing was checked on a real stack or by a te
 
 Tests: 8 in `test_batch_settings.py`, 6 in `test_batch_run.py`, 8 in
 `test_gui_batch_run_widget.py`.
+
+### Phases 2-4 as built (2026-10-23)
+
+As planned below, with Harvey's decisions 2, 3, 4 and 6, except:
+
+- **Not done: remembering the window between napari sessions.** The panel has no per-user
+  store, and adding one (and keeping tests off the user's own) is its own decision. Within a
+  session the window keeps everything; across sessions the output folder's last batch is
+  offered as soon as the folder is typed.
+- **Found and fixed:** Check kept the done-before read at Match, so after a batch it called
+  every image "ready (checked)" though Skip done would skip them all. The summary's Peak RAM
+  was the process's peak, which in a batch includes every earlier image; it is now the largest
+  of the image's own stage peaks (`docs/export_dictionary.md` says so). The six-image demo's
+  working set still grew about 35 MB an image: not measured on a real batch.
+- **Added (decision 7):** each image's on-disk caches go once it ends
+  (`batch_run.clear_image_caches`); see `docs/notes/batch_run.md`.
+
+Tests: `test_batch_run.py` (caches, progress line, stop, traceback, figures, peak, Check,
+Run again, comparison, `batch_settings.yaml` read back, mask hint, settings line),
+`test_gui_batch_run_widget.py` (matching on leaving a field, Run batch, Stop, the progress line
+and figures, Run again, row actions, ticking, sorting, the Comparison tab, the last batch, the
+greyed mask rows, the settings line), and each cache's own file (`test_raw_volume_cache.py`,
+`test_thick_vessel_region_cache.py`, `test_memmap_support.py`).
 
 ### 1. Defects (1-6), as planned
 
@@ -216,14 +240,16 @@ because the layout change moves every widget the other phases add. Each phase is
 more, with its tests, and the GUI tests run before each commit (`pytest -m gui
 tests/test_gui_batch_run_widget.py tests/test_gui_tooltips.py`).
 
-## Decisions to confirm with Harvey
+## Decisions (Harvey)
 
-1. **A path over Windows' limit:** refuse the image (an error, so nothing runs until the output
-   folder moves or long paths are turned on), or warn and run with that stage unsaved?
-2. **A Run button in the window**, or keep Run pipeline the only start, as `PLAN_batch_run.md`
-   chose?
-3. **Stop after this image:** add it beside Cancel?
-4. **A batch from its folder:** fill the window only, or load the panel settings from
-   `batch_settings.yaml` too?
-5. **Conditions with Statistics off:** an error, or a warning?
-6. **The comparison in the window**, or only a button that opens its CSV?
+1. **A path over Windows' limit:** an error (2026-10-23).
+2. **Starting a batch:** both: a Run button in the window, and Run pipeline still runs a set
+   batch (2026-10-23).
+3. **Stop after this image:** added, beside Cancel (2026-10-23).
+4. **A batch from its folder:** fills the window and loads the panel settings from
+   `batch_settings.yaml` too (2026-10-23).
+5. **Conditions with Statistics off:** a warning (2026-10-23).
+6. **The comparison:** shown in the window, and a button that opens its CSV (2026-10-23).
+7. **On-disk caches** (added 2026-10-23): each image's are deleted once it ends, since the next
+   image never reads them -- its decompressed input in `memmap_directory`, scratch volumes
+   Windows kept while mapped, its stage checkpoint pickles and its thick-vessel region cache.

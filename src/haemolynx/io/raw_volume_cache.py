@@ -133,6 +133,36 @@ def _write_sidecar(
     sidecar_path.write_text(json.dumps(meta))
 
 
+def discard_cached_raw_volume(
+    filepath: str | Path, *, axis_order: str, memmap_directory: str | Path
+) -> tuple[Path, ...]:
+    """Delete the entry :func:`load_raw_volume_reusing_cache` keeps in
+    *memmap_directory* for *filepath* as it is now; returns the files removed.
+
+    A batch runs each image once, so an image's decompressed copy is only
+    disk taken once it is done. A file still mapped (Windows will not delete
+    it) or already gone is left, and logged; never raises.
+    """
+    if axis_order != CANONICAL_AXIS_ORDER:
+        return ()
+    try:
+        resolved = Path(filepath).resolve()
+        key = _cache_key(resolved, resolved.stat(), axis_order)
+    except OSError:
+        return ()
+    removed = []
+    for path in _cache_file_paths(Path(memmap_directory), key):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            logger.warning("Could not remove the cached raw volume %s: %s", path, error)
+            continue
+        removed.append(path)
+    return tuple(removed)
+
+
 def load_raw_volume_reusing_cache(
     filepath: str,
     *,

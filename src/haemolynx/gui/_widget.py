@@ -6532,12 +6532,15 @@ def _run_batch_in_background(
     on_done=None,
     on_item=None,
     on_stopped=None,
+    stop_requested=None,
 ):
     """Run a batch (:func:`haemolynx.gui.batch_run.run_batch`) off the GUI
     thread: the bars follow each image's stages in turn, the report says which
     image is running, *on_item* gets each :class:`~haemolynx.gui.batch_run.BatchResult`
     as its image starts and ends, and *on_done* the batch's summary; *on_stopped*
     is called once the batch is over, however it ended. All on the GUI thread.
+    *stop_requested* is asked from the batch's thread before each image: once
+    True, the batch stops there (Stop after this image).
     Nothing is drawn; each image's ``.haemorun`` opens with Load run. Stopped
     as a run is."""
     from napari.qt.threading import thread_worker
@@ -6593,6 +6596,7 @@ def _run_batch_in_background(
             skip_done=setup.skip_done,
             conditions=setup.conditions,
             exclude_sections=setup.exclude_sections,
+            stop_requested=stop_requested,
         )
 
     def finished(summary) -> None:
@@ -9744,17 +9748,31 @@ def _show_batch_row(widget, label, setup, name: str) -> None:
         label.setToolTip(setup.row_tooltip(name))
 
 
+def _open_in_system(path) -> bool:
+    """Open *path* (a folder or a file) with the system's own program for it."""
+    from qtpy.QtCore import QUrl
+    from qtpy.QtGui import QDesktopServices
+
+    return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+
+
 class _BatchRunWindow:
-    """The Batch run window: the batch's folders, the two conditions read from
-    the images' file names, the images matched in them, Check, Compare
-    statistics, Use this batch and Leave batch run.
+    """The Batch run window. Its Images tab holds the batch's folders, the two
+    conditions read from the images' file names, the images matched in them
+    with what each came to, and what can be done to one image; its Comparison
+    tab the two conditions tested against each other. Under both: Match again,
+    Check, Compare statistics, Open batch folder, Stop after this image, Leave
+    batch run, Use this batch and Run batch.
 
     Plain Qt glue; what a batch is, and how it is matched, checked and run, is
     :mod:`haemolynx.gui.batch_run` and :mod:`haemolynx.io.batch_matching`.
     *values* returns the panel's form values; *on_use* gets the
     :class:`~haemolynx.gui.batch_run.BatchSetup` Run pipeline is to run,
-    *on_leave* is called to go back to one image, and *on_open* with an
-    image's ``.haemorun`` when its row is double-clicked. *parent* is the
+    *on_run* the one to run now, *on_run_again* the setup and the one image's
+    stem to run again; *on_leave* is called to go back to one image, *on_stop*
+    to stop the running batch after its image, *on_open* with an image's
+    ``.haemorun`` to open it, and *on_load_settings* with a
+    ``batch_settings.yaml`` to put its settings in the panel. *parent* is the
     panel: the window stays a window of its own, but as the panel's child it
     takes napari's stylesheet (and its theme changes), which napari sets on
     its main window and so never reaches a parentless one.
@@ -9780,20 +9798,38 @@ class _BatchRunWindow:
         ("Median of its images", "median"),
         ("Mean of its images", "mean"),
     )
+    #: Rows the window opens tall enough to show.
+    VISIBLE_ROWS = 8
 
-    def __init__(self, *, schema, values, on_use, on_leave, on_open=None, parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        schema,
+        values,
+        on_use,
+        on_leave,
+        on_open=None,
+        on_run=None,
+        on_run_again=None,
+        on_stop=None,
+        on_load_settings=None,
+        parent=None,
+    ) -> None:
         from qtpy.QtCore import Qt
         from qtpy.QtWidgets import (
             QAbstractItemView,
             QCheckBox,
             QComboBox,
             QGridLayout,
+            QGroupBox,
             QHBoxLayout,
             QLabel,
             QLineEdit,
             QPlainTextEdit,
             QPushButton,
+            QSplitter,
             QTableWidget,
+            QTabWidget,
             QVBoxLayout,
             QWidget,
         )
@@ -9806,21 +9842,36 @@ class _BatchRunWindow:
         self._on_use = on_use
         self._on_leave = on_leave
         self._on_open = on_open
+        self._on_run = on_run
+        self._on_run_again = on_run_again
+        self._on_stop = on_stop
+        self._on_load_settings = on_load_settings
         self._filling = False
+        self._running = False
+        self._record = None
         self.setup = None
 
         self.native = QWidget(parent, Qt.WindowType.Window)
         self.native.setWindowTitle("HaemoLynx: Batch run")
         self.native.setObjectName("haemolynx_batch_run")
-        self.native.resize(900, 520)
         layout = QVBoxLayout(self.native)
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+        images_page = QWidget()
+        images = QVBoxLayout(images_page)
+        images.setContentsMargins(0, 0, 0, 0)
+        self.tabs.addTab(images_page, "Images")
 
+        # -- Images: the folders --------------------------------------------
+        folders_box = QGroupBox("Images")
+        folders_layout = QVBoxLayout(folders_box)
         grid = QGridLayout()
         self.fields: dict[str, Any] = {}
         self.browse_buttons: dict[str, Any] = {}
         for row, (key, text) in enumerate(self.FOLDER_ROWS):
             edit = QLineEdit()
             edit.setToolTip(tips[key])
+            edit.editingFinished.connect(lambda: self._folders_changed())
             browse = QPushButton("Browse...")
             browse.setToolTip(tips["browse"])
             browse.clicked.connect(lambda _checked=False, field=edit: self._browse(field))
@@ -9829,9 +9880,32 @@ class _BatchRunWindow:
             grid.addWidget(browse, row, 2)
             self.fields[key] = edit
             self.browse_buttons[key] = browse
-        layout.addLayout(grid)
+        folders_layout.addLayout(grid)
+        self.last_batch_button = QPushButton("Use this folder's last batch")
+        self.last_batch_button.setToolTip(tips["last_batch"])
+        self.last_batch_button.setVisible(False)
+        self.last_batch_button.clicked.connect(lambda *_: self.use_last_batch())
+        folders_layout.addWidget(self.last_batch_button)
+        self.skip_done = QCheckBox("Skip images whose folder already has a .haemorun")
+        self.skip_done.setChecked(True)
+        self.skip_done.setToolTip(tips["skip_done"])
+        self.skip_done.toggled.connect(lambda *_: self._skip_done_changed())
+        settings_row = QHBoxLayout()
+        settings_row.addWidget(self.skip_done)
+        settings_row.addStretch(1)
+        self.settings_line = QLabel("")
+        self.settings_line.setToolTip(tips["settings_line"])
+        self.show_settings_button = QPushButton("Show")
+        self.show_settings_button.setToolTip(tips["show_settings"])
+        self.show_settings_button.clicked.connect(lambda *_: self.show_settings())
+        settings_row.addWidget(self.settings_line)
+        settings_row.addWidget(self.show_settings_button)
+        folders_layout.addLayout(settings_row)
+        images.addWidget(folders_box)
 
-        conditions = QGridLayout()
+        # -- Images: conditions and statistics ----------------------------------
+        conditions_box = QGroupBox("Conditions and statistics")
+        conditions = QGridLayout(conditions_box)
         self.condition_fields: dict[str, Any] = {}
         for column, (key, text) in enumerate(self.CONDITION_ROWS):
             edit = QLineEdit()
@@ -9871,55 +9945,127 @@ class _BatchRunWindow:
         self.exclude_sections.textChanged.connect(lambda *_: self._sections_changed())
         conditions.addWidget(QLabel("Leave out sections"), 3, 0)
         conditions.addWidget(self.exclude_sections, 3, 1, 1, 3)
-        layout.addLayout(conditions)
+        images.addWidget(conditions_box)
         self._refresh_design_rows()
 
-        self.skip_done = QCheckBox("Skip images whose folder already has a .haemorun")
-        self.skip_done.setChecked(True)
-        self.skip_done.setToolTip(tips["skip_done"])
-        self.skip_done.toggled.connect(lambda *_: self._skip_done_changed())
-        layout.addWidget(self.skip_done)
-
+        # -- Images: the table, what can be done to one image, the report -------
+        table_page = QWidget()
+        table_layout = QVBoxLayout(table_page)
+        table_layout.setContentsMargins(0, 0, 0, 0)
         self.table = QTableWidget(0, len(TABLE_COLUMNS))
         self.table.setHorizontalHeaderLabels(list(TABLE_COLUMNS))
+        self.table.horizontalHeaderItem(TABLE_COLUMNS.index("Peak RAM")).setToolTip(tips["peak_ram"])
         self.table.setToolTip(tips["table"])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.horizontalHeader().setStretchLastSection(True)
+        # No order until a header is clicked: the images as matched, by name.
+        self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        self.table.setSortingEnabled(True)
         self.table.itemChanged.connect(self._ticked)
         self.table.cellDoubleClicked.connect(self._double_clicked)
-        layout.addWidget(self.table, 1)
+        self.table.itemSelectionChanged.connect(lambda: self._refresh_row_actions())
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
+        table_layout.addWidget(self.table, 1)
+        rows = QHBoxLayout()
+        self.tick_buttons: dict[str, Any] = {}
+        for key, text in (("all", "Tick all"), ("none", "Tick none"), ("failed", "Tick failed")):
+            button = QPushButton(text)
+            button.setToolTip(tips[f"tick_{key}"])
+            button.clicked.connect(lambda _checked=False, which=key: self.tick(which))
+            rows.addWidget(button)
+            self.tick_buttons[key] = button
+        rows.addStretch(1)
+        self.row_buttons: dict[str, Any] = {}
+        for key, text in (
+            ("open_run", "Open run"),
+            ("open_folder", "Open folder"),
+            ("show_error", "Show error"),
+            ("run_again", "Run again"),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tips[key])
+            button.setEnabled(False)
+            button.clicked.connect(lambda _checked=False, which=key: self.row_action(which))
+            rows.addWidget(button)
+            self.row_buttons[key] = button
+        table_layout.addLayout(rows)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setToolTip(tips["details"])
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.addWidget(table_page)
+        self.splitter.addWidget(self.details)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setSizes([1, 0])
+        images.addWidget(self.splitter, 1)
 
+        # -- Comparison ---------------------------------------------------------
+        comparison_page = QWidget()
+        comparison = QVBoxLayout(comparison_page)
+        self.comparison_note = QLabel("")
+        self.comparison_note.setWordWrap(True)
+        comparison.addWidget(self.comparison_note)
+        self.comparison_table = QTableWidget(0, 0)
+        self.comparison_table.setToolTip(tips["comparison_table"])
+        self.comparison_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.comparison_table.horizontalHeader().setStretchLastSection(True)
+        comparison.addWidget(self.comparison_table, 1)
+        comparison_buttons = QHBoxLayout()
+        comparison_buttons.addStretch(1)
+        self.refresh_comparison_button = QPushButton("Read again")
+        self.refresh_comparison_button.setToolTip(tips["refresh_comparison"])
+        self.refresh_comparison_button.clicked.connect(lambda *_: self.refresh_comparison())
+        self.open_comparison_button = QPushButton("Open comparison CSV")
+        self.open_comparison_button.setToolTip(tips["open_comparison"])
+        self.open_comparison_button.clicked.connect(lambda *_: self.open_comparison())
+        comparison_buttons.addWidget(self.refresh_comparison_button)
+        comparison_buttons.addWidget(self.open_comparison_button)
+        comparison.addLayout(comparison_buttons)
+        self.tabs.addTab(comparison_page, "Comparison")
+
+        # -- Under both tabs ----------------------------------------------------
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setMaximumHeight(140)
-        self.details.setVisible(False)
-        layout.addWidget(self.details)
-
         buttons = QHBoxLayout()
-        self.match_button = QPushButton("Match")
+        self.match_button = QPushButton("Match again")
         self.match_button.setToolTip(tips["match"])
         self.check_button = QPushButton("Check")
         self.check_button.setToolTip(tips["check"])
         self.compare_button = QPushButton("Compare statistics")
         self.compare_button.setToolTip(tips["compare"])
+        self.open_folder_button = QPushButton("Open batch folder")
+        self.open_folder_button.setToolTip(tips["open_batch_folder"])
+        self.stop_button = QPushButton("Stop after this image")
+        self.stop_button.setToolTip(tips["stop"])
+        self.stop_button.setEnabled(False)
         self.leave_button = QPushButton("Leave batch run")
         self.leave_button.setToolTip(tips["leave"])
         self.use_button = QPushButton("Use this batch")
         self.use_button.setToolTip(tips["use"])
-        for button in (self.match_button, self.check_button, self.compare_button):
+        self.run_button = QPushButton("Run batch")
+        self.run_button.setToolTip(tips["run"])
+        for button in (self.match_button, self.check_button, self.compare_button, self.open_folder_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
-        for button in (self.leave_button, self.use_button):
+        for button in (self.stop_button, self.leave_button, self.use_button, self.run_button):
             buttons.addWidget(button)
         layout.addLayout(buttons)
         self.match_button.clicked.connect(lambda *_: self.match())
         self.check_button.clicked.connect(lambda *_: self.check())
         self.compare_button.clicked.connect(lambda *_: self.compare())
+        self.open_folder_button.clicked.connect(lambda *_: self.open_batch_folder())
+        self.stop_button.clicked.connect(lambda *_: self.stop())
         self.use_button.clicked.connect(lambda *_: self.use())
         self.leave_button.clicked.connect(lambda *_: self.leave())
+        self.run_button.clicked.connect(lambda *_: self.run())
+
+        row_height = self.table.verticalHeader().defaultSectionSize()
+        self.native.resize(1100, 560 + row_height * self.VISIBLE_ROWS)
 
     # -- folders ---------------------------------------------------------
 
@@ -9929,6 +10075,7 @@ class _BatchRunWindow:
         chosen = QFileDialog.getExistingDirectory(self.native, "Choose a folder", field.text())
         if chosen:
             field.setText(chosen)
+            self._folders_changed()
 
     def _sizes(self) -> tuple[str, ...]:
         from haemolynx.pipeline.batch import batch_mask_sizes
@@ -9936,16 +10083,86 @@ class _BatchRunWindow:
         return batch_mask_sizes(self._values())
 
     def _refresh_mask_rows(self) -> None:
+        from haemolynx.gui.batch_run import mask_switch_hint
+
         sizes = self._sizes()
+        values = self._values()
         for size in ("large", "small"):
             used = size in sizes
             self.fields[size].setEnabled(used)
             self.browse_buttons[size].setEnabled(used)
-            if not used:
-                self.fields[size].setPlaceholderText("not used: this run's settings use no such masks")
-            else:
-                self.fields[size].setPlaceholderText("blank: the segmented folder")
+            self.fields[size].setPlaceholderText(
+                "blank: the segmented folder" if used else mask_switch_hint(self._schema, values, size)
+            )
         self.fields["raw"].setPlaceholderText("blank: the segmented folder")
+
+    def _refresh_settings_line(self) -> None:
+        from haemolynx.gui.batch_run import settings_changed
+
+        changed = settings_changed(self._values(), self._schema)
+        self.settings_line.setText(
+            f"Settings: the panel's, {len(changed)} differ from the defaults"
+            if changed
+            else "Settings: the panel's, all at their defaults"
+        )
+        self.show_settings_button.setEnabled(bool(changed))
+
+    def show_settings(self) -> None:
+        """List, in the report box, the settings every image runs with that
+        differ from their defaults."""
+        from haemolynx.gui.batch_run import settings_changed
+
+        values = self._values()
+        lines = [f"{name}: {values.get(name)}" for name in settings_changed(values, self._schema)]
+        self._report(["Settings every image runs with that differ from the defaults:", *lines])
+
+    def _folders_changed(self) -> None:
+        """A folder typed or chosen: offer the output folder's last batch, and
+        match again once there are images and somewhere to put them."""
+        self._refresh_last_batch()
+        if self.fields["segmented"].text().strip() and self.fields["output"].text().strip():
+            self.match()
+
+    def _refresh_last_batch(self) -> None:
+        from haemolynx.gui.batch_run import SETTINGS_FILENAME, read_batch_settings
+
+        output = self.fields["output"].text().strip()
+        self._record = read_batch_settings(Path(output) / SETTINGS_FILENAME) if output else None
+        self.last_batch_button.setVisible(self._record is not None)
+
+    def use_last_batch(self) -> bool:
+        """Fill the window from the output folder's ``batch_settings.yaml``
+        -- its folders, conditions, comparison and sections -- and put the
+        settings it ran with in the panel; then match. Whether there was one."""
+        if self._record is None:
+            self._refresh_last_batch()
+        record = self._record
+        if record is None:
+            return False
+        if self._on_load_settings is not None:
+            self._on_load_settings(record.path)
+        self._filling = True
+        try:
+            for key in ("segmented", "raw", "large", "small"):
+                value = getattr(record.folders, key)
+                self.fields[key].setText("" if value is None else str(value))
+            self.fields["output"].setText(str(record.output_root))
+            self._show_conditions(record.conditions, record.exclude_sections)
+        finally:
+            self._filling = False
+        self._refresh_design_rows()
+        self._refresh_settings_line()
+        matched = self.match()
+        self._say(f"Filled from {record.path}, and the panel's settings with it. " + self.status.text())
+        return matched
+
+    def _show_conditions(self, conditions, exclude_sections) -> None:
+        for key, condition in zip(("condition_a", "condition_b"), (conditions.a, conditions.b)):
+            self.condition_fields[key].setText("" if condition is None else condition.label)
+        self.design.setCurrentIndex(self.design.findData(conditions.design))
+        self.subject_pattern.setText(conditions.subject_pattern)
+        self.aggregate.setCurrentIndex(self.aggregate.findData(conditions.aggregate))
+        self.exclude_sections.setText(", ".join(exclude_sections))
 
     def open(self, setup=None) -> None:
         """Show the window, filled from *setup* (the batch in use) if any."""
@@ -9960,14 +10177,7 @@ class _BatchRunWindow:
             self._filling = True
             try:
                 self.skip_done.setChecked(setup.skip_done)
-                for key, condition in zip(
-                    ("condition_a", "condition_b"), (setup.conditions.a, setup.conditions.b)
-                ):
-                    self.condition_fields[key].setText("" if condition is None else condition.label)
-                self.design.setCurrentIndex(self.design.findData(setup.conditions.design))
-                self.subject_pattern.setText(setup.conditions.subject_pattern)
-                self.aggregate.setCurrentIndex(self.aggregate.findData(setup.conditions.aggregate))
-                self.exclude_sections.setText(", ".join(setup.exclude_sections))
+                self._show_conditions(setup.conditions, setup.exclude_sections)
             finally:
                 self._filling = False
             self._refresh_design_rows()
@@ -9976,16 +10186,17 @@ class _BatchRunWindow:
             if default is not None:
                 self.fields["output"].setText(str(default))
         self._refresh_mask_rows()
+        self._refresh_settings_line()
+        self._refresh_last_batch()
         self._fill_table()
+        self.refresh_comparison()
         self.native.show()
         self.native.raise_()
 
     # -- conditions ------------------------------------------------------
 
     def _conditions(self):
-        from haemolynx.statistics.batch_comparison import BatchConditions
-
-        from haemolynx.statistics.batch_comparison import PAIRED
+        from haemolynx.statistics.batch_comparison import PAIRED, BatchConditions
 
         paired = self.design.currentData() == PAIRED
         return BatchConditions.from_text(
@@ -10060,6 +10271,50 @@ class _BatchRunWindow:
             exclude_sections=self.setup.exclude_sections,
         )
         self._say(written.message if written is not None else "No image is ticked.")
+        self.refresh_comparison()
+
+    # -- the comparison --------------------------------------------------
+
+    def _comparison_path(self) -> Path | None:
+        from haemolynx.statistics.batch_comparison import COMPARISON_FILENAME
+
+        output = self.setup.output_root if self.setup is not None else self.fields["output"].text().strip()
+        return Path(output) / COMPARISON_FILENAME if output else None
+
+    def refresh_comparison(self) -> None:
+        """Show the output folder's comparison CSV, most significant first."""
+        from qtpy.QtWidgets import QTableWidgetItem
+
+        from haemolynx.gui.batch_run import comparison_table, comparison_tested
+
+        path = self._comparison_path()
+        header, rows = comparison_table(path.parent) if path is not None else ([], [])
+        self.comparison_table.clear()
+        self.comparison_table.setColumnCount(len(header))
+        self.comparison_table.setRowCount(len(rows))
+        self.comparison_table.setHorizontalHeaderLabels(header)
+        for row, cells in enumerate(rows):
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
+                self.comparison_table.setItem(row, column, item)
+        self.comparison_table.resizeColumnsToContents()
+        self.open_comparison_button.setEnabled(bool(rows))
+        self.comparison_note.setText(
+            f"{comparison_tested(header, rows)} of {len(rows)} statistics tested (the rest "
+            "have too few images, or one value everywhere), smallest q first, from "
+            f"{path}."
+            if rows
+            else "No comparison yet: set Condition A and B, with Statistics on, then run the "
+            "batch or press Compare statistics."
+        )
+
+    def open_comparison(self) -> None:
+        path = self._comparison_path()
+        if path is None or not path.is_file():
+            self._say("No comparison CSV yet.")
+            return
+        _open_in_system(path)
 
     # -- matching --------------------------------------------------------
 
@@ -10079,10 +10334,16 @@ class _BatchRunWindow:
         """Match the folders' images; says why not in the window when it cannot."""
         from dataclasses import replace
 
-        from haemolynx.gui.batch_run import BatchSetup, read_summary_statuses, stems_done_before
+        from haemolynx.gui.batch_run import (
+            BatchSetup,
+            read_summary_figures,
+            read_summary_statuses,
+            stems_done_before,
+        )
         from haemolynx.io.batch_matching import match_batch
 
         self._refresh_mask_rows()
+        self._refresh_settings_line()
         output = self.fields["output"].text().strip()
         if not output:
             self._say("Choose an output folder: each image's outputs go in a folder of its own in it.")
@@ -10104,9 +10365,11 @@ class _BatchRunWindow:
             exclude_sections=self._excluded_sections(),
             done_before=stems_done_before(output, matches),
             last_statuses=read_summary_statuses(output),
+            figures=read_summary_figures(output),
         )
         self.setup = setup
         self._fill_table()
+        self.refresh_comparison()
         attention = sum(not match.ok for match in matches)
         counts = setup.condition_counts()
         self._say(
@@ -10137,14 +10400,14 @@ class _BatchRunWindow:
             if failing
             else f"All {len(self.setup.checked)} ticked image(s) passed their checks."
         )
-        self.details.setPlainText("\n".join(lines))
-        self.details.setVisible(bool(lines))
+        self._report(lines)
 
-    def use(self) -> None:
+    def _ready(self) -> bool:
+        """The batch as the window shows it, ready to hand over; says why not."""
         from dataclasses import replace
 
         if self.setup is None and not self.match():
-            return
+            return False
         self.setup = replace(
             self.setup,
             skip_done=self.skip_done.isChecked(),
@@ -10153,38 +10416,190 @@ class _BatchRunWindow:
         )
         if not self.setup.selected():
             self._say("No image is ticked.")
-            return
+            return False
         if self.setup.conditions.problem():
             self._say(self.setup.conditions.problem())
+            return False
+        return True
+
+    def use(self) -> None:
+        if not self._ready():
             return
         self._on_use(self.setup)
         self.native.hide()
+
+    def run(self) -> None:
+        """Use this batch and run it now, keeping the window open to watch."""
+        if self._running or self._on_run is None or not self._ready():
+            return
+        self._on_run(self.setup)
+
+    def stop(self) -> None:
+        if self._on_stop is not None and self._on_stop():
+            self.stop_button.setEnabled(False)
+            self.stop_button.setText("Stopping after this image")
 
     def leave(self) -> None:
         self._on_leave()
         self.native.hide()
 
-    def show_finished(self, setup) -> None:
-        """The batch as it ended: each image's status in the table."""
-        self.setup = setup
-        self._fill_table()
+    def set_running(self, running: bool) -> None:
+        """A batch started (True) or ended: Run and Run again wait for it to
+        end, and Stop after this image is for it alone."""
+        self._running = running
+        self.run_button.setEnabled(not running)
+        self.stop_button.setEnabled(running)
+        self.stop_button.setText("Stop after this image")
+        self._refresh_row_actions()
 
-    def show_progress(self, setup, stem: str) -> None:
-        """The batch as it runs: each image's status so far, and the row of
-        *stem* (the image that started or ended) in view."""
+    def show_finished(self, setup, message: str | None = None) -> None:
+        """The batch as it ended: each image's status in the table, and its
+        comparison read again."""
         self.setup = setup
         self._fill_table()
-        for row, match in enumerate(setup.matches):
-            if match.stem == stem:
-                item = self.table.item(row, 1)
-                if item is not None:
-                    self.table.scrollToItem(item)
-                break
+        self.refresh_comparison()
+        if message:
+            self._say(message)
+
+    def show_progress(self, setup, stem: str, text: str | None = None) -> None:
+        """The batch as it runs: each image's status so far, the row of *stem*
+        (the image that started or ended) in view, and *text*, the batch's
+        progress line."""
+        self.setup = setup
+        self._fill_table()
+        row = self._row_of(stem)
+        if row is not None:
+            self.table.scrollToItem(self.table.item(row, 1))
+        if text:
+            self._say(text)
+
+    def open_batch_folder(self) -> None:
+        output = self.setup.output_root if self.setup is not None else self.fields["output"].text().strip()
+        if not output or not Path(output).is_dir():
+            self._say("The output folder does not exist yet.")
+            return
+        _open_in_system(Path(output))
+
+    # -- one image -------------------------------------------------------
+
+    def _row_of(self, stem: str) -> int | None:
+        from qtpy.QtCore import Qt
+
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)
+            if item is not None and item.data(Qt.UserRole) == stem:
+                return row
+        return None
+
+    def _match_at(self, row: int):
+        from qtpy.QtCore import Qt
+
+        item = self.table.item(row, 1)
+        if self.setup is None or item is None:
+            return None
+        stem = item.data(Qt.UserRole)
+        return next((match for match in self.setup.matches if match.stem == stem), None)
+
+    def _selected_match(self):
+        rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+        return self._match_at(min(rows)) if rows else None
+
+    def _error_of(self, match) -> str:
+        """The selected image's error: its traceback from this batch, else
+        what its status says of a failure."""
+        details = self.setup.error_details.get(match.stem, "")
+        if details:
+            return details
+        row = self._row_of(match.stem)
+        status = self.table.item(row, self.table.columnCount() - 1) if row is not None else None
+        text = status.text() if status is not None else ""
+        return text if "failed" in text else ""
+
+    def _row_actions(self, match) -> dict[str, bool]:
+        """Which of the row's actions *match* allows now."""
+        from haemolynx.gui.batch_run import haemorun_path
+        from haemolynx.pipeline.batch import image_output_folder
+
+        if match is None or self.setup is None:
+            return {key: False for key in self.row_buttons}
+        return {
+            "open_run": haemorun_path(self.setup.output_root, match).is_file() and not self._running,
+            "open_folder": image_output_folder(self.setup.output_root, match).is_dir(),
+            "show_error": bool(self._error_of(match)),
+            "run_again": match.ok and not self._running and self._on_run_again is not None,
+        }
+
+    def _refresh_row_actions(self) -> None:
+        for key, allowed in self._row_actions(self._selected_match()).items():
+            self.row_buttons[key].setEnabled(allowed)
+
+    def row_action(self, which: str, match=None) -> None:
+        """Open run, Open folder, Show error or Run again, on *match* or the
+        selected image."""
+        from haemolynx.gui.batch_run import haemorun_path
+        from haemolynx.pipeline.batch import image_output_folder
+
+        match = match if match is not None else self._selected_match()
+        if match is None or not self._row_actions(match).get(which):
+            return
+        if which == "open_run":
+            self._on_open(haemorun_path(self.setup.output_root, match))
+        elif which == "open_folder":
+            _open_in_system(image_output_folder(self.setup.output_root, match))
+        elif which == "show_error":
+            self._report([f"{match.stem}:", self._error_of(match)])
+        elif which == "run_again":
+            self._on_run_again(self.setup, match.stem)
+
+    def _row_menu(self, position) -> None:
+        from qtpy.QtWidgets import QMenu
+
+        row = self.table.rowAt(position.y())
+        match = self._match_at(row) if row >= 0 else None
+        if match is None:
+            return
+        self.table.selectRow(row)
+        menu = QMenu(self.table)
+        allowed = self._row_actions(match)
+        for key, button in self.row_buttons.items():
+            action = menu.addAction(button.text())
+            action.setEnabled(allowed[key])
+            action.triggered.connect(lambda _checked=False, which=key: self.row_action(which, match))
+        menu.exec_(self.table.viewport().mapToGlobal(position))
+
+    def tick(self, which: str) -> None:
+        """Tick every image ("all"), none, or only those whose last outcome
+        (this batch's, else the folder's last summary's) is a failure."""
+        from dataclasses import replace
+
+        if self.setup is None:
+            return
+        stems = [match.stem for match in self.setup.matches]
+        if which == "all":
+            unticked = frozenset()
+        elif which == "none":
+            unticked = frozenset(stems)
+        else:
+
+            def failed(stem: str) -> bool:
+                status = self.setup.checked.get(stem) or self.setup.last_statuses.get(stem, "")
+                return status.startswith("failed")
+
+            unticked = frozenset(stem for stem in stems if not failed(stem))
+        self.setup = replace(self.setup, unticked=unticked)
+        self._fill_table()
 
     # -- the table -------------------------------------------------------
 
     def _say(self, text: str) -> None:
         self.status.setText(text)
+
+    def _report(self, lines) -> None:
+        """Put *lines* in the report box, opening it if it is folded away."""
+        self.details.setPlainText("\n".join(lines))
+        if lines and self.splitter.sizes()[1] == 0:
+            total = sum(self.splitter.sizes()) or 400
+            self.splitter.setSizes([total * 2 // 3, total // 3])
 
     def _fill_table(self) -> None:
         from qtpy.QtCore import Qt
@@ -10193,6 +10608,7 @@ class _BatchRunWindow:
         from haemolynx.gui.batch_run import table_rows, tied_cells
 
         self._filling = True
+        self.table.setSortingEnabled(False)
         try:
             setup = self.setup
             rows = table_rows(setup) if setup is not None else []
@@ -10208,6 +10624,7 @@ class _BatchRunWindow:
                     item.setToolTip(text)
                     self.table.setItem(row, column, item)
                     self.table.removeCellWidget(row, column)
+                self.table.item(row, 1).setData(Qt.UserRole, match.stem)
                 for column, (role, tied) in tied_cells(match).items():
                     choice = QComboBox()
                     choice.addItems(["choose..."] + [path.name for path in tied])
@@ -10220,7 +10637,9 @@ class _BatchRunWindow:
                     self.table.setCellWidget(row, column, choice)
             self.table.resizeColumnsToContents()
         finally:
+            self.table.setSortingEnabled(True)
             self._filling = False
+        self._refresh_row_actions()
 
     def _ticked(self, item) -> None:
         from dataclasses import replace
@@ -10229,12 +10648,14 @@ class _BatchRunWindow:
 
         if self._filling or self.setup is None or item.column() != 0:
             return
-        stem = self.setup.matches[item.row()].stem
+        match = self._match_at(item.row())
+        if match is None:
+            return
         unticked = set(self.setup.unticked)
         if item.checkState() == Qt.Checked:
-            unticked.discard(stem)
+            unticked.discard(match.stem)
         else:
-            unticked.add(stem)
+            unticked.add(match.stem)
         self.setup = replace(self.setup, unticked=frozenset(unticked))
 
     def _choose(self, match, role, tied, index: int) -> None:
@@ -10246,9 +10667,10 @@ class _BatchRunWindow:
     def _double_clicked(self, row: int, _column: int) -> None:
         from haemolynx.gui.batch_run import haemorun_path
 
-        if self.setup is None or self._on_open is None or row >= len(self.setup.matches):
+        match = self._match_at(row)
+        if match is None or self._on_open is None:
             return
-        path = haemorun_path(self.setup.output_root, self.setup.matches[row])
+        path = haemorun_path(self.setup.output_root, match)
         if path.is_file():
             self._on_open(path)
         else:
@@ -13116,9 +13538,9 @@ def settings_widget(napari_viewer=None):
     #: Run pipeline runs the one image the Input tab names), and the "Batch
     #: run" text shown in each path row it fills -- predeclared, since
     #: `apply_prerequisites` reads them from its first call.
-    #: The batch Run pipeline runs (None: the Input tab's one image), and
-    #: whether one is running now.
-    batch_mode = SimpleNamespace(setup=None, running=False)
+    #: The batch Run pipeline runs (None: the Input tab's one image), whether
+    #: one is running now, and whether it is to stop after its image.
+    batch_mode = SimpleNamespace(setup=None, running=False, stop=False)
     batch_row_labels: dict[str, Any] = {}
     #: The Input tab's boxes by key, so the chrome built further down (the
     #: check and optimise buttons) can join the box it belongs to.
@@ -14347,6 +14769,31 @@ def settings_widget(napari_viewer=None):
         refresh_batch_controls()
         report.value = "Left the batch run: Run pipeline runs the image the Input tab names."
 
+    def run_batch_now(setup) -> None:
+        """The window's Run batch: use *setup*, and run it."""
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        use_batch(setup)
+        on_run()
+
+    def run_again(setup, stem: str) -> None:
+        """The window's Run again: *setup* in use, its image *stem* run now."""
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        use_batch(setup)
+        _restore_skip_toggles()
+        on_run_batch(run_setup=setup.only(stem))
+
+    def request_stop() -> bool:
+        """Stop after this image: whether there is a batch running to stop."""
+        if not batch_mode.running:
+            return False
+        batch_mode.stop = True
+        report.value = "Stopping once this image is done: the images after it will not run."
+        return True
+
     def open_batch_window() -> None:
         if batch_window[0] is None:
             batch_window[0] = _BatchRunWindow(
@@ -14355,9 +14802,14 @@ def settings_widget(napari_viewer=None):
                 on_use=use_batch,
                 on_leave=leave_batch,
                 on_open=lambda path: load_run_file(path),
+                on_run=run_batch_now,
+                on_run_again=run_again,
+                on_stop=request_stop,
+                on_load_settings=lambda path: load_config_file(path),
                 parent=panel,
             )
         batch_window[0].open(batch_mode.setup)
+        batch_window[0].set_running(batch_mode.running)
 
     batch_button.changed.connect(lambda *_args: open_batch_window())
 
@@ -14773,15 +15225,23 @@ def settings_widget(napari_viewer=None):
             apply_prerequisites()
         return restored
 
-    def on_run_batch() -> None:
-        """Run pipeline with a batch set: every ticked image's checks first,
-        then the batch off the GUI thread. An image failing its checks stops
-        the whole batch before anything runs."""
+    def on_run_batch(run_setup=None) -> None:
+        """Run pipeline with a batch set, or *run_setup* (a part of it: Run
+        again's one image): every ticked image's checks first, then the batch
+        off the GUI thread. An image failing its checks stops the whole batch
+        before anything runs."""
+        import time as _time
         from dataclasses import replace as _replace
 
-        from haemolynx.gui.batch_run import check_setup
+        from haemolynx.gui.batch_run import RUNNING as _RUNNING
+        from haemolynx.gui.batch_run import (
+            BatchResult,
+            batch_progress_text,
+            check_setup,
+            figure_cells,
+        )
 
-        setup = batch_mode.setup
+        setup = batch_mode.setup if run_setup is None else run_setup
         if not setup.selected():
             report.value = "No image is ticked in the Batch run window."
             return
@@ -14791,9 +15251,12 @@ def settings_widget(napari_viewer=None):
         except Exception as error:  # noqa: BLE001 - reported in the panel
             report.value = f"Could not read settings:\n{error}"
             return
-        batch_mode.setup = setup
+        # This batch's statuses replace those shown; a part of the batch (Run
+        # again) leaves the other images' as they were.
+        kept = dict(batch_mode.setup.checked) if run_setup is not None else {}
+        batch_mode.setup = _replace(batch_mode.setup, checked={**kept, **setup.checked})
         if batch_window[0] is not None:
-            batch_window[0].show_finished(setup)
+            batch_window[0].show_finished(batch_mode.setup)
         failing = [stem for stem, error in setup.checked.items() if error]
         if failing:
             report.value = (
@@ -14805,29 +15268,60 @@ def settings_widget(napari_viewer=None):
         log_view.set_level(VERBOSE_LEVEL if values.get("verbose_logging") else DEFAULT_LEVEL)
         show_log()
         # This batch's images, as each starts and ends: the window's table
-        # shows them as they come, and when it is opened mid-batch.
+        # shows them as they come, and when it is opened mid-batch, and the
+        # report says how far the batch has got.
         statuses: dict[str, str] = {}
+        ordered = {match.stem: BatchResult(match) for match in setup.selected()}
+        started = {"batch": _time.monotonic(), "image": _time.monotonic()}
 
         def item_changed(result) -> None:
-            statuses[result.match.stem] = result.status_text()
+            stem = result.match.stem
+            ordered[stem] = result
+            statuses[stem] = result.status_text()
+            now = _time.monotonic()
+            if result.status == _RUNNING:
+                started["image"] = now
+            text = batch_progress_text(
+                list(ordered.values()),
+                elapsed_s=now - started["batch"],
+                running_elapsed_s=now - started["image"],
+            )
+            report.value = text
             if batch_mode.setup is None:
                 return
-            batch_mode.setup = _replace(batch_mode.setup, checked=dict(statuses))
+            figures = dict(batch_mode.setup.figures)
+            if result.status != _RUNNING and result.seconds is not None:
+                figures[stem] = figure_cells(result.seconds, result.peak_rss_bytes, result.vessels)
+            details = dict(batch_mode.setup.error_details)
+            if result.error_detail:
+                details[stem] = result.error_detail
+            batch_mode.setup = _replace(
+                batch_mode.setup,
+                checked={**kept, **statuses},
+                figures=figures,
+                error_details=details,
+            )
             if batch_window[0] is not None:
-                batch_window[0].show_progress(batch_mode.setup, result.match.stem)
+                batch_window[0].show_progress(batch_mode.setup, stem, text)
 
         def batch_finished(summary) -> None:
             statuses.update({result.match.stem: result.status_text() for result in summary.results})
             if batch_mode.setup is None:  # the batch run was left while it ran
                 return
-            batch_mode.setup = _replace(batch_mode.setup, checked=dict(statuses))
+            batch_mode.setup = _replace(batch_mode.setup, checked={**kept, **statuses})
             if batch_window[0] is not None:
-                batch_window[0].show_finished(batch_mode.setup)
+                batch_window[0].show_finished(batch_mode.setup, summary.message())
 
         def batch_stopped() -> None:
             batch_mode.running = False
+            batch_mode.stop = False
+            if batch_window[0] is not None:
+                batch_window[0].set_running(False)
 
         batch_mode.running = True
+        batch_mode.stop = False
+        if batch_window[0] is not None:
+            batch_window[0].set_running(True)
         _run_batch_in_background(
             values,
             schema,
@@ -14840,6 +15334,7 @@ def settings_widget(napari_viewer=None):
             on_done=batch_finished,
             on_item=item_changed,
             on_stopped=batch_stopped,
+            stop_requested=lambda: batch_mode.stop,
         )
         refresh_revert_buttons()
 
@@ -16069,6 +16564,9 @@ def settings_widget(napari_viewer=None):
         use=use_batch,
         leave=leave_batch,
         open=open_batch_window,
+        run_now=run_batch_now,
+        run_again=run_again,
+        stop=request_stop,
     )
     # The Input tab's raw image rows: the schema's own, which every reader shares.
     panel._haemolynx_raw_data_row = rows["raw_image_path"]
