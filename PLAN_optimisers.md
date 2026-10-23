@@ -3,8 +3,9 @@
 > **Status (2026-10-23):** Phase 0 measured on E14.5 at `405364d7` (see **Measured**): A5, and
 > A10 and B7 (both found in Phase 0), are the largest drifts. Phase 3 is pushed (`9328c668`).
 > Phase 2 is pushed (`f1184f25`: A1, A2, A5, A9, A10; a trial's E14.5 skeleton now equals the
-> run's), and Optimise settings re-measured on E14.5 after it. Findings were first read in the
-> code at `666cafe8`. Decisions D1-D6 are Harvey's.
+> run's), and Optimise settings re-measured on E14.5 after it. Phase 5 is done on its own branch
+> (`claude/optimiser-phase5-c7ec9e`, not yet merged), beside Phases 1 and 4. Findings were first
+> read in the code at `666cafe8`. Decisions D1-D6 are Harvey's.
 
 ## Context
 
@@ -199,6 +200,41 @@ The largest change; it alters what the graph sweeps choose.
   `docs/notes/gui.md`.
 - Tests: `test_gui_optimise_settings_widget.py`, `test_gui_fwhm_optimise_widget.py` (greying,
   the ilastik output used), `test_gui_tooltips.py`.
+
+**Done (2026-10-23, branch `claude/optimiser-phase5-c7ec9e`, in its own session beside Phases 1
+and 4; A6, A7 and A8 but the CLAUDE.md rule):**
+- **A7.** Both optimisers grey under synthetic (`graph.network_is_synthetic`), hover text and
+  report line `chrome_tooltips.OPTIMISE_SYNTHETIC_TOOLTIP`; batch greying was already in
+  (`d4bdfd0c`). `_widget.py`'s `refresh_single_image_buttons` now holds both reasons, runs from
+  `apply_prerequisites` on every change of settings, and gives back only the buttons it greyed (a
+  run's own greyed button stays greyed). With ilastik segmenting, Optimise settings optimises on
+  `stages.current_ilastik_output(settings)` (new, beside `segmented_input_path`: the output's
+  sidecar against this run's project, raw image and vessel label) and otherwise refuses, giving
+  the reason; `segment` is handed the output (`segmented_path=`), so ilastik never starts. Found
+  doing it: before, with ilastik on *and* an `input_path` set, the button's `segment` call ran
+  ilastik. A named `input_path` is not used while ilastik segments (a run would analyse ilastik's
+  output, not it).
+- **A6.** The worker's body is a plain function, `_optimise_settings_for_run`. Under low RAM it
+  binarises onto disk and reads the raw image onto disk the way the stages read it
+  (`load_single_channel_tiff_volume(use_memmap=True)`, crop and `downsample_raw_volume` on disk,
+  superseded copies released). `raw_volume_cache` holds only the segmented image (no channel),
+  which `load_volume_on_run_grid` already reads through it; the stages read the raw image as
+  above, so that is what "as the pipeline does" came to. `block_reduce_volume` already read a
+  memmap a slab at a time; `_downsample_mask` and `_downsample_restriction` (which no longer casts
+  first) go straight through it, and `_downsample_intensity`, which cast the whole raw image to
+  float64 first (8 B a voxel), casts one plane of blocks at a time, equal bit for bit. "Off" under
+  low RAM is refused before binarising when `search.full_resolution_search_refusal` says the mask
+  will not fit (`FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL`, see **Measured**); Auto is not capped.
+  Pinned in `test_low_ram_option.py`: on the dense capillary bed with a raw image, low RAM hands
+  the search memmaps equal to the in-RAM arrays and the result, every trial and the scorecard are
+  the same.
+- **A8.** `optimisation/__init__.py`'s dependency list (`io.downsample`, `io.load`; never
+  `pipeline` or `gui` -- Phase 1 will change that) and group counts, `search.py`'s "21 settings"
+  and "all ten". `fwhm_search.py` already said eight. `_SEARCH_STEP_CALLS` left for Phase 4.
+  History in `docs/notes/gui.md`.
+- **Not done:** CLAUDE.md's *Optimisation* rule waits for Phase 4's `finish_network_graph`.
+  "Check segmented image" still calls `segment` (so runs ilastik when it is on) and binarises in
+  RAM; out of this phase's scope.
 
 ## Order
 

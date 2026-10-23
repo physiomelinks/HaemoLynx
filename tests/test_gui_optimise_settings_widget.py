@@ -844,3 +844,162 @@ def test_passes_are_passed_through(panel, monkeypatch, tmp_path):
 
     assert started[0][1]["max_passes"] == 3
     assert panel._haemolynx_optimise_passes.tooltip.strip()
+
+
+# --- what the button may optimise on (PLAN_optimisers.md, Phase 5) ------------
+
+
+def test_a_synthetic_network_greys_both_optimisers_and_an_image_restores_them(panel):
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+
+    buttons = [panel._haemolynx_optimise_button, panel._haemolynx_optimise_fwhm_button]
+    before = [(button.enabled, button.tooltip) for button in buttons]
+    assert all(enabled for enabled, _tooltip in before)
+    rows = panel._haemolynx_rows()
+
+    rows["network_source"].value = "synthetic"
+    for button in buttons:
+        assert not button.enabled
+        assert button.tooltip == OPTIMISE_SYNTHETIC_TOOLTIP
+    assert panel._haemolynx_check_image_button.tooltip != OPTIMISE_SYNTHETIC_TOOLTIP
+
+    rows["network_source"].value = "segmented_image"
+    assert [(button.enabled, button.tooltip) for button in buttons] == before
+
+
+def test_a_change_of_settings_does_not_free_a_running_optimisers_button(panel):
+    """Every change of settings re-judges the greying, and the panel gives
+    back only what it greyed: the button a run greyed stays so until the run
+    ends."""
+    button = panel._haemolynx_optimise_button
+    button.enabled = False  # as a starting optimisation run leaves it
+    rows = panel._haemolynx_rows()
+    rows["skeleton_closing_radius"].value = 3
+    rows["use_thick_vessel_skeletonisation"].value = not rows["use_thick_vessel_skeletonisation"].value
+    assert not button.enabled
+
+
+def test_optimise_settings_refuses_for_a_synthetic_network(panel, monkeypatch, tmp_path):
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    rows["network_source"].value = "synthetic"
+
+    panel._haemolynx_optimise_settings()
+
+    assert not started
+    assert panel._haemolynx_report() == OPTIMISE_SYNTHETIC_TOOLTIP
+
+
+def _ilastik_rows(panel, tmp_path):
+    raw = tmp_path / "raw.tif"
+    raw.write_bytes(b"")
+    rows = panel._haemolynx_rows()
+    rows["raw_image_path"].value = raw
+    rows["use_ilastik_segmentation"].value = True
+    rows["ilastik_classifier_path"].value = tmp_path / "classifier.ilp"
+    rows["ilastik_output_dir"].value = tmp_path / "segmentations"
+    return rows
+
+
+def test_with_ilastik_optimise_settings_uses_its_current_output(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    produced = tmp_path / "segmentations" / "raw_segmented.tif"
+    asked = []
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "current_ilastik_output",
+        lambda settings: asked.append(settings) or (produced, ""),
+    )
+    _ilastik_rows(panel, tmp_path)
+
+    panel._haemolynx_optimise_settings()
+
+    assert asked and len(started) == 1
+    assert started[0][1]["segmented_path"] == produced
+
+
+def test_with_ilastik_optimise_settings_refuses_without_a_current_output(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "current_ilastik_output",
+        lambda settings: (None, "raw_segmented.tif: there is no output yet"),
+    )
+    rows = _ilastik_rows(panel, tmp_path)
+    # A segmented image named too: a run with ilastik on analyses ilastik's
+    # output, not it, so it is not what to optimise on either.
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+
+    panel._haemolynx_optimise_settings()
+
+    assert not started
+    report = panel._haemolynx_report()
+    assert "ilastik segments this run's raw image" in report
+    assert "there is no output yet" in report
+
+
+def test_the_optimiser_reads_ilastiks_output_and_never_runs_ilastik(monkeypatch, tmp_path):
+    """The worker's own function, with the output current: `segment` reads it
+    as a resumed run's segmented image, so ilastik is not started."""
+    import numpy as np
+    import tifffile
+
+    from haemolynx import io
+    from haemolynx.optimisation.search import OptimisationResult
+    from haemolynx.pipeline import default_schema
+
+    def never(**_kwargs):
+        raise AssertionError("ilastik was run")
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", never)
+    mask = np.zeros((12, 30, 30), dtype=np.uint8)
+    mask[5:8, 14:17, 3:27] = 1
+    produced = tmp_path / "segmentations" / "raw_segmented.tif"
+    produced.parent.mkdir()
+    tifffile.imwrite(produced, mask)
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, mask.astype(np.float32))
+    settings = {
+        **default_schema().defaults(),
+        "input_path": None,
+        "vtk_output_prefix": tmp_path / "run" / "network",
+        "raw_image_path": raw,
+        "use_ilastik_segmentation": True,
+        "ilastik_classifier_path": tmp_path / "classifier.ilp",
+        "ilastik_output_dir": produced.parent,
+    }
+    searched = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        searched["raw_mask"] = raw_mask
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    _result, input_path, _raw_error, _restriction_error = widget_mod._optimise_settings_for_run(
+        settings, segmented_path=produced, downsample_factor=2
+    )
+
+    assert Path(input_path) == produced
+    assert np.array_equal(searched["raw_mask"], mask.astype(bool))
+
+    # Not current, and none handed in: refused, not segmented.
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "current_ilastik_output", lambda s: (None, "stale")
+    )
+    with pytest.raises(widget_mod._OptimiseRefused, match="stale"):
+        widget_mod._optimise_settings_for_run(settings, downsample_factor=2)

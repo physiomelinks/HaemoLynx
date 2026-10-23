@@ -585,3 +585,103 @@ def test_build_network_passes_the_low_ram_setting_to_graph_building(tmp_path, mo
     stages.build_network(settings, volume, SCHEMA)
 
     assert seen == [True]
+
+
+# --- the panel's Optimise settings (PLAN_optimisers.md, Phase 5) --------------
+
+from haemolynx.gui import _widget as gui_widget  # noqa: E402
+
+
+def _bed_and_raw(tmp_path: Path) -> tuple[Path, Path]:
+    """The dense capillary bed as a segmented image, and a raw image of it:
+    its vessels bright over a dim, noisy background."""
+    from dense_capillary_fixtures import dense_capillary_bed
+
+    bed = dense_capillary_bed().mask
+    mask_path = tmp_path / "bed.tif"
+    tifffile.imwrite(mask_path, bed.astype(np.uint8) * 255)
+    rng = np.random.default_rng(5)
+    raw = (np.where(bed, 180.0, 20.0) + rng.normal(0.0, 8.0, bed.shape)).astype(np.float32)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(raw_path, raw)
+    return mask_path, raw_path
+
+
+def _trials(result) -> str:
+    return repr([(t.group, t.setting, t.value, t.score, t.note, dict(t.metrics)) for t in result.trials])
+
+
+def test_optimise_settings_in_low_ram_mode_hands_on_disk_volumes_and_chooses_the_same(
+    tmp_path, monkeypatch
+):
+    """Regression (A6): the panel binarised the whole mask and read the
+    whole raw image in RAM whatever use_memmap_loading said, and the search
+    cast the raw image to float64 whole. Low RAM now hands the search both on
+    disk, and it chooses what it chooses in RAM, trial for trial."""
+    mask_path, raw_path = _bed_and_raw(tmp_path)
+    handed: dict[bool, dict] = {}
+    real = gui_widget.optimise_skeleton_and_graph_settings
+    results = {}
+    for low_ram in (False, True):
+
+        def spy(raw_mask, **kwargs):
+            handed[low_ram] = {"raw_mask": raw_mask, **kwargs}
+            return real(raw_mask, **kwargs)
+
+        monkeypatch.setattr(gui_widget, "optimise_skeleton_and_graph_settings", spy)
+        settings = _stage_settings(
+            tmp_path, mask_path, use_memmap_loading=low_ram, memmap_directory=tmp_path / "memmaps",
+            raw_image_path=raw_path, raw_image_stain="plasma_column",
+        )
+        results[low_ram] = gui_widget._optimise_settings_for_run(
+            settings, downsample_factor=2,
+            groups=("segmentation_cleanup", "min_branch_length", "reconnect_thresholds"),
+        )
+
+    in_ram, low = handed[False], handed[True]
+    assert isinstance(low["raw_mask"], np.memmap) and isinstance(low["raw_image"], np.memmap)
+    assert not isinstance(in_ram["raw_mask"], np.memmap)
+    assert np.array_equal(np.asarray(low["raw_mask"]), in_ram["raw_mask"])
+    assert np.array_equal(np.asarray(low["raw_image"]), in_ram["raw_image"])
+    (result, _path, raw_error, _restriction_error), (low_result, *_rest) = results[False], results[True]
+    assert raw_error is None
+    assert result.trials
+    assert low_result.settings == result.settings
+    assert _trials(low_result) == _trials(result)
+    assert low_result.scorecard == result.scorecard
+
+
+def test_optimise_settings_off_in_low_ram_mode_is_refused_when_it_will_not_fit(tmp_path, monkeypatch):
+    def never(*_args, **_kwargs):
+        raise AssertionError("the mask was binarised before the search was refused")
+
+    monkeypatch.setattr(gui_widget, "_to_binary_volume_for_skeletonization", never)
+    settings = _stage_settings(
+        tmp_path, _write_rod_mask(tmp_path), use_memmap_loading=True, memmap_directory=tmp_path / "mm"
+    )
+
+    with pytest.raises(gui_widget._OptimiseRefused, match="Optimisation downsampling is Off"):
+        gui_widget._optimise_settings_for_run(settings, downsample_factor=1, available_bytes=1_000)
+
+
+@pytest.mark.parametrize(
+    "low_ram, factor, available",
+    [(True, 1, 10**12), (True, None, 1_000), (True, 2, 1_000), (False, 1, 1_000)],
+)
+def test_optimise_settings_is_refused_only_off_in_low_ram_mode_short_of_memory(
+    tmp_path, monkeypatch, low_ram, factor, available
+):
+    from haemolynx.optimisation import OptimisationResult
+
+    searched = []
+    monkeypatch.setattr(
+        gui_widget, "optimise_skeleton_and_graph_settings",
+        lambda raw_mask, **kwargs: searched.append(kwargs) or OptimisationResult(settings={}, trials=()),
+    )
+    settings = _stage_settings(
+        tmp_path, _write_rod_mask(tmp_path), use_memmap_loading=low_ram, memmap_directory=tmp_path / "mm"
+    )
+
+    gui_widget._optimise_settings_for_run(settings, downsample_factor=factor, available_bytes=available)
+
+    assert len(searched) == 1 and searched[0]["downsample_factor"] == factor

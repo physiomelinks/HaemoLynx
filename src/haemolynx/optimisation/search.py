@@ -32,8 +32,9 @@ segmented image" button reports) rather than a skeleton-connectivity or
 braid metric -- these settings act on the mask itself, before any skeleton
 exists to measure.
 
-This is coordinate-descent, not a joint grid search over all 21 settings at
-once (which would be combinatorial): every sweep still calls the real
+This is coordinate-descent, in eleven groups (:data:`GROUP_NAMES`), not a
+joint grid search over every one of :data:`OPTIMISE_SETTING_NAMES` at once
+(which would be combinatorial): every sweep still calls the real
 ``preprocess_skeleton_for_graph`` / ``build_graph_from_skeleton`` /
 ``smooth_graph_centrelines`` for every candidate it tries and scores the
 result with :mod:`.metrics`, so every setting gets a genuine, image-specific
@@ -308,7 +309,9 @@ def _downsample_restriction(
     blocks = axis_downsample_factors(factor, voxel_size_zyx)
     if max(blocks) <= 1:
         return np.asarray(restriction, dtype=bool)
-    return _downsample.block_reduce_volume(np.asarray(restriction, dtype=bool), blocks, "majority")
+    # Read as it is, a slab at a time: the majority counts nonzero voxels, so
+    # a disk-backed restriction is never copied whole into RAM first.
+    return _downsample.block_reduce_volume(restriction, blocks, "majority")
 
 
 def _downsample_intensity(
@@ -324,8 +327,48 @@ def _downsample_intensity(
     if max(blocks) <= 1:
         return image
     # In float, as the comparison reads it: the import reduction's own
-    # rounding back into the image's dtype is for a run, not a search.
-    return _downsample.block_reduce_volume(np.asarray(image, dtype=np.float64), blocks, "mean")
+    # rounding back into the image's dtype is for a run, not a search. Each
+    # plane of blocks is cast on its own: a whole float64 copy of the image
+    # is eight bytes a voxel, which the low-RAM option exists to avoid. Every
+    # reduced plane reads only its own blocks' planes, so this is the whole
+    # copy's reduction bit for bit.
+    first = blocks[0]
+    reduced = np.empty(
+        tuple(-(-int(n) // b) for n, b in zip(image.shape, blocks)), dtype=np.float64
+    )
+    for k in range(reduced.shape[0]):
+        slab = np.asarray(image[k * first:(k + 1) * first], dtype=np.float64)
+        reduced[k:k + 1] = _downsample.block_reduce_volume(slab, blocks, "mean")
+    return reduced
+
+
+#: Bytes of RAM a search on the image as read (factor 1, "Off") holds per
+#: voxel of the mask at its peak: what its traced peak grew by per voxel on
+#: the dense capillary bed fixture tiled from 0.29 M to 1.15 M voxels (56 to
+#: 122 MB, 76 B a voxel; 2026-10-23), rounded up.
+FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL = 80
+
+
+def full_resolution_search_refusal(
+    shape: Sequence[int], available_bytes: Optional[int]
+) -> Optional[str]:
+    """Why a search at full resolution (factor 1) on a mask of *shape* should
+    not start -- it would need more than the *available_bytes* of free memory
+    (:data:`FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL` a voxel) -- or ``None``
+    when it fits, or when the free memory is not known."""
+    if available_bytes is None:
+        return None
+    voxels = int(np.prod([int(n) for n in shape], dtype=np.int64))
+    needed = voxels * FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL
+    if needed <= int(available_bytes):
+        return None
+    return (
+        f"Optimisation downsampling is Off, so the search would hold this "
+        f"{' x '.join(str(int(n)) for n in shape)} mask at full resolution in memory: about "
+        f"{needed / 1e9:.1f} GB, and {int(available_bytes) / 1e9:.1f} GB is free. Choose Auto "
+        "or a coarser factor (2x, 4x, 8x, 16x) under Optimisation downsampling, then press "
+        "Optimise settings."
+    )
 
 
 #: "Auto" downsampling's own time budget, in seconds, when a caller asks it
@@ -2779,7 +2822,7 @@ def optimise_skeleton_and_graph_settings(
     default five minutes.
 
     *groups* restricts the search to some of :data:`GROUP_NAMES` -- ``None``
-    (the default) runs all ten; any other setting simply keeps its starting
+    (the default) runs all eleven; any other setting simply keeps its starting
     value, exactly as if every one of its candidates had failed.
 
     *raw_image* is an optional raw (unsegmented) reference image, same shape

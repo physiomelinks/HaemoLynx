@@ -11,16 +11,21 @@ through the run's own FWHM call,
 :func:`haemolynx.haemodynamics.apply.measure_fwhm_diameters`, scored with
 :mod:`.fwhm_metrics`, instead of a proxy metric.
 
-The skeleton/graph search depends only on ``numpy``, ``scipy``, ``networkx``,
-and the sibling ``haemolynx.preprocessing`` / ``haemolynx.graph`` /
-``haemolynx.statistics`` subpackages -- never on ``haemolynx.pipeline``,
-``haemolynx.io``, or ``haemolynx.gui`` -- so it is testable with tiny
-synthetic arrays under plain pytest, no disk I/O and no GUI toolkit. The FWHM
-search adds one more dependency to that list, on ``haemolynx.haemodynamics``
-(``apply``: the run's own measurement calls and haemodynamics config) -- still
-never on ``haemolynx.pipeline`` or ``haemolynx.gui``, which hand it the run's
-config, so the same "small synthetic array, no GUI, no disk I/O beyond a
-throwaway tiff" testability holds for it too.
+The skeleton/graph search, over its eleven groups (:data:`GROUP_NAMES`),
+depends only on ``numpy``, ``scipy``, ``networkx``, and the sibling
+``haemolynx.preprocessing`` / ``haemolynx.graph`` / ``haemolynx.io``
+subpackages -- the last for two of the run's own steps, never to read a file:
+the block reduction a search grid is made by (``io.downsample``) and the
+binarise-skeletonise-fill every loader skeletonises with (``io.load``). It
+never imports ``haemolynx.pipeline`` or ``haemolynx.gui``, which hand it the
+run's mask, grid and settings, so it is testable with tiny synthetic arrays
+under plain pytest, no disk I/O and no GUI toolkit. The FWHM search, over its
+eight groups (:data:`FWHM_GROUP_NAMES`), adds ``haemolynx.haemodynamics``
+(``apply``: the run's own measurement calls and haemodynamics config) and
+``io.load``'s binarisation of the segmentation -- still never
+``haemolynx.pipeline`` or ``haemolynx.gui``, which hand it the run's config,
+so the same "small synthetic array, no GUI, no disk I/O beyond a throwaway
+tiff" testability holds for it too.
 """
 from .fwhm_metrics import (
     FwhmMeasurementQuality,
@@ -66,6 +71,7 @@ from .search import (
     OptimisationResult,
     TrialRecord,
     estimate_downsample_factor_for_time_budget,
+    full_resolution_search_refusal,
     optimise_skeleton_and_graph_settings,
     resolve_auto_downsample_factor,
 )
@@ -107,6 +113,7 @@ __all__ = [
     "OptimisationResult",
     "TrialRecord",
     "estimate_downsample_factor_for_time_budget",
+    "full_resolution_search_refusal",
     "optimise_skeleton_and_graph_settings",
     "resolve_auto_downsample_factor",
 ]

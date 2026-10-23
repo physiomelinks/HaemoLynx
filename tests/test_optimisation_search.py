@@ -1,7 +1,7 @@
 """End-to-end tests for haemolynx.optimisation.search on tiny, real synthetic volumes.
 
 These run the actual preprocessing/graph-building code (not mocks) on masks
-small enough to finish in well under a second per call, so the whole 10-group
+small enough to finish in well under a second per call, so the whole 11-group
 search still runs in a few seconds.
 """
 from __future__ import annotations
@@ -2440,3 +2440,87 @@ def test_a_search_on_a_coarser_grid_confines_its_thick_trials_too(monkeypatch):
     expected = search_module._downsample_restriction(restriction, 2, (1.0, 1.0, 1.0))
     assert seen
     assert all(r is not None and np.array_equal(r, expected) for r in seen)
+
+
+# ---------------------------------------------------------------------------
+# Low RAM: the raw image reduced without a whole float copy, and a search at
+# full resolution refused when it will not fit (PLAN_optimisers.md, Phase 5)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dtype", [np.float32, np.uint16])
+@pytest.mark.parametrize(
+    "shape, voxel_size_zyx",
+    [((16, 16, 16), (1.0, 1.0, 1.0)), ((13, 17, 19), (1.0, 1.0, 1.0)), ((9, 22, 21), (2.0, 0.5, 0.5))],
+)
+@pytest.mark.parametrize("factor", [2, 4])
+def test_a_raw_image_is_reduced_plane_by_plane_as_its_whole_float_copy_was(
+    dtype, shape, voxel_size_zyx, factor, tmp_path
+):
+    """Regression (A6): the search cast the whole raw image to float64 before
+    reducing it, eight bytes a voxel in RAM whether the image was on disk or
+    not. Cast a plane of blocks at a time, the reduction is the same bit for
+    bit, in RAM or read from disk -- partial blocks at the edges included."""
+    from haemolynx.io.downsample import axis_downsample_factors, block_reduce_volume
+    from haemolynx.optimisation.search import _downsample_intensity
+    from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+    image = (np.random.default_rng(3).random(shape) * 4000).astype(dtype)
+    on_disk = new_memmap_array(shape, dtype, directory=tmp_path)
+    on_disk[:] = image
+    blocks = axis_downsample_factors(factor, voxel_size_zyx)
+    expected = block_reduce_volume(np.asarray(image, dtype=np.float64), blocks, "mean")
+
+    for given in (image, on_disk):
+        reduced = _downsample_intensity(given, factor, voxel_size_zyx)
+        assert reduced.dtype == np.float64
+        assert np.array_equal(reduced, expected)
+
+
+def test_reducing_a_raw_image_on_disk_holds_no_float_copy_of_it(tmp_path):
+    import tracemalloc
+
+    from haemolynx.optimisation.search import _downsample_intensity
+    from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+    shape = (64, 128, 128)
+    on_disk = new_memmap_array(shape, np.float32, directory=tmp_path)
+    rng = np.random.default_rng(0)
+    for z in range(shape[0]):
+        on_disk[z] = rng.random(shape[1:], dtype=np.float32)
+    tracemalloc.start()
+    try:
+        _downsample_intensity(on_disk, 2, (1.0, 1.0, 1.0))
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    whole_float_copy = on_disk.size * 8
+    assert peak < whole_float_copy / 4
+
+
+def test_a_restriction_on_disk_is_reduced_as_the_one_in_ram(tmp_path):
+    from haemolynx.optimisation.search import _downsample_restriction
+    from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+    restriction = np.random.default_rng(1).random((13, 18, 17)) > 0.6
+    on_disk = new_memmap_array(restriction.shape, bool, directory=tmp_path)
+    on_disk[:] = restriction
+    for factor in (2, 4):
+        assert np.array_equal(
+            _downsample_restriction(on_disk, factor, (2.0, 1.0, 1.0)),
+            _downsample_restriction(restriction, factor, (2.0, 1.0, 1.0)),
+        )
+
+
+def test_a_full_resolution_search_is_refused_only_when_it_would_not_fit():
+    from haemolynx.optimisation import full_resolution_search_refusal
+    from haemolynx.optimisation.search import FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL
+
+    shape = (100, 200, 300)
+    needed = 100 * 200 * 300 * FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL
+    assert full_resolution_search_refusal(shape, needed) is None
+    assert full_resolution_search_refusal(shape, None) is None  # free memory unknown
+
+    refusal = full_resolution_search_refusal(shape, needed - 1)
+    assert refusal is not None
+    assert "100 x 200 x 300" in refusal
+    assert f"about {needed / 1e9:.1f} GB" in refusal
+    assert "Optimisation downsampling is Off" in refusal and "Auto" in refusal

@@ -506,3 +506,32 @@ def test_on_clear_drops_a_pending_fwhm_proposal(panel):
     panel._haemolynx_clear(ask=False)
 
     assert not review.pending
+
+
+# --- a synthetic network: no image to optimise on (PLAN_optimisers.md, Phase 5)
+
+
+def test_optimise_fwhm_settings_greys_and_refuses_for_a_synthetic_network(panel, monkeypatch, tmp_path):
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_fwhm_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    button = panel._haemolynx_optimise_fwhm_button
+    before = (button.enabled, button.tooltip)
+    rows = panel._haemolynx_rows()
+    panel._haemolynx_view.results = _fake_results(_tiny_graph())
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    rows["raw_image_path"].value = raw_file
+
+    rows["network_source"].value = "synthetic"
+    assert not button.enabled
+    assert button.tooltip == OPTIMISE_SYNTHETIC_TOOLTIP
+    panel._haemolynx_optimise_fwhm_settings()
+    assert not started
+    assert panel._haemolynx_report() == OPTIMISE_SYNTHETIC_TOOLTIP
+
+    rows["network_source"].value = "segmented_image"
+    assert (button.enabled, button.tooltip) == before

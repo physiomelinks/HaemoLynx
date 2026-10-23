@@ -37,7 +37,7 @@ from haemolynx.gui.form import (
     unmet_chain,
     shared_ilastik_host,
 )
-from haemolynx.graph.boundaries import assigns_large_vessel_branch_orders
+from haemolynx.graph.boundaries import assigns_large_vessel_branch_orders, network_is_synthetic
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.layout import (
@@ -167,6 +167,7 @@ from haemolynx.optimisation import (
     OptimisationEvent,
     build_report_text,
     config_filename,
+    full_resolution_search_refusal,
     optimise_fwhm_settings,
     optimise_skeleton_and_graph_settings,
 )
@@ -6708,6 +6709,7 @@ def _load_raw_reference_image_or_none(
     expected_shape: tuple[int, ...],
     downsample: "Mapping[str, Any] | Downsample | None" = None,
     voxel_size_xyz: "tuple[float, float, float] | None" = None,
+    use_memmap: bool = False,
 ) -> tuple["np.ndarray | None", "str | None"]:
     """Load the optional raw reference image from ``raw_image_path``.
 
@@ -6728,23 +6730,34 @@ def _load_raw_reference_image_or_none(
     record ``load_volume_for_skeletonise`` returns in its status, or a
     ``Downsample``), and with none, *voxel_size_xyz* -- the run's -- is what
     a ``raw_image_downsample`` of its own is read against.
+
+    *use_memmap* (the low-RAM option) reads it as the run's stages do: onto
+    disk in ``memmap_directory``, cut and reduced a slab at a time, so no
+    copy of the whole image is ever in RAM.
     """
     from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
     from haemolynx.io import resolve_image_path_with_optional_zip, voxel_size_zyx_from_xyz
+    from haemolynx.preprocessing import release_superseded
 
     raw_path = local_settings.get("raw_image_path")
     if not raw_path:
         return None, None
+    on_disk = (
+        {"use_memmap": True, "memmap_directory": local_settings.get("memmap_directory")}
+        if use_memmap else {}
+    )
     try:
         raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
         channel = local_settings.get("raw_image_channel")
-        raw_image = load_single_channel_tiff_volume(
+        whole = load_single_channel_tiff_volume(
             raw_path_resolved,
             axis_order=local_settings["image_axis_order"],
             channel=None if channel is None else int(channel),
+            **on_disk,
         )
         # The mask came through crop_on_import's box; the raw image goes too.
-        raw_image = crop_volume_from_settings(raw_image, local_settings, description="raw image")
+        raw_image = crop_volume_from_settings(whole, local_settings, description="raw image")
+        release_superseded(whole, raw_image, keep=None)
         # And onto the mask's grid, as the run reads it.
         reduction = (
             Downsample.from_record(downsample)
@@ -6756,7 +6769,11 @@ def _load_raw_reference_image_or_none(
                 1, raw_image.shape, voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
             )
         if reduction is not None:
-            raw_image = downsample_raw_volume(raw_image, reduction, raw_factor, description="raw image")
+            cropped = raw_image
+            raw_image = downsample_raw_volume(
+                cropped, reduction, raw_factor, description="raw image", **on_disk
+            )
+            release_superseded(cropped, raw_image, keep=None)
         if raw_image.shape != expected_shape:
             raise ValueError(
                 "raw_image shape does not match the segmented mask shape: "
@@ -6857,6 +6874,146 @@ def _start_optimisation_worker(
     return worker
 
 
+class _OptimiseRefused(Exception):
+    """Optimise settings will not run, for the reason it carries: said in the
+    panel as it is, and not a failure."""
+
+
+def _segmented_image_to_optimise(settings: Mapping[str, Any]) -> tuple["Path | None", str]:
+    """``(path, "")``: the segmented image Optimise settings tries settings
+    on -- the Input tab's, or, while ilastik does the segmenting, its output
+    from the raw image when that output's record says it is the one a run
+    would make now (``pipeline.stages.current_ilastik_output``) -- else
+    ``(None, why not)``. Ilastik is never run from here: a segmentation can
+    take hours, and the run makes it."""
+    if pipeline_stages.ilastik_segments(settings):
+        path, reason = pipeline_stages.current_ilastik_output(settings)
+        if path is None:
+            return None, (
+                "ilastik segments this run's raw image, and there is no current output of it "
+                f"to optimise on ({reason}). Run the pipeline once to make it, then press "
+                "Optimise settings."
+            )
+        return path, ""
+    input_path = settings.get("input_path")
+    if not input_path or not Path(input_path).is_file():
+        return None, "Choose a segmented input image first, then press Optimise settings."
+    return Path(input_path), ""
+
+
+def _optimise_settings_for_run(
+    settings: dict[str, Any],
+    *,
+    segmented_path: "Path | None" = None,
+    progress=None,
+    downsample_factor: "int | None" = None,
+    groups: "tuple[str, ...] | None" = None,
+    max_passes: int = 1,
+    available_bytes: "int | None" = None,
+):
+    """`optimise_skeleton_and_graph_settings` on the segmented image at
+    *segmented_path* (``_segmented_image_to_optimise``'s when None), read as
+    the run's skeletonise reads it, with the run's whole settings, its
+    thick-vessel restriction and the Input tab's raw image. The plain function
+    `_run_optimisation_in_background`'s worker calls.
+
+    Under ``use_memmap_loading`` nothing volume-sized is copied into RAM
+    before the search reduces it: the mask is binarised onto disk, the raw
+    image read onto disk as the run's stages read it, and the search reduces
+    both a slab at a time. A search at full resolution (*downsample_factor*
+    1, "Off") that would not fit in *available_bytes* of free memory
+    (``haemodynamics.available_memory_bytes`` when None) is refused, as is an
+    image ilastik would have to make: both raise :class:`_OptimiseRefused`.
+
+    Returns ``(result, input_path, raw_image_error, restriction_error)``,
+    the result's voxel counts back on the image as read.
+    """
+    from dataclasses import replace
+
+    local_settings = dict(settings)
+    if segmented_path is None:
+        segmented_path, refusal = _segmented_image_to_optimise(local_settings)
+        if segmented_path is None:
+            raise _OptimiseRefused(refusal)
+    ilastik = pipeline_stages.ilastik_segments(local_settings)
+    if not ilastik:
+        local_settings["input_path"] = segmented_path
+    # Handed to `segment` only while ilastik segments, so that it reads
+    # ilastik's output rather than running ilastik; else it reads the image named.
+    inputs = segment(local_settings, segmented_path=segmented_path if ilastik else None)
+    # What a run's skeletonise reads: the image on the run's grid, and the
+    # box and reduction it came through, which the vessel masks the run
+    # confines its thick-vessel region to come through too.
+    volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+    voxel_size_xyz = volume.voxel_size_xyz
+    use_memmap = bool(local_settings.get("use_memmap_loading"))
+    if use_memmap and downsample_factor == 1:
+        if available_bytes is None:
+            from haemolynx.haemodynamics import available_memory_bytes
+
+            available_bytes = available_memory_bytes()
+        refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
+        if refusal is not None:
+            raise _OptimiseRefused(refusal)
+    raw_mask = _to_binary_volume_for_skeletonization(
+        volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
+    )
+    # The run's whole settings: the search changes only the ones it
+    # tunes and builds every trial with the rest as a run would. Voxel
+    # counts go in on the run's grid, as a run counts them there.
+    starting_values = {
+        **local_settings,
+        **pipeline_stages.skeleton_voxel_settings_on_grid(local_settings, volume.downsample),
+    }
+    restriction, restriction_error = _thick_restriction_or_none(local_settings, raw_mask, volume)
+
+    # Optional: the Input tab's raw image, which "Check segmented image"
+    # reads too -- when present, guards the
+    # segmentation_cleanup group against inventing foreground the raw
+    # signal does not support. Never fatal (see
+    # `_load_raw_reference_image_or_none`): a missing/unreadable/
+    # mismatched-shape raw file just means the search runs without this
+    # extra guard, exactly like leaving the field empty.
+    raw_image, raw_image_error = _load_raw_reference_image_or_none(
+        local_settings,
+        expected_shape=raw_mask.shape,
+        downsample=volume.downsample,
+        voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
+        use_memmap=use_memmap,
+    )
+    raw_image_stain = "plasma_column"
+    if raw_image is not None:
+        from haemolynx.io import voxel_size_zyx_from_xyz
+        from haemolynx.preprocessing import resolve_stain
+
+        raw_image_stain, _reading = resolve_stain(
+            local_settings.get("raw_image_stain", "auto"), raw_image, raw_mask,
+            voxel_size_zyx_from_xyz(voxel_size_xyz),
+        )
+
+    result = optimise_skeleton_and_graph_settings(
+        raw_mask,
+        voxel_size_xyz=voxel_size_xyz,
+        starting_values=starting_values,
+        progress=progress,
+        downsample_factor=downsample_factor,
+        groups=groups,
+        raw_image=raw_image,
+        raw_image_stain=raw_image_stain,
+        max_passes=max_passes,
+        thick_restriction_mask=restriction,
+    )
+    # Voxel counts back from the run's grid to the image as read, as the
+    # rows hold them.
+    result = replace(result, settings={
+        **result.settings,
+        **pipeline_stages.skeleton_voxel_settings_from_grid(
+            result.settings, local_settings, volume.downsample
+        ),
+    })
+    return result, local_settings["input_path"], raw_image_error, restriction_error
+
+
 def _run_optimisation_in_background(
     settings: dict[str, Any],
     schema: Schema,
@@ -6871,6 +7028,7 @@ def _run_optimisation_in_background(
     groups: "tuple[str, ...] | None" = None,
     max_passes: int = 1,
     propose,
+    segmented_path: "Path | None" = None,
 ):
     """Run the settings optimiser off the GUI thread, reporting progress as it goes.
 
@@ -6886,6 +7044,9 @@ def _run_optimisation_in_background(
     button purely for mutual exclusion and cooperative cancellation --
     "Optimise settings" and "Run pipeline" must never run concurrently against
     the same `rows`.
+
+    *segmented_path* is the image to optimise on (`_segmented_image_to_optimise`);
+    a refusal (:class:`_OptimiseRefused`) is said in *report*, not raised.
     """
     from napari.qt.threading import thread_worker
 
@@ -6893,69 +7054,14 @@ def _run_optimisation_in_background(
 
     @thread_worker
     def run():
-        from dataclasses import replace
-
-        local_settings = dict(settings)
-        inputs = segment(local_settings)
-        # What a run's skeletonise reads: the image on the run's grid, and the
-        # box and reduction it came through, which the vessel masks the run
-        # confines its thick-vessel region to come through too.
-        volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
-        voxel_size_xyz = volume.voxel_size_xyz
-        raw_mask = _to_binary_volume_for_skeletonization(volume.image)
-        # The run's whole settings: the search changes only the ones it
-        # tunes and builds every trial with the rest as a run would. Voxel
-        # counts go in on the run's grid, as a run counts them there.
-        starting_values = {
-            **local_settings,
-            **pipeline_stages.skeleton_voxel_settings_on_grid(local_settings, volume.downsample),
-        }
-        restriction, restriction_error = _thick_restriction_or_none(local_settings, raw_mask, volume)
-
-        # Optional: the Input tab's raw image, which "Check segmented image"
-        # reads too -- when present, guards the
-        # segmentation_cleanup group against inventing foreground the raw
-        # signal does not support. Never fatal (see
-        # `_load_raw_reference_image_or_none`): a missing/unreadable/
-        # mismatched-shape raw file just means the search runs without this
-        # extra guard, exactly like leaving the field empty.
-        raw_image, raw_image_error = _load_raw_reference_image_or_none(
-            local_settings,
-            expected_shape=raw_mask.shape,
-            downsample=volume.downsample,
-            voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
-        )
-        raw_image_stain = "plasma_column"
-        if raw_image is not None:
-            from haemolynx.io import voxel_size_zyx_from_xyz
-            from haemolynx.preprocessing import resolve_stain
-
-            raw_image_stain, _reading = resolve_stain(
-                local_settings.get("raw_image_stain", "auto"), raw_image, raw_mask,
-                voxel_size_zyx_from_xyz(voxel_size_xyz),
-            )
-
-        result = optimise_skeleton_and_graph_settings(
-            raw_mask,
-            voxel_size_xyz=voxel_size_xyz,
-            starting_values=starting_values,
+        return _optimise_settings_for_run(
+            settings,
+            segmented_path=segmented_path,
             progress=watched,
             downsample_factor=downsample_factor,
             groups=groups,
-            raw_image=raw_image,
-            raw_image_stain=raw_image_stain,
             max_passes=max_passes,
-            thick_restriction_mask=restriction,
         )
-        # Voxel counts back from the run's grid to the image as read, as the
-        # rows hold them.
-        result = replace(result, settings={
-            **result.settings,
-            **pipeline_stages.skeleton_voxel_settings_from_grid(
-                result.settings, local_settings, volume.downsample
-            ),
-        })
-        return result, local_settings["input_path"], raw_image_error, restriction_error
 
     def finished(payload) -> None:
         if not still_ours():
@@ -7022,6 +7128,10 @@ def _run_optimisation_in_background(
         button.enabled = True
         if isinstance(error, RunCancelled):
             report.value = CANCELLED
+            return
+        if isinstance(error, _OptimiseRefused):
+            bars.reset()
+            report.value = str(error)
             return
         bars.fail(f"Failed: {type(error).__name__}")
         report.value = f"{type(error).__name__}: {error}"
@@ -13604,6 +13714,14 @@ def settings_widget(napari_viewer=None):
             optimise_fwhm_button.visible = fwhm_could_run
         if fwhm_optimise_box is not None:
             fwhm_optimise_box.visible = fwhm_could_run
+        # Both optimisers grey while the run draws a synthetic network (no
+        # image to try settings on) -- once the buttons exist, further down.
+        try:
+            refresh_buttons = refresh_single_image_buttons
+        except NameError:
+            refresh_buttons = None
+        if refresh_buttons is not None:
+            refresh_buttons(values)
 
         thick_vessel_row = rows.get("use_thick_vessel_skeletonisation")
         if thick_vessel_row is not None:
@@ -13961,6 +14079,9 @@ def settings_widget(napari_viewer=None):
             return
         if batch_mode.setup is not None:
             report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        if network_is_synthetic(current_values()):
+            report.value = OPTIMISE_SYNTHETIC_TOOLTIP
             return
         if view.results is None or getattr(view.results, "_graph", None) is None:
             report.value = (
@@ -14397,19 +14518,47 @@ def settings_widget(napari_viewer=None):
 
     #: What acts on the one image the Input tab names, with its own hover
     #: text: off while a batch is set. Save run stays on: it saves the run
-    #: shown, which is never the batch's.
+    #: shown, which is never the batch's. The two optimisers are off too
+    #: while the run draws a synthetic network: there is no image to try
+    #: settings on.
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+
     single_image_buttons = [
         (button, button.tooltip)
         for button in (check_image_button, optimise_button, optimise_fwhm_button)
     ]
+    optimiser_buttons = (optimise_button, optimise_fwhm_button)
+    #: The buttons greyed here, so only those are given back: a run greys its
+    #: own button and frees it as it ends, and a change of settings mid-run
+    #: must not free it first.
+    greyed_here: set[int] = set()
+
+    def refresh_single_image_buttons(values: "Mapping[str, Any] | None" = None) -> None:
+        """Grey what acts on one image while a batch is set, and the
+        optimisers while the run has no image, saying why."""
+        batched = batch_mode.setup is not None
+        synthetic = network_is_synthetic(current_values() if values is None else values)
+        for button, tooltip in single_image_buttons:
+            reason = None
+            if batched:
+                reason = SINGLE_IMAGE_IN_BATCH
+            elif synthetic and any(button is optimiser for optimiser in optimiser_buttons):
+                reason = OPTIMISE_SYNTHETIC_TOOLTIP
+            if reason is not None:
+                button.enabled = False
+                button.tooltip = reason
+                greyed_here.add(id(button))
+            elif id(button) in greyed_here:
+                greyed_here.discard(id(button))
+                button.enabled = True
+                button.tooltip = tooltip
 
     def refresh_batch_controls() -> None:
         """Grey what acts on one image while a batch is set, saying why."""
-        batched = batch_mode.setup is not None
-        for button, tooltip in single_image_buttons:
-            button.enabled = not batched
-            button.tooltip = SINGLE_IMAGE_IN_BATCH if batched else tooltip
+        refresh_single_image_buttons()
         refresh_revert_buttons()
+
+    refresh_single_image_buttons()
 
     def use_batch(setup) -> None:
         batch_mode.setup = setup
@@ -14744,9 +14893,12 @@ def settings_widget(napari_viewer=None):
             report.value = SINGLE_IMAGE_IN_BATCH
             return
         values = current_values()
-        input_path = values.get("input_path")
-        if not input_path or not Path(input_path).is_file():
-            report.value = "Choose a segmented input image first, then press Optimise settings."
+        if network_is_synthetic(values):
+            report.value = OPTIMISE_SYNTHETIC_TOOLTIP
+            return
+        segmented_path, refusal = _segmented_image_to_optimise(values)
+        if segmented_path is None:
+            report.value = refusal
             return
         downsample_factor = _DOWNSAMPLE_CHOICES.get(downsample_dropdown.value)
         groups = None
@@ -14766,6 +14918,7 @@ def settings_widget(napari_viewer=None):
             groups=groups,
             max_passes=int(passes_spinbox.value),
             propose=optimise_review.propose,
+            segmented_path=segmented_path,
         )
 
     def on_check_segmented_image() -> None:
@@ -15057,6 +15210,8 @@ def settings_widget(napari_viewer=None):
             optimise_bars.reset()
             optimise_fwhm_button.enabled = True
             optimise_fwhm_bars.reset()
+            # Bar any a set batch or a synthetic network keeps greyed.
+            refresh_single_image_buttons()
             log_view.cancelled()
         optimise_review.clear()
         fwhm_review.clear()
@@ -15553,6 +15708,8 @@ def settings_widget(napari_viewer=None):
             optimise_bars.reset()
             optimise_fwhm_button.enabled = True
             optimise_fwhm_bars.reset()
+            # Bar any a set batch or a synthetic network keeps greyed.
+            refresh_single_image_buttons()
             log_view.cancelled()
         optimise_review.clear()
         fwhm_review.clear()
