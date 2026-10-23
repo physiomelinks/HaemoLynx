@@ -1,12 +1,11 @@
 # Batch run panel: improvements (plan, 2026-10-23)
 
-> **Status (2026-10-23): Phases 1-4 implemented** (Phase 1 committed at `d4bdfd0c`; 2-4 and
-> the cache clearing not yet committed). It builds on `PLAN_batch_run.md` (implemented
-> 2026-10-19) and leaves that plan's "Later" list (ilastik batches, more per-image inputs,
-> parallel images) for after this one. Harvey's decisions are at the end. Where the code showed
-> the plan was wrong, the build changed; see "Phase 1 as built" and "Phases 2-4 as built".
-> Still to do: item 7 (measure the cache on real stacks: now cleared per image, so this is
-> only how much it held), and remembering the window between napari sessions.
+> **Status (2026-10-23): complete.** Phase 1 at `d4bdfd0c`; Phases 2-4 and the per-image
+> cache clearing at `92dbc815`. It builds on `PLAN_batch_run.md` (implemented 2026-10-19).
+> Harvey's decisions are at the end. Where the code showed the plan was wrong, the build
+> changed; see "Phase 1 as built" and "Phases 2-4 as built". Item 7 is settled by the
+> per-image clearing (decision 7). What was not built is under "Later". Not yet tried by hand
+> in napari: the window was driven off-screen and by the tests.
 
 ## How this was looked at
 
@@ -53,7 +52,9 @@ session scratchpad, not the repo. Nothing was checked on a real stack or by a te
 7. **The raw-volume cache keeps every image.** Under `use_memmap_loading`, each image's
    decompressed raw volume stays in `memmap_directory` (`io/raw_volume_cache.py` has no eviction).
    A batch reads each image once, so a batch of large stacks may fill the disk. Measure it on two
-   or three real stacks before changing anything.
+   or three real stacks before changing anything. *Settled (2026-10-23):* rather than measured,
+   each image's entry is deleted once it ends (decision 7, `batch_run.clear_image_caches`), so a
+   batch holds at most the one image's, whatever its length.
 
 ### Usability, from the screenshots
 
@@ -98,8 +99,7 @@ Tests: 8 in `test_batch_settings.py`, 6 in `test_batch_run.py`, 8 in
 
 As planned below, with Harvey's decisions 2, 3, 4 and 6, except:
 
-- **Not done: remembering the window between napari sessions.** The panel has no per-user
-  store, and adding one (and keeping tests off the user's own) is its own decision. Within a
+- **Not done: remembering the window between napari sessions** (moved to "Later"). Within a
   session the window keeps everything; across sessions the output folder's last batch is
   offered as soon as the folder is typed.
 - **Found and fixed:** Check kept the done-before read at Match, so after a batch it called
@@ -239,6 +239,16 @@ built side by side, since they touch different parts of `_BatchRunWindow`. Phase
 because the layout change moves every widget the other phases add. Each phase is one commit or
 more, with its tests, and the GUI tests run before each commit (`pytest -m gui
 tests/test_gui_batch_run_widget.py tests/test_gui_tooltips.py`).
+
+## Later (not in this plan)
+
+- **Remembering the window between napari sessions:** its last output folder and its size. The
+  panel has no per-user store yet, and adding one, with the tests kept off the user's own, is
+  its own decision.
+- **The working set's growth across a batch:** about 35 MB an image on the six-image demo
+  (440 to 619 MB), not measured on a real batch.
+- From `PLAN_batch_run.md`'s "Later": ilastik batches, more per-image inputs (pericyte, cell and
+  tissue mask folders), and several images at once.
 
 ## Decisions (Harvey)
 
