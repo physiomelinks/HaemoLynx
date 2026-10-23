@@ -12,7 +12,8 @@ All of it can be recovered without re-running anything. ``per_edge_morphometry.c
 4512 cells on WKY-A, with ``assigned_diameter_um`` agreeing on every one, which is what
 establishes that the join is correct rather than merely complete. The rows and the skeleton
 come from ``batch_outputs.open_batch_run``, which checks the placed ROI before either is read,
-and a cell with no row raises.
+and a cell with no row raises. So does a run missing any of the pipeline's three VTK files:
+every batch run holds all three, so a specimen is never left out of the export unannounced.
 
 Writes, per specimen, into one shared directory so all six load into a single ParaView
 session:
@@ -94,6 +95,18 @@ def _check_tags(run, keys, edges, column, known):
             f"{edges[unknown[0]][column]!r}.")
 
 
+def _pipeline_export(run, name):
+    """A pipeline export in the run folder. A missing one raises: the pipeline writes all three
+    into every batch run, so a specimen without one would otherwise leave the export short
+    without saying so (package AC)."""
+    src = run.run_dir / name
+    if not src.exists():
+        raise FileNotFoundError(
+            f"{run.specimen.specimen_id} ({run.run_dir}): no {name}; carotid_image_to_model.py "
+            f"writes it into every batch run, so re-run the batch for this specimen.")
+    return src
+
+
 def enrich_vessels(run, edges, report):
     """The run's analysed centrelines, with every cell's edge-table row copied onto it.
 
@@ -101,9 +114,7 @@ def enrich_vessels(run, edges, report):
     non-finite number in a matched row (read through ``BatchRun.numeric_column``), rather than
     being written as NaN, 0 or "" and read in ParaView as a measurement.
     """
-    src = run.run_dir / VESSELS_VTP_NAME
-    if not src.exists():
-        return None
+    src = _pipeline_export(run, VESSELS_VTP_NAME)
     mesh = pv.read(src)
     keys = list(zip(mesh.cell_data["edge_u"].tolist(),
                     mesh.cell_data["edge_v"].tolist(),
@@ -154,9 +165,7 @@ def build_nodes(run, edges, report):
     nodes file lacks. No current run has either kind (all 18 batch and sensitivity runs
     checked, package AA).
     """
-    src = run.run_dir / NODES_VTP_NAME
-    if not src.exists():
-        return None
+    src = _pipeline_export(run, NODES_VTP_NAME)
     mesh = pv.read(src)
     degree = {}
     for (u, v, _k) in edges:
@@ -201,10 +210,7 @@ def build_skeleton(run, report):
 
 
 def build_surface(run, report, smoothing=30):
-    src = run.run_dir / VESSEL_MASK_VTI_NAME
-    if not src.exists():
-        return None, None
-    grid = pv.read(src)
+    grid = pv.read(_pipeline_export(run, VESSEL_MASK_VTI_NAME))
     surface = grid.contour([0.5], scalars="vessel_mask")
     if surface.n_points:
         surface = surface.smooth(n_iter=smoothing, relaxation_factor=0.1)
@@ -224,28 +230,26 @@ def verify(specimen, vessels, skeleton, grid):
     whether the overhang is sub-voxel.
     """
     notes = []
-    if vessels is not None and grid is not None:
-        vb, gb = np.array(vessels.bounds), np.array(grid.bounds)
-        lo_over = np.maximum(gb[::2] - vb[::2], 0.0)     # centreline below the mask minimum
-        hi_over = np.maximum(vb[1::2] - gb[1::2], 0.0)   # centreline above the mask maximum
-        overhang = float(max(lo_over.max(), hi_over.max()))
-        inset = float(max((vb[::2] - gb[::2]).max(), (gb[1::2] - vb[1::2]).max()))
-        voxel = float(min(PROCESSING_VOXEL_UM))
-        verdict = "sub-voxel, from centreline smoothing" if overhang < voxel else "CHECK"
-        notes.append(f"overhang beyond mask {overhang:.2f} um "
-                     f"({overhang / voxel:.2f} voxel) - {verdict}")
-        reach = ("network does not reach that face" if inset > 0
-                 else "network reaches every face")
-        notes.append(f"inset from mask face {inset:.1f} um - {reach}")
-    if skeleton is not None and grid is not None:
-        mask = grid["vessel_mask"].reshape(grid.dimensions, order="F").astype(bool)
-        vz, vy, vx = PROCESSING_VOXEL_UM
-        idx = np.column_stack([
-            np.clip((skeleton.points[:, 0] / vz).round().astype(int), 0, mask.shape[0] - 1),
-            np.clip((skeleton.points[:, 1] / vy).round().astype(int), 0, mask.shape[1] - 1),
-            np.clip((skeleton.points[:, 2] / vx).round().astype(int), 0, mask.shape[2] - 1)])
-        inside = mask[idx[:, 0], idx[:, 1], idx[:, 2]].mean()
-        notes.append(f"{inside:.1%} of skeleton points fall inside mask foreground")
+    vb, gb = np.array(vessels.bounds), np.array(grid.bounds)
+    lo_over = np.maximum(gb[::2] - vb[::2], 0.0)     # centreline below the mask minimum
+    hi_over = np.maximum(vb[1::2] - gb[1::2], 0.0)   # centreline above the mask maximum
+    overhang = float(max(lo_over.max(), hi_over.max()))
+    inset = float(max((vb[::2] - gb[::2]).max(), (gb[1::2] - vb[1::2]).max()))
+    voxel = float(min(PROCESSING_VOXEL_UM))
+    verdict = "sub-voxel, from centreline smoothing" if overhang < voxel else "CHECK"
+    notes.append(f"overhang beyond mask {overhang:.2f} um "
+                 f"({overhang / voxel:.2f} voxel) - {verdict}")
+    reach = ("network does not reach that face" if inset > 0
+             else "network reaches every face")
+    notes.append(f"inset from mask face {inset:.1f} um - {reach}")
+    mask = grid["vessel_mask"].reshape(grid.dimensions, order="F").astype(bool)
+    vz, vy, vx = PROCESSING_VOXEL_UM
+    idx = np.column_stack([
+        np.clip((skeleton.points[:, 0] / vz).round().astype(int), 0, mask.shape[0] - 1),
+        np.clip((skeleton.points[:, 1] / vy).round().astype(int), 0, mask.shape[1] - 1),
+        np.clip((skeleton.points[:, 2] / vx).round().astype(int), 0, mask.shape[2] - 1)])
+    inside = mask[idx[:, 0], idx[:, 1], idx[:, 2]].mean()
+    notes.append(f"{inside:.1%} of skeleton points fall inside mask foreground")
     return notes
 
 
@@ -275,17 +279,13 @@ def main(argv=None):
         surface, grid = build_surface(run, report)
 
         if not args.verify:
+            # This export's own names, read back by cb_h1_renders.py; not batch-run files.
             stem = out / specimen.specimen_id
-            if vessels is not None:
-                vessels.save(f"{stem}_vessels.vtp")
-            if nodes is not None:
-                nodes.save(f"{stem}_nodes.vtp")
-            if skeleton is not None:
-                skeleton.save(f"{stem}_skeleton.vtp")
-            if surface is not None:
-                surface.save(f"{stem}_surface.vtp")
-            if grid is not None:
-                stamp(grid, specimen).save(f"{stem}_mask.vti")
+            vessels.save(f"{stem}_vessels.vtp")
+            nodes.save(f"{stem}_nodes.vtp")
+            skeleton.save(f"{stem}_skeleton.vtp")
+            surface.save(f"{stem}_surface.vtp")
+            stamp(grid, specimen).save(f"{stem}_mask.vti")
 
         matched = report.get("vessels_matched", 0)
         cells = report.get("vessels_cells", 0)

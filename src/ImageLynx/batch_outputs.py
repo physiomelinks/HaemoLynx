@@ -31,15 +31,25 @@ from .io.load import read_ilastik_probabilities
 # ROI_RECORD_NAME is defined by the module that writes the record; it is a batch-run file too.
 from .roi_placement import ROI_RECORD_NAME, check_output_roi, place_roi  # noqa: F401
 from .specimens import TH_CHANNEL
+# The network suffixes belong to the writer that adds them, graph_to_vtk.
+from .visualization.vtk_io import NODES_VTP_SUFFIX, VESSELS_VTP_SUFFIX
 
 EDGE_TABLE_NAME = "per_edge_morphometry.csv"
 GRAPH_NAME = "network_graph.pkl"
 SKELETON_NAME = "skeleton.npy"
 VESSEL_MASK_NAME = "vessel_mask.npy"
-# The pipeline's VTK exports of the network and the mask, in the run folder.
-VESSELS_VTP_NAME = "resistance_network_vessels.vtp"
-NODES_VTP_NAME = "resistance_network_nodes.vtp"
-VESSEL_MASK_VTI_NAME = "resistance_network_vessel_mask.vti"
+# The pipeline's VTK exports of the network and the mask, in the run folder: its output prefix
+# (carotid_image_to_model.py's vtk_output_prefix) plus a suffix per export. The mask's suffix
+# is added by carotid_image_to_model.py itself, so it lives here.
+VTK_PREFIX = "resistance_network"
+VESSEL_MASK_VTI_SUFFIX = "_vessel_mask.vti"
+VESSELS_VTP_NAME = VTK_PREFIX + VESSELS_VTP_SUFFIX
+NODES_VTP_NAME = VTK_PREFIX + NODES_VTP_SUFFIX
+VESSEL_MASK_VTI_NAME = VTK_PREFIX + VESSEL_MASK_VTI_SUFFIX
+# The pipeline caches its mask, skeleton and graph in "<image stem><CACHE_SUFFIX>", beside the
+# VTK exports; a batch run holds exactly one such folder.
+CACHE_SUFFIX = "_cache"
+CACHE_GLOB = f"*{CACHE_SUFFIX}"
 DIAMETER = "assigned_diameter_um"
 
 
@@ -53,10 +63,10 @@ def open_batch_run(specimen, run_dir=None) -> "BatchRun":
     placement = place_roi(specimen, cb_settings.ROI_VOXELS)
     check_output_roi(run_dir, specimen, cb_settings.ROI_VOXELS, placement)
 
-    caches = sorted(path for path in run_dir.glob("*_cache") if path.is_dir())
+    caches = sorted(path for path in run_dir.glob(CACHE_GLOB) if path.is_dir())
     if len(caches) != 1:
         raise ValueError(
-            f"{specimen.specimen_id}: {run_dir} holds {len(caches)} *_cache folders "
+            f"{specimen.specimen_id}: {run_dir} holds {len(caches)} {CACHE_GLOB} folders "
             f"({[path.name for path in caches]}); a batch run has exactly one. A stale or "
             f"duplicate cache would otherwise be picked up silently."
         )

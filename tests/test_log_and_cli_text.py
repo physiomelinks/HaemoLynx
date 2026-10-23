@@ -141,7 +141,8 @@ def test_inset_note_only_when_the_network_stops_short(lo, hi, reaches):
     import cb_h1_vtk
 
     vessels = pv.Line((lo, lo, lo), (hi, hi, hi))
-    notes = cb_h1_vtk.verify(None, vessels, None, _box_grid())
+    skeleton = pv.PolyData(np.array([[1.0, 1.0, 1.0]]))
+    notes = cb_h1_vtk.verify(None, vessels, skeleton, _box_grid())
     inset = next(n for n in notes if n.startswith("inset"))
     assert ("network reaches every face" in inset) is reaches
     assert ("does not reach that face" in inset) is (not reaches)

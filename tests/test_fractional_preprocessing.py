@@ -3,7 +3,7 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 
 from carotid_image_to_model import PipelineConfig
-from ImageLynx.batch_outputs import GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
+from ImageLynx.batch_outputs import CACHE_SUFFIX, GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
 from ImageLynx.pipeline.map_reduce import map_reduce_pipeline
 
 
@@ -173,7 +173,7 @@ def test_cache_saving_on_full_run(tmp_path):
         carotid_image_to_model("dummy.tif", pipeline_config=config)
         
         # The cache sits beside vtk_output_prefix, named after the image stem.
-        cache_dir = tmp_path / "dummy_cache"
+        cache_dir = tmp_path / f"dummy{CACHE_SUFFIX}"
         assert cache_dir.exists(), "Cache directory was not created!"
         assert (cache_dir / VESSEL_MASK_NAME).exists(), f"{VESSEL_MASK_NAME} was not cached!"
         assert (cache_dir / SKELETON_NAME).exists(), f"{SKELETON_NAME} was not cached!"
@@ -189,7 +189,7 @@ def test_pipeline_short_circuit_loads_cache(tmp_path):
     config.do_graph_building = False
     
     # Create the mock cache
-    cache_dir = tmp_path / "dummy_cache"
+    cache_dir = tmp_path / f"dummy{CACHE_SUFFIX}"
     cache_dir.mkdir(parents=True)
     np.save(cache_dir / VESSEL_MASK_NAME, np.zeros((10,10,10), dtype=np.uint8))
     np.save(cache_dir / SKELETON_NAME, np.zeros((10,10,10), dtype=bool))

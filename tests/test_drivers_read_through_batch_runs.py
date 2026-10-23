@@ -130,7 +130,7 @@ def other_ways_to_read_a_batch_run(tree):
             if name in FILE_CALLS or on_numpy:
                 found.append(f"line {node.lineno}: {name}(...)")
     for text in _code_strings(tree):
-        if "_cache" in text or any(name in text for name in BATCH_FILE_NAMES):
+        if batch_outputs.CACHE_SUFFIX in text or any(name in text for name in BATCH_FILE_NAMES):
             found.append(f"string {text!r}")
     return found
 

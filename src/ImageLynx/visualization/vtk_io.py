@@ -7,6 +7,11 @@ from typing import Any, Dict, Iterable, List
 import numpy as np
 import networkx as nx
 
+# What graph_to_vtk adds to its output prefix. ImageLynx.batch_outputs builds the batch-run
+# file names from these, so the writer and the reader name the same files.
+VESSELS_VTP_SUFFIX = "_vessels.vtp"
+NODES_VTP_SUFFIX = "_nodes.vtp"
+
 
 def _as_points(path_like: Any) -> np.ndarray:
     arr = np.asarray(path_like, dtype=float)
@@ -237,9 +242,9 @@ def graph_to_vtk(
     output_prefix = Path(output_prefix)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
 
-    vessel_path = output_prefix.with_name(output_prefix.name + "_vessels.vtp")
+    vessel_path = output_prefix.with_name(output_prefix.name + VESSELS_VTP_SUFFIX)
     pericyte_path = output_prefix.with_name(output_prefix.name + "_pericytes.vtp")
-    node_path = output_prefix.with_name(output_prefix.name + "_nodes.vtp")
+    node_path = output_prefix.with_name(output_prefix.name + NODES_VTP_SUFFIX)
 
     all_points: List[np.ndarray] = []
     line_cells: List[int] = []

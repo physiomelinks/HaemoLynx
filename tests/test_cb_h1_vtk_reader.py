@@ -16,7 +16,7 @@ pv = pytest.importorskip("pyvista")
 
 import cb_h1_vtk  # noqa: E402
 from ImageLynx.batch_outputs import (EDGE_TABLE_NAME, NODES_VTP_NAME,  # noqa: E402
-                                     VESSELS_VTP_NAME, BatchRun)
+                                     VESSEL_MASK_VTI_NAME, VESSELS_VTP_NAME, BatchRun)
 
 EDGES = [(0, 1, 0), (1, 2, 0), (1, 2, 1)]
 
@@ -197,3 +197,18 @@ def test_a_node_listed_twice_in_the_nodes_vtp_raises(make_batch_run):
     run = _nodes_run(make_batch_run, [0, 1, 2, 3, 2])
     with pytest.raises(ValueError, match=r"WKY-A.*more than once.*\[2\]"):
         _nodes(run)
+
+
+# --- missing source files (package AC) -------------------------------------------------------
+# A builder whose pipeline export was missing used to return None, and main left that part of
+# the specimen out of the export without a word. Every batch run holds all three, so it raises.
+
+@pytest.mark.parametrize("build, name", [
+    (lambda run: cb_h1_vtk.enrich_vessels(run, run.edge_table(), {}), VESSELS_VTP_NAME),
+    (lambda run: cb_h1_vtk.build_nodes(run, run.edge_table(), {}), NODES_VTP_NAME),
+    (lambda run: cb_h1_vtk.build_surface(run, {}), VESSEL_MASK_VTI_NAME),
+], ids=["vessels", "nodes", "surface"])
+def test_a_missing_pipeline_export_raises_rather_than_being_skipped(make_batch_run, build, name):
+    run = make_batch_run(specimen_id="WKY-A").run
+    with pytest.raises(FileNotFoundError, match=rf"WKY-A.*no {name}"):
+        build(run)

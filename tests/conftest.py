@@ -233,7 +233,7 @@ def make_batch_run(tmp_path, monkeypatch):
         if (G is None) != (columns is None):
             raise ValueError("pass G and columns together, or neither")
         run_dir = tmp_path / specimen_id if run_dir is None else Path(run_dir)
-        cache = run_dir / "TEST_vessels_ilastik_Probabilities_cache"
+        cache = run_dir / f"TEST_vessels_ilastik_Probabilities{batch_outputs.CACHE_SUFFIX}"
         cache.mkdir(parents=True)
 
         if G is None:
@@ -272,14 +272,27 @@ def stub_h1_vtk_builders(monkeypatch):
 
     Returns ``stub(vessels=None, nodes=None, skeleton=None, surface=None, grid=None,
     events=None)``. Each builder returns what it is given (``build_surface`` returns
-    ``(surface, grid)``). With ``events`` a list, each builder also appends its name
+    ``(surface, grid)``), or a placeholder mesh for a part left as None: a builder never
+    returns None, since a missing source file raises (package AC). The placeholder grid is a
+    2x2x2 all-vessel mask, so ``verify`` runs on the placeholders. With ``events`` a list, each builder also appends its name
     (``"vessels"``, ``"nodes"``, ``"skeleton"``, ``"surface"``) when it is called. The one
     specimen is ``WKY-A``; ``stamp`` returns the mesh it is given. The test still sets
     ``OUTPUT``, ``open_batch_run`` and ``sys.argv`` itself.
     """
     import cb_h1_vtk
+    pv = pytest.importorskip("pyvista")
 
     def stub(*, vessels=None, nodes=None, skeleton=None, surface=None, grid=None, events=None):
+        def point():
+            return pv.PolyData(np.zeros((1, 3)))
+
+        if grid is None:
+            grid = pv.ImageData(dimensions=(2, 2, 2))
+            grid["vessel_mask"] = np.ones(grid.n_points, dtype=np.uint8)
+        vessels = pv.Line((0, 0, 0), (1, 1, 1)) if vessels is None else vessels
+        nodes, skeleton, surface = (point() if part is None else part
+                                    for part in (nodes, skeleton, surface))
+
         def builder(name, value):
             def build(*args):
                 if events is not None:

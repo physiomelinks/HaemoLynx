@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 from ImageLynx import cb_settings, graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
-from ImageLynx.batch_outputs import EDGE_TABLE_NAME, GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
+from ImageLynx.batch_outputs import (CACHE_SUFFIX, EDGE_TABLE_NAME, GRAPH_NAME, SKELETON_NAME,
+                                     VESSEL_MASK_NAME, VESSEL_MASK_VTI_SUFFIX, VTK_PREFIX)
 from ImageLynx.haemodynamics.resistance import PASCALS_PER_MMHG, POISEUILLE_FLOW_TO_UM3_PER_S
 
 #: The pipeline's pressure unit, mPa, per mmHg. HaemodynamicsConfig holds its pressures in mPa.
@@ -483,7 +484,7 @@ class PipelineConfig:
     # acquisition truth is kept as Specimen.measured_voxel_um for the methods section.
     voxel_size_um: tuple = specimens.PROCESSING_VOXEL_UM
     min_branch_length: int = 10
-    vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
+    vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / VTK_PREFIX
     plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid"
     chunk_fraction: float = 1.0
     margin: int = 32
@@ -1705,6 +1706,17 @@ def _load_anatomy_channel(anatomy_path):
         return np.asarray(handle["data"][..., 0], dtype=np.float32)
 
 
+def vessel_mask_vti_path(vtk_output_prefix):
+    """Where the run writes its vessel mask as VTK ImageData: the prefix plus the mask suffix."""
+    prefix = Path(vtk_output_prefix)
+    return prefix.with_name(prefix.name + VESSEL_MASK_VTI_SUFFIX)
+
+
+def cache_dir_for(vtk_output_prefix, image_path):
+    """The run's artefact cache, beside its VTK exports and named after the input image."""
+    return Path(vtk_output_prefix).parent / f"{Path(image_path).stem}{CACHE_SUFFIX}"
+
+
 def carotid_image_to_model(image_path: Path | str, 
                            pre_config: PreprocessingConfig = None,
                            skel_config: SkeletonConfig = None,
@@ -1742,7 +1754,7 @@ def carotid_image_to_model(image_path: Path | str,
     if pipeline_config.plot_dir is None:
         pipeline_config.plot_dir = Path("plots")
     if pipeline_config.vtk_output_prefix is None:
-        pipeline_config.vtk_output_prefix = Path("outputs/resistance_network")
+        pipeline_config.vtk_output_prefix = Path("outputs") / VTK_PREFIX
 
     logging.basicConfig(
         level=logging.DEBUG if pipeline_config.verbose_logging else logging.INFO,
@@ -1750,7 +1762,7 @@ def carotid_image_to_model(image_path: Path | str,
     )
 
     # --- Phase 4: Intermediate Caching & Pipeline Short-Circuiting ---
-    cache_dir = pipeline_config.vtk_output_prefix.parent / f"{image_path.stem}_cache"
+    cache_dir = cache_dir_for(pipeline_config.vtk_output_prefix, image_path)
     if getattr(pipeline_config, 'pre_generated_mask_and_skeleton', False):
         if not cache_dir.exists():
             raise FileNotFoundError(f"Cache directory {cache_dir} not found. A standard run must be completed first to populate the cache.")
@@ -1970,7 +1982,7 @@ def carotid_image_to_model(image_path: Path | str,
             vtk_vol.spacing = (spacing[2], spacing[1], spacing[0])
             vtk_vol.point_data["vessel_mask"] = binary.flatten(order="F").astype(np.uint8)
             
-            out_path = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_vessel_mask.vti")
+            out_path = vessel_mask_vti_path(pipeline_config.vtk_output_prefix)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             vtk_vol.save(out_path)
             
@@ -2130,7 +2142,7 @@ def carotid_image_to_model(image_path: Path | str,
             
             # PyVista expects flat Fortran-ordered arrays
             vtk_vol.point_data["vessel_mask"] = binary.flatten(order="F").astype(np.uint8)
-            binary_vtk_path = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_vessel_mask.vti")
+            binary_vtk_path = vessel_mask_vti_path(pipeline_config.vtk_output_prefix)
             # Ensure the outputs folder exists
             binary_vtk_path.parent.mkdir(parents=True, exist_ok=True)
             vtk_vol.save(binary_vtk_path)
@@ -2391,7 +2403,7 @@ if __name__ == "__main__":
     if args.output_dir is not None:
         _out = Path(args.output_dir)
         _out.mkdir(parents=True, exist_ok=True)
-        pipeline_config.vtk_output_prefix = _out / "resistance_network"
+        pipeline_config.vtk_output_prefix = _out / VTK_PREFIX
         pipeline_config.plot_dir = _out / "plots"
     _apply_hysteresis_overrides(pre_config, args.hysteresis_low, args.hysteresis_high)
     if args.roi_voxels is not None:

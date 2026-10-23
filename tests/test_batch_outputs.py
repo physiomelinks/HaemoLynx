@@ -50,7 +50,7 @@ def test_a_run_cut_anywhere_but_the_placed_roi_is_refused_before_anything_else(b
     """The ROI error wins even when the cache layout is also broken and the table is garbage."""
     moved = placement(batch_run.specimen.specimen_id, centre=(7, 4, 5))
     write_roi_record(batch_run.run_dir, roi_record(moved, SHAPE, centred=False))
-    (batch_run.run_dir / "second_cache").mkdir()
+    (batch_run.run_dir / f"second{batch_outputs.CACHE_SUFFIX}").mkdir()
     (batch_run.run_dir / batch_outputs.EDGE_TABLE_NAME).write_text("not,a\nvalid table")
 
     with pytest.raises(ValueError, match="place_roi now gives"):
@@ -62,8 +62,8 @@ def test_a_run_without_exactly_one_cache_folder_is_refused(batch_run, caches):
     if caches == 0:
         batch_run.cache.rename(batch_run.run_dir / "moved_away")
     else:
-        (batch_run.run_dir / "stale_cache").mkdir()
-    with pytest.raises(ValueError, match=f"{caches} \\*_cache folders"):
+        (batch_run.run_dir / f"stale{batch_outputs.CACHE_SUFFIX}").mkdir()
+    with pytest.raises(ValueError, match=f"{caches} {re.escape(batch_outputs.CACHE_GLOB)} folders"):
         open_batch_run(batch_run.specimen)
 
 

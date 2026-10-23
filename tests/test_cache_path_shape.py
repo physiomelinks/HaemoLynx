@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from ImageLynx import cb_settings
-from ImageLynx.batch_outputs import GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
+from ImageLynx.batch_outputs import CACHE_SUFFIX, GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
 from ImageLynx.graph.boundaries import select_boundary_terminal_nodes_by_face
 
 C = pytest.importorskip("carotid_image_to_model")
@@ -39,7 +39,7 @@ def _cache(tmp_path, G=None):
     config = C.PipelineConfig()
     config.vtk_output_prefix = tmp_path / "dummy_network"
     config.pre_generated_mask_and_skeleton = True
-    cache_dir = tmp_path / "dummy_cache"
+    cache_dir = tmp_path / f"dummy{CACHE_SUFFIX}"
     cache_dir.mkdir(parents=True)
     np.save(cache_dir / VESSEL_MASK_NAME, np.zeros(SHAPE, dtype=np.uint8))
     np.save(cache_dir / SKELETON_NAME, np.zeros(SHAPE, dtype=bool))
