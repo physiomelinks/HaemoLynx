@@ -133,4 +133,7 @@ pipeline as it now runs; the plan's **Measured** section has the E14.5 numbers.
   memmap a slab at a time; the search's raw-image reduction cast the whole image to float64 first
   (eight bytes a voxel), and now casts a plane of blocks at a time, bit for bit the same.
   "Off" is refused when the mask will not fit in free memory
-  (`search.full_resolution_search_refusal`, BYTES_PER_VOXEL_NOTE).
+  (`search.full_resolution_search_refusal`, 128 B a voxel: a full-resolution search's traced
+  peak on the dense capillary bed fixture, tiled, was 56, 122 and 267 MB at 0.29, 1.15 and
+  2.30 M voxels, growing 76 then 126 B a voxel; measured with tracemalloc, so memory allocated
+  outside numpy and Python is not counted). Auto is not capped by it.

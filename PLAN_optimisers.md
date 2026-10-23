@@ -224,7 +224,7 @@ and 4; A6, A7 and A8 but the CLAUDE.md rule):**
   first) go straight through it, and `_downsample_intensity`, which cast the whole raw image to
   float64 first (8 B a voxel), casts one plane of blocks at a time, equal bit for bit. "Off" under
   low RAM is refused before binarising when `search.full_resolution_search_refusal` says the mask
-  will not fit (`FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL`, see **Measured**); Auto is not capped.
+  will not fit (`FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL`, 128 B a voxel, see **Measured**); Auto is not capped.
   Pinned in `test_low_ram_option.py`: on the dense capillary bed with a raw image, low RAM hands
   the search memmaps equal to the in-RAM arrays and the result, every trial and the scorecard are
   the same.
@@ -455,6 +455,24 @@ voxels). Against Phase 0's R1 (`harness/compare_r1.py`; settings either run move
 - **Time**: 1,356 s against Auto's estimate of 1,229 s (Phase 0: 2,643 s against 703 s); thick
   gating 13 s (72 s). Phase 0's run shared the machine with the Phase 3 session's suites, this one
   with a peer's small pytest, so not all of the difference is Phase 2's.
+
+### Phase 5 (2026-10-23, `claude/optimiser-phase5-c7ec9e`, the dense capillary bed fixture)
+
+What a full-resolution search ("Off") holds in RAM, for `FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL`:
+`optimise_skeleton_and_graph_settings(downsample_factor=1)`, every group, schema defaults, under
+`tracemalloc` (numpy's and Python's allocations only), on `tests/dense_capillary_fixtures.py`'s
+bed (11% vessel) and on it mirrored to 4x and 8x its voxels (script in the session scratchpad):
+
+| mask | voxels | traced peak | per voxel | search |
+|---|---|---|---|---|
+| bed | 0.29 M | 56.0 MB | 195 B | 55 s |
+| bed x4 (y, x) | 1.15 M | 121.5 MB | 106 B | 209 s |
+| bed x8 (y, x, z) | 2.30 M | 266.7 MB | 116 B | 427 s |
+
+The peak grew 76 B a voxel from the first to the second and 126 B from the second to the third,
+so it is not yet flat; the constant is 128, rounded up from the larger. Not measured on a stack
+the size the refusal is for (E14.5 is 75 M voxels: about 9.6 GB at this rate); a first E14.5
+"Off" run under low RAM would check it.
 
 **Two pipeline findings outside this plan:**
 - A run that reuses its saved skeleton (`do_skeletonize` off) gets the segmented image uncleaned

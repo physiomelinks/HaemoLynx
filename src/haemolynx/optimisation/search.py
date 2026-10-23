@@ -344,9 +344,10 @@ def _downsample_intensity(
 
 #: Bytes of RAM a search on the image as read (factor 1, "Off") holds per
 #: voxel of the mask at its peak: what its traced peak grew by per voxel on
-#: the dense capillary bed fixture tiled from 0.29 M to 1.15 M voxels (56 to
-#: 122 MB, 76 B a voxel; 2026-10-23), rounded up.
-FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL = 80
+#: the dense capillary bed fixture, tiled (2026-10-23): 56, 122 and 267 MB at
+#: 0.29, 1.15 and 2.30 M voxels, 76 then 126 B a voxel -- rounded up from the
+#: larger, since it grew with the volume.
+FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL = 128
 
 
 def full_resolution_search_refusal(
