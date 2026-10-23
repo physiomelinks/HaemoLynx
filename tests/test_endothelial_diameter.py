@@ -19,7 +19,7 @@ from haemolynx.haemodynamics.endothelial import (
     fit_ring_section,
     measure_edge_diameters_from_endothelium,
 )
-from haemolynx.haemodynamics.automated import _arc_length_parameterize
+from haemolynx.haemodynamics.fwhm_diameter import _arc_length_parameterize
 
 VOXEL = (1.0, 0.98, 0.98)
 OPTICS = (2.0, 0.5, 0.5)
@@ -512,7 +512,7 @@ def _composite(path, plasma, endothelium):
 
 
 def test_one_channel_of_a_composite_is_read(tmp_path):
-    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
 
     rng = np.random.default_rng(0)
     plasma = rng.integers(0, 50, size=(6, 8, 9))

@@ -56,7 +56,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.optimize import least_squares
 
-from .automated import _aggregate_edge_diameter, _arc_length_parameterize
+from .fwhm_diameter import _aggregate_edge_diameter, _arc_length_parameterize
 from .edt_diameter import _centreline_tangents, edge_sample_targets
 from .sections import (
     averaged_section,

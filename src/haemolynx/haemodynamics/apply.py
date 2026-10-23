@@ -16,7 +16,7 @@ from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 from haemolynx.io.downsample import raw_volume_like_graph
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.preprocessing.memmap_support import release_memmap_array
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import fwhm_diameter
 from haemolynx.haemodynamics import edt_diameter
 from haemolynx.haemodynamics import endothelial
 from haemolynx.haemodynamics import fwhm_decoys
@@ -256,7 +256,7 @@ def load_fwhm_raw_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     path = _fwhm_raw_path(config)
     if path is None:
         return None
-    return automated.load_single_channel_tiff_volume(
+    return fwhm_diameter.load_single_channel_tiff_volume(
         path,
         axis_order=config.axis_order,
         use_memmap=config.use_memmap,
@@ -389,9 +389,9 @@ def _measure_fwhm_diameters(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
     )
     measurement_parameters = inspect.signature(
-        automated.measure_edge_diameters_fwhm_from_raw_tiff
+        fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff
     ).parameters
-    return automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    return fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         voxel_size_zyx=voxel_sz,
         axis_order=config.axis_order,
@@ -433,7 +433,7 @@ def _measure_raw_section_diameters(
         if path is None:
             return {"skipped": True, "reason": "no fwhm_raw_tiff_path to read sections from"}
         raw_volume = _cropped_like_graph(
-            automated.load_single_channel_tiff_volume(
+            fwhm_diameter.load_single_channel_tiff_volume(
                 path, axis_order=config.axis_order, use_memmap=config.use_memmap,
                 memmap_directory=config.memmap_directory, channel=_fwhm_raw_channel(config),
             ),
@@ -514,7 +514,7 @@ def _measure_endothelial_diameters(
     channel = config.endothelial_setting("endothelial_channel")
     owned = raw_volume is None
     volume = raw_volume if raw_volume is not None else _cropped_like_graph(
-        automated.load_single_channel_tiff_volume(
+        fwhm_diameter.load_single_channel_tiff_volume(
             io.resolve_image_path_with_optional_zip(Path(path)),
             axis_order=config.axis_order,
             use_memmap=config.use_memmap,
@@ -582,7 +582,7 @@ def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
     path = io.resolve_image_path_with_optional_zip(Path(mask_path))
-    raw = automated.load_single_channel_tiff_volume(
+    raw = fwhm_diameter.load_single_channel_tiff_volume(
         path,
         axis_order=config.axis_order,
         use_memmap=config.use_memmap,
@@ -613,7 +613,7 @@ def _measure_edt_diameters(
         # Shares FWHM's own along-edge sample spacing and aggregation policy
         # rather than duplicating either as a separate EDT-only setting --
         # one aggregation policy for both techniques (see
-        # automated._aggregate_edge_diameter).
+        # fwhm_diameter._aggregate_edge_diameter).
         sample_spacing_along_edge_um=float(
             config.fwhm_setting("fwhm_sample_spacing_along_edge_um", 2.0)
         ),
@@ -679,7 +679,7 @@ def assign_edge_diameters(
     initial diameter guess from it instead of the one global
     ``diameter_guess_um`` every edge would otherwise share regardless of
     its real width (see
-    :func:`haemolynx.haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff`'s
+    :func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`'s
     ``diameter_guess_edge_attribute``, default ``"edt_diameter_um"`` --
     exactly what this stamps). Independently of that seeding, EDT also
     still serves its original two purposes: a fallback for an edge FWHM

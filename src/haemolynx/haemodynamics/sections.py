@@ -24,7 +24,7 @@ from haemolynx.preprocessing.shared_volume_tasks import (  # noqa: F401 -- re-ex
     run_volume_tasks,
 )
 
-from .automated import _arc_length_parameterize, _interpolate_centerline
+from .fwhm_diameter import _arc_length_parameterize, _interpolate_centerline
 from .edt_diameter import _centreline_tangents
 from .poiseuille import edge_selection
 

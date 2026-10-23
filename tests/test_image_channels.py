@@ -281,7 +281,7 @@ def test_preflight_runs_the_channel_check(tmp_path):
 
 def test_channel_0_of_a_z_stack_tifffile_labels_as_channels_is_the_whole_stack(tmp_path):
     """Reading "channel 0" must not take one plane of a mislabelled z-stack."""
-    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
 
     path = tmp_path / "stack.tif"
     stack = np.arange(5 * 8 * 8, dtype=np.uint16).reshape(5, 8, 8)
@@ -321,12 +321,12 @@ def test_the_fwhm_measurement_forwards_its_channel_to_the_loader(tmp_path, monke
     given, rather than failing on (or averaging) a composite."""
     import networkx as nx
 
-    from haemolynx.haemodynamics import automated
+    from haemolynx.haemodynamics import fwhm_diameter
 
     path = tmp_path / "composite.tif"
     _composite(path)
     loaded = {}
-    original = automated.load_single_channel_tiff_volume
+    original = fwhm_diameter.load_single_channel_tiff_volume
 
     def spy(*args, **kwargs):
         volume = original(*args, **kwargs)
@@ -334,9 +334,9 @@ def test_the_fwhm_measurement_forwards_its_channel_to_the_loader(tmp_path, monke
         loaded["values"] = np.unique(volume)
         return volume
 
-    monkeypatch.setattr(automated, "load_single_channel_tiff_volume", spy)
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", spy)
 
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         nx.MultiGraph(),
         raw_tiff_path=path,
         voxel_size_zyx=(1.0, 1.0, 1.0),

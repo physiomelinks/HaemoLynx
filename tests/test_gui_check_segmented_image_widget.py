@@ -350,7 +350,7 @@ def test_check_segmented_image_cross_checks_against_a_raw_file_when_set(
     import numpy as np
     from qtpy.QtWidgets import QApplication
 
-    import haemolynx.haemodynamics.automated as automated_mod
+    import haemolynx.haemodynamics.fwhm_diameter as automated_mod
 
     shape = (20, 20, 20)
     zz, yy, xx = np.indices(shape, dtype=float)
@@ -406,7 +406,7 @@ def test_check_segmented_image_reads_the_chosen_raw_channel(panel, tmp_path, mon
     import numpy as np
     from qtpy.QtWidgets import QApplication
 
-    import haemolynx.haemodynamics.automated as automated_mod
+    import haemolynx.haemodynamics.fwhm_diameter as automated_mod
 
     mask = np.zeros((12, 12, 12), dtype=bool)
     mask[4:8, 4:8, 1:11] = True

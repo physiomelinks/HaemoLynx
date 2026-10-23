@@ -17,7 +17,7 @@ contract :mod:`.candidates` documents for the Skeletonise/Graph search.
 
 The one deliberate exception is the two exclusion-zone candidate functions'
 own safety cap: a candidate at or beyond
-:data:`haemolynx.haemodynamics.automated.MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH`
+:data:`haemolynx.haemodynamics.fwhm_diameter.MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH`
 of the sampled subgraph's own median edge length would be silently clamped
 right back down to that bound by
 ``measure_edge_diameters_fwhm_from_raw_tiff``'s own per-edge
@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from haemolynx.haemodynamics.automated import MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH
+from haemolynx.haemodynamics.fwhm_diameter import MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH
 
 
 def _percentiles(values: np.ndarray, percentiles: tuple[float, ...]) -> list[float]:

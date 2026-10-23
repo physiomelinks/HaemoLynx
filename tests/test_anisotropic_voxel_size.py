@@ -12,7 +12,7 @@ import tifffile
 
 from haemolynx.graph import build_graph_from_skeleton
 from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
-from haemolynx.haemodynamics.automated import physical_points_to_continuous_indices
+from haemolynx.haemodynamics.fwhm_diameter import physical_points_to_continuous_indices
 from haemolynx.io import load_3d_tif_with_voxel_size, voxel_size_zyx_from_xyz
 
 # Deliberately anisotropic: coarse z, fine x — the usual confocal/2-photon case.

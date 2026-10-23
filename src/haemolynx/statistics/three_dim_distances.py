@@ -31,7 +31,7 @@ from haemolynx.io.load import (
     _to_binary_volume_for_skeletonization,
     load_binary_mask_voxel_size_and_status,
 )
-from haemolynx.haemodynamics.automated import build_graph_branch_label_volume
+from haemolynx.haemodynamics.fwhm_diameter import build_graph_branch_label_volume
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.io.downsample import graph_downsample, mask_volume_like_graph
 from haemolynx.preprocessing.memmap_support import (

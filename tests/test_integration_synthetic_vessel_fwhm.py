@@ -31,7 +31,7 @@ import tifffile
 from skimage.measure import label as sk_label_cc
 from skimage.measure import marching_cubes
 
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import fwhm_diameter
 
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
 _I0 = 100.0
@@ -158,7 +158,7 @@ def build_matching_multigraph(
     voxel_size_zyx: tuple[float, float, float],
     step_um: float = 0.25,
 ) -> nx.MultiGraph:
-    """Graph edges replicate centerlines; physical coords (z,y,x) match ``automated`` convention."""
+    """Graph edges replicate centerlines; physical coords (z,y,x) match ``fwhm_diameter`` convention."""
     vz, vy, vx = voxel_size_zyx
     step = min(step_um, vz, vy, vx)
     G = nx.MultiGraph()
@@ -765,7 +765,7 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
     tifffile.imwrite(str(raw_path), raw)
 
     G = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -783,7 +783,7 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
             f"edge ({u},{v},{k}): measured {got:.3f} µm vs target {exp:.3f} µm"
         )
 
-    labels, _ = automated.build_graph_branch_label_volume(
+    labels, _ = fwhm_diameter.build_graph_branch_label_volume(
         G,
         raw.shape,
         voxel_size_zyx,
@@ -835,7 +835,7 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
             "reject_samples_with_low_fit_r2": False,
         }
     )
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -859,7 +859,7 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
         )
     assert len(measured) >= 3
 
-    labels, _ = automated.build_graph_branch_label_volume(
+    labels, _ = fwhm_diameter.build_graph_branch_label_volume(
         G,
         raw_noisy.shape,
         voxel_size_zyx,
@@ -898,7 +898,7 @@ def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
     tifffile.imwrite(str(raw_path), raw)
 
     G = build_tight_zigzag_matching_multigraph(centerline)
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -913,7 +913,7 @@ def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
         f"zig-zag edge measured {d:.3f} µm vs target {exp:.3f} µm"
     )
 
-    labels, _ = automated.build_graph_branch_label_volume(
+    labels, _ = fwhm_diameter.build_graph_branch_label_volume(
         G,
         raw.shape,
         voxel_size_zyx,
@@ -953,7 +953,7 @@ def _write_single_demo_html(
         raw_path = Path(tf.name)
     try:
         tifffile.imwrite(str(raw_path), raw)
-        automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
             G,
             raw_tiff_path=raw_path,
             voxel_size_zyx=voxel_size_zyx,
@@ -965,7 +965,7 @@ def _write_single_demo_html(
             d = float(G[u][v][k]["fwhm_diameter_um"])
             title_parts.append(f"FWHM {t[2]:.1f}→{d:.2f} µm")
         title = title_prefix + " | " + " | ".join(title_parts)
-        labels, _ = automated.build_graph_branch_label_volume(
+        labels, _ = fwhm_diameter.build_graph_branch_label_volume(
             G,
             raw.shape,
             voxel_size_zyx,
@@ -1052,14 +1052,14 @@ def test_diagonal_vessel_default_mode_unchanged_regression(tmp_path: Path) -> No
     tifffile.imwrite(str(raw_path), raw)
 
     g_implicit = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         g_implicit,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
         **_DEFAULT_FWHM_MEASURE_KWARGS,
     )
     g_explicit = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         g_explicit,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -1085,7 +1085,7 @@ def test_diagonal_vessel_in_plane_mode_overestimates_diameter(tmp_path: Path) ->
     tifffile.imwrite(str(raw_path), raw)
 
     G = build_single_edge_multigraph(a, b, voxel_size_zyx)
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -1108,7 +1108,7 @@ def test_diagonal_vessel_true_3d_mode_recovers_ground_truth(tmp_path: Path) -> N
     tifffile.imwrite(str(raw_path), raw)
 
     G = build_single_edge_multigraph(a, b, voxel_size_zyx)
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -1130,7 +1130,7 @@ def test_out_of_plane_warning_flags_diagonal_not_straight_edge(tmp_path: Path) -
     raw_path = tmp_path / "synthetic_diagonal_vessel.tif"
     tifffile.imwrite(str(raw_path), raw_diag)
     g_diag = build_single_edge_multigraph(a, b, voxel_size_zyx)
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         g_diag,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -1143,7 +1143,7 @@ def test_out_of_plane_warning_flags_diagonal_not_straight_edge(tmp_path: Path) -
     straight_path = tmp_path / "synthetic_vessels.tif"
     tifffile.imwrite(str(straight_path), raw_straight)
     g_straight = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         g_straight,
         raw_tiff_path=straight_path,
         voxel_size_zyx=voxel_size_zyx,

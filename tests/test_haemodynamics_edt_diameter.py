@@ -187,7 +187,7 @@ def test_measure_edge_diameters_skips_an_edge_entirely_outside_the_mask():
 def test_measure_edge_diameters_uses_the_same_aggregation_helper_as_fwhm():
     """`aggregation="mean"` must reach the actual computation, not just
     exist on the signature -- pins the shared aggregation policy with
-    `automated._aggregate_edge_diameter`."""
+    `fwhm_diameter._aggregate_edge_diameter`."""
     shape = (30, 30, 40)
     zz, yy, xx = np.indices(shape, dtype=float)
     hub = (zz - 15) ** 2 + (yy - 15) ** 2 + (xx - 15) ** 2 <= 10.0**2

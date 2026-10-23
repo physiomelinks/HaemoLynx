@@ -898,7 +898,7 @@ def _fake_measurements(monkeypatch, tmp_path, *, fwhm_um=3.0, edt_um=None, flag_
             data["edt_diameter_um"] = edt_um
         return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
 
-    monkeypatch.setattr(apply_module.automated, "measure_edge_diameters_fwhm_from_raw_tiff", fake_fwhm)
+    monkeypatch.setattr(apply_module.fwhm_diameter, "measure_edge_diameters_fwhm_from_raw_tiff", fake_fwhm)
     monkeypatch.setattr(apply_module.raw_section, "measure_edge_diameters_from_raw_sections", fake_raw)
     monkeypatch.setattr(apply_module, "_measure_edt_diameters", fake_edt)
     monkeypatch.setattr(apply_module, "load_fwhm_raw_volume", lambda _c: np.zeros((2, 2, 2), np.float32))

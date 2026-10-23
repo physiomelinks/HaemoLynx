@@ -52,9 +52,9 @@ def _network(G, mask):
 
 
 def test_a_named_stain_is_taken_as_named_with_nothing_loaded(monkeypatch):
-    import haemolynx.haemodynamics.automated as automated
+    import haemolynx.haemodynamics.fwhm_diameter as fwhm_diameter
 
-    monkeypatch.setattr(automated, "load_single_channel_tiff_volume", _never)
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", _never)
     network = _network(nx.MultiGraph(), np.zeros((2, 2, 2), dtype=bool))
     assert stages.resolve_raw_image_stain(_settings(raw_image_stain=ENDOTHELIAL), network) == (
         ENDOTHELIAL, None, None
@@ -64,9 +64,9 @@ def test_a_named_stain_is_taken_as_named_with_nothing_loaded(monkeypatch):
 def test_the_builds_answer_is_taken_without_opening_the_raw_image(monkeypatch):
     """build_network recorded what it read the stain as; the Diameters stage
     takes that, so one graph never names its raw image two ways."""
-    import haemolynx.haemodynamics.automated as automated
+    import haemolynx.haemodynamics.fwhm_diameter as fwhm_diameter
 
-    monkeypatch.setattr(automated, "load_single_channel_tiff_volume", _never)
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", _never)
     G = nx.MultiGraph()
     G.graph["raw_image_stain"] = ENDOTHELIAL
     network = _network(G, np.zeros((2, 2, 2), dtype=bool))
@@ -77,10 +77,10 @@ def test_the_builds_answer_is_taken_without_opening_the_raw_image(monkeypatch):
 def test_a_run_that_must_read_cuts_the_raw_image_to_its_crop_box(monkeypatch):
     """Read uncut against the cropped mask, this endothelial image came back
     'cannot tell' or plasma, and was then measured by FWHM."""
-    import haemolynx.haemodynamics.automated as automated
+    import haemolynx.haemodynamics.fwhm_diameter as fwhm_diameter
 
     image, lumen = _endothelial_image_and_lumen()
-    monkeypatch.setattr(automated, "load_single_channel_tiff_volume", lambda *_a, **_k: image)
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", lambda *_a, **_k: image)
     monkeypatch.setattr(stages.io, "resolve_image_path_with_optional_zip", lambda path: path)
     G = nx.MultiGraph()
     G.graph["image_voxel_size_zyx"] = VS
@@ -96,10 +96,10 @@ def test_a_run_that_must_read_cuts_the_raw_image_to_its_crop_box(monkeypatch):
 
 
 def test_an_uncropped_run_reads_the_whole_image_and_hands_it_on(monkeypatch):
-    import haemolynx.haemodynamics.automated as automated
+    import haemolynx.haemodynamics.fwhm_diameter as fwhm_diameter
 
     image, lumen = _endothelial_image_and_lumen()
-    monkeypatch.setattr(automated, "load_single_channel_tiff_volume", lambda *_a, **_k: image)
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", lambda *_a, **_k: image)
     monkeypatch.setattr(stages.io, "resolve_image_path_with_optional_zip", lambda path: path)
     G = nx.MultiGraph()
     G.graph["image_voxel_size_zyx"] = VS
@@ -162,7 +162,7 @@ def test_the_endothelial_fit_reads_the_raw_volume_it_is_handed_instead_of_the_fi
         return {"measured": 0}
 
     monkeypatch.setattr(apply.endothelial, "measure_edge_diameters_from_endothelium", fake_fit)
-    monkeypatch.setattr(apply.automated, "load_single_channel_tiff_volume", _never)
+    monkeypatch.setattr(apply.fwhm_diameter, "load_single_channel_tiff_volume", _never)
     config = HaemodynamicsApplyConfig(
         diameters={"diameter_by_branch_order": {"B01": 5.0}},
         fwhm={"use_fwhm_edge_diameters": False},

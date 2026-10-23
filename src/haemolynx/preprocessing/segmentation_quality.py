@@ -87,7 +87,7 @@ DEFAULT_NOISE_SIGMA_UM = 1.0
 #: full marks for the resolution score; less scales down proportionally.
 #: Reasoned (not empirically fitted) against this codebase's own diameter
 #: measurements: both the FWHM Gaussian fit
-#: (`haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff`) and
+#: (`haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`) and
 #: the EDT inscribed-radius estimate (`haemodynamics.edt_diameter`) need
 #: several samples across a vessel's profile to be trustworthy -- under
 #: about 3 voxels of radius, both techniques are known to carry a

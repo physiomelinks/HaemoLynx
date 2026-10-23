@@ -15,7 +15,7 @@ import pytest
 import tifffile
 from scipy.ndimage import gaussian_filter
 
-from haemolynx.haemodynamics.automated import build_graph_branch_label_volume
+from haemolynx.haemodynamics.fwhm_diameter import build_graph_branch_label_volume
 from haemolynx.statistics import three_dim_distances as dist3d
 
 
@@ -47,7 +47,7 @@ def _write(path: Path, array: np.ndarray) -> Path:
     return path
 
 
-# --- haemodynamics.automated.build_graph_branch_label_volume ----------------
+# --- haemodynamics.fwhm_diameter.build_graph_branch_label_volume ----------------
 
 
 def test_branch_label_volume_on_disk_matches_the_in_ram_one(tmp_path):
@@ -207,7 +207,7 @@ def test_cell_mask_measurement_against_the_runs_segmentation_is_the_same_in_low_
 
 # --- haemodynamics: FWHM diameters and the EDT cross-check -------------------
 
-from haemolynx.haemodynamics import automated, edt_diameter  # noqa: E402
+from haemolynx.haemodynamics import fwhm_diameter, edt_diameter  # noqa: E402
 
 _FWHM_ARGS = dict(
     sample_spacing_along_edge_um=2.0,
@@ -269,10 +269,10 @@ def test_fwhm_diameters_are_identical_in_low_ram_mode(tmp_path):
     tifffile.imwrite(path, raw)
     G_plain, G_low = G.copy(), G.copy()
 
-    plain = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    plain = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G_plain, raw_tiff_path=path, voxel_size_zyx=(1.0, 1.0, 1.0), **_FWHM_ARGS
     )
-    low_ram = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    low_ram = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G_low,
         raw_tiff_path=path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -292,8 +292,8 @@ def test_fwhm_raw_volume_on_disk_matches_the_in_ram_load_for_any_axis_order(tmp_
     path = tmp_path / "raw_xyz.tif"
     tifffile.imwrite(path, np.transpose(raw, (2, 1, 0)))
 
-    plain = automated.load_single_channel_tiff_volume(path, axis_order="xyz")
-    low_ram = automated.load_single_channel_tiff_volume(
+    plain = fwhm_diameter.load_single_channel_tiff_volume(path, axis_order="xyz")
+    low_ram = fwhm_diameter.load_single_channel_tiff_volume(
         path, axis_order="xyz", use_memmap=True, memmap_directory=tmp_path / "mm"
     )
 
@@ -360,8 +360,8 @@ def test_fwhm_in_low_ram_mode_keeps_its_volumes_on_disk(tmp_path, monkeypatch):
     path = tmp_path / "raw.tif"
     tifffile.imwrite(path, raw)
     seen = {}
-    real_labels = automated.build_graph_branch_label_volume
-    real_sample = automated._sample_transverse_profile
+    real_labels = fwhm_diameter.build_graph_branch_label_volume
+    real_sample = fwhm_diameter._sample_transverse_profile
 
     def spy_labels(*args, **kwargs):
         labels, keys = real_labels(*args, **kwargs)
@@ -372,10 +372,10 @@ def test_fwhm_in_low_ram_mode_keeps_its_volumes_on_disk(tmp_path, monkeypatch):
         seen.setdefault("raw", isinstance(raw_volume, np.memmap))
         return real_sample(raw_volume, *args, **kwargs)
 
-    monkeypatch.setattr(automated, "build_graph_branch_label_volume", spy_labels)
-    monkeypatch.setattr(automated, "_sample_transverse_profile", spy_sample)
+    monkeypatch.setattr(fwhm_diameter, "build_graph_branch_label_volume", spy_labels)
+    monkeypatch.setattr(fwhm_diameter, "_sample_transverse_profile", spy_sample)
 
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G, raw_tiff_path=path, voxel_size_zyx=(1.0, 1.0, 1.0), use_memmap=True, **_FWHM_ARGS
     )
 

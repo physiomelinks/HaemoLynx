@@ -33,7 +33,7 @@ def test_exclusion_zone_candidates_percentile_candidates_capped_by_edge_length()
     stop a length-scaled alternative from being offered -- the percentile
     candidates are capped at MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH of the
     median edge length, not at the (much larger) default itself."""
-    from haemolynx.haemodynamics.automated import MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH
+    from haemolynx.haemodynamics.fwhm_diameter import MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH
 
     lengths = np.full(20, 8.0)
     result = c.exclusion_zone_candidates(lengths, default=10.0)

@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import fwhm_diameter
 from haemolynx.optimisation import fwhm_search as s
 from haemolynx.pipeline.schema import SCHEMA
 from test_raw_section_diameter import EFFECTIVE_PSF, VOXEL, _graph, _render  # noqa: E402
@@ -62,7 +62,7 @@ def _real_error(scene, settings) -> float:
     raw, _mask, lines, _path = scene
     G = _graph(lines, list(TRUTH * 1.1))
     blurred_lumen = settings["fwhm_profile_model"] == "blurred_lumen"
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G, raw_volume=raw, voxel_size_zyx=VOXEL, store_profile_debug=False,
         profile_psf_sigma_zyx=EFFECTIVE_PSF if blurred_lumen else None,
         **s._measurement_kwargs(settings),

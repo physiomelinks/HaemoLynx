@@ -95,10 +95,10 @@ def test_representative_subgraph_does_not_mutate_the_caller_graph(multi_vessel):
     G, raw_path = multi_vessel
     sample = s._representative_subgraph(G, 2)
     starting_values = _fwhm_starting_values()
-    import haemolynx.haemodynamics.automated as automated
+    import haemolynx.haemodynamics.fwhm_diameter as fwhm_diameter
 
-    raw_volume = automated.load_single_channel_tiff_volume(raw_path)
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    raw_volume = fwhm_diameter.load_single_channel_tiff_volume(raw_path)
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         sample,
         raw_volume=raw_volume,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -353,14 +353,14 @@ def test_every_trial_holds_the_blur_at_the_image_psf(multi_vessel, monkeypatch, 
 
     G, raw_path = multi_vessel
     seen = []
-    real = s.automated.measure_edge_diameters_fwhm_from_raw_tiff
+    real = s.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff
 
     @functools.wraps(real)  # the search reads its keyword arguments off the signature
     def recording(graph, **kwargs):
         seen.append(kwargs.get("profile_psf_sigma_zyx"))
         return real(graph, **kwargs)
 
-    monkeypatch.setattr(s.automated, "measure_edge_diameters_fwhm_from_raw_tiff", recording)
+    monkeypatch.setattr(s.fwhm_diameter, "measure_edge_diameters_fwhm_from_raw_tiff", recording)
     s.optimise_fwhm_settings(
         G,
         raw_tiff_path=raw_path,
@@ -494,14 +494,14 @@ def test_a_sweeps_baseline_is_its_current_values_own_trial_measured_once(monkeyp
     import functools
 
     calls = {"n": 0}
-    real = s.automated.measure_edge_diameters_fwhm_from_raw_tiff
+    real = s.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff
 
     @functools.wraps(real)  # the search reads its keyword arguments off the signature
     def counting(graph, **kwargs):
         calls["n"] += 1
         return real(graph, **kwargs)
 
-    monkeypatch.setattr(s.automated, "measure_edge_diameters_fwhm_from_raw_tiff", counting)
+    monkeypatch.setattr(s.fwhm_diameter, "measure_edge_diameters_fwhm_from_raw_tiff", counting)
     search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume())
     current = float(search.current["fwhm_branch_endpoint_exclusion_um"])
     candidates = sorted({0.0, current, current + 2.0})
@@ -517,14 +517,14 @@ def test_the_baseline_diameters_are_the_current_settings_trial(monkeypatch):
     import functools
 
     calls = {"n": 0}
-    real = s.automated.measure_edge_diameters_fwhm_from_raw_tiff
+    real = s.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff
 
     @functools.wraps(real)
     def counting(graph, **kwargs):
         calls["n"] += 1
         return real(graph, **kwargs)
 
-    monkeypatch.setattr(s.automated, "measure_edge_diameters_fwhm_from_raw_tiff", counting)
+    monkeypatch.setattr(s.fwhm_diameter, "measure_edge_diameters_fwhm_from_raw_tiff", counting)
     search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume())
 
     diameters = search._baseline_diameters_um()

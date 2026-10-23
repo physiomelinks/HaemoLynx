@@ -12,7 +12,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.haemodynamics import automated, fwhm_planted
+from haemolynx.haemodynamics import fwhm_diameter, fwhm_planted
 from haemolynx.haemodynamics.fwhm_planted import (
     DEFAULT_OPTICS_PSF_UM,
     draw_vessel,
@@ -43,14 +43,14 @@ def scene():
 
 def _fwhm(graph, volume, **overrides):
     """FWHM at the schema's defaults, its blur held at the image PSF."""
-    valid = set(inspect.signature(automated.measure_edge_diameters_fwhm_from_raw_tiff).parameters)
+    valid = set(inspect.signature(fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff).parameters)
     kwargs = {
         field.name[5:]: field.default
         for field in SCHEMA
         if field.name.startswith("fwhm_") and field.name[5:] in valid
     }
     kwargs.update(overrides)
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         graph, raw_volume=volume, voxel_size_zyx=VOXEL, store_profile_debug=False,
         profile_psf_sigma_zyx=EFFECTIVE_PSF, **kwargs,
     )

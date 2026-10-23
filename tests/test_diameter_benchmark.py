@@ -19,7 +19,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import fwhm_diameter
 from haemolynx.haemodynamics.endothelial import measure_edge_diameters_from_endothelium
 from haemolynx.haemodynamics.raw_section import measure_edge_diameters_from_raw_sections
 from test_endothelial_diameter import PSF as RING_PSF, WALL, _ring  # noqa: E402
@@ -55,7 +55,7 @@ def test_the_raw_cross_section_is_within_seven_percent_from_five_microns(diamete
 def test_fwhm_is_within_fifteen_percent_at_every_orientation(diameter, direction):
     raw, mask, graph = _plasma_vessel(diameter, DIRECTIONS[direction], seed=int(10 * diameter) + 1)
 
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         graph, raw_tiff_path="unused", raw_volume=raw, vessel_mask=mask, voxel_size_zyx=VOXEL,
         sample_spacing_along_edge_um=2.0, transverse_profile_step_um=0.25,
         transverse_half_extent_um=6.0, min_accepted_samples=2,
@@ -88,7 +88,7 @@ def test_fwhm_with_the_image_psf_held_fixed_is_within_fifteen_percent_and_steadi
     widths = {}
     for psf in (None, EFFECTIVE_PSF):
         raw, mask, graph = _plasma_vessel(diameter, DIRECTIONS[direction], seed=int(10 * diameter) + 1)
-        automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
             graph, raw_tiff_path="unused", raw_volume=raw, vessel_mask=mask, voxel_size_zyx=VOXEL,
             sample_spacing_along_edge_um=2.0, transverse_profile_step_um=0.25,
             transverse_half_extent_um=6.0, min_accepted_samples=2, profile_psf_sigma_zyx=psf,

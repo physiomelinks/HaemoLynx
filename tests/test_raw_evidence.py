@@ -449,7 +449,7 @@ def test_build_network_keeps_the_calibration_on_the_graph(tmp_path):
 def test_build_network_records_an_auto_stain_for_the_diameters_stage(tmp_path, monkeypatch):
     """One answer per run: the build's reading is the graph's raw_image_stain,
     and the Diameters stage takes it without opening the file again."""
-    import haemolynx.haemodynamics.automated as automated
+    import haemolynx.haemodynamics.fwhm_diameter as fwhm_diameter
 
     settings, schema = _run_settings(tmp_path, raw_image_path=str(tmp_path / "raw.tif"))
     network = stages.build_network(settings, stages.skeletonise(settings, stages.segment(settings)), schema)
@@ -461,7 +461,7 @@ def test_build_network_records_an_auto_stain_for_the_diameters_stage(tmp_path, m
     def no_load(*_args, **_kwargs):
         raise AssertionError("the Diameters stage opened the raw image again")
 
-    monkeypatch.setattr(automated, "load_single_channel_tiff_volume", no_load)
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", no_load)
     assert stages.resolve_raw_image_stain(settings, network) == (PLASMA_COLUMN, None, None)
 
 

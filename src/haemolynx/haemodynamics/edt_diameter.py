@@ -1,6 +1,6 @@
 """Per-edge vessel diameter from the segmentation mask's own inscribed radius.
 
-A genuinely different technique from :mod:`haemolynx.haemodynamics.automated`'s
+A genuinely different technique from :mod:`haemolynx.haemodynamics.fwhm_diameter`'s
 FWHM fit: instead of fitting a Gaussian to a transverse intensity profile,
 this samples the mask's own Euclidean-distance-transform (EDT) inscribed
 radius (:func:`haemolynx.preprocessing.thick_vessels.inscribed_radius_map`,
@@ -15,10 +15,10 @@ disagrees strongly with the mask's own local radius (see
 the ``fwhm_edt_disagreement_ratio``/``fwhm_low_confidence_vs_edt`` attributes
 it stamps independently of that fallback).
 
-Reuses :mod:`haemolynx.haemodynamics.automated`'s own centerline-sampling
+Reuses :mod:`haemolynx.haemodynamics.fwhm_diameter`'s own centerline-sampling
 helpers (``_arc_length_parameterize``, ``_interpolate_centerline``,
 ``physical_points_to_continuous_indices``) and
-:func:`haemolynx.haemodynamics.automated._aggregate_edge_diameter` (the same
+:func:`haemolynx.haemodynamics.fwhm_diameter._aggregate_edge_diameter` (the same
 median-by-default aggregation FWHM uses) rather than re-deriving either --
 one centerline sampler and one aggregation policy for both techniques.
 
@@ -84,7 +84,7 @@ from haemolynx.preprocessing.bridge_mask_support import PackedMask
 from haemolynx.preprocessing.pointwise_distance import FeatureDistance
 from haemolynx.preprocessing.thick_vessels import inscribed_radius_map
 
-from .automated import (
+from .fwhm_diameter import (
     _aggregate_edge_diameter,
     _arc_length_parameterize,
     _interpolate_centerline,
@@ -198,7 +198,7 @@ def measure_edge_diameters_from_binary_mask(
     cross-section there; with ``"inscribed_radius"`` it is ``2 * radius``,
     *radius* being the mask's EDT inscribed radius at that point, trilinearly
     interpolated the same way
-    :func:`haemolynx.haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff`
+    :func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`
     samples its own intensity volume. See the module docstring for how
     they compare.
 
@@ -221,7 +221,7 @@ def measure_edge_diameters_from_binary_mask(
     aggregation :
         How to collapse one edge's accepted per-sample diameters into one
         value -- ``median`` (default) or ``mean``. Shares
-        :func:`haemolynx.haemodynamics.automated._aggregate_edge_diameter`
+        :func:`haemolynx.haemodynamics.fwhm_diameter._aggregate_edge_diameter`
         with the FWHM path, so both techniques resolve outliers the same way.
     use_memmap :
         The low-RAM option. Instead of transforming the whole mask, reads the
@@ -251,7 +251,7 @@ def measure_edge_diameters_from_binary_mask(
     Returns
     -------
     A summary shaped like
-    :func:`haemolynx.haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff`'s
+    :func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`'s
     own: ``edges_measured``, ``edges_skipped`` (list of
     ``(u, v, key, reason)``), ``per_edge``.
     """

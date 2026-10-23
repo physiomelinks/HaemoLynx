@@ -1,4 +1,4 @@
-"""Tests for FWHM-based diameter estimation (haemodynamics.automated)."""
+"""Tests for FWHM-based diameter estimation (haemodynamics.fwhm_diameter)."""
 import pytest
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import numpy as np
 import networkx as nx
 import tifffile
 
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import fwhm_diameter
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 
 
@@ -26,7 +26,7 @@ def test_fwhm_from_profile_gaussian_fit():
     sigma = 1.5
     x = np.linspace(-8.0, 8.0, 161, dtype=float)
     y = 100.0 * np.exp(-(x**2) / (2.0 * sigma**2))
-    w = automated.fwhm_from_profile(x, y)
+    w = fwhm_diameter.fwhm_from_profile(x, y)
     expected = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
     assert w is not None
     assert abs(w - expected) < 0.2
@@ -48,8 +48,8 @@ def test_fwhm_from_profile_matches_diagnostics_fwhm(kwargs):
     sigma = 1.5
     x = np.linspace(-8.0, 8.0, 161, dtype=float)
     y = 100.0 * np.exp(-(x**2) / (2.0 * sigma**2))
-    simple = automated.fwhm_from_profile(x, y, **kwargs)
-    diagnostic_fwhm, _center, _r2 = automated._fwhm_gaussian_fit_with_diagnostics(
+    simple = fwhm_diameter.fwhm_from_profile(x, y, **kwargs)
+    diagnostic_fwhm, _center, _r2 = fwhm_diameter._fwhm_gaussian_fit_with_diagnostics(
         x, y, **kwargs
     )
     assert simple is not None and diagnostic_fwhm is not None
@@ -66,7 +66,7 @@ def test_fwhm_from_profile_tolerates_non_finite_samples():
     y_with_gap = y.copy()
     y_with_gap[10] = np.nan
     y_with_gap[50] = np.inf
-    w = automated.fwhm_from_profile(x, y_with_gap)
+    w = fwhm_diameter.fwhm_from_profile(x, y_with_gap)
     expected = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
     assert w is not None
     assert abs(w - expected) < 0.3
@@ -78,8 +78,8 @@ def test_full_width_at_fraction_ideal_gaussian():
     sigma = 1.5
     x = np.linspace(-10.0, 10.0, 2001, dtype=float)
     y = 100.0 * np.exp(-(x**2) / (2.0 * sigma**2))
-    w80 = automated._full_width_at_fraction(x, y, 0.0, 100.0, 0.8)
-    w50 = automated._full_width_at_fraction(x, y, 0.0, 100.0, 0.5)
+    w80 = fwhm_diameter._full_width_at_fraction(x, y, 0.0, 100.0, 0.8)
+    w50 = fwhm_diameter._full_width_at_fraction(x, y, 0.0, 100.0, 0.5)
     assert w80 is not None and w50 is not None
     expected_ratio = np.sqrt(np.log(0.8) / np.log(0.5))
     assert (w80 / w50) == pytest.approx(expected_ratio, abs=0.01)
@@ -88,7 +88,7 @@ def test_full_width_at_fraction_ideal_gaussian():
 def test_full_width_at_fraction_none_when_never_crosses():
     x = np.linspace(-2.0, 2.0, 21, dtype=float)
     y = np.full_like(x, 100.0)  # flat at the peak everywhere -- never drops
-    assert automated._full_width_at_fraction(x, y, 0.0, 100.0, 0.5) is None
+    assert fwhm_diameter._full_width_at_fraction(x, y, 0.0, 100.0, 0.5) is None
 
 
 def test_profile_plateau_shape_ratio_flags_flat_top_profile():
@@ -97,10 +97,10 @@ def test_profile_plateau_shape_ratio_flags_flat_top_profile():
     plateau threshold."""
     x = np.linspace(-10.0, 10.0, 2001, dtype=float)
     gaussian = 100.0 * np.exp(-(x**2) / (2.0 * 1.5**2))
-    gaussian_ratio = automated._profile_plateau_shape_ratio(x, gaussian, 0.0)
+    gaussian_ratio = fwhm_diameter._profile_plateau_shape_ratio(x, gaussian, 0.0)
 
     saturated = 100.0 / (1.0 + np.exp((np.abs(x) - 3.0) / 0.05))
-    saturated_ratio = automated._profile_plateau_shape_ratio(x, saturated, 0.0)
+    saturated_ratio = fwhm_diameter._profile_plateau_shape_ratio(x, saturated, 0.0)
 
     assert gaussian_ratio is not None and saturated_ratio is not None
     assert gaussian_ratio < 0.6
@@ -144,13 +144,13 @@ def test_clip_profile_to_central_lobe_survives_light_noise_on_a_clean_single_lob
     x, y = _noisy_gaussian_profile(
         true_diameter=true_diameter, noise_sigma=0.02 * 200.0, seed=1
     )
-    x_fit, y_fit = automated._clip_profile_to_central_lobe(x, y)
+    x_fit, y_fit = fwhm_diameter._clip_profile_to_central_lobe(x, y)
     window = float(x_fit.max() - x_fit.min())
     # A single, uncomplicated lobe should keep most of the sampled extent --
     # the old, unsmoothed decision collapsed this to under 2um.
     assert window > 3.0 * true_diameter
 
-    d, _x0, _r2 = automated._fwhm_gaussian_fit_with_diagnostics(x_fit, y_fit)
+    d, _x0, _r2 = fwhm_diameter._fwhm_gaussian_fit_with_diagnostics(x_fit, y_fit)
     assert d is not None
     assert d == pytest.approx(true_diameter, rel=0.25)
 
@@ -170,8 +170,8 @@ def test_clip_profile_to_central_lobe_diameter_estimate_is_stable_across_noise_l
         peak=peak,
         seed=2,
     )
-    x_fit, y_fit = automated._clip_profile_to_central_lobe(x, y)
-    d, _x0, _r2 = automated._fwhm_gaussian_fit_with_diagnostics(x_fit, y_fit)
+    x_fit, y_fit = fwhm_diameter._clip_profile_to_central_lobe(x, y)
+    d, _x0, _r2 = fwhm_diameter._fwhm_gaussian_fit_with_diagnostics(x_fit, y_fit)
     assert d is not None
     assert d == pytest.approx(true_diameter, rel=0.3)
 
@@ -187,7 +187,7 @@ def test_clip_profile_to_central_lobe_still_truncates_a_genuine_second_lobe():
     secondary = 180.0 * np.exp(-((x - second_lobe_center) ** 2) / (2.0 * sigma**2))
     y = primary + secondary
 
-    x_fit, _y_fit = automated._clip_profile_to_central_lobe(x, y)
+    x_fit, _y_fit = fwhm_diameter._clip_profile_to_central_lobe(x, y)
     # The right side must be cut back before it reaches the second lobe;
     # the left side has no such feature in this fixture and is free to
     # keep its full sampled extent.
@@ -206,7 +206,7 @@ def _window(diameter_estimate, **overrides):
         transverse_profile_step_um=0.2,
     )
     kwargs.update(overrides)
-    return automated._local_same_edge_window(diameter_estimate, **kwargs)
+    return fwhm_diameter._local_same_edge_window(diameter_estimate, **kwargs)
 
 
 def test_local_same_edge_window_scales_with_the_diameter_estimate():
@@ -251,7 +251,7 @@ def test_local_same_edge_window_does_not_use_sample_spacing_when_an_estimate_exi
 def _offset(diameter_estimate, **overrides):
     kwargs = dict(max_fit_center_offset_um=1.5, max_fit_center_offset_fraction_of_diameter=0.3)
     kwargs.update(overrides)
-    return automated._local_max_center_offset(diameter_estimate, **kwargs)
+    return fwhm_diameter._local_max_center_offset(diameter_estimate, **kwargs)
 
 
 def test_local_max_center_offset_scales_with_the_diameter_estimate():
@@ -290,14 +290,14 @@ def test_local_max_center_offset_does_not_use_a_fixed_value_for_a_wide_vessel():
 
 def test_edge_diameter_guess_prefers_the_edge_attribute_when_present():
     data = {"edt_diameter_um": 12.0}
-    guess = automated._edge_diameter_guess(
+    guess = fwhm_diameter._edge_diameter_guess(
         data, diameter_guess_edge_attribute="edt_diameter_um", fallback_diameter_guess=2.0,
     )
     assert guess == pytest.approx(12.0)
 
 
 def test_edge_diameter_guess_falls_back_when_the_attribute_is_absent():
-    guess = automated._edge_diameter_guess(
+    guess = fwhm_diameter._edge_diameter_guess(
         {}, diameter_guess_edge_attribute="edt_diameter_um", fallback_diameter_guess=2.0,
     )
     assert guess == pytest.approx(2.0)
@@ -307,7 +307,7 @@ def test_edge_diameter_guess_falls_back_for_a_non_positive_or_non_finite_attribu
     """Regression: a stray 0, negative, or NaN value under the attribute
     name must not silently become this edge's own diameter guess."""
     for bad_value in (0.0, -5.0, float("nan"), float("inf")):
-        guess = automated._edge_diameter_guess(
+        guess = fwhm_diameter._edge_diameter_guess(
             {"edt_diameter_um": bad_value},
             diameter_guess_edge_attribute="edt_diameter_um",
             fallback_diameter_guess=2.0,
@@ -319,7 +319,7 @@ def test_edge_diameter_guess_none_attribute_name_always_uses_the_fallback():
     """diameter_guess_edge_attribute=None reproduces this function's
     behaviour from before per-edge seeding existed: only the one global
     guess, even when the edge itself carries a real per-edge value."""
-    guess = automated._edge_diameter_guess(
+    guess = fwhm_diameter._edge_diameter_guess(
         {"edt_diameter_um": 12.0}, diameter_guess_edge_attribute=None, fallback_diameter_guess=2.0,
     )
     assert guess == pytest.approx(2.0)
@@ -400,10 +400,10 @@ def test_measure_edge_diameters_rejects_saturated_synthetic_vessel(tmp_path: Pat
         # default blurred-lumen model expects a plateau and fits it properly.
         profile_model="gaussian",
     )
-    summary_gated = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary_gated = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(), reject_samples_with_plateau_shape=True, **common
     )
-    summary_ungated = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary_ungated = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(), reject_samples_with_plateau_shape=False, **common
     )
 
@@ -423,8 +423,8 @@ def test_aggregate_edge_diameter_median_resists_one_outlier_sample():
     """The one skewed fit corrupting an otherwise-good edge average is
     exactly the failure mode `median` exists to resist."""
     diameters = [2.0, 2.1, 1.9, 2.05, 9.0]
-    median = automated._aggregate_edge_diameter(diameters, "median")
-    mean = automated._aggregate_edge_diameter(diameters, "mean")
+    median = fwhm_diameter._aggregate_edge_diameter(diameters, "median")
+    mean = fwhm_diameter._aggregate_edge_diameter(diameters, "mean")
     assert median == pytest.approx(2.05)
     assert mean > 3.0  # pulled well away from the true ~2.0 cluster
     assert abs(median - 2.0) < abs(mean - 2.0)
@@ -432,19 +432,19 @@ def test_aggregate_edge_diameter_median_resists_one_outlier_sample():
 
 def test_aggregate_edge_diameter_agrees_with_mean_on_tightly_clustered_samples():
     diameters = [3.0, 3.01, 2.99, 3.02]
-    median = automated._aggregate_edge_diameter(diameters, "median")
-    mean = automated._aggregate_edge_diameter(diameters, "mean")
+    median = fwhm_diameter._aggregate_edge_diameter(diameters, "median")
+    mean = fwhm_diameter._aggregate_edge_diameter(diameters, "mean")
     assert median == pytest.approx(mean, abs=0.05)
 
 
 def test_aggregate_edge_diameter_handles_a_single_sample():
-    assert automated._aggregate_edge_diameter([4.2], "median") == pytest.approx(4.2)
-    assert automated._aggregate_edge_diameter([4.2], "mean") == pytest.approx(4.2)
+    assert fwhm_diameter._aggregate_edge_diameter([4.2], "median") == pytest.approx(4.2)
+    assert fwhm_diameter._aggregate_edge_diameter([4.2], "mean") == pytest.approx(4.2)
 
 
 def test_aggregate_edge_diameter_rejects_an_unknown_method():
     with pytest.raises(ValueError):
-        automated._aggregate_edge_diameter([1.0, 2.0], "bogus")
+        fwhm_diameter._aggregate_edge_diameter([1.0, 2.0], "bogus")
 
 
 def test_fwhm_from_profile_rejects_an_unknown_baseline_mode():
@@ -454,9 +454,9 @@ def test_fwhm_from_profile_rejects_an_unknown_baseline_mode():
     x = np.linspace(-8.0, 8.0, 21, dtype=float)
     y = 100.0 * np.exp(-(x**2) / (2.0 * 1.5**2))
     with pytest.raises(ValueError):
-        automated.fwhm_from_profile(x, y, profile_baseline_mode="bogus")
+        fwhm_diameter.fwhm_from_profile(x, y, profile_baseline_mode="bogus")
     with pytest.raises(ValueError):
-        automated._fwhm_gaussian_fit_with_diagnostics(x, y, profile_baseline_mode="bogus")
+        fwhm_diameter._fwhm_gaussian_fit_with_diagnostics(x, y, profile_baseline_mode="bogus")
 
 
 def test_robust_baseline_wings_one_sided_shoulder():
@@ -464,7 +464,7 @@ def test_robust_baseline_wings_one_sided_shoulder():
     y = 100.0 * np.exp(-(x**2) / (2.0 * 1.5**2))
     y = np.asarray(y, dtype=float).copy()
     y[x > 4.0] += 40.0
-    b = automated.robust_baseline_from_profile_wings(x, y, wing_fraction=0.2)
+    b = fwhm_diameter.robust_baseline_from_profile_wings(x, y, wing_fraction=0.2)
     assert b < 12.0
 
 
@@ -472,8 +472,8 @@ def test_fwhm_percentile_and_wings_modes_symmetric_gaussian():
     sigma = 1.5
     x = np.linspace(-8.0, 8.0, 161, dtype=float)
     y = 100.0 * np.exp(-(x**2) / (2.0 * sigma**2))
-    w_w = automated.fwhm_from_profile(x, y, profile_baseline_mode="wings")
-    w_p = automated.fwhm_from_profile(x, y, profile_baseline_mode="percentile")
+    w_w = fwhm_diameter.fwhm_from_profile(x, y, profile_baseline_mode="wings")
+    w_p = fwhm_diameter.fwhm_from_profile(x, y, profile_baseline_mode="percentile")
     assert w_w is not None and w_p is not None
     assert abs(w_w - w_p) < 0.3
 
@@ -481,13 +481,13 @@ def test_fwhm_percentile_and_wings_modes_symmetric_gaussian():
 def test_transverse_unit_in_physical_yx_plane():
     """In-plane transverse: orthogonal to tangent, zero z (axis-0) component, unit length."""
     t = np.array([0.0, 0.0, 1.0], dtype=float)
-    n = automated._transverse_unit_in_physical_yx_plane(t)
+    n = fwhm_diameter._transverse_unit_in_physical_yx_plane(t)
     assert abs(n[0]) < 1e-9
     assert abs(float(np.dot(t, n))) < 1e-9
     assert abs(float(np.linalg.norm(n)) - 1.0) < 1e-9
 
     t2 = np.array([1.0, 2.0, 3.0], dtype=float)
-    n2 = automated._transverse_unit_in_physical_yx_plane(t2)
+    n2 = fwhm_diameter._transverse_unit_in_physical_yx_plane(t2)
     assert abs(n2[0]) < 1e-9
     assert abs(float(np.dot(t2, n2))) < 1e-9
     assert abs(float(np.linalg.norm(n2)) - 1.0) < 1e-9
@@ -498,7 +498,7 @@ def test_gram_schmidt_perpendicular_true_3d():
     the in-plane direction, this holds for a tangent with a real z (axis 0)
     component."""
     t = np.array([1.0, 2.0, 3.0], dtype=float)
-    n = automated._gram_schmidt_perpendicular(t)
+    n = fwhm_diameter._gram_schmidt_perpendicular(t)
     assert abs(float(np.linalg.norm(n)) - 1.0) < 1e-9
     t_hat = t / np.linalg.norm(t)
     assert abs(float(np.dot(n, t_hat))) < 1e-9
@@ -514,35 +514,35 @@ def test_gram_schmidt_perpendicular_uses_the_least_parallel_axis():
     (x, the inverted-condition bug) leaves it dominated by y instead.
     """
     t = np.array([0.1, 0.3, 0.95], dtype=float)
-    n = automated._gram_schmidt_perpendicular(t)
+    n = fwhm_diameter._gram_schmidt_perpendicular(t)
     assert abs(n[0]) > abs(n[1])
     assert abs(n[0]) > abs(n[2])
 
 
 def test_transverse_unit_for_mode_dispatches_correctly():
     t = np.array([1.0, 2.0, 3.0], dtype=float)
-    in_plane = automated._transverse_unit_for_mode(t, "in_plane_yx")
-    true_3d = automated._transverse_unit_for_mode(t, "true_3d_perpendicular")
+    in_plane = fwhm_diameter._transverse_unit_for_mode(t, "in_plane_yx")
+    true_3d = fwhm_diameter._transverse_unit_for_mode(t, "true_3d_perpendicular")
     assert in_plane[0] == pytest.approx(0.0)  # in-plane: no z component
     assert true_3d[0] != pytest.approx(0.0)  # true 3D: has a z component here
     with pytest.raises(ValueError):
-        automated._transverse_unit_for_mode(t, "bogus")
+        fwhm_diameter._transverse_unit_for_mode(t, "bogus")
 
 
 def test_out_of_plane_fraction_zero_for_in_plane_tangent():
     t = np.array([0.0, 1.0, 2.0], dtype=float)
-    assert automated._out_of_plane_fraction(t) == pytest.approx(0.0)
+    assert fwhm_diameter._out_of_plane_fraction(t) == pytest.approx(0.0)
 
 
 def test_out_of_plane_fraction_one_for_pure_z_tangent():
     t = np.array([5.0, 0.0, 0.0], dtype=float)
-    assert automated._out_of_plane_fraction(t) == pytest.approx(1.0)
+    assert fwhm_diameter._out_of_plane_fraction(t) == pytest.approx(1.0)
 
 
 def test_out_of_plane_fraction_matches_the_sine_of_the_tilt_angle():
     t = np.array([1.0, 2.0, 3.0], dtype=float)
     expected = abs(t[0]) / np.linalg.norm(t)
-    assert automated._out_of_plane_fraction(t) == pytest.approx(expected)
+    assert fwhm_diameter._out_of_plane_fraction(t) == pytest.approx(expected)
 
 
 def test_build_graph_branch_label_volume():
@@ -551,7 +551,7 @@ def test_build_graph_branch_label_volume():
     G.add_node(1, pos=np.array([2.0, 0.0, 0.0]))
     edge_voxels = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
     G.add_edge(0, 1, voxels=edge_voxels)
-    vol, mapping = automated.build_graph_branch_label_volume(
+    vol, mapping = fwhm_diameter.build_graph_branch_label_volume(
         G,
         (3, 3, 3),
         (1.0, 1.0, 1.0),
@@ -590,7 +590,7 @@ def test_measure_edge_diameters_fwhm_stamps_status_on_skip_paths(tmp_path: Path)
         voxels=[(1.0, 1.0, 1.0), (1.0, 1.0, 1.0)],
     )
 
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -624,15 +624,15 @@ def test_measure_edge_diameters_fwhm_forwards_edge_diameter_aggregation(
     G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
 
     captured_methods = []
-    real_aggregate = automated._aggregate_edge_diameter
+    real_aggregate = fwhm_diameter._aggregate_edge_diameter
 
     def spy(diameters, method):
         captured_methods.append(method)
         return real_aggregate(diameters, method)
 
-    monkeypatch.setattr(automated, "_aggregate_edge_diameter", spy)
+    monkeypatch.setattr(fwhm_diameter, "_aggregate_edge_diameter", spy)
 
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -667,7 +667,7 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     )
 
     voxel_size_zyx = (1.0, 1.0, 1.0)
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel_size_zyx,
@@ -713,7 +713,7 @@ def test_measure_edge_diameters_fwhm_exposes_a_fit_r2_per_accepted_sample(tmp_pa
     voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
     G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
 
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -758,7 +758,7 @@ def test_measure_edge_diameters_seeds_the_first_pass_from_an_edt_diameter_attrib
         return G
 
     recorded_half_extents: list[float] = []
-    real_sample = automated._sample_transverse_profile
+    real_sample = fwhm_diameter._sample_transverse_profile
 
     def recording_sample(raw_arr, labels, center, tangent, assigned, half_extent, *args, **kwargs):
         recorded_half_extents.append(half_extent)
@@ -775,14 +775,14 @@ def test_measure_edge_diameters_seeds_the_first_pass_from_an_edt_diameter_attrib
         cap_half_extent_by_nonlocal_same_edge_distance=False,
     )
 
-    monkeypatch.setattr(automated, "_sample_transverse_profile", recording_sample)
+    monkeypatch.setattr(fwhm_diameter, "_sample_transverse_profile", recording_sample)
 
     recorded_half_extents.clear()
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(_build_graph(None), **common)
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(_build_graph(None), **common)
     without_edt_first_half_extent = recorded_half_extents[0]
 
     recorded_half_extents.clear()
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(_build_graph(9.0), **common)
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(_build_graph(9.0), **common)
     with_edt_first_half_extent = recorded_half_extents[0]
 
     assert without_edt_first_half_extent == pytest.approx(max(1.0, 0.5 * 3.0 * 2.0))
@@ -853,7 +853,7 @@ def test_transverse_window_scales_with_diameter_on_a_tortuous_vessel(tmp_path: P
     voxels = [(zc, float(centerline_y[x]), float(x)) for x in xs]
     G.add_edge(0, 1, weight=1.0, length=70.0, branch_order="B01", voxels=voxels)
 
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -914,7 +914,7 @@ def test_center_offset_gate_scales_with_diameter_estimate(tmp_path: Path):
         transverse_half_extent_um=8.0,
         diameter_guess_um=true_diameter,
     )
-    fixed_only = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fixed_only = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G, max_fit_center_offset_fraction_of_diameter=0.0, **common,
     )
     assert fixed_only["edges_measured"] == 0, (
@@ -922,7 +922,7 @@ def test_center_offset_gate_scales_with_diameter_estimate(tmp_path: Path):
         "(fraction_of_diameter=0.0 reproduces that old, fixed-only behaviour)"
     )
 
-    scaled = automated.measure_edge_diameters_fwhm_from_raw_tiff(G, **common)
+    scaled = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(G, **common)
     assert scaled["edges_measured"] == 1
     d = scaled["per_edge"][0]["fwhm_diameter_um"]
     assert abs(d - true_diameter) < 2.0
@@ -976,7 +976,7 @@ def test_transverse_widening_loop_converges_beyond_two_widening_passes(
         calls["n"] += 1
         return sequence[idx], 0.0, 1.0
 
-    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
+    monkeypatch.setattr(fwhm_diameter, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
 
     common = dict(
         raw_tiff_path=raw_path,
@@ -994,7 +994,7 @@ def test_transverse_widening_loop_converges_beyond_two_widening_passes(
     )
 
     calls["n"] = 0
-    capped = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    capped = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(), max_transverse_widen_passes=1, **common,
     )
     # Only 2 total passes allowed: settles on the second call's own value,
@@ -1002,7 +1002,7 @@ def test_transverse_widening_loop_converges_beyond_two_widening_passes(
     assert capped["per_edge"][0]["fwhm_diameter_um"] == pytest.approx(4.0)
 
     calls["n"] = 0
-    converged = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    converged = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(), max_transverse_widen_passes=10, **common,
     )
     assert converged["per_edge"][0]["fwhm_diameter_um"] == pytest.approx(sequence[-1])
@@ -1042,9 +1042,9 @@ def test_transverse_widening_keeps_the_last_good_measurement_if_a_wider_pass_fai
             return 5.0, 0.0, 1.0  # accepted
         return None, None, None  # every wider pass's own fit fails
 
-    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
+    monkeypatch.setattr(fwhm_diameter, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
 
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(),
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -1107,9 +1107,9 @@ def test_transverse_widening_bisects_towards_a_failing_wider_pass_instead_of_giv
         return value, 0.0, 1.0
 
     calls = {"n": 0}
-    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
+    monkeypatch.setattr(fwhm_diameter, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
 
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(),
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -1178,7 +1178,7 @@ def test_branch_exclusion_scales_down_for_a_short_edge_instead_of_excluding_it_w
         return G
 
     G = _build_graph()
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -1269,13 +1269,13 @@ def test_allow_crossing_other_edges_recovers_a_wide_vessel_split_into_close_edge
     collapse on a fat vessel). Two edges 6um apart, both embedded in one
     true 16um-diameter vessel, must both recover that true diameter under
     the default settings -- confirmed to fail before this fix by stashing
-    ``automated.py`` (see the module docstring for the general convention).
+    ``fwhm_diameter.py`` (see the module docstring for the general convention).
     """
     true_diameter = 16.0
     raw_path, G, voxel = _parallel_edges_sharing_one_wide_vessel(
         tmp_path, true_diameter=true_diameter, separation=6.0
     )
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel,
@@ -1291,7 +1291,7 @@ def test_allow_crossing_other_edges_recovers_a_wide_vessel_split_into_close_edge
     # allow_crossing_other_edges=False restores the stricter, topology-only
     # stop for anyone who prefers it -- explicitly asking for it must still
     # work as its own documented, opt-out knob.
-    restored = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    restored = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel,
@@ -1330,7 +1330,7 @@ def test_center_offset_gate_uses_the_just_fitted_diameter_not_a_stale_guess(
     G.remove_edge(2, 3)
     G.remove_nodes_from([2, 3])
 
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=voxel,
@@ -1348,7 +1348,7 @@ def test_the_lumen_fit_holds_a_given_blur_instead_of_fitting_it():
     """With the image's PSF known, each profile's blur is held there: the
     right blur recovers the width, and a wrong one moves the answer -- it is
     used, not ignored."""
-    from haemolynx.haemodynamics.automated import (
+    from haemolynx.haemodynamics.fwhm_diameter import (
         _blurred_lumen_1d,
         _blurred_lumen_fwhm,
         _lumen_fwhm_fit_with_diagnostics,
@@ -1405,9 +1405,9 @@ def test_measuring_a_subset_gives_those_edges_what_a_full_run_gives_them(tmp_pat
         profile_model="gaussian",
     )
     full = build()
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(full, **common)
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(full, **common)
     subset = build()
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         subset, edges=[(3, 2, 0)], **common
     )
 
@@ -1422,10 +1422,10 @@ def test_measuring_a_subset_gives_those_edges_what_a_full_run_gives_them(tmp_pat
 
 def test_a_line_crosses_voxels_at_its_own_axis_pitch():
     spacing = (2.0, 0.5, 0.5)
-    assert automated._line_pitch_um(np.array([1.0, 0.0, 0.0]), spacing) == pytest.approx(2.0)
-    assert automated._line_pitch_um(np.array([0.0, 0.0, 1.0]), spacing) == pytest.approx(0.5)
+    assert fwhm_diameter._line_pitch_um(np.array([1.0, 0.0, 0.0]), spacing) == pytest.approx(2.0)
+    assert fwhm_diameter._line_pitch_um(np.array([0.0, 0.0, 1.0]), spacing) == pytest.approx(0.5)
     oblique = np.array([1.0, 0.0, 1.0]) / np.sqrt(2.0)
-    assert 0.5 < automated._line_pitch_um(oblique, spacing) < 2.0
+    assert 0.5 < fwhm_diameter._line_pitch_um(oblique, spacing) < 2.0
 
 
 def test_true_3d_sampling_measures_a_3_um_vessel_running_along_z(tmp_path: Path):
@@ -1449,7 +1449,7 @@ def test_true_3d_sampling_measures_a_3_um_vessel_running_along_z(tmp_path: Path)
     G.add_edge(0, 1, length=38.0, branch_order="B01",
                voxels=[(float(z) * 2.0, yc * 0.5, xc * 0.5) for z in range(2, 22)])
 
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=spacing,
@@ -1483,8 +1483,8 @@ def test_a_raw_volume_needs_no_path_and_no_image_at_all_is_refused():
         transverse_half_extent_um=4.0,
     )
 
-    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(G, raw_volume=raw, **common)
+    summary = fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(G, raw_volume=raw, **common)
 
     assert summary["edges_measured"] == 1
     with pytest.raises(ValueError, match="raw_tiff_path or raw_volume"):
-        automated.measure_edge_diameters_fwhm_from_raw_tiff(G.copy(), **common)
+        fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(G.copy(), **common)

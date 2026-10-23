@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter
 
-from haemolynx.haemodynamics.automated import (
+from haemolynx.haemodynamics.fwhm_diameter import (
     _GAUSSIAN_FWHM_FROM_SIGMA,
     _blurred_lumen_1d,
     _blurred_lumen_fwhm,
@@ -253,7 +253,7 @@ def test_a_dim_lumen_is_measured_at_its_width_not_a_noise_spikes(seed):
 
 
 def test_averaging_along_the_vessel_keeps_the_profile_and_cuts_the_noise():
-    from haemolynx.haemodynamics.automated import _sample_transverse_profile
+    from haemolynx.haemodynamics.fwhm_diameter import _sample_transverse_profile
 
     graph, clean, _cy = _plasma_vessel(10.0)
     rng = np.random.default_rng(3)
@@ -280,10 +280,10 @@ def test_averaging_along_the_vessel_keeps_the_profile_and_cuts_the_noise():
 def test_a_width_under_two_pixels_is_rejected(monkeypatch):
     """No fit narrower than two pixels is a resolved vessel; on real data it
     is almost always a single noise spike."""
-    from haemolynx.haemodynamics import automated
+    from haemolynx.haemodynamics import fwhm_diameter
 
     monkeypatch.setattr(
-        automated, "_lumen_fwhm_fit_with_diagnostics",
+        fwhm_diameter, "_lumen_fwhm_fit_with_diagnostics",
         lambda *args, **kwargs: (1.5, 0.0, 0.99),
     )
     assert _measure_dim(6.0, 0) is None  # 1.5um < 2 x 0.98um
@@ -301,7 +301,7 @@ def test_the_noise_defaults_are_the_pipeline_defaults():
 
 def _ray(vessel_mask, start_y=10):
     """Distance a +y ray from (z=2, y=start_y, x=5) travels, 1um voxels."""
-    from haemolynx.haemodynamics.automated import _max_extent_along_ray
+    from haemolynx.haemodynamics.fwhm_diameter import _max_extent_along_ray
 
     labels = np.zeros(vessel_mask.shape, dtype=np.int32)
     return _max_extent_along_ray(
@@ -353,14 +353,14 @@ def _measure_with_fixed_fit(monkeypatch, width_um, **overrides):
     """A plain vessel measured by a fit that reports *width_um* on the first,
     12um line and fails on any wider one -- the widening loop then keeps the
     12um pass, as it does when a wider pass fails a quality gate."""
-    from haemolynx.haemodynamics import automated
+    from haemolynx.haemodynamics import fwhm_diameter
 
     def fit(positions, _intensities, **_kwargs):
         if float(np.ptp(positions)) <= 12.1:
             return width_um, 0.0, 0.99
         return None, None, None
 
-    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fit)
+    monkeypatch.setattr(fwhm_diameter, "_lumen_fwhm_fit_with_diagnostics", fit)
     graph, image, _cy = _plasma_vessel(4.0)
     summary = measure_edge_diameters_fwhm_from_raw_tiff(
         graph,

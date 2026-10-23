@@ -67,7 +67,7 @@ haemolynx/
 │   │                       #   skeleton_retrace.py (skeleton the clean-up took round a wide
 │   │                       #   hole, drawn back after it)
 │   ├── haemodynamics/      # poiseuille, viscosity (the laws), resistance, apply,
-│   │                       #   automated.py (FWHM diameters), raw_section.py (the raw
+│   │                       #   fwhm_diameter.py (FWHM diameters), raw_section.py (the raw
 │   │                       #   cross-section fitted where FWHM fails, opt-in), edt_diameter.py
 │   │                       #   (mask diameters), endothelial.py (internal diameter inside an
 │   │                       #   endothelial stain's wall, FWHM's alternative), sections.py (the
@@ -747,9 +747,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 
 ### Diameters and haemodynamics (`docs/notes/diameters_and_haemodynamics.md`)
 
-- **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from the raw image
+- **`haemodynamics/fwhm_diameter.py`** — FWHM vessel-**diameter** measurement from the raw image
   (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`; neither is
-  re-exported, so import them from the module). *"automated" is a misnomer.* The diameter chain is
+  re-exported, so import them from the module). The diameter chain is
   FWHM → raw section (`raw_section.py`, `use_raw_section_fallback`, off) → mask (`edt_diameter.py`,
   reading the run's segmented input) → class median (`diameter_class_median_min_edges`) → table
   (`stamp_edge_diameters`). For an endothelial stain `endothelial.py` takes FWHM's place
@@ -1033,8 +1033,7 @@ Rules for agents:
       re-exports:
   - [x] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`
   - [x] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`
-  - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py` (many importers; some tests
-        patch `haemodynamics.automated.<name>` by string, so grep the dotted path too)
+  - [x] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py`
 - [ ] **Phase 4** — a short "preset system" note in the README (schema declarations → preset dicts →
       CLI/YAML overrides); the README does not mention presets today.
 - [ ] **When done** — full `pytest` green, the tutorial notebook still exports and runs; update the

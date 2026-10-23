@@ -5,7 +5,7 @@ settings (the Diameters tab's "5. FWHM" block).
 pattern -- one setting (or small joint group sharing a prerequisite toggle)
 at a time, holding everything else fixed, every candidate scored by actually
 running the real
-:func:`haemolynx.haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff`
+:func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`
 -- applied to the seven FWHM setting groups
 (:data:`FWHM_GROUP_NAMES`) instead of the Skeletonise/Graph ones.
 
@@ -45,7 +45,7 @@ from typing import Any, Iterable, Mapping, Optional
 import networkx as nx
 import numpy as np
 
-from haemolynx.haemodynamics import automated, edt_diameter, fwhm_decoys, fwhm_planted
+from haemolynx.haemodynamics import fwhm_diameter, edt_diameter, fwhm_decoys, fwhm_planted
 from haemolynx.haemodynamics.apply import image_psf_from_settings
 from haemolynx.haemodynamics.poiseuille import (
     flag_fwhm_edt_disagreement,
@@ -219,7 +219,7 @@ def _measurement_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
     does not need the rest of that module for.
     """
     prefix = "fwhm_"
-    valid = set(inspect.signature(automated.measure_edge_diameters_fwhm_from_raw_tiff).parameters)
+    valid = set(inspect.signature(fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff).parameters)
     return {
         name[len(prefix):]: value
         for name, value in settings.items()
@@ -373,7 +373,7 @@ def _time_budget_sample(
     kwargs = _measurement_kwargs(starting_values)
 
     def _probe_once() -> None:
-        automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
             probe_graph.copy(),
             raw_volume=raw_volume,
             voxel_size_zyx=voxel_size_zyx,
@@ -506,7 +506,7 @@ class _FwhmSearch(_SweepBookkeeping):
         fixed_blur = bool(settings.get("fwhm_fix_blur_to_image_psf", True)) and (
             settings.get("fwhm_profile_model", "blurred_lumen") == "blurred_lumen"
         )
-        return automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        return fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
             graph,
             raw_volume=self.raw_volume if volume is None else volume,
             voxel_size_zyx=self.voxel_size_zyx,
@@ -922,7 +922,7 @@ def optimise_fwhm_settings(
     auto_sample_target_seconds: float = DEFAULT_AUTO_SAMPLE_TARGET_SECONDS,
     groups: Optional[Iterable[str]] = None,
     max_passes: int = 1,
-    axis_order: str = automated.CANONICAL_AXIS_ORDER,
+    axis_order: str = fwhm_diameter.CANONICAL_AXIS_ORDER,
     raw_channel: int | None = None,
     vessel_mask: Optional[np.ndarray] = None,
     measure_full_graph: bool = False,
@@ -970,7 +970,7 @@ def optimise_fwhm_settings(
     # Cut to the crop_on_import box G was built in, and reduced onto its
     # grid, when the image was.
     raw_volume = raw_volume_like_graph(
-        automated.load_single_channel_tiff_volume(
+        fwhm_diameter.load_single_channel_tiff_volume(
             raw_tiff_path, axis_order=axis_order, channel=raw_channel
         ),
         G,

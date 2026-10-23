@@ -1,5 +1,5 @@
 """Haemodynamics: viscosity, Poiseuille resistance/conductance, network resistance."""
-from . import automated
+from . import fwhm_diameter
 from . import edt_diameter
 from . import fwhm_decoys
 from . import raw_section
@@ -115,7 +115,7 @@ from .perturbations import (
 )
 
 __all__ = [
-    "automated",
+    "fwhm_diameter",
     "open_ends",
     "red_cells",
     "DEFAULT_RED_CELL_VOLUME_FL",

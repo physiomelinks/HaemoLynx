@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from haemolynx import preprocessing
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import fwhm_diameter
 from haemolynx.parsers import parameters_of
 from haemolynx.pipeline import default_schema
 
@@ -26,7 +26,7 @@ PACKAGE = Path(__file__).resolve().parents[1] / "src" / "haemolynx"
 #: ``haemodynamics/apply.py`` (FWHM), ``pipeline/stages.py``'s skeletonise
 #: (cleanup and skeleton).
 PREFIXED_GROUPS = {
-    "fwhm_": automated.measure_edge_diameters_fwhm_from_raw_tiff,
+    "fwhm_": fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff,
     "skeleton_": preprocessing.preprocess_skeleton_for_graph,
     "segmentation_cleanup_": preprocessing.clean_segmented_mask_for_skeletonisation,
 }

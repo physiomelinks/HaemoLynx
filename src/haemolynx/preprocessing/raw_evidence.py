@@ -782,7 +782,7 @@ def load_raw_channel(
     """One channel of a raw TIFF in canonical order. In RAM it keeps the
     file's own dtype (uint16: two bytes a voxel); with *use_memmap* it is the
     float32 disk-backed array ``load_single_channel_tiff_volume`` makes."""
-    from haemolynx.haemodynamics.automated import _read_tiff_channel, load_single_channel_tiff_volume
+    from haemolynx.haemodynamics.fwhm_diameter import _read_tiff_channel, load_single_channel_tiff_volume
     from haemolynx.io.axis_order import apply_axis_order
 
     if use_memmap:

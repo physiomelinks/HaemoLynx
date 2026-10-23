@@ -6710,7 +6710,7 @@ def _load_raw_reference_image_or_none(
     ``Downsample``), and with none, *voxel_size_xyz* -- the run's -- is what
     a ``raw_image_downsample`` of its own is read against.
     """
-    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
     from haemolynx.io import resolve_image_path_with_optional_zip, voxel_size_zyx_from_xyz
 
     raw_path = local_settings.get("raw_image_path")
@@ -12350,7 +12350,7 @@ def _post_processing_controls(
 
     def load_raw():
         """The run's raw image: ``(volume, None)``, or ``(None, why not)``."""
-        from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+        from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
         from haemolynx.io import resolve_image_path_with_optional_zip
 
         local = read_settings() or {}

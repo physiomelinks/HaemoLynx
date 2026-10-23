@@ -6,7 +6,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import fwhm_diameter
 from haemolynx.haemodynamics.fwhm_decoys import decoy_centrelines, fwhm_decoy_check
 from test_raw_section_diameter import VOXEL, _graph, _render  # noqa: E402
 
@@ -25,7 +25,7 @@ def _vessel_at_one_sample_only(seed=41):
 
 
 def _fwhm(graph, raw, mask, **kwargs):
-    return automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    return fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         graph, raw_tiff_path="unused", raw_volume=raw, vessel_mask=mask, voxel_size_zyx=VOXEL,
         sample_spacing_along_edge_um=7.0, transverse_profile_step_um=0.25,
         transverse_half_extent_um=6.0, **kwargs,
@@ -284,7 +284,7 @@ def test_fwhm_measures_a_vessel_running_along_z():
     raw, mask, lines = _render([(6.0, (1, 0.05, 0.05), (0, 0, 0))], seed=61)
     graph = _graph(lines, [6.0])
 
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
         graph, raw_tiff_path="unused", raw_volume=raw, vessel_mask=mask, voxel_size_zyx=VOXEL,
         sample_spacing_along_edge_um=2.0, transverse_profile_step_um=0.25,
         transverse_half_extent_um=6.0, min_accepted_samples=2,

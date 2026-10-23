@@ -3580,7 +3580,7 @@ def resolve_raw_image_stain(
     path = settings.get("raw_image_path")
     if not path or network is None or network.volume is None or network.volume.image is None:
         return raw_stain.PLASMA_COLUMN, None, None
-    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
     use_memmap, memmap_directory = settings["use_memmap_loading"], settings["memmap_directory"]
@@ -6549,7 +6549,7 @@ def tissue_measurement(
     if cached is not None and cached.key == key and cached.segmentation is segmentation:
         return cached.tissue
 
-    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
     logger.info(f"Measuring the tissue volume in {resolved} (from {path_name})...")

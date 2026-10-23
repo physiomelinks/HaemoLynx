@@ -1,6 +1,6 @@
 """Per-edge vessel diameter from the raw image's own cross-section: the step after FWHM.
 
-FWHM (:mod:`haemolynx.haemodynamics.automated`) fits one transverse line at a
+FWHM (:mod:`haemolynx.haemodynamics.fwhm_diameter`) fits one transverse line at a
 time, gated on the fit's R^2, its centring and the line's length. On a dim,
 photon-limited channel that fails where a single line cannot carry the
 vessel: wide vessels (on a real 3,191-vessel network the R^2 gate alone
@@ -12,7 +12,7 @@ This reads the whole cross-section instead. At each sample point the raw
 image is sampled in the plane normal to the centreline, averaged over a few
 microns of the vessel along its curve, and fitted as a uniformly filled
 elliptical lumen seen through the microscope's blur -- FWHM's own blurred-
-lumen model (:func:`automated._blurred_lumen_1d`) in two dimensions, pooling
+lumen model (:func:`fwhm_diameter._blurred_lumen_1d`) in two dimensions, pooling
 every photon in the section. The blur is anisotropic (a two-photon PSF is
 several times longer in z than across), and the fit knows it: the PSF is
 projected onto the plane, so a small vessel whose section contains z is not
@@ -62,7 +62,7 @@ import numpy as np
 from scipy.ndimage import binary_dilation, binary_fill_holes, gaussian_filter, label
 from scipy.optimize import least_squares
 
-from .automated import _aggregate_edge_diameter, _arc_length_parameterize, _interpolate_centerline
+from .fwhm_diameter import _aggregate_edge_diameter, _arc_length_parameterize, _interpolate_centerline
 from .edt_diameter import _centreline_tangents, edge_sample_targets
 from .sections import (
     averaged_section,

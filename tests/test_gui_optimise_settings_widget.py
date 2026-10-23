@@ -388,7 +388,7 @@ def test_optimise_settings_loads_the_raw_data_row_as_the_raw_image(panel, monkey
     import numpy as np
     from qtpy.QtWidgets import QApplication
 
-    import haemolynx.haemodynamics.automated as automated_mod
+    import haemolynx.haemodynamics.fwhm_diameter as automated_mod
     from haemolynx.optimisation.search import OptimisationResult
 
     mask = np.zeros((12, 12, 12), dtype=bool)
@@ -498,7 +498,7 @@ def test_optimise_settings_raw_image_shape_mismatch_degrades_instead_of_crashing
     import numpy as np
     from qtpy.QtWidgets import QApplication
 
-    import haemolynx.haemodynamics.automated as automated_mod
+    import haemolynx.haemodynamics.fwhm_diameter as automated_mod
 
     mask = np.zeros((12, 12, 12), dtype=bool)
     mask[3:9, 3:9, 3:9] = True
