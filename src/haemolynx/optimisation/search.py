@@ -851,6 +851,9 @@ class OptimisationResult:
     #: The starting settings against the chosen ones, on the same measures
     #: (see :mod:`.scorecard`); empty when they could not be measured.
     scorecard: tuple[ScoreRow, ...] = ()
+    #: What the report should say about how the search judged its trials,
+    #: one line each.
+    notes: tuple[str, ...] = ()
 
 
 def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:

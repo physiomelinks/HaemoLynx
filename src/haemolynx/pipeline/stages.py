@@ -77,12 +77,7 @@ from haemolynx.haemodynamics.pericyte_sweep import (
 )
 from haemolynx.haemodynamics.perturbations import plain as plain_values
 from haemolynx.haemodynamics.viscosity import run_diameter_basis, run_viscosity_law
-from haemolynx.haemodynamics.poiseuille import (
-    EDGE_DIAMETER_BASIS,
-    PoiseuilleModel,
-    positive_diameter_um,
-    set_edge_diameter_override,
-)
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel, start_measurement_afresh
 from haemolynx.io.crop import GRAPH_ATTRIBUTE as CROP_GRAPH_ATTRIBUTE
 from haemolynx.io.crop import CropBox, crop_box_from_settings, crop_volume_and_box, crop_volume_like_graph
 from haemolynx.io.downsample import GRAPH_ATTRIBUTE as DOWNSAMPLE_GRAPH_ATTRIBUTE
@@ -4246,38 +4241,6 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
     )
 
 
-#: What an edited vessel may have brought with it from the vessel it was cut
-#: from or merged with, and must be measured for afresh instead: every width
-#: and its flags, and the resistance built on them.
-_MEASUREMENT_PREFIXES = ("fwhm_", "edt_", "raw_section_", "endothelial_")
-_MEASUREMENT_ATTRIBUTES = (
-    "diameter_um",
-    "diameter_source",
-    EDGE_DIAMETER_BASIS,
-    "resistance",
-    "conductance",
-)
-
-
-def _start_measurement_afresh(data: dict) -> None:
-    """Clear what *data* was measured as, keeping its diameter as provisional.
-
-    The provisional diameter is what the edit gave it -- its neighbours' mean
-    for a vessel drawn by hand, the cut vessel's for each half -- held as an
-    override: a measurement replaces it, the branch-order table does not.
-    """
-    provisional = positive_diameter_um(data.get("diameter_um"))
-    stale = [
-        name
-        for name in data
-        if name in _MEASUREMENT_ATTRIBUTES or str(name).startswith(_MEASUREMENT_PREFIXES)
-    ]
-    for name in stale:
-        del data[name]
-    if provisional is not None:
-        set_edge_diameter_override(data, provisional)
-
-
 class _PostProcessSegmentation:
     """The run's segmentation as post-processing reads it: binarised once --
     a slab at a time and on disk under the low-RAM option -- and read
@@ -4724,8 +4687,10 @@ def post_process(
         # Even with no vessel to measure (only deletions): a table or class
         # median diameter follows the branch order just assigned.
         if settings["run_haemodynamics"]:
+            # What an edited vessel brought with it from the vessel it was
+            # cut from or merged with is measured afresh.
             for u, v, key in edited:
-                _start_measurement_afresh(G.edges[u, v, key])
+                start_measurement_afresh(G.edges[u, v, key])
             haemo_config = _haemodynamics_apply_config(
                 settings, schema, voxel_size_zyx=voxel_size_zyx,
                 stain=recorded_raw_image_stain(settings, G),

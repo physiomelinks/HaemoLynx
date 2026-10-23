@@ -265,6 +265,14 @@ def load_fwhm_raw_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     )
 
 
+def load_fwhm_raw_volume_like_graph(
+    config: HaemodynamicsApplyConfig, G: nx.MultiGraph
+) -> np.ndarray | None:
+    """The intensity volume FWHM fits, under *G*'s positions (see
+    :func:`_cropped_like_graph`), or ``None`` when no path is configured."""
+    return _cropped_like_graph(load_fwhm_raw_volume(config), G, config, "FWHM raw image")
+
+
 def _cropped_like_graph(
     volume: np.ndarray | None, G: nx.MultiGraph, config: HaemodynamicsApplyConfig, description: str
 ) -> np.ndarray | None:
@@ -373,6 +381,57 @@ def image_psf_from_settings(
     return tuple(float(v) for v in psf), {"source": "estimated", "psf_sigma_zyx": psf, **details}
 
 
+def measured_vessels(G: nx.MultiGraph) -> nx.MultiGraph:
+    """The edges of *G* a diameter measurement reads: every one but the
+    zero-resistance bridges, each the radius of a thick vessel rather than a
+    vessel (see :func:`assign_edge_diameters`). A view sharing *G*'s
+    attribute dicts, or *G* itself when it has no bridge."""
+    if not any(data.get(IS_ZERO_RESISTANCE) for _u, _v, data in G.edges(data=True)):
+        return G
+    return G.edge_subgraph(
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if not data.get(IS_ZERO_RESISTANCE)
+    )
+
+
+def fwhm_decoy_sample_size(config: HaemodynamicsApplyConfig) -> int:
+    """How many measured vessels the FWHM decoy check moves into tissue."""
+    return int(config.fwhm_setting("fwhm_decoy_check_sample_size", fwhm_decoys.DECOY_SAMPLE_SIZE))
+
+
+def measure_fwhm_diameters(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    *,
+    raw_volume: np.ndarray | None = None,
+    vessel_mask: np.ndarray | None = None,
+    psf_sigma_zyx: tuple[float, float, float] | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
+) -> dict[str, Any]:
+    """FWHM widths of *G*'s edges (or of *edges*, measured among all of *G*'s)
+    exactly as a run measures them: *config*'s FWHM settings, axis order and
+    low-RAM option, the voxel size *G* records, and *vessel_mask* (the
+    binarised segmentation) for the lines to stop at the vessel beside.
+    The call a run, its decoy check and post processing make, for the FWHM
+    settings optimiser's trials to measure through."""
+    return _measure_fwhm_diameters(
+        G, config, raw_volume=raw_volume, vessel_mask=vessel_mask,
+        psf_sigma_zyx=psf_sigma_zyx, **_subset(edges),
+    )
+
+
+def measure_edt_diameters(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    *,
+    mask_volume: np.ndarray,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
+) -> dict[str, Any]:
+    """The segmentation's own widths of *G*'s edges (or of *edges*) exactly as
+    a run measures them before FWHM, which reads them as its first guess."""
+    return _measure_edt_diameters(G, config, mask_volume=mask_volume, **_subset(edges))
+
+
 def _measure_fwhm_diameters(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
@@ -383,7 +442,7 @@ def _measure_fwhm_diameters(
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     path = _fwhm_raw_path(config)
-    if path is None:
+    if path is None and raw_volume is None:
         raise ValueError("use_fwhm_edge_diameters=True requires fwhm_raw_tiff_path.")
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
@@ -710,12 +769,8 @@ def assign_edge_diameters(
                 return None
             return [e for e in edge_list if not G.edges[tuple(e)].get(IS_ZERO_RESISTANCE)]
 
-        vessels = G.edge_subgraph(
-            (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
-            if not data.get(IS_ZERO_RESISTANCE)
-        )
         _vessels, summary, raw_volume = assign_edge_diameters(
-            vessels,
+            measured_vessels(G),
             config,
             mask_volume=mask_volume,
             edges=not_a_bridge(edges),
@@ -860,7 +915,7 @@ def _assign_edge_diameters_with_mask(
     demote_flagged = bool(config.fwhm_setting("fwhm_demote_flagged_edges", True))
     if config.use_fwhm_edge_diameters and measuring:
         if raw_volume is None:
-            raw_volume = _cropped_like_graph(load_fwhm_raw_volume(config), G, config, "FWHM raw image")
+            raw_volume = load_fwhm_raw_volume_like_graph(config, G)
         if remeasure:
             recorded = G.graph.get("fwhm_psf_sigma_zyx") if subset else None
             if recorded is not None:
@@ -897,11 +952,7 @@ def _assign_edge_diameters_with_mask(
                         float(v)
                         for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
                     ),
-                    sample_size=int(
-                        config.fwhm_setting(
-                            "fwhm_decoy_check_sample_size", fwhm_decoys.DECOY_SAMPLE_SIZE
-                        )
-                    ),
+                    sample_size=fwhm_decoy_sample_size(config),
                     guide_attribute=config.fwhm_setting(
                         "fwhm_diameter_guess_edge_attribute", "edt_diameter_um"
                     ),

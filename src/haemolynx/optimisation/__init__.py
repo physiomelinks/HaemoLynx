@@ -6,9 +6,9 @@ image-derived candidate values, scores each with :mod:`.metrics`, and returns
 the winning value for every setting on the Skeletonise and Graph tabs.
 :func:`.fwhm_search.optimise_fwhm_settings` is the same coordinate-descent
 pattern applied to the FWHM diameter-measurement settings on the Diameters
-tab: it runs the real
-:func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`
-on a representative sample of the graph's own edges, scored with
+tab: it measures a representative sample of the graph's own vessels
+through the run's own FWHM call,
+:func:`haemolynx.haemodynamics.apply.measure_fwhm_diameters`, scored with
 :mod:`.fwhm_metrics`, instead of a proxy metric.
 
 The skeleton/graph search depends only on ``numpy``, ``scipy``, ``networkx``,
@@ -16,11 +16,11 @@ and the sibling ``haemolynx.preprocessing`` / ``haemolynx.graph`` /
 ``haemolynx.statistics`` subpackages -- never on ``haemolynx.pipeline``,
 ``haemolynx.io``, or ``haemolynx.gui`` -- so it is testable with tiny
 synthetic arrays under plain pytest, no disk I/O and no GUI toolkit. The FWHM
-search adds one more dependency to that list, on
-``haemolynx.haemodynamics.fwhm_diameter`` specifically (the one real measurement
-function it calls) -- still never on ``haemolynx.pipeline``/``haemolynx.io``/
-``haemolynx.gui``, so the same "small synthetic array, no GUI, no disk I/O
-beyond a throwaway tiff" testability holds for it too.
+search adds one more dependency to that list, on ``haemolynx.haemodynamics``
+(``apply``: the run's own measurement calls and haemodynamics config) -- still
+never on ``haemolynx.pipeline`` or ``haemolynx.gui``, which hand it the run's
+config, so the same "small synthetic array, no GUI, no disk I/O beyond a
+throwaway tiff" testability holds for it too.
 """
 from .fwhm_metrics import (
     FwhmMeasurementQuality,
