@@ -181,18 +181,18 @@ class BatchRun:
 
         Read through the guarded Ilastik reader with the registry's TH channel index, so it
         gets the same class-axis, index and shape checks as the vessel read, and only the box
-        is read from disk. The exports are 8-bit, so a maximum above 1.5 is divided by 255.
+        is read from disk. The exports are 8-bit and are divided by 255 by their stored dtype,
+        not by what the box happens to hold; a float export is taken as stored, any other dtype
+        raises.
         """
-        block = read_ilastik_probabilities(
+        return read_ilastik_probabilities(
             self.specimen.th_probabilities_path,
             vessel_class_index=TH_CHANNEL.target_index,
             expected_shape_zyx=self.specimen.shape_zyx,
             check_calibration=False,
             crop_zyx=self.placement.bounds,
+            unit_scale=True,
         )
-        if block.max() > 1.5:
-            block = block / 255.0
-        return block
 
     def th_mask(self, threshold=None) -> np.ndarray:
         """Glomus voxels of the placed ROI: ``p > threshold``, default ``TH_THRESHOLD``."""

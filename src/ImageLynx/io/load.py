@@ -332,6 +332,7 @@ def read_ilastik_probabilities(
     expected_shape_zyx: tuple | None = None,
     check_calibration: bool = True,
     crop_zyx: tuple | None = None,
+    unit_scale: bool = False,
 ) -> np.ndarray:
     """Read one class channel from an Ilastik headless probability export.
 
@@ -353,7 +354,11 @@ def read_ilastik_probabilities(
     calibration check is a whole-volume test, so it has to be turned off for a crop.
 
     The value range is judged against the stored dtype: [0, 1] for a float export, [0, 255]
-    for an integer one (the TH exports are uint8). An integer export comes back unscaled.
+    for an integer one (the TH exports are uint8). An integer export comes back unscaled
+    unless ``unit_scale`` is set, which returns every channel on [0, 1]: ``uint8`` is divided
+    by 255 whatever the values in the box (a nearly empty crop is rescaled like a full one),
+    ``float`` is returned as stored, and any other dtype raises, since 255 is the maximum of
+    8-bit storage only.
 
     Returns the selected channel as float32 in (z, y, x).
     """
@@ -433,6 +438,11 @@ def read_ilastik_probabilities(
         for position, axis in enumerate(kept):
             selection[axis] = index if position == class_axis else next(boxes)
         integer_storage = stored.dtype.kind in "ui"
+        if unit_scale and stored.dtype != np.uint8 and stored.dtype.kind != "f":
+            raise ValueError(
+                f"{path.name}/{dataset} is stored as {stored.dtype}; unit_scale accepts uint8 "
+                f"(divided by 255) or float (a probability already) and nothing else."
+            )
         # The calibration check below is on the [0, 1] scale, and the vessel reads that use it
         # threshold the result directly, so an 8-bit vessel export is still refused here.
         if integer_storage and check_calibration:
@@ -449,6 +459,8 @@ def read_ilastik_probabilities(
             f"{path.name} class {index} spans [{lo:.4f}, {hi:.4f}], which is not a "
             f"probability on its stored scale [0, {upper:g}]."
         )
+    if unit_scale and integer_storage:
+        probabilities /= 255.0
 
     # Deliberately the whole-volume mean, not the mean of any sub-volume. A swapped class
     # is a property of the file, and the empty margin is what gives the test its headroom:

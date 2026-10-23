@@ -193,12 +193,48 @@ def test_the_th_channel_index_comes_from_the_registry(batch_run, monkeypatch):
 
 
 def test_a_float_th_export_is_not_rescaled(batch_run):
-    """The 255 rescale only fires above 1.5, so a [0, 1] export passes through as it is."""
+    """The rescale follows the stored dtype, so a float [0, 1] export passes through as it is."""
     glomus = batch_run.glomus.astype(np.float32) / 255.0
     with h5py.File(batch_run.th_path, "w") as handle:
         handle.create_dataset("exported_data", data=np.stack([glomus, 1 - glomus], axis=-1))
     got = open_batch_run(batch_run.specimen).th_probabilities()
     assert np.array_equal(got, glomus[4:8, 1:7, 3:8])
+
+
+def _th_export_of_dtype(batch_run, dtype, value):
+    """A TH export of ``dtype`` that is zero everywhere but ``value`` at (1, 1, 1) of the box."""
+    glomus = np.zeros(SHAPE, dtype=dtype)
+    glomus[5, 2, 4] = value
+    with h5py.File(batch_run.th_path, "w") as handle:
+        handle.create_dataset("exported_data", data=np.stack([glomus, glomus], axis=-1))
+
+
+@pytest.mark.parametrize("raw", [0, 1, 2, 255])
+def test_an_8_bit_th_export_is_divided_by_255_whatever_its_maximum(batch_run, raw):
+    """The crop's maximum is irrelevant: a nearly empty 8-bit box is rescaled like a full one."""
+    _th_export_of_dtype(batch_run, np.uint8, raw)
+    got = open_batch_run(batch_run.specimen).th_probabilities()
+    assert got.dtype == np.float32
+    assert got[1, 1, 1] == np.float32(raw) / np.float32(255)
+    assert got.max() == got[1, 1, 1]
+
+
+def test_a_raw_one_in_an_8_bit_th_export_does_not_pass_the_th_threshold(batch_run):
+    _th_export_of_dtype(batch_run, np.uint8, 1)
+    assert not open_batch_run(batch_run.specimen).th_mask().any()
+
+
+def test_a_float_th_export_on_the_0_to_255_scale_raises(batch_run):
+    _th_export_of_dtype(batch_run, np.float32, 200.0)
+    with pytest.raises(ValueError, match="not a probability"):
+        open_batch_run(batch_run.specimen).th_probabilities()
+
+
+@pytest.mark.parametrize("dtype", [np.uint16, np.int8, np.bool_])
+def test_a_th_export_of_an_unexpected_dtype_raises(batch_run, dtype):
+    _th_export_of_dtype(batch_run, dtype, 1)
+    with pytest.raises(ValueError, match=re.escape(str(np.dtype(dtype)))):
+        open_batch_run(batch_run.specimen).th_probabilities()
 
 
 def _th_export_with_one_value(batch_run, value):

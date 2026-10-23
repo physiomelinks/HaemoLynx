@@ -230,3 +230,22 @@ def test_an_8_bit_export_is_read_on_its_own_0_to_255_scale(tmp_path):
                               data=np.stack([glomus, 255 - glomus], axis=-1).astype(np.float32))
     with pytest.raises(ValueError, match="not a probability"):
         read_ilastik_probabilities(bad, vessel_class_index=0, check_calibration=False)
+
+
+def test_unit_scale_divides_8_bit_by_255_and_is_off_by_default(tmp_path):
+    """A box that only holds 0 and 1 is still divided: the dtype decides, not the values."""
+    h5py = pytest.importorskip("h5py")
+    from ImageLynx.io import read_ilastik_probabilities
+
+    glomus = np.zeros((4, 6, 6), dtype=np.uint8)
+    glomus[0, 0, 0] = 1
+    path = tmp_path / "TH_ilastik_Probabilities.h5"
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("exported_data", data=np.stack([glomus, glomus], axis=-1))
+
+    off = read_ilastik_probabilities(path, vessel_class_index=0, check_calibration=False)
+    assert off.max() == 1.0
+    on = read_ilastik_probabilities(path, vessel_class_index=0, check_calibration=False,
+                                    unit_scale=True)
+    assert on.dtype == np.float32
+    assert on.max() == np.float32(1) / np.float32(255)
