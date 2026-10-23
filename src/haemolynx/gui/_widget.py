@@ -188,6 +188,7 @@ from haemolynx.pipeline import (
     run_voxel_size_xyz,
     segment,
 )
+from haemolynx.pipeline import stages as pipeline_stages
 from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
 
 logger = logging.getLogger(__name__)
@@ -6996,6 +6997,52 @@ _FWHM_OPTIMISER_READS = (
 )
 
 
+def _optimise_fwhm_settings_for_run(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    *,
+    boundaries,
+    progress,
+    groups: "tuple[str, ...] | None",
+    vessel_mask: "np.ndarray | None",
+    sample_edge_count: "int | None",
+    max_passes: int,
+):
+    """`optimise_fwhm_settings` on *graph*, measuring as the run's Diameters
+    stage does: with the haemodynamics config the pipeline builds from
+    *settings*, and calibrating on the vessels its network handling keeps,
+    by *boundaries*' inlets and outlets (on every vessel without them)."""
+    starting_values = {
+        name: value
+        for name, value in settings.items()
+        if name.startswith("fwhm_") or name in _FWHM_OPTIMISER_READS
+    }
+    config = pipeline_stages._haemodynamics_apply_config(
+        settings,
+        schema,
+        voxel_size_zyx=voxel_size_zyx,
+        stain=pipeline_stages.recorded_raw_image_stain(settings, graph),
+    )
+    calibration_edges = (
+        None if boundaries is None
+        else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
+    )
+    return optimise_fwhm_settings(
+        graph,
+        voxel_size_zyx=voxel_size_zyx,
+        starting_values=starting_values,
+        progress=progress,
+        groups=groups,
+        vessel_mask=vessel_mask,
+        sample_edge_count=sample_edge_count,
+        max_passes=max_passes,
+        config=config,
+        calibration_edges=calibration_edges,
+    )
+
+
 def _run_fwhm_optimisation_in_background(
     graph: "nx.MultiGraph",
     voxel_size_zyx: tuple[float, float, float],
@@ -7012,6 +7059,7 @@ def _run_fwhm_optimisation_in_background(
     vessel_mask: "np.ndarray | None" = None,
     sample_edge_count: "int | None" = None,
     max_passes: int = 1,
+    boundaries=None,
     propose,
 ):
     """Run the FWHM settings optimiser off the GUI thread, reporting progress
@@ -7022,8 +7070,10 @@ def _run_fwhm_optimisation_in_background(
     rather than a mask reloaded from disk. Shares *run_state* with "Run
     pipeline" and "Optimise settings" purely for mutual exclusion and
     cooperative cancellation -- only one of the three may run at a time
-    against the same `rows`. *vessel_mask*, the run's segmented image, lets
-    every trial be checked against decoys and the mask's own widths. Like
+    against the same `rows`. *vessel_mask*, the run's segmented image, stops
+    each line at the vessel beside as a run's does and lets every trial be
+    checked against decoys and the mask's own widths; *boundaries* (the
+    Boundaries checkpoint) says which vessels the run calibrates on. Like
     `_run_optimisation_in_background`, it proposes rather than applies: see
     *propose* there.
     """
@@ -7034,26 +7084,19 @@ def _run_fwhm_optimisation_in_background(
     @thread_worker
     def run():
         local_settings = dict(settings)
-        starting_values = {
-            name: value
-            for name, value in local_settings.items()
-            if name.startswith("fwhm_") or name in _FWHM_OPTIMISER_READS
-        }
-        raw_path = local_settings["raw_image_path"]
-        result = optimise_fwhm_settings(
+        result = _optimise_fwhm_settings_for_run(
             graph,
-            raw_tiff_path=raw_path,
-            voxel_size_zyx=voxel_size_zyx,
-            starting_values=starting_values,
+            voxel_size_zyx,
+            local_settings,
+            schema,
+            boundaries=boundaries,
             progress=watched,
             groups=groups,
-            axis_order=local_settings["image_axis_order"],
-            raw_channel=local_settings.get("raw_image_channel"),
             vessel_mask=vessel_mask,
             sample_edge_count=sample_edge_count,
             max_passes=max_passes,
         )
-        return result, raw_path
+        return result, local_settings["raw_image_path"]
 
     def finished(payload) -> None:
         if not still_ours():
@@ -13872,6 +13915,7 @@ def settings_widget(napari_viewer=None):
             vessel_mask=getattr(getattr(skeletonised, "output", None), "image", None),
             sample_edge_count=_FWHM_SAMPLE_CHOICES.get(fwhm_sample_dropdown.value),
             max_passes=int(fwhm_passes_spinbox.value),
+            boundaries=checkpoints.get("assign_boundaries"),
             propose=fwhm_review.propose,
         )
 
