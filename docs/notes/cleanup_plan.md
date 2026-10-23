@@ -65,7 +65,7 @@ running tests between each.
 ### Phase 2 — Rename modules for clarity (mechanical, test-guarded)
 Rename + update all imports in `src/`, `examples/`, `tests/`, and the `__init__.py` re-exports.
 Keep the **public function names** the same so the API surface doesn’t move; only file/module names change.
-- [ ] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`.
+- [x] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`. (2026-10-23)
 - [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`.
 - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py`. It now has many more
       importers than when this item was written: in `src/`, `haemodynamics/__init__.py`, `apply.py`,

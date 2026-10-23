@@ -15,7 +15,7 @@ import pytest
 
 from haemolynx.graph.dead_ends import DEAD_END_KIND
 from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
-from haemolynx.io.automated_vessel_assignment import vessel_masks_are_global
+from haemolynx.io.vessel_masks import vessel_masks_are_global
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
 from haemolynx.pipeline.checks import check_synthetic_template
 from haemolynx.pipeline.naming import run_stem

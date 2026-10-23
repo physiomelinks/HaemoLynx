@@ -17,7 +17,7 @@ from .load_2d import (
 )
 from .raw_volume_cache import load_raw_volume_reusing_cache
 from .ilastik import run_ilastik_headless_segmentation
-from .automated_vessel_assignment import (
+from .vessel_masks import (
     as_global_vessel_mask,
     clear_vessel_mask_cache,
     global_vessel_mask_roles,

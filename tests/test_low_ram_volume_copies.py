@@ -810,7 +810,7 @@ def test_low_ram_vessel_mask_clean_ups_give_the_same_masks_on_disk(tmp_path, mon
 def test_low_ram_vessel_masks_are_read_and_remembered_on_disk(tmp_path, monkeypatch):
     import tifffile
 
-    from haemolynx.io import automated_vessel_assignment as ava
+    from haemolynx.io import vessel_masks as ava
 
     monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 3_000)
     art, ven = _vessel_masks(seed=2)

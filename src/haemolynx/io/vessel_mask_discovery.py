@@ -36,7 +36,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Mapping, NamedTuple
 
-from .automated_vessel_assignment import VESSEL_MASK_SETTINGS
+from .vessel_masks import VESSEL_MASK_SETTINGS
 
 #: The file types a vessel mask loads from (`load_large_vessel_masks`).
 MASK_SUFFIXES = (".tif", ".tiff", ".h5")

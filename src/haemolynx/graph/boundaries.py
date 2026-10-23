@@ -542,7 +542,7 @@ def inlets_outlets_from_vessel_masks(settings: Mapping[str, Any]) -> bool:
     inlet from an outlet. The one place this is decided: the Boundaries
     stage, the panel's greying and preflight all ask here.
     """
-    from haemolynx.io.automated_vessel_assignment import vessel_masks_are_global
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
 
     return (
         vessel_masks_in_use(settings, "large")
@@ -558,7 +558,7 @@ def assigns_large_vessel_branch_orders(settings: Mapping[str, Any]) -> bool:
     whenever one of those does not hold, so it is off then, whatever it holds.
     Off too with global vessel masks, which give no branch orders at all.
     """
-    from haemolynx.io.automated_vessel_assignment import vessel_masks_are_global
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
 
     return (
         bool(settings.get("assign_large_vessel_branch_orders"))

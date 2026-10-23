@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from haemolynx.io.automated_vessel_assignment import (
+from haemolynx.io.vessel_masks import (
     VESSEL_MASK_SETTINGS,
     load_and_validate_vessel_masks,
     vessel_mask_arguments,
@@ -220,7 +220,7 @@ def test_segment_hands_the_vessel_label_to_ilastik(tmp_path, monkeypatch):
 
 
 def test_the_mask_loader_hands_each_classifier_its_own_label(tmp_path, monkeypatch):
-    from haemolynx.io import automated_vessel_assignment as module
+    from haemolynx.io import vessel_masks as module
 
     shape = (3, 4, 5)
     seen = []

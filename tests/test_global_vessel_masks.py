@@ -229,7 +229,7 @@ def test_a_global_mask_is_loaded_once_and_handed_out_fresh(tmp_path, monkeypatch
     first, *_ = load_and_validate_vessel_masks(**arguments)
     first[:] = False
 
-    import haemolynx.io.automated_vessel_assignment as loader
+    import haemolynx.io.vessel_masks as loader
 
     monkeypatch.setattr(
         loader, "_load_mask_image", lambda *a, **k: pytest.fail("loaded the file again")
@@ -254,7 +254,7 @@ def test_a_global_mask_of_the_wrong_shape_is_refused(tmp_path):
 
 
 def test_ilastik_with_no_venule_classifier_segments_one_global_mask(tmp_path, monkeypatch):
-    import haemolynx.io.automated_vessel_assignment as loader
+    import haemolynx.io.vessel_masks as loader
 
     calls = []
 

@@ -1,4 +1,4 @@
-"""Tests for io/automated_vessel_assignment.py — vessel-mask loading and validation.
+"""Tests for io/vessel_masks.py — vessel-mask loading and validation.
 
 Despite the module name this is I/O: it resolves mask paths, optionally runs
 ilastik, loads the masks and checks they line up with the main image. The checks
@@ -30,7 +30,7 @@ from haemolynx.io import (
     load_large_vessel_masks,
     vessel_mask_arguments,
 )
-from haemolynx.io.automated_vessel_assignment import _assert_voxel_sizes_match_main_image
+from haemolynx.io.vessel_masks import _assert_voxel_sizes_match_main_image
 
 # Coarse z, fine x — the usual confocal case, and all three spacings differ.
 VOXEL_SIZE_XYZ = (0.4, 0.5, 2.0)
@@ -353,7 +353,7 @@ def test_loaded_masks_and_voxel_size_check_are_logged_for_every_role(
     _write_mask_tif(arteriole_path, shape)
     _write_mask_tif(venule_path, shape)
 
-    with caplog.at_level("INFO", logger="haemolynx.io.automated_vessel_assignment"):
+    with caplog.at_level("INFO", logger="haemolynx.io.vessel_masks"):
         load_and_validate_vessel_masks(
             mask_role=mask_role,
             enabled=True,
@@ -717,7 +717,7 @@ def test_an_unknown_mask_role_is_rejected() -> None:
 @pytest.mark.parametrize("reuse", [True, False])
 def test_vessel_mask_ilastik_runs_honour_the_reuse_setting(tmp_path, monkeypatch, reuse) -> None:
     """Both mask segmentations reuse a current output exactly as the main one does."""
-    from haemolynx.io import automated_vessel_assignment as module
+    from haemolynx.io import vessel_masks as module
 
     shape = (3, 4, 5)
     seen = []
@@ -761,7 +761,7 @@ def test_the_two_classifiers_run_on_one_raw_stack_write_two_outputs(tmp_path, mo
     """Regression: both outputs were `{stem}_segmented`, so the venule run
     overwrote the arteriole's and the masks loaded identical (or, reusing
     existing output, the venule run read the arteriole's back)."""
-    from haemolynx.io import automated_vessel_assignment as module
+    from haemolynx.io import vessel_masks as module
 
     shape = (3, 4, 5)
     outputs: dict[str, Path] = {}
@@ -847,7 +847,7 @@ def test_the_same_files_and_settings_are_loaded_once_per_process(tmp_path: Path,
     """A run reads its masks in skeletonise (the thick-vessel restriction)
     and again in build_network; the second read, and a repeated run, reuse
     the cleaned masks."""
-    from haemolynx.io import automated_vessel_assignment as module
+    from haemolynx.io import vessel_masks as module
     from haemolynx.io import clear_vessel_mask_cache
 
     clear_vessel_mask_cache()

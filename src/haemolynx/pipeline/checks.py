@@ -22,7 +22,7 @@ from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
 )
-from haemolynx.io.automated_vessel_assignment import (
+from haemolynx.io.vessel_masks import (
     global_vessel_mask_roles,
     vessel_masks_are_global,
 )
@@ -107,7 +107,7 @@ def ilastik_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str
     (``stages.ilastik_segments``), and each vessel-mask role's arteriole (or
     global) classifier, with its venule one when that is set, while ilastik
     makes that role's masks."""
-    from haemolynx.io.automated_vessel_assignment import VESSEL_MASK_SETTINGS
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
     from haemolynx.pipeline.stages import ilastik_segments
 
     pairs: list[tuple[str, str]] = []
@@ -757,7 +757,7 @@ def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
     import numpy as np
 
     from haemolynx.io import CANONICAL_AXIS_ORDER
-    from haemolynx.io.automated_vessel_assignment import (
+    from haemolynx.io.vessel_masks import (
         _VOXEL_SIZE_RELATIVE_TOLERANCE,
         _resolve_mask_voxel_size_xyz,
     )

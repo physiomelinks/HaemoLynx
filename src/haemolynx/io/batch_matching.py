@@ -42,7 +42,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Mapping, NamedTuple, Sequence
 
-from .automated_vessel_assignment import VESSEL_MASK_SETTINGS
+from .vessel_masks import VESSEL_MASK_SETTINGS
 from .vessel_mask_discovery import (
     MASK_SUFFIXES,
     SIZE_WORDS,

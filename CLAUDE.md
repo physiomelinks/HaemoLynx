@@ -20,7 +20,7 @@ haemolynx/
 │   │                       #   mask reduced by the same blocks and the raw image brought onto
 │   │                       #   that grid; the record kept on the graph), ilastik.py, voxel_validation.py, axis_order.py,
 │   │                       #   raw_volume_cache.py (reuse a memmapped raw volume across runs),
-│   │                       #   automated_vessel_assignment.py (mask loading/validation),
+│   │                       #   vessel_masks.py (mask loading/validation),
 │   │                       #   vessel_mask_discovery.py (the masks beside the input image,
 │   │                       #   found by file name), batch_matching.py (a batch run's
 │   │                       #   images matched to their raw images and masks by name)
@@ -516,12 +516,11 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **`io/axis_order.py`** — canonical `(z, y, x)` convention: `normalize_axis_order`, `apply_axis_order`
   (transposes an input volume to canonical order), `voxel_size_zyx_from_xyz` / `voxel_size_xyz_from_zyx`.
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
-- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`,
-  `load_and_validate_vessel_masks` (includes the ilastik path for large/small masks). *Despite the
-  name, this is I/O, not graph assignment.* A mask with no voxel spacing of its own (an ilastik
-  export) takes the main image's under the `auto` policy. The masks loaded last are cached per
-  role, packed one bit a voxel and keyed on the files and every cleanup setting (`_LOADED_MASKS`,
-  `clear_vessel_mask_cache`); each read gets a fresh array.
+- **`io/vessel_masks.py`** — mask **loading & validation**: `load_large_vessel_masks`,
+  `load_and_validate_vessel_masks` (includes the ilastik path for large/small masks). A mask with
+  no voxel spacing of its own (an ilastik export) takes the main image's under the `auto` policy.
+  The masks loaded last are cached per role, packed one bit a voxel and keyed on the files and
+  every cleanup setting (`_LOADED_MASKS`, `clear_vessel_mask_cache`); each read gets a fresh array.
   - **Global masks**: a role given its arteriole/global mask and no venule mask loads as one mask
     of every vessel of that size, `(mask, None, voxel size, None)`. `vessel_masks_are_global(settings)`
     is the one test. Once any role is global the run classes vessels by size alone: no inlets,
@@ -1033,7 +1032,7 @@ Rules for agents:
 - [ ] **Phase 2 renames** — file/module names only, public function names unchanged; `git mv`, one
       commit per rename, imports updated in `src/`, `examples/`, `tests/` and the `__init__.py`
       re-exports:
-  - [ ] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`
+  - [x] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`
   - [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`
   - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py` (many importers; some tests
         patch `haemodynamics.automated.<name>` by string, so grep the dotted path too)

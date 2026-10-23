@@ -354,7 +354,7 @@ def test_a_small_minority_is_swapped_before_opposite_attached_cleanup_deletes_it
 
 
 def test_the_run_log_names_each_swap(tmp_path: Path, caplog) -> None:
-    with caplog.at_level(logging.INFO, logger="haemolynx.io.automated_vessel_assignment"):
+    with caplog.at_level(logging.INFO, logger="haemolynx.io.vessel_masks"):
         _load(tmp_path, "large", swap_minority_components=True)
 
     assert "arteriole component of 1000 voxels -> venule" in caplog.text
@@ -375,7 +375,7 @@ def test_the_run_log_counts_rather_than_lists_a_crowd_of_swaps(
     venule &= ~arteriole
     arteriole_path, venule_path = _write_masks(tmp_path, arteriole, venule)
 
-    with caplog.at_level(logging.INFO, logger="haemolynx.io.automated_vessel_assignment"):
+    with caplog.at_level(logging.INFO, logger="haemolynx.io.vessel_masks"):
         loaded_arteriole, loaded_venule, _, _ = load_and_validate_vessel_masks(
             mask_role="small",
             enabled=True,

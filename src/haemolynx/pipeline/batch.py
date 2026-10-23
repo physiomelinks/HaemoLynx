@@ -24,7 +24,7 @@ from haemolynx.graph.boundaries import (
     network_is_synthetic,
     vessel_masks_in_use,
 )
-from haemolynx.io.automated_vessel_assignment import VESSEL_MASK_SETTINGS
+from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
 from haemolynx.io.batch_matching import BatchMatch
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from haemolynx.graph.boundaries import vessel_masks_in_use
-from haemolynx.io.automated_vessel_assignment import VESSEL_MASK_SETTINGS
+from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
 from haemolynx.io.vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
 
 #: The images a run's masks are looked for beside: its segmented image, then

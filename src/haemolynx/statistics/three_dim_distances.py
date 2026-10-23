@@ -23,7 +23,7 @@ from scipy.ndimage import binary_erosion, find_objects, generate_binary_structur
 from scipy.spatial import cKDTree
 
 from haemolynx.io import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
-from haemolynx.io.automated_vessel_assignment import (
+from haemolynx.io.vessel_masks import (
     _VOXEL_SIZE_RELATIVE_TOLERANCE,
     _resolve_mask_voxel_size_xyz,
 )
