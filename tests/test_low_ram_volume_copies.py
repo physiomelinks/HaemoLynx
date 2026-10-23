@@ -1322,10 +1322,10 @@ def test_low_ram_restriction_union_is_the_in_ram_one(tmp_path, monkeypatch):
         automated_vessel_assignment=True,
     )
     image = a | b | c
-    plain = stages._thick_vessel_restriction_mask(
+    plain = stages.thick_vessel_restriction_mask(
         image, dict(settings, use_memmap_loading=False, memmap_directory=None), (1.0, 1.0, 1.0)
     )
-    low = stages._thick_vessel_restriction_mask(
+    low = stages.thick_vessel_restriction_mask(
         image, dict(settings, use_memmap_loading=True, memmap_directory=str(tmp_path)), (1.0, 1.0, 1.0)
     )
     assert isinstance(low, np.memmap)
