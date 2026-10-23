@@ -200,8 +200,8 @@ class SkeletonisedVolume:
     #: loaded (``thick_vessel_region_cache``); None otherwise.
     thick_vessel_mask: np.ndarray | None = None
     #: The pre-cleanup, canonically-binarised mask, if at least one
-    #: segmentation_cleanup_* step ran; None otherwise (including when
-    #: every step is off, or a resume that skipped skeletonise entirely) --
+    #: segmentation_cleanup_* step ran (whether the skeleton was made or
+    #: loaded); None otherwise (including when every step is off) --
     #: same "None costs nothing extra" convention as thick_vessel_mask.
     raw_segmented_image: np.ndarray | None = None
     #: Where ``image`` was cut from the whole input image (``crop_on_import``);
@@ -1328,6 +1328,52 @@ def _skeletonize_loaded_mask(
     )
 
 
+def _mask_skeleton_is_made_from(
+    settings: dict, image: np.ndarray, voxel_size_xyz
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """``(image, raw_segmented_image)``: the segmented image as skeletonising
+    reads it, after the ``segmentation_cleanup_*`` steps that are on, and the
+    binarised image from before them (None when none ran, *image* then
+    returned as it is).
+
+    A run that makes its skeleton and one that loads it both go through
+    here, so graph building reads the same mask either way -- and the
+    thick-vessel region, cached under a digest of this mask, is found again.
+    """
+    cleanup_kwargs = prefixed_arguments(
+        settings, "segmentation_cleanup_",
+        parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
+    )
+    if not settings["segmentation_cleanup"] or not any(
+        cleanup_kwargs.get(flag) for flag in _SEGMENTATION_CLEANUP_STEPS
+    ):
+        return image, None
+    logger.info(
+        "Segmentation cleanup: fill_cavities=%s remove_whiskers=%s "
+        "split_narrow_necks=%s close_gaps=%s reconnect=%s smooth=%s "
+        "remove_small=%s",
+        cleanup_kwargs.get("fill_cavities"),
+        cleanup_kwargs.get("remove_whiskers"),
+        cleanup_kwargs.get("split_narrow_necks"),
+        cleanup_kwargs.get("close_gaps"),
+        cleanup_kwargs.get("reconnect_gaps"),
+        cleanup_kwargs.get("smooth_surfaces"),
+        cleanup_kwargs.get("remove_small_volumes"),
+    )
+    binary_image = _to_binary_volume_for_skeletonization(
+        image,
+        use_memmap=settings["use_memmap_loading"],
+        memmap_directory=settings["memmap_directory"],
+    )
+    return preprocessing.clean_segmented_mask_for_skeletonisation(
+        binary_image,
+        voxel_size_zyx=io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz)),
+        use_memmap=settings["use_memmap_loading"],
+        memmap_directory=settings["memmap_directory"],
+        **cleanup_kwargs,
+    )
+
+
 def skeletonise(settings: dict, inputs: SegmentedInputs):
     """Load the mask, resolve its voxel size, and skeletonise it."""
     if inputs.synthetic:
@@ -1344,7 +1390,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     if not settings["plot_dir"].exists():
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)
 
-    # Only a fresh skeletonise run can produce the cleanup's raw image; the
+    # A loaded skeleton's image is cleaned as a fresh run's is; the
     # thick-vessel region is kept beside the skeleton, so a loaded skeleton
     # gets it back when the mask and settings are the run's that found it.
     thick_vessel_mask: np.ndarray | None = None
@@ -1380,48 +1426,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 "centreline tree on fat vessels, Lee on the rest"
             )
 
-        cleanup_kwargs = prefixed_arguments(
-            settings, "segmentation_cleanup_",
-            parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
-        )
-        if settings["segmentation_cleanup"] and any(
-            cleanup_kwargs.get(flag)
-            for flag in (
-                "fill_cavities",
-                "remove_whiskers",
-                "split_narrow_necks",
-                "close_gaps",
-                "reconnect_gaps",
-                "smooth_surfaces",
-                "remove_small_volumes",
-            )
-        ):
-            logger.info(
-                "Segmentation cleanup: fill_cavities=%s remove_whiskers=%s "
-                "split_narrow_necks=%s close_gaps=%s reconnect=%s smooth=%s "
-                "remove_small=%s",
-                cleanup_kwargs.get("fill_cavities"),
-                cleanup_kwargs.get("remove_whiskers"),
-                cleanup_kwargs.get("split_narrow_necks"),
-                cleanup_kwargs.get("close_gaps"),
-                cleanup_kwargs.get("reconnect_gaps"),
-                cleanup_kwargs.get("smooth_surfaces"),
-                cleanup_kwargs.get("remove_small_volumes"),
-            )
-            binary_image = _to_binary_volume_for_skeletonization(
-                image,
-                use_memmap=settings["use_memmap_loading"],
-                memmap_directory=settings["memmap_directory"],
-            )
-            image, raw_segmented_image = preprocessing.clean_segmented_mask_for_skeletonisation(
-                binary_image,
-                voxel_size_zyx=io.voxel_size_zyx_from_xyz(
-                    tuple(float(v) for v in voxel_size)
-                ),
-                use_memmap=settings["use_memmap_loading"],
-                memmap_directory=settings["memmap_directory"],
-                **cleanup_kwargs,
-            )
+        image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
 
         # Binarised once and shared: skeletonisation and the reconnection
         # step's segmentation mask both need the same mask, and each call
@@ -1565,6 +1570,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             f"metadata_status={voxel_meta_status.get('status')}, "
             f"final={voxel_size}"
         )
+        image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
         if settings["use_thick_vessel_skeletonisation"]:
             thick_vessel_mask = _thick_vessel_region_if_cached(
                 settings, image, voxel_size, crop, region_cache, downsample
