@@ -83,19 +83,16 @@ def test_a_node_left_without_edges_raises():
 
 
 def test_load_network_reads_lengths_through_the_reader_and_refuses_a_blank_one(
-        tmp_path, monkeypatch):
+        make_batch_run, monkeypatch):
     """A blank length used to become NaN and the edge was quietly dropped from the solve."""
-    from types import SimpleNamespace
-    from ImageLynx.batch_outputs import EDGE_TABLE_NAME, BatchRun
-
     G, lengths = _inputs(_graph())
-    rows = ["u,v,key,length_um,assigned_diameter_um"]
-    rows += [f"{a},{b},{k},{'' if (a, b, k) == (0, 7, 1) else 40.0},6.0" for a, b, k in lengths]
-    (tmp_path / EDGE_TABLE_NAME).write_text("\n".join(rows) + "\n")
-    run = BatchRun(SimpleNamespace(specimen_id="TEST-A"), tmp_path, None, None)
-    monkeypatch.setattr(run, "graph", lambda: G)
-    monkeypatch.setattr(module, "open_batch_run", lambda specimen: run)
-    monkeypatch.setattr(module, "get_specimen", lambda specimen_id: None)
+    edges = list(lengths)
+    stand_in = make_batch_run("TEST-A", G=G, columns={
+        "length_um": {e: "" if e == (0, 7, 1) else "40.0" for e in edges},
+        "assigned_diameter_um": {e: "6.0" for e in edges}})
+    monkeypatch.setattr(module, "get_specimen",
+                        lambda specimen_id: stand_in.specimen if specimen_id == "TEST-A"
+                        else pytest.fail(f"asked for {specimen_id}"))
 
     with pytest.raises(ValueError, match=r"TEST-A.*empty or non-finite length_um.*\(0, 7, 1\)"):
         module.load_network("TEST-A")

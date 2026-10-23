@@ -3,7 +3,6 @@
 The driver-snapshot tool runs each driver with ``--out`` pointing into a snapshot folder. With
 no flag every driver must still write where it always did.
 """
-from types import SimpleNamespace
 
 import pytest
 
@@ -40,10 +39,10 @@ def test_figures_write_into_out_and_leave_the_batch_folder_alone(stub_figures, t
 
 
 @pytest.fixture
-def stub_vtk(tmp_path, monkeypatch, stub_h1_vtk_builders):
+def stub_vtk(tmp_path, monkeypatch, make_batch_run, stub_h1_vtk_builders):
     stub_h1_vtk_builders()
     monkeypatch.setattr(cb_h1_vtk, "OUTPUT", tmp_path / "paraview")
-    run = SimpleNamespace(edge_table=lambda: {})
+    run = make_batch_run("WKY-A").run
     monkeypatch.setattr(cb_h1_vtk, "open_batch_run", lambda specimen: run)
     return tmp_path / "paraview"
 

@@ -64,6 +64,8 @@ def test_analyse_takes_every_part_from_the_opened_run_and_passes_the_th_threshol
     """Batch-run reader ticket 04: --th-threshold is the TH mask's override, not a crop here."""
     asked = {}
 
+    # A spy, not a stand-in run: sentinel parts show analyse hands on exactly what the run gave,
+    # and it records the threshold th_mask was asked for (package AD).
     class _Run:
         def graph(self):
             return "graph"

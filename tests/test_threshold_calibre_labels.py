@@ -3,10 +3,11 @@
 It hard-coded 0.85 / 0.90 / 0.95 until the 2026-09-28 re-selection moved the freeze to 0.95.
 """
 
+import networkx as nx
 import pytest
 
 from ImageLynx import cb_settings
-from ImageLynx.batch_outputs import EDGE_TABLE_NAME, BatchRun
+from ImageLynx.batch_outputs import open_batch_run
 
 calibre = pytest.importorskip("cb_h2_threshold_calibre")
 
@@ -27,29 +28,33 @@ def test_the_frozen_run_is_the_default_batch_run_and_the_neighbours_are_sensitiv
     assert folders[calibre.UPPER] == calibre.SENSITIVITY_DIR / f"t{calibre.UPPER}" / "WKY-A"
 
 
-def _opened_run(tmp_path, diameters, asked):
-    """A real ``BatchRun`` over an edge table holding ``diameters``, recording what was opened."""
-    rows = ["u,v,key,edt_diameter_um"] + [f"{i},0,0,{d}" for i, d in enumerate(diameters)]
-    (tmp_path / EDGE_TABLE_NAME).write_text("\n".join(rows) + "\n")
+def _opened_run(make_batch_run, diameters, asked):
+    """A factory batch run whose edges (i, i + 1, 0) hold ``diameters``, opened through the real
+    reader whatever folder the driver names; ``asked`` records what it named."""
+    G = nx.MultiGraph()
+    for i in range(len(diameters)):
+        G.add_edge(i, i + 1, key=0)
+    stand_in = make_batch_run("SHR-B", G=G, columns={"edt_diameter_um": {
+        (i, i + 1, 0): d for i, d in enumerate(diameters)}})
 
     def fake_open(specimen, run_dir=None):
         asked.append((specimen.specimen_id, run_dir))
-        return BatchRun(specimen, tmp_path, None, None)
+        return open_batch_run(stand_in.specimen, stand_in.run_dir)
     return fake_open
 
 
 def test_the_median_calibre_comes_from_the_opened_run_and_drops_non_positive_edges(
-        tmp_path, monkeypatch):
+        make_batch_run, monkeypatch):
     asked = []
     monkeypatch.setattr(calibre, "open_batch_run",
-                        _opened_run(tmp_path, ["4.0", "8.0", "0", "6.0"], asked))
+                        _opened_run(make_batch_run, ["4.0", "8.0", "0", "6.0"], asked))
     assert calibre.median_calibre("SHR-B", "somewhere") == 6.0
     assert asked == [("SHR-B", "somewhere")]
 
 
-def test_a_blank_calibre_raises_rather_than_being_skipped(tmp_path, monkeypatch):
+def test_a_blank_calibre_raises_rather_than_being_skipped(make_batch_run, monkeypatch):
     monkeypatch.setattr(calibre, "open_batch_run",
-                        _opened_run(tmp_path, ["4.0", "", "8.0", "6.0"], []))
+                        _opened_run(make_batch_run, ["4.0", "", "8.0", "6.0"], []))
     with pytest.raises(ValueError,
-                       match=r"SHR-B.*empty or non-finite edt_diameter_um.*\(1, 0, 0\)"):
+                       match=r"SHR-B.*empty or non-finite edt_diameter_um.*\(1, 2, 0\)"):
         calibre.median_calibre("SHR-B", "somewhere")

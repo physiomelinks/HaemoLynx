@@ -10,13 +10,14 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import networkx as nx
 import numpy as np
 import pytest
 
 import cb_h1_batch
 import cb_h1_figures
 from ImageLynx import cb_settings
-from ImageLynx.batch_outputs import EDGE_TABLE_NAME, BatchRun
+from ImageLynx.batch_outputs import EDGE_TABLE_NAME, open_batch_run
 from ImageLynx.specimens import SPECIMENS
 from ImageLynx.statistics.cohort_split import assess_cohort_split
 
@@ -25,19 +26,6 @@ FIELDS = ["u", "v", "key", "length_um", "edt_diameter_um", "edt_junction_trim"]
 # A triangle 0-1-2 with a parallel 0-1 edge and a tail 2-3: E = 5, V = 4, so beta-1 = 2;
 # nodes 0, 1 and 2 have degree 3 on the MultiGraph, node 3 degree 1.
 BASE_EDGES = [(0, 1), (0, 1), (1, 2), (2, 0), (2, 3)]
-
-
-def _write(run_dir, specimen_id, edges, length_um=10.0, diameter_um=6.0, trimmed=1):
-    folder = run_dir / specimen_id
-    folder.mkdir(parents=True, exist_ok=True)
-    with (folder / EDGE_TABLE_NAME).open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
-        writer.writeheader()
-        for i, (u, v) in enumerate(edges):
-            writer.writerow({"u": u, "v": v, "key": i, "length_um": length_um,
-                             "edt_diameter_um": diameter_um,
-                             "edt_junction_trim": "trimmed" if i < trimmed
-                             else "untrimmed_too_short"})
 
 
 def _ring(n_extra):
@@ -49,25 +37,45 @@ def _ring(n_extra):
     return edges
 
 
-class _FakeReader:
-    """Stands in for ``open_batch_run``: a real ``BatchRun`` over the tiny CSVs these tests
-    write, without the placed-ROI and cache checks.
+class _Runs:
+    """Factory batch runs (``make_batch_run``) for the registry's specimens, under any root.
 
-    ``run_dir`` None is the batch (``batch_root / specimen``); otherwise the folder passed.
-    ``opened`` records every (specimen, folder) so a test can see what was opened how.
+    ``write`` makes one specimen's run from ``(u, v)`` edges, keyed in order. ``reader(root)``
+    stands in for ``open_batch_run``: the driver passes the registry's specimens, whose batch
+    folder is the real one on disk, so it opens each specimen's stand-in through the real
+    reader, at ``root / specimen`` when no ``run_dir`` is given. ``opened`` records every
+    (specimen, run_dir) the driver asked for.
     """
 
-    def __init__(self, batch_root):
-        self.batch_root = batch_root
+    def __init__(self, make_batch_run):
+        self.make_batch_run = make_batch_run
+        self.specimens = {}
         self.opened = []
 
-    def __call__(self, specimen, run_dir=None):
-        self.opened.append((specimen.specimen_id, run_dir))
-        folder = self.batch_root / specimen.specimen_id if run_dir is None else Path(run_dir)
-        path = folder / EDGE_TABLE_NAME
-        if not path.exists():
-            raise FileNotFoundError(f"{specimen.specimen_id} ({folder}): no {path.name}.")
-        return BatchRun(specimen, folder, None, None)
+    def write(self, root, specimen_id, edges, length_um=10.0, diameter_um=6.0, trimmed=1):
+        G = nx.MultiGraph()
+        for key, (u, v) in enumerate(edges):
+            G.add_edge(u, v, key=key)
+        keys = list(G.edges(keys=True))
+        columns = {"length_um": {e: length_um for e in keys},
+                   "edt_diameter_um": {e: diameter_um for e in keys},
+                   "edt_junction_trim": {e: "trimmed" if e[2] < trimmed
+                                         else "untrimmed_too_short" for e in keys}}
+        stand_in = self.make_batch_run(specimen_id, G=G, columns=columns,
+                                       run_dir=root / specimen_id)
+        self.specimens[specimen_id] = stand_in.specimen
+
+    def reader(self, root):
+        def open_run(specimen, run_dir=None):
+            self.opened.append((specimen.specimen_id, run_dir))
+            folder = root / specimen.specimen_id if run_dir is None else Path(run_dir)
+            return open_batch_run(self.specimens[specimen.specimen_id], folder)
+        return open_run
+
+
+@pytest.fixture
+def runs(make_batch_run):
+    return _Runs(make_batch_run)
 
 
 @pytest.fixture(autouse=True)
@@ -79,34 +87,34 @@ def _fresh_tables():
 
 
 @pytest.fixture
-def outputs(tmp_path, monkeypatch):
+def outputs(tmp_path, monkeypatch, runs):
     """Batch plus both sensitivity runs; SHR carries one more loop than WKY at every threshold."""
     results = tmp_path / "cb_h1_batch"
     sensitivity = tmp_path / "cb_h1_sensitivity"
     low, high = cb_h1_batch.sensitivity_thresholds(cb_settings.FROZEN_THRESHOLD)
-    runs = {low: sensitivity / f"t{low:.2f}", cb_settings.FROZEN_THRESHOLD: results,
-            high: sensitivity / f"t{high:.2f}"}
-    for step, run_dir in enumerate(runs.values()):
+    folders = {low: sensitivity / f"t{low:.2f}", cb_settings.FROZEN_THRESHOLD: results,
+               high: sensitivity / f"t{high:.2f}"}
+    for step, run_dir in enumerate(folders.values()):
         for i, specimen in enumerate(SPECIMENS):
             extra = i % 3 + (1 + step if specimen.group == "SHR" else 0)
             diameter = 7.0 + 0.1 * (i % 3) if specimen.group == "WKY" else 6.0 + 0.1 * (i % 3)
-            _write(run_dir, specimen.specimen_id, _ring(extra), diameter_um=diameter,
-                   trimmed=2 + i % 2)
+            runs.write(run_dir, specimen.specimen_id, _ring(extra), diameter_um=diameter,
+                       trimmed=2 + i % 2)
     (results / "threshold_selection.json").write_text(json.dumps({
         "frozen": cb_settings.FROZEN_THRESHOLD,
         "fragmentation_onset": {s.specimen_id: (high if i < 4 else None)
                                 for i, s in enumerate(SPECIMENS)}}))
-    reader = _FakeReader(results)
     monkeypatch.setattr(cb_h1_figures, "OUTPUT_DIR", results)
     monkeypatch.setattr(cb_h1_figures, "SENSITIVITY_DIR", sensitivity)
-    monkeypatch.setattr(cb_h1_figures, "open_batch_run", reader)
-    return SimpleNamespace(results=results, sensitivity=sensitivity, runs=runs, reader=reader)
+    monkeypatch.setattr(cb_h1_figures, "open_batch_run", runs.reader(results))
+    return SimpleNamespace(results=results, sensitivity=sensitivity, runs=folders, reader=runs)
 
 
-def test_network_measures_counts_loops_junctions_and_length_on_the_multigraph(tmp_path, monkeypatch):
-    monkeypatch.setattr(cb_h1_figures, "open_batch_run", _FakeReader(tmp_path))
+def test_network_measures_counts_loops_junctions_and_length_on_the_multigraph(
+        tmp_path, monkeypatch, runs):
+    monkeypatch.setattr(cb_h1_figures, "open_batch_run", runs.reader(tmp_path))
     for specimen in SPECIMENS:
-        _write(tmp_path, specimen.specimen_id, BASE_EDGES, length_um=10.0)
+        runs.write(tmp_path, specimen.specimen_id, BASE_EDGES, length_um=10.0)
     measures = cb_h1_figures.network_measures(tmp_path)
     roi = cb_h1_figures.ROI_MM3
     for values in measures.values():
@@ -115,10 +123,11 @@ def test_network_measures_counts_loops_junctions_and_length_on_the_multigraph(tm
         assert values["length"] == pytest.approx(50.0 / roi)
 
 
-def test_a_missing_table_raises_rather_than_dropping_the_specimen(tmp_path, monkeypatch):
-    monkeypatch.setattr(cb_h1_figures, "open_batch_run", _FakeReader(tmp_path))
-    for specimen in SPECIMENS[1:]:
-        _write(tmp_path, specimen.specimen_id, BASE_EDGES)
+def test_a_missing_table_raises_rather_than_dropping_the_specimen(tmp_path, monkeypatch, runs):
+    monkeypatch.setattr(cb_h1_figures, "open_batch_run", runs.reader(tmp_path))
+    for specimen in SPECIMENS:
+        runs.write(tmp_path, specimen.specimen_id, BASE_EDGES)
+    (tmp_path / SPECIMENS[0].specimen_id / EDGE_TABLE_NAME).unlink()
     with pytest.raises(FileNotFoundError, match=SPECIMENS[0].specimen_id):
         cb_h1_figures.network_measures(tmp_path)
 
