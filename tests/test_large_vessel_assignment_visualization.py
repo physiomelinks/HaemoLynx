@@ -638,7 +638,7 @@ def test_a_whole_image_mask_is_pooled_to_a_volume_a_page_can_hold():
 
 
 def test_the_small_vessel_labelling_view_pools_its_masks_too(tmp_path):
-    from haemolynx.graph.automated_vessel_assignment import (
+    from haemolynx.graph.terminal_node_assignment import (
         write_small_vessel_mask_boundary_labelling_3d_html,
     )
     from haemolynx.visualization.large_vessel_assignment import MAX_VOLUME_TRACE_POINTS

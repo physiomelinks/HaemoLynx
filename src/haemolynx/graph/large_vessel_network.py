@@ -4,7 +4,7 @@ A large arteriole or venule mask that is meant to stay in the network (see
 ``cut_at_large_vessel_volumes.py`` for the alternative, where it is cut away)
 still needs an inlet/outlet: the point where the real vessel was truncated by
 the imaging field of view, not an internal narrowing. Overlap-based terminal
-selection (``automated_vessel_assignment.py``) only ever looks at the graph's
+selection (``terminal_node_assignment.py``) only ever looks at the graph's
 *existing* degree-1 nodes and has no notion of "this is where the field of
 view cut the vessel off" versus "this is a genuine interior arm tip" -- both
 read identically as a degree-1 node overlapping the mask. This module answers

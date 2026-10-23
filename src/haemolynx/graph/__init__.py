@@ -174,7 +174,7 @@ from .boundary_node_fallback import (
     seed_nodes_without_mask_coverage,
     select_nodes_at_hop_distance,
 )
-from .automated_vessel_assignment import (
+from .terminal_node_assignment import (
     compute_overlapping_terminal_assignment_metrics,
     filter_io_nodes_to_terminal_degree1,
     infer_boundary_nodes_from_small_vessel_masks,

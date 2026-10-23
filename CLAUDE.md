@@ -54,7 +54,7 @@ haemolynx/
 │   │                       #   communities.py (vascular communities), edit.py (the panel's
 │   │                       #   graph edits), post_processing.py (4+ junctions: delete
 │   │                       #   vessels / split with a connector; Add vessel's click-by-click
-│   │                       #   A* traces through mask or raw data), automated_vessel_assignment.py
+│   │                       #   A* traces through mask or raw data), terminal_node_assignment.py
 │   │                       #   (terminal-node assignment), mask_recovery.py (segmented vessels
 │   │                       #   the graph lost, traced and joined back through the mask),
 │   │                       #   lumen_loops.py (loops lying inside one lumen: Lee rings, broken),
@@ -534,11 +534,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
     arteriole/venule synonyms). Ties are named, never guessed; a row holding a file the user
     chose keeps its role; loading a config or `.haemorun` never searches; nothing searches
     outside the panel.
-- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks:
+- **`graph/terminal_node_assignment.py`** — graph **terminal-node assignment** from masks:
   `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`.
-  *Same filename as the io module but a different concern* (see Cleanup plan). A terminal the
-  large-vessel cut made carries `CUT_FROM_LARGE_VESSEL` and every selector counts it as inside
-  that mask. The progressive dilation (`small_vessel_mask_dilation_microns`) labels each edge at
+  A terminal the large-vessel cut made carries `CUT_FROM_LARGE_VESSEL` and every selector counts
+  it as inside that mask. The progressive dilation (`small_vessel_mask_dilation_microns`) labels each edge at
   the first step that reaches it and re-judges unlabelled ones at every step.
 - **`graph/large_vessel_network.py`** — the `mask_stump` method: inlets/outlets where a large mask
   is cut by an image face. A component under `large_vessel_stump_min_component_fraction` of the
@@ -1033,7 +1032,7 @@ Rules for agents:
       commit per rename, imports updated in `src/`, `examples/`, `tests/` and the `__init__.py`
       re-exports:
   - [x] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`
-  - [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`
+  - [x] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`
   - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py` (many importers; some tests
         patch `haemodynamics.automated.<name>` by string, so grep the dotted path too)
 - [ ] **Phase 4** — a short "preset system" note in the README (schema declarations → preset dicts →

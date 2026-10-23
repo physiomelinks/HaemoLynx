@@ -66,7 +66,7 @@ running tests between each.
 Rename + update all imports in `src/`, `examples/`, `tests/`, and the `__init__.py` re-exports.
 Keep the **public function names** the same so the API surface doesn’t move; only file/module names change.
 - [x] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`. (2026-10-23)
-- [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`.
+- [x] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`. (2026-10-23)
 - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py`. It now has many more
       importers than when this item was written: in `src/`, `haemodynamics/__init__.py`, `apply.py`,
       `edt_diameter.py`, `statistics/three_dim_distances.py`, `preprocessing/segmentation_quality.py`,

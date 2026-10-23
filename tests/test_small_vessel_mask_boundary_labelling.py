@@ -214,7 +214,7 @@ def test_the_overlap_fraction_is_a_fraction_of_the_vessels_length():
     Here an L-shaped edge runs 20 um in-plane (inside the arteriole mask) then
     20 um along z (outside it): half its length is in the mask, but 41 of its
     51 vertices were."""
-    from haemolynx.graph.automated_vessel_assignment import (
+    from haemolynx.graph.terminal_node_assignment import (
         _edge_sample_points_from_data,
         _sample_overlap_fraction,
     )

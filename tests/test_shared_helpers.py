@@ -50,10 +50,10 @@ def test_edge_id_keeps_parallel_edges_distinct():
 
 
 def test_edge_id_has_one_definition_shared_by_both_consumers():
-    from haemolynx.graph import automated_vessel_assignment, branch_order
+    from haemolynx.graph import terminal_node_assignment, branch_order
 
     assert branch_order.edge_id is edge_id
-    assert automated_vessel_assignment._edge_id is edge_id
+    assert terminal_node_assignment._edge_id is edge_id
 
 
 # --- sort_nodes ------------------------------------------------------------
@@ -73,10 +73,10 @@ def test_sort_nodes_deduplicates():
 
 
 def test_sort_nodes_has_one_definition_shared_by_both_consumers():
-    from haemolynx.graph import automated_vessel_assignment, boundaries
+    from haemolynx.graph import terminal_node_assignment, boundaries
 
     assert boundaries.sort_nodes is sort_nodes
-    assert automated_vessel_assignment._sort_nodes is sort_nodes
+    assert terminal_node_assignment._sort_nodes is sort_nodes
 
 
 # --- load_binary_mask_and_voxel_size ---------------------------------------
@@ -197,7 +197,7 @@ def test_edge_point_accessors_differ_on_a_two_dimensional_polyline():
 
 def test_terminal_node_accessors_return_different_shapes():
     """Why ``_terminal_nodes_with_positions`` could not become one function."""
-    from haemolynx.graph.automated_vessel_assignment import (
+    from haemolynx.graph.terminal_node_assignment import (
         _terminal_nodes_with_position_pairs,
     )
     from haemolynx.graph.boundaries import _terminal_nodes_and_position_map

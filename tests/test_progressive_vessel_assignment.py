@@ -9,7 +9,7 @@ from haemolynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks_progressive_dilation,
     select_terminal_nodes_from_large_vessel_masks_progressive_dilation,
 )
-from haemolynx.graph.automated_vessel_assignment import _build_dilation_schedule_microns
+from haemolynx.graph.terminal_node_assignment import _build_dilation_schedule_microns
 from haemolynx.pipeline import default_schema
 
 
@@ -197,7 +197,7 @@ def test_progressive_assignment_matches_growing_the_masks_step_by_step(seed):
 def test_progressive_assignment_builds_no_whole_volume_mask_per_step(monkeypatch):
     """Regression: two volume-sized masks were built at every step, to read a
     handful of terminal voxels from."""
-    import haemolynx.graph.automated_vessel_assignment as module
+    import haemolynx.graph.terminal_node_assignment as module
 
     def refuse(*_args, **_kwargs):
         raise AssertionError("a whole-volume step mask was built")
@@ -240,7 +240,7 @@ def test_a_masks_long_axis_is_measured_in_microns():
     mask 98 um long in z (50 slices of 2 um) and 74.5 um across x (150 voxels
     of 0.5 um) read as running along x, and the cross-section that resolves an
     inlet/outlet overlap was taken from the wrong slice."""
-    from haemolynx.graph.automated_vessel_assignment import (
+    from haemolynx.graph.terminal_node_assignment import (
         _cross_section_midpoint_physical,
         _mask_principal_axis,
     )
@@ -331,7 +331,7 @@ def _reference_labels_growing_the_masks(G, art, ven, schedule, voxel_size, thres
     it (both masks: the one covering more, the arteriole on a tie)."""
     from scipy.ndimage import distance_transform_edt
 
-    from haemolynx.graph.automated_vessel_assignment import (
+    from haemolynx.graph.terminal_node_assignment import (
         _edge_sample_points_from_data,
         _sample_overlap_fraction,
     )
@@ -387,7 +387,7 @@ def test_small_vessel_progressive_labelling_builds_no_whole_volume_transform(mon
     """Regression: two float64 distance transforms of the whole volume were
     computed before the first step, whatever the schedule, and two volume
     sized masks built per step."""
-    import haemolynx.graph.automated_vessel_assignment as module
+    import haemolynx.graph.terminal_node_assignment as module
 
     def refuse(*_args, **_kwargs):
         raise AssertionError("a whole-volume transform or step mask was built")

@@ -7,7 +7,7 @@ import networkx as nx
 import numpy as np
 
 from ._helpers import sort_nodes as _sort_nodes
-from .automated_vessel_assignment import (
+from .terminal_node_assignment import (
     _build_dilation_schedule_microns,
     _cut_from,
     _dilated_mask_from_cached_distance,

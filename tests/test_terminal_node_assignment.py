@@ -1,4 +1,4 @@
-"""Tests for graph/automated_vessel_assignment.py — terminal-node assignment.
+"""Tests for graph/terminal_node_assignment.py — terminal-node assignment.
 
 These functions decide where blood enters and leaves the network, so a mistake
 does not crash anything: it produces a plausible model of the wrong vasculature.
@@ -16,7 +16,7 @@ from haemolynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,
     select_terminal_nodes_from_large_vessel_masks,
 )
-from haemolynx.graph.automated_vessel_assignment import (
+from haemolynx.graph.terminal_node_assignment import (
     compute_overlapping_terminal_assignment_metrics,
     resolve_overlapping_terminal_node_assignment,
 )
