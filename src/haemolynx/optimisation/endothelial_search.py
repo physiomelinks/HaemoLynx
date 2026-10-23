@@ -69,7 +69,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 import networkx as nx
 import numpy as np
 
-from haemolynx.haemodynamics import apply, endothelial, endothelial_planted, fwhm_decoys
+from haemolynx.haemodynamics import apply, endothelial, endothelial_planted, fwhm_decoys, sections
 from haemolynx.haemodynamics.apply import HaemodynamicsApplyConfig
 from haemolynx.haemodynamics.fwhm_diameter import CANONICAL_AXIS_ORDER
 from haemolynx.io.load import _to_binary_volume_for_skeletonization
@@ -117,11 +117,19 @@ _ROUNDING = 3
 
 #: "Auto" sample size: the trials' time budget (s), the trials a pass makes
 #: at most (blur 5 + wall 5 + gate 6, less the baselines they share), and
-#: the fewest vessels ever sampled -- as for FWHM's
-#: (``.fwhm_search.DEFAULT_AUTO_SAMPLE_TARGET_SECONDS``).
-DEFAULT_AUTO_SAMPLE_TARGET_SECONDS = 180.0
+#: the fewest vessels ever sampled. The budget is FWHM's three minutes
+#: (``.fwhm_search.DEFAULT_AUTO_SAMPLE_TARGET_SECONDS``) times three and a
+#: bit: a ring reading costs ~0.2 s a vessel (E14.5), and three minutes
+#: sampled 13 of 1,342 vessels there, 4-6 of them read -- so few that one
+#: vessel's spread moved the score more than any setting did.
+DEFAULT_AUTO_SAMPLE_TARGET_SECONDS = 600.0
 _TRIALS_PER_PASS = 14
 _MIN_SAMPLE_EDGE_COUNT = 10
+#: ...and the most: from :data:`~haemolynx.haemodynamics.sections.MIN_EDGES_FOR_WORKERS`
+#: vessels a reading starts worker processes, copying the image to disk and
+#: importing the package in each, on every trial -- a cost a probe of ten,
+#: read in this process, does not see.
+_MAX_AUTO_SAMPLE_EDGE_COUNT = sections.MIN_EDGES_FOR_WORKERS - 1
 #: Calibrations a pass fits at most: one free blur and three fixed ones.
 _CALIBRATIONS_PER_PASS = 4
 
@@ -381,6 +389,52 @@ def _with_ring_settings(
 # -- the search ---------------------------------------------------------------------
 
 
+class _Calibrations:
+    """The run's calibrations of the blur and wall on one image and set of
+    vessels, made as they are asked for and kept: the rings' fits by the
+    blur they were fitted with, each calibration made from them by ``(blur,
+    gate)`` -- a calibration depends on nothing else a trial changes."""
+
+    def __init__(
+        self,
+        template: nx.MultiGraph,
+        config: HaemodynamicsApplyConfig,
+        raw_volume: np.ndarray,
+        calibration_edges: Optional[list[tuple]],
+    ) -> None:
+        self.template = template
+        self.config = config
+        self.raw_volume = raw_volume
+        self.calibration_edges = calibration_edges
+        self._fits: dict[Any, endothelial.RingCalibrationFits] = {}
+        self._calibrations: dict[tuple, Any] = {}
+        #: Seconds the rings' fits took, by blur.
+        self.seconds: dict[Any, float] = {}
+
+    def __call__(self, settings: Mapping[str, Any]):
+        """The calibration for *settings* -- ``None`` when they set both the
+        blur and the wall -- as the run's ring fit would make it."""
+        config = _with_ring_settings(self.config, settings)
+        psf, wall = apply.endothelial_psf_and_wall(config)
+        if psf is not None and wall is not None:
+            return None
+        gate = settings.get("endothelial_min_ring_contrast")
+        key = (psf, None if gate is None else float(gate))
+        if key not in self._calibrations:
+            if psf not in self._fits:
+                start = time.perf_counter()
+                self._fits[psf] = apply.endothelial_calibration_fits(
+                    self.template, config, raw_volume=self.raw_volume,
+                    calibration_edges=self.calibration_edges,
+                )
+                self.seconds[psf] = time.perf_counter() - start
+            self._calibrations[key] = apply.calibrate_endothelial_rings(
+                self.template, config, raw_volume=self.raw_volume,
+                calibration_edges=self.calibration_edges, fits=self._fits[psf],
+            )
+        return self._calibrations[key]
+
+
 class _EndothelialSearch(_SweepBookkeeping):
     """Mutable state for one call to :func:`optimise_endothelial_settings`."""
 
@@ -394,6 +448,7 @@ class _EndothelialSearch(_SweepBookkeeping):
         sample_edges: Iterable[tuple],
         pool_size: Optional[int] = None,
         calibration_edges: Optional[list[tuple]] = None,
+        calibrations: Optional[_Calibrations] = None,
         progress: Optional[ProgressCallback] = None,
         enabled_groups: Optional[Iterable[str]] = None,
         vessel_mask: Optional[np.ndarray] = None,
@@ -410,13 +465,11 @@ class _EndothelialSearch(_SweepBookkeeping):
         #: What the run calibrates the blur and wall on (``None``: every vessel).
         self.calibration_edges = calibration_edges
         self.current: dict[str, Any] = dict(starting_values)
-        #: The rings' fits by the blur they were fitted with, and each
-        #: calibration made from them by ``(blur, gate)``: a calibration
-        #: depends on nothing else a trial changes.
-        self._fits: dict[Any, endothelial.RingCalibrationFits] = {}
-        self._calibrations: dict[tuple, Any] = {}
-        #: Seconds the rings' fits took, by blur, for the report.
-        self.calibration_seconds: dict[Any, float] = {}
+        #: Every calibration a trial asks for (the caller's, when it has
+        #: already made some).
+        self.calibrations = calibrations or _Calibrations(
+            template, config, raw_volume, calibration_edges
+        )
         super().__init__(
             progress=progress,
             enabled_groups=enabled_groups,
@@ -450,25 +503,7 @@ class _EndothelialSearch(_SweepBookkeeping):
     def _calibration(self, settings: Mapping[str, Any]):
         """The run's calibration of the blur and wall for *settings* --
         ``None`` when they set both -- its rings fitted once per blur."""
-        config = self._config(settings)
-        psf, wall = apply.endothelial_psf_and_wall(config)
-        if psf is not None and wall is not None:
-            return None
-        gate = settings.get("endothelial_min_ring_contrast")
-        key = (psf, None if gate is None else float(gate))
-        if key not in self._calibrations:
-            if psf not in self._fits:
-                start = time.perf_counter()
-                self._fits[psf] = apply.endothelial_calibration_fits(
-                    self.template, config, raw_volume=self.raw_volume,
-                    calibration_edges=self.calibration_edges,
-                )
-                self.calibration_seconds[psf] = time.perf_counter() - start
-            self._calibrations[key] = apply.calibrate_endothelial_rings(
-                self.template, config, raw_volume=self.raw_volume,
-                calibration_edges=self.calibration_edges, fits=self._fits[psf],
-            )
-        return self._calibrations[key]
+        return self.calibrations(settings)
 
     def _measure(
         self,
@@ -675,7 +710,8 @@ def _sample_count_for_budget(
     planted_sample_size: int,
     decoy_sample_size: int,
 ) -> tuple[int, Optional[float]]:
-    """How many of *pool*'s vessels to sample so the trials of a pass take
+    """How many of *pool*'s vessels to sample -- at most
+    :data:`_MAX_AUTO_SAMPLE_EDGE_COUNT` -- so the trials of a pass take
     about *target_seconds*, timing ``measure(edges)`` -- one ring fit of
     *edges* among every vessel -- on a probe of ten and on none; and the
     time the trials are estimated to take at that count (``None`` without a
@@ -705,8 +741,9 @@ def _sample_count_for_budget(
         )
         return 3.0 * fixed + per_vessel * measured
 
-    count = _MIN_SAMPLE_EDGE_COUNT
-    while count < total and _TRIALS_PER_PASS * trial_seconds(count + 1) <= target_seconds:
+    most = min(total, _MAX_AUTO_SAMPLE_EDGE_COUNT)
+    count = min(_MIN_SAMPLE_EDGE_COUNT, most)
+    while count < most and _TRIALS_PER_PASS * trial_seconds(count + 1) <= target_seconds:
         count += 1
     return count, _TRIALS_PER_PASS * trial_seconds(count)
 
@@ -769,15 +806,31 @@ def _prepared_search(
         )
     template = _fresh_template(vessels, config, vessel_mask)
     calibration = None if calibration_edges is None else pool
+    calibrations = _Calibrations(template, config, raw_volume, calibration)
 
     estimated_seconds: Optional[float] = None
     if sample_edge_count is None:
-        # Timed with the blur and wall the image gives fixed, so the probe
-        # times measuring, not calibrating (the calibrations are timed apart).
+        # Timed reading with the image's own blur and wall, calibrated once
+        # here (the search reuses it): a probe that calibrated would time the
+        # calibration, a minute on E14.5, as if every vessel cost it; one
+        # whose gate leaves the rings uncalibrated would read nothing.
+        probe_settings = dict(starting_values)
+        image_psf, image_wall, _details = _calibrated_values(calibrations({
+            **starting_values, **_UNSET_BLUR_AND_WALL,
+            "endothelial_min_ring_contrast": image_calibration_gate(
+                starting_values.get("endothelial_min_ring_contrast")
+            ),
+        }))
+        if image_psf is not None and image_wall is not None:
+            probe_settings.update(
+                endothelial_psf_sigma_xy_um=image_psf[1], endothelial_psf_sigma_z_um=image_psf[0],
+                endothelial_wall_thickness_um=image_wall,
+            )
+        probe_config = _with_ring_settings(config, probe_settings)
         sample_edge_count, estimated_seconds = _sample_count_for_budget(
             lambda edges: apply.measure_endothelial_diameters(
-                template.copy(), config, raw_volume=raw_volume, edges=edges,
-                calibration_edges=calibration,
+                template.copy(), probe_config, raw_volume=raw_volume, edges=edges,
+                calibration_edges=calibration, calibration=calibrations(probe_settings),
             ),
             vessels, pool, target_seconds=auto_sample_target_seconds,
             planted_sample_size=planted_sample_size if vessel_mask is not None else 0,
@@ -791,6 +844,7 @@ def _prepared_search(
         sample_edges=_representative_edges(vessels, sample_edge_count, pool=pool),
         pool_size=len(pool),
         calibration_edges=calibration,
+        calibrations=calibrations,
         progress=progress,
         enabled_groups=groups,
         vessel_mask=vessel_mask,
@@ -798,7 +852,7 @@ def _prepared_search(
         decoy_sample_size=decoy_sample_size,
     )
     if estimated_seconds is not None:
-        estimated_seconds += _CALIBRATIONS_PER_PASS * max(search.calibration_seconds.values(), default=0.0)
+        estimated_seconds += _CALIBRATIONS_PER_PASS * max(calibrations.seconds.values(), default=0.0)
     return search, estimated_seconds
 
 

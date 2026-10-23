@@ -853,7 +853,7 @@ ENDOTHELIAL_OPTIMISE_TOOLTIPS = {
     ),
     "sample": (
         "How many of the network's vessels each trial reads; Auto times one "
-        "reading and picks a count to keep the trials near three minutes, "
+        "reading and picks a count to keep the trials near ten minutes, "
         "with the blur and wall calibrations on top"
     ),
 }

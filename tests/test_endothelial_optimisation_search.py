@@ -433,6 +433,37 @@ def test_a_run_calibrating_on_no_vessel_is_refused_with_its_reason(raw_path):
         _optimise(_chain(), raw_path, calibration_edges=[])
 
 
+def test_auto_times_reading_with_the_images_blur_and_wall_calibrated_once(monkeypatch, raw_path):
+    """Regression: Auto's probe left the blur and wall to the measurement,
+    which calibrated them on the whole image at every timed call -- a minute
+    on E14.5, taken as every vessel's cost, so it sampled ten vessels and
+    estimated over an hour. The probe now reads with the image's own values,
+    calibrated once, and the search reuses that calibration."""
+    stand_in = _StandIn(monkeypatch, lambda settings, calibration, edge: [6.0, 6.0])
+    measure = apply.measure_endothelial_diameters
+    probes = []
+
+    def recording(G, config, **kwargs):
+        probes.append((_ring_settings(config), kwargs.get("calibration")))
+        return measure(G, config, **kwargs)
+
+    monkeypatch.setattr(apply, "measure_endothelial_diameters", recording)
+
+    search, estimate = s._prepared_search(
+        _chain(30), starting_values=dict(DEFAULTS), voxel_size_zyx=(1.0, 1.0, 1.0),
+        raw_tiff_path=raw_path,
+    )
+
+    assert estimate is not None and len(probes) == 3
+    for settings, calibration in probes:
+        assert (settings["endothelial_psf_sigma_xy_um"], settings["endothelial_psf_sigma_z_um"],
+                settings["endothelial_wall_thickness_um"]) == (0.6, 2.0, 1.0)
+        assert calibration is None  # both set: nothing left to calibrate
+    assert stand_in.fits == [(None, None)]
+    assert stand_in.calibrations == [(None, 4.0)]
+    assert search.image_psf == (2.0, 0.6, 0.6)
+
+
 def test_auto_picks_the_most_vessels_whose_trials_fit_the_budget(monkeypatch):
     """Each trial reads its sample, up to three planted vessels per sampled
     one and a decoy each, and pays a fixed cost three times: the count is
@@ -455,6 +486,13 @@ def test_auto_picks_the_most_vessels_whose_trials_fit_the_budget(monkeypatch):
 
     assert s._TRIALS_PER_PASS * trial(count) <= 60.0 < s._TRIALS_PER_PASS * trial(count + 1)
     assert estimate == pytest.approx(s._TRIALS_PER_PASS * trial(count))
+
+    def free(edges):
+        pass
+
+    assert s._sample_count_for_budget(
+        free, G, pool, target_seconds=60.0, planted_sample_size=60, decoy_sample_size=100
+    )[0] == s._MAX_AUTO_SAMPLE_EDGE_COUNT < len(pool)  # never so many a trial starts workers
 
     def failing(edges):
         raise RuntimeError("no")
