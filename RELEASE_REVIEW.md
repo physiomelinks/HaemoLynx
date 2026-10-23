@@ -35,7 +35,7 @@ confirming.
 | 13 | [Reproducibility](#13-reproducibility--repro) | **5** | no end-to-end identity test (6c) |
 | 14 | [Testing and CI](#14-testing-and-ci--tests) | **3** | no full-suite pass recorded since 2026-09-25 (4c) |
 | 15 | [Installation and packaging](#15-installation-and-packaging--package) | **4** | still 0.1.0 after 457 commits, no CHANGELOG (6a) |
-| 16 | [Code maintainability](#16-code-maintainability--code) | **3** | Cleanup plan Phase 2 unfinished (4c) |
+| 16 | [Code maintainability](#16-code-maintainability--code) | **3** | Cleanup plan not finished: the README presets note and the final full-suite check are left (4c) |
 
 **Headline: the lowest score is 3** (testing, maintainability).
 The mean is 4.4. The release gate needs every aspect at 7 or more, and the science aspects at 8.
@@ -440,7 +440,7 @@ haematocrit, constriction and perturbations.
 | code.2a | R | An installable package, split into subpackages by concern. | ✓ | 166 modules, 99,806 lines |
 | code.4a | A | The public API is guarded. | ✓ | `test_public_api.py` |
 | code.4b | A | At least 80% of functions have type hints. | ✓ | 91% of returns and 84% of parameters annotated; `py.typed` ships |
-| code.4c | R | The `CLAUDE.md` Cleanup plan is finished. | ✗ | Phase 2 has three renames left (`io/` and `graph/automated_vessel_assignment.py`, `haemodynamics/automated.py`). The README preset note is also open |
+| code.4c | R | The `CLAUDE.md` Cleanup plan is finished. | ✗ | Phase 2 done 2026-10-23: `io/vessel_masks.py`, `graph/terminal_node_assignment.py`, `haemodynamics/fwhm_diameter.py`, one commit each; the full non-GUI suite (slow and integration included) at `666cafe8` and at each rename gave 7,447 passed and the same 2 failures already there (`test_no_library_module_prints`, `test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset`); the GUI tests through the renamed modules (5 files, 235) passed at the last. Open: the README presets note (Phase 4) and the final check (the whole suite, GUI included, green) |
 | code.6a | A | A linter and formatter are configured and clean in CI. | ✗ | None configured |
 | code.6b | R | No module is over 3,000 lines *(proposed)* without a stated reason. | ✗ | `gui/_widget.py` 14,178, `pipeline/stages.py` 5,114. `pipeline/schema.py` (5,867) is declarations, which is a reason |
 | code.6c | R | The repository root holds only project files. Personal configs, debug scripts and plans are ignored or kept elsewhere. | ✗ | Five configs, `hang_debug.*`, `PLAN_*.md` and `mason_claude.md` at the root |
@@ -476,3 +476,4 @@ Add a row for every scoring, and for every change to a check or a target.
 | 2026-10-22 | after `1a9c2eb` | Claude | ilastik vessel label and provenance-checked reuse (`PLAN_dale_review_fixes.md` item 4): `input.6c` and `robust.6b` pass; `input.8a` evidence updated (a hand run on Windows), still fails. Inputs 5 -> 6, mean 4.1 -> 4.2. Robustness stays 4: `robust.6a` and `robust.6c` still fail. |
 | 2026-10-22 | after `1a9c2eb` | Claude | Statistics glossary and units (`statistics/glossary.py`, `docs/statistics_glossary.md`): every statistics row has a definition and a unit from one ASCII list, the units a run decides read from its own rows, and older CSVs read back to the same metrics and units in a batch. `stats.6a` and `stats.6b` pass, so level 6 is complete and one of level 8's two checks passes (8a): Statistics 5 -> 7, mean 4.2 -> 4.3. The headline stays 3. `stats.10a` now has a glossary for George, Rebecca or Mike to review. |
 | 2026-10-23 | after `f1b2289` | Claude | Output data dictionary and units (`pipeline/export_dictionary.py`, `docs/export_dictionary.md`): `export.6a` and `export.6b` pass. Every output file, column and VTK array documented with its unit and pinned to its writer; VTK units in field data, CSV units in column names (Harvey's choice, 2026-10-22), so perturbation, block, sweep, batch-summary and cell-distance column names changed. Level 6 is complete and level 8 has none of two, so Exports 5 → 6, mean 4.3 → 4.4. The headline stays 3 (testing, maintainability). |
+| 2026-10-23 | after `666cafe8` | Claude | Cleanup Phase 2: the three renames, one commit each, each followed by the full non-GUI suite (7,447 passed, the 2 failures already at `666cafe8`). `code.4c` evidence updated; it still fails on the README presets note and the final check. No score changes. |

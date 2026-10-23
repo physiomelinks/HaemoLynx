@@ -208,7 +208,7 @@ haemolynx/
 └── tests/data/             # Small TIFF/H5 fixtures for tests and tutorial input
 ```
 
-> **Note:** there is an active repo-cleanup effort — see **“Cleanup plan”** at the end of this file. Some filenames above are slated to change.
+> **Note:** there is an active repo-cleanup effort — see **“Cleanup plan”** at the end of this file.
 
 ---
 
@@ -1022,13 +1022,13 @@ Rules for agents:
 
 # Cleanup plan (TEMPORARY — delete this whole section once implemented)
 
-> **Status:** Phases 0, 1 and 3 are done, Phase 4 all but the README note, Phase 2 one rename of
-> four. The finished items and the findings behind the plan are in `docs/notes/cleanup_plan.md`.
+> **Status:** Phases 0, 1, 2 and 3 are done (Phase 2's renames on 2026-10-23), Phase 4 all but
+> the README note. The finished items and the findings behind the plan are in `docs/notes/cleanup_plan.md`.
 > Record a full-run pass count before starting Phase 2, and re-run the full `pytest` (including
 > `slow`/`integration`) after **every** rename; no phase may reduce the green count. Tick items as
 > they land, and **remove this entire section** when every one is done.
 
-- [ ] **Phase 2 renames** — file/module names only, public function names unchanged; `git mv`, one
+- [x] **Phase 2 renames** — file/module names only, public function names unchanged; `git mv`, one
       commit per rename, imports updated in `src/`, `examples/`, `tests/` and the `__init__.py`
       re-exports:
   - [x] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`
