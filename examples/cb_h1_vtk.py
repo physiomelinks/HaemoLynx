@@ -32,6 +32,7 @@ trusting the reasoning, and writes nothing.
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -146,6 +147,13 @@ def enrich_vessels(run, edges, report):
 
 
 def build_nodes(run, edges, report):
+    """The run's graph nodes, each carrying its degree counted from the edge table.
+
+    The match is strict both ways: a node with no edge in the table raises rather than being
+    written as degree 0 (neither branch point nor endpoint), and so does an edge-table node the
+    nodes file lacks. No current run has either kind (all 18 batch and sensitivity runs
+    checked, package AA).
+    """
     src = run.run_dir / NODES_VTP_NAME
     if not src.exists():
         return None
@@ -154,8 +162,23 @@ def build_nodes(run, edges, report):
     for (u, v, _k) in edges:
         degree[u] = degree.get(u, 0) + 1
         degree[v] = degree.get(v, 0) + 1
-    ids = mesh.point_data["node_id"].tolist()
-    values = np.array([degree.get(int(i), 0) for i in ids], dtype=np.int32)
+    ids = [int(i) for i in mesh.point_data["node_id"].tolist()]
+    repeated = sorted(i for i, n in Counter(ids).items() if n > 1)
+    if repeated:
+        raise ValueError(
+            f"{run.specimen.specimen_id} ({run.run_dir}): {src} lists node ids more than once: "
+            f"{repeated[:10]}.")
+    unmatched = [i for i in ids if i not in degree]
+    if unmatched:
+        raise ValueError(
+            f"{run.specimen.specimen_id} ({run.run_dir}): {len(unmatched)} of {len(ids)} nodes "
+            f"in {src} have no edge in the edge table: {unmatched[:10]}.")
+    absent = sorted(set(degree) - set(ids))
+    if absent:
+        raise ValueError(
+            f"{run.specimen.specimen_id} ({run.run_dir}): {len(absent)} node(s) of the edge "
+            f"table are not in {src}: {absent[:10]}.")
+    values = np.array([degree[i] for i in ids], dtype=np.int32)
     mesh.point_data["degree"] = values
     # Section 1.1 counts branch points: nodes joining three or more distinct segments.
     mesh.point_data["is_branch_node"] = (values >= 3).astype(np.int8)

@@ -15,7 +15,8 @@ import pytest
 pv = pytest.importorskip("pyvista")
 
 import cb_h1_vtk  # noqa: E402
-from ImageLynx.batch_outputs import EDGE_TABLE_NAME, VESSELS_VTP_NAME, BatchRun  # noqa: E402
+from ImageLynx.batch_outputs import (EDGE_TABLE_NAME, NODES_VTP_NAME,  # noqa: E402
+                                     VESSELS_VTP_NAME, BatchRun)
 
 EDGES = [(0, 1, 0), (1, 2, 0), (1, 2, 1)]
 
@@ -148,3 +149,51 @@ def test_a_tag_the_export_does_not_know_raises_rather_than_being_coded(tmp_path,
     edges[(1, 2, 0)] = {**_row("5.0"), column: cell}
     with pytest.raises(ValueError, match=rf"WKY-A.*{column}.*\(1, 2, 0\)"):
         _enrich(_run(tmp_path, EDGES, edges))
+
+
+# --- nodes (package AA) ----------------------------------------------------------------------
+# A node's degree is counted from the edge table. A node in the pipeline's nodes .vtp with no
+# edge used to be written as degree 0 (neither branch point nor endpoint); it now raises, and so
+# does an edge-table node the .vtp lacks. No current run has either (all 18 checked 2026-10-24).
+
+def _nodes_run(make_batch_run, node_ids):
+    """The factory's four-edge run (0-1, 1-2 twice, 2-3), with a nodes .vtp holding
+    ``node_ids``."""
+    stand_in = make_batch_run(specimen_id="WKY-A")
+    mesh = pv.PolyData(np.array([[float(i), 0.0, 0.0] for i in node_ids]))
+    mesh.point_data["node_id"] = np.array(node_ids)
+    mesh.save(stand_in.run_dir / NODES_VTP_NAME)
+    stand_in.specimen.group = "WKY"
+    stand_in.specimen.probabilities_path = stand_in.run_dir / "missing.h5"
+    return stand_in.run
+
+
+def _nodes(run):
+    report = {}
+    return cb_h1_vtk.build_nodes(run, run.edge_table(), report), report
+
+
+def test_every_node_gets_its_degree_from_the_edge_table(make_batch_run):
+    mesh, report = _nodes(_nodes_run(make_batch_run, [0, 1, 2, 3]))
+    assert mesh.point_data["degree"].tolist() == [1, 3, 3, 1]   # the parallel 1-2 pair counts
+    assert mesh.point_data["is_branch_node"].tolist() == [0, 1, 1, 0]
+    assert mesh.point_data["is_endpoint"].tolist() == [1, 0, 0, 1]
+    assert report == {"nodes": 4, "branch_nodes": 2}
+
+
+def test_a_node_with_no_edge_raises_rather_than_getting_degree_zero(make_batch_run):
+    run = _nodes_run(make_batch_run, [0, 1, 2, 3, 9])
+    with pytest.raises(ValueError, match=r"WKY-A.*1 of 5 nodes.*no edge.*\[9\]"):
+        _nodes(run)
+
+
+def test_an_edge_table_node_missing_from_the_nodes_vtp_raises(make_batch_run):
+    run = _nodes_run(make_batch_run, [0, 1, 2])
+    with pytest.raises(ValueError, match=r"WKY-A.*1 node.*not in.*\[3\]"):
+        _nodes(run)
+
+
+def test_a_node_listed_twice_in_the_nodes_vtp_raises(make_batch_run):
+    run = _nodes_run(make_batch_run, [0, 1, 2, 3, 2])
+    with pytest.raises(ValueError, match=r"WKY-A.*more than once.*\[2\]"):
+        _nodes(run)
