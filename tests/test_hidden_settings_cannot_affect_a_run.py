@@ -415,7 +415,7 @@ NEEDS_EXTERNAL_INFRASTRUCTURE = frozenset(
 #: depends on: use_large_vessel_masks, use_small_vessel_masks_for_
 #: boundary_assignment), which is what its section=_VESSEL_MASKS -> "4.
 #: Boundaries" claim gives it -- but it is actually read inside
-#: skeletonise() (see pipeline/stages.py's _thick_vessel_restriction_mask),
+#: skeletonise() (see pipeline/stages.py's thick_vessel_restriction_mask),
 #: not assign_boundaries. Probing assign_boundaries here would trivially
 #: "pass" without exercising the real code path -- assign_boundaries never
 #: reads this setting regardless of its value. Covered directly, and more

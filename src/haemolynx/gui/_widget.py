@@ -188,6 +188,7 @@ from haemolynx.pipeline import (
     run_voxel_size_xyz,
     segment,
 )
+from haemolynx.pipeline import stages as pipeline_stages
 from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
 
 logger = logging.getLogger(__name__)
@@ -6766,6 +6767,22 @@ def _load_raw_reference_image_or_none(
         return None, f"{type(error).__name__}: {error}"
 
 
+def _thick_restriction_or_none(
+    local_settings: dict[str, Any], binary_mask: "np.ndarray", volume
+) -> "tuple[np.ndarray | None, str | None]":
+    """``(restriction, None)``: the vessel masks a run confines its
+    thick-vessel region to (``pipeline.stages.thick_vessel_restriction_mask``,
+    ``None`` while ``skeleton_thick_vessel_restrict_to_mask`` is off), on
+    *volume*'s grid -- or ``(None, reason)`` when they cannot be read, so the
+    search still runs, unconfined, and says so."""
+    try:
+        return pipeline_stages.thick_vessel_restriction_mask(
+            binary_mask, local_settings, volume.voxel_size_xyz, volume.crop, volume.downsample
+        ), None
+    except Exception as error:  # noqa: BLE001 - degrade, never fail the caller
+        return None, f"{type(error).__name__}: {error}"
+
+
 def _cancellable_progress_bridge(run_state: "RunState", bars: "OptimiseProgressBars"):
     """The cancel-flag/progress-bridge plumbing every "Optimise ..."
     background run needs, shared by `_run_optimisation_in_background` and
@@ -6876,16 +6893,24 @@ def _run_optimisation_in_background(
 
     @thread_worker
     def run():
+        from dataclasses import replace
+
         local_settings = dict(settings)
         inputs = segment(local_settings)
-        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
-            local_settings, inputs.input_format
-        )
-        voxel_size_xyz, _source = run_voxel_size_xyz(
-            local_settings, metadata_voxel_size, voxel_meta_status
-        )
-        raw_mask = _to_binary_volume_for_skeletonization(image)
-        starting_values = {name: local_settings[name] for name in OPTIMISE_SETTING_NAMES}
+        # What a run's skeletonise reads: the image on the run's grid, and the
+        # box and reduction it came through, which the vessel masks the run
+        # confines its thick-vessel region to come through too.
+        volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+        voxel_size_xyz = volume.voxel_size_xyz
+        raw_mask = _to_binary_volume_for_skeletonization(volume.image)
+        # The run's whole settings: the search changes only the ones it
+        # tunes and builds every trial with the rest as a run would. Voxel
+        # counts go in on the run's grid, as a run counts them there.
+        starting_values = {
+            **local_settings,
+            **pipeline_stages.skeleton_voxel_settings_on_grid(local_settings, volume.downsample),
+        }
+        restriction, restriction_error = _thick_restriction_or_none(local_settings, raw_mask, volume)
 
         # Optional: the Input tab's raw image, which "Check segmented image"
         # reads too -- when present, guards the
@@ -6897,7 +6922,7 @@ def _run_optimisation_in_background(
         raw_image, raw_image_error = _load_raw_reference_image_or_none(
             local_settings,
             expected_shape=raw_mask.shape,
-            downsample=(voxel_meta_status or {}).get("downsample"),
+            downsample=volume.downsample,
             voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
         )
         raw_image_stain = "plasma_column"
@@ -6920,8 +6945,17 @@ def _run_optimisation_in_background(
             raw_image=raw_image,
             raw_image_stain=raw_image_stain,
             max_passes=max_passes,
+            thick_restriction_mask=restriction,
         )
-        return result, local_settings["input_path"], raw_image_error
+        # Voxel counts back from the run's grid to the image as read, as the
+        # rows hold them.
+        result = replace(result, settings={
+            **result.settings,
+            **pipeline_stages.skeleton_voxel_settings_from_grid(
+                result.settings, local_settings, volume.downsample
+            ),
+        })
+        return result, local_settings["input_path"], raw_image_error, restriction_error
 
     def finished(payload) -> None:
         if not still_ours():
@@ -6931,7 +6965,7 @@ def _run_optimisation_in_background(
         if cancel_flag["cancelled"]:
             report.value = FINISHED_FIRST
             return
-        result, input_path, raw_image_error = payload
+        result, input_path, raw_image_error, restriction_error = payload
 
         def apply_result() -> None:
             for name, value in result.settings.items():
@@ -6972,7 +7006,11 @@ def _run_optimisation_in_background(
         raw_note = (
             f" Raw-image cross-check skipped: {raw_image_error}" if raw_image_error else ""
         )
-        report.value = propose(result, apply_result) + wrote_note + raw_note
+        restriction_note = (
+            f" Thick-vessel trials ran unconfined, the vessel masks unread: {restriction_error}"
+            if restriction_error else ""
+        )
+        report.value = propose(result, apply_result) + wrote_note + raw_note + restriction_note
 
     def failed(error: Exception) -> None:
         if not still_ours():
@@ -7014,6 +7052,52 @@ _FWHM_OPTIMISER_READS = (
 )
 
 
+def _optimise_fwhm_settings_for_run(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    *,
+    boundaries,
+    progress,
+    groups: "tuple[str, ...] | None",
+    vessel_mask: "np.ndarray | None",
+    sample_edge_count: "int | None",
+    max_passes: int,
+):
+    """`optimise_fwhm_settings` on *graph*, measuring as the run's Diameters
+    stage does: with the haemodynamics config the pipeline builds from
+    *settings*, and calibrating on the vessels its network handling keeps,
+    by *boundaries*' inlets and outlets (on every vessel without them)."""
+    starting_values = {
+        name: value
+        for name, value in settings.items()
+        if name.startswith("fwhm_") or name in _FWHM_OPTIMISER_READS
+    }
+    config = pipeline_stages._haemodynamics_apply_config(
+        settings,
+        schema,
+        voxel_size_zyx=voxel_size_zyx,
+        stain=pipeline_stages.recorded_raw_image_stain(settings, graph),
+    )
+    calibration_edges = (
+        None if boundaries is None
+        else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
+    )
+    return optimise_fwhm_settings(
+        graph,
+        voxel_size_zyx=voxel_size_zyx,
+        starting_values=starting_values,
+        progress=progress,
+        groups=groups,
+        vessel_mask=vessel_mask,
+        sample_edge_count=sample_edge_count,
+        max_passes=max_passes,
+        config=config,
+        calibration_edges=calibration_edges,
+    )
+
+
 def _run_fwhm_optimisation_in_background(
     graph: "nx.MultiGraph",
     voxel_size_zyx: tuple[float, float, float],
@@ -7030,6 +7114,7 @@ def _run_fwhm_optimisation_in_background(
     vessel_mask: "np.ndarray | None" = None,
     sample_edge_count: "int | None" = None,
     max_passes: int = 1,
+    boundaries=None,
     propose,
 ):
     """Run the FWHM settings optimiser off the GUI thread, reporting progress
@@ -7040,8 +7125,10 @@ def _run_fwhm_optimisation_in_background(
     rather than a mask reloaded from disk. Shares *run_state* with "Run
     pipeline" and "Optimise settings" purely for mutual exclusion and
     cooperative cancellation -- only one of the three may run at a time
-    against the same `rows`. *vessel_mask*, the run's segmented image, lets
-    every trial be checked against decoys and the mask's own widths. Like
+    against the same `rows`. *vessel_mask*, the run's segmented image, stops
+    each line at the vessel beside as a run's does and lets every trial be
+    checked against decoys and the mask's own widths; *boundaries* (the
+    Boundaries checkpoint) says which vessels the run calibrates on. Like
     `_run_optimisation_in_background`, it proposes rather than applies: see
     *propose* there.
     """
@@ -7052,26 +7139,19 @@ def _run_fwhm_optimisation_in_background(
     @thread_worker
     def run():
         local_settings = dict(settings)
-        starting_values = {
-            name: value
-            for name, value in local_settings.items()
-            if name.startswith("fwhm_") or name in _FWHM_OPTIMISER_READS
-        }
-        raw_path = local_settings["raw_image_path"]
-        result = optimise_fwhm_settings(
+        result = _optimise_fwhm_settings_for_run(
             graph,
-            raw_tiff_path=raw_path,
-            voxel_size_zyx=voxel_size_zyx,
-            starting_values=starting_values,
+            voxel_size_zyx,
+            local_settings,
+            schema,
+            boundaries=boundaries,
             progress=watched,
             groups=groups,
-            axis_order=local_settings["image_axis_order"],
-            raw_channel=local_settings.get("raw_image_channel"),
             vessel_mask=vessel_mask,
             sample_edge_count=sample_edge_count,
             max_passes=max_passes,
         )
-        return result, raw_path
+        return result, local_settings["raw_image_path"]
 
     def finished(payload) -> None:
         if not still_ours():
@@ -13919,6 +13999,7 @@ def settings_widget(napari_viewer=None):
             vessel_mask=getattr(getattr(skeletonised, "output", None), "image", None),
             sample_edge_count=_FWHM_SAMPLE_CHOICES.get(fwhm_sample_dropdown.value),
             max_passes=int(fwhm_passes_spinbox.value),
+            boundaries=checkpoints.get("assign_boundaries"),
             propose=fwhm_review.propose,
         )
 

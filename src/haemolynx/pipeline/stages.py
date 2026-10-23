@@ -77,12 +77,7 @@ from haemolynx.haemodynamics.pericyte_sweep import (
 )
 from haemolynx.haemodynamics.perturbations import plain as plain_values
 from haemolynx.haemodynamics.viscosity import run_diameter_basis, run_viscosity_law
-from haemolynx.haemodynamics.poiseuille import (
-    EDGE_DIAMETER_BASIS,
-    PoiseuilleModel,
-    positive_diameter_um,
-    set_edge_diameter_override,
-)
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel, start_measurement_afresh
 from haemolynx.io.crop import GRAPH_ATTRIBUTE as CROP_GRAPH_ATTRIBUTE
 from haemolynx.io.crop import CropBox, crop_box_from_settings, crop_volume_and_box, crop_volume_like_graph
 from haemolynx.io.downsample import GRAPH_ATTRIBUTE as DOWNSAMPLE_GRAPH_ATTRIBUTE
@@ -200,8 +195,8 @@ class SkeletonisedVolume:
     #: loaded (``thick_vessel_region_cache``); None otherwise.
     thick_vessel_mask: np.ndarray | None = None
     #: The pre-cleanup, canonically-binarised mask, if at least one
-    #: segmentation_cleanup_* step ran; None otherwise (including when
-    #: every step is off, or a resume that skipped skeletonise entirely) --
+    #: segmentation_cleanup_* step ran (whether the skeleton was made or
+    #: loaded); None otherwise (including when every step is off) --
     #: same "None costs nothing extra" convention as thick_vessel_mask.
     raw_segmented_image: np.ndarray | None = None
     #: Where ``image`` was cut from the whole input image (``crop_on_import``);
@@ -804,6 +799,45 @@ def run_voxel_size_xyz(
     )
 
 
+@dataclass(frozen=True)
+class RunGridVolume:
+    """The segmented image as :func:`skeletonise` reads it before it
+    skeletonises: cut to the ``crop_on_import`` box and reduced by
+    ``segmented_image_downsample``, with the voxel size of the grid that
+    leaves, and the box and the reduction themselves, which whatever is read
+    beside the image (the vessel masks, the raw image) is put through too."""
+
+    image: np.ndarray
+    #: ``(x, y, z)`` microns of the run's grid, resolved as ``skeletonise`` resolves it.
+    voxel_size_xyz: tuple[float, float, float]
+    voxel_size_source: str
+    crop: CropBox | None
+    downsample: Downsample | None
+
+
+def load_volume_on_run_grid(settings: dict, input_format: str) -> RunGridVolume:
+    """What :func:`skeletonise` reads, without skeletonising it: for the
+    settings optimiser, whose trials must start from the run's mask and grid
+    and confine the thick-vessel region as the run does
+    (:func:`thick_vessel_restriction_mask` needs the box and the reduction)."""
+    image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
+        settings, input_format
+    )
+    voxel_size, source = resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size,
+        metadata_status=voxel_meta_status,
+        voxel_size_override_xyz=settings["voxel_size_override_xyz"],
+        voxel_size_policy=settings["voxel_size_policy"],
+    )
+    return RunGridVolume(
+        image=image,
+        voxel_size_xyz=_run_voxel_size_on_grid(voxel_size, downsample),
+        voxel_size_source=source,
+        crop=crop,
+        downsample=downsample,
+    )
+
+
 #: The binarisation rule last decided on a whole segmented image, keyed on
 #: the file's identity and the volume as read: deciding it reads every voxel
 #: (a minute or two on a 17 G-voxel stack), and a run may load the image
@@ -998,6 +1032,32 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     return scaled
 
 
+def skeleton_voxel_settings_from_grid(
+    chosen: Mapping[str, Any], settings: Mapping[str, Any], downsample: Downsample | None
+) -> dict:
+    """:func:`skeleton_voxel_settings_on_grid` the other way: the
+    :data:`SKELETON_VOXEL_SETTINGS` in *chosen*, counted on *downsample*'s
+    grid, as the image as read counts them. One a run on that grid would
+    have used for its setting in *settings* comes back as set; another is
+    multiplied back up by the finest axis's reduction. For the settings
+    optimiser, which searches on the run's grid. Empty without a reduction."""
+    if downsample is None or downsample.is_identity:
+        return {}
+    finest = int(np.argmin(downsample.source_voxel_size_zyx))
+    factor = int(downsample.axis_factors_zyx[finest])
+    on_grid = skeleton_voxel_settings_on_grid(settings, downsample)
+    restored = {}
+    for name in SKELETON_VOXEL_SETTINGS:
+        value = chosen.get(name)
+        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if name in on_grid and value == on_grid[name]:
+            restored[name] = settings[name]
+        else:
+            restored[name] = int(round(value * factor))
+    return restored
+
+
 def _run_voxel_size_on_grid(voxel_size_xyz, downsample: Downsample | None):
     """A resolved ``(x, y, z)`` voxel size of the image as read, on the grid
     the run is on: scaled by *downsample* when there is one."""
@@ -1018,7 +1078,7 @@ def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[
     }
 
 
-def _thick_vessel_restriction_mask(
+def thick_vessel_restriction_mask(
     binary_image: np.ndarray,
     settings: dict,
     voxel_size_xyz,
@@ -1046,6 +1106,9 @@ def _thick_vessel_restriction_mask(
     *crop* is the ``crop_on_import`` box *binary_image* was cut to, which the
     masks are cut to as well, and *downsample* how it was reduced after that
     (``segmented_image_downsample``), which they are too.
+
+    Public for the settings optimiser, whose thick-vessel trials are confined
+    to the same voxels (see :func:`load_volume_on_run_grid`).
     """
     choice = str(settings["skeleton_thick_vessel_restrict_to_mask"]).strip().lower()
     if choice == "off":
@@ -1141,7 +1204,7 @@ def _thick_region_arguments(
         "voxel_size_zyx": io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz)),
         "fill_mask_holes": bool(settings["skeleton_fill_mask_holes_before_thickness"]),
         "wall_absorption_um": settings["skeleton_thick_vessel_wall_absorption_um"],
-        "restrict_thick_to_mask": _thick_vessel_restriction_mask(
+        "restrict_thick_to_mask": thick_vessel_restriction_mask(
             binary, settings, voxel_size_xyz, crop, downsample
         ),
         "use_memmap": settings["use_memmap_loading"],
@@ -1328,6 +1391,52 @@ def _skeletonize_loaded_mask(
     )
 
 
+def _mask_skeleton_is_made_from(
+    settings: dict, image: np.ndarray, voxel_size_xyz
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """``(image, raw_segmented_image)``: the segmented image as skeletonising
+    reads it, after the ``segmentation_cleanup_*`` steps that are on, and the
+    binarised image from before them (None when none ran, *image* then
+    returned as it is).
+
+    A run that makes its skeleton and one that loads it both go through
+    here, so graph building reads the same mask either way -- and the
+    thick-vessel region, cached under a digest of this mask, is found again.
+    """
+    cleanup_kwargs = prefixed_arguments(
+        settings, "segmentation_cleanup_",
+        parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
+    )
+    if not settings["segmentation_cleanup"] or not any(
+        cleanup_kwargs.get(flag) for flag in _SEGMENTATION_CLEANUP_STEPS
+    ):
+        return image, None
+    logger.info(
+        "Segmentation cleanup: fill_cavities=%s remove_whiskers=%s "
+        "split_narrow_necks=%s close_gaps=%s reconnect=%s smooth=%s "
+        "remove_small=%s",
+        cleanup_kwargs.get("fill_cavities"),
+        cleanup_kwargs.get("remove_whiskers"),
+        cleanup_kwargs.get("split_narrow_necks"),
+        cleanup_kwargs.get("close_gaps"),
+        cleanup_kwargs.get("reconnect_gaps"),
+        cleanup_kwargs.get("smooth_surfaces"),
+        cleanup_kwargs.get("remove_small_volumes"),
+    )
+    binary_image = _to_binary_volume_for_skeletonization(
+        image,
+        use_memmap=settings["use_memmap_loading"],
+        memmap_directory=settings["memmap_directory"],
+    )
+    return preprocessing.clean_segmented_mask_for_skeletonisation(
+        binary_image,
+        voxel_size_zyx=io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz)),
+        use_memmap=settings["use_memmap_loading"],
+        memmap_directory=settings["memmap_directory"],
+        **cleanup_kwargs,
+    )
+
+
 def skeletonise(settings: dict, inputs: SegmentedInputs):
     """Load the mask, resolve its voxel size, and skeletonise it."""
     if inputs.synthetic:
@@ -1344,7 +1453,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     if not settings["plot_dir"].exists():
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)
 
-    # Only a fresh skeletonise run can produce the cleanup's raw image; the
+    # A loaded skeleton's image is cleaned as a fresh run's is; the
     # thick-vessel region is kept beside the skeleton, so a loaded skeleton
     # gets it back when the mask and settings are the run's that found it.
     thick_vessel_mask: np.ndarray | None = None
@@ -1380,48 +1489,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 "centreline tree on fat vessels, Lee on the rest"
             )
 
-        cleanup_kwargs = prefixed_arguments(
-            settings, "segmentation_cleanup_",
-            parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
-        )
-        if settings["segmentation_cleanup"] and any(
-            cleanup_kwargs.get(flag)
-            for flag in (
-                "fill_cavities",
-                "remove_whiskers",
-                "split_narrow_necks",
-                "close_gaps",
-                "reconnect_gaps",
-                "smooth_surfaces",
-                "remove_small_volumes",
-            )
-        ):
-            logger.info(
-                "Segmentation cleanup: fill_cavities=%s remove_whiskers=%s "
-                "split_narrow_necks=%s close_gaps=%s reconnect=%s smooth=%s "
-                "remove_small=%s",
-                cleanup_kwargs.get("fill_cavities"),
-                cleanup_kwargs.get("remove_whiskers"),
-                cleanup_kwargs.get("split_narrow_necks"),
-                cleanup_kwargs.get("close_gaps"),
-                cleanup_kwargs.get("reconnect_gaps"),
-                cleanup_kwargs.get("smooth_surfaces"),
-                cleanup_kwargs.get("remove_small_volumes"),
-            )
-            binary_image = _to_binary_volume_for_skeletonization(
-                image,
-                use_memmap=settings["use_memmap_loading"],
-                memmap_directory=settings["memmap_directory"],
-            )
-            image, raw_segmented_image = preprocessing.clean_segmented_mask_for_skeletonisation(
-                binary_image,
-                voxel_size_zyx=io.voxel_size_zyx_from_xyz(
-                    tuple(float(v) for v in voxel_size)
-                ),
-                use_memmap=settings["use_memmap_loading"],
-                memmap_directory=settings["memmap_directory"],
-                **cleanup_kwargs,
-            )
+        image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
 
         # Binarised once and shared: skeletonisation and the reconnection
         # step's segmentation mask both need the same mask, and each call
@@ -1565,6 +1633,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             f"metadata_status={voxel_meta_status.get('status')}, "
             f"final={voxel_size}"
         )
+        image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
         if settings["use_thick_vessel_skeletonisation"]:
             thick_vessel_mask = _thick_vessel_region_if_cached(
                 settings, image, voxel_size, crop, region_cache, downsample
@@ -4240,38 +4309,6 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
     )
 
 
-#: What an edited vessel may have brought with it from the vessel it was cut
-#: from or merged with, and must be measured for afresh instead: every width
-#: and its flags, and the resistance built on them.
-_MEASUREMENT_PREFIXES = ("fwhm_", "edt_", "raw_section_", "endothelial_")
-_MEASUREMENT_ATTRIBUTES = (
-    "diameter_um",
-    "diameter_source",
-    EDGE_DIAMETER_BASIS,
-    "resistance",
-    "conductance",
-)
-
-
-def _start_measurement_afresh(data: dict) -> None:
-    """Clear what *data* was measured as, keeping its diameter as provisional.
-
-    The provisional diameter is what the edit gave it -- its neighbours' mean
-    for a vessel drawn by hand, the cut vessel's for each half -- held as an
-    override: a measurement replaces it, the branch-order table does not.
-    """
-    provisional = positive_diameter_um(data.get("diameter_um"))
-    stale = [
-        name
-        for name in data
-        if name in _MEASUREMENT_ATTRIBUTES or str(name).startswith(_MEASUREMENT_PREFIXES)
-    ]
-    for name in stale:
-        del data[name]
-    if provisional is not None:
-        set_edge_diameter_override(data, provisional)
-
-
 class _PostProcessSegmentation:
     """The run's segmentation as post-processing reads it: binarised once --
     a slab at a time and on disk under the low-RAM option -- and read
@@ -4718,8 +4755,10 @@ def post_process(
         # Even with no vessel to measure (only deletions): a table or class
         # median diameter follows the branch order just assigned.
         if settings["run_haemodynamics"]:
+            # What an edited vessel brought with it from the vessel it was
+            # cut from or merged with is measured afresh.
             for u, v, key in edited:
-                _start_measurement_afresh(G.edges[u, v, key])
+                start_measurement_afresh(G.edges[u, v, key])
             haemo_config = _haemodynamics_apply_config(
                 settings, schema, voxel_size_zyx=voxel_size_zyx,
                 stain=recorded_raw_image_stain(settings, G),
