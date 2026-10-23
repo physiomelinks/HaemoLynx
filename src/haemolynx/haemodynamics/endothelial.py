@@ -74,10 +74,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ENDOTHELIAL_MIN_RING_CONTRAST",
+    "RingCalibrationFits",
     "RingFit",
     "calibrate_from_rings",
     "fit_ring_section",
     "measure_edge_diameters_from_endothelium",
+    "ring_calibration_fits",
 ]
 
 #: The weakest wall a reading is accepted for: the fitted wall's brightness
@@ -147,6 +149,13 @@ class RingFit:
     other_axis_z: float
     #: The lumen's centre in the section's own axes (a, b), um from the centreline.
     centre_ab_um: tuple[float, float] = (0.0, 0.0)
+    #: The fitted brightness of the background, and of the lumen and the wall
+    #: above it, before the blur: the model is ``background + lumen *
+    #: (unit lumen) + wall * (unit ring)``, each unit image seen through the
+    #: blur (:func:`~haemolynx.haemodynamics.sections.ring_images`).
+    background_level: float = float("nan")
+    lumen_level: float = float("nan")
+    wall_level: float = float("nan")
 
 
 def _ring_radius(smooth, valid, offsets, rr, step, guide_um):
@@ -339,6 +348,9 @@ def fit_ring_section(
         sigma_other_um=sigma_b,
         other_axis_z=abs(float(b[0])),
         centre_ab_um=(float(p[3]), float(p[4])),
+        background_level=float(p[0]),
+        lumen_level=float(p[1]),
+        wall_level=float(p[2]),
     ), "ok"
 
 
@@ -370,6 +382,66 @@ def _guide_diameter(data: dict, guide_attribute: str | None, fallback_um: float)
     return float(fallback_um)
 
 
+@dataclass(frozen=True)
+class RingCalibrationFits:
+    """The sections a calibration reads and each one's ring, fitted with its
+    wall free, and its blur too unless *psf_sigma_zyx* was given: all of
+    :func:`calibrate_from_rings`' fitting, which its contrast gate then only
+    picks among. Made once, it serves a calibration at any gate."""
+
+    #: The blur the rings were fitted with; ``None``: fitted free.
+    psf_sigma_zyx: tuple[float, float, float] | None
+    sections_tried: int
+    edges_tried: int
+    #: Each vessel's sections, ``(fit, reason)`` as :func:`fit_ring_section`
+    #: returns them, one tuple per vessel.
+    readings: tuple[tuple[tuple[RingFit | None, str], ...], ...]
+
+
+def ring_calibration_fits(
+    G: Any,
+    volume: np.ndarray,
+    voxel_size_zyx,
+    *,
+    psf_sigma_zyx=None,
+    guide_attribute: str | None = "edt_diameter_um",
+    average_um: float = DEFAULT_AVERAGE_ALONG_VESSEL_UM,
+    seed: int = 0,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    workers: int = 1,
+    memmap_directory=None,
+) -> RingCalibrationFits:
+    """The rings :func:`calibrate_from_rings` reads, fitted (see
+    :class:`RingCalibrationFits`); the arguments are its own."""
+    sites = calibration_sites(
+        G, guide_um=lambda data: _guide_diameter(data, guide_attribute, 0.0),
+        min_guide_um=PSF_CALIBRATION_MIN_GUIDE_UM, average_um=average_um,
+        max_sections=PSF_CALIBRATION_MAX_SECTIONS, seed=seed, edges=edges,
+    )
+    psf = None if psf_sigma_zyx is None else tuple(float(v) for v in psf_sigma_zyx)
+    payloads = [
+        {
+            "poly": np.asarray(G.edges[edge]["voxels"], dtype=float),
+            "targets": targets,
+            "guide": _guide_diameter(G.edges[edge], guide_attribute, 0.0),
+            "spacing": tuple(float(v) for v in voxel_size_zyx),
+            "psf": psf,
+            "average": float(average_um),
+        }
+        for edge, targets in sites
+    ]
+    readings = run_edge_tasks(
+        _calibration_rings, payloads, volume=volume, workers=workers,
+        memmap_directory=memmap_directory,
+    )
+    return RingCalibrationFits(
+        psf_sigma_zyx=psf,
+        sections_tried=int(sum(len(targets) for _edge, targets in sites)),
+        edges_tried=len(sites),
+        readings=tuple(tuple(edge_readings) for edge_readings in readings),
+    )
+
+
 def calibrate_from_rings(
     G: Any,
     volume: np.ndarray,
@@ -383,6 +455,7 @@ def calibrate_from_rings(
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
     workers: int = 1,
     memmap_directory=None,
+    fits: RingCalibrationFits | None = None,
 ) -> tuple[tuple[float, float, float] | None, float | None, dict[str, Any]]:
     """``(psf_sigma_zyx, wall_um, details)`` from the image's wide vessels'
     rings; ``(None, None, details)`` when too few show them, or they do not
@@ -408,30 +481,27 @@ def calibrate_from_rings(
     ``(None, None, details)``. *seed* otherwise only picks which vessels when
     there are more sections than the cap. *workers* processes fit the
     sections; the answer is the same however many.
+
+    *fits*, :func:`ring_calibration_fits` made beforehand with these same
+    arguments, stands in for fitting the sections again: the contrast gate
+    is all that is left (how the settings optimiser calibrates each of its
+    trials' gates on one set of fits).
     """
-    sites = calibration_sites(
-        G, guide_um=lambda data: _guide_diameter(data, guide_attribute, 0.0),
-        min_guide_um=PSF_CALIBRATION_MIN_GUIDE_UM, average_um=average_um,
-        max_sections=PSF_CALIBRATION_MAX_SECTIONS, seed=seed, edges=edges,
-    )
-    payloads = [
-        {
-            "poly": np.asarray(G.edges[edge]["voxels"], dtype=float),
-            "targets": targets,
-            "guide": _guide_diameter(G.edges[edge], guide_attribute, 0.0),
-            "spacing": tuple(float(v) for v in voxel_size_zyx),
-            "psf": None if psf_sigma_zyx is None else tuple(float(v) for v in psf_sigma_zyx),
-            "average": float(average_um),
-        }
-        for edge, targets in sites
-    ]
-    readings = run_edge_tasks(
-        _calibration_rings, payloads, volume=volume, workers=workers,
-        memmap_directory=memmap_directory,
-    )
+    psf_given = None if psf_sigma_zyx is None else tuple(float(v) for v in psf_sigma_zyx)
+    record = fits
+    if record is None:
+        record = ring_calibration_fits(
+            G, volume, voxel_size_zyx, psf_sigma_zyx=psf_given, guide_attribute=guide_attribute,
+            average_um=average_um, seed=seed, edges=edges, workers=workers,
+            memmap_directory=memmap_directory,
+        )
+    elif record.psf_sigma_zyx != psf_given:
+        raise ValueError(
+            f"The rings were fitted with the blur {record.psf_sigma_zyx}, not {psf_given}."
+        )
     fits: list[RingFit] = []
     groups: list[int] = []
-    for group, edge_readings in enumerate(readings):
+    for group, edge_readings in enumerate(record.readings):
         for fit, _why in edge_readings:
             if fit is None or _gate(fit, min_contrast=min_contrast, min_diameter_um=0.0) != "ok":
                 continue
@@ -446,8 +516,8 @@ def calibrate_from_rings(
             groups.append(group)
     axial = sum(1 for f in fits if f.other_axis_z >= _AXIAL_TILT)
     details: dict[str, Any] = {
-        "sections_tried": int(sum(len(targets) for _edge, targets in sites)),
-        "edges_tried": len(sites),
+        "sections_tried": record.sections_tried,
+        "edges_tried": record.edges_tried,
         "sections_fitted": len(fits),
         "edges_fitted": len(set(groups)),
         "axial_sections": axial,
@@ -581,6 +651,7 @@ def measure_edge_diameters_from_endothelium(
     workers: int = 1,
     memmap_directory=None,
     calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    calibration: tuple[Any, Any, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Measure *edges* (default every edge) from their endothelial rings.
 
@@ -596,7 +667,10 @@ def measure_edge_diameters_from_endothelium(
     and ``G.graph["endothelial_wall_um"]``. Either left ``None`` is estimated
     from the wide vessels' rings (:func:`calibrate_from_rings`, among
     *calibration_edges* when given); when that cannot, nothing is measured
-    and the summary says why.
+    and the summary says why. *calibration*, what :func:`calibrate_from_rings`
+    returned for this image and these settings, stands in for calibrating
+    again: the settings optimiser measures many samples, and vessels drawn
+    into a copy of the image, on the image's own one.
 
     A reading is kept when its ring's contrast is at least
     *min_ring_contrast*, its centre lies within FWHM's centring limit of the
@@ -612,7 +686,7 @@ def measure_edge_diameters_from_endothelium(
     psf_source = "set" if psf_sigma_zyx is not None else "estimated"
     wall_source = "set" if wall_um is not None else "estimated"
     if psf_sigma_zyx is None or wall_um is None:
-        psf_found, wall_found, calibration = calibrate_from_rings(
+        psf_found, wall_found, calibration = calibration or calibrate_from_rings(
             G, endothelial_volume, spacing, psf_sigma_zyx=psf_sigma_zyx,
             guide_attribute=guide_attribute, average_um=average_along_vessel_um,
             min_contrast=min_ring_contrast, edges=calibration_edges, workers=int(workers),

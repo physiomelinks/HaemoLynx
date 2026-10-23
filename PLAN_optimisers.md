@@ -230,8 +230,8 @@ on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
 - **D3. Decoys and demotion in FWHM scoring.** Recommend scoring with both on whatever the run's
   switches say (a loose setting must never win by measuring specks), honouring the sample size,
   and saying so in the report; or follow the run's switches.
-- **D4. An optimiser for the endothelial ring fit.** None exists; the FWHM button is hidden for an
-  endothelial stain, correctly. Out of scope here; a plan of its own if wanted.
+- **D4. An optimiser for the endothelial ring fit.** Asked for by Harvey (2026-10-23), built in its
+  own session: see **The endothelial optimiser** at the end of this file.
 - **D5. Cost of Phase 4.** If the finish makes a 4x E14.5 search more than twice as slow (Phase 0
   says), Auto will pick coarser grids. Recommend accepting it and letting the time model say so;
   the alternative, finishing only some groups' trials, breaks Principle 2.
@@ -250,7 +250,7 @@ on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
 
 ## Out of scope
 
-An endothelial optimiser (D4); optimising once for a whole batch; new objectives on dead ends or
+Optimising once for a whole batch; new objectives on dead ends or
 loops before a marked grid; sweeping settings that marked grids fixed; help-menu text.
 
 ## Measured

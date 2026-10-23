@@ -170,6 +170,12 @@ from haemolynx.optimisation import (
     optimise_fwhm_settings,
     optimise_skeleton_and_graph_settings,
 )
+from haemolynx.optimisation.endothelial_search import (
+    ENDOTHELIAL_GROUP_LABELS,
+    ENDOTHELIAL_GROUP_NAMES,
+    ENDOTHELIAL_SETTING_NAMES,
+    optimise_endothelial_settings,
+)
 from haemolynx.parsers import (
     Schema,
     dump_config,
@@ -7224,6 +7230,161 @@ def _run_fwhm_optimisation_in_background(
     )
 
 
+def _optimise_endothelial_settings_for_run(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    *,
+    boundaries,
+    progress,
+    groups: "tuple[str, ...] | None",
+    vessel_mask: "np.ndarray | None",
+    sample_edge_count: "int | None",
+    max_passes: int,
+):
+    """`optimise_endothelial_settings` on *graph*, reading as the run's
+    Diameters stage does: with the haemodynamics config the pipeline builds
+    from *settings*, and calibrating on the vessels its network handling
+    keeps, by *boundaries*' inlets and outlets (on every vessel without them)."""
+    config = pipeline_stages._haemodynamics_apply_config(
+        settings,
+        schema,
+        voxel_size_zyx=voxel_size_zyx,
+        stain=pipeline_stages.recorded_raw_image_stain(settings, graph),
+    )
+    calibration_edges = (
+        None if boundaries is None
+        else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
+    )
+    return optimise_endothelial_settings(
+        graph,
+        starting_values={name: settings.get(name) for name in ENDOTHELIAL_SETTING_NAMES},
+        voxel_size_zyx=voxel_size_zyx,
+        config=config,
+        vessel_mask=vessel_mask,
+        calibration_edges=calibration_edges,
+        sample_edge_count=sample_edge_count,
+        progress=progress,
+        groups=groups,
+        max_passes=max_passes,
+    )
+
+
+def _run_endothelial_optimisation_in_background(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    rows: dict[str, Any],
+    report,
+    button,
+    bars: "OptimiseProgressBars",
+    *,
+    apply_prerequisites,
+    run_state: RunState,
+    groups: "tuple[str, ...] | None" = None,
+    vessel_mask: "np.ndarray | None" = None,
+    sample_edge_count: "int | None" = None,
+    max_passes: int = 1,
+    boundaries=None,
+    propose,
+):
+    """Run the endothelial settings optimiser off the GUI thread: the
+    Diameters tab's counterpart of `_run_fwhm_optimisation_in_background`
+    for an endothelial raw image, over
+    `haemolynx.optimisation.endothelial_search.optimise_endothelial_settings`.
+    The same mutual exclusion, cancellation and proposal before Apply;
+    *vessel_mask* (the run's segmented image) gives the planted vessels and
+    decoys their tissue, *boundaries* says which vessels the run calibrates on.
+    """
+    from napari.qt.threading import thread_worker
+
+    cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
+
+    @thread_worker
+    def run():
+        local_settings = dict(settings)
+        result = _optimise_endothelial_settings_for_run(
+            graph,
+            voxel_size_zyx,
+            local_settings,
+            schema,
+            boundaries=boundaries,
+            progress=watched,
+            groups=groups,
+            vessel_mask=vessel_mask,
+            sample_edge_count=sample_edge_count,
+            max_passes=max_passes,
+        )
+        return result, local_settings["raw_image_path"]
+
+    def finished(payload) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        result, raw_path = payload
+
+        def apply_result() -> None:
+            for name, value in result.settings.items():
+                if name in rows:
+                    rows[name].value = display_value_for(schema[name], value)
+            apply_prerequisites()
+
+        out_path = Path(raw_path).parent / config_filename(raw_path)
+        documented_schema = Schema(
+            list(schema.subset(_names_with_prerequisite_closure(schema, ENDOTHELIAL_SETTING_NAMES))),
+            title="HaemoLynx optimised endothelial settings",
+            description=build_report_text(
+                result,
+                group_names=ENDOTHELIAL_GROUP_NAMES,
+                heading="HaemoLynx endothelial ring-fit settings, optimised on a sample of the "
+                "network's vessels in the raw image:",
+            ),
+        )
+        try:
+            dump_config(out_path, documented_schema, values=result.settings)
+            wrote_note = f" Wrote {out_path}."
+        except Exception:  # noqa: BLE001 - the proposal stands without its file
+            logger.exception("could not write optimised endothelial config to %s", out_path)
+            wrote_note = f" Could not write {out_path} (see log)."
+        bars.finish("Optimised")
+        report.value = propose(result, apply_result) + wrote_note
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale endothelial optimisation worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        bars.fail(f"Failed: {type(error).__name__}")
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("endothelial settings optimisation failed", exc_info=error)
+        raise error
+
+    return _start_optimisation_worker(
+        run,
+        run_state=run_state,
+        cancel_flag=cancel_flag,
+        still_ours=still_ours,
+        button=button,
+        bars=bars,
+        report=report,
+        finished=finished,
+        failed=failed,
+        starting_message="Optimising endothelial settings...",
+    )
+
+
 def _run_segmentation_quality_check_in_background(
     settings: dict[str, Any],
     report,
@@ -13219,6 +13380,9 @@ def settings_widget(napari_viewer=None):
     optimise_fwhm_button: Any = None
     #: The FWHM optimiser's options and its review box, shown with the button.
     fwhm_optimise_box: Any = None
+    #: "Optimise endothelial settings" and its box: the same, for the ring fit.
+    optimise_endothelial_button: Any = None
+    endothelial_optimise_box: Any = None
     #: A nested QGroupBox (e.g. "Connectivity/Network Analysis" on "8.
     #: Additional measurements") boxes a run of settings that all share one
     #: `requires` gate on the section above it. Left always visible, an
@@ -13604,6 +13768,22 @@ def settings_widget(napari_viewer=None):
             optimise_fwhm_button.visible = fwhm_could_run
         if fwhm_optimise_box is not None:
             fwhm_optimise_box.visible = fwhm_could_run
+        # "Optimise endothelial settings": visible exactly when the ring fit
+        # would run -- diameters measured from the raw image, its stain
+        # endothelial as set or as the last run read an auto -- and never
+        # for a synthetic network, which reads no image.
+        from haemolynx.graph.boundaries import network_is_synthetic
+
+        ring_fit_could_run = (
+            bool(values.get("measure_diameters_from_raw_image"))
+            and bool(values.get("raw_image_path"))
+            and resolved_raw_image_stain(values) == "endothelial"
+            and not network_is_synthetic(values)
+        )
+        if optimise_endothelial_button is not None:
+            optimise_endothelial_button.visible = ring_fit_could_run
+        if endothelial_optimise_box is not None:
+            endothelial_optimise_box.visible = ring_fit_could_run
 
         thick_vessel_row = rows.get("use_thick_vessel_skeletonisation")
         if thick_vessel_row is not None:
@@ -14004,6 +14184,129 @@ def settings_widget(napari_viewer=None):
         )
 
     optimise_fwhm_button.changed.connect(lambda *_args: on_optimise_fwhm_settings())
+
+    #: "Optimise endothelial settings": the same for an endothelial raw image,
+    #: whose diameters the ring fit reads instead of FWHM. It sits where the
+    #: FWHM button does, and only one of the two is ever shown.
+    from haemolynx.gui.chrome_tooltips import ENDOTHELIAL_OPTIMISE_TOOLTIPS
+
+    optimise_endothelial_button = PushButton(text="Optimise endothelial settings")
+    optimise_endothelial_button.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["button"]
+    endothelial_options_toggle = CheckBox(text="Endothelial optimiser options", value=False)
+    endothelial_options_toggle.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["options"]
+    endothelial_choose_groups = CheckBox(text="Choose endothelial optimisation types", value=False)
+    endothelial_choose_groups.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["choose_groups"]
+    endothelial_group_checkboxes: dict[str, Any] = {
+        name: CheckBox(text=ENDOTHELIAL_GROUP_LABELS[name], value=True)
+        for name in ENDOTHELIAL_GROUP_NAMES
+    }
+    for _name, _box in endothelial_group_checkboxes.items():
+        _box.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS[_name]
+    endothelial_group_container = Container(
+        widgets=list(endothelial_group_checkboxes.values()), labels=False
+    )
+    endothelial_group_container.visible = False
+    endothelial_sample_dropdown = ComboBox(
+        label="Endothelial optimisation sample", choices=list(_FWHM_SAMPLE_CHOICES), value="Auto"
+    )
+    endothelial_sample_dropdown.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["sample"]
+    endothelial_passes_spinbox = SpinBox(label="Optimisation passes", value=1, min=1, max=5)
+    endothelial_passes_spinbox.tooltip = OPTIMISE_TOOLTIPS["passes"]
+    endothelial_options_container = Container(
+        widgets=[
+            endothelial_choose_groups, endothelial_group_container,
+            endothelial_sample_dropdown, endothelial_passes_spinbox,
+        ]
+    )
+    endothelial_options_container.visible = False
+    endothelial_review = _OptimiseReview(
+        current_values, report, what="optimised endothelial settings"
+    )
+    endothelial_optimise_box = Container(
+        widgets=[
+            endothelial_options_toggle, endothelial_options_container,
+            endothelial_review.container,
+        ],
+        labels=False,
+    )
+    endothelial_options_toggle.changed.connect(
+        lambda *_args: setattr(
+            endothelial_options_container, "visible", bool(endothelial_options_toggle.value)
+        )
+    )
+    endothelial_choose_groups.changed.connect(
+        lambda *_args: setattr(
+            endothelial_group_container, "visible", bool(endothelial_choose_groups.value)
+        )
+    )
+    if diameters_settings is not None:
+        after_fwhm = list(diameters_settings).index(fwhm_optimise_box) + 1
+        diameters_settings.insert(after_fwhm, optimise_endothelial_button)
+        diameters_settings.insert(after_fwhm + 1, endothelial_optimise_box)
+    optimise_endothelial_bars = OptimiseProgressBars()
+
+    def on_optimise_endothelial_settings() -> None:
+        from haemolynx.graph.boundaries import network_is_synthetic
+
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        values = current_values()
+        if network_is_synthetic(values):
+            report.value = (
+                "A synthetic network reads no image: there is no endothelial stain to optimise "
+                "the ring fit on."
+            )
+            return
+        if view.results is None or getattr(view.results, "_graph", None) is None:
+            report.value = (
+                "Nothing to optimise yet: run the pipeline through at least Graph first."
+            )
+            return
+        raw_path = values.get("raw_image_path")
+        if not raw_path or not Path(raw_path).is_file():
+            report.value = (
+                "Choose the raw image on the Input tab first, then press Optimise endothelial "
+                "settings."
+            )
+            return
+        results = view.results
+        graph = copy_graph(results._graph)
+        voxel_size_zyx = tuple(
+            float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
+        )
+        skeletonised = checkpoints.get("skeletonise")
+        groups = None
+        if endothelial_choose_groups.value:
+            groups = tuple(
+                name for name, box in endothelial_group_checkboxes.items() if box.value
+            )
+        endothelial_review.clear()
+        _run_endothelial_optimisation_in_background(
+            graph,
+            voxel_size_zyx,
+            _settings(),
+            schema,
+            rows,
+            report,
+            optimise_endothelial_button,
+            optimise_endothelial_bars,
+            apply_prerequisites=apply_prerequisites,
+            run_state=run_state,
+            groups=groups,
+            vessel_mask=getattr(getattr(skeletonised, "output", None), "image", None),
+            sample_edge_count=_FWHM_SAMPLE_CHOICES.get(endothelial_sample_dropdown.value),
+            max_passes=int(endothelial_passes_spinbox.value),
+            boundaries=checkpoints.get("assign_boundaries"),
+            propose=endothelial_review.propose,
+        )
+
+    optimise_endothelial_button.changed.connect(
+        lambda *_args: on_optimise_endothelial_settings()
+    )
     apply_prerequisites()
 
     def _toggle_group_checkboxes(*_args) -> None:
@@ -14400,7 +14703,10 @@ def settings_widget(napari_viewer=None):
     #: shown, which is never the batch's.
     single_image_buttons = [
         (button, button.tooltip)
-        for button in (check_image_button, optimise_button, optimise_fwhm_button)
+        for button in (
+            check_image_button, optimise_button, optimise_fwhm_button,
+            optimise_endothelial_button,
+        )
     ]
 
     def refresh_batch_controls() -> None:
@@ -15051,15 +15357,18 @@ def settings_widget(napari_viewer=None):
             checkpoints.freeze()
             run_state.supersede()
             run_button.enabled = True
-            # Whichever of the three was the one running: cancel() does not
+            # Whichever of them was the one running: cancel() does not
             # say which, and re-enabling/resetting the others is a no-op.
             optimise_button.enabled = True
             optimise_bars.reset()
             optimise_fwhm_button.enabled = True
             optimise_fwhm_bars.reset()
+            optimise_endothelial_button.enabled = True
+            optimise_endothelial_bars.reset()
             log_view.cancelled()
         optimise_review.clear()
         fwhm_review.clear()
+        endothelial_review.clear()
         removed = 0
         if viewer is not None:
             removed = _clear_our_layers(viewer)
@@ -15547,15 +15856,18 @@ def settings_widget(napari_viewer=None):
             checkpoints.freeze()
             run_state.supersede()
             run_button.enabled = True
-            # Whichever of the three was the one running: cancel() does not
+            # Whichever of them was the one running: cancel() does not
             # say which, and re-enabling/resetting the others is a no-op.
             optimise_button.enabled = True
             optimise_bars.reset()
             optimise_fwhm_button.enabled = True
             optimise_fwhm_bars.reset()
+            optimise_endothelial_button.enabled = True
+            optimise_endothelial_bars.reset()
             log_view.cancelled()
         optimise_review.clear()
         fwhm_review.clear()
+        endothelial_review.clear()
         if viewer is not None:
             _clear_our_layers(viewer)
             reparent_arrow_length_slider()
@@ -16140,6 +16452,17 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_fwhm_group_checkboxes = fwhm_group_checkboxes
     panel._haemolynx_optimise_fwhm_sample = fwhm_sample_dropdown
     panel._haemolynx_optimise_fwhm_passes = fwhm_passes_spinbox
+    panel._haemolynx_optimise_endothelial_button = optimise_endothelial_button
+    panel._haemolynx_optimise_endothelial_bars = optimise_endothelial_bars
+    panel._haemolynx_optimise_endothelial_settings = on_optimise_endothelial_settings
+    panel._haemolynx_optimise_endothelial_review = endothelial_review
+    panel._haemolynx_optimise_endothelial_box = endothelial_optimise_box
+    panel._haemolynx_optimise_endothelial_options = endothelial_options_toggle
+    panel._haemolynx_optimise_endothelial_options_container = endothelial_options_container
+    panel._haemolynx_optimise_endothelial_choose_groups = endothelial_choose_groups
+    panel._haemolynx_optimise_endothelial_group_checkboxes = endothelial_group_checkboxes
+    panel._haemolynx_optimise_endothelial_sample = endothelial_sample_dropdown
+    panel._haemolynx_optimise_endothelial_passes = endothelial_passes_spinbox
     panel._haemolynx_check_image_button = check_image_button
     panel._haemolynx_run_checks = on_check
     panel._haemolynx_batch = SimpleNamespace(
@@ -16203,6 +16526,7 @@ def settings_widget(napari_viewer=None):
     # than the magicgui Diameters-tab Container, which the button itself
     # (a real magicgui PushButton) was inserted into directly.
     layout.addWidget(optimise_fwhm_bars.native)
+    layout.addWidget(optimise_endothelial_bars.native)
     layout.addWidget(report.native)
     if viewer is None:
         view_panel.setParent(panel)
