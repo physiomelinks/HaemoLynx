@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from haemolynx.graph.boundaries import vessel_masks_in_use
+from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
+
 from .checks import ilastik_segments_vessel_masks
 
 #: HaemoLynx's own citation, always first: the pipeline that ran everything
@@ -52,11 +55,6 @@ def _used_ilastik(settings: Mapping[str, Any]) -> bool:
     return ilastik_segments_vessel_masks(settings)
 
 
-def _input_suffix(settings: Mapping[str, Any]) -> str:
-    path = settings.get("input_path")
-    return "" if path is None else Path(path).suffix.lower()
-
-
 def _synthetic(settings: Mapping[str, Any]) -> bool:
     """A synthetic run (``network_source=synthetic``) reads no image, thins
     nothing and builds its graph from no skeleton."""
@@ -65,23 +63,139 @@ def _synthetic(settings: Mapping[str, Any]) -> bool:
     return network_is_synthetic(settings)
 
 
-def _used_hdf5_input(settings: Mapping[str, Any]) -> bool:
-    return not _synthetic(settings) and _input_suffix(settings) in {".h5", ".hdf5"}
+def _is_set(path: Any) -> bool:
+    return path not in (None, "")
 
 
-def _used_tiff_input(settings: Mapping[str, Any]) -> bool:
-    return not _synthetic(settings) and _input_suffix(settings) not in {".h5", ".hdf5"}
+def _perturbation_entries(settings: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+    """``(type, settings it re-solves with)`` for every perturbation the run
+    re-solves: none unless ``run_perturbations`` and ``run_haemodynamics``
+    are both on, the only way the perturbation stage runs any."""
+    if not (settings.get("run_perturbations") and settings.get("run_haemodynamics")):
+        return []
+    entries = []
+    for entry in settings.get("perturbations") or ():
+        if isinstance(entry, Mapping):
+            overrides = entry.get("overrides") or {}
+            entries.append((str(entry.get("type")), {**settings, **overrides}))
+    return entries
 
 
-def _used_plotly_3d(settings: Mapping[str, Any]) -> bool:
+def _runs_non_sweep_perturbation(settings: Mapping[str, Any]) -> bool:
+    """A single re-solve writes the baseline's figures and statistics again
+    for itself (``export_non_sweep_perturbation_artifacts``), whatever the
+    baseline's own ``statistics`` and ``visualize_results`` say."""
+    return any(not is_sweep_perturbation(kind) for kind, _ in _perturbation_entries(settings))
+
+
+#: The two image readers, by file suffix: everything else the loaders take
+#: is a TIFF.
+_HDF5_SUFFIXES = frozenset({".h5", ".hdf5"})
+
+#: The large and small arteriole/venule mask paths, and each role's ilastik
+#: switch (``pipeline.checks``' own pairing).
+_VESSEL_MASK_FILES: dict[str, tuple[str, tuple[str, str]]] = {
+    "large": (
+        "use_ilastik_large_vessel_segmentation",
+        ("large_arteriole_mask_path", "large_venule_mask_path"),
+    ),
+    "small": (
+        "use_ilastik_small_vessel_segmentation",
+        ("small_arteriole_mask_path", "small_venule_mask_path"),
+    ),
+}
+
+
+def _reader(path: Any) -> str:
+    return "h5py" if Path(str(path)).suffix.lower() in _HDF5_SUFFIXES else "tifffile"
+
+
+def _image_readers(settings: Mapping[str, Any]) -> set[str]:
+    """The readers (``"tifffile"``, ``"h5py"``) of every image file the run
+    reads: the segmented image (ilastik's output when ilastik makes it), the
+    raw image, the vessel masks in use, the tissue's own raw image, the 3D
+    distance measurement's masks and the masks a perturbation reads. The raw
+    images are read as TIFF whatever their name."""
+    if _synthetic(settings):
+        return set()
+    readers: set[str] = set()
+    ilastik_output = f"output{settings.get('ilastik_output_suffix') or '.tif'}"
+    raw_image_set = _is_set(settings.get("raw_image_path"))
+    if raw_image_set:
+        readers.add("tifffile")
+    if settings.get("use_ilastik_segmentation") and raw_image_set:
+        readers.add(_reader(ilastik_output))
+    elif _is_set(settings.get("input_path")):
+        readers.add(_reader(settings.get("input_path")))
+    for role, (ilastik_flag, mask_settings) in _VESSEL_MASK_FILES.items():
+        if not vessel_masks_in_use(settings, role):
+            continue
+        if settings.get(ilastik_flag):
+            readers.add(_reader(ilastik_output))
+            continue
+        readers.update(
+            _reader(settings.get(name)) for name in mask_settings if _is_set(settings.get(name))
+        )
+    if settings.get("measure_tissue_volume") and _is_set(settings.get("tissue_raw_tiff_path")):
+        readers.add("tifffile")
+    if settings.get("measurement_3d_to_cell_mask"):
+        readers.update(
+            _reader(settings.get(name))
+            for name in ("cell_mask_path", "measurement_3d_vessel_mask_path")
+            if _is_set(settings.get(name))
+        )
+    for kind, perturbed in _perturbation_entries(settings):
+        if kind == "capillary_block_mask" and _is_set(perturbed.get("capillary_block_mask_path")):
+            readers.add(_reader(perturbed.get("capillary_block_mask_path")))
+        if (
+            kind in _PERICYTE_CONSTRICTION_PERTURBATION_TYPES
+            and perturbed.get("use_pericyte_mask_constriction")
+            and _is_set(perturbed.get("pericyte_mask_path"))
+        ):
+            readers.add(_reader(perturbed.get("pericyte_mask_path")))
+    return readers
+
+
+def _used_hdf5(settings: Mapping[str, Any]) -> bool:
+    return "h5py" in _image_readers(settings)
+
+
+def _used_tifffile(settings: Mapping[str, Any]) -> bool:
+    return "tifffile" in _image_readers(settings)
+
+
+def _used_matplotlib(settings: Mapping[str, Any]) -> bool:
+    """The run's own figures, or a perturbation's: a sweep draws its curves
+    and a single re-solve its degree, overlay and resistance figures."""
+    return bool(settings.get("visualize_results")) or bool(_perturbation_entries(settings))
+
+
+def _used_plotly(settings: Mapping[str, Any]) -> bool:
+    """The 3D views: the run's own and a single re-solve's in the ``3d``
+    render mode, and the two vessel-mask debug views when their masks are in
+    use."""
+    if settings.get("final_render_mode") == "3d" and (
+        settings.get("visualize_results") or _runs_non_sweep_perturbation(settings)
+    ):
+        return True
+    if (
+        settings.get("write_fast_mode_preassignment_large_vessel_debug_3d_html")
+        and settings.get("automated_vessel_assignment_fast_mode")
+        and vessel_masks_in_use(settings, "large")
+    ):
+        return True
     return bool(
-        settings.get("visualize_results")
-        and settings.get("final_render_mode") == "3d"
+        settings.get("write_small_vessel_boundary_labelling_3d_html")
+        and vessel_masks_in_use(settings, "small")
     )
 
 
 def _used_vtk_export(settings: Mapping[str, Any]) -> bool:
-    return bool(settings.get("run_haemodynamics") and settings.get("vtk_export"))
+    """The vessel, pericyte and node files, and the tissue's surface."""
+    return bool(
+        (settings.get("run_haemodynamics") and settings.get("vtk_export"))
+        or settings.get("measure_tissue_volume")
+    )
 
 
 def _pries_form(settings: Mapping[str, Any]) -> str | None:
@@ -242,36 +356,39 @@ PACKAGE_CITATIONS: tuple[Citation, ...] = (
     ),
     Citation(
         name="pandas",
-        reason="statistics tables and CSV export",
+        # Nothing the pipeline writes goes through pandas (the statistics
+        # CSVs are written by the csv module); napari keeps each layer's
+        # per-vessel features in a pandas table.
+        reason="the per-vessel feature tables of the napari layers",
         reference=(
             "McKinney, W. (2010). Data structures for statistical "
             "computing in Python. Proceedings of the 9th Python in Science "
             "Conference, 56-61."
         ),
-        applies=lambda settings: bool(settings.get("statistics")),
+        applies=_used_napari,
     ),
     Citation(
         name="Matplotlib",
-        reason="the static overlay and degree-distribution plots",
+        reason="the static overlay, degree-distribution and perturbation plots",
         reference=(
             "Hunter, J.D. (2007). Matplotlib: a 2D graphics environment. "
             "Computing in Science & Engineering, 9(3), 90-95. "
             "https://doi.org/10.1109/MCSE.2007.55"
         ),
-        applies=lambda settings: bool(settings.get("visualize_results")),
+        applies=_used_matplotlib,
     ),
     Citation(
         name="Plotly",
-        reason="the interactive 3D graph views",
+        reason="the interactive 3D graph and vessel-mask views",
         reference=(
             "Plotly Technologies Inc. (2015). Collaborative data science. "
             "Plotly Technologies Inc., Montreal, QC. https://plot.ly"
         ),
-        applies=_used_plotly_3d,
+        applies=_used_plotly,
     ),
     Citation(
         name="PyVista / VTK",
-        reason="the exported .vtp vessel/pericyte/node files",
+        reason="the exported .vtp vessel/pericyte/node and tissue-surface files",
         reference=(
             "Sullivan, C., Kaszynski, A. (2019). PyVista: 3D plotting and "
             "mesh analysis through a streamlined interface for the "
@@ -284,18 +401,18 @@ PACKAGE_CITATIONS: tuple[Citation, ...] = (
     ),
     Citation(
         name="h5py",
-        reason="loading the HDF5 input image",
+        reason="loading the HDF5 images and masks",
         reference="Collette, A. (2013). Python and HDF5. O'Reilly Media.",
-        applies=_used_hdf5_input,
+        applies=_used_hdf5,
     ),
     Citation(
         name="tifffile",
-        reason="loading the TIFF input image",
+        reason="loading the TIFF images and masks",
         reference=(
             "Gohlke, C. tifffile: read and write TIFF files with Python. "
             "https://github.com/cgohlke/tifffile"
         ),
-        applies=_used_tiff_input,
+        applies=_used_tifffile,
     ),
     Citation(
         name="ilastik",
@@ -520,6 +637,175 @@ IMAGE_ANALYSIS_CITATIONS: tuple[Citation, ...] = (
 )
 
 
+def _used_centreline_smoothing(method: str) -> Callable[[Mapping[str, Any]], bool]:
+    def applies(settings: Mapping[str, Any]) -> bool:
+        return bool(
+            settings.get("do_graph_building", True)
+            and settings.get("smooth_centrelines", True)
+            and settings.get("centreline_smoothing_method", "taubin") == method
+            and not _synthetic(settings)
+        )
+
+    return applies
+
+
+#: How the vessels' centrelines are drawn from the segmentation.
+CENTRELINE_CITATIONS: tuple[Citation, ...] = (
+    Citation(
+        name="Lee's 3D medial-axis thinning (skeletonize method='lee')",
+        reason="the vessel centrelines thinned from the segmented mask",
+        reference=(
+            "Lee, T.C., Kashyap, R.L., Chu, C.N. (1994). Building skeleton "
+            "models via 3-D medial surface/axis thinning algorithms. CVGIP: "
+            "Graphical Models and Image Processing, 56(6), 462-478. "
+            "https://doi.org/10.1006/cgip.1994.1042"
+        ),
+        applies=lambda settings: bool(settings.get("do_skeletonize", True))
+        and not _synthetic(settings),
+    ),
+    Citation(
+        name="Taubin smoothing (centreline_smoothing_method='taubin')",
+        reason="the voxel staircase taken out of each centreline, which sets its length",
+        reference=(
+            "Taubin, G. (1995). Curve and surface smoothing without shrinkage. "
+            "Proceedings of the Fifth International Conference on Computer "
+            "Vision, 852-857. https://doi.org/10.1109/ICCV.1995.466848"
+        ),
+        applies=_used_centreline_smoothing("taubin"),
+    ),
+    Citation(
+        name="Chaikin corner cutting (centreline_smoothing_method='chaikin')",
+        reason="the voxel staircase taken out of each centreline, which sets its length",
+        reference=(
+            "Chaikin, G.M. (1974). An algorithm for high-speed curve generation. "
+            "Computer Graphics and Image Processing, 3(4), 346-349. "
+            "https://doi.org/10.1016/0146-664X(74)90028-8"
+        ),
+        applies=_used_centreline_smoothing("chaikin"),
+    ),
+)
+
+
+def _statistics_measure_runs(
+    measure: str, *, network_analysis: bool
+) -> Callable[[Mapping[str, Any]], bool]:
+    """Whether the statistics compute ``statistics_{measure}``: the baseline's
+    report (``statistics`` on) or a single re-solve's, which always computes
+    the run's own selection. A network analysis also needs
+    ``statistics_network_analysis`` (``pipeline.stages.statistics_arguments``);
+    *network_analysis* says which kind *measure* is, and a test pins it to
+    ``statistics.NETWORK_ANALYSIS_MEASURES``."""
+
+    def applies(settings: Mapping[str, Any]) -> bool:
+        if not (settings.get("statistics") or _runs_non_sweep_perturbation(settings)):
+            return False
+        if not settings.get(f"statistics_{measure}"):
+            return False
+        return not network_analysis or bool(settings.get("statistics_network_analysis"))
+
+    return applies
+
+
+def _used_murray_law(settings: Mapping[str, Any]) -> bool:
+    return _statistics_measure_runs("murray_law", network_analysis=False)(settings) or _synthetic(
+        settings
+    )
+
+
+def _used_betweenness(settings: Mapping[str, Any]) -> bool:
+    # The baseline's report always writes the length/resistance/flow-weighted
+    # betweenness JSONs beside its CSV, whatever statistics_betweenness says.
+    return bool(settings.get("statistics")) or _statistics_measure_runs(
+        "betweenness", network_analysis=True
+    )(settings)
+
+
+def _used_greedy_modularity(settings: Mapping[str, Any]) -> bool:
+    # The vessels layer's communities, and the weighted community counts the
+    # baseline's report always writes, as well as the community measure.
+    return (
+        bool(settings.get("compute_vascular_communities"))
+        or bool(settings.get("statistics"))
+        or _statistics_measure_runs("community", network_analysis=True)(settings)
+    )
+
+
+#: Measures of the network graph, from the statistics report (and Murray's
+#: law from a synthetic network's trees too).
+NETWORK_STATISTICS_CITATIONS: tuple[Citation, ...] = (
+    Citation(
+        name="Murray's law",
+        reason=(
+            "the cube law relating a junction's parent and daughter diameters: "
+            "the Murray's law statistic, and the diameters a synthetic network's "
+            "trees are drawn with"
+        ),
+        reference=(
+            "Murray, C.D. (1926). The physiological principle of minimum work: "
+            "I. The vascular system and the cost of blood volume. Proceedings "
+            "of the National Academy of Sciences, 12(3), 207-214. "
+            "https://doi.org/10.1073/pnas.12.3.207"
+        ),
+        applies=_used_murray_law,
+    ),
+    Citation(
+        name="Horton-Strahler ordering (statistics_strahler)",
+        reason="the Strahler orders of the arterial and venous trees, and Horton's ratios",
+        reference=(
+            "Horton, R.E. (1945). Erosional development of streams and their "
+            "drainage basins; hydrophysical approach to quantitative "
+            "morphology. Geological Society of America Bulletin, 56(3), "
+            "275-370. https://doi.org/10.1130/0016-7606(1945)56[275:EDOSAT]2.0.CO;2\n"
+            "    Strahler, A.N. (1957). Quantitative analysis of watershed "
+            "geomorphology. Transactions, American Geophysical Union, 38(6), "
+            "913-920. https://doi.org/10.1029/TR038i006p00913"
+        ),
+        applies=_statistics_measure_runs("strahler", network_analysis=True),
+    ),
+    Citation(
+        name="Greedy modularity communities (Clauset-Newman-Moore)",
+        reason="the vascular communities and the community counts",
+        reference=(
+            "Clauset, A., Newman, M.E.J., Moore, C. (2004). Finding community "
+            "structure in very large networks. Physical Review E, 70(6), "
+            "066111. https://doi.org/10.1103/PhysRevE.70.066111"
+        ),
+        applies=_used_greedy_modularity,
+    ),
+    Citation(
+        name="Kaplan-Meier estimator (statistics_capillary_bed_joins)",
+        reason="the median branch order and distance at which capillary beds join",
+        reference=(
+            "Kaplan, E.L., Meier, P. (1958). Nonparametric estimation from "
+            "incomplete observations. Journal of the American Statistical "
+            "Association, 53(282), 457-481. "
+            "https://doi.org/10.1080/01621459.1958.10501452"
+        ),
+        applies=_statistics_measure_runs("capillary_bed_joins", network_analysis=True),
+    ),
+    Citation(
+        name="Algebraic connectivity (statistics_algebraic_connectivity)",
+        reason="the Fiedler value of the network and the Fiedler split",
+        reference=(
+            "Fiedler, M. (1973). Algebraic connectivity of graphs. Czechoslovak "
+            "Mathematical Journal, 23(2), 298-305. "
+            "https://doi.org/10.21136/CMJ.1973.101168"
+        ),
+        applies=_statistics_measure_runs("algebraic_connectivity", network_analysis=True),
+    ),
+    Citation(
+        name="Brandes' betweenness centrality",
+        reason="the betweenness of each node, unweighted and weighted",
+        reference=(
+            "Brandes, U. (2001). A faster algorithm for betweenness centrality. "
+            "Journal of Mathematical Sociology, 25(2), 163-177. "
+            "https://doi.org/10.1080/0022250X.2001.9990249"
+        ),
+        applies=_used_betweenness,
+    ),
+)
+
+
 def used_citations(
     settings: Mapping[str, Any], citations: tuple[Citation, ...]
 ) -> list[Citation]:
@@ -596,9 +882,15 @@ def render_citations(settings: Mapping[str, Any]) -> str:
             "(none detected -- haemodynamics was not run)",
         )
     )
+    centrelines = used_citations(settings, CENTRELINE_CITATIONS)
+    if centrelines:
+        lines.extend(_render_section("Centreline methods", centrelines, ""))
     image_analysis = used_citations(settings, IMAGE_ANALYSIS_CITATIONS)
     if image_analysis:
         lines.extend(_render_section("Image analysis methods", image_analysis, ""))
+    network_statistics = used_citations(settings, NETWORK_STATISTICS_CITATIONS)
+    if network_statistics:
+        lines.extend(_render_section("Network statistics methods", network_statistics, ""))
     generation = used_citations(settings, NETWORK_GENERATION_CITATIONS)
     if generation:
         lines.extend(_render_section("Network generation methods", generation, ""))
