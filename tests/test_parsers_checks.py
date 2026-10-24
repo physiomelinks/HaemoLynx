@@ -145,7 +145,10 @@ def test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset():
     segmentation (stages.export_results, tests/test_three_dim_distances.py),
     and the four venule masks and classifiers to the arteriole/global one
     read as a global mask (io.vessel_masks_are_global,
-    tests/test_global_vessel_masks.py). A new one has to be added here, its
+    tests/test_global_vessel_masks.py). capillary_block_mask_path has no
+    fallback: only a capillary_block_mask perturbation reads it, and preflight
+    refuses one that names none (haemodynamics.perturbations.perturbation_problems,
+    tests/test_capillary_block_mask.py). A new one has to be added here, its
     fallback checked."""
     from haemolynx.pipeline import default_schema
 
@@ -157,6 +160,7 @@ def test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset():
         "small_venule_mask_path",
         "ilastik_venule_classifier_path",
         "ilastik_small_venule_classifier_path",
+        "capillary_block_mask_path",
     }
 
 

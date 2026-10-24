@@ -25,11 +25,14 @@ writes it again).
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 #: Every unit a statistic is reported in, spelled as the CSVs spell it, and
 #: what it means.
@@ -652,4 +655,7 @@ def write_glossary_markdown(path: Union[str, Path]) -> Path:
 
 
 if __name__ == "__main__":
-    print(write_glossary_markdown(Path(__file__).resolve().parents[3] / GLOSSARY_PAGE))
+    from haemolynx.parsers import configure_console_logging
+
+    configure_console_logging()
+    logger.info("Wrote %s", write_glossary_markdown(Path(__file__).resolve().parents[3] / GLOSSARY_PAGE))
