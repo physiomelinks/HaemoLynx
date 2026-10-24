@@ -565,8 +565,12 @@ Harvey's results (2026-10-24, the panel on `43bdcb41`, the E14.5 template above)
   and every role tab is disabled under a synthetic network. Fixed in `43bdcb41` (the panel swallows
   the wheel over the role tab bar while its current tab is disabled).
 - **The Boundaries role tabs are greyed.**
-- Not yet reported: the Statistics tab's comparison section; the saved run refused as a template;
-  the Voronoi bed.
+- **The Statistics tab has the comparison section.** Its button read "Synthetic comparison" (its
+  key's words); at his asking it is "Template comparison", with hover text of its own.
+- **The saved synthetic run is refused as a template**: "FAILED: synthetic_template_path: The
+  template run is itself a synthetic network: choose the microscopy-image run it was generated
+  from."
+- Not yet reported: the Voronoi bed (optional).
 
 **Before the decisions** (the options as they were put to Harvey):
 
