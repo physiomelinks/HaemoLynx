@@ -3,31 +3,40 @@
 A thick vessel is represented by its centreline alone -- the tree
 :func:`preprocessing.thick_vessels.skeletonize_edt_ridge` draws through the
 thick-vessel region -- and every vessel opening into it is joined to that
-centreline by one bridge: a straight edge from where the vessel enters the
-thick vessel's lumen to the nearest point of the centreline, one local radius
-long, tagged :data:`IS_ZERO_RESISTANCE` so haemodynamics gives it (near) zero
-resistance (:func:`haemodynamics.apply._assign_poiseuille_resistances`). The
-radius belongs to the thick vessel: counted as the joining vessel's length,
-it would add resistance that is not there.
+centreline by one bridge, tagged :data:`IS_ZERO_RESISTANCE` so haemodynamics
+gives it (near) zero resistance
+(:func:`haemodynamics.apply._assign_poiseuille_resistances`). The radius
+belongs to the thick vessel: counted as the joining vessel's length, it would
+add resistance that is not there. By Harvey's rules (2026-10-10) a bridge
+reaches the thick vessel's segmented boundary -- the thick-vessel region's,
+the segmentation within the margin of the large-vessel body -- in every case,
+joins the centreline to a vessel that goes on, and is never a dead end nor
+attached to one.
 
 Graph building leaves a joined vessel running on through the thick vessel's
 lumen to wherever skeletonisation joined it: to the centreline, along it, or
 onto another vessel's join. Each edge reaching the thick-vessel region is
 sampled, and each sample labelled: off the region, on the thick centreline
-(within *centreline_tolerance_um* of the tree), or in the region off the
-centreline. The off-centreline stretches, joined through their nodes, are
-either
+(within *centreline_tolerance_um*, or :data:`CENTRELINE_TOLERANCE_PER_RADIUS`
+of the lumen radius, of the tree), or in the region off the centreline. The
+off-centreline stretches, joined through their nodes, are either
 
-- a *graze*, never touching the centreline (a vessel passing through the
-  region's margin): vessel, left as it is; or
-- a *connector*, touching it. Its samples within one lumen radius of the
-  centreline (the segmentation's inscribed radius at the nearest point of the
-  tree) are inside the thick vessel and are removed; the rest is the joining
-  vessel and stays, and each place it meets a removed stretch gets one
-  straight bridge to the nearest point of the graph's thick centreline.
+- a *graze*, never touching the centreline nor coming within one lumen
+  radius of it (a vessel passing through the region's margin): vessel, left
+  as it is; or
+- a *connector*, leading out of the region and touching the centreline or
+  entering the lumen. Its stretch inside the region is removed -- bar the
+  thick vessel's own path where the graph's centreline strays off the tree --
+  and where the vessel leaves the region it gets one straight bridge to where
+  the connector met the graph's thick centreline (else the nearest point of
+  it, within reach). Bridges ending within one lumen radius of each other
+  share one node (design C.4), and a bridge whose straight line would leave
+  the segmentation keeps the way its vessel ran instead (C.5,
+  :data:`DRAWN_BRIDGE`).
 
 The thick centreline itself is vessel, at its own diameter. A junction on it
-that only a removed stretch made is merged away.
+that only a removed stretch made is merged away. What shape the bridges came
+out is reported by :mod:`haemolynx.graph.thick_vessel_bridge_shapes`.
 """
 from __future__ import annotations
 
@@ -647,10 +656,13 @@ def insert_thick_vessel_junction_nodes(
     *thick_mask* is the thick-vessel region skeletonisation found;
     *centreline* the tree it drew through it (a volume of it, or its voxels:
     :func:`thick_vessel_centreline_voxels`), found again from the region
-    when not given. *segmentation* gives
-    the thick vessel's lumen, whose inscribed radius at the centreline is
-    where a joining vessel enters it; without one the region stands in,
-    which puts that wall about the region's margin further out.
+    when not given. A bridge starts where its vessel leaves the region.
+    *segmentation* gives the thick vessel's lumen, whose inscribed radius at
+    the centreline tells a stretch entering the thick vessel from one
+    skimming the region's margin, sets the tolerance and how far a bridge
+    looks for the centreline, and is what a straight bridge must not leave;
+    without one the region stands in. *centreline_tolerance_um* is the
+    tolerance's floor (``thick_bridge_centreline_tolerance_um``).
 
     Three more cases, by Harvey's examples (2026-10-13, PLAN_bridging.md):
 
