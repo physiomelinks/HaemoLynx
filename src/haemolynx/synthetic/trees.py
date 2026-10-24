@@ -10,14 +10,27 @@ more only when the table asks for more than two children a tip). The tips
 that grow are chosen to fill space -- far from the faces and from vessels
 already drawn.
 
-Diameters follow Murray's law exactly at every junction, with the template's
-exponent: the children of a parent of width ``d`` have widths
-``d (1 + a^n)^(-1/n)`` and ``a`` times that, the asymmetry ``a`` drawn round
-the value that reproduces the table's fall in mean diameter from one order to
-the next (:func:`fit_asymmetry`). The two daughters open at the template's
-daughter-daughter angle, the narrower deflected more, in the plane round the
-parent that keeps them inside the box and away from other vessels. A child
-that would leave the box is cut at the face and marked as leaving the image.
+The large tier (Large_Art/Large_Ven) is a **trunk with side branches**, as a
+run with large-vessel masks finds it: its order rises at every junction, and
+most of its junctions are where a capillary leaves it. So within the large
+tier a tip may grow one child -- the trunk going on -- and hand a side branch
+to the capillary bed (:attr:`SideResult.handoffs`, the large-vessel boundary
+nodes), as well as bifurcate when the next order has more vessels. Its widths
+are the template's, each order's drawn from that order's distribution
+(:func:`draw_root_diameters`): a trunk's measured width hardly falls from one
+order to the next, which Murray's law at any junction losing a capillary would
+not allow (at the network's exponent it shrinks to nothing within a few
+junctions).
+
+In the small tier (Art/Ven) diameters follow Murray's law exactly at every
+junction, with the template's exponent: the children of a parent of width
+``d`` have widths ``d (1 + a^n)^(-1/n)`` and ``a`` times that, the asymmetry
+``a`` drawn round the value that reproduces the small tier's fall in mean
+diameter from one order to the next (:func:`fit_asymmetry`). The two
+daughters open at the template's daughter-daughter angle, the narrower
+deflected more, in the plane round the parent that keeps them inside the box
+and away from other vessels. A child that would leave the box is cut at the
+face and marked as leaving the image.
 """
 from __future__ import annotations
 
@@ -50,6 +63,10 @@ MIN_DAUGHTER_ANGLE_DEG = 20.0
 MAX_DAUGHTER_ANGLE_DEG = 150.0
 #: A root's first vessel tilts at most this far from the face's inward normal.
 ROOT_TILT_DEG = 30.0
+#: Directions tried for a root's first vessel before it is shortened to fit
+#: the box, and how far inside the face a shortened one stops (a share).
+FIRST_VESSEL_AIMS = 12
+FIRST_VESSEL_MARGIN = 0.05
 #: A drawn length is kept within these multiples of its order's median.
 LENGTH_CLIP = (0.2, 6.0)
 #: The asymmetry is drawn uniformly this far either side of the fitted one.
@@ -61,6 +78,8 @@ TORTUOSITY_LOG_SIGMA = 0.6
 #: A length drawn when the template gives none at all.
 FALLBACK_LENGTH_UM = 30.0
 FALLBACK_DIAMETER_UM = 8.0
+#: A trunk's side branch's width, for its bend, when the template has no capillary width.
+FALLBACK_SIDE_BRANCH_UM = 5.0
 
 _SIDE_CATEGORIES = {
     "arterial": ("large_arteriole", "arteriole"),
@@ -93,6 +112,9 @@ class SideResult:
     side: str
     leaves: list = field(default_factory=list)
     large_boundary: list = field(default_factory=list)
+    #: Large-tier nodes where the trunk goes on as one child and a side
+    #: branch leaves for the bed (each takes one bed vessel).
+    handoffs: list = field(default_factory=list)
     nodes: list = field(default_factory=list)
     #: ``{root: [its tree's nodes]}``: what each root connects on its own.
     trees: dict = field(default_factory=dict)
@@ -278,6 +300,26 @@ def children_per_tip(tips: int, wanted: int, notes: Optional[list] = None, order
     return counts
 
 
+def trunk_children_per_tip(tips: int, wanted: int, notes: Optional[list] = None, order: str = "") -> list[int]:
+    """How many children each growing tip of the large tier gets so that
+    their sum is *wanted*: a trunk may go on as one child (its side branch
+    goes to the bed), so ``min(tips, wanted)`` tips grow one each and the
+    rest of *wanted* is spread one at a time, bifurcations first."""
+    if wanted <= 0 or tips <= 0:
+        return []
+    growing = min(tips, wanted)
+    counts = [1] * growing
+    extra = wanted - growing
+    i = 0
+    while extra > 0:
+        counts[i % growing] += 1
+        extra -= 1
+        i += 1
+    if max(counts) > 3 and notes is not None:
+        notes.append(f"{order}: {wanted} vessels from {tips} tips need junctions of {max(counts)} children")
+    return counts
+
+
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------
@@ -344,6 +386,30 @@ def snap_to_face(point: np.ndarray, extent: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Growing one side
 # ---------------------------------------------------------------------------
+
+
+def _aim_first_vessel(
+    base: np.ndarray,
+    tilt_deg: float,
+    start: np.ndarray,
+    chord: float,
+    extent: np.ndarray,
+    rng: np.random.Generator,
+    first: tuple[np.ndarray, float],
+) -> tuple[np.ndarray, float]:
+    """A direction for a root's first vessel within *tilt_deg* of *base*,
+    and how much of *chord* fits in the box along it (1 when all of it):
+    the best of *first* (the direction drawn, which left the box) and
+    :data:`FIRST_VESSEL_AIMS` more tries, stopping at one that fits."""
+    best_direction, best_fraction = first
+    for _ in range(FIRST_VESSEL_AIMS):
+        direction = _tilted(base, tilt_deg, rng)
+        fraction = exit_fraction(start, start + chord * direction, extent)
+        if fraction > best_fraction:
+            best_direction, best_fraction = direction, fraction
+        if fraction >= 1.0:
+            break
+    return best_direction, best_fraction
 
 
 class _Occupancy:
@@ -451,9 +517,15 @@ def grow_side(
         if daughter_angle_sd_deg is not None
         else (template.daughter_angle_sd_deg if template.daughter_angle_sd_deg else DEFAULT_DAUGHTER_ANGLE_SD_DEG)
     )
+    # Murray's law holds in the small tier only: its asymmetry is fitted to
+    # the small tier's fall in width from the large tier's last order on.
     asymmetry = fit_asymmetry(
-        diameter_fall_per_order([o for o, _c, _l in generations]), exponent, draft.notes
+        diameter_fall_per_order(list(large_tier[-1:]) + list(small_tier)) if small_tier else None,
+        exponent,
+        draft.notes,
     )
+    capillaries = template.class_target("capillary")
+    side_branch_um = (capillaries.mean_diameter_um if capillaries else None) or FALLBACK_SIDE_BRANCH_UM
 
     # Generation 1: one vessel from each root, extra ones in pairs so a root
     # is a terminal or a junction, never a degree-2 node.
@@ -482,18 +554,28 @@ def grow_side(
         base = _random_unit(rng) if normal is None else normal
         root_position = draft.position(root)
         for j in range(count):
-            direction = _tilted(base, ROOT_TILT_DEG, rng) if count == 1 else _tilted(base, 60.0, rng)
+            tilt = ROOT_TILT_DEG if count == 1 else 60.0
+            direction = _tilted(base, tilt, rng)
             diameter = first_diameters.pop()
             length = first_lengths.pop()
             tortuosity = draw_tortuosity(first_order, first_class, rng)
             chord = length / tortuosity
+            fraction = exit_fraction(root_position, root_position + chord * direction, extent)
+            if fraction < 1.0:
+                direction, fraction = _aim_first_vessel(base, tilt, root_position, chord, extent, rng, (direction, fraction))
+            # A root's first vessel stays in the box: re-aimed above, else
+            # shortened to end inside it. Cut at a face, its tree would be
+            # that one vessel.
+            if fraction < 1.0:
+                kept = fraction * (1.0 - FIRST_VESSEL_MARGIN)
+                draft.note(
+                    f"{first_order.label}: a first vessel {length:.0f} um long has no room in the box; "
+                    f"{length * kept:.0f} um drawn"
+                )
+                chord *= kept
+                length *= kept
             end = root_position + chord * direction
-            fraction = exit_fraction(root_position, end, extent)
-            cut = fraction < 1.0
-            if cut:
-                end = snap_to_face(root_position + fraction * chord * direction, extent)
-                chord = float(np.linalg.norm(end - root_position))
-                length = chord * tortuosity
+            cut = False
             node = draft.add_node(end)
             result.nodes.append(node)
             result.trees.setdefault(root, []).append(node)
@@ -507,7 +589,11 @@ def grow_side(
     for order, category, is_large in generations[1:]:
         cls = template.class_target(category)
         growable = [t for t in tips if not t.at_face]
-        counts = children_per_tip(len(growable), order.edge_count, draft.notes, order.label)
+        trunk = is_large and previous_large
+        if trunk:
+            counts = trunk_children_per_tip(len(growable), order.edge_count, draft.notes, order.label)
+        else:
+            counts = children_per_tip(len(growable), order.edge_count, draft.notes, order.label)
         if len(counts) < len(growable):
             weights = np.array([
                 min(face_distance_um(t.position, extent), spacing_um)
@@ -527,17 +613,27 @@ def grow_side(
         result.leaves.extend(leaves)
         next_tips: list[Tip] = []
         generation_lengths = draw_lengths(order, cls, sum(counts), rng)
+        # The large tier's widths are its orders' own (see the module).
+        generation_widths = draw_root_diameters(order, cls, sum(counts), rng) if is_large else None
         for tip, count in zip(growing, counts):
-            a = float(np.clip(rng.uniform(asymmetry - ASYMMETRY_SPREAD, asymmetry + ASYMMETRY_SPREAD), MIN_ASYMMETRY, 1.0))
-            ratios = murray_ratios(a, exponent, count)
-            rng.shuffle(ratios)
-            diameters = tip.diameter_um * ratios
+            if generation_widths is not None:
+                diameters = np.array([generation_widths.pop() for _ in range(count)])
+            else:
+                a = float(np.clip(rng.uniform(asymmetry - ASYMMETRY_SPREAD, asymmetry + ASYMMETRY_SPREAD), MIN_ASYMMETRY, 1.0))
+                ratios = murray_ratios(a, exponent, count)
+                rng.shuffle(ratios)
+                diameters = tip.diameter_um * ratios
             lengths = [generation_lengths.pop() for _ in range(count)]
             tortuosities = [draw_tortuosity(order, cls, rng) for _ in range(count)]
             chords = [length / tort for length, tort in zip(lengths, tortuosities)]
             angle = math.radians(float(np.clip(rng.normal(angle_mean, angle_sd), MIN_DAUGHTER_ANGLE_DEG, MAX_DAUGHTER_ANGLE_DEG)))
             if count == 2:
                 deflections = list(angle * murray_deflections(tip.diameter_um, diameters))
+            elif count == 1:
+                # The trunk going on bends away from its side branch by
+                # Murray's optimum share of the angle between them.
+                deflections = [angle * float(murray_deflections(tip.diameter_um, [diameters[0], side_branch_um])[0])]
+                result.handoffs.append(tip.node)
             else:
                 deflections = [angle / 2.0] * count
             children = _place_children(tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng)
@@ -576,4 +672,5 @@ __all__ = [
     "murray_deflections",
     "murray_ratios",
     "snap_to_face",
+    "trunk_children_per_tip",
 ]

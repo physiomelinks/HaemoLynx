@@ -52,7 +52,15 @@ from .template import (
     lognormal_from_mean_median,
     lognormal_from_median_p10_p90,
 )
-from .trees import SideResult, face_distance_um, grow_side, inward_normal, snap_to_face
+from .trees import (
+    LENGTH_CLIP,
+    TORTUOSITY_LOG_SIGMA,
+    SideResult,
+    face_distance_um,
+    grow_side,
+    inward_normal,
+    snap_to_face,
+)
 
 #: The schema's seeds' default (``pipeline/schema.py`` repeats it; it stays
 #: importable without numpy).
@@ -74,6 +82,8 @@ SYNTHETIC = "synthetic"
 
 #: A boundary leaf takes this many bed edges (with its tree edge, a 3-way junction).
 LEAF_BED_EDGES = 2
+#: A trunk's hand-off node takes one (with its two trunk edges, a 3-way junction).
+HANDOFF_BED_EDGES = 1
 #: A root attached to the bed directly (no tree on its side) is a terminal.
 ROOT_BED_EDGES = 1
 #: Two roots closer than this share of the box's shortest side are moved apart.
@@ -106,6 +116,9 @@ class _Side:
     boundary_role: str = ""
     large_role: str = ""
     boundary_count: int = 0
+    #: The count is exact: none left means no leaf is a boundary node (a
+    #: large tier whose hand-offs took the template's whole count).
+    counted: bool = False
     blind: list = None  # type: ignore[assignment]
     face: list = None  # type: ignore[assignment]
 
@@ -152,7 +165,7 @@ def _choose_boundary_leaves(side: _Side, interior_dead_ends: bool, rng: np.rando
     chosen: list = []
     if interior:
         wanted = side.boundary_count if interior_dead_ends else len(interior)
-        if wanted <= 0:
+        if wanted <= 0 and not side.counted:
             draft.note(f"{side.name} side: the template counts no boundary nodes; every tree leaf joins the bed")
             wanted = len(interior)
         if wanted >= len(interior):
@@ -366,12 +379,6 @@ def generate_network(
                 if T.scheme == "hierarchical":
                     draft.add_role(node, side.boundary_role)
             continue
-        if large and not small:
-            # The large tier is the whole tree: its leaves are where it hands
-            # over to the bed, the large-vessel boundary nodes (the template's
-            # count of them), as the large masks alone leave a run.
-            side.boundary_role = side.large_role
-            side.boundary_count = getattr(T, f"{side.large_role}_count")
         side.result = grow_side(
             draft, T, side.name, side.roots,
             rng=rng, spacing_um=spacing, extent_um=extent, min_separation_um=min_separation,
@@ -380,6 +387,17 @@ def generate_network(
         tree_nodes.extend(side.result.nodes)
         for node in side.result.large_boundary:
             draft.add_role(node, side.large_role)
+        for node in side.result.handoffs:
+            draft.add_role(node, side.large_role)
+            attached[node] = HANDOFF_BED_EDGES
+        if large and not small:
+            # The large tier is the whole tree: its leaves, like its trunks'
+            # side branches, are where it hands over to the bed, the
+            # large-vessel boundary nodes, as the large masks alone leave a
+            # run; the template's count of them less the hand-offs.
+            side.boundary_role = side.large_role
+            side.boundary_count = max(getattr(T, f"{side.large_role}_count") - len(side.result.handoffs), 0)
+            side.counted = True
         for node in _choose_boundary_leaves(side, options.interior_dead_ends, rng, draft):
             draft.add_role(node, side.boundary_role)
             attached[node] = LEAF_BED_EDGES
@@ -499,7 +517,9 @@ def _capillary_chord(template: NetworkTemplate) -> Optional[float]:
 
 def _rescale_tree_lengths(draft: NetworkDraft, template: NetworkTemplate) -> None:
     """One factor per tree class so its vessels add up to the template's
-    total length for that class, never below a vessel's chord."""
+    total length for that class, never below a vessel's chord, nor above
+    the longest and most tortuous vessel the template's class has
+    (:func:`_tree_length_caps`); what the caps leave short is noted."""
     by_class: dict = {}
     for edge in draft.edges:
         if edge.part == TREE:
@@ -509,13 +529,54 @@ def _rescale_tree_lengths(draft: NetworkDraft, template: NetworkTemplate) -> Non
         if cls is None or not cls.total_length_um:
             continue
         chords = {id(e): _chord(draft, e) for e in edges}
+        longest, most_tortuous = _tree_length_caps(cls, template, category)
+        floors = {id(e): chords[id(e)] * (1.0 + 1e-6) for e in edges}
+        # The rescale never stretches a vessel past the caps; one drawn
+        # beyond them is not shortened to them either.
+        ceilings = {
+            id(e): max(min(longest, chords[id(e)] * most_tortuous), floors[id(e)], float(e.length_um or 0.0))
+            for e in edges
+        }
         for _ in range(3):
             total = sum(float(e.length_um or 0.0) for e in edges)
             if total <= 0:
                 break
             factor = cls.total_length_um / total
             for e in edges:
-                e.length_um = max(float(e.length_um or 0.0) * factor, chords[id(e)] * (1.0 + 1e-6))
+                e.length_um = min(max(float(e.length_um or 0.0) * factor, floors[id(e)]), ceilings[id(e)])
+        total = sum(float(e.length_um or 0.0) for e in edges)
+        if total < 0.98 * cls.total_length_um:
+            draft.note(
+                f"{category}: {total:.0f} um of the template's {cls.total_length_um:.0f} um drawn; "
+                "longer vessels would be longer or more tortuous than any of the template's"
+            )
+
+
+def _tree_length_caps(cls: Any, template: NetworkTemplate, category: str) -> tuple[float, float]:
+    """``(longest length, highest tortuosity)`` a tree vessel of *category*
+    may be rescaled to: the template's own longest and most tortuous
+    vessels of the class (the graph source), else the draws' own limits --
+    :data:`trees.LENGTH_CLIP` times the class's median length, and the
+    tortuosity two sigmas up the draw's spread."""
+    samples = cls.samples
+    lengths = list(samples.lengths_um) if samples is not None else []
+    tortuosities = list(samples.tortuosities) if samples is not None else []
+    for order in template.orders:
+        if order.category == category and order.samples is not None:
+            lengths += list(order.samples.lengths_um)
+            tortuosities += list(order.samples.tortuosities)
+    if lengths:
+        longest = float(max(lengths))
+    else:
+        median = cls.median_length_um or cls.mean_length_um
+        longest = float(LENGTH_CLIP[1] * median) if median else math.inf
+    if tortuosities:
+        most_tortuous = max(float(max(tortuosities)), 1.0)
+    else:
+        excess = max(float(cls.mean_tortuosity or 1.1) - 1.0, 0.0)
+        sigma = TORTUOSITY_LOG_SIGMA
+        most_tortuous = 1.0 + excess * math.exp(-(sigma**2) / 2.0 + 2.0 * sigma)
+    return longest, most_tortuous
 
 
 def _chord(draft: NetworkDraft, edge: Any) -> float:

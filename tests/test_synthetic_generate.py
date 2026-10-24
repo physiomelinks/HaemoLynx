@@ -21,6 +21,7 @@ from haemolynx.statistics.bifurcation import fitted_murray_exponent
 from haemolynx.synthetic import bed as bed_module
 from haemolynx.synthetic import polylines, trees
 from haemolynx.synthetic.compare import compare_templates, comparison_summary
+from haemolynx.synthetic.trees import face_distance_um
 from haemolynx.synthetic.generate import (
     DEFAULT_SEED,
     SYNTHETIC,
@@ -427,11 +428,102 @@ def test_a_large_tier_alone_hands_over_to_the_bed_at_large_boundary_nodes():
         assert d[SYNTHETIC_CLASS] == expected
 
 
-def test_a_tree_cut_by_a_face_at_its_first_vessel_still_joins_the_bed():
-    """Regression (E14.5's graph source, 2026-10-24): the one inlet's first
-    vessel left the box, so its side had no leaf inside it, and the rule
-    that a tree keeps a leaf on the bed was skipped: the inlet and its vessel
-    were a piece of their own and the network failed its contract."""
+def _trunk_template():
+    """A large tier shaped like E14.5's: two trunks per side over six orders
+    at a flat width (an order's mean hardly falls), no Art/Ven tier."""
+    T = _large_tier_only_template()
+    orders = []
+    for side, label, width in (("large_arteriole", "Large_Art", 20.0), ("large_venule", "Large_Ven", 22.0)):
+        for index in range(1, 7):
+            orders.append(OrderTarget(f"{label}{index}", side, index, 2, 30.0, 1.1, 40.0, width + (index % 2), 0.1))
+    classes = {
+        **T.classes,
+        "large_arteriole": replace(T.classes["large_arteriole"], count=12, total_length_um=360.0, mean_length_um=30.0, median_length_um=29.0, mean_diameter_um=20.5),
+        "large_venule": replace(T.classes["large_venule"], count=12, total_length_um=360.0, mean_length_um=30.0, median_length_um=29.0, mean_diameter_um=22.5),
+    }
+    return replace(T, orders=tuple(orders), classes=classes, large_arteriole_boundary_count=12, large_venule_boundary_count=12)
+
+
+def test_trunk_children_per_tip_lets_a_trunk_go_on_as_one():
+    assert trees.trunk_children_per_tip(2, 2) == [1, 1]
+    assert trees.trunk_children_per_tip(3, 2) == [1, 1]
+    assert trees.trunk_children_per_tip(2, 3) == [2, 1]
+    assert trees.trunk_children_per_tip(2, 6) == [3, 3]
+    assert trees.trunk_children_per_tip(2, 0) == [] and trees.trunk_children_per_tip(0, 2) == []
+    notes: list = []
+    assert trees.trunk_children_per_tip(1, 5, notes, "Large_Art3") == [5] and notes
+
+
+def test_a_trunk_hands_side_branches_to_the_bed_at_its_orders_widths():
+    """Harvey, 2026-10-24: the large tier is a trunk with side branches, its
+    widths the template's per order. Murray's law at its exponent shrank a
+    trunk of 15 orders below a micron on E14.5."""
+    T = _trunk_template()
+    G = generate_network(T, seed=SEED)
+    roles = boundary_nodes(G)
+    summary = assign_vessel_branch_orders(
+        G,
+        roles["inlet"],
+        outlet_nodes=roles["outlet"],
+        large_arteriole_boundary_nodes=roles["large_arteriole_boundary"],
+        large_venule_boundary_nodes=roles["large_venule_boundary"],
+        expects_hierarchical=False,
+    )
+    assert summary["mode"] == "large_tier"
+    labels = Counter(d["branch_order"] for *_e, d in G.edges(data=True))
+    assert {k: v for k, v in labels.items() if not k.startswith("B")} == {o.label: o.edge_count for o in T.orders}
+    # Each order's widths are its own: their mean is the order's exactly.
+    for order in T.orders:
+        widths = [d["diameter_um"] for *_e, d in G.edges(data=True) if d["branch_order"] == order.label]
+        assert np.mean(widths) == pytest.approx(order.mean_diameter_um, rel=1e-9)
+    # A trunk going on as one vessel hands a side branch (a capillary) to the bed.
+    handoffs = [
+        n for n in roles["large_arteriole_boundary"] + roles["large_venule_boundary"]
+        if sorted(d[SYNTHETIC_CLASS] for *_e, d in G.edges(n, data=True)).count("capillary") == 1
+        and G.degree(n) == 3
+    ]
+    assert len(handoffs) >= 8  # two trunks a side, five orders on
+    for n in handoffs:
+        classes = Counter(d[SYNTHETIC_CLASS] for *_e, d in G.edges(n, data=True))
+        assert classes["capillary"] == 1 and sum(classes.values()) == 3
+
+
+def test_the_tree_rescale_stops_at_the_templates_longest_and_most_tortuous():
+    """Harvey, 2026-10-24: no class-length rescale stretches a vessel past
+    the template's longest or most tortuous; the shortfall is noted. (One
+    vessel left of a tier was stretched to 904 um, tortuosity 14.6.)"""
+    from haemolynx.synthetic import generate as generate_module
+    from haemolynx.synthetic.draft import TREE, NetworkDraft
+
+    T = fixture_template()
+    T = replace(T, classes={**T.classes, "arteriole": replace(T.classes["arteriole"], total_length_um=5000.0)})
+    longest, most_tortuous = generate_module._tree_length_caps(T.classes["arteriole"], T, "arteriole")
+    assert longest == pytest.approx(trees.LENGTH_CLIP[1] * 32.0)
+    assert 1.0 < most_tortuous < 1.5  # mean 1.1, two sigmas up the draw's spread
+    draft = NetworkDraft()
+    a = draft.add_node([0.0, 0.0, 0.0])
+    ends = [draft.add_node([0.0, 0.0, 40.0 * (i + 1)]) for i in range(3)]
+    for end, chord in zip(ends, (40.0, 80.0, 120.0)):
+        draft.add_edge(a, end, category="arteriole", order="Art1", length_um=chord * 1.05, diameter_um=10.0, part=TREE)
+    generate_module._rescale_tree_lengths(draft, T)
+    for edge, chord in zip(draft.edges, (40.0, 80.0, 120.0)):
+        assert edge.length_um == pytest.approx(min(longest, chord * most_tortuous))
+    assert any("longer or more tortuous than any of the template's" in n for n in draft.notes)
+
+
+def test_the_tree_rescale_reads_the_graph_sources_own_extremes():
+    from haemolynx.synthetic import generate as generate_module
+    from haemolynx.synthetic.template import Samples
+
+    T = fixture_template()
+    cls = replace(T.classes["arteriole"], samples=Samples(lengths_um=(10.0, 55.0), tortuosities=(1.02, 1.4)))
+    assert generate_module._tree_length_caps(cls, T, "arteriole") == (55.0, 1.4)
+
+
+def test_a_first_vessel_longer_than_the_box_is_shortened_inside_it():
+    """Harvey, 2026-10-24: a root's first vessel stays in the box -- re-aimed,
+    else shortened -- since cut at a face its tree would be that one vessel
+    (E14.5's graph source drew the one inlet's out through a face)."""
     T = fixture_template()
     T = replace(
         T,
@@ -442,9 +534,39 @@ def test_a_tree_cut_by_a_face_at_its_first_vessel_still_joins_the_bed():
     roles = boundary_nodes(G)
     inlet = roles["inlet"][0]
     (first,) = list(G.neighbors(inlet))
-    assert G.degree(first) == 3  # the cut vessel's end joins the bed
-    assert "arteriole_boundary" in G.nodes[first][SYNTHETIC_ROLES]
-    assert nx.is_connected(G)
+    extent = np.asarray(T.extent_um)
+    assert face_distance_um(np.asarray(G.nodes[first]["pos"]), extent) > 1.0  # inside, not on a face
+    assert G.degree(first) >= 3  # its tree grows on from it
+    labels = {d[SYNTHETIC_CLASS] for *_e, d in G.edges(first, data=True)}
+    assert labels == {"arteriole"}
+    notes = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["notes"]
+    assert any("has no room in the box" in n for n in notes)
+
+
+def test_a_first_vessel_that_fits_is_drawn_as_before():
+    """Re-aiming only happens when the direction drawn leaves the box: the
+    fixture's first vessels fit, and their draws are the ones they were."""
+    G = generate_network(fixture_template(), seed=SEED)
+    notes = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["notes"]
+    assert not any("has no room in the box" in n for n in notes)
+
+
+def test_a_tree_whose_every_leaf_is_at_a_face_keeps_one_on_the_bed():
+    """Regression (5dda9ac9): a side with no leaf inside the box returned
+    before the rule that each tree keeps a leaf on the bed, and its tree hung
+    loose. The leaf at the face joins the bed instead."""
+    from haemolynx.synthetic import generate as generate_module
+    from haemolynx.synthetic.draft import NetworkDraft
+    from haemolynx.synthetic.trees import SideResult, Tip
+
+    draft = NetworkDraft()
+    root = draft.add_node(np.array([10.0, 10.0, 0.0]), "inlet")
+    end = draft.add_node(np.array([0.0, 10.0, 30.0]))
+    tip = Tip(node=end, position=np.array([0.0, 10.0, 30.0]), direction=np.array([0.0, 0.0, 1.0]), diameter_um=10.0, generation=1, root=root, at_face=True)
+    side = generate_module._Side("arterial", [(root, "x0")], boundary_role="arteriole_boundary", boundary_count=3)
+    side.result = SideResult(side="arterial", leaves=[tip], nodes=[end], trees={root: [end]})
+    chosen = generate_module._choose_boundary_leaves(side, True, np.random.default_rng(0), draft)
+    assert chosen == [end] and side.face == []
 
 
 def test_a_template_without_capillaries_or_inlets_is_refused():
