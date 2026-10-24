@@ -1041,6 +1041,20 @@ def _not_at_their_defaults_note(settings: Mapping[str, Any]) -> tuple[str, ...]:
     return (f"Judged with these settings it does not tune, not at their defaults: {listed}.",)
 
 
+def _search_grid_note(factor: int) -> tuple[str, ...]:
+    """The report's line on how a coarser search grid was made, which is not
+    how a run reduces its image (D2, Harvey 2026-10-23: keep block max and
+    say so); none at full resolution."""
+    if factor <= 1:
+        return ()
+    return (
+        f"The {factor}x search grid was reduced by block max -- a coarse voxel is vessel when any voxel "
+        "of its block is, so no thin vessel is lost, though vessels read a little wider and close ones "
+        "may touch -- not by the block majority a run's downsample on import uses "
+        "(segmented_image_downsample).",
+    )
+
+
 def _cartwheel_hub_count(G, settings: Mapping[str, Any]) -> int:
     """How many of *G*'s nodes are "cartwheel" artifacts -- one node
     with many spoke edges radiating in every direction instead of the
@@ -1070,10 +1084,14 @@ def _cartwheel_hub_count(G, settings: Mapping[str, Any]) -> int:
     )
 
 
+#: The scorecard's dead-end rows: this, then the kind.
+_DEAD_END_KIND_MEASURE = "dead ends: "
+
 #: The before/after scorecard (see :mod:`.scorecard`): each measure's name,
-#: whether higher is better, and how far it may move the wrong way and still
-#: count as the same. The coverage tolerances are the guards' own.
-_SCORECARD_MEASURES: tuple[tuple[str, bool, float], ...] = (
+#: whether higher is better (``None``: neither), and how far it may move the
+#: wrong way and still count as the same. The coverage tolerances are the
+#: guards' own.
+_SCORECARD_MEASURES: tuple[tuple[str, Optional[bool], float], ...] = (
     ("mask score (0-10)", True, 0.05),
     ("input vessels the skeleton reaches", True, 0.02),
     ("input mask the skeleton runs through", True, 0.02),
@@ -1085,7 +1103,16 @@ _SCORECARD_MEASURES: tuple[tuple[str, bool, float], ...] = (
     # Measures only, never scored by a sweep: what they should be decides
     # what a structure is, which takes a marked grid (PLAN_optimisers.md).
     ("dead ends", False, 0.0),
+    # Each dead end's kind as a run marks it (graph.dead_ends); no kind is
+    # better or worse until a grid says so. A person's "blind" is never on
+    # a graph the search builds.
+    *(
+        (_DEAD_END_KIND_MEASURE + kind.replace("_", " "), None, 0.0)
+        for kind in graph_mod.dead_ends.DEAD_END_KINDS
+        if kind != graph_mod.dead_ends.BLIND
+    ),
     ("short loops", False, 0.0),
+    ("loops inside one lumen", False, 0.0),
     ("pairs of edges in one lumen", False, 0.0),
 )
 
@@ -1120,6 +1147,8 @@ def _scorecard_measures(
     )
     context = _stages.network_context(_in_ram(settings), cleaned, voxel, thick, thick_centreline=tree)
     G = _finished_graph(skeleton, cleaned, settings, context)
+    _stages.mark_dead_end_kinds(settings, G, context)
+    kinds = Counter(G.nodes[node].get(graph_mod.DEAD_END_KIND) for node, degree in G.degree() if degree == 1)
     artefacts = graph_mod.diagnose_lumen_artefacts(
         G, cleaned, voxel_size_zyx=voxel, mask_support=context.mask_support,
         stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0),
@@ -1155,7 +1184,12 @@ def _scorecard_measures(
         "graph components": float(topology.n_components),
         "self-loops": float(topology.n_selfloops),
         "dead ends": float(sum(1 for _node, degree in G.degree() if degree == 1)),
+        **{
+            _DEAD_END_KIND_MEASURE + kind.replace("_", " "): float(kinds.get(kind, 0))
+            for kind in graph_mod.dead_ends.DEAD_END_KINDS
+        },
         "short loops": float(artefacts["short_loop_count"]),
+        "loops inside one lumen": float(artefacts["loops_inside_one_lumen"]),
         "pairs of edges in one lumen": float(artefacts["duplicate_pair_count"]),
         "cartwheel hubs": float(_cartwheel_hub_count(G, settings)),
     }
@@ -2991,5 +3025,5 @@ def optimise_skeleton_and_graph_settings(
         resolution_cap=auto.resolution_cap if auto is not None else None,
         finer_than_search_grid=finer_than_search_grid,
         scorecard=_scorecard(before, after),
-        notes=_not_at_their_defaults_note(given),
+        notes=_search_grid_note(factor) + _not_at_their_defaults_note(given),
     )

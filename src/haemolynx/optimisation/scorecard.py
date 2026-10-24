@@ -12,7 +12,7 @@ Pure: rows in, rows and text out.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,9 @@ class ScoreRow:
     name: str
     before: float
     after: float
-    higher_is_better: bool
+    #: ``None`` for a measure with no better way: shown, never better or
+    #: worse (what a dead end is, until a marked grid says which way is better).
+    higher_is_better: Optional[bool]
     #: How far *after* may move the wrong way from *before* before it counts
     #: as worse: rounding between two near-identical results is not a
     #: regression.
@@ -35,11 +37,11 @@ class ScoreRow:
 
     @property
     def worse(self) -> bool:
-        return self._gain() < -self.tolerance
+        return self.higher_is_better is not None and self._gain() < -self.tolerance
 
     @property
     def better(self) -> bool:
-        return self._gain() > self.tolerance
+        return self.higher_is_better is not None and self._gain() > self.tolerance
 
 
 def worse_rows(rows: Iterable[ScoreRow]) -> tuple[ScoreRow, ...]:

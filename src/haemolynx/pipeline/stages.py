@@ -2505,7 +2505,7 @@ def build_network(
         # what the flow's open ends are put on, the rest what the review lists.
         graph.dead_ends.record_image_extent(G, skeleton.shape, voxel_size_zyx)
         if binary_mask is not None and no_vessels is None:
-            _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at, support=mask_support)
+            mark_dead_end_kinds(settings, G, context)
             _record_raw_evidence(
                 settings, G, binary_mask, voxel_size_zyx,
                 getattr(volume, "crop", None), getattr(volume, "downsample", None),
@@ -2721,6 +2721,19 @@ def _mark_dead_end_kinds(
         "Dead ends: %d -- %s.",
         len(ends),
         ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in census.items() if count) or "none",
+    )
+
+
+def mark_dead_end_kinds(settings: Mapping[str, Any], G: nx.MultiGraph, context: NetworkContext) -> None:
+    """What each dead end of *G* is, judged through *context*'s mask and
+    written on its node, as :func:`build_network` marks the graph it saves:
+    the image's extent recorded, then every dead end's kind
+    (``graph.dead_ends``). The settings optimiser's scorecard counts the
+    same marks on its graphs."""
+    graph.dead_ends.record_image_extent(G, context.binary_mask.shape, context.voxel_size_zyx)
+    _mark_dead_end_kinds(
+        settings, G, context.binary_mask, context.voxel_size_zyx, context.radius_at,
+        support=context.mask_support,
     )
 
 

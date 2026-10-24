@@ -54,6 +54,23 @@ def test_the_report_lines_mark_each_measure_and_warn_on_regressions():
     )
 
 
+def test_a_measure_with_no_better_way_is_shown_but_never_better_or_worse():
+    """What a dead end is waits on a marked grid, so the scorecard counts the
+    kinds without judging them: a large move either way is no regression."""
+    up = ScoreRow("dead ends: leaves image", 10.0, 40.0, None)
+    down = ScoreRow("dead ends: leaves image", 40.0, 10.0, None)
+    assert not up.worse and not up.better
+    assert not down.worse and not down.better
+    assert worse_rows((up, down)) == ()
+
+    lines = scorecard_lines((up, ScoreRow("self-loops", 0.0, 1.0, False)))
+    assert lines[1] == "    dead ends: leaves image  10 -> 40"
+    assert lines[-1] == (
+        "WARNING: worse than your starting settings on self-loops (0 -> 1). "
+        "Check these before using the settings."
+    )
+
+
 def test_no_rows_no_lines():
     assert scorecard_lines(()) == []
     assert "WARNING" not in "\n".join(scorecard_lines((ScoreRow("a", 1.0, 1.0, True),)))

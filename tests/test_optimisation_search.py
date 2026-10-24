@@ -2608,6 +2608,73 @@ def test_a_trial_scores_the_graph_the_run_saves(tmp_path, thick):
     assert (search._network_context(search.current).thick_vessel_mask is not None) is thick
 
 
+@pytest.mark.parametrize("thick", [True, False], ids=["thick vessels", "plain"])
+def test_the_scorecard_counts_the_dead_end_kinds_and_lumen_loops_the_run_saves(tmp_path, thick):
+    """Regression: the scorecard counted dead ends but not their kinds, and
+    no loops inside one lumen -- a trial's graph was never marked, since
+    build_network marks dead ends after finish_network_graph. The scorecard
+    now marks its graph as the run marks the graph it saves, and counts
+    those marks kind by kind."""
+    from collections import Counter
+
+    from test_skeletonise_stage import _write_mask, settings_for
+    from test_thick_vessel_skeletonisation import plasma_labelled_object
+
+    from haemolynx import graph as graph_module
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.optimisation.search import _DEAD_END_KIND_MEASURE, _scorecard_measures
+    from haemolynx.pipeline import default_schema, stages
+
+    mask, _fat = plasma_labelled_object(8.0)
+    settings = settings_for(tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=thick)
+    volume = stages.skeletonise(dict(settings), stages.segment(dict(settings)))
+    run = stages.build_network(dict(settings), volume, default_schema()).graph
+
+    local = dict(settings)
+    on_grid = stages.load_volume_on_run_grid(local, stages.segment(local).input_format)
+    binary = _to_binary_volume_for_skeletonization(on_grid.image)
+    voxel_zyx = tuple(reversed(on_grid.voxel_size_xyz))
+    measured = _scorecard_measures(binary, voxel_zyx, local)
+
+    marked = Counter(run.nodes[n].get(graph_module.DEAD_END_KIND) for n, d in run.degree() if d == 1)
+    assert sum(marked.values()) > 0 and None not in marked
+    assert measured["dead ends"] == sum(marked.values())
+    for kind in graph_module.dead_ends.DEAD_END_KINDS:
+        assert measured[_DEAD_END_KIND_MEASURE + kind.replace("_", " ")] == marked.get(kind, 0), kind
+    support = stages.network_context(local, binary, voxel_zyx).mask_support
+    artefacts = graph_module.diagnose_lumen_artefacts(run, binary, voxel_size_zyx=voxel_zyx, mask_support=support)
+    assert measured["loops inside one lumen"] == artefacts["loops_inside_one_lumen"]
+
+
+def test_the_report_says_a_coarser_search_grid_is_reduced_by_block_max_not_majority():
+    """D2 (Harvey, 2026-10-23): the search reduces its own grid by block max
+    where a run's downsample on import reduces by block majority, and the
+    report says so -- a vessel one voxel thin stays on the search grid and
+    would not on the run's."""
+    from haemolynx.io.downsample import block_reduce_volume
+    from haemolynx.optimisation import build_report_text
+    from haemolynx.optimisation.search import _downsample_mask
+
+    thin = np.zeros((8, 8, 8), dtype=bool)
+    thin[3, 3, :] = True
+    assert _downsample_mask(thin, 2)[1, 1].all()
+    assert not block_reduce_volume(thin, (2, 2, 2), "majority").any()
+
+    coarse = optimise_skeleton_and_graph_settings(
+        _y_shaped_vessel(shape=(32, 32, 32)), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=_DEFAULT_STARTING_VALUES, downsample_factor=2, groups=["min_stub_length"],
+    )
+    text = build_report_text(coarse)
+    assert "The 2x search grid was reduced by block max" in text
+    assert "not by the block majority a run's downsample on import uses" in text
+
+    full = optimise_skeleton_and_graph_settings(
+        _y_shaped_vessel(shape=(32, 32, 32)), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=_DEFAULT_STARTING_VALUES, downsample_factor=1, groups=["min_stub_length"],
+    )
+    assert "block max" not in build_report_text(full)
+
+
 # ---------------------------------------------------------------------------
 # Low RAM: the raw image reduced without a whole float copy, and a search at
 # full resolution refused when it will not fit (PLAN_optimisers.md, Phase 5)
