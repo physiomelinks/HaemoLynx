@@ -28,6 +28,7 @@ from haemolynx.io.raw_volume_cache import (
     _RACY_WINDOW_NS,
     _cache_file_paths,
     _cache_key,
+    discard_cached_raw_volume,
     load_raw_volume_reusing_cache,
 )
 
@@ -339,3 +340,28 @@ def test_a_promoted_2d_tiff_round_trips_through_the_cache(tmp_path):
     assert Path(image2.filename) == memmap_path
     assert np.array_equal(image2[0], raw)
     assert status2["promoted_from_2d"] is True
+
+
+def test_discarding_an_entry_removes_its_two_files_and_nothing_else(tmp_path):
+    """A batch runs each image once: its decompressed copy is only disk taken
+    once the image is done."""
+    source, other = tmp_path / "volume.tif", tmp_path / "other.tif"
+    _write_tiff(source, seed=1)
+    _write_tiff(other, seed=2)
+    cache_dir = tmp_path / "cache"
+    for path in (source, other):
+        image, *_rest = load_raw_volume_reusing_cache(
+            str(path), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+        )
+        del image, _rest
+    entry = _cache_files_for(cache_dir, source)
+
+    removed = discard_cached_raw_volume(source, axis_order="zyx", memmap_directory=cache_dir)
+
+    assert set(removed) == set(entry)
+    assert not any(path.exists() for path in entry)
+    assert all(path.exists() for path in _cache_files_for(cache_dir, other))
+    assert discard_cached_raw_volume(source, axis_order="zyx", memmap_directory=cache_dir) == ()
+    # Never cached: a non-canonical order, or a file that is not there.
+    assert discard_cached_raw_volume(other, axis_order="xyz", memmap_directory=cache_dir) == ()
+    assert discard_cached_raw_volume(tmp_path / "gone.tif", axis_order="zyx", memmap_directory=cache_dir) == ()

@@ -740,3 +740,300 @@ def test_the_command_line_warns_of_conditions_with_statistics_off(tmp_path, sche
     assert "warning: Statistics is off" in capsys.readouterr().out
     assert main(argv) == 0
     assert "Statistics is off" not in capsys.readouterr().out
+
+
+# -- each image's caches -------------------------------------------------------
+
+
+def _caching_run(memmaps: Path, fail=()):
+    """A run that leaves what a real one does: the input decompressed into
+    the memmap folder, stage checkpoints and the thick-vessel region beside
+    the outputs, and the outputs themselves."""
+    from haemolynx.io import load_raw_volume_reusing_cache
+
+    def run_image(values, schema, *, progress=None, check_cancelled=None, haemorun=None):
+        stem = Path(values["input_path"]).stem
+        image, *_rest = load_raw_volume_reusing_cache(
+            str(values["input_path"]), input_format="tif", axis_order="zyx", memmap_directory=memmaps
+        )
+        del image, _rest
+        folder = haemorun.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in (
+            f"{stem}_checkpoint_build_network.pkl",
+            f"{stem}_checkpoint_solve.pkl",
+            f"{stem}_thick_vessel_region.json",
+            f"{stem}_thick_vessel_region.npy",
+            f"{stem}_skeleton.npy",
+            f"{stem}_graph.pkl",
+        ):
+            (folder / name).write_bytes(b"x")
+        if stem in fail:
+            raise ValueError(f"{stem} is broken")
+        haemorun.write_bytes(b"run")
+        return nx.MultiGraph([(0, 1)])
+
+    return run_image
+
+
+def _caching_batch(tmp_path: Path, schema, **changes):
+    import os
+    import time
+
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    old = time.time_ns() - 60_000_000_000
+    for stem in ("A_seg", "B_seg"):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+        os.utime(folder / f"{stem}.tif", ns=(old, old))
+    memmaps = tmp_path / "memmaps"
+    values = {
+        **_values(schema, tmp_path),
+        "use_memmap_loading": True,
+        "memmap_directory": memmaps,
+        **changes,
+    }
+    return values, memmaps, match_batch(BatchFolders(folder))
+
+
+def test_each_images_cached_files_go_once_it_ends_and_its_outputs_stay(tmp_path, schema, monkeypatch):
+    values, memmaps, matches = _caching_batch(tmp_path, schema)
+    monkeypatch.setattr(batch_run, "run_image", _caching_run(memmaps, fail={"B_seg"}))
+    out = tmp_path / "out"
+    summary = run_batch(values, schema, matches, out)
+    assert [result.status for result in summary.results] == [DONE, FAILED]
+    assert list(memmaps.iterdir()) == []
+    for stem in ("A_seg", "B_seg"):  # a failed image's too
+        left = sorted(path.name for path in (out / stem).iterdir())
+        assert f"{stem}_skeleton.npy" in left and f"{stem}_graph.pkl" in left
+        assert not [name for name in left if "checkpoint" in name or "thick_vessel_region" in name]
+    assert (out / "A_seg" / "A_seg.haemorun").is_file()
+
+
+def test_caches_stay_when_asked(tmp_path, schema, monkeypatch):
+    values, memmaps, matches = _caching_batch(tmp_path, schema)
+    monkeypatch.setattr(batch_run, "run_image", _caching_run(memmaps))
+    out = tmp_path / "out"
+    run_batch(values, schema, matches, out, clear_caches=False)
+    assert len([path for path in memmaps.iterdir() if path.suffix == ".memmap"]) == 2
+    assert (out / "A_seg" / "A_seg_checkpoint_solve.pkl").is_file()
+    assert (out / "B_seg" / "B_seg_thick_vessel_region.npy").is_file()
+
+
+def test_clearing_an_images_caches_never_fails_the_batch(tmp_path, schema, monkeypatch):
+    from haemolynx.gui.batch_run import clear_image_caches
+
+    def broken(*_args, **_kwargs):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("haemolynx.io.discard_cached_raw_volume", broken)
+    values, _memmaps, (match, _other) = _caching_batch(tmp_path, schema)
+    assert clear_image_caches({**values, "input_path": match.segmented}, schema) == ()
+
+
+# -- following a batch ----------------------------------------------------------
+
+
+def test_the_progress_line_counts_the_images_and_estimates_the_rest(tmp_path):
+    from haemolynx.gui.batch_run import RUNNING, BatchResult, batch_progress_text
+
+    _folders, matches = _batch(tmp_path, "A", "B", "C", "D", "E")
+    results = [BatchResult(match) for match in matches]
+    results[0].status = RUNNING
+    assert batch_progress_text(results, elapsed_s=30) == (
+        "Image 1 of 5: A -- 0 done, 0 failed, under a minute so far"
+    )
+    results[0].status, results[0].seconds = DONE, 1500
+    results[1].status, results[1].seconds = FAILED, 20
+    results[2].status = RUNNING
+    # 25 min an image: two waiting, and 20 of the running one's 25 left.
+    assert batch_progress_text(results, elapsed_s=1800, running_elapsed_s=300) == (
+        "Image 3 of 5: C -- 1 done, 1 failed, 30 min so far, about 1 h 10 min left"
+    )
+    for result in results[2:]:
+        result.status, result.seconds = DONE, 1500
+    assert batch_progress_text(results, elapsed_s=6000).startswith("5 images -- 4 done, 1 failed, 1 h 40 min")
+
+
+def test_a_batch_asked_to_stop_finishes_its_image_and_runs_no_more(tmp_path, schema, monkeypatch):
+    calls = []
+    monkeypatch.setattr(batch_run, "run_image", _fake_run(calls))
+    _folders, matches = _batch(tmp_path, "A_seg", "B_seg", "C_seg")
+    summary = run_batch(
+        _values(schema, tmp_path), schema, matches, tmp_path / "out", stop_requested=lambda: bool(calls)
+    )
+    assert [result.status for result in summary.results] == [DONE, NOT_RUN, NOT_RUN]
+    assert summary.stopped
+    assert "Stopped after an image, as asked." in summary.message()
+    assert "runs just the ones that failed or did not run" in summary.message()
+    rows = _summary_rows(summary.csv_path)
+    assert [row["status"] for row in rows] == [DONE, NOT_RUN, NOT_RUN]
+
+
+def test_a_failure_keeps_its_traceback_and_the_summary_its_first_line(tmp_path, schema, monkeypatch):
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([], fail={"A_seg"}))
+    _folders, matches = _batch(tmp_path, "A_seg")
+    summary = run_batch(_values(schema, tmp_path), schema, matches, tmp_path / "out")
+    (result,) = summary.results
+    assert result.error == "ValueError: A_seg is broken"
+    assert result.error_detail.startswith("Traceback") and "A_seg is broken" in result.error_detail
+    (row,) = _summary_rows(summary.csv_path)
+    assert row["error"] == "ValueError: A_seg is broken"
+
+
+def test_time_ram_and_vessels_fill_the_table_from_this_batch_or_the_last(tmp_path, schema, monkeypatch):
+    from haemolynx.gui.batch_run import (
+        TABLE_COLUMNS,
+        BatchSetup,
+        figure_cells,
+        read_summary_figures,
+        table_rows,
+    )
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+    folders, matches = _batch(tmp_path, "A_seg")
+    out = tmp_path / "out"
+    run_batch(_values(schema, tmp_path), schema, matches, out)
+    (time_s, ram, vessels) = read_summary_figures(out)["A_seg"]
+    assert time_s == "under a minute" and vessels == "1"
+    assert figure_cells(6600, 3 * 1024**3 + 200 * 1024**2, 12345) == ("1 h 50 min", "3.2 GB", "12,345")
+    setup = BatchSetup(
+        folders=folders, output_root=out, matches=tuple(matches), figures=read_summary_figures(out)
+    )
+    (row,) = table_rows(setup)
+    assert row[TABLE_COLUMNS.index("Time")] == "under a minute"
+    assert row[TABLE_COLUMNS.index("Vessels")] == "1"
+    assert len(row) == len(TABLE_COLUMNS)
+
+
+def test_an_images_peak_memory_is_its_own_stages_not_the_process(tmp_path):
+    import json
+
+    from haemolynx.gui.batch_run import _peak_rss
+
+    folder = tmp_path / "A"
+    folder.mkdir()
+    manifest = {"peak_rss_bytes": 900, "stages": [{"peak_rss_bytes": 100}, {"peak_rss_bytes": 300}, {}]}
+    (folder / "A_run_manifest.json").write_text(json.dumps(manifest))
+    settings = {"vtk_output_prefix": folder / "run"}
+    assert _peak_rss(settings, "A") == 300
+    (folder / "A_run_manifest.json").write_text(json.dumps({"peak_rss_bytes": 900, "stages": []}))
+    assert _peak_rss(settings, "A") == 900
+
+
+def test_check_reads_again_which_images_are_done(tmp_path, schema):
+    from haemolynx.gui.batch_run import DONE_BEFORE_SKIPPED, BatchSetup, check_setup, table_rows
+
+    folders, matches = _batch(tmp_path, "A_seg")
+    out = tmp_path / "out"
+    setup = BatchSetup(folders=folders, output_root=out, matches=tuple(matches))
+    done = haemorun_path(out, matches[0])
+    done.parent.mkdir(parents=True)
+    done.write_bytes(b"since")
+    checked, _lines = check_setup(_values(schema, tmp_path), schema, setup)
+    assert checked.done_before == {"A_seg"}
+    assert table_rows(checked)[0][-1] == DONE_BEFORE_SKIPPED
+
+
+# -- acting on the results --------------------------------------------------
+
+
+def test_run_again_is_the_one_image_whether_or_not_it_was_done(tmp_path):
+    from haemolynx.gui.batch_run import BatchSetup
+
+    folders, matches = _batch(tmp_path, "A_seg", "B_seg", "C_seg")
+    setup = BatchSetup(
+        folders=folders, output_root=tmp_path / "out", matches=tuple(matches),
+        unticked=frozenset({"B_seg"}), checked={"A_seg": "done"},
+    )
+    again = setup.only("B_seg")
+    assert [match.stem for match in again.selected()] == ["B_seg"]
+    assert again.skip_done is False and again.checked == {}
+
+
+def test_the_comparison_shows_its_tested_rows_smallest_q_first(tmp_path):
+    from haemolynx.gui.batch_run import comparison_table, comparison_tested
+    from haemolynx.statistics.batch_comparison import COMPARISON_FILENAME
+
+    header = [
+        "Section", "Metric", "Unit", "N WT", "N KO", "Median WT", "Median KO",
+        "Mean WT", "Mean KO", "Difference of medians (KO - WT)", "Mann-Whitney U",
+        "P (Mann-Whitney U, two-sided)", "Q (Benjamini-Hochberg)", "Smallest possible P",
+        "Welch t", "P (Welch t)", "Note",
+    ]
+    rows = [
+        ["Core", "Length", "um", 3, 3, 10, 12, 10, 12, 2, 1, 0.2, 0.4, 0.1, 1, 0.3, ""],
+        ["Core", "Nodes", "count", 3, 3, 5, 9, 5, 9, 4, 0, 0.05, 0.1, 0.1, 3, 0.01, ""],
+        ["Core", "Flat", "count", 3, 3, 1, 1, 1, 1, 0, "", "", "", "", "", "", "one value everywhere"],
+    ]
+    with (tmp_path / COMPARISON_FILENAME).open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(header)
+        writer.writerows(rows)
+    shown, cells = comparison_table(tmp_path)
+    assert shown == [
+        "Section", "Metric", "Unit", "N WT", "N KO", "Median WT", "Median KO",
+        "Difference of medians (KO - WT)", "P (Mann-Whitney U, two-sided)",
+        "Q (Benjamini-Hochberg)", "Note",
+    ]
+    assert [row[1] for row in cells] == ["Nodes", "Length", "Flat"]
+    assert cells[0][shown.index("P (Mann-Whitney U, two-sided)")] == "0.05"
+    assert comparison_tested(shown, cells) == 2
+    assert comparison_table(tmp_path / "none") == ([], [])
+
+
+# -- setting a batch up ----------------------------------------------------------
+
+
+def test_a_batch_is_read_back_from_its_settings_file(tmp_path, schema):
+    from haemolynx.gui.batch_run import SETTINGS_FILENAME, read_batch_settings, write_batch_settings
+    from haemolynx.parsers import load_config
+    from haemolynx.statistics.batch_comparison import BatchConditions
+
+    folders = BatchFolders(tmp_path / "seg", large=tmp_path / "large")
+    conditions = BatchConditions.from_text(
+        "contra", "ipsi, ipsilateral", paired=True, subject_pattern=r"^(\d+_\d+)", aggregate="median"
+    )
+    values = {**_values(schema, tmp_path), "statistics": True}
+    out = tmp_path / "out"
+    out.mkdir()
+    path = write_batch_settings(values, schema, folders, out, conditions, ("Dead Ends", "Loops"))
+    record = read_batch_settings(path)
+    assert record.folders == folders
+    assert record.output_root == out
+    assert record.conditions == conditions
+    assert record.exclude_sections == ("Dead Ends", "Loops")
+    assert load_config(path, schema)["statistics"] is True  # its body is the settings
+    plain = write_batch_settings(values, schema, BatchFolders(tmp_path / "seg"), out)
+    assert read_batch_settings(plain).conditions == BatchConditions()
+    (tmp_path / SETTINGS_FILENAME).write_text("statistics: true\n")
+    assert read_batch_settings(tmp_path / SETTINGS_FILENAME) is None
+    assert read_batch_settings(tmp_path / "missing.yaml") is None
+
+
+def test_a_greyed_mask_row_names_the_switches_that_would_use_it(schema):
+    from haemolynx.gui.batch_run import mask_switch_hint
+    from haemolynx.gui.tabs import assign_to_stages
+
+    values = schema.defaults()
+    tab = assign_to_stages(schema)["use_large_vessel_masks"]
+    assert mask_switch_hint(schema, values, "large") == (
+        f"not used: tick 'Automated vessel assignment' and 'Use large vessel masks' ({tab})"
+    )
+    on = {**values, "automated_vessel_assignment": True}
+    assert "'Use small vessel masks for boundary assignment'" in mask_switch_hint(schema, on, "small")
+    assert "Automated" not in mask_switch_hint(schema, on, "small")
+    used = {**on, "use_large_vessel_masks": True}
+    assert mask_switch_hint(schema, used, "large") == ""
+    assert "ilastik" in mask_switch_hint(
+        schema, {**used, "use_ilastik_large_vessel_segmentation": True}, "large"
+    )
+
+
+def test_the_settings_every_image_runs_with_that_differ_from_the_defaults(schema, tmp_path):
+    from haemolynx.gui.batch_run import settings_changed
+
+    values = schema.defaults()
+    assert settings_changed(values, schema) == []
+    changed = {**values, "statistics": True, "input_path": tmp_path / "one.tif"}
+    assert settings_changed(changed, schema) == ["statistics"]

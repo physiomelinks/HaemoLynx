@@ -417,10 +417,48 @@ BATCH_RUN_TOOLTIPS = {
         "stopped part way picks up where it ended"
     ),
     "table": (
-        "Each segmented image and what was matched to it; untick an image to "
-        "leave it out, and choose a file where several tie"
+        "Each segmented image, what was matched to it and what it came to; untick "
+        "an image to leave it out, choose a file where several tie, double-click a "
+        "finished image to open it, right-click for what else can be done to it, "
+        "and click a heading to sort by it"
     ),
-    "match": "Read the folders again and match every image",
+    "match": (
+        "Read the folders again and match every image (done by itself when a folder "
+        "is typed or chosen)"
+    ),
+    "last_batch": (
+        "The output folder holds a batch's batch_settings.yaml: fill this window "
+        "from it (folders, conditions, comparison, sections) and put the settings "
+        "it ran with in the panel"
+    ),
+    "settings_line": "How many of the panel's settings, which every image runs with, differ from their defaults",
+    "show_settings": "List the settings every image runs with that differ from their defaults",
+    "peak_ram": (
+        "The image's peak memory: the largest of its stages' peaks in its run "
+        "manifest (where a stage did not raise the process's peak, its peak was "
+        "read every 0.2 s, so it may be a little low)"
+    ),
+    "tick_all": "Tick every image",
+    "tick_none": "Untick every image",
+    "tick_failed": "Tick only the images that failed, in this batch or the folder's last one",
+    "open_run": "Open the selected image's .haemorun in the panel (leaves the batch run)",
+    "open_folder": "Open the selected image's output folder",
+    "show_error": "Show why the selected image failed, with its traceback when this batch ran it",
+    "run_again": "Run the selected image again now, whether or not it was done before",
+    "details": "What Check, Show error and Show said",
+    "comparison_table": (
+        "The two conditions tested statistic by statistic, smallest q (most "
+        "significant) first: each condition's N and median, the difference, the "
+        "test's P and the Benjamini-Hochberg q"
+    ),
+    "refresh_comparison": "Read the output folder's batch_condition_comparison.csv again",
+    "open_comparison": "Open batch_condition_comparison.csv with the system's program for it",
+    "open_batch_folder": "Open the batch's output folder",
+    "stop": (
+        "Let the image running finish and be saved, then stop: the images after it "
+        "are not run (Cancel stops the image itself)"
+    ),
+    "run": "Use this batch and run it now, keeping this window open to follow it",
     "check": "Run every ticked image's pre-run checks and show what they say",
     "condition_a": (
         "One condition's images: a phrase their file names hold (ignoring case; "
@@ -459,7 +497,7 @@ BATCH_RUN_TOOLTIPS = {
         "Write the batch statistics from the ticked images already run in the "
         "output folder, by the conditions as they are now, without running anything"
     ),
-    "use": "Close this window and let Run pipeline run the batch",
+    "use": "Close this window and let Run pipeline run the batch later",
     "leave": "Go back to running the one image the Input tab names",
 }
 REVERT_STAGE_TOOLTIP = (
@@ -850,8 +888,9 @@ ENDOTHELIAL_OPTIMISE_TOOLTIPS = {
         "below, instead of every ring-fit setting"
     ),
     "blur_and_wall": (
-        "Try the blur and wall estimated from the image's wide vessels "
-        "against the same values fixed and the ends of their 95% interval"
+        "Where the image's wide vessels cannot estimate the blur or the wall, "
+        "or you have fixed them, try their estimate fixed and the ends of its "
+        "95% interval; otherwise they stay estimated from the image"
     ),
     "ring_gate": (
         "Try half to twice the weakest ring a reading is kept for "

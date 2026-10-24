@@ -120,6 +120,20 @@ class ThickVesselRegionCache:
         logger.info("Reusing the thick-vessel region a previous run found: %s", self.packed)
         return True, region
 
+    def discard(self) -> tuple[Path, ...]:
+        """Delete the entry; returns the files removed. Never raises."""
+        removed = []
+        for path in (self.sidecar, self.packed):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                logger.warning("Could not remove the thick-vessel region cache %s: %s", path, error)
+                continue
+            removed.append(path)
+        return tuple(removed)
+
     def store(self, key: str, region: np.ndarray | None, shape) -> None:
         """Write *region* (``None`` for no thick region in a mask of *shape*)
         under *key*, replacing whatever entry was there."""

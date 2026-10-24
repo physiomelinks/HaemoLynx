@@ -535,3 +535,231 @@ def test_loading_a_run_leaves_the_batch_set(panel, tmp_path):
     assert all(button.enabled for button in _single_image_buttons(panel))
     for label in batch.labels.values():
         assert label.isHidden()
+
+
+# -- Phases 2-4: running from the window, the row actions, the comparison ------
+
+
+def _open_window(panel, tmp_path, *stems):
+    """The window matched on a folder of *stems*, output in ``tmp_path/out``."""
+    batch = panel._haemolynx_batch
+    _images(tmp_path / "seg", *stems)
+    batch.open()
+    window = batch.window[0]
+    window.fields["segmented"].setText(str(tmp_path / "seg"))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    window.fields["output"].editingFinished.emit()  # typed, then left: matched
+    return batch, window
+
+
+def _status_column(window):
+    return window.table.columnCount() - 1
+
+
+def _statuses(window):
+    return [window.table.item(row, _status_column(window)).text() for row in range(window.table.rowCount())]
+
+
+def test_leaving_a_folder_field_matches_by_itself(panel, tmp_path):
+    _batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg")
+    assert window.table.rowCount() == 2
+    assert window.match_button.text() == "Match again"
+
+
+def test_run_batch_in_the_window_runs_it_and_keeps_the_window_open(panel, tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(widget_mod, "_run_batch_in_background", lambda *args, **kwargs: started.append(kwargs))
+    batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg")
+    window.run()
+    (callbacks,) = started
+    assert batch.mode.setup is not None and batch.mode.running
+    assert not window.native.isHidden()
+    assert not window.run_button.isEnabled() and window.stop_button.isEnabled()
+    window.run()  # pressed again while it runs: nothing more starts
+    assert len(started) == 1
+    callbacks["on_stopped"]()
+    assert window.run_button.isEnabled() and not window.stop_button.isEnabled()
+
+
+def test_stop_after_this_image_asks_the_running_batch_to_stop(panel, tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(widget_mod, "_run_batch_in_background", lambda *args, **kwargs: started.append(kwargs))
+    batch, window = _open_window(panel, tmp_path, "A_seg")
+    window.run()
+    stop_requested = started[0]["stop_requested"]
+    assert stop_requested() is False
+    window.stop()
+    assert stop_requested() is True
+    assert not window.stop_button.isEnabled()
+    assert window.stop_button.text() == "Stopping after this image"
+    assert "Stopping once this image is done" in panel._haemolynx_report()
+    started[0]["on_stopped"]()
+    assert batch.mode.stop is False
+    assert window.stop_button.text() == "Stop after this image"
+
+
+def test_the_progress_line_and_figures_follow_the_batch(panel, tmp_path, monkeypatch):
+    from haemolynx.gui.batch_run import DONE, RUNNING, TABLE_COLUMNS, BatchResult
+
+    started = []
+    monkeypatch.setattr(widget_mod, "_run_batch_in_background", lambda *args, **kwargs: started.append(kwargs))
+    batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg")
+    window.run()
+    first, second = batch.mode.setup.matches
+    started[0]["on_item"](BatchResult(first, status=RUNNING))
+    assert window.status.text().startswith("Image 1 of 2: A_seg -- 0 done, 0 failed")
+    assert panel._haemolynx_report() == window.status.text()
+    started[0]["on_item"](BatchResult(first, status=DONE, seconds=125.0, vessels=42, peak_rss_bytes=3 * 1024**3))
+    started[0]["on_item"](BatchResult(second, status=RUNNING))
+    assert window.status.text().startswith("Image 2 of 2: B_seg -- 1 done")
+    row = [window.table.item(0, column).text() for column in range(window.table.columnCount())]
+    assert row[TABLE_COLUMNS.index("Time")] == "2 min"
+    assert row[TABLE_COLUMNS.index("Peak RAM")] == "3.0 GB"
+    assert row[TABLE_COLUMNS.index("Vessels")] == "42"
+
+
+def test_run_again_runs_the_selected_image_alone(panel, tmp_path, monkeypatch):
+    from haemolynx.gui.batch_run import DONE, haemorun_path
+
+    started = []
+    monkeypatch.setattr(widget_mod, "_run_batch_in_background", lambda values, schema, setup, *args, **kwargs: started.append(setup))
+    batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg")
+    done = haemorun_path(window.setup.output_root, window.setup.matches[1])
+    done.parent.mkdir(parents=True)
+    done.write_bytes(b"earlier")
+    window.match()
+    window.table.selectRow(1)
+    assert window.row_buttons["run_again"].isEnabled()
+    window.row_action("run_again")
+    (setup,) = started
+    assert [match.stem for match in setup.selected()] == ["B_seg"]
+    assert setup.skip_done is False
+    # The rest of the batch is still the batch, with A's status kept.
+    assert [match.stem for match in batch.mode.setup.selected()] == ["A_seg", "B_seg"]
+    assert DONE not in _statuses(window)[0]
+
+
+def test_each_row_action_is_offered_only_where_it_can_act(panel, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from haemolynx.gui.batch_run import haemorun_path
+
+    opened, loaded = [], []
+    monkeypatch.setattr(widget_mod, "_open_in_system", lambda path: opened.append(Path(path)) or True)
+    batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg")
+    monkeypatch.setattr(window, "_on_open", lambda path: loaded.append(path))
+    window.table.selectRow(0)
+    assert {key: button.isEnabled() for key, button in window.row_buttons.items()} == {
+        "open_run": False, "open_folder": False, "show_error": False, "run_again": True,
+    }
+    done = haemorun_path(window.setup.output_root, window.setup.matches[0])
+    done.parent.mkdir(parents=True)
+    done.write_bytes(b"run")
+    window.setup = replace(
+        window.setup,
+        checked={"A_seg": "failed: ValueError: no"},
+        error_details={"A_seg": "Traceback (most recent call last):\n  ValueError: no"},
+    )
+    window._fill_table()
+    window.table.selectRow(0)
+    assert all(button.isEnabled() for button in window.row_buttons.values())
+    window.row_action("open_folder")
+    assert opened == [done.parent]
+    window.row_action("open_run")
+    assert loaded == [done]
+    window.row_action("show_error")
+    assert "Traceback (most recent call last)" in window.details.toPlainText()
+    assert window.splitter.sizes()[1] > 0, "the report box opens to show it"
+
+
+def test_tick_all_none_and_failed(panel, tmp_path):
+    from dataclasses import replace
+
+    _batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg", "C_seg")
+    window.tick("none")
+    assert window.setup.selected() == []
+    window.tick("all")
+    assert len(window.setup.selected()) == 3
+    window.setup = replace(window.setup, checked={"B_seg": "failed: ValueError: no"}, last_statuses={"C_seg": "failed: x"})
+    window.tick("failed")
+    assert [match.stem for match in window.setup.selected()] == ["B_seg", "C_seg"]
+
+
+def test_sorting_the_table_keeps_each_rows_image(panel, tmp_path):
+    from qtpy.QtCore import Qt
+
+    _batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg", "C_seg")
+    window.table.sortItems(1, Qt.DescendingOrder)
+    assert window.table.item(0, 1).text() == "C_seg.tif"
+    window.table.item(0, 0).setCheckState(Qt.Unchecked)
+    assert window.setup.unticked == {"C_seg"}
+    window._fill_table()  # filled again: the order the user chose stays
+    assert window.table.item(0, 1).text() == "C_seg.tif"
+
+
+def test_the_comparison_tab_shows_the_csv_and_opens_it(panel, tmp_path, monkeypatch):
+    from haemolynx.statistics.batch_comparison import COMPARISON_FILENAME
+
+    opened = []
+    monkeypatch.setattr(widget_mod, "_open_in_system", lambda path: opened.append(Path(path)) or True)
+    _batch, window = _open_window(panel, tmp_path, "A_seg")
+    assert window.comparison_table.rowCount() == 0
+    assert not window.open_comparison_button.isEnabled()
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    (out / COMPARISON_FILENAME).write_text(
+        "Section,Metric,Unit,N WT,N KO,Median WT,Median KO,\"P (Mann-Whitney U, two-sided)\","
+        "Q (Benjamini-Hochberg),Note\n"
+        "Core,Length,um,3,3,10,12,0.2,0.4,\nCore,Nodes,count,3,3,5,9,0.05,0.1,\n",
+        encoding="utf-8",
+    )
+    window.refresh_comparison()
+    assert window.comparison_table.rowCount() == 2
+    assert window.comparison_table.item(0, 1).text() == "Nodes"
+    assert window.comparison_note.text().startswith("2 of 2 statistics tested")
+    window.open_comparison()
+    assert opened == [out / COMPARISON_FILENAME]
+
+
+def test_the_folders_last_batch_fills_the_window_and_the_panel(panel, tmp_path):
+    from haemolynx.gui.batch_run import write_batch_settings
+    from haemolynx.pipeline import default_schema
+    from haemolynx.statistics.batch_comparison import BatchConditions
+
+    schema = default_schema()
+    _images(tmp_path / "seg", "WT_1_seg", "KO_1_seg")
+    out = tmp_path / "out"
+    out.mkdir()
+    values = {**panel._haemolynx_values(), "statistics": True}
+    write_batch_settings(
+        values, schema, BatchFolders(tmp_path / "seg"), out, BatchConditions.from_text("WT", "KO"), ("Dead Ends",)
+    )
+    rows = panel._haemolynx_rows()
+    assert rows["statistics"].value is False
+    batch = panel._haemolynx_batch
+    batch.open()
+    window = batch.window[0]
+    window.fields["output"].setText(str(out))
+    window.fields["output"].editingFinished.emit()
+    assert not window.last_batch_button.isHidden()
+    assert window.use_last_batch()
+    assert window.fields["segmented"].text() == str(tmp_path / "seg")
+    assert window.condition_fields["condition_a"].text() == "WT"
+    assert window.exclude_sections.text() == "Dead Ends"
+    assert rows["statistics"].value is True, "the settings it ran with are the panel's again"
+    assert window.table.rowCount() == 2
+
+
+def test_a_greyed_mask_row_names_its_switch(panel, tmp_path):
+    _batch, window = _open_window(panel, tmp_path, "A_seg")
+    assert not window.fields["large"].isEnabled()
+    assert "'Use large vessel masks'" in window.fields["large"].placeholderText()
+
+
+def test_the_settings_line_counts_what_differs_from_the_defaults(panel, tmp_path):
+    rows = panel._haemolynx_rows()
+    rows["statistics"].value = True
+    _batch, window = _open_window(panel, tmp_path, "A_seg")
+    assert "differ from the defaults" in window.settings_line.text()
+    window.show_settings()
+    assert "statistics: True" in window.details.toPlainText()

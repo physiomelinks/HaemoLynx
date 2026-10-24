@@ -646,7 +646,11 @@ FILES: tuple[OutputFile, ...] = (
             _c("nodes", "count", "Nodes in its network."),
             _c("vessels", "vessels", "Vessels in its network."),
             _c("wall_time_s", "s", "Its wall time."),
-            _c("peak_rss_bytes", "bytes", "Its peak memory."),
+            _c(
+                "peak_rss_bytes", "bytes",
+                "Its peak memory: the largest of its stages' peaks in its run manifest "
+                "(not the process's, which in a batch includes every earlier image).",
+            ),
             _c("error", "-", "The error, if it failed."),
         ),
     ),

@@ -16,7 +16,7 @@ from .load_2d import (
     load_image_with_voxel_size_2d_aware,
     promote_2d_to_single_slice_volume,
 )
-from .raw_volume_cache import load_raw_volume_reusing_cache
+from .raw_volume_cache import discard_cached_raw_volume, load_raw_volume_reusing_cache
 from .ilastik import run_ilastik_headless_segmentation
 from .vessel_masks import (
     as_global_vessel_mask,
@@ -72,6 +72,7 @@ __all__ = [
     "load_image_with_voxel_size_2d_aware",
     "promote_2d_to_single_slice_volume",
     "load_raw_volume_reusing_cache",
+    "discard_cached_raw_volume",
     "bridge_gaps",
     "run_ilastik_headless_segmentation",
     "clear_vessel_mask_cache",

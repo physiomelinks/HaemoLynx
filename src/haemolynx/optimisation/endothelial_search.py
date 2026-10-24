@@ -17,10 +17,13 @@ the value the user had -- over two groups (:data:`ENDOTHELIAL_GROUP_NAMES`):
     too strict, none do and nothing is read.
 ``blur_and_wall``
     The PSF and the wall's thickness every section is fitted with: estimated
-    from the image's own wide vessels (unset, the default) or fixed. The
-    candidates are the image's: its rings' estimate, fixed, and the ends of
-    its 95% interval. Fixed values are what make the fit work at all when
-    the rings will not calibrate on their own (they disagree on the blur).
+    from the image's own wide vessels (unset, the default) or fixed. Fixed
+    values are tried only where the rings will not calibrate one on their
+    own (they disagree on the blur, say: the fit then reads nothing), or the
+    settings already fix it; otherwise it stays the estimate, since a fixed
+    value inside the estimate's interval is no different from it (Harvey,
+    2026-10-24). The candidates are the image's: its rings' estimate, fixed,
+    and the ends of its 95% interval, beside unset and the settings' own.
 
 The image's own blur and wall -- what the planted vessels are drawn with,
 and the fixed candidates' source when the gate being tuned is too strict for
@@ -284,6 +287,12 @@ def _dedupe(values: Iterable[Any]) -> list[Any]:
     return kept
 
 
+def _calibrates(calibration: Optional[tuple[Any, Any, dict[str, Any]]]) -> bool:
+    """Whether a run with these settings gets a blur and wall from the
+    image's rings: a calibration was made and not refused."""
+    return calibration is not None and calibration[0] is not None
+
+
 def _calibrated_values(
     calibration: Optional[tuple[Any, Any, dict[str, Any]]],
 ) -> tuple[Optional[tuple[float, float, float]], Optional[float], dict[str, Any]]:
@@ -491,6 +500,9 @@ class _EndothelialSearch(_SweepBookkeeping):
         #: blur and wall they were drawn with, when there are.
         self.unplanted_reason: Optional[str] = None
         self.planting_source = ""
+        #: Which of "blur" and "wall" were left to the image without a sweep,
+        #: its rings calibrating them (see `_group_blur_and_wall`).
+        self.kept_estimated: set[str] = set()
         if vessel_mask is None:
             self.unplanted_reason = "no segmentation to find vessel-free tissue in"
         else:
@@ -632,42 +644,53 @@ class _EndothelialSearch(_SweepBookkeeping):
 
     # -- groups ---------------------------------------------------------------
     def _group_blur_and_wall(self) -> None:
+        """Fixed values are tried only where they can do what the image
+        cannot (Harvey, 2026-10-24): where its rings will not calibrate the
+        blur, or the wall, on their own at the current settings, or the
+        settings already fix it. Otherwise it stays the image's estimate: a
+        fixed value inside the estimate's own interval is no different from
+        it, and on E14.5 the search moved one on a vessel or two."""
         group = "blur_and_wall"
         incumbent = (
             self.current.get("endothelial_psf_sigma_xy_um"),
             self.current.get("endothelial_psf_sigma_z_um"),
         )
-        # The image's values at the current gate; where it is too strict for
-        # them, the image's own (at `image_calibration_gate`).
-        _psf, _wall, free = _calibrated_values(
-            self._calibration({**self.current, **_UNSET_BLUR_AND_WALL})
-        )
-        if "sigma_xy_um" not in free:
-            free = self.image_details
-        chosen = self._run_candidates(
-            group, PSF_SWEEP_NAME, psf_candidates(incumbent, free),
-            lambda pair: self._cost(
-                {"endothelial_psf_sigma_xy_um": pair[0], "endothelial_psf_sigma_z_um": pair[1]}
-            ),
-            incumbent=incumbent,
-        )
-        (
-            self.current["endothelial_psf_sigma_xy_um"],
-            self.current["endothelial_psf_sigma_z_um"],
-        ) = chosen
-        self._emit(
-            GROUP_FINISHED, group,
-            winner={"endothelial_psf_sigma_xy_um": chosen[0], "endothelial_psf_sigma_z_um": chosen[1]},
-        )
-        self._group_index += 1
-        _psf, _wall, at_blur = _calibrated_values(
-            self._calibration({**self.current, "endothelial_wall_thickness_um": None})
-        )
-        if "wall_um" not in at_blur and chosen == (None, None):
-            at_blur = self.image_details
+        blur_set, _wall_set = apply.endothelial_psf_and_wall(self._config(self.current))
+        free = self._calibration({**self.current, **_UNSET_BLUR_AND_WALL})
+        if blur_set is None and _calibrates(free):
+            self.kept_estimated.add("blur")
+        else:
+            # The image's values at the current gate; where it is too strict
+            # for them, the image's own (at `image_calibration_gate`).
+            _psf, _wall, details = _calibrated_values(free)
+            if "sigma_xy_um" not in details:
+                details = self.image_details
+            chosen = self._run_candidates(
+                group, PSF_SWEEP_NAME, psf_candidates(incumbent, details),
+                lambda pair: self._cost(
+                    {"endothelial_psf_sigma_xy_um": pair[0], "endothelial_psf_sigma_z_um": pair[1]}
+                ),
+                incumbent=incumbent,
+            )
+            (
+                self.current["endothelial_psf_sigma_xy_um"],
+                self.current["endothelial_psf_sigma_z_um"],
+            ) = chosen
+            self._emit(
+                GROUP_FINISHED, group,
+                winner={"endothelial_psf_sigma_xy_um": chosen[0], "endothelial_psf_sigma_z_um": chosen[1]},
+            )
+            self._group_index += 1
+        at_blur = self._calibration({**self.current, "endothelial_wall_thickness_um": None})
+        if self.current.get("endothelial_wall_thickness_um") is None and _calibrates(at_blur):
+            self.kept_estimated.add("wall")
+            return
+        _psf, _wall, details = _calibrated_values(at_blur)
+        if "wall_um" not in details and apply.endothelial_psf_and_wall(self._config(self.current))[0] is None:
+            details = self.image_details
         self._sweep(
             group, "endothelial_wall_thickness_um",
-            wall_candidates(self.current.get("endothelial_wall_thickness_um"), at_blur),
+            wall_candidates(self.current.get("endothelial_wall_thickness_um"), details),
             lambda wall: self._cost({"endothelial_wall_thickness_um": wall}),
         )
 
@@ -913,6 +936,14 @@ def _notes(
                 "wide vessels it calibrates on by: turn it on, or set endothelial_psf_sigma_xy_um, "
                 "endothelial_psf_sigma_z_um and endothelial_wall_thickness_um."
             )
+    kept = [name for name in ("blur", "wall") if name in search.kept_estimated]
+    if kept:
+        notes.append(
+            f"The {' and '.join(kept)} stayed the image's estimate, not swept: its rings calibrate "
+            f"{'them' if len(kept) > 1 else 'it'} on their own, and a fixed value inside the "
+            "estimate's interval is no different from it. Fixed values are tried only where the "
+            "rings will not calibrate, or the settings already fix them."
+        )
     if search.planted is not None:
         planted = search.planted
         notes.append(

@@ -588,13 +588,16 @@ Built in its own session, on `claude/endothelial-optimiser-52c5f2` (first commit
 | group | settings | candidates |
 |---|---|---|
 | `ring_gate` (first) | `endothelial_min_ring_contrast` | half to twice its value, and the ring fit's own default (4) |
-| `blur_and_wall` | `endothelial_psf_sigma_xy_um` / `_z_um` (one joint sweep), then `endothelial_wall_thickness_um` | unset (the image estimates it), the image's estimate fixed, the ends of its 95% interval |
+| `blur_and_wall` | `endothelial_psf_sigma_xy_um` / `_z_um` (one joint sweep), then `endothelial_wall_thickness_um` | only where the rings will not calibrate it on their own, or the settings fix it: unset (the image estimates it), the settings' value, the image's estimate fixed, the ends of its 95% interval; otherwise not swept |
 
 The gate goes first because it also decides which rings calibrate the blur and wall: set too
 strict, none do and the ring fit reads nothing (found by the slow tests; at a gate of 32 halving
 once still read nothing, so the default is always a candidate). Fixed blur and wall matter where
 the rings will not calibrate on their own (they disagree on the blur): the run then measures
-nothing, and the image's own values, fixed, let it.
+nothing, and the image's own values, fixed, let it. **Decided (Harvey, 2026-10-24): fixed values
+are tried only then, or where the settings already fix them**; where the rings calibrate, the
+blur and wall stay the image's estimate and are not swept (a fixed value inside the estimate's
+interval is no different from it; on E14.5 the search moved the wall on one vessel, below).
 
 **Read, never swept:** `edt_junction_proximity_exclusion_um` (the ring fit's junction zones) is
 the mask-width setting's and moves those widths too, the fallback of every vessel the ring fit
@@ -674,7 +677,6 @@ vessel, inside the image's own interval. Before this run (at `65068bc1`, Auto br
 of 10) the search fixed the blur and wall at other values inside their intervals, on 6 read
 vessels -- noise.
 
-**Open (Harvey):** offer fixed blur and wall candidates only when the image's rings will not
-calibrate on their own (or the settings already fix them)? Inside the image's interval a fixed
-value is indistinguishable from the estimate, and the search then moves it on a vessel or two.
-Not done without a decision: it changes what the search may propose.
+**Decided (Harvey, 2026-10-24):** fixed blur and wall candidates only where the rings will not
+calibrate on their own, or the settings already fix them; done in the commit after `a525ad9c`.
+E14.5 under that rule is below.

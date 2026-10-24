@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from haemolynx.preprocessing.memmap_support import (
+    delete_dropped_memmap_files,
     new_memmap_array,
     release_memmap_array,
     temporary_memmap_array,
@@ -180,3 +181,18 @@ def test_release_resident_pages_passes_over_a_released_volume(tmp_path):
     gone = new_memmap_array((4, 4), np.uint8, directory=tmp_path)
     release_memmap_array(gone)
     release_resident_pages(gone)
+
+
+def test_dropped_scratch_files_are_deleted_on_asking(tmp_path):
+    """Between a batch's images: every scratch volume nothing holds is gone,
+    on Windows too, where its file waited while it was mapped."""
+    array = new_memmap_array((4, 5), np.uint8, directory=tmp_path)
+    array[:] = 1
+    path = Path(array.filename)
+    view = array[1:]
+    del array
+    assert path.exists(), "a view still holds the map"
+    del view
+    assert delete_dropped_memmap_files() == 0
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == []

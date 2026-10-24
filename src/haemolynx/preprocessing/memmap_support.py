@@ -162,6 +162,18 @@ def _delete_dropped(path: str) -> None:
         _DROPPED_FILES.add(path)
 
 
+def delete_dropped_memmap_files() -> int:
+    """Delete the backing files of scratch arrays nothing holds any more:
+    collect them first, so each finaliser runs and its map is closed, then
+    remove what Windows refused while they were mapped. Returns how many are
+    left (still mapped, or held by another program)."""
+    import gc
+
+    gc.collect()
+    _delete_dropped_files()
+    return len(_DROPPED_FILES)
+
+
 @atexit.register
 def _delete_dropped_files() -> None:
     for path in list(_DROPPED_FILES):

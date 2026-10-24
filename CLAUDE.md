@@ -868,7 +868,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `tests/test_optimisation_search.py` pins a trial's skeleton `==` `skeletonise`'s and each step's
   arguments `==` the run's. **Optimise endothelial settings** (`endothelial_search.py`,
   shown instead of the FWHM button when the raw image stains the wall) sweeps the ring fit's
-  blur, wall (estimated or fixed, the image's own values) and contrast gate; a trial reads
+  contrast gate, and its blur and wall only where the image's rings will not calibrate them or the
+  settings fix them (then the image's own values, fixed; Harvey's rule); a trial reads
   through `apply.measure_endothelial_diameters` with the run's config, each blur's calibration
   fits made once (`apply.endothelial_calibration_fits`), scored on planted hollow vessels
   (`haemodynamics/endothelial_planted.py`), the sample and decoys. **Check segmented image** is
@@ -923,7 +924,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`batch_mode.setup`), not settings. Each image's checks refuse an output path past Windows'
   limit while long paths are off (`check_output_path_lengths`). A set batch greys what acts on one
   image (Check segmented image, the optimisers, Run from this stage); Load run leaves it, and is
-  refused while a batch runs.
+  refused while a batch runs. Each image's on-disk caches (its decompressed input, checkpoint
+  pickles, thick-vessel region) are deleted once it ends (`batch_run.clear_image_caches`).
 - **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic.
