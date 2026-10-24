@@ -456,6 +456,43 @@ def test_the_perturbation_blocks_listed_vessels_and_writes_the_comparison(tmp_pa
     assert all(BLOCK_EDGE_ATTRIBUTE not in d for *_e, d in model.graph.edges(keys=True, data=True))
 
 
+def test_a_blocked_vessel_no_inlet_and_outlet_reach_has_blank_flows_in_the_blocked_vessels_csv(tmp_path):
+    """PLAN_dale_review_fixes.md item 5, step 1: the blocked-vessels CSV reads
+    the one list of the solve's attributes like the other exports, so a
+    blocked capillary in a piece no inlet and outlet reach has no flow before
+    or after (blank, not the solve's 0), while a blocked capillary on the
+    flowing network keeps its numbers."""
+    from haemolynx.graph import FLOW_STATE, mark_flow_solved_edges
+
+    model = _model()
+    G = model.graph
+    for node, z in ((6, 10.0), (7, 11.0)):
+        G.add_node(node, pos=np.asarray([0.0, 5.0, z]))
+    _vessel(G, 6, 7, "BO2")
+    G[6][7][0]["voxels"] = [[0.0, 5.0, 10.0], [0.0, 5.0, 11.0]]
+    mark_flow_solved_edges(G, [0], [5])
+    island_id = list(G.edges(keys=True)).index((6, 7, 0))
+    assert G[6][7][0][FLOW_STATE] == "no_boundary"
+    entry = {
+        "name": "stall",
+        "type": "capillary_block",
+        "overrides": {"capillary_block_selection": "vessel_ids", "capillary_block_vessel_ids": [1, island_id]},
+    }
+
+    run = run_perturbations(_settings(tmp_path, [entry]), model, _boundaries(), SCHEMA)
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    rows = {(row["u"], row["v"]): row for row in _read(result.output_dir / "stall_blocked_vessels.csv")}
+    island, blocked = rows[("6", "7")], rows[("1", "2")]
+    assert island["baseline_flow_abs_m3_s"] == "" and island["blocked_flow_abs_m3_s"] == ""
+    assert float(island["blocked_resistance_pa_s_per_m3"]) == pytest.approx(
+        1e6 * float(island["baseline_resistance_pa_s_per_m3"])
+    )
+    assert float(blocked["baseline_flow_abs_m3_s"]) > 0
+    assert float(blocked["blocked_flow_abs_m3_s"]) == 0.0
+
+
 def test_the_perturbations_own_network_carries_no_flow_on_its_stopped_vessels(tmp_path):
     """Regression: the perturbation's network kept the solve's leak flows (a
     millionth of the vessel's at the default factor, above the carrying

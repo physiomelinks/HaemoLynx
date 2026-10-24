@@ -311,8 +311,8 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A c
 | `diameter_um` | `um` | Its diameter. |
 | `baseline_resistance_pa_s_per_m3` | `Pa.s/m^3` | Its resistance before the block. |
 | `blocked_resistance_pa_s_per_m3` | `Pa.s/m^3` | Its resistance blocked. |
-| `baseline_flow_abs_m3_s` | `m^3/s` | Its flow before the block. |
-| `blocked_flow_abs_m3_s` | `m^3/s` | Its flow blocked (exactly 0). |
+| `baseline_flow_abs_m3_s` | `m^3/s` | Its flow before the block; blank where no inlet and outlet reach it. |
+| `blocked_flow_abs_m3_s` | `m^3/s` | Its flow blocked (exactly 0); blank as above. |
 
 ## `{name}_block_comparison.csv`
 

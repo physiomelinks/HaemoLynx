@@ -442,8 +442,8 @@ FILES: tuple[OutputFile, ...] = (
             _c("diameter_um", "um", "Its diameter."),
             _c("baseline_resistance_pa_s_per_m3", "Pa.s/m^3", "Its resistance before the block."),
             _c("blocked_resistance_pa_s_per_m3", "Pa.s/m^3", "Its resistance blocked."),
-            _c("baseline_flow_abs_m3_s", "m^3/s", "Its flow before the block."),
-            _c("blocked_flow_abs_m3_s", "m^3/s", "Its flow blocked (exactly 0)."),
+            _c("baseline_flow_abs_m3_s", "m^3/s", "Its flow before the block; blank where no inlet and outlet reach it."),
+            _c("blocked_flow_abs_m3_s", "m^3/s", "Its flow blocked (exactly 0); blank as above."),
         ),
     ),
     OutputFile(

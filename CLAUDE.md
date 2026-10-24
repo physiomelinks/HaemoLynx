@@ -692,8 +692,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `no_boundary`) beside `FLOW_SOLVED`. `blind_end` and `closed_end` flows and drops are exactly 0:
   **call `graph.zero_flows_behind_dead_ends` after any new `set_edge_flows` on a marked graph.**
   Only `no_boundary` flows are blanked in exports (`graph.flow_is_undefined`). What is blanked is
-  one list, `graph.SOLVE_DERIVED_EDGE_ATTRIBUTES`: the VTK, a perturbation's edges CSV and the
-  viewer's `gui/results.SOLVED_FLOW_COLUMNS` all read it. The viewer draws no
+  one list, `graph.SOLVE_DERIVED_EDGE_ATTRIBUTES`: the VTK, a perturbation's edges and blocked-vessels
+  CSVs (`stages._solve_value`) and the viewer's `gui/results.SOLVED_FLOW_COLUMNS` all read it. The viewer draws no
   flow arrow at or below `visualization.flow_direction.flow_arrow_floor`.
 - **Pieces cut off by an edit** — `graph.branch_order.assign_branch_orders` pops `branch_order`
   from an edge the search from the inlets does not reach.

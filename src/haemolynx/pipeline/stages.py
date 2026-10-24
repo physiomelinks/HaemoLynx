@@ -5499,9 +5499,7 @@ PERTURBATION_EDGE_COLUMNS = (
 )
 
 #: The edge attribute each `<name>_edges.csv` column read straight off the
-#: perturbed vessel holds. Those of the solve's
-#: (``graph.SOLVE_DERIVED_EDGE_ATTRIBUTES``) are blank where its flow is no
-#: answer at all (``graph.flow_is_undefined``), as in the VTK.
+#: perturbed vessel holds, through :func:`_solve_value`.
 PERTURBATION_EDGE_ATTRIBUTES = {
     "branch_order": "branch_order",
     "length_um": "length",
@@ -5513,6 +5511,16 @@ PERTURBATION_EDGE_ATTRIBUTES = {
     "flow_solved": graph.FLOW_SOLVED,
     "flow_state": graph.FLOW_STATE,
 }
+
+
+def _solve_value(data: Mapping[str, Any], name: str) -> Any:
+    """Edge attribute *name* as a perturbation's CSVs write it: blank (None)
+    when it is one of the solve's (``graph.SOLVE_DERIVED_EDGE_ATTRIBUTES``)
+    and the vessel's flow is no answer at all (``graph.flow_is_undefined``:
+    no inlet and outlet reach it), as in the VTK -- not the 0 the solve left."""
+    if name in graph.SOLVE_DERIVED_EDGE_ATTRIBUTES and graph.flow_is_undefined(data):
+        return None
+    return data.get(name)
 
 #: Columns of a perturbation's `<name>_summary.csv`, in order.
 PERTURBATION_SUMMARY_COLUMNS = (
@@ -5760,19 +5768,13 @@ def _write_perturbation_csvs(
             baseline_data = baseline_graph.get_edge_data(u, v, key) or {}
             was = baseline_data.get("resistance")
             now = data.get("resistance")
-            # No answer at all where no inlet and outlet reach: blank, not 0.
-            undefined = graph.flow_is_undefined(data)
             writer.writerow(
                 {
                     "u": u,
                     "v": v,
                     "key": key,
                     **{
-                        column: (
-                            None
-                            if undefined and name in graph.SOLVE_DERIVED_EDGE_ATTRIBUTES
-                            else data.get(name)
-                        )
+                        column: _solve_value(data, name)
                         for column, name in PERTURBATION_EDGE_ATTRIBUTES.items()
                     },
                     "baseline_resistance_pa_s_per_m3": was,
@@ -6087,8 +6089,8 @@ def _write_capillary_block_comparison(
                     "diameter_um": data.get("diameter_um"),
                     "baseline_resistance_pa_s_per_m3": before.get("resistance"),
                     "blocked_resistance_pa_s_per_m3": data.get("resistance"),
-                    "baseline_flow_abs_m3_s": before.get("flow_abs"),
-                    "blocked_flow_abs_m3_s": data.get("flow_abs"),
+                    "baseline_flow_abs_m3_s": _solve_value(before, "flow_abs"),
+                    "blocked_flow_abs_m3_s": _solve_value(data, "flow_abs"),
                 }
             )
     result.outputs.append(vessels_path)
