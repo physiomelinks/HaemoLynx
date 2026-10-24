@@ -476,7 +476,22 @@ dead ends by kind, capillary count (1,185 / 1,186 of 1,181) and mean diameter (1
 capillaries, so 237 are drawn), daughter angle 97 of 114 degrees, average degree 2.47 of 2.31 (the
 template's 94 ends of junction-less pieces).
 
-**Waits on Harvey** (behaviour the plan leaves open; nothing built):
+**Decided by Harvey, 2026-10-24** (on the options below; being built in this order):
+
+1. The large tier: **a trunk with side branches handed to the bed, its widths the template's per
+   order** (Murray's law not enforced in the large tier, its exponent reported only; Murray stays
+   exact in the Art/Ven tiers).
+2. A root's first vessel: **re-aimed, else shortened, to stay in the box; and no class-length
+   rescale stretches a vessel past the template's longest or most tortuous** (the shortfall
+   reported instead).
+3. The bed: **its lattice spacing from the template's mean capillary chord, filling only as much
+   of the box as the count needs, grown from the trees; where the template measured a tissue
+   volume, the bed fills that volume instead.**
+4. `vessel_box`: **dropped** (the occupied volume of item 3 takes its place).
+5. **A Voronoi bed as an option** (`bed_model`), beside the Delaunay fill.
+6. The panel half of verification 2: **Harvey checks it himself.**
+
+**Waits on Harvey** (behaviour the plan left open, as it stood before the decisions above):
 
 - **How to draw a large tier like E14.5's.** Its Large_Art/Large_Ven orders are a trunk whose
   order rises at every junction where a capillary leaves it (27 vessels over 15 orders, 1-3 a
