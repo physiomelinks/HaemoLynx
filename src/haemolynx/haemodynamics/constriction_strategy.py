@@ -21,7 +21,7 @@ from typing import Any, Mapping
 import networkx as nx
 import numpy as np
 
-from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
+from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER, axis_order_for_run
 
 from .constriction import resolve_generator
 from . import pericyte_mask as pericyte_mask_strategy
@@ -134,7 +134,7 @@ def constriction_strategy_kwargs(
         max_assignment_distance_um=settings.get("pericyte_max_assignment_distance_um", 3.0),
         min_pericyte_diameter_um=settings.get("pericyte_min_diameter_um", 5.0),
         max_pericyte_diameter_um=settings.get("pericyte_max_diameter_um", 12.0),
-        axis_order=settings.get("image_axis_order", CANONICAL_AXIS_ORDER),
+        axis_order=axis_order_for_run(settings),
         seed=settings.get("pericyte_constriction_seed"),
         voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
         voxel_size_policy=settings.get("voxel_size_policy", "auto"),

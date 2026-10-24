@@ -19,14 +19,29 @@ Input files do not always arrive in ``(z, y, x)``. Loaders accept an
 (x, y, z) volume, ``"yzx"`` for a (y, z, x) volume, and so on) and transpose the
 volume to the canonical order on load. That is what makes "which axis is z" —
 the axis projected through — user-selectable.
+
+``image_axis_order="auto"`` reads each file in the order its own axis labels
+give (:func:`stated_axis_order`: a TIFF's OME or ImageJ metadata, an HDF5
+dataset's ``axistags``), and a file whose labels do not name z, y and x in the
+segmented image's order, else ``"zyx"`` (:func:`axis_order_for_run`). Loaders
+take ``"auto"`` too and resolve it against the file they open
+(:func:`axis_order_for_file`); anything that transposes an array without a
+file needs a permutation.
 """
 from __future__ import annotations
 
-from typing import Sequence
+import logging
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
+import tifffile
+
+logger = logging.getLogger(__name__)
 
 CANONICAL_AXIS_ORDER = "zyx"
+AUTO_AXIS_ORDER = "auto"
+_AUTO_PREFIX = f"{AUTO_AXIS_ORDER}:"
 VALID_AXIS_ORDERS = (
     "zyx",
     "zxy",
@@ -37,23 +52,180 @@ VALID_AXIS_ORDERS = (
 )
 
 
-def normalize_axis_order(axis_order: str, *, label: str = "axis_order") -> str:
+def normalize_axis_order(
+    axis_order: str, *, label: str = "axis_order", allow_auto: bool = False
+) -> str:
     """Validate an axis-order string and return it lowercased.
 
     The string names the meaning of each array axis in order, so ``"zyx"``
-    describes a volume indexed ``volume[z, y, x]``.
+    describes a volume indexed ``volume[z, y, x]``. *allow_auto* accepts an
+    auto order as well (``"auto"``, or :func:`auto_axis_order`'s
+    ``"auto:<order>"``), for a caller that resolves it against a file.
     """
     if not isinstance(axis_order, str):
         raise ValueError(
             f"{label} must be a string permutation of 'xyz', got {axis_order!r}."
         )
     normalized = axis_order.strip().lower()
+    if is_auto_axis_order(normalized):
+        if not allow_auto:
+            raise ValueError(
+                f"{label}={axis_order!r} names no order until it is resolved against "
+                "a file (axis_order_for_file); a permutation of 'xyz' is needed here."
+            )
+        unlabelled = normalized[len(_AUTO_PREFIX):] or CANONICAL_AXIS_ORDER
+        return auto_axis_order(normalize_axis_order(unlabelled, label=label))
     if sorted(normalized) != ["x", "y", "z"]:
+        auto = " or 'auto'" if allow_auto else ""
         raise ValueError(
-            f"{label} must be a permutation of 'xyz' (one of {', '.join(VALID_AXIS_ORDERS)}), "
-            f"got {axis_order!r}."
+            f"{label} must be a permutation of 'xyz' (one of {', '.join(VALID_AXIS_ORDERS)})"
+            f"{auto}, got {axis_order!r}."
         )
     return normalized
+
+
+def is_auto_axis_order(axis_order: Any) -> bool:
+    """Whether *axis_order* is an auto order: ``"auto"`` or ``"auto:<order>"``."""
+    if not isinstance(axis_order, str):
+        return False
+    normalized = axis_order.strip().lower()
+    return normalized == AUTO_AXIS_ORDER or normalized.startswith(_AUTO_PREFIX)
+
+
+def auto_axis_order(unlabelled: str = CANONICAL_AXIS_ORDER) -> str:
+    """The auto order that reads a file whose labels do not name z, y and x
+    in *unlabelled*: ``"auto"`` while that is ``"zyx"``, else
+    ``"auto:<unlabelled>"``. A run under ``image_axis_order="auto"`` hands
+    its loaders this with the segmented image's order
+    (:func:`axis_order_for_run`)."""
+    unlabelled = normalize_axis_order(unlabelled, label="unlabelled")
+    if unlabelled == CANONICAL_AXIS_ORDER:
+        return AUTO_AXIS_ORDER
+    return f"{_AUTO_PREFIX}{unlabelled}"
+
+
+def axis_order_from_labels(labels: Iterable[str]) -> str | None:
+    """The order of z, y and x among a file's axis *labels*, one per array
+    axis (``"ZCYX"``, ``["z", "c", "y", "x"]``), its other axes -- channel,
+    time, samples -- left out; None unless z, y and x are each named once.
+    tifffile names an axis it knows nothing about ``Q`` or ``I``, so a stack
+    written without metadata (``"QYX"``) gives None."""
+    spatial = [str(label).strip().lower() for label in labels]
+    spatial = [label for label in spatial if label in {"x", "y", "z"}]
+    if sorted(spatial) != ["x", "y", "z"]:
+        return None
+    return "".join(spatial)
+
+
+def resolve_axis_order(axis_order: str, stated: str | None) -> str:
+    """The permutation a file is read in: *axis_order* when it is one; for
+    an auto order, the order the file's labels state (*stated*), else the
+    auto order's unlabelled one."""
+    normalized = normalize_axis_order(axis_order, allow_auto=True)
+    if not is_auto_axis_order(normalized):
+        return normalized
+    if stated is not None:
+        return normalize_axis_order(stated, label="stated axis order")
+    return normalized[len(_AUTO_PREFIX):] or CANONICAL_AXIS_ORDER
+
+
+_STATED_AXIS_ORDERS: dict[tuple, str | None] = {}
+_STATED_AXIS_ORDERS_KEPT = 64
+_LOGGED_RESOLUTIONS: set[tuple] = set()
+
+
+def _h5_axis_labels(path: Path, dataset_name: str | None) -> list[str] | None:
+    try:
+        import h5py
+    except ImportError:
+        return None
+    from .load import _h5_axis_keys, _select_h5_dataset
+
+    with h5py.File(path, "r") as f:
+        return _h5_axis_keys(f[_select_h5_dataset(f, path, dataset_name)])
+
+
+def stated_axis_order(path: Any, dataset_name: str | None = None) -> str | None:
+    """The order a file's own axis labels give its z, y and x axes; None when
+    they do not name all three, or *path* is not a readable TIFF or HDF5 file.
+
+    A TIFF's labels are tifffile's for its first series: from the OME header,
+    ImageJ's hyperstack metadata or a tifffile writer's ``axes``. Every TIFF
+    page is a Y-by-X plane, so a TIFF states z first unless its writer named
+    the axes otherwise, and a resliced stack still labelled ``ZYX`` is not
+    caught. tifffile writes an ImageJ stack given no axes as channels
+    (``CYX``), which names no z. An HDF5 dataset's (*dataset_name*, or the one the loader picks)
+    are the ``axistags`` ilastik and vigra write, else h5py's dimension
+    labels, in any order. Read from the header alone, and kept per file
+    until the file changes.
+    """
+    if path is None or path == "":
+        return None
+    try:
+        resolved = Path(path).resolve()
+        stat = resolved.stat()
+    except (OSError, TypeError, ValueError):
+        return None
+    key = (str(resolved), stat.st_mtime_ns, stat.st_size, dataset_name)
+    if key in _STATED_AXIS_ORDERS:
+        return _STATED_AXIS_ORDERS[key]
+    labels = None
+    suffix = resolved.suffix.lower()
+    try:
+        if suffix in {".tif", ".tiff"}:
+            with tifffile.TiffFile(resolved) as tif:
+                labels = tif.series[0].axes
+        elif suffix in {".h5", ".hdf5"}:
+            labels = _h5_axis_labels(resolved, dataset_name)
+    except Exception:  # noqa: BLE001 - an unreadable file states nothing; its loader says why
+        logger.debug("Could not read the axis labels of %s", resolved, exc_info=True)
+    stated = None if labels is None else axis_order_from_labels(labels)
+    if len(_STATED_AXIS_ORDERS) >= _STATED_AXIS_ORDERS_KEPT:
+        _STATED_AXIS_ORDERS.pop(next(iter(_STATED_AXIS_ORDERS)))
+    _STATED_AXIS_ORDERS[key] = stated
+    return stated
+
+
+def axis_order_for_file(
+    axis_order: str, path: Any, *, dataset_name: str | None = None
+) -> str:
+    """The permutation *path* is read in under *axis_order*: the order itself,
+    or for an auto order, the file's own labels' (:func:`stated_axis_order`),
+    else the auto order's unlabelled one. Every loader calls this before it
+    transposes; under auto, which order each file got, and why, is logged
+    once."""
+    normalized = normalize_axis_order(axis_order, allow_auto=True)
+    if not is_auto_axis_order(normalized):
+        return normalized
+    stated = stated_axis_order(path, dataset_name)
+    resolved = resolve_axis_order(normalized, stated)
+    logged = (str(path), resolved, stated is not None)
+    if path not in (None, "") and logged not in _LOGGED_RESOLUTIONS and Path(path).is_file():
+        _LOGGED_RESOLUTIONS.add(logged)
+        if stated is not None:
+            logger.info(
+                "image_axis_order=auto: reading %s as '%s', as its axis labels say.",
+                Path(path).name, resolved,
+            )
+        else:
+            logger.info(
+                "image_axis_order=auto: %s does not name its z, y and x axes; reading it as '%s'.",
+                Path(path).name, resolved,
+            )
+    return resolved
+
+
+def axis_order_for_run(settings: Mapping[str, Any]) -> str:
+    """The *axis_order* a run hands its loaders: ``image_axis_order`` when it
+    is a permutation; under ``"auto"``, the auto order whose files without
+    labels are read in the segmented image's (``input_path``) order -- its
+    own labels', else ``"zyx"``. Each loader resolves it against its own file
+    (:func:`axis_order_for_file`)."""
+    value = settings.get("image_axis_order") or CANONICAL_AXIS_ORDER
+    normalized = normalize_axis_order(value, label="image_axis_order", allow_auto=True)
+    if not is_auto_axis_order(normalized):
+        return normalized
+    return auto_axis_order(axis_order_for_file(normalized, settings.get("input_path")))
 
 
 def axis_order_transpose(axis_order: str) -> tuple[int, int, int]:

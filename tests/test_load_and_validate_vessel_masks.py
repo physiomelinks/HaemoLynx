@@ -686,6 +686,35 @@ def test_the_large_role_picks_the_large_paths_and_the_dilation() -> None:
     assert arguments["voxel_size_policy"] == "override"
 
 
+def test_under_auto_masks_without_axis_labels_follow_the_segmented_image(tmp_path: Path) -> None:
+    """An ilastik HDF5 stored (x, y, z) says so in its axistags; the masks
+    beside it, written without labels, are read in its order."""
+    import json
+
+    h5py = pytest.importorskip("h5py")
+    image = tmp_path / "image.h5"
+    with h5py.File(image, "w") as handle:
+        dataset = handle.create_dataset("data", data=np.zeros((6, 5, 7), dtype=np.uint8))
+        dataset.attrs["axistags"] = json.dumps(
+            {"axes": [{"key": key, "typeFlags": 2, "resolution": 0, "description": ""}
+                      for key in "xyz"]}
+        )
+    settings = {**LARGE_SETTINGS, "image_axis_order": "auto", "input_path": image}
+    arguments = vessel_mask_arguments(settings, "large")
+    assert arguments["axis_order"] == "auto:xyz"
+
+    volume_xyz = np.zeros((6, 5, 7), dtype=np.uint8)
+    volume_xyz[5, 0, 3] = 1  # x = 5, y = 0, z = 3
+    arteriole_path, venule_path = tmp_path / "arteriole.tif", tmp_path / "venule.tif"
+    tifffile.imwrite(arteriole_path, volume_xyz)
+    tifffile.imwrite(venule_path, volume_xyz)
+    arteriole, _venule, _av, _vv = load_large_vessel_masks(
+        True, arteriole_path, venule_path, axis_order=arguments["axis_order"]
+    )
+    assert arteriole.shape == (7, 5, 6)
+    assert bool(arteriole[3, 0, 5])
+
+
 def test_the_small_role_picks_the_small_paths_and_has_no_dilation() -> None:
     """The small settings are not the large names with a prefix; mixing them up
     would dilate the boundary masks and load the wrong files."""

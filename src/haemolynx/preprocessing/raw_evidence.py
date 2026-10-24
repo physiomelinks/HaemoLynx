@@ -783,13 +783,16 @@ def load_raw_channel(
     file's own dtype (uint16: two bytes a voxel); with *use_memmap* it is the
     float32 disk-backed array ``load_single_channel_tiff_volume`` makes."""
     from haemolynx.haemodynamics.fwhm_diameter import _read_tiff_channel, load_single_channel_tiff_volume
-    from haemolynx.io.axis_order import apply_axis_order
+    from haemolynx.io.axis_order import apply_axis_order, axis_order_for_file
 
     if use_memmap:
         return load_single_channel_tiff_volume(
             path, axis_order=axis_order, use_memmap=True, memmap_directory=memmap_directory, channel=channel,
         )
-    return apply_axis_order(_read_tiff_channel(Path(path), 0 if channel is None else int(channel)), axis_order)
+    return apply_axis_order(
+        _read_tiff_channel(Path(path), 0 if channel is None else int(channel)),
+        axis_order_for_file(axis_order, path),
+    )
 
 
 def _raw_downsample_factor(settings: Mapping[str, Any]) -> int:
@@ -816,6 +819,7 @@ def raw_evidence_from_settings(
     spec = raw_image_for_build(settings)
     if spec is None:
         return None
+    from haemolynx.io.axis_order import axis_order_for_run
     from haemolynx.io.load import resolve_image_path_with_optional_zip
 
     try:
@@ -831,7 +835,7 @@ def raw_evidence_from_settings(
     raw = load_raw_channel(
         path,
         spec.channel,
-        axis_order=str(settings.get("image_axis_order") or "zyx"),
+        axis_order=axis_order_for_run(settings),
         use_memmap=bool(settings.get("use_memmap_loading")),
         memmap_directory=settings.get("memmap_directory"),
     )

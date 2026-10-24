@@ -100,7 +100,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("no voxel size: pass --voxel-size-zyx")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    raw = hio.apply_axis_order(tifffile.imread(args.mask or settings["input_path"]), settings["image_axis_order"])
+    mask_file = args.mask or settings["input_path"]
+    raw = hio.apply_axis_order(
+        tifffile.imread(mask_file),
+        hio.axis_order_for_file(hio.axis_order_for_run(settings), mask_file),
+    )
     mask = raw == args.mask_value if args.mask_value is not None else _to_binary_volume_for_skeletonization(raw)
     mask_path = out / "mask.npy"
     np.save(mask_path, np.asarray(mask, dtype=bool))

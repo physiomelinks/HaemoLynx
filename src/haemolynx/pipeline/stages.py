@@ -540,10 +540,15 @@ def segment(
     input_format = settings["input_path"].suffix[1:].lower()
     if input_format not in ["tif", "tiff", "h5"]:
         raise ValueError(f"Invalid image format: {input_format}")
-    settings["image_axis_order"] = io.normalize_axis_order(settings["image_axis_order"], label="IMAGE_AXIS_ORDER")
-    if settings["image_axis_order"] != io.CANONICAL_AXIS_ORDER:
+    settings["image_axis_order"] = io.normalize_axis_order(
+        settings["image_axis_order"], label="IMAGE_AXIS_ORDER", allow_auto=True
+    )
+    # Under auto, each file is read in its own labels' order, and one that
+    # names none in this image's (io.axis_order_for_run).
+    image_axis_order = io.axis_order_for_file(settings["image_axis_order"], settings["input_path"])
+    if image_axis_order != io.CANONICAL_AXIS_ORDER:
         logger.info(
-            f"Input axis order '{settings['image_axis_order']}' will be transposed to the canonical "
+            f"Input axis order '{image_axis_order}' will be transposed to the canonical "
             f"'{io.CANONICAL_AXIS_ORDER}' layout on load."
         )
     settings["vtk_output_prefix"] = Path(settings["vtk_output_prefix"])
@@ -840,7 +845,7 @@ def _h5_input_crop_box(settings: dict, input_format: str) -> CropBox | None:
     low-RAM raw cache keeping the whole image for the next run."""
     if input_format != "h5" or (settings["use_memmap_loading"] and settings["memmap_directory"]):
         return None
-    shape = io.h5_volume_shape(settings["input_path"], axis_order=settings["image_axis_order"])
+    shape = io.h5_volume_shape(settings["input_path"], axis_order=io.axis_order_for_run(settings))
     if len(shape) != 3:
         return None
     box = crop_box_from_settings(settings, shape)
@@ -870,7 +875,7 @@ def _load_and_crop_volume(settings: dict, input_format: str):
             voxel_meta_status,
         ) = io.load_3d_h5_with_voxel_size(
             settings["input_path"],
-            axis_order=settings["image_axis_order"],
+            axis_order=io.axis_order_for_run(settings),
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
             box=box.slices,
@@ -885,7 +890,7 @@ def _load_and_crop_volume(settings: dict, input_format: str):
         ) = io.load_raw_volume_reusing_cache(
             settings["input_path"],
             input_format=input_format,
-            axis_order=settings["image_axis_order"],
+            axis_order=io.axis_order_for_run(settings),
             memmap_directory=settings["memmap_directory"],
         )
     else:
@@ -898,7 +903,7 @@ def _load_and_crop_volume(settings: dict, input_format: str):
         ) = io.load_image_with_voxel_size_2d_aware(
             settings["input_path"],
             input_format=input_format,
-            axis_order=settings["image_axis_order"],
+            axis_order=io.axis_order_for_run(settings),
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
         )
@@ -3633,7 +3638,7 @@ def resolve_raw_image_stain(
     use_memmap, memmap_directory = settings["use_memmap_loading"], settings["memmap_directory"]
     whole = load_single_channel_tiff_volume(
         io.resolve_image_path_with_optional_zip(Path(path)),
-        axis_order=settings["image_axis_order"],
+        axis_order=io.axis_order_for_run(settings),
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
         channel=settings.get("raw_image_channel"),
@@ -3710,7 +3715,7 @@ def _haemodynamics_apply_config(
         endothelial=endothelial,
         resistance_node_pair=resistance_node_pair,
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
-        axis_order=settings["image_axis_order"],
+        axis_order=io.axis_order_for_run(settings),
         comparison_output_csv_path=None,
         equivalent_resistance_solver=_equivalent_resistance_solver(settings),
         use_memmap=settings["use_memmap_loading"],
@@ -5787,7 +5792,7 @@ def _capillary_blocks_from_mask(
         mask_path,
         G,
         h5_dataset_name=settings.get("capillary_block_mask_h5_dataset_name"),
-        axis_order=settings.get("image_axis_order", io.CANONICAL_AXIS_ORDER),
+        axis_order=io.axis_order_for_run(settings),
         voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
         voxel_size_policy=settings.get("voxel_size_policy", "auto"),
     )
@@ -6587,7 +6592,7 @@ def tissue_measurement(
         stat.st_mtime_ns,
         stat.st_size,
         channel,
-        settings["image_axis_order"],
+        io.axis_order_for_run(settings),
         tuple(network.volume.voxel_size_zyx),
         tuple(settings[name] for name in _TISSUE_SETTINGS),
     )
@@ -6603,7 +6608,7 @@ def tissue_measurement(
     use_memmap, memmap_directory = settings["use_memmap_loading"], settings["memmap_directory"]
     whole_raw = load_single_channel_tiff_volume(
         resolved,
-        axis_order=settings["image_axis_order"],
+        axis_order=io.axis_order_for_run(settings),
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
         channel=channel,
@@ -6970,7 +6975,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             output_dir=output_dir,
             image_stem=run_stem(settings),
             voxel_size_xyz=main_voxel_size_xyz,
-            axis_order=settings["image_axis_order"],
+            axis_order=io.axis_order_for_run(settings),
             vessel_mask_path=(
                 None
                 if settings["measurement_3d_vessel_mask_path"] is None

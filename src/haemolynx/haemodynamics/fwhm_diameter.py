@@ -29,6 +29,7 @@ from scipy.special import erf
 from haemolynx.io.axis_order import (
     CANONICAL_AXIS_ORDER,
     apply_axis_order,
+    axis_order_for_file,
     normalize_axis_order,
 )
 from haemolynx.preprocessing.memmap_support import release_memmap_array
@@ -51,7 +52,8 @@ def load_single_channel_tiff_volume(
 
     Single channel / single signal expected -- or, with *channel*, that one
     channel (counting from 0) of a multi-channel stack such as an ImageJ
-    composite (see :func:`_read_tiff_channel`).
+    composite (see :func:`_read_tiff_channel`). *axis_order* may be
+    ``"auto"`` (:func:`haemolynx.io.axis_order.axis_order_for_file`).
 
     *use_memmap* (the low-RAM option) decompresses, reorders and converts to
     float32 into disk-backed arrays in *memmap_directory*; the returned
@@ -61,6 +63,7 @@ def load_single_channel_tiff_volume(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"TIFF not found: {path}")
+    axis_order = axis_order_for_file(axis_order, path)
     if channel is not None:
         vol = _read_tiff_channel(path, int(channel))
         vol = apply_axis_order(vol, axis_order)

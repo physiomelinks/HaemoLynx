@@ -33,3 +33,33 @@ segmented-image row stays when ilastik is ticked with no raw image (`form.unmet_
 The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`/`_channel`,
 `endothelial_image_path`/`_channel`, `use_fwhm_edge_diameters`, `use_endothelial_diameters`,
 `diameter_basis`) still load, moved together by `Setting.migrates`/`migrate` (`Schema.upgrade`).
+
+## image_axis_order = auto (2026-10-24)
+
+Added at Harvey's request; `zyx` stays the default. What the headers of the files to hand said
+(tifffile 2026.8.23):
+
+| File | Labels |
+|---|---|
+| `MasonTest.tif` (ImageJ, `slices` set) | `ZYX` |
+| Desktop nerve / skeletal-muscle crops (ImageJ composites) | `ZCYX` |
+| Skeletal-muscle `.ome.tif` (16.4 G voxels) | `ZYX` |
+| E14.5 claudin Probabilities `.h5` (ilastik) | axistags `z c y x` |
+| `e14p5_mca.tif`, the test fixtures (written by tifffile) | `QYX`: none |
+
+So every file there reads as `zyx` under auto too, and switching the default would change none of
+those runs. What auto can and cannot see:
+
+- A TIFF page is a Y×X plane, so a TIFF's labels can only put z first, unless a tifffile writer
+  named its axes (`metadata={"axes": "XYZ"}`). A resliced stack ImageJ still labels `ZYX`.
+- tifffile writing an ImageJ stack given no `axes` calls its pages channels (`CYX`, `channels=N`):
+  that names no z, so the file is read in the segmented image's order.
+- HDF5 is where it matters: ilastik and vigra write `axistags` in any order. Before this, the
+  loader read them only to drop size-1 channel and time axes and then applied
+  `image_axis_order` whatever they said.
+
+A file with no labels is read in the segmented image's order rather than `zyx`, so masks written
+beside a labelled non-`zyx` HDF5 by the same tool line up with it. That is carried as
+`"auto:<order>"` (`io.axis_order_for_run`) rather than threaded through every caller, since one
+`axis_order` argument reaches several files in the diameter, pericyte, cell-mask and vessel-mask
+loaders.

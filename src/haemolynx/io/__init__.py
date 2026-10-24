@@ -42,10 +42,14 @@ from .downsample import (
 from .voxel_validation import resolve_voxel_size_xyz, validate_voxel_size_xyz
 from .channels import TiffChannel, tiff_channel_axis, tiff_channels
 from .axis_order import (
+    AUTO_AXIS_ORDER,
     CANONICAL_AXIS_ORDER,
     VALID_AXIS_ORDERS,
     apply_axis_order,
+    axis_order_for_file,
+    axis_order_for_run,
     axis_order_transpose,
+    stated_axis_order,
     file_axis_spacing_from_xyz,
     normalize_axis_order,
     voxel_size_xyz_from_file_axes,
@@ -91,8 +95,12 @@ __all__ = [
     "match_batch",
     "validate_voxel_size_xyz",
     "resolve_voxel_size_xyz",
+    "AUTO_AXIS_ORDER",
     "CANONICAL_AXIS_ORDER",
     "VALID_AXIS_ORDERS",
+    "axis_order_for_file",
+    "axis_order_for_run",
+    "stated_axis_order",
     "normalize_axis_order",
     "voxel_size_xyz_from_file_axes",
     "file_axis_spacing_from_xyz",

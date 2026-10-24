@@ -438,6 +438,42 @@ def test_skeletonise_loads_a_genuinely_2d_tiff_as_a_single_slice_volume_and_warn
     assert any("2D image" in r.message for r in caplog.records)
 
 
+@pytest.mark.parametrize("crop", [False, True])
+def test_an_auto_axis_order_reads_an_hdf5_stored_x_y_z_as_its_axistags_say(tmp_path, crop):
+    """image_axis_order="auto" on an ilastik-style HDF5 whose axistags say it
+    is stored (x, y, z) skeletonises the same volume as the canonical file
+    read as "zyx" -- read whole, and through the crop_on_import box, which
+    reads only the box of an HDF5 and is given in canonical voxels."""
+    import json
+
+    h5py = pytest.importorskip("h5py")
+    mask = np.zeros((9, 14, 30), dtype=bool)
+    mask[3:6, 5:8, 2:28] = True
+    mask[3:6, 2:12, 14:17] = True
+    canonical = _write_mask(tmp_path, mask)
+    stored = tmp_path / "stored_xyz.h5"
+    with h5py.File(stored, "w") as handle:
+        dataset = handle.create_dataset("data", data=np.transpose(mask, (2, 1, 0)).astype(np.uint8))
+        dataset.attrs["axistags"] = json.dumps(
+            {"axes": [{"key": key, "typeFlags": 2, "resolution": 0, "description": ""}
+                      for key in "xyz"]}
+        )
+    box = {"crop_on_import": True, "crop_size_xyz": [24, 10, 7]} if crop else {}
+
+    expected = skeletonise(
+        expected_settings := settings_for(tmp_path, canonical, **box),
+        segment(expected_settings),
+    )
+    settings = settings_for(tmp_path, stored, image_axis_order="auto", **box)
+    volume = skeletonise(settings, segment(settings))
+
+    assert volume.image.shape == expected.image.shape == ((7, 10, 24) if crop else mask.shape)
+    assert np.array_equal(np.asarray(volume.image, dtype=bool), np.asarray(expected.image, dtype=bool))
+    assert np.array_equal(volume.skeleton, expected.skeleton)
+    assert int(volume.skeleton.sum()) > 0
+    assert settings["image_axis_order"] == "auto"
+
+
 # --- segmentation cleanup (Input tab, before skeletonisation) ----------------
 
 

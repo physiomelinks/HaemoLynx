@@ -39,8 +39,9 @@ _CLASSIFIERS = "classifiers"
 _OUTPUTS = "outputs"
 _PLOTS = "plots"
 
-#: Axis orders accepted by the loader: any permutation of x, y and z.
-AXIS_ORDERS = ("zyx", "zxy", "yzx", "yxz", "xzy", "xyz")
+#: Axis orders accepted by the loader: any permutation of x, y and z, or
+#: "auto" for each file's own axis labels (io.axis_order.axis_order_for_run).
+AXIS_ORDERS = ("zyx", "zxy", "yzx", "yxz", "xzy", "xyz", "auto")
 
 #: Boundary-node selection methods understood by ``select_boundary_nodes_by_method``.
 NODE_SELECTION_METHODS = (
@@ -503,7 +504,12 @@ SCHEMA = Schema(
             name="image_axis_order",
             kind="choice",
             default="zyx",
-            help="Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load",
+            help=(
+                "Declare which array axis is which in the input files, so volumes can be "
+                "transposed to canonical (z, y, x) on load. auto reads each file's own axis "
+                "labels (a TIFF's OME or ImageJ metadata, an HDF5's axistags); a file that "
+                "names none is read in the segmented image's order, else zyx"
+            ),
             section=_INPUT_AND_SEGMENTATION,
             choices=AXIS_ORDERS,
             requires=("network_source=segmented_image",),

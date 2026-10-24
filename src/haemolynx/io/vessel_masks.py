@@ -7,7 +7,7 @@ from typing import Literal, Mapping
 
 import numpy as np
 
-from .axis_order import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
+from .axis_order import CANONICAL_AXIS_ORDER, axis_order_for_run, voxel_size_zyx_from_xyz
 from .crop import CropBox, crop_volume
 from .downsample import Downsample, downsample_volume
 from .ilastik import run_ilastik_headless_segmentation
@@ -406,7 +406,7 @@ def vessel_mask_arguments(
         if setting_name in settings:
             arguments[setting_name] = settings[setting_name]
     if "image_axis_order" in settings:
-        arguments["axis_order"] = settings["image_axis_order"]
+        arguments["axis_order"] = axis_order_for_run(settings)
     return arguments
 
 

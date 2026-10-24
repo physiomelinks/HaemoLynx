@@ -247,3 +247,231 @@ def test_an_h5_element_size_follows_the_axis_order(tmp_path):
     assert (vx, vy, vz) == pytest.approx((2.0, 0.25, 0.5))
     _image, vx, vy, vz, _status = load_3d_h5_with_voxel_size(str(path))
     assert (vx, vy, vz) == pytest.approx((0.5, 0.25, 2.0))
+
+
+# --- image_axis_order="auto": each file's own axis labels ---------------------
+
+
+def _labelled_volume() -> np.ndarray:
+    """A canonical (z=5, y=6, x=7) volume of distinct values. Longer than four
+    on every axis: tifffile reads a leading axis of 3 or 4 as colour samples."""
+    return np.arange(5 * 6 * 7, dtype=np.uint16).reshape(5, 6, 7)
+
+
+def _stored(volume_zyx: np.ndarray, order: str) -> np.ndarray:
+    return np.transpose(volume_zyx, [CANONICAL_AXIS_ORDER.index(axis) for axis in order])
+
+
+def _write_labelled_tiff(path, volume_zyx, order, **kwargs):
+    """*volume_zyx* stored in *order*, its axes named so in the file."""
+    tifffile.imwrite(str(path), _stored(volume_zyx, order), metadata={"axes": order.upper()}, **kwargs)
+    return path
+
+
+def _write_h5(path, data, *, axistags=None, dimension_labels=None, element_size_um=None):
+    h5py = pytest.importorskip("h5py")
+    import json
+
+    with h5py.File(path, "w") as handle:
+        dataset = handle.create_dataset("data", data=data)
+        if axistags is not None:
+            dataset.attrs["axistags"] = json.dumps(
+                {"axes": [{"key": key, "typeFlags": 2, "resolution": 0, "description": ""}
+                          for key in axistags]}
+            )
+        for axis, label in enumerate(dimension_labels or ()):
+            dataset.dims[axis].label = label
+        if element_size_um is not None:
+            dataset.attrs["element_size_um"] = element_size_um
+    return path
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        ("ZYX", "zyx"),
+        ("ZCYX", "zyx"),
+        ("TZCYXS", "zyx"),
+        ("XYZ", "xyz"),
+        (["y", "c", "z", "x"], "yzx"),
+        ("QYX", None),  # tifffile's name for an axis it knows nothing about
+        ("IYX", None),
+        ("YX", None),
+        ("ZZYX", None),
+    ],
+)
+def test_the_labelled_order_is_z_y_and_x_among_the_files_axes(labels, expected):
+    from haemolynx.io.axis_order import axis_order_from_labels
+
+    assert axis_order_from_labels(labels) == expected
+
+
+def test_auto_is_refused_where_an_array_is_transposed_without_a_file():
+    with pytest.raises(ValueError, match="resolved against a file"):
+        normalize_axis_order("auto")
+    with pytest.raises(ValueError, match="resolved against a file"):
+        apply_axis_order(_distinct_shape_volume(), "auto")
+    with pytest.raises(ValueError, match="resolved against a file"):
+        axis_order_transpose("auto")
+
+
+def test_an_auto_order_carries_the_order_a_file_without_labels_is_read_in():
+    from haemolynx.io.axis_order import auto_axis_order
+
+    assert normalize_axis_order(" AUTO ", allow_auto=True) == "auto"
+    assert normalize_axis_order("auto:XYZ", allow_auto=True) == "auto:xyz"
+    assert normalize_axis_order("auto:zyx", allow_auto=True) == "auto"
+    assert auto_axis_order() == "auto" and auto_axis_order("yzx") == "auto:yzx"
+    with pytest.raises(ValueError, match="permutation of 'xyz'"):
+        normalize_axis_order("auto:abc", allow_auto=True)
+    with pytest.raises(ValueError, match="or 'auto'"):
+        normalize_axis_order("abc", allow_auto=True)
+
+
+def test_a_file_is_read_in_its_labels_order_only_under_auto():
+    from haemolynx.io.axis_order import resolve_axis_order
+
+    assert resolve_axis_order("yzx", "xyz") == "yzx"  # a chosen order wins
+    assert resolve_axis_order("auto", "xyz") == "xyz"
+    assert resolve_axis_order("auto", None) == "zyx"
+    assert resolve_axis_order("auto:xzy", "yxz") == "yxz"
+    assert resolve_axis_order("auto:xzy", None) == "xzy"
+
+
+def test_each_formats_axis_labels_are_read_from_its_header(tmp_path):
+    from haemolynx.io import stated_axis_order
+
+    volume = _labelled_volume()
+    assert stated_axis_order(_write_labelled_tiff(tmp_path / "xyz.tif", volume, "xyz")) == "xyz"
+    imagej = tmp_path / "imagej.tif"
+    tifffile.imwrite(str(imagej), volume, imagej=True, metadata={"axes": "ZYX"})
+    assert stated_axis_order(imagej) == "zyx"
+    composite = tmp_path / "composite.tif"
+    tifffile.imwrite(
+        str(composite), np.stack([volume, volume], axis=1), imagej=True, metadata={"axes": "ZCYX"}
+    )
+    assert stated_axis_order(composite) == "zyx"
+    plain = tmp_path / "plain.tif"
+    tifffile.imwrite(str(plain), volume)  # tifffile names its pages Q: no z
+    assert stated_axis_order(plain) is None
+    unnamed = tmp_path / "imagej_unnamed.tif"
+    tifffile.imwrite(str(unnamed), volume, imagej=True)  # tifffile's ImageJ guess: channels
+    assert stated_axis_order(unnamed) is None
+
+    stored = _stored(volume, "xzy")[..., np.newaxis]
+    assert stated_axis_order(_write_h5(tmp_path / "tags.h5", stored, axistags="xzyc")) == "xzy"
+    labelled = _write_h5(tmp_path / "dims.h5", _stored(volume, "yxz"), dimension_labels="yxz")
+    assert stated_axis_order(labelled) == "yxz"
+    assert stated_axis_order(_write_h5(tmp_path / "bare.h5", volume)) is None
+
+    text = tmp_path / "notes.txt"
+    text.write_text("zyx")
+    for nothing in (text, tmp_path / "gone.tif", None, ""):
+        assert stated_axis_order(nothing) is None
+
+
+def test_a_files_labels_are_read_again_once_it_changes(tmp_path):
+    from haemolynx.io import stated_axis_order
+
+    path = _write_labelled_tiff(tmp_path / "stack.tif", _labelled_volume(), "xyz")
+    assert stated_axis_order(path) == "xyz"
+    _write_labelled_tiff(path, _labelled_volume()[:, :, :6], "zyx")
+    assert stated_axis_order(path) == "zyx"
+
+
+def test_an_imagej_stack_states_z_first_whatever_its_pages_step_along(tmp_path):
+    """What auto cannot see: a TIFF page is a Y by X plane, and ImageJ labels a
+    stack ZYX whatever its pages are, so a resliced stack needs the order
+    chosen by hand."""
+    from haemolynx.io import axis_order_for_file
+
+    path = tmp_path / "pages_along_x.tif"
+    _imagej_stack(path, _stored(_labelled_volume(), "xyz").astype(np.uint8),
+                  page_spacing=2.0, height_spacing=0.25, width_spacing=0.5)
+
+    assert axis_order_for_file("auto", path) == "zyx"
+    assert axis_order_for_file("xyz", path) == "xyz"
+
+
+def test_the_loaders_read_an_auto_file_in_its_labels_order(tmp_path):
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
+    from haemolynx.io import h5_volume_shape, load_3d_h5_with_voxel_size, read_voxel_size_xyz
+
+    volume = _labelled_volume()
+    # Width spacing 2.0 and height 0.25: the width is the file's Z, the height its Y.
+    tiff = _write_labelled_tiff(tmp_path / "xyz.tif", volume, "xyz", resolution=(0.5, 4.0))
+    image, vx, vy, vz, _status = load_3d_tif_with_voxel_size(str(tiff), axis_order="auto")
+    assert np.array_equal(image, volume)
+    assert (vx, vy, vz) == pytest.approx((1.0, 0.25, 2.0))  # nothing gives x
+    assert read_voxel_size_xyz(tiff, "auto")[0] == pytest.approx((1.0, 0.25, 2.0))
+    assert np.array_equal(load_single_channel_tiff_volume(tiff, axis_order="auto"), volume)
+    for use_memmap in (False, True):
+        loaded = load_single_channel_tiff_volume(
+            tiff, axis_order="auto", use_memmap=use_memmap, memmap_directory=tmp_path
+        )
+        assert np.array_equal(loaded, volume)
+
+    h5 = _write_h5(
+        tmp_path / "xyzc.h5", _stored(volume, "xyz")[..., np.newaxis], axistags="xyzc",
+        element_size_um=(0.4, 0.5, 2.0, 1.0),  # one per dataset axis, the channel's too
+    )
+    assert h5_volume_shape(h5, axis_order="auto") == volume.shape
+    image, vx, vy, vz, _status = load_3d_h5_with_voxel_size(str(h5), axis_order="auto")
+    assert np.array_equal(image, volume)
+    assert (vx, vy, vz) == pytest.approx((0.4, 0.5, 2.0))
+
+
+def test_a_channel_of_an_auto_composite_is_read_in_its_labels_order(tmp_path):
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
+
+    volume = _labelled_volume()
+    composite = tmp_path / "composite.tif"
+    tifffile.imwrite(
+        str(composite), np.stack([volume, volume + 1], axis=1), imagej=True,
+        metadata={"axes": "ZCYX"},
+    )
+
+    loaded = load_single_channel_tiff_volume(composite, axis_order="auto", channel=1)
+    assert np.array_equal(loaded, volume + 1)
+
+
+def test_a_run_reads_a_file_without_labels_in_the_segmented_images_order(tmp_path):
+    """The segmented image names its axes (an ilastik HDF5 stored x, y, z); a
+    mask written beside it without labels is in the same order, and one that
+    names its own axes is read in those."""
+    from haemolynx.io import axis_order_for_run
+
+    volume = _labelled_volume()
+    image = _write_h5(tmp_path / "image.h5", _stored(volume, "xyz"), axistags="xyz")
+    run_order = axis_order_for_run({"image_axis_order": "auto", "input_path": image})
+    assert run_order == "auto:xyz"
+
+    unlabelled = tmp_path / "mask.tif"
+    tifffile.imwrite(str(unlabelled), _stored(volume, "xyz"))
+    labelled = _write_labelled_tiff(tmp_path / "labelled.tif", volume, "zyx")
+    for mask in (unlabelled, labelled):
+        loaded, *_ = load_3d_tif_with_voxel_size(str(mask), axis_order=run_order)
+        assert np.array_equal(loaded, volume), mask.name
+
+
+def test_a_runs_order_is_the_chosen_one_or_auto_with_zyx_for_files_without_labels(tmp_path):
+    from haemolynx.io import axis_order_for_run
+
+    plain = tmp_path / "plain.tif"
+    tifffile.imwrite(str(plain), _labelled_volume())
+    labelled = _write_labelled_tiff(tmp_path / "xyz.tif", _labelled_volume(), "xyz")
+
+    assert axis_order_for_run({"image_axis_order": "xzy", "input_path": labelled}) == "xzy"
+    assert axis_order_for_run({"image_axis_order": "auto", "input_path": plain}) == "auto"
+    # ilastik has not written the segmented image yet.
+    assert axis_order_for_run({"image_axis_order": "auto", "input_path": None}) == "auto"
+    assert axis_order_for_run({}) == "zyx"
+
+
+def test_auto_is_a_choice_of_image_axis_order_and_zyx_stays_the_default():
+    from haemolynx.pipeline import default_schema
+
+    setting = default_schema()["image_axis_order"]
+    assert "auto" in setting.choices
+    assert set(VALID_AXIS_ORDERS) <= set(setting.choices)
+    assert setting.default == "zyx"

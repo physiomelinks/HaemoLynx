@@ -6733,7 +6733,11 @@ def _load_raw_reference_image_or_none(
     a ``raw_image_downsample`` of its own is read against.
     """
     from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
-    from haemolynx.io import resolve_image_path_with_optional_zip, voxel_size_zyx_from_xyz
+    from haemolynx.io import (
+        axis_order_for_run,
+        resolve_image_path_with_optional_zip,
+        voxel_size_zyx_from_xyz,
+    )
 
     raw_path = local_settings.get("raw_image_path")
     if not raw_path:
@@ -6743,7 +6747,7 @@ def _load_raw_reference_image_or_none(
         channel = local_settings.get("raw_image_channel")
         raw_image = load_single_channel_tiff_volume(
             raw_path_resolved,
-            axis_order=local_settings["image_axis_order"],
+            axis_order=axis_order_for_run(local_settings),
             channel=None if channel is None else int(channel),
         )
         # The mask came through crop_on_import's box; the raw image goes too.
@@ -7051,6 +7055,8 @@ def _run_fwhm_optimisation_in_background(
     """
     from napari.qt.threading import thread_worker
 
+    from haemolynx.io import axis_order_for_run
+
     cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
 
     @thread_worker
@@ -7069,7 +7075,7 @@ def _run_fwhm_optimisation_in_background(
             starting_values=starting_values,
             progress=watched,
             groups=groups,
-            axis_order=local_settings["image_axis_order"],
+            axis_order=axis_order_for_run(local_settings),
             raw_channel=local_settings.get("raw_image_channel"),
             vessel_mask=vessel_mask,
             sample_edge_count=sample_edge_count,
@@ -12815,7 +12821,7 @@ def _post_processing_controls(
     def load_raw():
         """The run's raw image: ``(volume, None)``, or ``(None, why not)``."""
         from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
-        from haemolynx.io import resolve_image_path_with_optional_zip
+        from haemolynx.io import axis_order_for_run, resolve_image_path_with_optional_zip
 
         local = read_settings() or {}
         path = local.get("raw_image_path")
@@ -12827,7 +12833,7 @@ def _post_processing_controls(
         try:
             raw = load_single_channel_tiff_volume(
                 resolve_image_path_with_optional_zip(Path(path)),
-                axis_order=local.get("image_axis_order") or "zyx",
+                axis_order=axis_order_for_run(local),
                 use_memmap=bool(local.get("use_memmap_loading")),
                 memmap_directory=local.get("memmap_directory"),
                 channel=None if channel is None else int(channel),
@@ -13715,6 +13721,8 @@ def settings_widget(napari_viewer=None):
     def use_layer(layer) -> None:
         """Point the run at *layer*: its own file, or its array written out."""
         from haemolynx.graph.boundaries import network_is_synthetic
+        from haemolynx.gui.layers import source_path_of
+        from haemolynx.io import axis_order_for_file
 
         if network_is_synthetic(current_values()):
             report.value = (
@@ -13722,7 +13730,10 @@ def settings_widget(napari_viewer=None):
                 "set the Input tab's Input to Segmented image to analyse the layer."
             )
             return
-        axis_order = str(current_values().get("image_axis_order") or "zyx")
+        # The layer's axes are its file's, so under auto that file's labels say them.
+        axis_order = axis_order_for_file(
+            str(current_values().get("image_axis_order") or "zyx"), source_path_of(layer)
+        )
         try:
             chosen = input_for_layer(layer, _export_dir(current_values()), axis_order)
         except ValueError as error:

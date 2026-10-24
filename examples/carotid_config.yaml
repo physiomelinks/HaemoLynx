@@ -52,7 +52,7 @@ input_and_segmentation:
   voxel_size_override_xyz: null
   # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only; needs network_source = segmented_image]
   voxel_size_policy: auto
-  # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz; needs network_source = segmented_image]
+  # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load. auto reads each file's own axis labels (a TIFF's OME or ImageJ metadata, an HDF5's axistags); a file that names none is read in the segmented image's order, else zyx  [one of: zyx, zxy, yzx, yxz, xzy, xyz, auto; needs network_source = segmented_image]
   image_axis_order: zyx
   # Pause a napari panel run after Haemodynamics, on the Post processing tab, to fix the solved network by hand; the tab's Continue button brings the edits in line, solves the haemodynamics again and runs the rest. A command-line run does not pause
   mid_run_postprocessing: false

@@ -187,6 +187,35 @@ def test_a_different_axis_order_does_not_reuse_the_zyx_cache_entry(tmp_path):
     assert np.array_equal(image, np.transpose(raw, (2, 1, 0)))
 
 
+def test_an_auto_axis_order_is_keyed_by_the_order_it_resolves_to(tmp_path):
+    """Under image_axis_order="auto" a file with no axis labels is read zyx,
+    so it shares the zyx entry (and a batch's clean-up finds it); one whose
+    labels say x, y, z is transposed fresh, like an explicit "xyz"."""
+    cache_dir = tmp_path / "cache"
+    plain = tmp_path / "plain.tif"
+    raw = _write_tiff(plain)
+    load_raw_volume_reusing_cache(
+        str(plain), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+    image, *_ = load_raw_volume_reusing_cache(
+        str(plain), input_format="tif", axis_order="auto", memmap_directory=cache_dir
+    )
+    entry = _cache_files_for(cache_dir, plain)
+    assert Path(image.filename).resolve() == entry[0].resolve()
+    assert np.array_equal(image, raw)
+
+    labelled = tmp_path / "labelled.tif"
+    stored = _write_tiff(labelled, shape=(12, 10, 6), metadata={"axes": "XYZ"})
+    image, *_ = load_raw_volume_reusing_cache(
+        str(labelled), input_format="tif", axis_order="auto", memmap_directory=cache_dir
+    )
+    assert np.array_equal(image, np.transpose(stored, (2, 1, 0)))
+    assert not any(path.exists() for path in _cache_files_for(cache_dir, labelled))
+    assert discard_cached_raw_volume(labelled, axis_order="auto", memmap_directory=cache_dir) == ()
+
+    assert set(discard_cached_raw_volume(plain, axis_order="auto", memmap_directory=cache_dir)) == set(entry)
+
+
 def test_a_truncated_cache_file_is_treated_as_a_miss_and_rebuilt(tmp_path):
     source = tmp_path / "volume.tif"
     raw = _write_tiff(source)

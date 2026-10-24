@@ -639,6 +639,31 @@ def test_preflight_catches_what_would_stop_the_measurement_at_the_end_of_the_run
     assert any(e.startswith("measurement_3d_vessel_mask_path is (10, 12, 13)") for e in report.errors)
 
 
+def test_preflight_compares_shapes_as_each_file_is_read_under_an_auto_axis_order(tmp_path):
+    """Under image_axis_order="auto" the input image may name its axes x, y, z
+    while the cell mask, an ImageJ stack, is z, y, x: the two are compared
+    as the run reads them, in (z, y, x), not as stored."""
+    image = tmp_path / "image_xyz.tif"
+    tifffile.imwrite(image, np.zeros((14, 12, 10), dtype=np.uint8), metadata={"axes": "XYZ"})
+    cells = tmp_path / "cells_zyx.tif"
+    tifffile.imwrite(
+        cells, np.zeros((10, 12, 14), dtype=np.uint8), imagej=True, resolution=(2.0, 2.0),
+        metadata={"spacing": 2.0, "unit": "um", "axes": "ZYX"},
+    )
+    settings = _preflight_settings(
+        tmp_path,
+        cell_mask_path=cells,
+        input_path=image,
+        image_axis_order="auto",
+        voxel_size_override_xyz=[0.5, 0.5, 2.0],
+        voxel_size_policy="override",
+    )
+
+    assert check_cell_mask_measurement(settings).ok, check_cell_mask_measurement(settings).errors
+    report = check_cell_mask_measurement({**settings, "image_axis_order": "zyx"})
+    assert any("(10, 12, 14) voxels where the input image is (14, 12, 10)" in e for e in report.errors)
+
+
 def _preflight_errors(tmp_path, **overrides):
     settings = {**SCHEMA.defaults(), **_preflight_settings(tmp_path), **overrides}
     return [e for e in preflight(settings, SCHEMA).errors if "mask" in e]

@@ -26,6 +26,7 @@ except ImportError:
 from .axis_order import (
     CANONICAL_AXIS_ORDER,
     apply_axis_order,
+    axis_order_for_file,
     axis_order_transpose,
     normalize_axis_order,
     voxel_size_xyz_from_file_axes,
@@ -695,6 +696,7 @@ def read_voxel_size_xyz(
     path = Path(filepath)
     if path.suffix.lower() not in {".tif", ".tiff"}:
         return None
+    axis_order = axis_order_for_file(axis_order, path)
     try:
         with tifffile.TiffFile(path) as tif:
             x, y, z, status = _voxel_size_xyz_from_tiff(tif, axis_order)
@@ -717,7 +719,8 @@ def load_3d_tif_with_voxel_size(
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status.
 
-    *axis_order* names what the file's array axes mean (default ``"zyx"``); the
+    *axis_order* names what the file's array axes mean (default ``"zyx"``), or
+    is ``"auto"`` for the file's own labels' (:func:`axis_order_for_file`); the
     volume is transposed into the canonical ``(z, y, x)`` order on load. The
     returned voxel size is always physical ``(x, y, z)`` — use
     :func:`haemolynx.io.voxel_size_zyx_from_xyz` before scaling array indices.
@@ -745,6 +748,7 @@ def load_3d_tif_with_voxel_size(
     run, rather than a temp file tifffile deletes once nothing references it.
     Both are ignored when *use_memmap* is False.
     """
+    axis_order = axis_order_for_file(axis_order, filepath)
     with tifffile.TiffFile(filepath) as tif:
         if use_memmap:
             if memmap_path:
@@ -870,7 +874,7 @@ def h5_volume_shape(
         shape = tuple(size for axis, size in enumerate(dataset.shape) if axis not in dropped)
     if len(shape) != 3:
         return shape
-    order = axis_order_transpose(normalize_axis_order(axis_order))
+    order = axis_order_transpose(axis_order_for_file(axis_order, path, dataset_name=dataset_name))
     return tuple(shape[axis] for axis in order)
 
 
@@ -955,7 +959,8 @@ def load_3d_h5_with_voxel_size(
     the file. A crop_on_import box of 1024 x 1024 x 512 is 5% of an AIA
     stack's 9.4 GB.
 
-    *axis_order* names what the dataset's array axes mean (default ``"zyx"``);
+    *axis_order* names what the dataset's array axes mean (default ``"zyx"``),
+    or is ``"auto"`` for its own ``axistags``' (:func:`axis_order_for_file`);
     the volume is transposed into the canonical ``(z, y, x)`` order on load.
 
     *allow_2d*, when True, returns a genuinely 2D dataset as-is instead of
@@ -984,6 +989,7 @@ def load_3d_h5_with_voxel_size(
     path = Path(filepath)
     if dataset_name is None and path.suffix not in {".h5", ".hdf5"}:
         raise ValueError(f"Expected a .h5/.hdf5 file, got: {filepath}")
+    axis_order = axis_order_for_file(axis_order, path, dataset_name=dataset_name)
 
     with h5py.File(filepath, "r") as f:
         selected_name = _select_h5_dataset(f, filepath, dataset_name)

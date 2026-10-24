@@ -46,7 +46,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .axis_order import CANONICAL_AXIS_ORDER
+from .axis_order import CANONICAL_AXIS_ORDER, axis_order_for_file
 from .load_2d import load_image_with_voxel_size_2d_aware
 
 logger = logging.getLogger(__name__)
@@ -143,12 +143,12 @@ def discard_cached_raw_volume(
     disk taken once it is done. A file still mapped (Windows will not delete
     it) or already gone is left, and logged; never raises.
     """
-    if axis_order != CANONICAL_AXIS_ORDER:
-        return ()
     try:
+        if axis_order_for_file(axis_order, filepath) != CANONICAL_AXIS_ORDER:
+            return ()
         resolved = Path(filepath).resolve()
-        key = _cache_key(resolved, resolved.stat(), axis_order)
-    except OSError:
+        key = _cache_key(resolved, resolved.stat(), CANONICAL_AXIS_ORDER)
+    except (OSError, ValueError):
         return ()
     removed = []
     for path in _cache_file_paths(Path(memmap_directory), key):
@@ -181,8 +181,11 @@ def load_raw_volume_reusing_cache(
     including ilastik simply re-running and overwriting its own output --
     always misses and is rebuilt), and *axis_order*. See the module
     docstring for why a non-canonical *axis_order*, or a source modified
-    within the last few seconds, always misses too.
+    within the last few seconds, always misses too. An auto *axis_order* is
+    resolved against the file first, and the order it resolves to is the key's.
     """
+    axis_order = axis_order_for_file(axis_order, filepath, dataset_name=h5_dataset_name)
+
     def load_uncached():
         return load_image_with_voxel_size_2d_aware(
             filepath,

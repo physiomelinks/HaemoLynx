@@ -77,6 +77,23 @@ def test_the_layer_scale_follows_the_runs_axis_order():
     assert result.settings["voxel_size_override_xyz"] == [2.0, 0.5, 0.4]
 
 
+def test_under_auto_the_layer_scale_follows_its_files_axis_labels(tmp_path):
+    """A layer opened from a file stored (x, y, z) that says so: under
+    image_axis_order="auto" its scale is read in that order; a layer with no
+    file behind it is read as (z, y, x)."""
+    import tifffile
+
+    path = tmp_path / "stored_xyz.tif"
+    tifffile.imwrite(path, np.zeros((7, 6, 5), dtype=np.uint8), metadata={"axes": "XYZ"})
+
+    from_file = input_for_layer(
+        fake_layer(shape=(7, 6, 5), scale=(2.0, 0.5, 0.4), path=path), tmp_path, "auto"
+    )
+    assert from_file.settings["voxel_size_override_xyz"] == [2.0, 0.5, 0.4]
+    in_memory = input_for_layer(fake_layer(scale=(2.0, 0.5, 0.4)), tmp_path, "auto")
+    assert in_memory.settings["voxel_size_override_xyz"] == [0.4, 0.5, 2.0]
+
+
 def test_an_all_ones_scale_carries_no_information():
     """Leave whatever the file says rather than overriding it with nothing."""
     assert voxel_size_xyz_from_scale((1.0, 1.0, 1.0)) is None

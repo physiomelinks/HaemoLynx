@@ -724,10 +724,12 @@ def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
 
 def _tiff_header(path: Any, axis_order: str) -> tuple[tuple[int, ...], tuple, dict] | None:
     """``(shape, voxel size (x, y, z), its metadata status)`` from a TIFF's
-    header, as the mask loaders read them; None for anything else."""
+    header, as the mask loaders read them (the shape in canonical
+    ``(z, y, x)`` order, *axis_order* resolved against the file); None for
+    anything else."""
     import tifffile
 
-    from haemolynx.io import read_voxel_size_xyz
+    from haemolynx.io import axis_order_for_file, axis_order_transpose, read_voxel_size_xyz
 
     if not path or Path(path).suffix.lower() not in {".tif", ".tiff"} or not Path(path).is_file():
         return None
@@ -739,6 +741,9 @@ def _tiff_header(path: Any, axis_order: str) -> tuple[tuple[int, ...], tuple, di
     if len(shape) == 4:
         # As io.load.simplify_to_3d: the first channel of the last axis.
         shape = shape[:3]
+    axis_order = axis_order_for_file(axis_order, path)
+    if len(shape) == 3:
+        shape = tuple(shape[axis] for axis in axis_order_transpose(axis_order))
     found = read_voxel_size_xyz(path, axis_order)
     if found is None:
         return shape, (1.0, 1.0, 1.0), {"status": "missing"}
@@ -756,7 +761,7 @@ def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
         return CheckReport()  # no image: nothing here applies
     import numpy as np
 
-    from haemolynx.io import CANONICAL_AXIS_ORDER
+    from haemolynx.io import axis_order_for_run
     from haemolynx.io.vessel_masks import (
         _VOXEL_SIZE_RELATIVE_TOLERANCE,
         _resolve_mask_voxel_size_xyz,
@@ -767,7 +772,7 @@ def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
     if not settings.get("measurement_3d_to_cell_mask") or not settings.get("cell_mask_path"):
         # An unset cell mask is reported by check_settings: it must_exist.
         return report
-    axis_order = settings.get("image_axis_order") or CANONICAL_AXIS_ORDER
+    axis_order = axis_order_for_run(settings)
     image = _tiff_header(settings.get("input_path"), axis_order)
     if image is None:
         # Checked where it is read; ilastik may not have written it yet.

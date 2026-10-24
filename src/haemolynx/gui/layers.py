@@ -113,12 +113,16 @@ def input_for_layer(
     A layer loaded from a TIFF or HDF5 points the run at that file. One built
     in the viewer -- a threshold result, a crop -- has no file behind it, so it
     is written to *export_dir* first, and `needs_export` says so. *axis_order*
-    is the run's ``image_axis_order``: what the layer's axes are.
+    is the run's ``image_axis_order``: what the layer's axes are -- under
+    ``"auto"``, what its file's labels say, else ``"zyx"``.
     """
+    from haemolynx.io.axis_order import axis_order_for_file
+
     reason = rejection_reason(layer)
     if reason is not None:
         raise ValueError(reason)
 
+    axis_order = axis_order_for_file(axis_order, source_path_of(layer))
     settings: dict[str, Any] = {}
     voxel_size = voxel_size_xyz_from_scale(getattr(layer, "scale", None), axis_order)
     if voxel_size is not None:

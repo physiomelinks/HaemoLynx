@@ -419,7 +419,13 @@ are only caught locally.
 - **Axis order** — arrays are canonical `(z, y, x)`: axis 0 is the stack axis that overlays and
   projections look through. Loaders take `axis_order` (`"zyx"` default, any permutation of `xyz`)
   and transpose the input to canonical order, so **that setting is how a user picks which axis is z**
-  (the `image_axis_order` setting). See `io/axis_order.py`.
+  (the `image_axis_order` setting). See `io/axis_order.py`. **`"auto"`** reads each file in the
+  order its own labels give (`stated_axis_order`: OME/ImageJ TIFF metadata, an HDF5's `axistags`),
+  and a file with none in the segmented image's order, else `zyx`. A run hands its loaders
+  `io.axis_order_for_run(settings)` (`"auto"`, or `"auto:<order>"` carrying the image's order),
+  never the raw setting, and each loader resolves it against its file (`axis_order_for_file`);
+  anything that transposes without a file needs a permutation and refuses `"auto"`. A TIFF page
+  is a Y×X plane, so a resliced stack labelled `ZYX` still needs its order chosen by hand.
 - **Voxel sizes** — two orders, never mix them. Image metadata is physical **`(x, y, z)`**
   (`voxel_size_xyz`, `io.voxel_validation.resolve_voxel_size_xyz`); anything that scales array
   indices takes per-array-axis spacing in **`(z, y, x)`** (`voxel_size_zyx`). Convert once at the
