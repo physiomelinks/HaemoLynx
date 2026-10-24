@@ -482,3 +482,75 @@ def test_a_ring_no_longer_than_twice_the_threshold_is_still_absorbed():
     assert out.number_of_nodes() == 3
     assert not list(nx.selfloop_edges(out))
     assert out.number_of_edges() == 2
+
+
+def _lattice_graph(seed: int, size: int = 8) -> nx.MultiGraph:
+    """Junctions on a 1 um grid in one plane, each joined to some of its grid
+    neighbours by a straight vessel. Every candidate pair ties with dozens of
+    others, as nodes on the voxel lattice do before collapse (58 distances
+    among E14.5's 25,188 pairs)."""
+    rng = np.random.default_rng(seed)
+    G = nx.MultiGraph()
+    for y in range(size):
+        for x in range(size):
+            G.add_node(y * size + x, pos=np.array([0.0, float(y), float(x)]))
+    for y in range(size):
+        for x in range(size):
+            for dy, dx in ((0, 1), (1, 0)):
+                if y + dy < size and x + dx < size and rng.random() < 0.7:
+                    a, b = y * size + x, (y + dy) * size + x + dx
+                    path = [G.nodes[a]["pos"].tolist(), G.nodes[b]["pos"].tolist()]
+                    G.add_edge(a, b, voxels=path, length=1.0)
+    return G
+
+
+def _presented(G, *, shift=0, isolated=0, reverse_nodes=False, reverse_edges=False):
+    """*G* again, its node IDs shifted, *isolated* far-away nodes added first,
+    or its nodes or edges added in reverse order."""
+    H = nx.MultiGraph()
+    for k in range(isolated):
+        H.add_node(-1 - k, pos=np.array([1.0e4 + 100.0 * k, 1.0e4, 1.0e4]))
+    nodes = list(G.nodes(data=True))
+    for n, data in nodes[::-1] if reverse_nodes else nodes:
+        H.add_node(n + shift, **data)
+    edges = list(G.edges(data=True))
+    for u, v, data in edges[::-1] if reverse_edges else edges:
+        H.add_edge(u + shift, v + shift, **data)
+    return H
+
+
+def _layout(G):
+    """Where the nodes are and what each edge's centreline is, IDs aside."""
+    positions = sorted(tuple(np.round(G.nodes[n]["pos"], 9)) for n in G.nodes if G.nodes[n]["pos"][0] < 1.0e3)
+    edges = []
+    for _u, _v, data in G.edges(data=True):
+        path = tuple(map(tuple, np.round(np.asarray(data["voxels"], dtype=float), 9)))
+        edges.append(min(path, path[::-1]))
+    return positions, sorted(edges)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize(
+    "presentation",
+    [
+        {"shift": 1000},
+        {"isolated": 2},
+        {"reverse_nodes": True},
+        {"reverse_edges": True},
+    ],
+    ids=["ids_shifted", "two_nodes_added_first", "nodes_reversed", "edges_reversed"],
+)
+def test_collapse_does_not_depend_on_node_order_or_ids(seed, presentation):
+    """Pairs at one distance were taken in the order cKDTree.query_pairs' set
+    yields them -- hash order of array indices -- and merged groups in node
+    order. A node added or removed anywhere reordered every tie, and on
+    E14.5 a change at the image faces moved junctions 180 um away
+    (PLAN_dale_review_fixes.md, item 2). Two isolated nodes added first, or
+    the nodes taken in reverse, changed this lattice's collapse."""
+    G = _lattice_graph(seed)
+
+    plain = collapse_node_clusters_direction_aware(_presented(G), distance_threshold=2.5)
+    other = collapse_node_clusters_direction_aware(_presented(G, **presentation), distance_threshold=2.5)
+
+    assert plain.number_of_nodes() < G.number_of_nodes()  # it did collapse
+    assert _layout(other) == _layout(plain)

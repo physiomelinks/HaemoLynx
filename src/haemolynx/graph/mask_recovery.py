@@ -50,8 +50,12 @@ DEFAULT_MIN_LENGTH_UM = 5.0
 #: not a vessel of its own.
 MIN_INSCRIBED_RADIUS_VOXELS = 1.5
 
-#: Nearest centreline samples each mask voxel is judged against.
+#: Nearest centreline samples each mask voxel is judged against -- and every
+#: further sample exactly as far as the last of them (:func:`_nearest_with_ties`).
 _COVERAGE_NEIGHBOURS = 4
+
+#: Two sample distances closer than this (um) are one distance.
+_TIE_UM = 1e-9
 
 #: How far out from a centreline, in lumen radii (+ the margin), its lumen's
 #: cross-section is followed to the wall. A flattened lumen's far side lies
@@ -257,6 +261,42 @@ class _Piece:
     ends: list[tuple[tuple[int, ...], tuple[int, ...]]] = field(default_factory=list)
 
 
+def _nearest_with_ties(tree: cKDTree, points: np.ndarray, k: int, upper: float):
+    """Each point's *k* nearest samples within *upper*, with every further
+    sample exactly as far as the *k*-th: blocks of ``(rows, distance, index)``,
+    ``inf`` and ``tree.n`` where a row has fewer.
+
+    A junction holds one sample per edge at one point, each with its own
+    edge's cross-section. Which of those tied samples a plain *k*-nearest
+    query hands back depends on how the tree split every sample in the image,
+    so a change anywhere changed which edges judged a voxel here -- the mask
+    left uncovered differed 280 um from any change on E14.5
+    (PLAN_dale_review_fixes.md, item 2). Rows without a tie at the *k*-th
+    come back *k* wide; the few with one, in blocks as wide as they need.
+    """
+    count = int(tree.n)
+    wide = min(k + 1, count)
+    distance, nearest = tree.query(points, k=wide, distance_upper_bound=upper, workers=-1)
+    distance, nearest = distance.reshape(len(points), wide), nearest.reshape(len(points), wide)
+    if wide == k:
+        yield np.arange(len(points)), distance, nearest
+        return
+    tied = np.isfinite(distance[:, k]) & (distance[:, k] <= distance[:, k - 1] + _TIE_UM)
+    plain = np.flatnonzero(~tied)
+    yield plain, distance[plain, :k], nearest[plain, :k]
+    rows = np.flatnonzero(tied)
+    while len(rows):
+        wide = min(2 * wide, count)
+        distance, nearest = tree.query(points[rows], k=wide, distance_upper_bound=upper, workers=-1)
+        distance, nearest = distance.reshape(len(rows), wide), nearest.reshape(len(rows), wide)
+        kth = distance[:, k - 1:k]
+        more = (wide < count) & np.isfinite(distance[:, -1]) & (distance[:, -1] <= kth[:, 0] + _TIE_UM)
+        done = ~more
+        beyond = distance[done] > kth[done] + _TIE_UM
+        yield rows[done], np.where(beyond, np.inf, distance[done]), np.where(beyond, count, nearest[done])
+        rows = rows[more]
+
+
 def _centreline_samples(G: nx.MultiGraph, support: MaskSupport):
     index = EdgeSampleIndex(G, step_um=float(min(support.voxel_size_zyx)))
     radii = support.radius(index.points) if len(index.points) else np.zeros(0)
@@ -281,6 +321,9 @@ def uncovered_mask_voxels(
     radii (+ *margin_um*; :data:`CROSS_SECTION_REACH_RADII`). The radius is
     the distance to the nearest wall, so the radius rule alone leaves the far
     side of every flattened lumen uncovered. 0 keeps the radius rule only.
+    A voxel is judged by its :data:`_COVERAGE_NEIGHBOURS` nearest samples and
+    every sample tied with the last of them, so the answer does not depend on
+    the order the graph's edges come in, or on edges elsewhere.
     Read a slab of whole z-slices at a time, so the mask may be a memmap;
     *z_range* ``(first, stop)`` reads only those slices. *workers* is how
     many processes follow the cross-sections (by default several, once there
@@ -309,21 +352,19 @@ def uncovered_mask_voxels(
             uncovered.append(coords)
             continue
         k = min(_COVERAGE_NEIGHBOURS, len(index.points))
-        distance, nearest = index.tree.query(
-            coords * spacing, k=k, distance_upper_bound=reach + 1e-9, workers=-1
-        )
-        distance, nearest = distance.reshape(len(coords), k), nearest.reshape(len(coords), k)
-        found = nearest < len(radii)
-        slack = np.where(found, distance - radii[np.minimum(nearest, len(radii) - 1)], np.inf)
-        left = coords[~np.any(slack <= margin_um + 1e-9, axis=1)]
+        held = np.zeros(len(coords), dtype=bool)
+        for rows, distance, nearest in _nearest_with_ties(index.tree, coords * spacing, k, reach + 1e-9):
+            found = nearest < len(radii)
+            slack = np.where(found, distance - radii[np.minimum(nearest, len(radii) - 1)], np.inf)
+            held[rows] = np.any(slack <= margin_um + 1e-9, axis=1)
+        left = coords[~held]
         if sections is not None and len(left):
             points = left * spacing
-            _d, candidates = index.tree.query(
-                points, k=k, distance_upper_bound=section_reach + 1e-9, workers=-1
-            )
-            candidates = candidates.reshape(len(left), k)
-            left = left[~_inside_cross_section(points, candidates, sections, index.points,
-                                               axial_um=axial, margin_um=margin_um)]
+            inside = np.zeros(len(left), dtype=bool)
+            for rows, _d, candidates in _nearest_with_ties(index.tree, points, k, section_reach + 1e-9):
+                inside[rows] = _inside_cross_section(points[rows], candidates, sections, index.points,
+                                                     axial_um=axial, margin_um=margin_um)
+            left = left[~inside]
         uncovered.append(left)
     return np.concatenate(uncovered) if uncovered else np.empty((0, np.ndim(mask)), dtype=np.intp)
 

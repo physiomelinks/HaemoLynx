@@ -642,7 +642,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   across background, never beside an existing vessel, never a loop inside one lumen
   (`lumen_loops.loop_inside_one_lumen`). `coverage_reach_radii=` and `two_ended=` serve
   `remove_interior_dead_ends`. Its worker processes, packed reads and indexes must leave the
-  result identical.
+  result identical, and so must the order edges come in: a voxel is judged by its 4 nearest
+  samples and every sample tied with the 4th (a junction holds one per edge at one point).
+  Direction-aware collapse likewise takes tied pairs and groups in node-position order.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends` (after mask recovery,
   `facing_dead_end_max_gap_um`, 0 off): two dead ends heading for each other within
   `FACING_MAX_TURN_DEG`, across one stretch of background only, are joined though the gap is more

@@ -653,6 +653,100 @@ def test_a_lost_branch_narrower_than_its_vessel_stays_uncovered_past_the_wall():
     assert int(np.min(uncovered[:, 1])) <= 12
 
 
+def _segment_distance(points, a, b):
+    ab = b - a
+    t = np.clip(((points - a) @ ab) / (ab @ ab), 0.0, 1.0)
+    return np.linalg.norm(points - (a + t[..., None] * ab), axis=-1)
+
+
+def _flat_junction():
+    """Six vessels meeting in a flattened lumen: a disc 3 um thick and 9 um
+    round in the z = 12 plane, one vessel running on along +x in it and five
+    leaving it away from +y. Each vessel's centreline starts at the junction,
+    so the junction holds six samples at one point. Across the disc towards
+    +y those six are a voxel's nearest, tied, and only the +x vessel's cross-
+    section -- the disc's own plane -- reaches it."""
+    shape = (25, 41, 41)
+    points = np.stack(np.indices(shape), axis=-1).astype(float)
+    centre = np.array([12.0, 20.0, 20.0])
+    offset = points - centre
+    mask = (np.abs(offset[..., 0]) <= 1.0) & (np.hypot(offset[..., 1], offset[..., 2]) <= 9.0)
+    G = nx.MultiGraph()
+    G.add_node(0, pos=centre.copy())
+    away = [(1, -1, 0), (-1, -1, 0), (1, -1, 1), (-1, -1, -1), (0, -1, -1)]
+    directions = [np.array([0.0, 0.0, 1.0])] + [np.asarray(d, dtype=float) / np.linalg.norm(d) for d in away]
+    for k, direction in enumerate(directions, start=1):
+        end = centre + 11.0 * direction
+        mask |= _segment_distance(points, centre, end) <= 2.0
+        G.add_node(k, pos=end)
+        path = [(centre + s * direction).tolist() for s in np.arange(0.0, 11.5, 1.0)]
+        G.add_edge(0, k, voxels=path, length=11.0)
+    return G, mask
+
+
+def _reordered(G, *, reverse_nodes=False, reverse_edges=False):
+    H = nx.MultiGraph()
+    nodes = list(G.nodes(data=True))
+    for n, data in nodes[::-1] if reverse_nodes else nodes:
+        H.add_node(n, **data)
+    edges = list(G.edges(data=True))
+    for u, v, data in edges[::-1] if reverse_edges else edges:
+        H.add_edge(u, v, **data)
+    return H
+
+
+@pytest.mark.parametrize(
+    "order", [{"reverse_edges": True}, {"reverse_nodes": True}], ids=["edges_reversed", "nodes_reversed"]
+)
+def test_the_mask_left_uncovered_does_not_depend_on_edge_order(order):
+    """A voxel was judged by its 4 nearest centreline samples, and which of
+    six tied junction samples cKDTree handed back depended on how it split
+    every sample -- on the order the edges came in, here, and on E14.5 on
+    edges 280 um away (PLAN_dale_review_fixes.md, item 2). Either order
+    changed 33 of this junction's uncovered voxels; every tied sample is
+    judged now."""
+    G, mask = _flat_junction()
+    plain = {tuple(v) for v in uncovered_mask_voxels(G, _support(mask))}
+    other = {tuple(v) for v in uncovered_mask_voxels(_reordered(G, **order), _support(mask))}
+    assert other == plain
+
+
+def test_a_tied_junction_sample_reaching_across_a_flattened_lumen_covers_it():
+    """Across the disc from the vessels leaving it, the voxels' nearest
+    samples are the junction's six, tied; the one on the vessel running on in
+    the disc covers them, whichever five others there are."""
+    G, mask = _flat_junction()
+    uncovered = {tuple(v) for v in uncovered_mask_voxels(G, _support(mask))}
+    across = [(12, y, 20) for y in range(24, 29)]  # 4-8 um towards +y, in the disc
+    assert all(mask[v] for v in across)
+    assert not uncovered & set(across)
+
+
+def test_nearest_samples_include_every_one_tied_with_the_last():
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.mask_recovery import _nearest_with_ties
+
+    rng = np.random.default_rng(0)
+    copies = np.zeros((30, 3))  # one point 30 times, as at a 30-way junction
+    others = rng.uniform(5.0, 9.0, size=(40, 3))
+    samples = np.vstack([others, copies])
+    points = np.array([[0.0, 0.0, 2.0], [7.0, 7.0, 7.0]])
+    found = {}
+    for order in (np.arange(len(samples)), np.arange(len(samples))[::-1]):
+        tree = cKDTree(samples[order])
+        for rows, distance, index in _nearest_with_ties(tree, points, 4, 50.0):
+            for row, d, i in zip(rows, distance, index):
+                kept = i < tree.n
+                found.setdefault(int(row), []).append(
+                    sorted(map(tuple, np.round(samples[order][i[kept]], 9)))
+                )
+    # Beside the junction: all 30 copies, not 4 of them, either order.
+    assert found[0][0] == found[0][1] == [(0.0, 0.0, 0.0)] * 30
+    # Among scattered samples, no tie: the 4 nearest.
+    assert len(found[1][0]) == 4 and found[1][0] == found[1][1]
+
+
 # --- uncovered_mask_regions: what recovery would trace, for review ----------
 
 

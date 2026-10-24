@@ -316,6 +316,12 @@ def collapse_node_clusters_direction_aware(
     stops growing where it would start looking like one, leaving separate
     representative nodes for what proximity alone could not tell apart.
 
+    Ties -- pairs at one distance, and the order groups and their members
+    are rewired in -- go by node position, not by the order nodes and edges
+    were added or the set order of their IDs: a change in one place of the
+    graph changes the collapse there only. (A representative's own tie still
+    goes to the lowest node ID.)
+
     *inside_lumen* (see ``assemble.mask_lumen_test``) lets the check for
     duplicate edges to one neighbour read the segmentation -- see
     :func:`_rewire_edges_deduplicating`.
@@ -358,8 +364,25 @@ def collapse_node_clusters_direction_aware(
         if not pairs:
             break
 
+        # Closest first, and pairs at one distance in the order of their two
+        # nodes' positions. Nodes on the voxel lattice share distances by the
+        # hundred (58 distances among E14.5's 25,188 pairs), and which merges
+        # the checks below refuse depends on what merged before. Left to the
+        # order query_pairs' set yields them -- hash order of array indices --
+        # a node added or removed anywhere reordered the ties everywhere, and
+        # moved junctions 180 um away (PLAN_dale_review_fixes.md, item 2).
+        positions = [tuple(p) for p in coords.tolist()]
+
+        def position(n):
+            return positions[index_of[n]]
+
         pair_list = sorted(
-            pairs, key=lambda ij: float(np.linalg.norm(coords[ij[0]] - coords[ij[1]]))
+            pairs,
+            key=lambda ij: (
+                float(np.linalg.norm(coords[ij[0]] - coords[ij[1]])),
+                min(positions[ij[0]], positions[ij[1]]),
+                max(positions[ij[0]], positions[ij[1]]),
+            ),
         )
 
         # Computed once for the whole iteration -- see _precompute_node_spokes
@@ -404,10 +427,16 @@ def collapse_node_clusters_direction_aware(
             members[root_a] |= members[root_b]
             del members[root_b]
 
+        # Groups, and each group's members, in position order too: which
+        # group is rewired first, and in what order a group's edges move onto
+        # its representative, decide which of two duplicate edges is kept --
+        # not something to leave to set or node order.
+        groups = sorted(
+            (sorted(group, key=position) for group in members.values() if len(group) >= 2),
+            key=lambda group: position(group[0]),
+        )
         merged_this_iter = 0
-        for group in members.values():
-            if len(group) < 2:
-                continue
+        for group in groups:
             group = [n for n in group if G.has_node(n)]
             if len(group) < 2:
                 continue
