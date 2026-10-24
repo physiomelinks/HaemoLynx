@@ -861,3 +861,38 @@ OPTIMISE_TOOLTIPS = {
         "three minutes"
     ),
 }
+
+#: "5. Diameters" — "Optimise endothelial settings", shown in place of
+#: Optimise FWHM settings when the raw image stains the vessel wall, and its
+#: options. Keyed by control; a group's checkbox by its name in
+#: ``optimisation.endothelial_search.ENDOTHELIAL_GROUP_NAMES``.
+ENDOTHELIAL_OPTIMISE_TOOLTIPS = {
+    "button": (
+        "Choose the endothelial ring fit's settings -- its blur and wall, "
+        "estimated from the image or fixed, and how strong a ring must be to "
+        "be read -- by running the real ring fit on a sample of the current "
+        "network's vessels in the raw image, judged on vessels of known lumen "
+        "drawn into a copy of it and on decoys in vessel-free tissue. "
+        "Proposes the winners for this tab; the current network's diameters "
+        "are not changed"
+    ),
+    "options": "Show or hide the endothelial optimiser's own options",
+    "choose_groups": (
+        "Restrict Optimise endothelial settings to only the ticked group(s) "
+        "below, instead of every ring-fit setting"
+    ),
+    "blur_and_wall": (
+        "Where the image's wide vessels cannot estimate the blur or the wall, "
+        "or you have fixed them, try their estimate fixed and the ends of its "
+        "95% interval; otherwise they stay estimated from the image"
+    ),
+    "ring_gate": (
+        "Try half to twice the weakest ring a reading is kept for "
+        "(endothelial_min_ring_contrast), and the ring fit's own default"
+    ),
+    "sample": (
+        "How many of the network's vessels each trial reads; Auto times one "
+        "reading and picks a count to keep the trials near ten minutes, "
+        "with the blur and wall calibrations on top"
+    ),
+}

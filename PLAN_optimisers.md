@@ -230,8 +230,8 @@ on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
 - **D3. Decoys and demotion in FWHM scoring.** Recommend scoring with both on whatever the run's
   switches say (a loose setting must never win by measuring specks), honouring the sample size,
   and saying so in the report; or follow the run's switches.
-- **D4. An optimiser for the endothelial ring fit.** None exists; the FWHM button is hidden for an
-  endothelial stain, correctly. Out of scope here; a plan of its own if wanted.
+- **D4. An optimiser for the endothelial ring fit.** Asked for by Harvey (2026-10-23), built in its
+  own session: see **The endothelial optimiser** at the end of this file.
 - **D5. Cost of Phase 4.** If the finish makes a 4x E14.5 search more than twice as slow (Phase 0
   says), Auto will pick coarser grids. Recommend accepting it and letting the time model say so;
   the alternative, finishing only some groups' trials, breaks Principle 2.
@@ -250,7 +250,7 @@ on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
 
 ## Out of scope
 
-An endothelial optimiser (D4); optimising once for a whole batch; new objectives on dead ends or
+Optimising once for a whole batch; new objectives on dead ends or
 loops before a marked grid; sweeping settings that marked grids fixed; help-menu text.
 
 ## Measured
@@ -428,3 +428,109 @@ voxels). Against Phase 0's R1 (`harness/compare_r1.py`; settings either run move
 - `io.load._skeletonize_loaded_volume`'s docstring calls the hole fill "a no-op on the normal
   case"; on E14.5's cleaned Claudin mask with plain Lee it adds 49% to the raw skeleton. Whether
   that is right is a question for a grid, not this plan.
+
+## The endothelial optimiser (D4, 2026-10-23)
+
+Harvey asked for it: the counterpart of Optimise FWHM settings for a raw image that stains the
+wall (claudin-5, CD31, isolectin), where the run reads diameters with the ring fit
+(`haemodynamics/endothelial.py`). **It must work on any endothelial dataset**: no constant is
+fitted to one stack; every candidate is the image's own or a multiple of the setting's value.
+Built in its own session, on `claude/endothelial-optimiser-52c5f2` (first commit `65068bc1`).
+
+**What it sweeps** (`optimisation/endothelial_search.py`, `ENDOTHELIAL_SETTING_NAMES`):
+
+| group | settings | candidates |
+|---|---|---|
+| `ring_gate` (first) | `endothelial_min_ring_contrast` | half to twice its value, and the ring fit's own default (4) |
+| `blur_and_wall` | `endothelial_psf_sigma_xy_um` / `_z_um` (one joint sweep), then `endothelial_wall_thickness_um` | only where the rings will not calibrate it on their own, or the settings fix it: unset (the image estimates it), the settings' value, the image's estimate fixed, the ends of its 95% interval; otherwise not swept |
+
+The gate goes first because it also decides which rings calibrate the blur and wall: set too
+strict, none do and the ring fit reads nothing (found by the slow tests; at a gate of 32 halving
+once still read nothing, so the default is always a candidate). Fixed blur and wall matter where
+the rings will not calibrate on their own (they disagree on the blur): the run then measures
+nothing, and the image's own values, fixed, let it. **Decided (Harvey, 2026-10-24): fixed values
+are tried only then, or where the settings already fix them**; where the rings calibrate, the
+blur and wall stay the image's estimate and are not swept (a fixed value inside the estimate's
+interval is no different from it; on E14.5 the search moved the wall on one vessel, below).
+
+**Read, never swept:** `edt_junction_proximity_exclusion_um` (the ring fit's junction zones) is
+the mask-width setting's and moves those widths too, the fallback of every vessel the ring fit
+leaves, and the planted vessels have no junction to judge it by. The sampling along a vessel
+(2 um), the averaging length (4 um) and the aggregation are not settings; none was added.
+`endothelial_workers` changes no width.
+
+**A trial is the run** (Principle 2): the sample is drawn from `apply.measured_vessels` (no
+bridge) and network handling's keeps, read among the whole vessel graph with `edges=` through
+`apply.measure_endothelial_diameters` with the run's config, from a template cleared by
+`clear_edge_measurements` keeping `edt_` (`fwhm_search._fresh_template`). The calibration is the
+run's: `calibrate_from_rings` was split into `ring_calibration_fits` (the section fits, which do
+not depend on the gate) and the gate, so each blur's fits are made once
+(`apply.endothelial_calibration_fits`) and each (blur, gate) calibrated once
+(`apply.calibrate_endothelial_rings`), then handed to the measurement (`calibration=`). Pinned:
+a trial's widths `==` `assign_edge_diameters`' on the same vessels, with the blur and wall
+estimated, with the blur set, and calibrated on a subset.
+
+**Scored by accuracy:** hollow vessels of known lumen planted beside sampled ones
+(`haemodynamics/endothelial_planted.py`), drawn with the image's calibrated blur and wall (at
+`image_calibration_gate`: the default gate, or the user's where weaker, so a gate under test
+cannot leave nothing to plant with), as bright as the sampled vessel's own ring fits, with the
+image's noise, clear of every vessel and of the volume's faces. Score = 2 x planted lumen error
+(an unread one counts 1) + the sample's real cost (per vessel: 1 without a width, else its
+readings' CV) + decoys given a width (sampled vessels moved into vessel-free tissue). The planted
+vessels carry the image's blur and wall, so they favour those two by construction; the real
+vessels decide between the estimate and fixed values, and the report says so. On synthetic
+stacks the planted vessels read within 6% at four voxel sizes (anisotropic 2 x 0.5 x 0.5 um
+included), walls 0.8-1.5 um and blurs; no decoy was read at any gate there (the ring fit's
+other gates already reject noise), so decoys are covered on a stand-in ring fit.
+
+**Panel:** "Optimise endothelial settings" on the Diameters tab where the FWHM button is, shown
+exactly when the ring fit runs (diameters from the raw image, stain endothelial as set or as a
+run read an auto, never for a synthetic network, which it also refuses), with options, review
+before Apply, progress bars, cancellation and hover text; greyed in batch mode like the others.
+
+**Auto** times reading with the image's own blur and wall, calibrated once (the search reuses
+that calibration), against a ten-minute budget for a pass's trials -- three minutes, FWHM's,
+sampled 13 of E14.5's vessels -- and never samples 64 or more: from there every trial starts
+worker processes (`run_edge_tasks` keeps no pool between calls), a cost a probe of ten does not
+see. The calibrations come on top (up to four blurs a pass, about a minute each on E14.5), and
+"Every vessel" on a large network is slow for the same reason.
+
+**Measured on E14.5 MCA (2026-10-24, `42c4be53`)**, the Claudin channel (raw image channel 1,
+endothelial) and Phase 0's run graph (`run_base/G_run.pkl`: 1,406 edges, 64 bridges), alone on
+the machine; harness `outputs/endothelial_optimiser/e14p5_check.py` (git-ignored, run on a
+`git archive` of the commit):
+
+- The run's Diameters call: 541 of 1,342 vessels measured in 178 s; the rings calibrated at
+  sigma_xy 1.08 um (95% 1.05-1.11), sigma_z 2.77 um (2.68-2.86), wall 1.14 um (1.12-1.16).
+- **A trial is the run:** one trial at the starting settings on a 40-vessel sample equals the
+  run's widths on all 40 (13 of them measured), to the bit.
+- Optimise endothelial settings as the panel runs it (Auto, both groups, one pass): 63 vessels
+  sampled (the cap), 60 planted vessels drawn like 24 sampled vessels' rings, 38 decoys. Auto
+  estimated 12 min 54 s; the search took 6 min 44 s, 9 min with setup. Each calibration at a
+  fixed blur costs ~83 s.
+
+| setting | start | chosen | why |
+|---|---|---|---|
+| `endothelial_min_ring_contrast` | 4 | 3 | planted lumen error 0.521 -> 0.495, CV along a vessel 0.138 -> 0.087, no decoy read (2 nearly ties with 3) |
+| `endothelial_psf_sigma_xy_um` / `_z_um` | unset | unset | every fixed candidate scored worse on both the planted vessels and the real ones |
+| `endothelial_wall_thickness_um` | unset | 1.125 | one more of 63 sampled vessels read (0.270 -> 0.286); CV worse (0.087 -> 0.118); inside the image's own 95% interval |
+
+| scorecard | start | chosen |
+|---|---|---|
+| sampled vessels measured | 0.270 | 0.286 |
+| width spread along a vessel (CV) | 0.138 | 0.118 (better) |
+| decoys given a width | 0 | 0 |
+| planted vessels' lumen error | 0.521 | 0.498 (better) |
+
+About half the planted vessels go unread at every setting: they are drawn like E14.5's narrow
+vessels, under a blur along z of 2.8 um, which the ring fit does not resolve (as it leaves 801 of
+the real ones to the mask width). They add the same to every trial's score.
+
+The gate's move is backed by both accuracy and agreement. **The wall's is not**: it rests on one
+vessel, inside the image's own interval. Before this run (at `65068bc1`, Auto broken, a sample
+of 10) the search fixed the blur and wall at other values inside their intervals, on 6 read
+vessels -- noise.
+
+**Decided (Harvey, 2026-10-24):** fixed blur and wall candidates only where the rings will not
+calibrate on their own, or the settings already fix them; done in the commit after `a525ad9c`.
+E14.5 under that rule is below.
