@@ -70,7 +70,9 @@ def test_form_tooltip_includes_unit_when_the_setting_declares_one():
 
 
 def test_non_schema_panel_controls_expose_tooltip_strings():
-    """Chrome buttons are not settings; their tooltips live in chrome_tooltips."""
+    """Chrome buttons are not settings; their tooltips live in chrome_tooltips.
+    That every control has one is scanned built, in
+    ``test_gui_hover_text_widget.py``; this holds the strings to one voice."""
     from haemolynx.gui import chrome_tooltips as chrome
 
     named = [
@@ -115,6 +117,21 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         *chrome.POST_PROCESSING_TOOLTIPS.values(),
         *chrome.OPTIMISE_TOOLTIPS.values(),
         *chrome.ENDOTHELIAL_OPTIMISE_TOOLTIPS.values(),
+        *chrome.OPTIMISE_GROUP_TOOLTIPS.values(),
+        *chrome.FWHM_OPTIMISE_GROUP_TOOLTIPS.values(),
+        *chrome.BOX_SIZE_TOOLTIPS.values(),
+        *chrome.BOX_MOVE_TOOLTIPS.values(),
+        chrome.REPORT_TOOLTIP,
+        chrome.MEASURED_ON_EXPORT_TAB_TOOLTIP,
+        chrome.LOG_VIEW_TOOLTIP,
+        chrome.ABOUT_TOOLTIP,
+        chrome.OPEN_LAYER_TOOLTIP,
+        *chrome.Z_DEPTH_TOOLTIPS.values(),
+        chrome.ARROW_LENGTH_TOOLTIP,
+        chrome.LAYER_COLOUR_BY_TOOLTIP,
+        chrome.LAYER_COLOUR_MAP_TOOLTIP,
+        *chrome.BRANCH_HOVER_TOOLTIPS.values(),
+        chrome.SWEEP_SLIDER_TOOLTIP,
     ]
     empty = [text for text in named if not text.strip()]
     assert not empty
@@ -141,3 +158,19 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
     for text in named:
         assert len(text.strip().split()) >= 3, text
         assert not text.rstrip().endswith("."), text
+
+
+def test_every_group_box_and_move_has_its_own_hover_text():
+    """One string per optimiser group, box axis, box move and hover metric:
+    a group, direction or metric added without one has none in the panel."""
+    from haemolynx.gui import chrome_tooltips as chrome
+    from haemolynx.gui.boundary_picking import MOVE_DIRECTIONS
+    from haemolynx.gui.branch_hover import BRANCH_HOVER_METRICS
+    from haemolynx.optimisation import FWHM_GROUP_NAMES, GROUP_NAMES
+
+    assert set(chrome.OPTIMISE_GROUP_TOOLTIPS) == set(GROUP_NAMES)
+    assert set(chrome.FWHM_OPTIMISE_GROUP_TOOLTIPS) == set(FWHM_GROUP_NAMES)
+    assert set(chrome.BOX_SIZE_TOOLTIPS) == set("zyx")
+    assert set(chrome.BOX_MOVE_TOOLTIPS) == set(MOVE_DIRECTIONS)
+    assert set(chrome.BRANCH_HOVER_TOOLTIPS) == set(BRANCH_HOVER_METRICS)
+    assert set(chrome.Z_DEPTH_TOOLTIPS) == {"min", "max"}

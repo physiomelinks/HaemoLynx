@@ -933,6 +933,15 @@ def advanced_button_text(title: str, expanded: bool, changed: int = 0) -> str:
     return f"{arrow} {title}{note}"
 
 
+def _readout_hover_text(slider) -> None:
+    """Give a magicgui slider's number box the slider's hover text: magicgui
+    puts it on the slider alone, and the box beside it can be typed in."""
+    from qtpy.QtWidgets import QAbstractSpinBox
+
+    for readout in slider.native.findChildren(QAbstractSpinBox):
+        readout.setToolTip(slider.tooltip)
+
+
 def _hide_row_label(widget) -> None:
     """Drop the empty label a labelled Container gives a nested block.
 
@@ -4661,6 +4670,8 @@ def _attach_sweep_sliders(viewer, layer, spec) -> None:
 
     from magicgui.widgets import Container, Label, Slider
 
+    from haemolynx.gui.chrome_tooltips import SWEEP_SLIDER_TOOLTIP
+
     dock_name = _sweep_dock_name(spec.name)
 
     sliders: list = []
@@ -4673,7 +4684,9 @@ def _attach_sweep_sliders(viewer, layer, spec) -> None:
             max=max(len(values) - 1, 0),
             step=1,
             label=_sweep_axis_label(axis_name),
+            tooltip=SWEEP_SLIDER_TOOLTIP,
         )
+        _readout_hover_text(slider)
         readout = Label(value=_format_sweep_value(axis_name, values[0] if values else 0))
         sliders.append((axis_name, slider, values, readout))
         value_labels.append(readout)
@@ -5094,10 +5107,14 @@ class _ColourScale:
         )
         outer.addWidget(self.heading)
 
+        from haemolynx.gui.chrome_tooltips import COLOUR_RANGE_TOOLTIPS
+
         row = QHBoxLayout()
         row.setSpacing(4)
         self.low = QLineEdit()
         self.high = QLineEdit()
+        self.low.setToolTip(COLOUR_RANGE_TOOLTIPS["low"])
+        self.high.setToolTip(COLOUR_RANGE_TOOLTIPS["high"])
         for box in (self.low, self.high):
             box.setFixedWidth(74)
             box.setAlignment(Qt.AlignRight)
@@ -5409,9 +5426,12 @@ class _FeatureChooser:
     def __init__(self, viewer, layer_name: str) -> None:
         from qtpy.QtWidgets import QComboBox
 
+        from haemolynx.gui.chrome_tooltips import LAYER_COLOUR_BY_TOOLTIP
+
         self._viewer = viewer
         self._layer_name = layer_name
         self.native = QComboBox()
+        self.native.setToolTip(LAYER_COLOUR_BY_TOOLTIP)
         self.native.currentTextChanged.connect(self._chosen)
 
     def _layer(self):
@@ -5497,12 +5517,15 @@ class _ColormapChooser:
     def __init__(self, viewer, layer_name: str) -> None:
         from qtpy.QtWidgets import QComboBox
 
+        from haemolynx.gui.chrome_tooltips import LAYER_COLOUR_MAP_TOOLTIP
+
         self._viewer = viewer
         self._layer_name = layer_name
         self._connected = None
         self.label = None
         self.shown = False
         self.native = QComboBox()
+        self.native.setToolTip(LAYER_COLOUR_MAP_TOOLTIP)
         _fill_colormap_combo(self.native)
         self.native.currentTextChanged.connect(self._chosen)
 
@@ -6073,6 +6096,7 @@ class _BranchHoverPanel:
     def refresh(self) -> None:
         """Rebuild checkboxes for the metrics this layer can currently offer."""
         from haemolynx.gui.branch_hover import panel_metric_options
+        from haemolynx.gui.chrome_tooltips import BRANCH_HOVER_TOOLTIPS
         from qtpy.QtWidgets import QCheckBox
 
         layer = self._layer()
@@ -6093,6 +6117,7 @@ class _BranchHoverPanel:
             for key, label in options:
                 box = QCheckBox(label)
                 box.setObjectName(f"branch_hover_{key}")
+                box.setToolTip(BRANCH_HOVER_TOOLTIPS[key])
                 box.toggled.connect(self._toggled)
                 self._box_layout.addWidget(box)
                 self._boxes[key] = box
@@ -7719,7 +7744,9 @@ def about_widget():
     cannot answer: where the colour controls live, and what a config is for."""
     from magicgui.widgets import TextEdit
 
-    report = TextEdit(value=about_text())
+    from haemolynx.gui.chrome_tooltips import ABOUT_TOOLTIP
+
+    report = TextEdit(value=about_text(), tooltip=ABOUT_TOOLTIP)
     report.read_only = True
     return report.native
 
@@ -7741,10 +7768,12 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
         MOVE_DIRECTIONS,
         role_title,
     )
+    from haemolynx.gui.chrome_tooltips import ACTION_TOOLTIPS, BOX_MOVE_TOOLTIPS, BOX_SIZE_TOOLTIPS
 
     size = Container(
         widgets=[
-            FloatSpinBox(value=v, min=0.5, max=5000.0, step=1.0, label=axis, name=f"size_{axis}")
+            FloatSpinBox(value=v, min=0.5, max=5000.0, step=1.0, label=axis, name=f"size_{axis}",
+                         tooltip=BOX_SIZE_TOOLTIPS[axis])
             for axis, v in zip("zyx", DEFAULT_BOX_SIZE_UM)
         ],
         layout="horizontal", labels=True, label="Box size (um)",
@@ -7752,7 +7781,7 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
     arrows = {"left": "\u25c0 Left", "right": "Right \u25b6", "up": "\u25b2 Up",
               "down": "\u25bc Down", "back": "Back", "forward": "Forward"}
     move = Container(
-        widgets=[PushButton(text=arrows[d], name=d) for d in MOVE_DIRECTIONS],
+        widgets=[PushButton(text=arrows[d], name=d, tooltip=BOX_MOVE_TOOLTIPS[d]) for d in MOVE_DIRECTIONS],
         layout="horizontal", labels=False, label="Move the box",
     )
     note = Label(value="Insert a box, move it over the vessel end, then press Scan.")
@@ -7766,6 +7795,7 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
     table.verticalHeader().setVisible(False)
     table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
     table.setMinimumHeight(110)
+    table.setToolTip(ACTION_TOOLTIPS["box_nodes"])
     nodes.native.layout().addWidget(table)
     nodes.table = table
     nodes.note = note
@@ -7928,6 +7958,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     for _action in actions.values():
         for _control, _tip in ACTION_TOOLTIPS.items():
             getattr(_action, _control).tooltip = _tip
+        _readout_hover_text(_action.depth)
 
     #: The box tools: insert a box, size and move it, list the nodes in it
     #: and choose one. A volume role's page is these and nothing else; no
@@ -14009,7 +14040,7 @@ def settings_widget(napari_viewer=None):
     #: are, and replaced when a new run that shows layers starts.
     checkpoints = StageCheckpoints()
     revert_buttons: dict[str, Any] = {}
-    from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
+    from haemolynx.gui.chrome_tooltips import MEASURED_ON_EXPORT_TAB_TOOLTIP, REVERT_STAGE_TOOLTIP
 
     #: The batch set up in the Batch run window, while there is one (None:
     #: Run pipeline runs the one image the Input tab names), and the "Batch
@@ -14115,9 +14146,10 @@ def settings_widget(napari_viewer=None):
         scroller = _fitting_scroll_area()
         scroller.setWidget(page)
         tab_widget.addTab(scroller, tab.stage.title)
-        if tab.stage.call:
-            index = tab_widget.count() - 1
-            tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
+        tab_widget.setTabToolTip(
+            tab_widget.count() - 1,
+            f"{tab.stage.call}(settings, ...)" if tab.stage.call else MEASURED_ON_EXPORT_TAB_TOOLTIP,
+        )
 
     # The pages that lay themselves out keep their own Advanced buttons and
     # boxes; the panel refreshes them with everything else.
@@ -14610,8 +14642,9 @@ def settings_widget(napari_viewer=None):
             choices=image_layers, label="Use open layer", nullable=True
         )
         use_button = PushButton(text="Use this layer as the input")
-        from haemolynx.gui.chrome_tooltips import USE_LAYER_TOOLTIP
+        from haemolynx.gui.chrome_tooltips import OPEN_LAYER_TOOLTIP, USE_LAYER_TOOLTIP
 
+        layer_picker.tooltip = OPEN_LAYER_TOOLTIP
         use_button.tooltip = USE_LAYER_TOOLTIP
         layer_row = Container(
             widgets=[layer_picker, use_button], layout="horizontal", labels=True
@@ -14729,7 +14762,11 @@ def settings_widget(napari_viewer=None):
     )
     behind_check_advanced(downsample_dropdown)
 
-    from haemolynx.gui.chrome_tooltips import OPTIMISE_TOOLTIPS
+    from haemolynx.gui.chrome_tooltips import (
+        FWHM_OPTIMISE_GROUP_TOOLTIPS,
+        OPTIMISE_GROUP_TOOLTIPS,
+        OPTIMISE_TOOLTIPS,
+    )
 
     #: "Optimisation passes": repeat the whole search from where the last pass
     #: ended (`max_passes`), stopping early once a pass changes nothing.
@@ -14750,7 +14787,8 @@ def settings_widget(napari_viewer=None):
     behind_check_advanced(choose_groups_checkbox)
 
     group_checkboxes: dict[str, Any] = {
-        name: CheckBox(text=GROUP_LABELS[name], value=True) for name in GROUP_NAMES
+        name: CheckBox(text=GROUP_LABELS[name], value=True, tooltip=OPTIMISE_GROUP_TOOLTIPS[name])
+        for name in GROUP_NAMES
     }
     group_checkboxes_container = Container(widgets=list(group_checkboxes.values()), labels=False)
     group_checkboxes_container.visible = False
@@ -14793,7 +14831,8 @@ def settings_widget(napari_viewer=None):
     fwhm_choose_groups = CheckBox(text="Choose FWHM optimisation types", value=False)
     fwhm_choose_groups.tooltip = OPTIMISE_TOOLTIPS["fwhm_choose_groups"]
     fwhm_group_checkboxes: dict[str, Any] = {
-        name: CheckBox(text=FWHM_GROUP_LABELS[name], value=True) for name in FWHM_GROUP_NAMES
+        name: CheckBox(text=FWHM_GROUP_LABELS[name], value=True, tooltip=FWHM_OPTIMISE_GROUP_TOOLTIPS[name])
+        for name in FWHM_GROUP_NAMES
     }
     fwhm_group_container = Container(widgets=list(fwhm_group_checkboxes.values()), labels=False)
     fwhm_group_container.visible = False
@@ -15030,12 +15069,14 @@ def settings_widget(napari_viewer=None):
     load_run_button = PushButton(text="Load run...")
 
     from haemolynx.gui.chrome_tooltips import (
+        ARROW_LENGTH_TOOLTIP,
         CLEAR_LAYERS_TOOLTIP,
         EDIT_GRAPH_TOOLTIP,
         LOAD_CONFIG_TOOLTIP,
         LOAD_RUN_TOOLTIP,
         PRESET_TOOLTIP,
         REOPEN_VIEW_TOOLTIP,
+        REPORT_TOOLTIP,
         RUN_CHECKS_TOOLTIP,
         RUN_PIPELINE_TOOLTIP,
         SAVE_CONFIG_TOOLTIP,
@@ -15051,8 +15092,10 @@ def settings_widget(napari_viewer=None):
         VESSEL_DRAW_TOOLTIP,
         VIEW_TOGGLE_TOOLTIPS,
         Z_DEPTH_TOOLTIP,
+        Z_DEPTH_TOOLTIPS,
     )
 
+    report.tooltip = REPORT_TOOLTIP
     load_button.tooltip = LOAD_CONFIG_TOOLTIP
     view_button.tooltip = REOPEN_VIEW_TOOLTIP
     view_button.enabled = viewer is not None
@@ -15114,6 +15157,8 @@ def settings_widget(napari_viewer=None):
     z_depth_slider.setEnabled(False)
     z_depth_label.setToolTip(Z_DEPTH_TOOLTIP)
     z_depth_slider.setToolTip(Z_DEPTH_TOOLTIP)
+    z_depth_slider._lo.setToolTip(Z_DEPTH_TOOLTIPS["min"])
+    z_depth_slider._hi.setToolTip(Z_DEPTH_TOOLTIPS["max"])
 
     vessel_draw_label = QLabel("Vessels")
     vessel_draw_label.setObjectName("haemolynx_vessel_draw_label")
@@ -15358,6 +15403,8 @@ def settings_widget(napari_viewer=None):
     arrow_length_slider.setObjectName("haemolynx_arrow_length_slider")
     arrow_length_slider.setRange(_ARROW_LENGTH_MIN, _ARROW_LENGTH_MAX)
     arrow_length_slider.setSingleStep(0.1)
+    arrow_length_label.setToolTip(ARROW_LENGTH_TOOLTIP)
+    arrow_length_slider.setToolTip(ARROW_LENGTH_TOOLTIP)
     arrow_length_slider.setEnabled(False)
     arrow_length_slider.setVisible(False)
     arrow_length_host = QWidget()

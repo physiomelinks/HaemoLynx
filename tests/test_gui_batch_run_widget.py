@@ -15,6 +15,7 @@ from haemolynx.gui._widget import settings_widget  # noqa: E402
 from haemolynx.gui.batch_run import BATCH_ROW_FOLDERS, BatchSetup  # noqa: E402
 from haemolynx.io import BatchFolders, match_batch  # noqa: E402
 from haemolynx.io.batch_matching import IMAGE_FOLDER_ROLES  # noqa: E402
+from hover_text_scan import controls_without_hover_text  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -920,58 +921,6 @@ def test_the_window_keeps_eight_rows_in_view_after_check(panel, tmp_path, monkey
     _assert_rows_in_view(window)
 
 
-def _controls_without_hover_text(root) -> list[str]:
-    """Every control under *root* -- button, field, choice, list, table,
-    slider, tab -- whose hover text is empty. Qt's own parts of a control
-    (a choice's list, a table's headers, corner button and scroll bars, a
-    tab bar's arrows) count as that control's."""
-    from qtpy.QtWidgets import (
-        QAbstractButton,
-        QAbstractItemView,
-        QAbstractScrollArea,
-        QAbstractSlider,
-        QAbstractSpinBox,
-        QComboBox,
-        QLineEdit,
-        QPlainTextEdit,
-        QScrollBar,
-        QTabBar,
-        QTabWidget,
-        QTextEdit,
-        QWidget,
-    )
-
-    controls = (
-        QAbstractButton,
-        QAbstractItemView,
-        QAbstractSlider,
-        QAbstractSpinBox,
-        QComboBox,
-        QLineEdit,
-        QPlainTextEdit,
-        QTextEdit,
-    )
-
-    def part_of_another(widget) -> bool:
-        if isinstance(widget, QScrollBar) or isinstance(widget.parentWidget(), QAbstractScrollArea):
-            return True
-        ancestor = widget.parentWidget()
-        while ancestor is not None:
-            if isinstance(ancestor, (QComboBox, QAbstractSpinBox, QTabBar)):
-                return True
-            ancestor = ancestor.parentWidget()
-        return False
-
-    missing = [
-        f"{type(widget).__name__} {getattr(widget, 'text', lambda: '')()!r}"
-        for widget in root.findChildren(QWidget)
-        if isinstance(widget, controls) and not part_of_another(widget) and not widget.toolTip().strip()
-    ]
-    for tabs in root.findChildren(QTabWidget):
-        missing += [f"tab {tabs.tabText(i)!r}" for i in range(tabs.count()) if not tabs.tabToolTip(i).strip()]
-    return missing
-
-
 def test_every_control_in_the_window_has_hover_text(panel, tmp_path):
     """The built window, every row and button in it whether shown or not
     (the other files' rows, the last batch's button), with a tie in the
@@ -991,11 +940,11 @@ def test_every_control_in_the_window_has_hover_text(panel, tmp_path):
     assert window.match()
     assert window.table.cellWidget(0, 2) is not None, "the tie's choice box"
     assert set(FILE_ROLE_KEYS) < set(window.fields)
-    assert _controls_without_hover_text(window.native) == []
+    assert controls_without_hover_text(window.native) == []
 
     # The scan finds a control with none.
     bare = QPushButton("Bare", window.native)
     try:
-        assert _controls_without_hover_text(window.native) == ["QPushButton 'Bare'"]
+        assert controls_without_hover_text(window.native) == ["QPushButton 'Bare'"]
     finally:
         bare.setParent(None)

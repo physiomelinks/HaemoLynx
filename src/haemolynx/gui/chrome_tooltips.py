@@ -89,6 +89,29 @@ ACTION_TOOLTIPS: dict[str, str] = {
         "Delete the chosen box"
     ),
 }
+#: The box tools' own parts: one size box per axis, and one button per move
+#: (``boundary_picking.MOVE_DIRECTIONS``).
+BOX_SIZE_TOOLTIPS: dict[str, str] = {
+    axis: (
+        f"The box's size along {axis} in microns; changing it resizes the "
+        "chosen box about its centre"
+    )
+    for axis in "zyx"
+}
+BOX_MOVE_TOOLTIPS: dict[str, str] = {
+    "left": "Move the box left across the screen by the move step",
+    "right": "Move the box right across the screen by the move step",
+    "up": "Move the box up the screen by the move step",
+    "down": "Move the box down the screen by the move step",
+    "back": (
+        "Move the box back by the move step: back through the slices in 2D, "
+        "towards you in 3D however the view is turned"
+    ),
+    "forward": (
+        "Move the box forward by the move step: on through the slices in 2D, "
+        "away from you in 3D however the view is turned"
+    ),
+}
 
 #: The node-picking button while clicks are going to its role.
 STOP_PICKING_NODES_TOOLTIP = (
@@ -376,6 +399,31 @@ SHOW_STEPS_TOOLTIP = (
 HELP_TOOLTIP = (
     "Open the help menu on the tab that is currently open"
 )
+#: The box under the buttons where the panel says what it last did.
+REPORT_TOOLTIP = (
+    "What the panel last said: a run's progress or why it stopped, what the "
+    "checks found, and what a button did; the run's full narration is in the "
+    "log window"
+)
+#: The "9. Additional measurements" tab, which has no stage function: every
+#: other stage tab's hover text names the function it runs.
+MEASURED_ON_EXPORT_TAB_TOOLTIP = (
+    "Measured by export_results(settings, ...): this tab has no stage of its own"
+)
+#: The log window's text.
+LOG_VIEW_TOOLTIP = (
+    "What the run says as it goes, newest at the bottom: Log level sets how "
+    "much is shown, and Follow keeps the newest line in view"
+)
+#: The About widget's text.
+ABOUT_TOOLTIP = (
+    "What HaemoLynx is, this build's version and number of settings, where "
+    "the colour controls are and how a config file repeats a run"
+)
+OPEN_LAYER_TOOLTIP = (
+    "The image layers open in the viewer: choosing one, or dropping an image "
+    "into the viewer, points the run at it"
+)
 USE_LAYER_TOOLTIP = (
     "Point the run at the image layer chosen above (its path, or an export "
     "of its array)"
@@ -556,6 +604,16 @@ REVERT_STAGE_TOOLTIP = (
 Z_DEPTH_TOOLTIP = (
     "Clip every displayed layer to this physical Z window; full range is the identity and does not crop the pipeline"
 )
+#: The Z window's two ends, one slider each.
+Z_DEPTH_TOOLTIPS = {
+    "min": "The lowest z shown, in microns: every displayed layer is clipped below it",
+    "max": "The highest z shown, in microns: every displayed layer is clipped above it",
+}
+#: The arrow-size row napari's controls show for a flow-direction layer.
+ARROW_LENGTH_TOOLTIP = (
+    "How long the flow-direction arrows are drawn; display only, the flows "
+    "are unchanged"
+)
 VESSEL_DRAW_TOOLTIP = (
     "Tubes: each centreline step as a 3D prism that stays visible from every "
     "camera angle. Lines: napari vector ribbons (faster, can vanish edge-on). "
@@ -572,6 +630,40 @@ COLOUR_BY_TOOLTIP = (
     "the same choice as Colour by on the vessels layer's own controls, for "
     "the network chosen under Showing"
 )
+#: What HaemoLynx adds to a vessel or node layer's own controls on the left:
+#: Colour by and Colour map (its colour range takes COLOUR_RANGE_TOOLTIPS).
+LAYER_COLOUR_BY_TOOLTIP = (
+    "Which of this layer's values its colours show; the colour map and "
+    "colour range below follow the choice"
+)
+LAYER_COLOUR_MAP_TOOLTIP = (
+    "The colour map the chosen value is drawn in; hidden while the colours "
+    "are categories or directions, which bring their own"
+)
+#: The vessels layer's "branch tooltip metrics" checkboxes, one per metric
+#: (``gui.branch_hover.BRANCH_HOVER_METRICS``).
+BRANCH_HOVER_TOOLTIPS: dict[str, str] = {
+    "flow_solution": (
+        "Show on hover whether the flow solve reached the vessel, and if not, "
+        "why: behind a dead end, behind a closed image-face end, or no inlet "
+        "and outlet"
+    ),
+    "flow": "Show on hover the size of the vessel's flow, in m^3/s",
+    "order": "Show on hover the vessel's branch order",
+    "diameter": "Show on hover the vessel's diameter, in microns",
+    "diameter_source": "Show on hover which method gave the vessel its diameter",
+    "fwhm_status": "Show on hover what FWHM made of the vessel: measured, or why not",
+    "resistance": "Show on hover the vessel's resistance to flow, in Pa.s/m^3",
+    "tortuosity": (
+        "Show on hover the vessel's tortuosity: its centreline length over the "
+        "straight line between its ends"
+    ),
+    "length": "Show on hover the vessel's centreline length, in microns",
+    "drawn_support": (
+        "Show on hover how much of a vessel drawn by hand lies in the "
+        "segmentation, and the most background it crosses in one run"
+    ),
+}
 #: The view panel's Colour range row, one entry per control.
 COLOUR_RANGE_TOOLTIPS = {
     "range": (
@@ -643,6 +735,11 @@ SWEEP_TOOLTIP = (
     "Step through the chosen perturbation's sweep: each grid point's flows, "
     "recoloured in place. Shown for a sweep perturbation chosen under Showing; "
     "each sweep keeps its own position while another is shown"
+)
+#: One slider per axis of a sweep's grid, in the Sweep box.
+SWEEP_SLIDER_TOOLTIP = (
+    "Step along this axis of the sweep's grid: the vessels are recoloured "
+    "with the flows solved at that point, whose value is shown below"
 )
 TUBE_QUALITY_TOOLTIP = (
     "How round the vessel tubes are drawn: one smooth tube per vessel, with "
@@ -912,6 +1009,107 @@ OPTIMISE_TOOLTIPS = {
         "How many of the network's vessels each FWHM trial measures; Auto "
         "times one measurement and picks a count to keep the search near "
         "three minutes"
+    ),
+}
+#: Optimise settings' group checkboxes, shown under "Choose optimisation
+#: types": what each group tries. Keyed by ``optimisation.GROUP_NAMES``.
+OPTIMISE_GROUP_TOOLTIPS: dict[str, str] = {
+    "segmentation_cleanup": (
+        "Try the clean-up of the mask before it is skeletonised -- filling "
+        "cavities, removing whiskers, splitting narrow necks, closing and "
+        "reconnecting gaps, smoothing, removing small pieces -- and their "
+        "sizes, each scored as Check segmented image scores the mask"
+    ),
+    "thick_vessel_gating": (
+        "Try the alternate skeletonisation of thick vessels on and off, the "
+        "radius above which a vessel counts as thick, and how the thick region "
+        "is refined and thin vessels are joined onto its centreline"
+    ),
+    "min_branch_length": (
+        "Try the shortest piece of skeleton kept when it is cleaned (Skeleton "
+        "min branch length)"
+    ),
+    "bundle_refinement": (
+        "Try the four settings that find dense tangles of skeleton and "
+        "collapse each into a hub: the scan window, how dense a window must "
+        "be, the links kept per hub and the spacing between hubs"
+    ),
+    "closing_radius": (
+        "Try the radius of the closing that fills small gaps in the mask "
+        "before it is skeletonised (Skeleton closing radius)"
+    ),
+    "gap_bridging": (
+        "Try how large a gap in the skeleton is bridged (Skeleton bridge gap "
+        "size) and how far a broken branch end reaches for another piece "
+        "(Skeleton max bridge distance)"
+    ),
+    "connectivity_and_component_filter": (
+        "Try the voxel connectivity skeleton pieces are counted by, and the "
+        "smallest piece kept as a percentage of the skeleton (Skeleton min "
+        "component percent)"
+    ),
+    "reconnect_thresholds": (
+        "Try how far apart pieces of the graph may be and still be joined: "
+        "the Graph reconnect threshold and the Final orphan reconnect threshold"
+    ),
+    "cluster_collapse_distance": (
+        "Try how nodes lying close together are merged into one: the Cluster "
+        "collapse distance and method, and the method's own setting"
+    ),
+    "min_stub_length": (
+        "Try the shortest dead-end stub the graph keeps: Min stub length, or "
+        "Min stub length radius multiple when stubs are judged by the radius "
+        "of the vessel they leave"
+    ),
+    "centreline_smoothing": (
+        "Try smoothing the vessel centrelines on and off, the smoothing "
+        "method, how many passes it makes and how far a smoothed centreline "
+        "may move from the skeleton"
+    ),
+}
+#: Optimise FWHM settings' group checkboxes. Keyed by
+#: ``optimisation.FWHM_GROUP_NAMES``.
+FWHM_OPTIMISE_GROUP_TOOLTIPS: dict[str, str] = {
+    "measurement_model": (
+        "Try how each profile is sampled and fitted -- in the slice plane or "
+        "across the vessel's 3D direction, as a blurred lumen or a Gaussian, "
+        "averaged along the vessel, how far apart -- and how many accepted "
+        "profiles a vessel needs and how they are combined. Judged on vessels "
+        "of known width planted beside the network's own, so it needs the "
+        "run's segmentation"
+    ),
+    "exclusion_zones": (
+        "Try how far from a branch end, and from a junction, profiles are "
+        "left unsampled"
+    ),
+    "extent_and_widening": (
+        "Try how far either side of the centreline each profile reaches, how "
+        "much wider than the fitted width it must span, and how many times it "
+        "may widen to make room"
+    ),
+    "central_lobe_clipping": (
+        "Try clipping each profile to its central lobe, so a neighbouring "
+        "vessel does not widen the fit, and the drop and re-rise that mark "
+        "the lobe's edges"
+    ),
+    "same_edge_geometry": (
+        "Try keeping each profile's samples to a local stretch of its own "
+        "vessel, and shortening a profile where another part of the same "
+        "vessel comes close"
+    ),
+    "baseline_estimation": (
+        "Try how each profile's background level is estimated, from its wings "
+        "or a percentile, and whether the fit's baseline is held near that "
+        "estimate"
+    ),
+    "diameter_guess": (
+        "Try where each vessel's fit starts: one diameter guess for every "
+        "vessel, or each vessel's own from a graph attribute"
+    ),
+    "rejection_gates": (
+        "Try the gates that throw out poor profiles -- a fitted centre too far "
+        "off the centreline, a poor fit (low R^2), a flat-topped plateau -- "
+        "and the threshold of each"
     ),
 }
 

@@ -86,8 +86,11 @@ class LogView:
 
         self.run_log = log if log is not None else RunLog(level=LEVELS[DEFAULT_LEVEL])
 
+        from haemolynx.gui.chrome_tooltips import LOG_VIEW_TOOLTIP
+
         # See the module docstring for why this is not magicgui's TextEdit.
         self.view = QPlainTextEdit()
+        self.view.setToolTip(LOG_VIEW_TOOLTIP)
         self.view.setReadOnly(True)
         self.view.setUndoRedoEnabled(False)
         # Wrapping is off on purpose: a statistics line runs to a few hundred
