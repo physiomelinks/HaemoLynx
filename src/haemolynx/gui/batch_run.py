@@ -1098,7 +1098,7 @@ def mask_switch_hint(schema: Schema, values: Mapping[str, Any], size: str) -> st
         ilastik = VESSEL_MASK_SETTINGS[size]["use_ilastik"]
         if not values.get(ilastik):
             return ""
-        return f"not used: ilastik makes these masks ({label_for(ilastik)}), which a batch cannot run"
+        return f"not used: ilastik makes these masks from each image's raw image ({label_for(ilastik)})"
     needed = [name for name in ("automated_vessel_assignment", switch) if not values.get(name)]
     named = " and ".join(f"'{label_for(name)}'" for name in needed)
     where = sorted({tabs.get(name, "") for name in needed} - {""})

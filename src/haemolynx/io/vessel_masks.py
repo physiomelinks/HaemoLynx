@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -249,8 +249,6 @@ def _vessel_mask_config(mask_role: Literal["large", "small"]) -> dict[str, str]:
     return {
         "enabled_flag": names["enabled"],
         "ilastik_flag": names["use_ilastik"],
-        "ilastik_arteriole_image_param": names["ilastik_unsegmented_arteriole_path"],
-        "ilastik_venule_image_param": names["ilastik_unsegmented_venule_path"],
         "ilastik_arteriole_classifier_param": names["ilastik_arteriole_classifier_path"],
         "ilastik_venule_classifier_param": names["ilastik_venule_classifier_path"],
         "ilastik_arteriole_label_param": names["ilastik_arteriole_vessel_label"],
@@ -330,8 +328,8 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "use_ilastik": "use_ilastik_large_vessel_segmentation",
         "arteriole_mask_path": "large_arteriole_mask_path",
         "venule_mask_path": "large_venule_mask_path",
-        "ilastik_unsegmented_arteriole_path": "ilastik_unsegmented_arteriole_image_path",
-        "ilastik_unsegmented_venule_path": "ilastik_unsegmented_venule_image_path",
+        "ilastik_arteriole_channels": "ilastik_arteriole_channels",
+        "ilastik_venule_channels": "ilastik_venule_channels",
         "ilastik_arteriole_classifier_path": "ilastik_arteriole_classifier_path",
         "ilastik_venule_classifier_path": "ilastik_venule_classifier_path",
         "ilastik_arteriole_vessel_label": "ilastik_arteriole_vessel_label",
@@ -357,8 +355,8 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "use_ilastik": "use_ilastik_small_vessel_segmentation",
         "arteriole_mask_path": "small_arteriole_mask_path",
         "venule_mask_path": "small_venule_mask_path",
-        "ilastik_unsegmented_arteriole_path": "ilastik_unsegmented_small_arteriole_image_path",
-        "ilastik_unsegmented_venule_path": "ilastik_unsegmented_small_venule_image_path",
+        "ilastik_arteriole_channels": "ilastik_small_arteriole_channels",
+        "ilastik_venule_channels": "ilastik_small_venule_channels",
         "ilastik_arteriole_classifier_path": "ilastik_small_arteriole_classifier_path",
         "ilastik_venule_classifier_path": "ilastik_small_venule_classifier_path",
         "ilastik_arteriole_vessel_label": "ilastik_small_arteriole_vessel_label",
@@ -375,6 +373,7 @@ _MAX_LOGGED_SWAPS = 20
 
 #: Settings both roles share, named identically in the config.
 _SHARED_VESSEL_MASK_SETTINGS = (
+    "raw_image_path",
     "ilastik_output_dir",
     "ilastik_output_suffix",
     "ilastik_executable",
@@ -438,8 +437,9 @@ def load_and_validate_vessel_masks(
     venule_mask_path: str | Path | None,
     image_shape: tuple[int, ...],
     main_voxel_size_xyz: tuple[float, float, float],
-    ilastik_unsegmented_arteriole_path: str | Path | None = None,
-    ilastik_unsegmented_venule_path: str | Path | None = None,
+    raw_image_path: str | Path | None = None,
+    ilastik_arteriole_channels: Sequence[int] | None = None,
+    ilastik_venule_channels: Sequence[int] | None = None,
     ilastik_arteriole_classifier_path: str | Path | None = None,
     ilastik_venule_classifier_path: str | Path | None = None,
     ilastik_arteriole_vessel_label: object = None,
@@ -478,6 +478,11 @@ def load_and_validate_vessel_masks(
     one is a global mask of every vessel of the role's size, returned as
     ``(mask, None, voxel size, None)`` (:func:`_load_global_vessel_mask`).
 
+    Under ilastik each classifier segments the run's raw image
+    (*raw_image_path*): its own *ilastik_arteriole_channels* /
+    *ilastik_venule_channels* of it, kept separate, or the whole file with
+    none (:func:`~haemolynx.io.ilastik.run_ilastik_headless_segmentation`).
+
     *crop* is the ``crop_on_import`` box the main image was cut to (see
     :mod:`haemolynx.io.crop`): each mask must have the whole image's shape, and
     is cut to the same box before anything else is done to it. *downsample* is
@@ -511,38 +516,34 @@ def load_and_validate_vessel_masks(
         # every vessel of the role's size, which no classifier told apart.
         global_mask = not ilastik_venule_classifier_path
         required = [
-            (config["ilastik_arteriole_image_param"], ilastik_unsegmented_arteriole_path),
+            ("raw_image_path", raw_image_path),
             (config["ilastik_arteriole_classifier_param"], ilastik_arteriole_classifier_path),
         ]
-        if not global_mask:
-            required.append(
-                (config["ilastik_venule_image_param"], ilastik_unsegmented_venule_path)
-            )
         for param_name, value in required:
-            if value is None:
+            if value in (None, ""):
                 raise ValueError(
-                    f"{param_name} must be set when {config['ilastik_flag']}=True."
+                    f"{param_name} must be set when {config['ilastik_flag']}=True: ilastik "
+                    "segments the run's raw image."
                 )
 
         output_dir = Path(ilastik_output_dir)
-        unsegmented_arteriole_image_path = resolve_image_path_with_optional_zip(
-            Path(ilastik_unsegmented_arteriole_path)
-        )
+        # Both classifiers segment the one raw image, each its own channels.
+        raw_image = resolve_image_path_with_optional_zip(Path(raw_image_path))
         arteriole_class = "global" if global_mask else "arteriole"
         segmented_arteriole_path = ilastik_vessel_mask_output_path(
             output_dir,
-            unsegmented_arteriole_image_path,
+            raw_image,
             mask_role,
             arteriole_class,
             ilastik_output_suffix,
         )
 
         logger.info(
-            f"Running ilastik segmentation for {scale_label} {arteriole_class} image: "
-            f"{unsegmented_arteriole_image_path}"
+            f"Running ilastik segmentation for the {scale_label} {arteriole_class} mask of: "
+            f"{raw_image}"
         )
         effective_arteriole_mask_path = run_ilastik_headless_segmentation(
-            input_image_path=unsegmented_arteriole_image_path,
+            input_image_path=raw_image,
             classifier_path=Path(ilastik_arteriole_classifier_path),
             output_path=segmented_arteriole_path,
             ilastik_executable=ilastik_executable,
@@ -550,6 +551,7 @@ def load_and_validate_vessel_masks(
             vessel_label=ilastik_arteriole_vessel_label,
             label_setting=config["ilastik_arteriole_label_param"],
             reuse_existing=bool(ilastik_reuse_existing_output),
+            channels=ilastik_arteriole_channels,
         )
         if global_mask:
             effective_venule_mask_path = None
@@ -558,22 +560,18 @@ def load_and_validate_vessel_masks(
                 f"{effective_arteriole_mask_path}"
             )
         else:
-            unsegmented_venule_image_path = resolve_image_path_with_optional_zip(
-                Path(ilastik_unsegmented_venule_path)
-            )
             segmented_venule_path = ilastik_vessel_mask_output_path(
                 output_dir,
-                unsegmented_venule_image_path,
+                raw_image,
                 mask_role,
                 "venule",
                 ilastik_output_suffix,
             )
             logger.info(
-                f"Running ilastik segmentation for {scale_label} venule image: "
-                f"{unsegmented_venule_image_path}"
+                f"Running ilastik segmentation for the {scale_label} venule mask of: {raw_image}"
             )
             effective_venule_mask_path = run_ilastik_headless_segmentation(
-                input_image_path=unsegmented_venule_image_path,
+                input_image_path=raw_image,
                 classifier_path=Path(ilastik_venule_classifier_path),
                 output_path=segmented_venule_path,
                 ilastik_executable=ilastik_executable,
@@ -581,6 +579,7 @@ def load_and_validate_vessel_masks(
                 vessel_label=ilastik_venule_vessel_label,
                 label_setting=config["ilastik_venule_label_param"],
                 reuse_existing=bool(ilastik_reuse_existing_output),
+                channels=ilastik_venule_channels,
             )
             logger.info(
                 f"Using ilastik-segmented {scale_label}-vessel masks: "

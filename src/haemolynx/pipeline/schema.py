@@ -148,6 +148,26 @@ def _migrate_raw_image(values: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _migrate_ilastik_mask_input(retired: str, switch: str):
+    """What a config written before vessel-mask ilastik read the raw image
+    becomes, for the classifier that read the image *retired* names: nothing.
+    It segments the run's raw image now (the whole file until its channels
+    are chosen), so a different file, while *switch* has ilastik make these
+    masks, is reported: the masks would come from another image than before."""
+
+    def migrate(values: Mapping[str, Any]) -> dict[str, Any]:
+        image, raw = values.get(retired), values.get("raw_image_path")
+        if values.get(switch) and image and (not raw or Path(str(image)) != Path(str(raw))):
+            logging.getLogger(__name__).warning(
+                "This config's %s (%s) is retired: its classifier segments the run's raw image "
+                "(%s) now, the whole file until its channels are chosen.",
+                retired, image, raw or "not set",
+            )
+        return {}
+
+    return migrate
+
+
 SCHEMA = Schema(
     [
         # ------------------------------------------------------------------
@@ -1083,30 +1103,6 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
-            name="ilastik_unsegmented_arteriole_image_path",
-            kind="path",
-            default=f"{_IMAGES}/large_arteriole_mask.tif",
-            help="Read this raw image as the ilastik input for the large arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "use_ilastik_large_vessel_segmentation",
-            ),
-        ),
-        Setting(
-            name="ilastik_unsegmented_venule_image_path",
-            kind="path",
-            default=f"{_IMAGES}/large_venule_mask.tif",
-            help="Read this raw image as the ilastik input for the large venule mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "use_ilastik_large_vessel_segmentation",
-            ),
-        ),
-        Setting(
             name="ilastik_arteriole_classifier_path",
             kind="path",
             default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
@@ -1140,6 +1136,29 @@ SCHEMA = Schema(
                 "use_large_vessel_masks",
                 "automated_vessel_assignment",
                 "use_ilastik_large_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_arteriole_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the arteriole/global classifier these channels of the raw image "
+                "(raw_image_path), kept separate and in this order, e.g. [1, 2]: the "
+                "channels it was trained on, counting from 0 as raw_image_channel does "
+                "(C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_arteriole_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_arteriole_image_path", "use_ilastik_large_vessel_segmentation"
             ),
         ),
         Setting(
@@ -1177,6 +1196,30 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "use_ilastik_large_vessel_segmentation",
                 "ilastik_venule_classifier_path",
+            ),
+        ),
+        Setting(
+            name="ilastik_venule_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the venule classifier these channels of the raw image "
+                "(raw_image_path), kept separate and in this order, e.g. [2]: the "
+                "channels it was trained on, counting from 0 as raw_image_channel does "
+                "(C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+                "ilastik_venule_classifier_path",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_venule_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_venule_image_path", "use_ilastik_large_vessel_segmentation"
             ),
         ),
         Setting(
@@ -1800,30 +1843,6 @@ SCHEMA = Schema(
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
-            name="ilastik_unsegmented_small_arteriole_image_path",
-            kind="path",
-            default=f"{_IMAGES}/small_arteriole_mask.tif",
-            help="Read this raw image as the ilastik input for the small arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "use_ilastik_small_vessel_segmentation",
-            ),
-        ),
-        Setting(
-            name="ilastik_unsegmented_small_venule_image_path",
-            kind="path",
-            default=f"{_IMAGES}/small_venule_mask.tif",
-            help="Read this raw image as the ilastik input for the small venule mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "use_ilastik_small_vessel_segmentation",
-            ),
-        ),
-        Setting(
             name="ilastik_small_arteriole_classifier_path",
             kind="path",
             default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
@@ -1856,6 +1875,30 @@ SCHEMA = Schema(
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
                 "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_small_arteriole_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the small arteriole/global classifier these channels of the raw "
+                "image (raw_image_path), kept separate and in this order, e.g. [1, 2]: "
+                "the channels it was trained on, counting from 0 as raw_image_channel "
+                "does (C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_small_arteriole_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_small_arteriole_image_path",
                 "use_ilastik_small_vessel_segmentation",
             ),
         ),
@@ -1894,6 +1937,31 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "use_ilastik_small_vessel_segmentation",
                 "ilastik_small_venule_classifier_path",
+            ),
+        ),
+        Setting(
+            name="ilastik_small_venule_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the small venule classifier these channels of the raw image "
+                "(raw_image_path), kept separate and in this order, e.g. [2]: the "
+                "channels it was trained on, counting from 0 as raw_image_channel does "
+                "(C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+                "ilastik_small_venule_classifier_path",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_small_venule_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_small_venule_image_path",
+                "use_ilastik_small_vessel_segmentation",
             ),
         ),
         Setting(

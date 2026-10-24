@@ -178,6 +178,101 @@ def ilastik_segmented_path(
     return Path(output_dir) / f"{ilastik_segmented_stem(unsegmented_image_path)}{suffix}"
 
 
+#: The folder, beside a vessel mask's ilastik output, the channels ilastik
+#: reads are written to while it runs.
+CHANNEL_INPUT_FOLDER = "channels"
+
+
+def channel_input_path(output_path: str | Path) -> Path:
+    """Where the chosen channels ilastik segments into *output_path* are
+    written first: ``{output folder}/channels/{output stem}_input.tif``. Not
+    the output's own folder, where ilastik writes its export, named after its
+    input, before it is moved to *output_path*."""
+    output_path = Path(output_path)
+    return output_path.parent / CHANNEL_INPUT_FOLDER / f"{output_path.stem}_input.tif"
+
+
+def write_ilastik_channels(
+    image_path: str | Path, channels: Sequence[int], output_path: str | Path
+) -> Path:
+    """Write *channels* (counting from 0, as ``raw_image_channel``: C1 is 0)
+    of the multi-channel TIFF at *image_path* to *output_path*, kept separate
+    and in the order given, for ilastik to segment: the file's own axes, its
+    channel axis holding these alone (dropped for one channel), the same kind
+    of file (an ImageJ hyperstack stays one, anything else is written as
+    OME-TIFF), its voxel size, and its voxel values untouched. Copied a plane
+    at a time where the file holds a page per plane, so a large stack is never
+    all in memory. Raises ``ValueError`` for a file with no channel axis, a
+    channel it lacks, or a channel named twice."""
+    import tifffile
+
+    from haemolynx.io.channels import tiff_channel_axis
+    from haemolynx.io.load import _voxel_size_xyz_from_tiff
+
+    image_path, output_path = Path(image_path), Path(output_path)
+    chosen = [int(channel) for channel in channels]
+    if not chosen:
+        raise ValueError("No channels chosen: leave the channels unset to give ilastik the whole file.")
+    twice = sorted({channel for channel in chosen if chosen.count(channel) > 1})
+    if twice:
+        raise ValueError(f"Channel(s) {twice} are chosen more than once.")
+    with tifffile.TiffFile(str(image_path)) as tif:
+        series = tif.series[0]
+        axes = series.axes.upper()
+        shape = tuple(int(size) for size in series.shape)
+        channel_axis = tiff_channel_axis(axes, shape, tif.imagej_metadata)
+        if channel_axis is None:
+            raise ValueError(
+                f"{image_path.name} has no channels to choose from (axes {axes}): leave the "
+                "channels unset, and ilastik reads the whole file."
+            )
+        count = shape[channel_axis]
+        missing = [channel for channel in chosen if not 0 <= channel < count]
+        if missing:
+            raise ValueError(
+                f"{image_path.name} has {count} channels (0-{count - 1}, C1-C{count}); "
+                f"channel(s) {missing} do not exist."
+            )
+        x, y, z, _status = _voxel_size_xyz_from_tiff(tif)
+        kept = list(shape)
+        kept[channel_axis] = len(chosen)
+        if len(chosen) == 1:
+            new_axes = axes[:channel_axis] + axes[channel_axis + 1:]
+            new_shape = tuple(kept[:channel_axis] + kept[channel_axis + 1:])
+        else:
+            new_axes, new_shape = axes, tuple(kept)
+        leading = shape[:-2]
+        if axes.endswith("YX") and channel_axis < len(leading) and len(series.pages) == int(
+            np.prod(leading)
+        ):
+            pages = list(series.pages)
+
+            def planes():
+                for index in np.ndindex(*kept[:-2]):
+                    source = list(index)
+                    source[channel_axis] = chosen[index[channel_axis]]
+                    yield pages[int(np.ravel_multi_index(source, leading))].asarray()
+
+            data = planes()
+        else:
+            data = np.take(series.asarray(), chosen, axis=channel_axis).reshape(new_shape)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        written = dict(shape=new_shape, dtype=series.dtype, resolution=(1.0 / x, 1.0 / y))
+        if tif.is_imagej:
+            metadata = {"axes": new_axes, "spacing": z, "unit": "um"}
+            if len(chosen) > 1:
+                metadata["mode"] = "composite"
+            tifffile.imwrite(output_path, data, imagej=True, metadata=metadata, **written)
+        else:
+            metadata = {
+                "axes": new_axes, "PhysicalSizeX": x, "PhysicalSizeY": y, "PhysicalSizeZ": z,
+            }
+            tifffile.imwrite(
+                output_path, data, ome=True, photometric="minisblack", metadata=metadata, **written
+            )
+    return output_path
+
+
 def sidecar_path(output_path: str | Path) -> Path:
     """Where the record of how *output_path* was made is kept."""
     output_path = Path(output_path)
@@ -195,11 +290,13 @@ def ilastik_provenance(
     vessel_label: int,
     *,
     label_names: Sequence[str] | None = None,
+    channels: Sequence[int] | None = None,
 ) -> dict:
     """What an output made from *input_image_path* by *classifier_path*,
     binarised at *vessel_label*, depends on: the project by its bytes, the
     input by path, size and modification time (hashing a raw volume of many
-    GB on every run would cost more than the segmentation it saves)."""
+    GB on every run would cost more than the segmentation it saves), and the
+    input's *channels* ilastik read, when it read only those."""
     classifier_path = Path(classifier_path)
     record = {
         "version": PROVENANCE_VERSION,
@@ -209,6 +306,8 @@ def ilastik_provenance(
         "vessel_label": int(vessel_label),
         "project": str(classifier_path.resolve()),
     }
+    if channels:
+        record["input"]["channels"] = [int(channel) for channel in channels]
     if label_names and 1 <= vessel_label <= len(label_names):
         record["vessel_label_name"] = label_names[vessel_label - 1]
     return record
@@ -238,7 +337,7 @@ def ilastik_output_is_current(output_path: str | Path, provenance: dict) -> tupl
         "version": "it was recorded by another version of HaemoLynx",
         "export_source": "it is another kind of ilastik export",
         "project_sha256": "the ilastik project is not the one it was made with",
-        "input": "the input image has changed (path, size or modification time)",
+        "input": "the input image, or the channels read of it, has changed",
         "vessel_label": "it was binarised at another vessel label",
     }
     for key in _PROVENANCE_KEYS:
@@ -401,6 +500,7 @@ def run_ilastik_headless_segmentation(
     label_setting: str = "vessel_label",
     reuse_existing: bool = False,
     poll: Optional[Callable[[], None]] = None,
+    channels: Sequence[int] | None = None,
 ) -> Path:
     """Run ilastik headless segmentation for a single image, and leave its
     output as a 0/1 vessel mask.
@@ -439,6 +539,12 @@ def run_ilastik_headless_segmentation(
         Whatever it raises stops the run: ilastik (and anything it started) is
         killed, and the exception propagates. This is how the napari panel's
         stop reaches a segmentation that can take hours.
+    channels:
+        The channels of a multi-channel TIFF ilastik reads, counting from 0,
+        kept separate and in this order (:func:`write_ilastik_channels`, into
+        :func:`channel_input_path` for as long as ilastik runs); None or empty
+        for the whole file. The output's record names them, so other channels
+        segment again.
 
     ilastik's own output is logged line by line as it arrives (``INFO``), so a
     long segmentation shows its progress in the run log rather than nothing
@@ -465,7 +571,7 @@ def run_ilastik_headless_segmentation(
         vessel_label, label_names, setting=label_setting, project=classifier_path
     )
     provenance = ilastik_provenance(
-        input_image_path, classifier_path, label, label_names=label_names
+        input_image_path, classifier_path, label, label_names=label_names, channels=channels
     )
     if reuse_existing:
         current, reason = ilastik_output_is_current(output_path, provenance)
@@ -482,6 +588,59 @@ def run_ilastik_headless_segmentation(
         if output_path.exists():
             logger.warning("Segmenting %s again: %s.", output_path, reason)
 
+    ilastik_input = input_image_path
+    if channels:
+        ilastik_input = write_ilastik_channels(
+            input_image_path, channels, channel_input_path(output_path)
+        )
+        logger.info(
+            "ilastik reads channel(s) %s (C%s) of %s, written for it to %s.",
+            ", ".join(str(int(c)) for c in channels),
+            ", C".join(str(int(c) + 1) for c in channels),
+            input_image_path.name,
+            ilastik_input,
+        )
+    try:
+        return _segment(
+            ilastik_input,
+            classifier_path,
+            output_path,
+            ilastik_executable,
+            timeout,
+            poll=poll,
+            label=label,
+            provenance=provenance,
+        )
+    finally:
+        if ilastik_input != input_image_path:
+            _discard_channel_input(ilastik_input)
+
+
+def _discard_channel_input(path: Path) -> None:
+    """Delete a channel file written for ilastik, and its folder once empty:
+    the output's record says which channels it was made from."""
+    path.unlink(missing_ok=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def _segment(
+    input_image_path: Path,
+    classifier_path: Path,
+    output_path: Path,
+    ilastik_executable: str | Path,
+    timeout: float | None,
+    *,
+    poll: Optional[Callable[[], None]],
+    label: int,
+    provenance: dict,
+) -> Path:
+    """Run ilastik on *input_image_path* into *output_path*, binarise it at
+    *label* and write its record (*provenance*): what
+    :func:`run_ilastik_headless_segmentation` does once nothing can be reused."""
+    output_suffix = output_path.suffix.lower()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # An old output left in place would be returned as this run's if ilastik
     # exited cleanly without writing one, and its record would vouch for it.

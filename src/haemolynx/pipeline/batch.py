@@ -228,13 +228,6 @@ def check_batch(
             else "These images were matched in the raw folder, for ilastik to segment, "
             "but use_ilastik_segmentation is off: match the folders again."
         )
-    for size, names in VESSEL_MASK_SETTINGS.items():
-        if vessel_masks_in_use(settings, size) and settings.get(names["use_ilastik"]):
-            report.add_error(
-                f"{names['use_ilastik']} is on: ilastik would make the {size} vessel masks "
-                "of every image in the batch from the one raw file that row names. Turn it "
-                f"off and give the batch its {size} vessel masks as files."
-            )
     for role in FILE_ROLES:
         _check_one_file(
             report, schema, role, settings, folders.file_folder(role.key) if folders else None
@@ -392,40 +385,42 @@ def ilastik_output_paths(settings: Mapping[str, Any]) -> list[Path]:
     """The files ilastik's segmentations write in ``ilastik_output_dir``: the
     main image's while ilastik segments it, and each vessel-mask role's while
     ilastik makes its masks, each with the record of how it was made beside
-    it (:func:`haemolynx.io.ilastik.sidecar_path`). A batch's image has only
-    the main image's (each in its own folder): a batch refuses ilastik's
-    vessel masks."""
-    from haemolynx.io.ilastik import sidecar_path
+    it (:func:`haemolynx.io.ilastik.sidecar_path`), and a vessel mask's
+    chosen channels while ilastik reads them (:func:`~haemolynx.io.ilastik.channel_input_path`).
+    Every vessel mask is segmented from the run's raw image, so a batch's
+    image writes its own in its own folder."""
+    from haemolynx.io.ilastik import channel_input_path, sidecar_path
     from haemolynx.io.vessel_masks import ilastik_vessel_mask_output_path
 
     folder = settings.get("ilastik_output_dir")
     if folder in (None, ""):
         return []
     suffix = str(settings.get("ilastik_output_suffix") or "")
-    images: list[Path] = []
+    files: list[Path] = []
     main = _ilastik_segmented_image(settings)
     if main is not None:
-        images.append(main)
+        main = Path(os.path.abspath(main))
+        files.extend((main, sidecar_path(main)))
+    raw = settings.get("raw_image_path")
     for role, names in VESSEL_MASK_SETTINGS.items():
-        if not (settings.get(names["use_ilastik"]) and vessel_masks_in_use(settings, role)):
+        if raw in (None, "") or not (
+            settings.get(names["use_ilastik"]) and vessel_masks_in_use(settings, role)
+        ):
             continue
         # With no venule classifier the arteriole one segments a global mask.
-        pairs = [(names["ilastik_unsegmented_arteriole_path"], "global")]
+        classes = [("global", names["ilastik_arteriole_channels"])]
         if settings.get(names["ilastik_venule_classifier_path"]) not in (None, ""):
-            pairs = [
-                (names["ilastik_unsegmented_arteriole_path"], "arteriole"),
-                (names["ilastik_unsegmented_venule_path"], "venule"),
+            classes = [
+                ("arteriole", names["ilastik_arteriole_channels"]),
+                ("venule", names["ilastik_venule_channels"]),
             ]
-        for image_setting, vessel_class in pairs:
-            image = settings.get(image_setting)
-            if image not in (None, ""):
-                images.append(
-                    ilastik_vessel_mask_output_path(folder, image, role, vessel_class, suffix)
-                )
-    files: list[Path] = []
-    for image in images:
-        image = Path(os.path.abspath(image))
-        files.extend((image, sidecar_path(image)))
+        for vessel_class, channels in classes:
+            mask = Path(
+                os.path.abspath(ilastik_vessel_mask_output_path(folder, raw, role, vessel_class, suffix))
+            )
+            files.extend((mask, sidecar_path(mask)))
+            if settings.get(channels):
+                files.append(channel_input_path(mask))
     return files
 
 

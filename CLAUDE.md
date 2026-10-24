@@ -229,6 +229,18 @@ haemolynx/
 2. **Large arteriole/venule masks** — `use_ilastik_large_vessel_segmentation` (requires `use_large_vessel_masks=True`).
 3. **Small arteriole/venule masks** — `use_ilastik_small_vessel_segmentation` (requires `use_small_vessel_masks_for_boundary_assignment=True`).
 
+**The vessel masks are segmented from the run's raw image** (2026-10-24, Harvey;
+`PLAN_batch_run.md`). Each classifier gets its own channels of it -- `ilastik_arteriole_channels`,
+`ilastik_venule_channels` and the two `ilastik_small_*_channels`, counting from 0 like
+`raw_image_channel` -- kept separate, or the whole file when unset.
+- `io.ilastik.write_ilastik_channels` writes them, plane by plane, to
+  `{ilastik_output_dir}/channels/{output stem}_input.tif` for as long as ilastik runs. It keeps
+  the file's axes, its kind (ImageJ or OME) and its voxel size, and the file is deleted afterwards.
+- The output's provenance record names the channels, so other channels segment again.
+- Preflight checks them against the raw image (`checks.check_ilastik_vessel_mask_channels`).
+- The separate input files these replace (`ilastik_unsegmented_*_image_path`) still load through
+  `migrates`, warning when one was another file than the raw image.
+
 Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts. Outputs are named `{image stem}_segmented` for the main image and `{image stem}_{large|small}_{arteriole|venule}_segmented` for the masks: the arteriole and venule classifiers are usually run on the one raw stack, and with one name the venule run overwrote the arteriole's (or, reusing existing output, read it back as its own).
 
 **The vessel label is named, and reuse is by provenance** (2026-10-22, `PLAN_dale_review_fixes.md`
@@ -256,7 +268,8 @@ label set (`io.load._warn_minority_guess`).
 Users may also supply **pre-segmented** masks only (no ilastik call) — typical for tutorial data and many tests.
 
 **One raw image per run.** The Input tab's `raw_image_path`, `raw_image_channel` and
-`raw_image_stain` are the only raw image a run reads: ilastik segments it, the Diameters stage
+`raw_image_stain` are the only raw image a run reads: ilastik segments it (the vessel masks'
+classifiers too, by their own channels), the Diameters stage
 measures from it (`measure_diameters_from_raw_image`), Check segmented image and the optimisers
 compare against it, and the tissue volume falls back to it. `raw_image_stain` is `auto`,
 `plasma_column` (a lumen label such as dextran) or `endothelial` (the wall, such as claudin-5). Auto
@@ -359,7 +372,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 | Change area | Typical test location |
 |-------------|----------------------|
-| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties, a batch of raw images, each image's other files) |
+| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_ilastik_vessel_mask_channels.py` (the vessel masks' classifiers given their channels of the raw image: the channel file, reuse, the loader, preflight, the retired input files), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties, a batch of raw images, each image's other files) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_tree.py` (the large-stack tree and the join's bounded last resort; digests of the in-RAM skeleton), `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_endothelial_planted.py` (planted vessels read at their lumen at several voxel sizes, walls and blurs), `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
@@ -946,7 +959,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   while read, `batch_file_roles`) by name; ties are named, never guessed. `pipeline/batch.py`:
   `item_settings` (each image's files, its perturbations' too, and its own output folder),
   `check_batch(settings, schema, folders)` (refuses what cannot be per-image: node IDs, synthetic,
-  ilastik's vessel masks, one `FILE_ROLES` file read for every image), `batch_preflight`.
+  one `FILE_ROLES` file read for every image), `batch_preflight`. ilastik's vessel masks read each
+  image's own raw image.
   `gui/batch_run.py`'s `run_batch` runs
   them in turn with fresh state each, records a failure and goes on, rewrites `batch_summary.csv`
   after every image; every image passes its checks or nothing runs. Headless:

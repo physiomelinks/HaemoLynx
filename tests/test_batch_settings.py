@@ -118,17 +118,26 @@ def test_synthetic_runs_are_refused_and_ilastik_needs_a_batch_of_raw_images(base
     assert "use_ilastik_segmentation is off" in error
 
 
-def test_ilastik_vessel_masks_are_refused_while_their_masks_are_used(base, schema):
+def test_ilastik_vessel_masks_are_made_from_each_images_own_raw_image(base, schema, tmp_path):
+    from haemolynx.pipeline.checks import check_ilastik_vessel_mask_channels
+
     on = {
         **base,
         "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
         "use_ilastik_large_vessel_segmentation": True,
+        "ilastik_arteriole_channels": (1,),
     }
-    (error,) = check_batch(on, schema).errors
-    assert "use_ilastik_large_vessel_segmentation is on" in error
-    # Left on under an unticked switch, it makes no masks.
-    assert check_batch({**on, "automated_vessel_assignment": False}, schema).errors == []
+    assert check_batch(on, schema).errors == []
+    seg = _folder(tmp_path / "seg", "E14_seg.tif", "E15_seg.tif")
+    _folder(tmp_path / "raw", "E14.tif")
+    with_raw, without_raw = match_batch(BatchFolders(seg, raw=tmp_path / "raw"))
+    first = item_settings(on, with_raw, tmp_path / "out")
+    assert first["raw_image_path"] == tmp_path / "raw" / "E14.tif"
+    assert first["ilastik_output_dir"] == tmp_path / "out" / "E14_seg" / "segmentations"
+    # An image with no raw image has nothing for ilastik to segment.
+    (error,) = check_ilastik_vessel_mask_channels(item_settings(on, without_raw, tmp_path / "out")).errors
+    assert "raw_image_path is not set" in error
 
 
 # -- the other files read beside each image ---------------------------------------
@@ -499,8 +508,7 @@ def test_ilastik_vessel_mask_outputs_are_counted_by_role_and_class(tmp_path, bas
         automated_vessel_assignment=True,
         use_large_vessel_masks=True,
         use_ilastik_large_vessel_segmentation=True,
-        ilastik_unsegmented_arteriole_image_path=str(tmp_path / "A.tif"),
-        ilastik_unsegmented_venule_image_path=str(tmp_path / "V.tif"),
+        raw_image_path=str(tmp_path / "R.tif"),
         ilastik_venule_classifier_path=None,
         ilastik_output_dir=str(seg),
         ilastik_output_suffix=".tif",
@@ -510,15 +518,19 @@ def test_ilastik_vessel_mask_outputs_are_counted_by_role_and_class(tmp_path, bas
         return {path.name for path in ilastik_output_paths(settings)}
 
     # No venule classifier: the arteriole one segments one global mask.
-    assert names() == {"A_large_global_segmented.tif", "A_large_global_segmented.tif.haemolynx.json"}
+    assert names() == {"R_large_global_segmented.tif", "R_large_global_segmented.tif.haemolynx.json"}
     settings["ilastik_venule_classifier_path"] = str(tmp_path / "ven.ilp")
+    # Both segment the run's raw image; chosen channels are written for ilastik first.
+    settings["ilastik_venule_channels"] = (2,)
     assert names() == {
-        "A_large_arteriole_segmented.tif",
-        "A_large_arteriole_segmented.tif.haemolynx.json",
-        "V_large_venule_segmented.tif",
-        "V_large_venule_segmented.tif.haemolynx.json",
+        "R_large_arteriole_segmented.tif",
+        "R_large_arteriole_segmented.tif.haemolynx.json",
+        "R_large_venule_segmented.tif",
+        "R_large_venule_segmented.tif.haemolynx.json",
+        "R_large_venule_segmented_input.tif",
     }
-    assert seg / "V_large_venule_segmented.tif.haemolynx.json" in output_paths(settings)[0]
+    assert seg / "R_large_venule_segmented.tif.haemolynx.json" in output_paths(settings)[0]
+    assert seg / "channels" / "R_large_venule_segmented_input.tif" in output_paths(settings)[0]
     # Left on under an unticked gate, the switch segments nothing.
     settings["automated_vessel_assignment"] = False
     assert names() == set()

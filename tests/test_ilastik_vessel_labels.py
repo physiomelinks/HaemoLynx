@@ -240,8 +240,7 @@ def test_the_mask_loader_hands_each_classifier_its_own_label(tmp_path, monkeypat
         venule=True,
         ilastik_arteriole_vessel_label="Artery",
         ilastik_venule_vessel_label="Vein",
-        ilastik_unsegmented_arteriole_image_path=tmp_path / "raw.tif",
-        ilastik_unsegmented_venule_image_path=tmp_path / "raw.tif",
+        raw_image_path=tmp_path / "raw.tif",
         ilastik_output_dir=tmp_path / "seg",
     )
     arguments = vessel_mask_arguments(settings, "large")

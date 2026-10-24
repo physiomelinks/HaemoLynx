@@ -752,18 +752,19 @@ def test_vessel_mask_ilastik_runs_honour_the_reuse_setting(tmp_path, monkeypatch
     seen = []
 
     def fake_run(**kwargs):
-        seen.append(kwargs["reuse_existing"])
+        seen.append((kwargs["reuse_existing"], Path(kwargs["input_image_path"]).name, kwargs["channels"]))
         _write_mask_with_voxel_size(kwargs["output_path"], np.zeros(shape, dtype=np.uint8))
         return Path(kwargs["output_path"])
 
     monkeypatch.setattr(module, "run_ilastik_headless_segmentation", fake_run)
-    for name in ("art.tif", "ven.tif", "art.ilp", "ven.ilp"):
+    for name in ("raw.tif", "art.ilp", "ven.ilp"):
         (tmp_path / name).write_bytes(b"x")
     settings = {
         "use_large_vessel_masks": True,
         "use_ilastik_large_vessel_segmentation": True,
-        "ilastik_unsegmented_arteriole_image_path": tmp_path / "art.tif",
-        "ilastik_unsegmented_venule_image_path": tmp_path / "ven.tif",
+        "raw_image_path": tmp_path / "raw.tif",
+        "ilastik_arteriole_channels": (1, 2),
+        "ilastik_venule_channels": (2,),
         "ilastik_arteriole_classifier_path": tmp_path / "art.ilp",
         "ilastik_venule_classifier_path": tmp_path / "ven.ilp",
         "ilastik_output_dir": tmp_path / "seg",
@@ -780,7 +781,21 @@ def test_vessel_mask_ilastik_runs_honour_the_reuse_setting(tmp_path, monkeypatch
         image_shape=shape,
         main_voxel_size_xyz=VOXEL_SIZE_XYZ,
     )
-    assert seen == [reuse, reuse]
+    # Both classifiers segment the run's raw image, each its own channels.
+    assert seen == [(reuse, "raw.tif", (1, 2)), (reuse, "raw.tif", (2,))]
+
+
+def test_ilastik_vessel_masks_need_the_raw_image(tmp_path) -> None:
+    (tmp_path / "art.ilp").write_bytes(b"x")
+    with pytest.raises(ValueError, match="raw_image_path must be set"):
+        load_and_validate_vessel_masks(
+            mask_role="small", enabled=True, use_ilastik=True,
+            arteriole_mask_path=None, venule_mask_path=None,
+            image_shape=(3, 4, 5), main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            raw_image_path=None,
+            ilastik_arteriole_classifier_path=tmp_path / "art.ilp",
+            ilastik_output_dir=tmp_path,
+        )
 
 
 # --- ilastik outputs named by role ------------------------------------------------
@@ -809,8 +824,7 @@ def test_the_two_classifiers_run_on_one_raw_stack_write_two_outputs(tmp_path, mo
             mask_role=mask_role, enabled=True, use_ilastik=True,
             arteriole_mask_path=None, venule_mask_path=None,
             image_shape=shape, main_voxel_size_xyz=VOXEL_SIZE_XYZ,
-            ilastik_unsegmented_arteriole_path=tmp_path / "raw.tif",
-            ilastik_unsegmented_venule_path=tmp_path / "raw.tif",
+            raw_image_path=tmp_path / "raw.tif",
             ilastik_arteriole_classifier_path=tmp_path / "art.ilp",
             ilastik_venule_classifier_path=tmp_path / "ven.ilp",
             ilastik_output_dir=tmp_path / "seg",

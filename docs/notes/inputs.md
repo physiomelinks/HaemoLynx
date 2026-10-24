@@ -63,3 +63,14 @@ beside a labelled non-`zyx` HDF5 by the same tool line up with it. That is carri
 `"auto:<order>"` (`io.axis_order_for_run`) rather than threaded through every caller, since one
 `axis_order` argument reaches several files in the diameter, pericyte, cell-mask and vessel-mask
 loaders.
+
+**The vessel masks' classifiers read the raw image too** (2026-10-24, Harvey; `PLAN_batch_run.md`).
+`ilastik_unsegmented_arteriole_image_path`, `_venule_image_path` and their two small
+counterparts named a file of their own for each classifier. They are retired:
+- Each classifier segments the run's raw image, given its own channels (`ilastik_arteriole_channels`
+  ..., kept separate as a multichannel input, the whole file when unset).
+- The old settings migrate to nothing. When ilastik made those masks and the old file was not the
+  raw image, a warning says the masks now come from another image.
+- A batch no longer refuses ilastik's vessel masks: each image's raw image is read.
+- Not checked on a real stack or with a real vessel-mask project: only with the fake ilastik in
+  the tests.

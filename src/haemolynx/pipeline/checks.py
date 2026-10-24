@@ -130,6 +130,74 @@ def ilastik_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str
     return pairs
 
 
+def ilastik_vessel_mask_channels_in_effect(settings: Mapping[str, Any]) -> list[str]:
+    """The channel setting of each classifier ilastik segments a vessel mask
+    with this run (``ilastik_arteriole_channels`` ...): every one reads the
+    run's raw image."""
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+
+    names: list[str] = []
+    for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items():
+        if not (settings.get(flag) and vessel_masks_in_use(settings, role)):
+            continue
+        role_names = VESSEL_MASK_SETTINGS[role]
+        names.append(role_names["ilastik_arteriole_channels"])
+        if settings.get(role_names["ilastik_venule_classifier_path"]) not in (None, ""):
+            names.append(role_names["ilastik_venule_channels"])
+    return names
+
+
+def check_ilastik_vessel_mask_channels(settings: Mapping[str, Any]) -> CheckReport:
+    """ilastik's vessel masks are segmented from the run's raw image, each
+    classifier given its own channels of it (the whole file with none): so
+    the raw image must be set, and each classifier's channels ones it has,
+    none twice. A missing raw image file is reported by ``check_raw_image``."""
+    from haemolynx.io import tiff_channels
+
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    names = ilastik_vessel_mask_channels_in_effect(settings)
+    if not names:
+        return report
+    path = settings.get("raw_image_path")
+    if path in (None, ""):
+        report.add_error(
+            "ilastik makes the vessel masks from the raw image, but raw_image_path is not "
+            "set. Fix: set raw_image_path on the Input tab, or turn off ilastik for the "
+            "vessel masks and give their mask files."
+        )
+        return report
+    if not Path(path).is_file():
+        return report
+    channels = tiff_channels(path)
+    listing = ", ".join(channel.label for channel in channels)
+    for name in names:
+        chosen = [int(channel) for channel in settings.get(name) or ()]
+        if not chosen:
+            continue
+        if not channels:
+            report.add_error(
+                f"{name} is {chosen}, but raw_image_path is a single-channel image: leave it "
+                "unset, and the classifier reads the whole file."
+            )
+            continue
+        twice = sorted({channel for channel in chosen if chosen.count(channel) > 1})
+        missing = [channel for channel in chosen if not 0 <= channel < len(channels)]
+        if twice:
+            report.add_error(f"{name} names channel(s) {twice} more than once.")
+        elif missing:
+            report.add_error(
+                f"{name} names channel(s) {missing}, but raw_image_path has {len(channels)} "
+                f"channels ({listing}), counting from 0."
+            )
+        else:
+            report.add_pass(
+                name, ", ".join(channels[channel].label for channel in chosen) + f" of {Path(path).name}"
+            )
+    return report
+
+
 def check_ilastik_vessel_labels(settings: Mapping[str, Any]) -> CheckReport:
     """Each ilastik project the run segments with must have its vessel label
     named, and the name must be one of the project's labels: its "Simple
@@ -979,6 +1047,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
     report.extend(check_ilastik_vessel_labels(settings))
+    report.extend(check_ilastik_vessel_mask_channels(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
     report.extend(check_global_vessel_masks(settings))

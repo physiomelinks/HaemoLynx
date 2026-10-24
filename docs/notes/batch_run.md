@@ -194,3 +194,9 @@ the window 819 px, 915 px with three other-file rows; with all five shown, 7 row
 a 3-line box, the window as tall as the screen. Hover text is now checked on the built window:
 every control in it, shown or not, including a tie's choice box. Its two tabs had none and now
 do. Neither was tried by hand by Harvey or a tester.
+
+**ilastik's vessel masks in a batch** (2026-10-24, Harvey's decision, `PLAN_batch_run.md`). They
+were refused, since each classifier read one file for every image. Now every classifier segments
+the run's raw image by its own channels (`ilastik_*_channels`; CLAUDE.md, "Segmentation"), so each
+image's masks come from its own raw image and go in its own `segmentations/` folder. An image with
+no raw image fails its checks (`check_ilastik_vessel_mask_channels`).

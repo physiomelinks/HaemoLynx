@@ -542,10 +542,10 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "small_arteriole_mask_path": "Small arteriole/global mask path",
     "ilastik_arteriole_classifier_path": "Ilastik arteriole/global classifier path",
     "ilastik_small_arteriole_classifier_path": "Ilastik small arteriole/global classifier path",
-    "ilastik_unsegmented_arteriole_image_path": "Ilastik unsegmented arteriole/global image path",
-    "ilastik_unsegmented_small_arteriole_image_path": (
-        "Ilastik unsegmented small arteriole/global image path"
-    ),
+    "ilastik_arteriole_channels": "Ilastik arteriole/global classifier's raw channels",
+    "ilastik_venule_channels": "Ilastik venule classifier's raw channels",
+    "ilastik_small_arteriole_channels": "Ilastik small arteriole/global classifier's raw channels",
+    "ilastik_small_venule_channels": "Ilastik small venule classifier's raw channels",
 }
 
 #: Display text for a ``choice`` setting's values, keyed by setting name then
