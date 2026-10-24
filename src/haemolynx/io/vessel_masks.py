@@ -410,6 +410,25 @@ def vessel_mask_arguments(
     return arguments
 
 
+def ilastik_vessel_mask_output_path(
+    output_dir: str | Path,
+    unsegmented_image_path: str | Path,
+    mask_role: str,
+    vessel_class: str,
+    suffix: str,
+) -> Path:
+    """Where ilastik's *vessel_class* (``arteriole``, ``venule`` or
+    ``global``) mask of *mask_role* is written:
+    ``{image stem}_{role}_{class}_segmented{suffix}``.
+
+    Named by role as well as by image: the arteriole and venule classifiers
+    are usually run on the one raw stack, and both outputs called
+    ``{stem}_segmented`` meant the venule run overwrote the arteriole's (or,
+    reusing existing output, read it back as its own)."""
+    stem = Path(unsegmented_image_path).stem
+    return Path(output_dir) / f"{stem}_{mask_role}_{vessel_class}_segmented{suffix}"
+
+
 def load_and_validate_vessel_masks(
     *,
     mask_role: Literal["large", "small"],
@@ -509,14 +528,13 @@ def load_and_validate_vessel_masks(
         unsegmented_arteriole_image_path = resolve_image_path_with_optional_zip(
             Path(ilastik_unsegmented_arteriole_path)
         )
-        # Named by role as well as by image: the arteriole and venule
-        # classifiers are usually run on the one raw stack, and both outputs
-        # called `{stem}_segmented` meant the venule run overwrote the
-        # arteriole's (or, reusing existing output, read it back as its own).
         arteriole_class = "global" if global_mask else "arteriole"
-        segmented_arteriole_path = output_dir / (
-            f"{unsegmented_arteriole_image_path.stem}_{mask_role}_{arteriole_class}_segmented"
-            f"{ilastik_output_suffix}"
+        segmented_arteriole_path = ilastik_vessel_mask_output_path(
+            output_dir,
+            unsegmented_arteriole_image_path,
+            mask_role,
+            arteriole_class,
+            ilastik_output_suffix,
         )
 
         logger.info(
@@ -543,9 +561,12 @@ def load_and_validate_vessel_masks(
             unsegmented_venule_image_path = resolve_image_path_with_optional_zip(
                 Path(ilastik_unsegmented_venule_path)
             )
-            segmented_venule_path = output_dir / (
-                f"{unsegmented_venule_image_path.stem}_{mask_role}_venule_segmented"
-                f"{ilastik_output_suffix}"
+            segmented_venule_path = ilastik_vessel_mask_output_path(
+                output_dir,
+                unsegmented_venule_image_path,
+                mask_role,
+                "venule",
+                ilastik_output_suffix,
             )
             logger.info(
                 f"Running ilastik segmentation for {scale_label} venule image: "

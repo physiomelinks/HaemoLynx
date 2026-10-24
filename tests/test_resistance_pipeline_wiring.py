@@ -281,6 +281,34 @@ def test_preflight_accepts_a_runnable_configuration(pipeline, tmp_path):
     assert preflight(settings, pipeline.SCHEMA).ok
 
 
+def test_preflight_stops_a_run_whose_outputs_windows_would_refuse(pipeline, tmp_path, monkeypatch):
+    """Before any work starts: an E14.5 run with a long output folder ran for
+    8 minutes, then died at Export writing a 266-character path."""
+    from haemolynx.pipeline import batch, preflight
+
+    image = tmp_path / "mask.tif"
+    image.write_bytes(b"x")
+    settings = pipeline.resolve_settings(
+        overrides={
+            "input_path": image,
+            "statistics": True,
+            "vtk_output_prefix": tmp_path / ("o" * 200) / "network",
+        }
+    )
+    limits = (batch.WINDOWS_MAX_FILE_PATH, batch.WINDOWS_MAX_FOLDER_PATH)
+    monkeypatch.setattr(batch, "path_length_limits", lambda: limits)
+    report = preflight(settings, pipeline.SCHEMA, echo=False)
+    assert any(
+        "mask_betweenness_communities_edge_length.json" in error and "long paths" in error
+        for error in report.errors
+    )
+    with pytest.raises(SystemExit):
+        pipeline._preflight_or_exit(settings)
+    # Long paths on: nothing to refuse.
+    monkeypatch.setattr(batch, "path_length_limits", lambda: None)
+    assert preflight(settings, pipeline.SCHEMA, echo=False).ok
+
+
 def test_preflight_rejects_a_missing_input_image(pipeline, tmp_path):
     from haemolynx.pipeline import preflight
 

@@ -125,3 +125,17 @@ thick-vessel region cache; its outputs stay. On a two-image low-RAM batch with t
 skeletonisation (Windows 11), each image had left two memmap-folder files, eight checkpoints
 and a region cache; with clearing, the memmap folder is empty and the `.haemorun`, graph and
 skeleton remain. A re-run of one image now finds the thick-vessel region again.
+
+**Single runs check their paths too** (2026-10-24). An E14.5 run with its output under
+a worktree's `outputs/synthetic_e14p5/template/` ran for 8 minutes and then failed at Export
+writing `{stem}_betweenness_communities_resistance.json`, a 266-character path (the E14.5 stem
+alone is about 115). `check_output_path_lengths` is now part of every run's `preflight`, not
+only a batch image's (`batch_preflight` no longer adds it again). `output_paths` reads a single
+run's settings as a config gives them (strings, relative paths from the folder the run starts
+in), names the run's files with the stem they will carry (ilastik's output's while ilastik
+segments the image), and counts what only a single run writes: ilastik's segmented images and
+their `.haemolynx.json` records (main image and vessel masks, named by
+`io.vessel_masks.ilastik_vessel_mask_output_path`) and a synthetic network's
+`_template_comparison.csv`. The files written by hand in Post processing are still not counted.
+The panel's checkpoints and `.haemorun` are counted for a run from the command line too, which
+writes neither: by at most 22 characters with Statistics off, none with it on.

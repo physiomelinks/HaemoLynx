@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from haemolynx.io import BatchFolders, match_batch
-from haemolynx.pipeline import default_schema
+from haemolynx.pipeline import default_schema, preflight
 from haemolynx.pipeline import batch
 from haemolynx.pipeline.batch import (
     NOT_WRITTEN_BY_A_BATCH,
@@ -20,6 +20,7 @@ from haemolynx.pipeline.batch import (
     check_batch_item,
     check_output_path_lengths,
     default_output_root,
+    ilastik_output_paths,
     item_settings,
     output_paths,
 )
@@ -261,4 +262,153 @@ def test_batch_preflight_checks_the_paths_and_prints_nothing(tmp_path, base, sch
     monkeypatch.setattr(batch, "path_length_limits", lambda: (40, 40))
     report = batch_preflight(base, match, tmp_path / "out", schema)
     assert any("Windows allows (40)" in error for error in report.errors)
+    # Once: the run's own preflight checks the paths now, the batch no longer.
+    assert sum("-character file path" in error for error in report.errors) == 1
     assert capsys.readouterr().out == ""
+
+
+# -- a single run's output paths -------------------------------------------------
+
+
+def _single_run(tmp_path, base, folder_name: str = "out", **changes):
+    """A single run's settings as a config gives them: strings, never through
+    :func:`item_settings`."""
+    image = tmp_path / "in" / "E14_seg.tif"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"x")
+    return {
+        **base,
+        "input_path": str(image),
+        "vtk_output_prefix": str(tmp_path / folder_name / "resistance_network"),
+        **changes,
+    }
+
+
+def _path_errors(report) -> list[str]:
+    return [error for error in report.errors if "Windows allows" in error]
+
+
+def test_preflight_refuses_a_single_runs_output_file_past_windows_limit(
+    tmp_path, base, schema, monkeypatch
+):
+    """Regression: an E14.5 run ran for 8 minutes, then died at Export writing
+    a 266-character ``..._betweenness_communities_resistance.json``. A batch
+    refused such paths; a single run's preflight never asked."""
+    monkeypatch.setattr(batch, "path_length_limits", lambda: LIMITS)
+    short = _longest_file(_single_run(tmp_path, base, "o", statistics=True))
+    padded = "o" * (1 + WINDOWS_MAX_FILE_PATH - short)
+    at_limit = _single_run(tmp_path, base, padded, statistics=True)
+    assert _longest_file(at_limit) == WINDOWS_MAX_FILE_PATH
+    assert not _path_errors(preflight(at_limit, schema, echo=False))
+
+    past = _single_run(tmp_path, base, padded + "o", statistics=True)
+    (error,) = _path_errors(preflight(past, schema, echo=False))
+    assert f"{WINDOWS_MAX_FILE_PATH + 1}-character file path" in error
+    assert "E14_seg_betweenness_communities_edge_length.json" in error
+    assert "shorter output folder" in error
+
+
+def test_preflight_is_quiet_about_path_lengths_while_long_paths_are_on(
+    tmp_path, base, schema, monkeypatch
+):
+    past = _single_run(tmp_path, base, "o" * 250, statistics=True)
+    monkeypatch.setattr(batch, "path_length_limits", lambda: None)
+    assert not _path_errors(preflight(past, schema, echo=False))
+    monkeypatch.setattr(batch, "path_length_limits", lambda: LIMITS)
+    errors = _path_errors(preflight(past, schema, echo=False))
+    assert any("-character file path" in error for error in errors)
+    assert any("-character folder path" in error for error in errors)
+
+
+def test_a_single_runs_files_are_its_stems_in_its_output_folder(tmp_path, base, monkeypatch):
+    """Relative paths, as a config holds them, from the folder the run starts in."""
+    monkeypatch.chdir(tmp_path)
+    settings = {
+        **base,
+        "input_path": "E14_MCA_seg.tif",
+        "vtk_output_prefix": "outputs/run/network",
+        "statistics": True,
+    }
+    files, folders = output_paths(settings)
+    folder = tmp_path / "outputs" / "run"
+    assert folder in folders
+    assert folder / "E14_MCA_seg_betweenness_communities_resistance.json" in files
+    assert folder / "E14_MCA_seg_run_manifest.json" in files
+    # Written by hand in the panel, or only for a synthetic network.
+    assert not [
+        path
+        for path in files
+        if path.name.endswith(("_review.csv", "_connectivity.csv", "_template_comparison.csv"))
+    ]
+    unmeasured, _folders = output_paths({**settings, "statistics": False})
+    assert not [path for path in unmeasured if "betweenness" in path.name]
+
+
+def test_ilastik_names_a_single_runs_outputs_and_writes_its_own(tmp_path, base):
+    seg = tmp_path / "seg"
+    settings = _single_run(
+        tmp_path,
+        base,
+        use_ilastik_segmentation=True,
+        raw_image_path=str(tmp_path / "in" / "E14.tif"),
+        ilastik_output_dir=str(seg),
+        ilastik_output_suffix=".tif",
+    )
+    files, folders = output_paths(settings)
+    names = {path.name for path in files}
+    # The run's files carry the stem of the image ilastik makes, not input_path's.
+    assert "E14_segmented_run_manifest.json" in names
+    assert "E14_seg_run_manifest.json" not in names
+    assert {seg / "E14_segmented.tif", seg / "E14_segmented.tif.haemolynx.json"} <= set(files)
+    assert seg in folders
+    # With no raw image ilastik segments nothing and the run reads input_path.
+    without_raw = {path.name for path in output_paths({**settings, "raw_image_path": None})[0]}
+    assert "E14_seg_run_manifest.json" in without_raw
+    assert not [name for name in without_raw if "_segmented." in name]
+
+
+def test_ilastik_vessel_mask_outputs_are_counted_by_role_and_class(tmp_path, base):
+    seg = tmp_path / "seg"
+    settings = _single_run(
+        tmp_path,
+        base,
+        automated_vessel_assignment=True,
+        use_large_vessel_masks=True,
+        use_ilastik_large_vessel_segmentation=True,
+        ilastik_unsegmented_arteriole_image_path=str(tmp_path / "A.tif"),
+        ilastik_unsegmented_venule_image_path=str(tmp_path / "V.tif"),
+        ilastik_venule_classifier_path=None,
+        ilastik_output_dir=str(seg),
+        ilastik_output_suffix=".tif",
+    )
+
+    def names():
+        return {path.name for path in ilastik_output_paths(settings)}
+
+    # No venule classifier: the arteriole one segments one global mask.
+    assert names() == {"A_large_global_segmented.tif", "A_large_global_segmented.tif.haemolynx.json"}
+    settings["ilastik_venule_classifier_path"] = str(tmp_path / "ven.ilp")
+    assert names() == {
+        "A_large_arteriole_segmented.tif",
+        "A_large_arteriole_segmented.tif.haemolynx.json",
+        "V_large_venule_segmented.tif",
+        "V_large_venule_segmented.tif.haemolynx.json",
+    }
+    assert seg / "V_large_venule_segmented.tif.haemolynx.json" in output_paths(settings)[0]
+    # Left on under an unticked gate, the switch segments nothing.
+    settings["automated_vessel_assignment"] = False
+    assert names() == set()
+
+
+def test_a_synthetic_runs_template_comparison_is_counted(tmp_path, base):
+    settings = {
+        **base,
+        "network_source": "synthetic",
+        "synthetic_template_path": str(tmp_path / "E14.haemorun"),
+        "vtk_output_prefix": str(tmp_path / "out" / "network"),
+    }
+    names = {path.name for path in output_paths(settings)[0]}
+    assert "E14_synthetic_template_comparison.csv" in names
+    assert "E14_synthetic_run_manifest.json" in names
+    image_run = {path.name for path in output_paths(_single_run(tmp_path, base))[0]}
+    assert not [name for name in image_run if name.endswith("_template_comparison.csv")]

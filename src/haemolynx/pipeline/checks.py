@@ -3,7 +3,8 @@
 The schema states most of what a run needs — see
 :mod:`haemolynx.parsers.checks`, which reads it. What is left here is knowledge
 of how *this* pipeline behaves: the files it names for itself when a stage is
-skipped, and the external tool it shells out to.
+skipped, the external tool it shells out to, and whether the files it writes
+fit Windows' path limit (:func:`haemolynx.pipeline.batch.check_output_path_lengths`).
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from haemolynx.io.vessel_masks import (
 )
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport, check_settings, resolve_existing_path
+from haemolynx.pipeline.batch import check_output_path_lengths
 
 #: Stage toggle -> the artefact a previous run must have left behind, as a
 #: format string over the run's image stem.
@@ -991,6 +993,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_crop_on_import(settings))
     report.extend(check_downsample_on_import(settings))
     report.extend(check_cell_mask_measurement(settings))
+    report.extend(check_output_path_lengths(settings))
     if echo:
         report.print("Preflight")
     return report

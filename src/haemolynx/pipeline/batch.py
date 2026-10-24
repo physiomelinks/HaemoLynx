@@ -8,9 +8,10 @@ for one image: its own input files, and every output folder moved into
 something in one image that would mean something else, or nothing, in the
 next -- node IDs, a single pericyte or cell mask -- so the batch refuses them
 before anything runs. :func:`batch_preflight` is the run's own preflight with
-those checks added, per image, and :func:`check_output_path_lengths`: a batch
-names every file after its image twice (``{output}/{stem}/{stem}_...``), and
-Windows refuses a path past its limit while long paths are off.
+those checks added, per image. The run's own preflight includes
+:func:`check_output_path_lengths`, for a batch's images and single runs alike:
+Windows refuses a path past its limit while long paths are off, and a batch
+names every file after its image twice (``{output}/{stem}/{stem}_...``).
 
 Pure: settings in, settings and reports out.
 """
@@ -236,14 +237,18 @@ WRITTEN_WHILE = {
     "_tissue_surface.vtp": "measure_tissue_volume",
 }
 
-#: Files no batch run writes: a synthetic network's (refused in a batch) and
-#: those written by hand in the panel's Post processing tab.
-NOT_WRITTEN_BY_A_BATCH = (
-    "_template_comparison.csv",
+#: Files a run writes only for a synthetic network (refused in a batch).
+WRITTEN_FOR_A_SYNTHETIC_NETWORK = ("_template_comparison.csv",)
+
+#: Files written by hand in the panel's Post processing tab, never by a run.
+WRITTEN_BY_HAND = (
     "_connectivity.csv",
     "_loop_review.csv",
     "_{kind}_review.csv",
 )
+
+#: Files no batch run writes.
+NOT_WRITTEN_BY_A_BATCH = WRITTEN_FOR_A_SYNTHETIC_NETWORK + WRITTEN_BY_HAND
 
 
 def _documented_names(
@@ -251,12 +256,13 @@ def _documented_names(
 ) -> list[str]:
     """The file names :mod:`~haemolynx.pipeline.export_dictionary` gives for
     *where* that start with *placeholder* (``{stem}``, ``{name}``) and that a
-    batch run on *settings* writes. A wildcard stands for each name in
+    run on *settings* writes. A wildcard stands for each name in
     :data:`WRITTEN_WHILE` it matches."""
     from fnmatch import fnmatchcase
 
     from haemolynx.pipeline.export_dictionary import FILES
 
+    synthetic = network_is_synthetic(settings)
     names: list[str] = []
     for entry in FILES:
         if entry.where != where:
@@ -271,7 +277,9 @@ def _documented_names(
                 else [pattern]
             )
             for suffix in suffixes:
-                if suffix in NOT_WRITTEN_BY_A_BATCH:
+                if suffix in WRITTEN_BY_HAND:
+                    continue
+                if suffix in WRITTEN_FOR_A_SYNTHETIC_NETWORK and not synthetic:
                     continue
                 gate = WRITTEN_WHILE.get(suffix)
                 if gate is None or settings.get(gate):
@@ -279,13 +287,67 @@ def _documented_names(
     return names
 
 
+def _ilastik_segmented_image(settings: Mapping[str, Any]) -> Path | None:
+    """The segmented image ilastik makes of the run's raw image, which the
+    run's outputs are then named after, or None when ilastik does not
+    segment it."""
+    from haemolynx.pipeline.stages import ilastik_segments, segmented_input_path
+
+    if not ilastik_segments(settings) or settings.get("ilastik_output_dir") in (None, ""):
+        return None
+    return segmented_input_path(dict(settings))
+
+
+def ilastik_output_paths(settings: Mapping[str, Any]) -> list[Path]:
+    """The files ilastik's segmentations write in ``ilastik_output_dir``: the
+    main image's while ilastik segments it, and each vessel-mask role's while
+    ilastik makes its masks, each with the record of how it was made beside
+    it (:func:`haemolynx.io.ilastik.sidecar_path`). A batch refuses ilastik,
+    so only a single run has any."""
+    from haemolynx.io.ilastik import sidecar_path
+    from haemolynx.io.vessel_masks import ilastik_vessel_mask_output_path
+
+    folder = settings.get("ilastik_output_dir")
+    if folder in (None, ""):
+        return []
+    suffix = str(settings.get("ilastik_output_suffix") or "")
+    images: list[Path] = []
+    main = _ilastik_segmented_image(settings)
+    if main is not None:
+        images.append(main)
+    for role, names in VESSEL_MASK_SETTINGS.items():
+        if not (settings.get(names["use_ilastik"]) and vessel_masks_in_use(settings, role)):
+            continue
+        # With no venule classifier the arteriole one segments a global mask.
+        pairs = [(names["ilastik_unsegmented_arteriole_path"], "global")]
+        if settings.get(names["ilastik_venule_classifier_path"]) not in (None, ""):
+            pairs = [
+                (names["ilastik_unsegmented_arteriole_path"], "arteriole"),
+                (names["ilastik_unsegmented_venule_path"], "venule"),
+            ]
+        for image_setting, vessel_class in pairs:
+            image = settings.get(image_setting)
+            if image not in (None, ""):
+                images.append(
+                    ilastik_vessel_mask_output_path(folder, image, role, vessel_class, suffix)
+                )
+    files: list[Path] = []
+    for image in images:
+        image = Path(os.path.abspath(image))
+        files.extend((image, sidecar_path(image)))
+    return files
+
+
 def output_paths(settings: Mapping[str, Any]) -> tuple[list[Path], list[Path]]:
-    """``(files, folders)`` one image's run writes, from its
-    :func:`item_settings`: each stage's checkpoint, its ``.haemorun`` (as the
-    ``.part`` it is written to first), the ``{stem}_`` files the export
-    dictionary lists for the run's folder that these settings write, and each
-    perturbation's in its own folder. Figures are left out: their names are
-    not fixed."""
+    """``(files, folders)`` a run writes, from its settings (a batch's from
+    one image's :func:`item_settings`): each stage's checkpoint, its
+    ``.haemorun`` (as the ``.part`` it is written to first), the ``{stem}_``
+    files the export dictionary lists for the run's folder that these
+    settings write, each perturbation's in its own folder, and ilastik's
+    (:func:`ilastik_output_paths`). The stem is the one the run's outputs
+    will carry: ilastik's output's while ilastik segments the image. The
+    checkpoints and ``.haemorun`` are the panel's, counted for every run.
+    Figures are left out: their names are not fixed."""
     from haemolynx.gui.run_snapshot import SUFFIX
     from haemolynx.gui.stage_checkpoints import checkpoint_pickle_path
     from haemolynx.haemodynamics.perturbations import (
@@ -296,7 +358,8 @@ def output_paths(settings: Mapping[str, Any]) -> tuple[list[Path], list[Path]]:
     from haemolynx.pipeline.naming import run_stem
     from haemolynx.pipeline.progress import STAGES
 
-    stem = run_stem(settings)
+    segmented = _ilastik_segmented_image(settings)
+    stem = run_stem(settings) if segmented is None else segmented.stem
     prefix = settings.get("vtk_output_prefix")
     if stem is None or prefix in (None, ""):
         return [], []
@@ -305,6 +368,7 @@ def output_paths(settings: Mapping[str, Any]) -> tuple[list[Path], list[Path]]:
     files = [checkpoint_pickle_path(folder, stem, stage.call) for stage in STAGES if stage.call]
     files.append(folder / f"{stem}{SUFFIX}.part")
     files.extend(folder / name.replace("{stem}", stem) for name in run_names)
+    files.extend(ilastik_output_paths(settings))
     folders = [folder]
     for setting in OUTPUT_FOLDERS:
         if settings.get(setting) not in (None, ""):
@@ -329,11 +393,12 @@ def _longest(paths: Iterable[Path]) -> Path | None:
 def check_output_path_lengths(
     settings: Mapping[str, Any], limits: tuple[int, int] | None = None
 ) -> CheckReport:
-    """An error when one image's longest output file or folder
-    (:func:`output_paths` of its :func:`item_settings`) is longer than
-    *limits* (``(file, folder)``, by default :func:`path_length_limits`):
-    Windows would refuse it, some writers only log that, and the run would go
-    on without the file."""
+    """An error when a run's longest output file or folder
+    (:func:`output_paths`; a batch's from one image's :func:`item_settings`)
+    is longer than *limits* (``(file, folder)``, by default
+    :func:`path_length_limits`): Windows would refuse it, some writers only
+    log that, and the run would go on without the file, or fail at the end.
+    Part of :func:`~haemolynx.pipeline.checks.preflight`."""
     report = CheckReport()
     limits = path_length_limits() if limits is None else limits
     if limits is None:
@@ -345,7 +410,7 @@ def check_output_path_lengths(
     ):
         if longest is not None and len(str(longest)) > limit:
             report.add_error(
-                f"This image's outputs need a {len(str(longest))}-character {kind} path, "
+                f"This run's outputs need a {len(str(longest))}-character {kind} path, "
                 f"longer than Windows allows ({limit}) while long paths are off: "
                 f"{longest}. Choose a shorter output folder, or turn on Windows long paths."
             )
@@ -355,14 +420,14 @@ def check_output_path_lengths(
 def batch_preflight(
     base: Mapping[str, Any], match: BatchMatch, output_root: Path | str, schema: Schema
 ) -> CheckReport:
-    """One image's preflight: the run's own, the batch's and the match's, and
-    whether its output paths fit. Printed by its caller, not here."""
+    """One image's preflight: the run's own (whether its output paths fit
+    among them), the batch's and the match's. Printed by its caller, not
+    here."""
     from haemolynx.pipeline.checks import preflight
 
     settings = item_settings(base, match, output_root)
     report = check_batch_item(match, base)
     report.extend(check_batch(base, schema))
-    report.extend(check_output_path_lengths(settings))
     report.extend(preflight(settings, schema, echo=False))
     return report
 
@@ -374,6 +439,8 @@ __all__ = [
     "NOT_WRITTEN_BY_A_BATCH",
     "WINDOWS_MAX_FILE_PATH",
     "WINDOWS_MAX_FOLDER_PATH",
+    "WRITTEN_BY_HAND",
+    "WRITTEN_FOR_A_SYNTHETIC_NETWORK",
     "WRITTEN_WHILE",
     "batch_mask_sizes",
     "batch_preflight",
@@ -381,6 +448,7 @@ __all__ = [
     "check_batch_item",
     "check_output_path_lengths",
     "default_output_root",
+    "ilastik_output_paths",
     "image_output_folder",
     "item_settings",
     "output_paths",

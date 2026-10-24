@@ -765,8 +765,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`status: "failed"`). Writing it never fails a run.
 - **`pipeline/checks.py`** — `preflight(settings, schema)`, the pre-run checklist: the schema's own
   checks (`parsers/checks.py`) plus what only this pipeline knows — the artefact a skipped stage
-  must have left behind, and whether the ilastik executable can be found. The examples call it
-  before doing any work and exit if it fails.
+  must have left behind, whether the ilastik executable can be found, and whether every output
+  path fits Windows' limit while long paths are off (`batch.check_output_path_lengths`, for any
+  run). The examples call it before doing any work and exit if it fails.
 
 ### Diameters and haemodynamics (`docs/notes/diameters_and_haemodynamics.md`)
 
@@ -945,7 +946,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`statistics/batch_comparison.py`): independent images (Mann-Whitney, Benjamini-Hochberg) or
   paired by subject (Wilcoxon), with `--exclude-section`. In the panel, a set batch is panel state
   (`batch_mode.setup`), not settings. Each image's checks refuse an output path past Windows'
-  limit while long paths are off (`check_output_path_lengths`). A set batch greys what acts on one
+  limit while long paths are off (`check_output_path_lengths`, in every run's preflight). A set batch greys what acts on one
   image (Check segmented image, the optimisers, Run from this stage); Load run leaves it, and is
   refused while a batch runs. Each image's on-disk caches (its decompressed input, checkpoint
   pickles, thick-vessel region) are deleted once it ends (`batch_run.clear_image_caches`).
