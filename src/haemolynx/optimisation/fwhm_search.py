@@ -140,15 +140,20 @@ FWHM_SETTING_NAMES: tuple[str, ...] = (
     "fwhm_max_plateau_shape_ratio",
 )
 
-#: An upper bound on how many sweeps a run does, for progress display and
-#: for the time-budget estimate below -- mirrors
-#: `.search._GROUP_TOTAL_UPPER_BOUND`. Guarded sub-sweeps that never run
-#: (a toggle stayed off) mean a real run can finish before reaching this.
+#: An upper bound on how many sweeps a run does, for progress display --
+#: mirrors `.search._GROUP_TOTAL_UPPER_BOUND`. Guarded sub-sweeps that never
+#: run (a toggle stayed off) mean a real run can finish before reaching this.
 _SWEEP_TOTAL_UPPER_BOUND = 34
-#: Reasoned, not measured: this search's own candidate lists mostly have
-#: 3-4 entries each (a handful have 2, for a bare on/off toggle) -- used
-#: only to convert a per-edge timing probe into a whole-run time estimate.
-_AVERAGE_CANDIDATES_PER_SWEEP = 3.5
+#: The trials a pass of every group measures, for Auto's time estimate:
+#: counted on E14.5 (77 at 4724f6ce, 100 vessels sampled; repeated settings
+#: come from the trial cache and are not counted). The estimate used to take
+#: 34 sweeps of 3.5 candidates, 119 trials (PLAN_optimisers.md, B8).
+_TRIALS_PER_PASS = 77
+#: The planted vessels and decoys a trial also measures, per sampled vessel,
+#: with the segmentation: 52 for 100 sampled and 96 for 200 on E14.5. Fewer
+#: than are asked for are placed (room is needed round each), and their
+#: small graphs pay little of a trial's fixed cost.
+_CHECK_VESSELS_PER_SAMPLED_VESSEL = 0.5
 
 #: "Auto" sample-size selection's own time budget, in seconds -- smaller
 #: than the skeleton/graph search's five minutes since this search's own
@@ -399,31 +404,47 @@ def _sample_edge_count_from_probe_seconds(
     total_edges: int,
     target_seconds: float,
     fixed_seconds: float = 0.0,
+    check_vessels_per_sampled_vessel: float = 0.0,
 ) -> int:
     """Pure arithmetic half of :func:`estimate_sample_edge_count_for_time_budget`,
     split out so the decision itself is directly testable without timing
     anything real -- mirrors `.search._factor_from_probe_seconds`.
     *probe_seconds* is one trial measuring *probe_edge_count* edges,
-    *fixed_seconds* of it what a trial costs however few it measures."""
+    *fixed_seconds* of it what a trial costs however few it measures;
+    *check_vessels_per_sampled_vessel* the planted vessels and decoys it
+    measures besides."""
     if probe_seconds <= 0.0 or probe_edge_count <= 0:
         return total_edges
-    per_edge_seconds = max(probe_seconds - fixed_seconds, 0.0) / float(probe_edge_count)
-    total_calls = _SWEEP_TOTAL_UPPER_BOUND * _AVERAGE_CANDIDATES_PER_SWEEP
+    per_vessel = _per_sampled_vessel_seconds(
+        probe_seconds, probe_edge_count, fixed_seconds, check_vessels_per_sampled_vessel
+    )
     budget_edges = int(
-        (target_seconds - total_calls * fixed_seconds) / max(per_edge_seconds * total_calls, 1e-12)
+        (target_seconds - _TRIALS_PER_PASS * fixed_seconds) / max(per_vessel * _TRIALS_PER_PASS, 1e-12)
     )
     return min(max(_MIN_AUTO_SAMPLE_EDGE_COUNT, budget_edges), total_edges)
 
 
-def _estimated_search_seconds(
-    probe_seconds: float, probe_edge_count: int, sample_edge_count: int, fixed_seconds: float = 0.0
+def _per_sampled_vessel_seconds(
+    probe_seconds: float, probe_edge_count: int, fixed_seconds: float, check_vessels_per_sampled_vessel: float
 ) -> float:
-    """How long a whole search on *sample_edge_count* edges is estimated to
-    take -- the arithmetic :func:`_sample_edge_count_from_probe_seconds`
-    compares with its budget."""
     per_edge_seconds = max(probe_seconds - fixed_seconds, 0.0) / float(max(probe_edge_count, 1))
-    total_calls = _SWEEP_TOTAL_UPPER_BOUND * _AVERAGE_CANDIDATES_PER_SWEEP
-    return total_calls * fixed_seconds + per_edge_seconds * total_calls * sample_edge_count
+    return per_edge_seconds * (1.0 + check_vessels_per_sampled_vessel)
+
+
+def _estimated_search_seconds(
+    probe_seconds: float,
+    probe_edge_count: int,
+    sample_edge_count: int,
+    fixed_seconds: float = 0.0,
+    check_vessels_per_sampled_vessel: float = 0.0,
+) -> float:
+    """How long a pass on *sample_edge_count* edges is estimated to take --
+    the arithmetic :func:`_sample_edge_count_from_probe_seconds` compares
+    with its budget."""
+    per_vessel = _per_sampled_vessel_seconds(
+        probe_seconds, probe_edge_count, fixed_seconds, check_vessels_per_sampled_vessel
+    )
+    return _TRIALS_PER_PASS * (fixed_seconds + per_vessel * sample_edge_count)
 
 
 def estimate_sample_edge_count_for_time_budget(
@@ -443,10 +464,10 @@ def estimate_sample_edge_count_for_time_budget(
     graph's own vessels among all of them, and of none -- then extrapolates
     linearly in edge count (this search's own cost scales per-edge, unlike
     the skeleton/graph search's cubic voxel-volume scaling) across the
-    roughly :data:`_SWEEP_TOTAL_UPPER_BOUND` x
-    :data:`_AVERAGE_CANDIDATES_PER_SWEEP` real trials a full run makes, each
-    paying what a trial costs whatever it measures (the whole network
-    painted into its label volume) once. Falls back to every edge (no
+    :data:`_TRIALS_PER_PASS` trials a pass makes, each paying what a trial
+    costs whatever it measures (the whole network painted into its label
+    volume) once. Never fewer than :data:`_MIN_AUTO_SAMPLE_EDGE_COUNT`
+    edges, whatever the budget. Falls back to every edge (no
     subsampling) if the probe itself cannot run at all, so "Auto" never
     fails a run just because estimating its own runtime did. *config* is
     the run's haemodynamics config, made from *starting_values* when not
@@ -472,12 +493,14 @@ def _time_budget_sample(
     pool: list[tuple],
     *,
     target_seconds: float,
+    check_vessels_per_sampled_vessel: float = 0.0,
 ) -> tuple[int, Optional[float]]:
     """:func:`estimate_sample_edge_count_for_time_budget`'s count of *pool*'s
     edges, timing ``measure(edges)`` -- one trial measuring *edges* -- and
     the search time it estimated for that count -- ``None`` when it did not
     time a probe -- which the run's report sets beside the time the search
-    took."""
+    took. A trial measures *check_vessels_per_sampled_vessel* planted vessels
+    and decoys besides each sampled one."""
     total_edges = len(pool)
     if total_edges <= _MIN_SAMPLE_EDGE_COUNT:
         return total_edges, None
@@ -500,11 +523,14 @@ def _time_budget_sample(
         return total_edges, None
 
     count = _sample_edge_count_from_probe_seconds(
-        probe_seconds, probe_edge_count, total_edges, target_seconds, fixed_seconds
+        probe_seconds, probe_edge_count, total_edges, target_seconds, fixed_seconds,
+        check_vessels_per_sampled_vessel,
     )
     if probe_seconds <= 0.0:
         return count, None
-    return count, _estimated_search_seconds(probe_seconds, probe_edge_count, count, fixed_seconds)
+    return count, _estimated_search_seconds(
+        probe_seconds, probe_edge_count, count, fixed_seconds, check_vessels_per_sampled_vessel
+    )
 
 
 class _FwhmSearch(_SweepBookkeeping):
@@ -1112,9 +1138,7 @@ def _prepared_search(
 
     estimated_seconds: Optional[float] = None
     if sample_edge_count is None:
-        # Each trial measures a decoy and a planted vessel per sampled edge
-        # as well, tripling it.
-        decoy_factor = 3.0 if vessel_mask is not None else 1.0
+        # With the segmentation a trial also measures planted vessels and decoys.
         sample_edge_count, estimated_seconds = _time_budget_sample(
             lambda edges: apply.measure_fwhm_diameters(
                 template.copy(), config, raw_volume=raw_volume, vessel_mask=vessel_mask,
@@ -1122,10 +1146,11 @@ def _prepared_search(
             ),
             vessels,
             pool,
-            target_seconds=auto_sample_target_seconds / decoy_factor,
+            target_seconds=auto_sample_target_seconds,
+            check_vessels_per_sampled_vessel=(
+                _CHECK_VESSELS_PER_SAMPLED_VESSEL if vessel_mask is not None else 0.0
+            ),
         )
-        if estimated_seconds is not None:
-            estimated_seconds *= decoy_factor
 
     search = _FwhmSearch(
         template,

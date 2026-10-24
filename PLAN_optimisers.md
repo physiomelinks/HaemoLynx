@@ -3,7 +3,9 @@
 > **Status (2026-10-24):** Phases 0-5 done: a trial's E14.5 skeleton and graph equal the run's
 > (see **Measured**), and an optimiser for the endothelial ring fit is built (D4). Phase 3 was
 > pushed as `9328c668`, Phase 2 as `f1184f25`; Phases 1, 4 and 5 and the endothelial optimiser land
-> together with this plan. Still open: B8 (FWHM Auto samples too few vessels to judge accuracy),
+> together with this plan. B8 fixed 2026-10-24 (`claude/optimiser-b8`): Auto samples at least
+> 100 vessels and its time estimate is within 3% on E14.5; it found FWHM's planted-vessel error
+> about 0.54 there (see **B8** under **Measured**). Still open: that error,
 > D6 and the component filter's two marked grids (built, awaiting Harvey's marks). Findings were
 > first read in the code at `666cafe8`. Decisions D1-D6 are Harvey's (taken 2026-10-23).
 
@@ -56,7 +58,7 @@ would make, through the same functions the run calls, so the two cannot drift ap
 | B4 | **Its own copy of the measurement call.** `_measure` builds the call itself; the run's `_measure_fwhm_diameters` also passes `use_memmap`, `memmap_directory`, the graph's `image_voxel_size_zyx` and the axis order from its config. | `fwhm_search.py:495` | Same drift risk as A3. |
 | B5 | **Run switches not honoured.** Trials always run the decoy check and demotion, whatever `fwhm_decoy_check` / `fwhm_demote_flagged_edges` say, and use `fwhm_decoys.DECOY_SAMPLE_SIZE` rather than `fwhm_decoy_check_sample_size`. | `fwhm_search.py:456-553` | Arguably right for scoring (see D3); the sample size is not. |
 | B6 | **The raw-section fallback is unseen.** With `use_raw_section_fallback` on, vessels FWHM fails are measured by the fallback; the optimiser's coverage term does not know. | — | Report-only gap. |
-| B8 | **Auto samples too few vessels to judge accuracy** (found checking Phase 3, 2026-10-23). Auto's time model overestimates a trial about fourfold, so on E14.5 it picks 10 of 1,342 vessels (estimated 857 s against its 180 s budget; the whole search took 209 s). With 10, no vessel of known width is planted and only 4 decoys are placed, so the accuracy group (`measurement_model`) is skipped and every choice rests on 1-3 measured vessels. With 200: 43 planted, 53 decoys. | `fwhm_search.py` (`_time_budget_sample`, `estimate_sample_edge_count_for_time_budget`) | The panel's default FWHM search on E14.5 never checks accuracy. Not yet fixed: recalibrate the time model, and never sample fewer vessels than planting needs. |
+| B8 | **Auto samples too few vessels to judge accuracy** (found checking Phase 3, 2026-10-23). Auto's time model overestimates a trial about fourfold, so on E14.5 it picks 10 of 1,342 vessels (estimated 857 s against its 180 s budget; the whole search took 209 s). With 10, no vessel of known width is planted and only 4 decoys are placed, so the accuracy group (`measurement_model`) is skipped and every choice rests on 1-3 measured vessels. With 200: 43 planted, 53 decoys. | `fwhm_search.py` (`_time_budget_sample`, `estimate_sample_edge_count_for_time_budget`) | The panel's default FWHM search on E14.5 never checked accuracy. **Fixed 2026-10-24** (see **B8** under **Measured**): Auto samples at least 100 vessels, and the time model counts the trials a pass makes and the planted vessels and decoys it measures; within 3% of the E14.5 search. |
 | B7 | **The sample is measured as a graph of its own** (found in Phase 0). `_representative_subgraph` returns `G.edge_subgraph(sample)`, and each trial measures that alone, so the neighbouring vessels and junctions FWHM reads round each sampled vessel are missing. | `fwhm_search.py:263, 518` | The largest FWHM drift on E14.5 (see **Measured**): measured as a subgraph, 25 of 47 widths match the run's; measured inside the whole vessel graph with `edges=`, all 47 do, at the same cost. |
 
 ## Principles
@@ -574,6 +576,36 @@ the size the refusal is for (E14.5 is 75 M voxels: about 9.6 GB at this rate); a
 - `io.load._skeletonize_loaded_volume`'s docstring calls the hole fill "a no-op on the normal
   case"; on E14.5's cleaned Claudin mask with plain Lee it adds 49% to the raw skeleton. Whether
   that is right is a question for a grid, not this plan.
+
+### B8 (2026-10-24, `claude/optimiser-b8`, E14.5 MCA)
+
+`harness/fwhm_end_to_end.py --code c4` (a `git archive` of `4724f6ce`, the 100-vessel floor alone)
+and `harness/fwhm_b8_probe.py`, as Phase 3's check: dextran (channel 0) as a plasma column, the
+panel's call, Auto, every group, one pass. Harvey's idle panel was the only other load.
+
+- **A trial is still the run**: on the 200-vessel sample, 56 measured by both, 56 equal.
+- **The sample**: Auto takes 100 of 1,342 vessels (10 before); 12 planted, 40 decoys. The
+  accuracy group now runs (16 of 77 trials).
+- **The time model** (part b). Auto's probe: 1.64 s fixed, 0.12 s a vessel. One trial on the 100:
+  19.5-20.9 s, of it 12.0 s for the sample among every vessel, 0.9 s for the 12 planted and 6.6 s
+  for the 40 decoys. The search took **1,488 s, 77 trials** (19.3 s each). The old estimate,
+  3,153 s, tripled a whole trial for its checks and assumed 119 trials. Now: the measured 77
+  trials (`_TRIALS_PER_PASS`), the fixed cost once a trial, and 0.5 check vessels per sampled
+  one (`_CHECK_VESSELS_PER_SAMPLED_VESSEL`; 52 at 100 sampled, 96 at 200): **1,530 s**, pinned in
+  `test_auto_estimate_matches_the_e14p5_search_it_was_counted_on`. The budget is still 180 s, so on
+  E14.5 Auto always takes the 100-vessel floor, and the panel's search takes about 25 minutes.
+- **What it chose** (start -> chosen): `fwhm_profile_model` blurred_lumen -> gaussian,
+  `fwhm_clip_profile_to_single_vessel` and `fwhm_enforce_same_edge_locality` on -> off,
+  `fwhm_diameter_guess_edge_attribute` edt_diameter_um -> None, `fwhm_diameter_guess_um` 4 -> None,
+  `fwhm_max_plateau_shape_ratio` 0.85 -> 0.75. Scorecard: vessels with a usable width 0.05 -> 0.05,
+  mean fit R2 0.909 -> 0.923, profile length reached 2.93 -> 1.13, width spread along a vessel
+  0.253 -> 0.200, decoys given a width 0.28 -> 0, **planted vessels' width error 0.535 -> 0.557**.
+- **Open, not this fix:** FWHM misreads the planted vessels by about half their width at the
+  starting settings and at the chosen ones, and the chosen ones are slightly worse (past the
+  scorecard's 0.02 tolerance) though each sweep is guarded: later groups traded accuracy for
+  their own terms. Only 5 of 100 sampled vessels end with a usable width. Whether that is FWHM on
+  this dextran stack or the planting (`fwhm_planted`) needs looking at before the accuracy term
+  is trusted on E14.5.
 
 ## The endothelial optimiser (D4, 2026-10-23)
 

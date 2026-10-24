@@ -287,6 +287,32 @@ def test_auto_never_samples_fewer_vessels_than_planting_needs():
     ) == 60
 
 
+def test_auto_estimate_matches_the_e14p5_search_it_was_counted_on():
+    """B8: on E14.5 (4724f6ce) Auto's probe took 2.86 s for ten vessels, 1.64 s
+    of it fixed, and the search on 100 vessels took 1,488 s; the estimate was
+    3,153 s (each trial tripled for its checks, 119 trials) and is now within
+    10% of it."""
+    estimate = s._estimated_search_seconds(
+        2.858, 10, 100, fixed_seconds=1.643,
+        check_vessels_per_sampled_vessel=s._CHECK_VESSELS_PER_SAMPLED_VESSEL,
+    )
+    assert abs(estimate - 1488.0) / 1488.0 < 0.10
+
+
+def test_auto_counts_the_planted_vessels_and_decoys_each_trial_measures():
+    plain = s._sample_edge_count_from_probe_seconds(
+        probe_seconds=0.1, probe_edge_count=10, total_edges=100_000, target_seconds=600.0
+    )
+    checked = s._sample_edge_count_from_probe_seconds(
+        probe_seconds=0.1, probe_edge_count=10, total_edges=100_000, target_seconds=600.0,
+        check_vessels_per_sampled_vessel=0.5,
+    )
+    assert checked < plain
+    assert s._estimated_search_seconds(
+        0.1, 10, checked, check_vessels_per_sampled_vessel=0.5
+    ) <= 600.0 < s._estimated_search_seconds(0.1, 10, checked + 1, check_vessels_per_sampled_vessel=0.5)
+
+
 def test_fwhm_search_shares_its_bookkeeping_base_class_with_search():
     """Regression: _FwhmSearch used to copy-paste _emit/_record/_group_enabled
     from search._Search verbatim instead of sharing them. Both now subclass
