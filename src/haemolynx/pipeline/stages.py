@@ -5495,6 +5495,22 @@ PERTURBATION_EDGE_COLUMNS = (
     "resistance_ratio",
 )
 
+#: The edge attribute each `<name>_edges.csv` column read straight off the
+#: perturbed vessel holds. Those of the solve's
+#: (``graph.SOLVE_DERIVED_EDGE_ATTRIBUTES``) are blank where its flow is no
+#: answer at all (``graph.flow_is_undefined``), as in the VTK.
+PERTURBATION_EDGE_ATTRIBUTES = {
+    "branch_order": "branch_order",
+    "length_um": "length",
+    "diameter_um": "diameter_um",
+    "resistance_pa_s_per_m3": "resistance",
+    "conductance_m3_per_pa_s": "conductance",
+    "pressure_drop_pa": "pressure_drop",
+    "flow_signed_m3_s": "flow_signed",
+    "flow_solved": graph.FLOW_SOLVED,
+    "flow_state": graph.FLOW_STATE,
+}
+
 #: Columns of a perturbation's `<name>_summary.csv`, in order.
 PERTURBATION_SUMMARY_COLUMNS = (
     "name",
@@ -5748,15 +5764,14 @@ def _write_perturbation_csvs(
                     "u": u,
                     "v": v,
                     "key": key,
-                    "branch_order": data.get("branch_order"),
-                    "length_um": data.get("length"),
-                    "diameter_um": data.get("diameter_um"),
-                    "resistance_pa_s_per_m3": now,
-                    "conductance_m3_per_pa_s": data.get("conductance"),
-                    "pressure_drop_pa": None if undefined else data.get("pressure_drop"),
-                    "flow_signed_m3_s": None if undefined else data.get("flow_signed"),
-                    "flow_solved": data.get(graph.FLOW_SOLVED),
-                    "flow_state": data.get(graph.FLOW_STATE),
+                    **{
+                        column: (
+                            None
+                            if undefined and name in graph.SOLVE_DERIVED_EDGE_ATTRIBUTES
+                            else data.get(name)
+                        )
+                        for column, name in PERTURBATION_EDGE_ATTRIBUTES.items()
+                    },
                     "baseline_resistance_pa_s_per_m3": was,
                     "resistance_ratio": (
                         float(now) / float(was) if was and now is not None else None

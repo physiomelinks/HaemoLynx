@@ -212,3 +212,90 @@ def test_an_unsolved_vessel_has_no_flow_direction_and_no_arrow():
     vectors, features = flow_direction_vectors(_graph())
     assert len(vectors) == 2
     np.testing.assert_allclose(features["flow_abs"], FLOWS[:2])
+
+
+# --- one list: the viewer and every export blank the solve's attributes alike --------
+
+
+def test_the_viewer_and_every_export_blank_one_list_of_the_solves_attributes(tmp_path):
+    """PLAN_dale_review_fixes.md item 5, step 1: ``graph.SOLVE_DERIVED_EDGE_ATTRIBUTES``
+    is the one list. The viewer blanks every one of them on an unsolved
+    vessel, and the VTK vessels file and a perturbation's edges CSV blank
+    exactly the ones they write where the flow is no answer at all
+    (``no_boundary``): nothing more, nothing less. *Where* differs on
+    purpose: the viewer greys every unsolved vessel, while the exports keep a
+    blind end's exact zeros (``graph.flow_is_undefined``)."""
+    import csv
+
+    import networkx as nx
+
+    pv = pytest.importorskip("pyvista")
+    from haemolynx.graph import FLOW_STATE, SOLVE_DERIVED_EDGE_ATTRIBUTES
+    from haemolynx.gui.results import EDGE_COLUMNS, FLOW_DERIVED_EDGE_COLUMNS, OPTIONAL_EDGE_COLUMNS
+    from haemolynx.pipeline.stages import (
+        PERTURBATION_EDGE_ATTRIBUTES,
+        PERTURBATION_EDGE_COLUMNS,
+        _write_perturbation_csvs,
+    )
+    from haemolynx.visualization import graph_to_vtk
+    from haemolynx.visualization.vtk_io import ARRAY_UNITS
+
+    solve_list = set(SOLVE_DERIVED_EDGE_ATTRIBUTES)
+
+    # The viewer: every one of them, and every column it reads straight off
+    # the solve is one of them (bar the directions it draws from them here).
+    assert solve_list <= SOLVED_FLOW_COLUMNS
+    off_the_solve = {
+        name for name, stage in {**EDGE_COLUMNS, **OPTIONAL_EDGE_COLUMNS}.items()
+        if stage == "solve" and name != FLOW_STATE
+    }
+    assert off_the_solve - FLOW_DERIVED_EDGE_COLUMNS <= solve_list
+    columns = {
+        FLOW_SOLUTION: np.array(["Solved", "Unsolved"], dtype=object),
+        **{name: np.array([0.25, 0.25]) for name in solve_list},
+        **{name: np.array([5.0, 5.0]) for name in ("length", "diameter_um", "resistance", "conductance")},
+    }
+    mask_unsolved_flow_columns(columns)
+    assert {name for name, values in columns.items() if name != FLOW_SOLUTION and np.isnan(values[1])} == solve_list
+
+    # A solved vessel and one no inlet and outlet reach, both carrying every
+    # attribute the solve writes.
+    G = nx.MultiGraph()
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (50.0, 0.0, 0.0), 3: (60.0, 0.0, 0.0)}
+    for node, p in pos.items():
+        G.add_node(node, pos=np.asarray(p))
+    for (u, v), state in (((0, 1), "solved"), ((2, 3), "no_boundary")):
+        G.add_edge(
+            u, v, key=0, voxels=[pos[u], pos[v]], length=10.0, diameter_um=5.0, diameter_source="fwhm",
+            branch_order="B01", resistance=1e15, conductance=1e-15,
+            **{name: 0.25 for name in solve_list}, **{FLOW_SOLVED: state == "solved", FLOW_STATE: state},
+        )
+
+    vessels = pv.read(graph_to_vtk(G, tmp_path / "run")["vessels_path"])
+    numeric = {
+        name: np.asarray(vessels.cell_data[name])
+        for name in vessels.cell_data.keys()
+        if np.issubdtype(np.asarray(vessels.cell_data[name]).dtype, np.floating)
+    }
+    assert not any(np.isnan(values[0]) for values in numeric.values())
+    blanked = {name for name, values in numeric.items() if np.isnan(values[1])}
+    # Every one the file documents is written, and blank on the second vessel.
+    assert blanked == solve_list & set(ARRAY_UNITS) == solve_list & set(vessels.cell_data.keys())
+
+    result = PerturbationResult(name="p", type="arteriole_diameter_change", graph=G)
+    result.output_dir = tmp_path
+    _write_perturbation_csvs(
+        result,
+        baseline_graph=G,
+        solved={"equivalent_resistance": 1.0, "total_inlet_flow": 1.0, "total_outlet_flow": -1.0},
+        baseline={"equivalent_resistance": 1.0},
+        settings={"inlet_p_bc": 100.0, "outlet_p_bc": 0.0},
+        overrides={},
+    )
+    with (tmp_path / "p_edges.csv").open(encoding="utf-8") as handle:
+        solved_row, unsolved_row = csv.DictReader(handle)
+    assert set(PERTURBATION_EDGE_ATTRIBUTES) <= set(PERTURBATION_EDGE_COLUMNS)
+    assert "" not in solved_row.values()
+    assert {column for column, value in unsolved_row.items() if value == ""} == {
+        column for column, name in PERTURBATION_EDGE_ATTRIBUTES.items() if name in solve_list
+    } == {"pressure_drop_pa", "flow_signed_m3_s"}

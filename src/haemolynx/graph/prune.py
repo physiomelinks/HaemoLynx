@@ -428,10 +428,14 @@ FLOW_SOLVED = "flow_solved"
 FLOW_STATE = "flow_state"
 FLOW_STATES = ("solved", "blind_end", "closed_end", "no_boundary")
 
-#: Edge attributes the flow solve writes (``haemodynamics.set_edge_flows``):
-#: what every export blanks where :func:`flow_is_undefined`.
+#: Edge attributes the flow solve writes (``haemodynamics.set_edge_flows``,
+#: and the haematocrit loop's ``discharge_haematocrit``): the one list of
+#: what every export blanks where :func:`flow_is_undefined` (the VTK vessels
+#: file, a perturbation's edges CSV) and the viewer blanks on every unsolved
+#: vessel (``gui.results.SOLVED_FLOW_COLUMNS``).
 SOLVE_DERIVED_EDGE_ATTRIBUTES = (
     "pressure_u", "pressure_v", "pressure_drop", "flow_signed", "flow_abs", "flow_abs_log10",
+    "discharge_haematocrit",
 )
 
 

@@ -40,6 +40,7 @@ from haemolynx.graph.branch_order import (
     branch_order_signed_values,
     flow_path_key,
 )
+from haemolynx.graph.prune import SOLVE_DERIVED_EDGE_ATTRIBUTES
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.visualization._helpers import create_color_mapping
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
@@ -601,17 +602,15 @@ FLOW_DERIVED_EDGE_COLUMNS: frozenset[str] = frozenset(
 #: The hover tooltip's own column of the same name says the same.
 FLOW_SOLUTION = "flow_solution"
 
-#: Columns read off the solved flow -- written by the solve, or computed from
-#: it by an analysis. An unsolved vessel has none of them (NaN), so a
-#: flow-based colouring draws it in the uncoloured grey and leaves it out of
-#: its colour range.
+#: Columns read off the solved flow -- written by the solve (the exports' own
+#: list, ``graph.SOLVE_DERIVED_EDGE_ATTRIBUTES``), drawn from it here (the
+#: flow directions), or computed from it by an analysis. An unsolved vessel
+#: has none of them (NaN), so a flow-based colouring draws it in the
+#: uncoloured grey and leaves it out of its colour range. ``flow_state`` says
+#: why a vessel is unsolved: it is never blanked.
 SOLVED_FLOW_COLUMNS: frozenset[str] = frozenset(
-    {
-        name
-        for name, stage in {**EDGE_COLUMNS, **OPTIONAL_EDGE_COLUMNS}.items()
-        # flow_state says why a vessel is unsolved: it is never blanked.
-        if stage == "solve" and name != "flow_state"
-    }
+    set(SOLVE_DERIVED_EDGE_ATTRIBUTES)
+    | FLOW_DERIVED_EDGE_COLUMNS
     | {
         "transit_time_s",
         "arrival_time_s",

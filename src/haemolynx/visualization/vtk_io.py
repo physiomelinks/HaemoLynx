@@ -150,9 +150,11 @@ def graph_to_vtk(
     ``is_zero_resistance``, ``flow_solved`` and ``flow_state`` (why it carries
     flow or not, ``graph.FLOW_STATE``) beside its resistance and flows; where
     its flow is no answer at all (``graph.flow_is_undefined``: a piece no
-    inlet and outlet reach) the flows and pressures are NaN, not the 0 the
-    solve left. Each node carries its ``dead_end_kind`` ("" where it is not a
-    dead end) and a NaN pressure where the solve could not set one. The run's
+    inlet and outlet reach) every array of the solve's
+    (``graph.SOLVE_DERIVED_EDGE_ATTRIBUTES``: flows, pressures, discharge
+    haematocrit) is NaN, not the 0 the solve left. Each node carries its
+    ``dead_end_kind`` ("" where it is not a dead end) and a NaN pressure
+    where the solve could not set one. The run's
     blood model and boundaries (viscosity law, diameter basis, haematocrit,
     open-end model) and the HaemoLynx version go in the vessels file's field
     data.
@@ -184,13 +186,16 @@ def graph_to_vtk(
     zero_resistance: List[int] = []
     solved_flags: List[int] = []
     flow_states: List[str] = []
-    haematocrits: List[float] = []
-    from haemolynx.graph.prune import FLOW_SOLVED, FLOW_STATE, flow_is_undefined
+    from haemolynx.graph.prune import (
+        FLOW_SOLVED,
+        FLOW_STATE,
+        SOLVE_DERIVED_EDGE_ATTRIBUTES,
+        flow_is_undefined,
+    )
     from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
-    #: Written by haemodynamics.set_edge_flows; absent until a run has solved.
+    #: The solve's attributes this file carries; absent until a run has solved.
     flow_fields: Dict[str, List[float]] = {
-        name: [] for name in ("pressure_u", "pressure_v", "pressure_drop",
-                              "flow_signed", "flow_abs")
+        name: [] for name in SOLVE_DERIVED_EDGE_ATTRIBUTES if name in ARRAY_UNITS
     }
 
     is_multigraph = isinstance(graph, nx.MultiGraph)
@@ -236,11 +241,9 @@ def graph_to_vtk(
         zero_resistance.append(int(bool(data.get(IS_ZERO_RESISTANCE))))
         solved_flags.append(int(data.get(FLOW_SOLVED) is True))
         flow_states.append(str(data.get(FLOW_STATE) or ""))
-        haematocrits.append(_number(data.get("discharge_haematocrit")))
         undefined = flow_is_undefined(data)
         for name, values in flow_fields.items():
-            value = data.get(name)
-            values.append(float(value) if value is not None and not undefined else np.nan)
+            values.append(np.nan if undefined else _number(data.get(name)))
 
     vessel_mesh = pv.PolyData()
     vessel_mesh.points = np.asarray(all_points, dtype=float) if all_points else np.empty((0, 3), dtype=float)
@@ -258,8 +261,6 @@ def graph_to_vtk(
         vessel_mesh.cell_data["is_zero_resistance"] = np.asarray(zero_resistance, dtype=np.uint8)
         vessel_mesh.cell_data["flow_solved"] = np.asarray(solved_flags, dtype=np.uint8)
         vessel_mesh.cell_data["flow_state"] = np.asarray(flow_states)
-        if np.any(np.isfinite(haematocrits)):
-            vessel_mesh.cell_data["discharge_haematocrit"] = np.asarray(haematocrits, dtype=float)
         for name, values in flow_fields.items():
             array = np.asarray(values, dtype=float)
             if np.any(np.isfinite(array)):
