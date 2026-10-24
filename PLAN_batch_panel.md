@@ -248,7 +248,8 @@ tests/test_gui_batch_run_widget.py tests/test_gui_tooltips.py`).
 - **The working set's growth across a batch:** about 35 MB an image on the six-image demo
   (440 to 619 MB), not measured on a real batch.
 - From `PLAN_batch_run.md`'s "Later": ilastik batches, more per-image inputs (pericyte, cell and
-  tissue mask folders), and several images at once.
+  tissue mask folders), and several images at once. *The first two were built on 2026-10-24
+  (`PLAN_batch_run.md`, "Later, as built"); several images at once waits on Harvey.*
 
 ## Decisions (Harvey)
 

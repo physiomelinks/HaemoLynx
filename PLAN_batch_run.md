@@ -1,15 +1,31 @@
 # Batch run (plan, 2026-10-18)
 
-> **Status (2026-10-19): implemented**, phases 1-5, with one change from the plan below: a mask
-> folder given on its own says the mask size, so a file there need not name it
-> (`io/batch_matching.mask_owners`). Harvey's first batch names its small masks
-> `..._Simple Segmentation_intermediate.h5`, which the name rule reads as no mask. Headless:
-> `python -m haemolynx.gui.batch_run` (see `CLAUDE.md`, "Batch run"). Not yet done: the
-> panel's Check segmented image, optimisers and Save run are not greyed in batch mode (they
-> act on the Input tab's one image as before); the ilastik batch and the extra per-image
-> masks under "Later".
-> Since (2026-10-19): two conditions read from the file names, and the batch's statistics side
-> by side and tested between them (`statistics/batch_comparison.py`; `CLAUDE.md`, "Batch run").
+> **Status (2026-10-24): complete, bar what waits on Harvey** (the list at the end of this box).
+> - **v1, phases 1-5** (2026-10-19), with one change from the plan below: a mask folder given on
+>   its own says the mask size, so a file there need not name it
+>   (`io/batch_matching.mask_owners`). Harvey's first batch names its small masks
+>   `..._Simple Segmentation_intermediate.h5`, which the name rule reads as no mask.
+> - **Conditions and the batch's statistics** (2026-10-19): two conditions read from the file
+>   names, the statistics side by side and tested between them (`statistics/batch_comparison.py`).
+> - **`PLAN_batch_panel.md`** (complete 2026-10-23) replaced "The window" below with its Phase 4
+>   layout, and added Run batch, Stop after this image, the row actions and the Comparison tab.
+>   Its Phase 1 (`d4bdfd0c`) greys Check segmented image, the optimisers and Run from this stage
+>   while a batch is set. **Save run stays on**, by design: it saves the run shown, never the
+>   batch's.
+> - **The button** (`fa7fd594`, 2026-10-24): greyed under a synthetic network and while a run of
+>   one image or an optimiser goes. It is never greyed while a batch is set or running: its window
+>   is where a batch is followed, stopped and left.
+> - **ilastik batches and more per-image inputs** (`3d9d071a`, 2026-10-24), from "Later": see
+>   "Later, as built" below.
+> - **"A CLI"** (Later) is `python -m haemolynx.gui.batch_run` (`gui/batch_run_cli.py`), not a
+>   flag of the example script.
+> - **Waits on Harvey:**
+>   - decisions 1-5 at the end, built as proposed and never confirmed;
+>   - several images at once;
+>   - ilastik's vessel masks per image;
+>   - the Input tab's help text for Batch run (`gui/stage_help.py`, his to write).
+>
+> Line numbers below are as of 2026-10-18 and have moved since.
 
 A **Batch run** button on the Input tab opens a window where the user gives up to four folders:
 segmented images, raw images, large vessel masks, small vessel masks. The panel matches each
@@ -31,7 +47,7 @@ starts the run. Leaving batch mode puts the rows back as they were.
   batch needs a `folders=` argument. The rule stays the same; only where it looks changes.
 - **A `.haemorun` needs no viewer.** `ResultLayers` (`gui/results.py`), `StageCheckpoints.record`,
   `capture_run` and `write_run_snapshot` (`gui/run_snapshot.py`) are all pure. `_run_in_background`
-  (`gui/_widget.py:6230`) only touches Qt to emit layers to the viewer. So a batch worker can
+  (`gui/_widget.py`) only touches Qt to emit layers to the viewer. So a batch worker can
   build a fresh `ResultLayers` + `StageCheckpoints` per image, pass `on_stage_output=` to
   `run_pipeline_stages`, and write the snapshot without drawing anything.
 - **Per-run outputs already follow a folder.** Checkpoint pickles, the run manifest and
@@ -42,6 +58,12 @@ starts the run. Leaving batch mode puts the rows back as they were.
   `perturbation_output_dir`, `sweep_output_dir`, `ilastik_output_dir`.
 
 ## The window
+
+> Superseded by `PLAN_batch_panel.md` Phase 4 (2026-10-23): three boxes (Images, Conditions and
+> statistics, the table), the report folded under the table, Run batch and Stop after this
+> image. The rules below (blank folders, greyed mask rows, the table as the preview) still hold.
+> Since 2026-10-24 the window also has a row for each other file the settings read, and greys the
+> segmented folder while ilastik segments the raw images.
 
 ```
 Batch run
@@ -200,7 +222,8 @@ the five folders, so the batch can be re-run.
   - "Show each stage in the viewer" is not drawn during a batch: twelve images' layers would
     pile up and slow the run. It is honoured as "write a `.haemorun`" (always on in a batch).
 - **Disabled in batch mode:** "Run from this stage", Check segmented image, the optimisers, and
-  Save run. They act on one image.
+  Save run. They act on one image. *As built (`d4bdfd0c`): all but Save run, which saves the run
+  shown and stays on.*
 - **The end.** The window's table shows each row's final status, plus an **Open** button per
   finished row that calls the existing `load_run_file` on its `.haemorun`. The report box shows
   `batch_summary.csv`'s path and the counts.
@@ -233,15 +256,92 @@ the five folders, so the batch can be re-run.
 ## Later (not in v1)
 
 - **ilastik batches.** With `use_ilastik_segmentation` on, the raw folder drives the list and
-  the segmented folder is greyed; the masks are matched against the raw names.
+  the segmented folder is greyed; the masks are matched against the raw names. *Built
+  2026-10-24.*
 - **More per-image inputs** in the window: pericyte, cell and tissue masks, each its own
-  folder, matched by the same rule.
+  folder, matched by the same rule. *Built 2026-10-24, with the 3D distances' vessel mask and a
+  capillary block's mask of blocks.*
 - **A CLI.** `examples/resistance_network_pipeline.py --batch-segmented DIR [--batch-raw DIR
-  ...]` over the same `run_batch`, for running a batch on a machine with no display.
+  ...]` over the same `run_batch`, for running a batch on a machine with no display. *Built as
+  `python -m haemolynx.gui.batch_run` (`gui/batch_run_cli.py`).*
 - **Parallel images.** One image at a time in v1: a run already uses worker pools and most of
-  the RAM on a large stack.
+  the RAM on a large stack. *Not built: waits on Harvey (below).*
+
+### Later, as built (2026-10-24, `3d9d071a`)
+
+**ilastik batches.** With `use_ilastik_segmentation` on (`pipeline.batch.batch_from_raw`):
+- **The images.** The raw folder lists them (`BatchFolders(from_raw=True)`,
+  `batch_inputs(raw=True)`): every image file there that is no segmentation, probability map or
+  mask of another. The window greys the segmented folder and says why.
+- **The name.** Each image is named after the segmentation ilastik will make,
+  `{raw stem}_segmented`, so its folder, `.haemorun`, outputs and statistics carry the one stem,
+  as every batch image's do. `io.ilastik.ilastik_segmented_stem` and `ilastik_segmented_path` are
+  now the one naming rule, shared with `stages.segment` and `segmented_input_path`.
+- **Where the segmentation goes.** `{folder}/segmentations/`, whether or not the settings name
+  an `ilastik_output_dir`.
+- **Reuse.** As in a single run: `ilastik_reuse_existing_output` and the provenance record
+  beside each output.
+- **Masks.** A blank mask folder is the raw folder, and masks are read against the raw names.
+- **The checks.** An image matched one way while the settings say the other is refused: "match
+  the folders again".
+- **The panel.** While a batch is set, a row it fills reads as set for greying
+  (`BatchSetup.gates`), so ilastik's switch and the other raw-image switches are live with the
+  panel's own raw image row empty. Before this they were greyed in any batch whose panel had no
+  raw image of its own.
+- **ilastik's vessel masks** stay refused in a batch, now only while their masks are in use: see
+  below.
+
+**The other files read beside each image** (`io.batch_matching.FILE_ROLES`):
+- **Which.** Pericyte mask, cell mask, the 3D distances' vessel mask, tissue image and mask of
+  blocks, each from a folder of its own (window rows, `--pericyte`/`--cell`/`--vessel-3d`/
+  `--tissue`/`--capillary-block`).
+- **Matched to an image by name** (`file_owners`, sharing `mask_owners`' ranking): the image
+  whose name the file shares the most words with from the start, then the most words.
+  - New tie-break: the image with the fewest of its own words the file lacks, so `E14_cells`
+    is `E14`'s, not `E14_2`'s. Mask folders gain it too; before, those were ties.
+  - A file already matched to the image (its raw image, a mask) is never one of its other files.
+    So a tissue folder that is the raw folder gives the other channel, and choosing a tied raw
+    image settles the tissue image.
+- **Matched only while read.** A role is matched while the run reads it, or a perturbation of a
+  type that reads it does (`pipeline.batch.batch_file_roles`). The window shows only those rows,
+  and the table gains an Other files column while any has a folder.
+- **With a folder,** each image's setting, and every perturbation override naming it, read the
+  image's own file (`item_settings`).
+- **Without one,** a single file that the run or a perturbation would read for every image is
+  refused. Before, any `capillary_block_mask` entry was refused, and a perturbation's own
+  pericyte mask was not looked at.
+- **No file for an image.** A problem for the pericyte, cell and blocks masks. For the
+  distances' vessel mask and the tissue image it is a note: they fall back to the segmentation
+  and the raw image.
+- **Records.** `batch_summary.csv` gains a column per file; `batch_settings.yaml` records the
+  folders and `# batch_from_raw: yes`.
+
+**Tests.**
+- `test_batch_matching.py` (9 new), `test_batch_settings.py` (6 new, 1 changed),
+  `test_batch_run.py` (6 new; 2 read the Condition column by name now),
+  `test_gui_batch_run_widget.py` (2 new, 1 changed).
+- `test_batch_run.py` includes a slow test of a real ilastik batch: a stand-in for ilastik labels
+  the seven-vessel fixture, and each image is run to the end.
+- Nothing was run on a real stack or by a tester.
+
+### Waits on Harvey
+
+- **Decisions 1-5** below were built as proposed and were never recorded as confirmed.
+- **Several images at once.** Not built. A run already spreads its heavy steps over worker
+  pools and, on a large stack, uses most of the RAM. Two questions:
+  - whether images should share the machine;
+  - if so, how many at once, by memory per image. The batch panel plan saw about 35 MB of
+    working set grow per image on a six-image demo, never measured on a real batch.
+- **ilastik's vessel masks per image.** `use_ilastik_large_vessel_segmentation` and
+  `use_ilastik_small_vessel_segmentation` read one raw file each
+  (`ilastik_unsegmented_*_image_path`), so a batch refuses them while their masks are in use.
+  Which file of each image they should read (the image's raw image, another channel, a folder of
+  their own) is his to say.
+- **The Input tab's help text** for Batch run (`gui/stage_help.py`): his to write.
 
 ## Decisions to confirm with Harvey
+
+*Built as proposed (2026-10-19); none recorded as confirmed by Harvey yet (2026-10-24).*
 
 1. **Filled folder replaces, not adds.** A filled raw/large/small folder replaces the
    segmented folder for that role. It does not search both.

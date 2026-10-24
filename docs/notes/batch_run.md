@@ -139,3 +139,44 @@ their `.haemolynx.json` records (main image and vessel masks, named by
 `_template_comparison.csv`. The files written by hand in Post processing are still not counted.
 The panel's checkpoints and `.haemorun` are counted for a run from the command line too, which
 writes neither: by at most 22 characters with Statistics off, none with it on.
+
+**ilastik batches, the other per-image files, and the button** (2026-10-24, `PLAN_batch_run.md`'s
+"Later"). With `use_ilastik_segmentation` on, a batch's images are its raw folder's
+(`BatchFolders(from_raw=True)`, `pipeline.batch.batch_from_raw`; `batch_inputs(raw=True)` takes every
+image file there that is no segmentation, probability map or mask of another). Each image is named
+after the segmentation ilastik will make of it, `{raw stem}_segmented`
+(`io.ilastik.ilastik_segmented_stem`, now the one naming rule `segment` and `segmented_input_path`
+share too), so its folder, `.haemorun`, outputs and statistics all carry that stem, as every batch
+image's do. Its segmentation goes in `{folder}/segmentations/` with its provenance record, and
+ilastik's reuse is a single run's (`ilastik_reuse_existing_output`). A blank mask folder is then the
+raw folder, and masks are read against the raw names. Each image's checks refuse a batch matched one
+way while the settings say the other ("match the folders again"). ilastik's vessel masks stay
+refused in a batch, now only while their masks are in use: they read one raw file
+(`ilastik_unsegmented_*_image_path`) for every image, and which file of each image they should read
+is Harvey's to say. While a batch is set the panel greys rows by `BatchSetup.gates`: a row the batch
+fills reads as set when a ticked image has that file, so ilastik's switch and the raw image's other
+switches are live with the panel's own raw row empty (before, they were greyed in batch mode).
+The other files a run reads beside its image (`io.batch_matching.FILE_ROLES`: pericyte mask, cell
+mask, the 3D distances' vessel mask, tissue image, mask of blocks) each come from a folder of their
+own, given to the image whose name they share the most words with from the start, then the most
+words, then the fewest of the image's words they lack (`_Owners`, shared with `mask_owners`:
+`E14_cells` is `E14`'s, not `E14_2`'s, where before it tied). A file already matched to the image
+(its raw image, a mask) is never one of them, so a tissue folder that is the raw folder gives the
+other channel, and choosing a tied raw image takes it out of the tissue image's tie. A role is
+matched only while the run, or a perturbation of a type reading it, reads it
+(`pipeline.batch.batch_file_roles`, `_readers`); the window shows its row only then. With a folder,
+each image's setting and every perturbation override naming it read the image's own file
+(`item_settings`); without one, a file the run or a perturbation would read for every image is
+refused (it was refused for the run's own settings before, and for any `capillary_block_mask`
+entry, whatever it named). A role with nothing to fall back on (pericyte, cell, blocks) and no file
+for an image is a problem; the distances' vessel mask and the tissue image fall back to the
+segmentation and the raw image, with a note. `batch_summary.csv` gains a column per role, and
+`batch_settings.yaml` records the folders given and `# batch_from_raw: yes`. Command line:
+`--pericyte`, `--cell`, `--vessel-3d`, `--tissue`, `--capillary-block`; with ilastik on in the
+config, `--raw` lists the images and `--segmented` is not read.
+The Batch run button greys under a synthetic network and while a run of one image or an optimiser
+goes (`batch_run.batch_button_greyed`, following `RunState.on_change`, which every way a run ends
+reaches), never while a batch is set or running: its window is where a batch is followed, stopped
+and left. Checked by the tests only (`tests/test_batch_*.py`, `test_gui_batch_run_widget.py`; the
+ilastik batch end to end with a stand-in for ilastik on the seven-vessel fixture), not on a real
+stack or by a tester.
