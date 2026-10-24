@@ -193,7 +193,7 @@ The largest change; it alters what the graph sweeps choose.
   finish was counted at 2x with Phase 4; 4x and 16x under **Finishing (2026-10-24)**.)
 - Scorecard, measures only (Principle 4): dead ends by kind, loops inside one lumen, the
   lumen-artefact report's counts. (Dead ends and pairs in one lumen with Phase 4; the kinds and
-  loops inside one lumen in `610e2899`.)
+  loops inside one lumen in `95941900`.)
 - Tests: on `tests/dense_capillary_fixtures.py` and a thick-vessel fixture, a trial's graph equals
   `build_network`'s at the same settings (node positions, edge voxels, lengths); a thick vessel
   restricted by a large mask gives the trial the run's region.
@@ -740,7 +740,7 @@ the current commit is the check, expected to choose the gate alone (4 -> 3 befor
 An audit on 2026-10-24 found these pieces outstanding after Phases 0-5, the endothelial optimiser
 and B8. Each, and where it stands:
 
-- **The scorecard's dead ends and loops** (Phase 4's scorecard bullet; `610e2899`). Trials never
+- **The scorecard's dead ends and loops** (Phase 4's scorecard bullet; `95941900`). Trials never
   marked dead-end kinds: `build_network` marks them after `finish_network_graph`. The marking is
   now public, `stages.mark_dead_end_kinds(settings, G, context)`, which `build_network` calls in
   place of its private call and the scorecard calls on its graphs. The scorecard counts each kind
@@ -750,7 +750,7 @@ and B8. Each, and where it stands:
   `higher_is_better=None` shows a row that is never better or worse, so they raise no warning.
   Pinned in `tests/test_optimisation_search.py`: the scorecard's counts equal the kinds and
   in-lumen loops of `build_network`'s saved graph, with thick vessels and without.
-- **D2** (`610e2899`): a search on a coarser grid says in its report that the grid was reduced by
+- **D2** (`95941900`): a search on a coarser grid says in its report that the grid was reduced by
   block max, not by the block majority a run's downsample on import uses. In the search's own
   notes rather than `report.py`'s downsample line, which the FWHM report also prints (see below).
 - **Docs**: CLAUDE.md's *optimisation/* entry gains the rule (trials through `network_context` and
@@ -783,7 +783,7 @@ and B8. Each, and where it stands:
   not keep real short sprouts, the 3 x radius rule stays), and the stub sweep moves it: to 2 on
   E14.5 at `f1184f25` and with Phase 4. Whether a decision binds like a grid (take the setting out
   of `GRAPH_SETTING_NAMES`) or the sweep may move it is his call.
-- **The hole-fill docstring** (`97f79a1c`): `io.load._skeletonize_loaded_volume` no longer calls
+- **The hole-fill docstring** (`868ac9f0`): `io.load._skeletonize_loaded_volume` no longer calls
   the fill a no-op; it says what A10 measured. Words only.
 - **The two grids** (D6; the component filter): **no marks yet** (checked 2026-10-24: no marks
   file beside either). `outputs/thick_vessel_review/` (marks A, B, = or X) and

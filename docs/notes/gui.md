@@ -165,7 +165,7 @@ numbers.
   samples at least 100, and its time model counts the trials a pass makes (77) and the planted
   vessels and decoys each measures (half a vessel per sampled one): 1,530 s estimated against the
   1,488 s the E14.5 search took. It found FWHM's planted-vessel error about 0.54 there, still open.
-- **The scorecard and the report** (2026-10-24, `610e2899`): the scorecard marks its graphs' dead ends as the
+- **The scorecard and the report** (2026-10-24, `95941900`): the scorecard marks its graphs' dead ends as the
   run does (`stages.mark_dead_end_kinds`, which `build_network` calls too) and counts each kind,
   with loops inside one lumen beside short loops; a kind is a measure only (`ScoreRow`'s
   `higher_is_better=None`: never better or worse), since which way is better waits on a marked
