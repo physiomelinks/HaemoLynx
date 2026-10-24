@@ -844,8 +844,9 @@ ENDOTHELIAL_OPTIMISE_TOOLTIPS = {
         "below, instead of every ring-fit setting"
     ),
     "blur_and_wall": (
-        "Try the blur and wall estimated from the image's wide vessels "
-        "against the same values fixed and the ends of their 95% interval"
+        "Where the image's wide vessels cannot estimate the blur or the wall, "
+        "or you have fixed them, try their estimate fixed and the ends of its "
+        "95% interval; otherwise they stay estimated from the image"
     ),
     "ring_gate": (
         "Try half to twice the weakest ring a reading is kept for "

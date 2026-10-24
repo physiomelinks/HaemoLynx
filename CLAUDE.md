@@ -863,7 +863,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `io.load._skeletonize_loaded_volume`. `tests/test_optimisation_search.py` pins a trial's
   skeleton `==` `skeletonise`'s. **Optimise endothelial settings** (`endothelial_search.py`,
   shown instead of the FWHM button when the raw image stains the wall) sweeps the ring fit's
-  blur, wall (estimated or fixed, the image's own values) and contrast gate; a trial reads
+  contrast gate, and its blur and wall only where the image's rings will not calibrate them or the
+  settings fix them (then the image's own values, fixed; Harvey's rule); a trial reads
   through `apply.measure_endothelial_diameters` with the run's config, each blur's calibration
   fits made once (`apply.endothelial_calibration_fits`), scored on planted hollow vessels
   (`haemodynamics/endothelial_planted.py`), the sample and decoys. **Check segmented image** is

@@ -241,7 +241,7 @@ def test_a_tie_keeps_every_value_the_user_had(monkeypatch, raw_path):
     assert result.settings == DEFAULTS
     assert result.groups_run == s.ENDOTHELIAL_GROUP_NAMES
     sweeps = {trial.sweep for trial in result.trials}
-    assert len(sweeps) == 3  # the blur, the wall, the gate
+    assert len(sweeps) == 1  # the gate: the image's rings calibrate the blur and wall
     for sweep in sweeps:
         chosen = [trial for trial in result.trials if trial.sweep == sweep and trial.chosen]
         assert len(chosen) == 1 and chosen[0].incumbent
@@ -303,17 +303,51 @@ def test_a_ring_found_in_vessel_free_tissue_counts_against_a_trial(monkeypatch, 
 
 def test_the_rings_are_fitted_once_per_blur_and_calibrated_once_per_gate(monkeypatch, raw_path):
     """A calibration's fits depend on the blur alone, its answer on the blur
-    and the gate: each is made once however many trials ask for it."""
+    and the gate: each is made once however many trials ask for it. (The
+    blur is set here, the wall left to the image, so every blur candidate
+    calibrates a wall.)"""
     stand_in = _StandIn(monkeypatch, lambda settings, calibration, edge: [6.0, 6.0])
+    starting = {**DEFAULTS, "endothelial_psf_sigma_xy_um": 0.7, "endothelial_psf_sigma_z_um": 2.5}
 
-    _optimise(_chain(), raw_path)
+    _optimise(_chain(), raw_path, starting_values=starting)
 
     blurs = [psf for psf, _edges in stand_in.fits]
     assert len(blurs) == len(set(blurs))
-    assert None in blurs and (2.0, 0.6, 0.6) in blurs  # free, and the estimate fixed
+    assert {None, (2.5, 0.7, 0.7), (2.0, 0.6, 0.6)} <= set(blurs)  # free, the user's, the estimate's
     assert len(stand_in.calibrations) == len(set(stand_in.calibrations))
-    gates = {gate for psf, gate in stand_in.calibrations if psf is None}
+    gates = {gate for psf, gate in stand_in.calibrations if psf == (2.5, 0.7, 0.7)}
     assert gates == set(s.ring_gate_candidates(4.0))
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+def test_fixed_blur_and_wall_are_tried_only_where_the_image_cannot_estimate_them(
+    monkeypatch, raw_path, fixed
+):
+    """Harvey's rule (2026-10-24): where the image's rings calibrate the
+    blur and wall on their own, a fixed value inside their interval is no
+    different from the estimate, so the estimate stays and nothing is
+    swept; where the settings already fix them, the estimate is tried
+    against them."""
+    _StandIn(monkeypatch, lambda settings, calibration, edge: [6.0, 6.0])
+    starting = dict(DEFAULTS)
+    if fixed:
+        starting.update(endothelial_psf_sigma_xy_um=0.7, endothelial_psf_sigma_z_um=2.5,
+                        endothelial_wall_thickness_um=1.3)
+
+    result = _optimise(_chain(), raw_path, starting_values=starting)
+
+    swept = {trial.setting for trial in result.trials if trial.group == "blur_and_wall"}
+    stayed = [note for note in result.notes if "stayed the image's estimate" in note]
+    if fixed:
+        assert swept == {s.PSF_SWEEP_NAME, "endothelial_wall_thickness_um"}
+        blurs = {trial.value for trial in result.trials if trial.setting == s.PSF_SWEEP_NAME}
+        assert {(0.7, 2.5), (None, None), (0.6, 2.0)} <= blurs
+        assert not stayed
+    else:
+        assert swept == set()
+        assert result.settings["endothelial_psf_sigma_xy_um"] is None
+        assert result.settings["endothelial_wall_thickness_um"] is None
+        assert len(stayed) == 1 and "blur and wall" in stayed[0]
 
 
 def test_when_the_rings_will_not_calibrate_on_their_own_their_values_are_fixed(monkeypatch, raw_path):
@@ -332,9 +366,12 @@ def test_when_the_rings_will_not_calibrate_on_their_own_their_values_are_fixed(m
 
     assert result.settings["endothelial_psf_sigma_xy_um"] == 0.6
     assert result.settings["endothelial_psf_sigma_z_um"] == 2.0
+    # At that blur the rings give a wall, which stays theirs.
+    assert result.settings["endothelial_wall_thickness_um"] is None
     measured = next(row for row in result.scorecard if row.name == "sampled vessels measured")
     assert (measured.before, measured.after) == (0.0, 1.0)
     assert any("will not calibrate on their own" in note for note in result.notes)
+    assert any(note.startswith("The wall stayed the image's estimate") for note in result.notes)
 
 
 def test_a_gate_too_strict_for_the_rings_to_calibrate_still_has_the_image_to_judge_by(
@@ -631,8 +668,7 @@ def test_a_gate_too_strict_for_the_image_is_lowered_whatever_its_voxels(tmp_path
 @pytest.mark.parametrize("voxel, optics, wall", _STACKS, ids=["claudin", "anisotropic"])
 def test_a_whole_search_is_no_worse_than_where_it_started(tmp_path, voxel, optics, wall):
     """Every group from the defaults: the image calibrates its own blur and
-    wall, so any value proposed for them is the image's own (unset, or
-    within its rings' interval), and nothing on the scorecard gets worse."""
+    wall, so they stay its estimate, and nothing on the scorecard gets worse."""
     from haemolynx.optimisation.scorecard import worse_rows
 
     scene = _dim_scene(voxel, optics, wall)
@@ -644,10 +680,8 @@ def test_a_whole_search_is_no_worse_than_where_it_started(tmp_path, voxel, optic
     )
 
     assert not worse_rows(result.scorecard)
-    xy, z = (result.settings["endothelial_psf_sigma_xy_um"], result.settings["endothelial_psf_sigma_z_um"])
-    if xy is not None:
-        assert xy == pytest.approx(scene.psf_seen_zyx[1], rel=0.25)
-        assert z == pytest.approx(scene.psf_seen_zyx[0], rel=0.25)
-    if result.settings["endothelial_wall_thickness_um"] is not None:
-        assert result.settings["endothelial_wall_thickness_um"] == pytest.approx(wall, rel=0.3)
+    for name in ("endothelial_psf_sigma_xy_um", "endothelial_psf_sigma_z_um",
+                 "endothelial_wall_thickness_um"):
+        assert result.settings[name] is None, name
+    assert not [trial for trial in result.trials if trial.group == "blur_and_wall"]
     assert any("calibrated at" in note for note in result.notes)
