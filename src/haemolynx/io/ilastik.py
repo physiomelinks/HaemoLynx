@@ -159,6 +159,25 @@ def file_sha256(path: str | Path) -> str:
     return _SHA256_MEMO[key]
 
 
+#: What the main image's segmentation adds to the raw image's stem.
+SEGMENTED_STEM_SUFFIX = "_segmented"
+
+
+def ilastik_segmented_stem(unsegmented_image_path: str | Path) -> str:
+    """``{raw image stem}_segmented``: the stem of ilastik's segmentation of
+    *unsegmented_image_path*, and so of every output of a run on it."""
+    return f"{Path(unsegmented_image_path).stem}{SEGMENTED_STEM_SUFFIX}"
+
+
+def ilastik_segmented_path(
+    output_dir: str | Path, unsegmented_image_path: str | Path, suffix: str
+) -> Path:
+    """Where the main image's segmentation is asked for:
+    ``{output_dir}/{raw image stem}_segmented{suffix}`` (ilastik may give a
+    ``.tif`` back as ``.tiff``; the stem stays)."""
+    return Path(output_dir) / f"{ilastik_segmented_stem(unsegmented_image_path)}{suffix}"
+
+
 def sidecar_path(output_path: str | Path) -> Path:
     """Where the record of how *output_path* was made is kept."""
     output_path = Path(output_path)

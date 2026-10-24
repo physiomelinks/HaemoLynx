@@ -14,6 +14,7 @@ from haemolynx.pipeline.batch import (
     WINDOWS_MAX_FILE_PATH,
     WINDOWS_MAX_FOLDER_PATH,
     WRITTEN_WHILE,
+    batch_file_roles,
     batch_mask_sizes,
     batch_preflight,
     check_batch,
@@ -106,9 +107,132 @@ def test_a_single_per_image_file_in_effect_is_refused(base, schema, tmp_path):
     assert not any("cell_mask_path" in error for error in check_batch(settings, schema).errors)
 
 
-def test_synthetic_and_ilastik_runs_are_refused(base, schema):
+def test_synthetic_runs_are_refused_and_ilastik_needs_a_batch_of_raw_images(base, schema, tmp_path):
     assert check_batch({**base, "network_source": "synthetic"}, schema).errors
-    assert check_batch({**base, "use_ilastik_segmentation": True}, schema).errors
+    ilastik = {**base, "use_ilastik_segmentation": True}
+    segmented, raw = BatchFolders(tmp_path), BatchFolders(raw=tmp_path, from_raw=True)
+    (error,) = check_batch(ilastik, schema, segmented).errors
+    assert "matched in the segmented folder" in error
+    assert check_batch(ilastik, schema, raw).errors == []
+    (error,) = check_batch(base, schema, raw).errors
+    assert "use_ilastik_segmentation is off" in error
+
+
+def test_ilastik_vessel_masks_are_refused_while_their_masks_are_used(base, schema):
+    on = {
+        **base,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+    }
+    (error,) = check_batch(on, schema).errors
+    assert "use_ilastik_large_vessel_segmentation is on" in error
+    # Left on under an unticked switch, it makes no masks.
+    assert check_batch({**on, "automated_vessel_assignment": False}, schema).errors == []
+
+
+# -- the other files read beside each image ---------------------------------------
+
+
+def _folder(folder: Path, *names: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (folder / name).write_bytes(b"")
+    return folder
+
+
+def test_a_folder_of_cell_masks_gives_each_image_its_own(tmp_path, base, schema):
+    seg = _folder(tmp_path / "seg", "E14_seg.tif", "E15_seg.tif")
+    cells = _folder(tmp_path / "cells", "E14_cells.tif", "E15_cells.tif")
+    settings = {**base, "measurement_3d_to_cell_mask": True, "cell_mask_path": tmp_path / "one.tif"}
+    folders = BatchFolders(seg, cell=cells)
+    # The distances' vessel mask is read too: with no folder, the segmentation.
+    assert batch_file_roles(settings, schema) == ("cell", "vessel_3d")
+    first, second = match_batch(folders, roles=batch_file_roles(settings, schema))
+    assert item_settings(settings, first, tmp_path)["measurement_3d_vessel_mask_path"] is None
+    out = tmp_path / "out"
+    assert item_settings(settings, first, out)["cell_mask_path"] == cells / "E14_cells.tif"
+    assert item_settings(settings, second, out)["cell_mask_path"] == cells / "E15_cells.tif"
+    # The one file the panel holds is refused for every image, not with a folder.
+    assert any("give the batch a folder of cell masks" in e for e in check_batch(settings, schema).errors)
+    assert check_batch(settings, schema, folders).errors == []
+
+
+def test_a_folder_of_files_nothing_reads_warns(tmp_path, base, schema):
+    seg = _folder(tmp_path / "seg", "E14_seg.tif")
+    folders = BatchFolders(seg, pericyte=_folder(tmp_path / "pericytes", "E14_pericytes.tif"))
+    assert batch_file_roles(base, schema) == ()
+    report = check_batch(base, schema, folders)
+    assert report.errors == []
+    assert any("nothing in these settings reads pericyte_mask_path" in w for w in report.warnings)
+    (match,) = match_batch(folders, roles=batch_file_roles(base, schema))
+    assert match.files == {}
+
+
+def test_a_perturbations_mask_of_blocks_is_each_images_own(tmp_path, base, schema):
+    seg = _folder(tmp_path / "seg", "E14_seg.tif")
+    blocks = _folder(tmp_path / "blocks", "E14_blocks.tif")
+    one = tmp_path / "one_blocks.tif"
+    entry = {"name": "stall", "type": "capillary_block_mask", "overrides": {"capillary_block_mask_path": one}}
+    settings = {**base, "run_perturbations": True, "perturbations": [entry]}
+    # Read by the perturbation alone: with none, nothing reads the setting.
+    assert batch_file_roles(settings, schema) == ("capillary_block",)
+    assert batch_file_roles({**settings, "run_perturbations": False}, schema) == ()
+    (error,) = check_batch(settings, schema).errors
+    assert "perturbation 'stall' reads one mask of blocks, one_blocks.tif" in error
+    folders = BatchFolders(seg, capillary_block=blocks)
+    assert check_batch(settings, schema, folders).errors == []
+    (match,) = match_batch(folders, roles=("capillary_block",))
+    image = item_settings(settings, match, tmp_path / "out")
+    assert image["perturbations"][0]["overrides"]["capillary_block_mask_path"] == blocks / "E14_blocks.tif"
+    assert image["capillary_block_mask_path"] == blocks / "E14_blocks.tif"
+    assert entry["overrides"]["capillary_block_mask_path"] == one, "the panel's settings are untouched"
+
+
+def test_a_pericyte_sweep_reading_one_mask_is_refused_without_a_folder(base, schema, tmp_path):
+    entry = {
+        "name": "dilate",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {"use_pericyte_mask_constriction": True, "pericyte_mask_path": tmp_path / "p.tif"},
+    }
+    settings = {**base, "run_perturbations": True, "perturbations": [entry]}
+    assert batch_file_roles(settings, schema) == ("pericyte",)
+    (error,) = check_batch(settings, schema).errors
+    assert "perturbation 'dilate' reads one pericyte mask" in error
+    folders = BatchFolders(tmp_path, pericyte=tmp_path / "pericytes")
+    assert check_batch(settings, schema, folders).errors == []
+
+
+# -- a batch ilastik segments ------------------------------------------------------
+
+
+def test_an_ilastik_batch_runs_each_raw_image_into_a_folder_named_for_its_segmentation(
+    tmp_path, base
+):
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    raw = _folder(
+        tmp_path / "raw",
+        "E14_MCA.tif",
+        "E15_MCA.tif",
+        "E14_MCA_Simple Segmentation.tif",
+        "E15_MCA_Probabilities.h5",
+    )
+    first, second = match_batch(BatchFolders(raw=raw, from_raw=True))
+    assert (first.raw, first.segmented, first.stem) == (raw / "E14_MCA.tif", None, "E14_MCA_segmented")
+    assert second.stem == "E15_MCA_segmented"
+    out = tmp_path / "out"
+    # ilastik_output_dir left unset is still the image's own.
+    settings = item_settings({**base, "use_ilastik_segmentation": True, "ilastik_output_dir": None}, first, out)
+    assert settings["input_path"] is None
+    assert settings["raw_image_path"] == raw / "E14_MCA.tif"
+    folder = out / "E14_MCA_segmented"
+    assert settings["ilastik_output_dir"] == folder / "segmentations"
+    assert segmented_input_path(settings) == folder / "segmentations" / "E14_MCA_segmented.tif"
+    # The run's outputs carry the stem of ilastik's segmentation: its folder's.
+    files, _folders = output_paths(settings)
+    assert folder.absolute() / "E14_MCA_segmented_run_manifest.json" in files
+    assert folder.absolute() / "segmentations" / "E14_MCA_segmented.tif.haemolynx.json" in files
 
 
 def test_mid_run_pause_and_skipped_stages_warn(base, schema):

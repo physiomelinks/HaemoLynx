@@ -88,6 +88,7 @@ from haemolynx.io.downsample import (
     raw_volume_like_graph,
     record_on_graph as record_downsample_on_graph,
 )
+from haemolynx.io.ilastik import ilastik_segmented_path
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -448,8 +449,9 @@ def segmented_input_path(settings: dict) -> Path | None:
         output_dir = Path(settings["ilastik_output_dir"])
         if produced is not None and Path(produced).parent == output_dir:
             return Path(produced)
-        unsegmented = Path(settings["raw_image_path"])
-        return output_dir / f"{unsegmented.stem}_segmented{settings['ilastik_output_suffix']}"
+        return ilastik_segmented_path(
+            output_dir, settings["raw_image_path"], settings["ilastik_output_suffix"]
+        )
     return None if produced is None else Path(produced)
 
 
@@ -539,14 +541,14 @@ def segment(
                 "ilastik_classifier_path must be set when use_ilastik_segmentation=True."
             )
         settings["ilastik_output_dir"] = Path(settings["ilastik_output_dir"])
-        ilastik_segmented_path = settings["ilastik_output_dir"] / (
-            f"{unsegmented_image_path.stem}_segmented{settings['ilastik_output_suffix']}"
+        segmented_output = ilastik_segmented_path(
+            settings["ilastik_output_dir"], unsegmented_image_path, settings["ilastik_output_suffix"]
         )
         logger.info(f"Running ilastik segmentation for unsegmented image: {unsegmented_image_path}")
         settings["input_path"] = io.run_ilastik_headless_segmentation(
             input_image_path=unsegmented_image_path,
             classifier_path=Path(settings["ilastik_classifier_path"]),
-            output_path=ilastik_segmented_path,
+            output_path=segmented_output,
             ilastik_executable=settings["ilastik_executable"],
             timeout=settings["ilastik_timeout_seconds"],
             vessel_label=settings.get("ilastik_vessel_label"),

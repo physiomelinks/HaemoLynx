@@ -33,6 +33,19 @@ name it shares the most words with from the start, and a global mask unless
 it names a vessel type -- ilastik's ``..._Simple Segmentation_intermediate.h5``
 in a small-vessel folder is that image's small mask.
 
+**A batch of raw images** (``BatchFolders(from_raw=True)``: ilastik segments
+each image) is listed from the raw folder instead (:func:`batch_inputs` with
+``raw=True``: every image file there that is no segmentation, probability map
+or mask of another), and its masks are read against the raw images' names. Each
+image's stem, and so its folder, is that of the segmentation ilastik will make
+(``{raw stem}_segmented``, :func:`~haemolynx.io.ilastik.ilastik_segmented_stem`).
+
+**The other files a run reads beside its image** -- a pericyte, cell or 3D
+distance vessel mask, a tissue image, a mask of capillary blocks
+(:data:`FILE_ROLES`) -- each come from a folder of their own, by the rule a
+mask folder of its own follows (:func:`file_owners`): a file is the image's
+whose name it shares the most words with from the start.
+
 Nothing here reads an image: names in, matches out.
 """
 from __future__ import annotations
@@ -42,6 +55,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Mapping, NamedTuple, Sequence
 
+from .ilastik import ilastik_segmented_stem
 from .vessel_masks import VESSEL_MASK_SETTINGS
 from .vessel_mask_discovery import (
     MASK_SUFFIXES,
@@ -100,6 +114,42 @@ MASK_KINDS = ("arteriole", "venule", "global")
 def mask_role(size: str, kind: str) -> str:
     """The role key of a *size* mask of *kind*: ``"large_arteriole"`` ..."""
     return f"{size}_{kind}"
+
+
+class FileRole(NamedTuple):
+    """A file a run reads beside its image, matched per image from a folder
+    of its own."""
+
+    #: Its :class:`BatchFolders` field and role key.
+    key: str
+    #: The run setting it fills.
+    setting: str
+    #: What it is, for messages.
+    label: str
+    #: What the run reads with none ("": an image with none is a problem).
+    fallback: str = ""
+
+
+#: The other files a run reads beside its image, a folder each.
+FILE_ROLES = (
+    FileRole("pericyte", "pericyte_mask_path", "pericyte mask"),
+    FileRole("cell", "cell_mask_path", "cell mask"),
+    FileRole(
+        "vessel_3d", "measurement_3d_vessel_mask_path", "vessel mask for the 3D distances",
+        "the run's segmented image",
+    ),
+    FileRole("tissue", "tissue_raw_tiff_path", "tissue image", "the raw image"),
+    FileRole("capillary_block", "capillary_block_mask_path", "mask of blocks"),
+)
+FILE_ROLE_KEYS = tuple(role.key for role in FILE_ROLES)
+
+
+def file_role(key: str) -> FileRole:
+    """The :data:`FILE_ROLES` entry *key* names."""
+    for role in FILE_ROLES:
+        if role.key == key:
+            return role
+    raise ValueError(f"Unknown batch file role {key!r}.")
 
 
 def _split_channels(words: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -222,10 +272,12 @@ class _WordIndex:
         return sorted(self._everyone if result is None else result)
 
 
-def batch_inputs(folder: Path | str) -> tuple[Path, ...]:
+def batch_inputs(folder: Path | str, *, raw: bool = False) -> tuple[Path, ...]:
     """The segmented images in *folder* a batch runs, in name order: every
     image file that is not a probability map, a mask of another file there or
-    the raw image of another file there."""
+    the raw image of another file there. With *raw*, the raw images ilastik
+    is to segment: every image file that is not a probability map, a
+    segmentation (its name says so) or a mask of another file there."""
     files = _image_files(Path(folder))
     words = [file_name_words(path.stem) for path in files]
     index = _WordIndex(words)
@@ -233,7 +285,9 @@ def batch_inputs(folder: Path | str) -> tuple[Path, ...]:
     for position, candidate in enumerate(files):
         names = words[position]
         word_set = set(names)
-        if word_set & PROBABILITY_WORDS or _says_raw(names):
+        if word_set & PROBABILITY_WORDS:
+            continue
+        if (word_set & SEGMENTATION_WORDS) if raw else _says_raw(names):
             continue
         if word_set & _ROLE_WORDS:
             required = word_set - _ROLE_WORDS - _UNIDENTIFYING_WORDS
@@ -244,7 +298,7 @@ def batch_inputs(folder: Path | str) -> tuple[Path, ...]:
             ):
                 continue
         required = set(_identity(_split_channels(names)[0]))
-        if any(
+        if not raw and any(
             _raw_of(candidate, files[other])
             for other in index.holding(required)
             if other != position
@@ -254,38 +308,72 @@ def batch_inputs(folder: Path | str) -> tuple[Path, ...]:
     return tuple(inputs)
 
 
+#: The folders a batch reads its images, raw images and vessel masks from.
+IMAGE_FOLDER_ROLES = ("segmented", "raw", "large", "small")
+
+
 @dataclass(frozen=True)
 class BatchFolders:
     """A batch run's folders. A blank raw, large or small folder is the
-    segmented images' folder."""
+    folder the images are listed from: the segmented folder, or with
+    *from_raw* (ilastik segments each raw image) the raw folder, and the
+    segmented folder is not read. A blank folder of one of the other files
+    (:data:`FILE_ROLES`) is none: the run's own setting is read."""
 
-    segmented: Path
+    segmented: Path | None = None
     raw: Path | None = None
     large: Path | None = None
     small: Path | None = None
+    pericyte: Path | None = None
+    cell: Path | None = None
+    vessel_3d: Path | None = None
+    tissue: Path | None = None
+    capillary_block: Path | None = None
+    #: The images are the raw folder's, each segmented by ilastik.
+    from_raw: bool = False
 
     def __post_init__(self) -> None:
-        for name in ("segmented", "raw", "large", "small"):
+        for name in IMAGE_FOLDER_ROLES + FILE_ROLE_KEYS:
             value = getattr(self, name)
             if value in (None, ""):
                 object.__setattr__(self, name, None)
             else:
                 object.__setattr__(self, name, Path(value))
-        if self.segmented is None:
+        object.__setattr__(self, "from_raw", bool(self.from_raw))
+        if self.from_raw and self.raw is None:
+            raise ValueError(
+                "A batch that ilastik segments needs a folder of raw images: its images are those."
+            )
+        if not self.from_raw and self.segmented is None:
             raise ValueError("A batch run needs a folder of segmented images.")
+
+    @property
+    def images(self) -> Path:
+        """The folder the batch's images are listed from."""
+        return self.raw if self.from_raw else self.segmented
 
     def folder(self, role: str) -> Path:
         """The folder *role* (``"segmented"``, ``"raw"``, ``"large"``,
         ``"small"``) is read from."""
-        if role not in ("segmented", "raw", "large", "small"):
+        if role not in IMAGE_FOLDER_ROLES:
             raise ValueError(f"Unknown batch folder {role!r}.")
-        return getattr(self, role) or self.segmented
+        return getattr(self, role) or self.images
+
+    def file_folder(self, key: str) -> Path | None:
+        """The folder the other file *key* (:data:`FILE_ROLE_KEYS`) is matched
+        from, or None when none was given."""
+        return getattr(self, file_role(key).key)
+
+    @property
+    def file_keys(self) -> tuple[str, ...]:
+        """The other files given a folder."""
+        return tuple(key for key in FILE_ROLE_KEYS if getattr(self, key) is not None)
 
     def own_folder(self, size: str) -> Path | None:
-        """The mask folder *size* was given apart from the segmented images,
-        or None when its masks are read from the segmented folder."""
+        """The mask folder *size* was given apart from the images, or None
+        when its masks are read from the images' folder."""
         folder = getattr(self, size)
-        if folder is None or _same_file(folder, self.segmented):
+        if folder is None or _same_file(folder, self.images):
             return None
         return folder
 
@@ -296,9 +384,11 @@ def _names(paths: Iterable[Path]) -> str:
 
 @dataclass(frozen=True)
 class BatchMatch:
-    """One segmented image of a batch, and what was matched to it."""
+    """One image of a batch, and what was matched to it. In a batch of raw
+    images (``folders.from_raw``) *segmented* is None until ilastik makes it,
+    and the image is its *raw* image."""
 
-    segmented: Path
+    segmented: Path | None
     folders: BatchFolders
     raw: Path | None = None
     #: The raw images that tied, none chosen (empty once one is chosen).
@@ -307,15 +397,33 @@ class BatchMatch:
     masks: Mapping[str, FoundVesselMasks] = field(default_factory=dict)
     #: Other images of the batch with this one's stem: they would share a folder.
     same_stem: tuple[Path, ...] = ()
+    #: The other files matched (:data:`FILE_ROLES`), by role key: the file,
+    #: or None when the role's folder holds none for this image.
+    files: Mapping[str, Path | None] = field(default_factory=dict)
+    #: The other files that tied, by role key, none chosen.
+    file_ties: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)
+
+    @property
+    def image(self) -> Path:
+        """The file the batch lists: the segmented image, or the raw image
+        ilastik segments."""
+        return self.segmented if self.segmented is not None else self.raw
 
     @property
     def stem(self) -> str:
-        return self.segmented.stem
+        """The stem the image's run names its outputs and folder with: the
+        segmented image's, or that of the segmentation ilastik makes."""
+        if self.segmented is not None:
+            return self.segmented.stem
+        return ilastik_segmented_stem(self.raw)
 
     def ties(self, role: str) -> tuple[Path, ...]:
-        """The files tied for *role* (:data:`RAW_ROLE` or :func:`mask_role`)."""
+        """The files tied for *role* (:data:`RAW_ROLE`, :func:`mask_role` or
+        one of :data:`FILE_ROLE_KEYS`)."""
         if role == RAW_ROLE:
             return self.raw_ties
+        if role in FILE_ROLE_KEYS:
+            return tuple(self.file_ties.get(role, ()))
         size, _, kind = role.partition("_")
         found = self.masks.get(size)
         return tuple(found.ambiguous.get(kind, ())) if found is not None else ()
@@ -325,6 +433,7 @@ class BatchMatch:
         roles = [RAW_ROLE] if self.raw_ties else []
         for size, found in self.masks.items():
             roles.extend(mask_role(size, kind) for kind in MASK_KINDS if kind in found.ambiguous)
+        roles.extend(key for key in FILE_ROLE_KEYS if self.file_ties.get(key))
         return tuple(roles)
 
     def choose(self, role: str, path: Path | str) -> "BatchMatch":
@@ -334,7 +443,10 @@ class BatchMatch:
         if not any(_same_file(path, other) for other in tied):
             raise ValueError(f"{path.name} is not one of the files tied for {role}.")
         if role == RAW_ROLE:
-            return replace(self, raw=path, raw_ties=())
+            return replace(self, raw=path, raw_ties=())._not_another_file(path)
+        if role in FILE_ROLE_KEYS:
+            ties = {key: value for key, value in self.file_ties.items() if key != role}
+            return replace(self, files={**self.files, role: path}, file_ties=ties)
         size, _, kind = role.partition("_")
         found = self.masks[size]
         ambiguous = {key: value for key, value in found.ambiguous.items() if key != kind}
@@ -343,7 +455,20 @@ class BatchMatch:
             ambiguous=ambiguous,
             **{"global_mask" if kind == "global" else kind: path},
         )
-        return replace(self, masks={**self.masks, size: chosen})
+        return replace(self, masks={**self.masks, size: chosen})._not_another_file(path)
+
+    def _not_another_file(self, path: Path) -> "BatchMatch":
+        """This match with *path*, now its raw image or a mask, taken out of
+        the other files' ties: the one file left in a tie is chosen."""
+        files, file_ties = dict(self.files), dict(self.file_ties)
+        for key, tied in self.file_ties.items():
+            left = tuple(other for other in tied if not _same_file(other, path))
+            if len(left) > 1:
+                file_ties[key] = left
+                continue
+            del file_ties[key]
+            files[key] = left[0] if left else None
+        return replace(self, files=files, file_ties=file_ties)
 
     @property
     def problems(self) -> tuple[str, ...]:
@@ -371,6 +496,13 @@ class BatchMatch:
                     f"Found a {size} venule mask, {found.venule.name}, but no {size} "
                     "arteriole mask to go with it."
                 )
+        for key in self.files:
+            role = file_role(key)
+            tied = self.file_ties.get(key)
+            if tied:
+                problems.append(f"Several files could be the {role.label} ({_names(tied)}): choose one.")
+            elif self.files[key] is None and not role.fallback:
+                problems.append(f"No {role.label} found in {self.folders.file_folder(key)}.")
         return tuple(problems)
 
     @property
@@ -379,6 +511,13 @@ class BatchMatch:
         notes: list[str] = []
         if self.raw is None and not self.raw_ties:
             notes.append(f"No raw image found in {self.folders.folder('raw')}.")
+        for key, path in self.files.items():
+            role = file_role(key)
+            if path is None and role.fallback and not self.file_ties.get(key):
+                notes.append(
+                    f"No {role.label} found in {self.folders.file_folder(key)}: "
+                    f"{role.fallback} is read instead."
+                )
         for size, found in self.masks.items():
             if found.is_global:
                 notes.append(
@@ -402,9 +541,11 @@ class BatchMatch:
         return not self.problems
 
     def settings(self) -> dict[str, Path | None]:
-        """The run settings this match sets: the segmented and raw images, and
-        both mask rows of every size searched -- a row nothing was found for is
-        emptied, so no file the panel held for a single run carries over."""
+        """The run settings this match sets: the segmented and raw images (no
+        segmented image while ilastik is to make it), both mask rows of every
+        size searched, and each other file given a folder -- a row nothing was
+        found for is emptied, so no file the panel held for a single run
+        carries over."""
         values: dict[str, Path | None] = {
             "input_path": self.segmented,
             "raw_image_path": self.raw,
@@ -414,6 +555,8 @@ class BatchMatch:
             values[names["arteriole_mask_path"]] = None
             values[names["venule_mask_path"]] = None
             values.update(found.settings())
+        for key, path in self.files.items():
+            values[file_role(key).setting] = path
         return values
 
 
@@ -434,6 +577,48 @@ def _plain_identity(words: Sequence[str]) -> list[str]:
     return _identity(plain)
 
 
+class _Owners:
+    """Which batch image a file in a folder of its own belongs to: the image
+    whose name shares the most words with it from the start, then the most
+    words, then the fewest words of its own the file lacks, when one image
+    does (``E14_pericytes`` is ``E14``'s, not ``E14_2``'s)."""
+
+    def __init__(self, inputs: Sequence[Path]) -> None:
+        self._inputs = list(inputs)
+        self._identities = [_plain_identity(file_name_words(image.stem)) for image in inputs]
+
+    def owner(self, words: Sequence[str]) -> Path | None:
+        identity = _plain_identity(words)
+        ranks = []
+        for image, image_identity in zip(self._inputs, self._identities):
+            shared_start = _common_prefix(identity, image_identity)
+            if shared_start:
+                shared = sum((Counter(identity) & Counter(image_identity)).values())
+                ranks.append(((shared_start, shared, shared - len(image_identity)), image))
+        if not ranks:
+            return None
+        best = max(rank for rank, _image in ranks)
+        winners = [image for rank, image in ranks if rank == best]
+        return winners[0] if len(winners) == 1 else None
+
+
+def file_owners(candidates: Sequence[Path], inputs: Sequence[Path]) -> dict[Path, list[Path]]:
+    """Each file in a folder of its own (one of :data:`FILE_ROLES`'), given
+    to the batch image it belongs to, as ``image -> [file, ...]``: the image
+    whose name it shares the most words with from the start (:class:`_Owners`).
+    Probability maps belong to no image."""
+    owners = _Owners(inputs)
+    owned: dict[Path, list[Path]] = {}
+    for candidate in candidates:
+        words = file_name_words(candidate.stem)
+        if set(words) & PROBABILITY_WORDS:
+            continue
+        owner = owners.owner(words)
+        if owner is not None:
+            owned.setdefault(owner, []).append(candidate)
+    return owned
+
+
 def mask_owners(
     candidates: Sequence[Path], inputs: Sequence[Path], size: str
 ) -> dict[Path, list[tuple[str, Path]]]:
@@ -443,34 +628,22 @@ def mask_owners(
     The folder says the size, so a file need not: ilastik's
     ``{stem}_Simple Segmentation_intermediate.h5`` in a small-vessel folder is a
     small mask. A file is the mask of the image whose name shares the most
-    words with it from the start (then the most words), when one image does;
-    a file naming the other size is not this folder's. Its kind is the vessel
-    type it names beyond that image's name, or global with none (or both)."""
+    words with it from the start (:class:`_Owners`); a file naming the other
+    size is not this folder's. Its kind is the vessel type it names beyond
+    that image's name, or global with none (or both)."""
     other_sizes = frozenset().union(
         *(words for name, words in SIZE_WORDS.items() if name != size)
     )
     own_size = SIZE_WORDS[size]
-    image_identities = [_plain_identity(file_name_words(image.stem)) for image in inputs]
     owners: dict[Path, list[tuple[str, Path]]] = {}
+    ownership = _Owners(inputs)
     for candidate in candidates:
         words = file_name_words(candidate.stem)
         if set(words) & (PROBABILITY_WORDS | RAW_WORDS):
             continue
-        identity = _plain_identity(words)
-        ranks = []
-        for image, image_identity in zip(inputs, image_identities):
-            shared = _common_prefix(identity, image_identity)
-            if shared:
-                ranks.append(
-                    ((shared, sum((Counter(identity) & Counter(image_identity)).values())), image)
-                )
-        if not ranks:
+        owner = ownership.owner(words)
+        if owner is None:
             continue
-        best = max(rank for rank, _image in ranks)
-        winners = [image for rank, image in ranks if rank == best]
-        if len(winners) != 1:
-            continue
-        owner = winners[0]
         added = set(words) - set(file_name_words(owner.stem))
         if added & other_sizes and not added & own_size:
             continue
@@ -502,24 +675,33 @@ def masks_owned_by(
 def match_batch(
     folders: BatchFolders,
     sizes: Iterable[str] = (),
+    roles: Iterable[str] = (),
 ) -> tuple[BatchMatch, ...]:
-    """Each segmented image in *folders*' segmented folder, matched to its raw
-    image and to its masks of each of *sizes* (the vessel-mask roles the run
-    uses: ``"large"``, ``"small"``). Raises ValueError when the segmented
-    folder is not a folder."""
+    """Each image in *folders*' segmented folder (its raw folder, for a batch
+    ilastik segments), matched to its raw image, to its masks of each of
+    *sizes* (the vessel-mask roles the run uses: ``"large"``, ``"small"``) and
+    to each other file of *roles* (:data:`FILE_ROLE_KEYS`: those the run
+    reads) given a folder. Raises ValueError when the images' folder is not a
+    folder."""
     sizes = tuple(sizes)
     for size in sizes:
         if size not in SIZE_WORDS:
             raise ValueError(f"size must be 'large' or 'small', got {size!r}.")
-    if not folders.segmented.is_dir():
-        raise ValueError(f"The segmented images folder {folders.segmented} is not a folder.")
-    inputs = batch_inputs(folders.segmented)
+    roles = tuple(key for key in FILE_ROLE_KEYS if key in set(roles))
+    if not folders.images.is_dir():
+        kind = "raw" if folders.from_raw else "segmented"
+        raise ValueError(f"The {kind} images folder {folders.images} is not a folder.")
+    inputs = batch_inputs(folders.images, raw=folders.from_raw)
     input_files = {file_key(image) for image in inputs}
-    raw_candidates = [
-        candidate
-        for candidate in _image_files(folders.folder("raw"))
-        if file_key(candidate) not in input_files
-    ]
+    raw_candidates = (
+        []
+        if folders.from_raw
+        else [
+            candidate
+            for candidate in _image_files(folders.folder("raw"))
+            if file_key(candidate) not in input_files
+        ]
+    )
     # Each mask folder is listed once, the batch's images left out of it.
     mask_files = {size: list_mask_files([folders.folder(size)], exclude=inputs) for size in sizes}
     stems = Counter(image.stem.lower() for image in inputs)
@@ -529,6 +711,20 @@ def match_batch(
         size: mask_owners(mask_files[size], inputs, size)
         for size in sizes
         if folders.own_folder(size) is not None
+    }
+    # Each other file's folder, the batch's images left out of it, its files
+    # given to the images they share their names with.
+    file_owned = {
+        key: file_owners(
+            [
+                candidate
+                for candidate in _image_files(folders.file_folder(key))
+                if file_key(candidate) not in input_files
+            ],
+            inputs,
+        )
+        for key in roles
+        if folders.file_folder(key) is not None
     }
 
     matches: list[BatchMatch] = []
@@ -545,8 +741,8 @@ def match_batch(
             for candidate, required in zip(raw_candidates, raw_required)
             if required <= held and (rank := read_raw_name(candidate, image)) is not None
         ]
-        raw, raw_ties = _nearest(readings)
-        references = [image] if raw is None else [image, raw]
+        raw, raw_ties = (image, ()) if folders.from_raw else _nearest(readings)
+        references = [image] if raw is None or raw is image else [image, raw]
         masks = {
             size: (
                 masks_owned_by(owned[size], image, size)
@@ -555,6 +751,16 @@ def match_batch(
             )
             for size in sizes
         }
+        # A file already matched to the image (its raw image, its masks) is
+        # not one of its other files, in a folder shared with them.
+        matched = {file_key(path) for path in (raw, *_mask_files(masks)) if path is not None}
+        files: dict[str, Path | None] = {}
+        file_ties: dict[str, tuple[Path, ...]] = {}
+        for key, owners in file_owned.items():
+            own = [path for path in owners.get(image, ()) if file_key(path) not in matched]
+            files[key] = own[0] if len(own) == 1 else None
+            if len(own) > 1:
+                file_ties[key] = tuple(own)
         others = [other for other in inputs if other is not image]
         same_stem = (
             tuple(other for other in others if other.stem.lower() == image.stem.lower())
@@ -563,15 +769,27 @@ def match_batch(
         )
         matches.append(
             BatchMatch(
-                segmented=image,
+                segmented=None if folders.from_raw else image,
                 folders=folders,
                 raw=raw,
                 raw_ties=raw_ties,
                 masks=masks,
                 same_stem=same_stem,
+                files=files,
+                file_ties=file_ties,
             )
         )
     return tuple(matches)
+
+
+def _mask_files(masks: Mapping[str, FoundVesselMasks]) -> list[Path]:
+    """Every file *masks* chose or left tied."""
+    paths: list[Path] = []
+    for found in masks.values():
+        paths.extend(path for path in (found.arteriole, found.venule, found.global_mask) if path)
+        for tied in found.ambiguous.values():
+            paths.extend(tied)
+    return paths
 
 
 def _distinguishing(path: Path, tied: Sequence[Path]) -> tuple[tuple[str, ...], str]:
@@ -612,12 +830,18 @@ __all__ = [
     "BatchFolders",
     "BatchMatch",
     "CHANNEL_WORDS",
+    "FILE_ROLES",
+    "FILE_ROLE_KEYS",
+    "FileRole",
+    "IMAGE_FOLDER_ROLES",
     "IMAGE_SUFFIXES",
     "MASK_KINDS",
     "RAW_ROLE",
     "RawName",
     "batch_inputs",
     "choose_alike",
+    "file_owners",
+    "file_role",
     "is_raw_of",
     "mask_role",
     "match_batch",

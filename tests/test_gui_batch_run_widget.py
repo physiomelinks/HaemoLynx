@@ -14,6 +14,7 @@ from haemolynx.gui import _widget as widget_mod  # noqa: E402
 from haemolynx.gui._widget import settings_widget  # noqa: E402
 from haemolynx.gui.batch_run import BATCH_ROW_FOLDERS, BatchSetup  # noqa: E402
 from haemolynx.io import BatchFolders, match_batch  # noqa: E402
+from haemolynx.io.batch_matching import IMAGE_FOLDER_ROLES  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -77,8 +78,10 @@ def test_a_batch_shows_batch_run_in_its_rows_and_leaving_puts_them_back(panel, t
     batch.use(setup)
     assert batch.button.text == "Batch run: 2 images"
     for name, label in batch.labels.items():
-        assert not label.isHidden(), name
-        assert rows[name].line_edit.native.isHidden(), name
+        # The other files' rows only while the batch has a folder of them.
+        filled = BATCH_ROW_FOLDERS[name] in IMAGE_FOLDER_ROLES
+        assert label.isHidden() is not filled, name
+        assert rows[name].line_edit.native.isHidden() is filled, name
         assert str(tmp_path / "seg") in label.toolTip() or name != "input_path"
     assert panel._haemolynx_values() == before, "a batch must not change the rows' values"
 
@@ -807,3 +810,59 @@ def test_the_batch_run_button_greys_while_one_image_runs_but_not_a_batch(panel, 
     panel._haemolynx_run()
     assert batch.mode.running and state.running
     assert batch.button.enabled
+
+# -- the other files beside each image, and a batch ilastik segments ----------
+
+
+def test_the_window_shows_a_row_for_each_other_file_the_settings_read(panel, tmp_path):
+    from haemolynx.gui.batch_run import TABLE_COLUMNS
+
+    rows = panel._haemolynx_rows()
+    batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg")
+    column = TABLE_COLUMNS.index("Other files")
+    assert window.fields["cell"].isHidden()
+    assert window.table.isColumnHidden(column)
+    rows["measurement_3d_to_cell_mask"].value = True
+    cells = _images(tmp_path / "cells", "A_cells", "B_cells")
+    batch.open()
+    assert not window.fields["cell"].isHidden() and not window.fields["vessel_3d"].isHidden()
+    assert window.fields["pericyte"].isHidden() and window.fields["tissue"].isHidden()
+    window.fields["cell"].setText(str(cells))
+    window.fields["cell"].editingFinished.emit()
+    assert not window.table.isColumnHidden(column)
+    assert [window.table.item(row, column).text() for row in (0, 1)] == [
+        "cell mask: A_cells.tif",
+        "cell mask: B_cells.tif",
+    ]
+    window.use()
+    assert batch.mode.setup.folders.cell == cells
+    # Its row says so; a file with no folder keeps the panel's own row.
+    assert not batch.labels["cell_mask_path"].isHidden()
+    assert batch.labels["measurement_3d_vessel_mask_path"].isHidden()
+
+
+def test_with_ilastik_on_the_window_lists_the_raw_folders_images(panel, tmp_path):
+    rows = panel._haemolynx_rows()
+    raw = _images(tmp_path / "raw", "E14", "E15")
+    # The panel's one raw image row is empty: what reads it is greyed.
+    assert not rows["use_ilastik_segmentation"].enabled
+    rows["use_ilastik_segmentation"].value = True
+    batch = panel._haemolynx_batch
+    batch.open()
+    window = batch.window[0]
+    assert not window.fields["segmented"].isEnabled()
+    assert "ilastik" in window.fields["segmented"].placeholderText()
+    window.fields["raw"].setText(str(raw))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    window.fields["output"].editingFinished.emit()
+    assert window.table.rowCount() == 2
+    assert window.table.item(0, 1).text() == "by ilastik: E14_segmented"
+    assert "2 raw image(s), each segmented by ilastik," in window.status.text()
+    window.use()
+    assert batch.mode.setup.folders.from_raw
+    # Each image has a raw image: what reads one is live again.
+    assert rows["use_ilastik_segmentation"].enabled
+    assert rows["measure_diameters_from_raw_image"].enabled
+    assert "Made for each image by ilastik" in batch.labels["input_path"].toolTip()
+    batch.leave()
+    assert not rows["use_ilastik_segmentation"].enabled

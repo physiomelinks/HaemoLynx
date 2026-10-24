@@ -36,7 +36,14 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from haemolynx.io.batch_matching import BatchFolders, BatchMatch
+from haemolynx.io.batch_matching import (
+    FILE_ROLE_KEYS,
+    FILE_ROLES,
+    IMAGE_FOLDER_ROLES,
+    BatchFolders,
+    BatchMatch,
+    file_role,
+)
 from haemolynx.parsers import Schema
 from haemolynx.pipeline.batch import (
     batch_preflight,
@@ -71,6 +78,7 @@ SUMMARY_COLUMNS = (
     "large_venule_mask",
     "small_arteriole_mask",
     "small_venule_mask",
+    *(role.setting[: -len("_path")] for role in FILE_ROLES),
     "haemorun",
     "nodes",
     "vessels",
@@ -119,12 +127,13 @@ class BatchResult:
             "stem": self.match.stem,
             "status": self.status,
             "condition": self.condition,
-            "segmented": str(self.match.segmented),
+            "segmented": text("input_path"),
             "raw": text("raw_image_path"),
             "large_arteriole_mask": text("large_arteriole_mask_path"),
             "large_venule_mask": text("large_venule_mask_path"),
             "small_arteriole_mask": text("small_arteriole_mask_path"),
             "small_venule_mask": text("small_venule_mask_path"),
+            **{role.setting[: -len("_path")]: text(role.setting) for role in FILE_ROLES},
             "haemorun": "" if self.haemorun is None else str(self.haemorun),
             "nodes": "" if self.nodes is None else self.nodes,
             "vessels": "" if self.vessels is None else self.vessels,
@@ -415,10 +424,14 @@ def write_batch_settings(
 
     path = output_root / SETTINGS_FILENAME
     write_settings_yaml(path, {k: v for k, v in values.items() if k in schema}, schema)
-    lines = ["", "# Batch folders (blank: the segmented folder)"]
-    for name in ("segmented", "raw", "large", "small"):
+    lines = ["", "# Batch folders (blank: the images' folder)"]
+    for name in IMAGE_FOLDER_ROLES:
         value = getattr(folders, name)
         lines.append(f"# batch_{name}: {'' if value is None else Path(value).as_posix()}")
+    for name in folders.file_keys:
+        lines.append(f"# batch_{name}: {Path(getattr(folders, name)).as_posix()}")
+    if folders.from_raw:
+        lines.append("# batch_from_raw: yes (ilastik segments each raw image)")
     lines.append(f"# batch_output: {Path(output_root).as_posix()}")
     for name in ("a", "b"):
         condition = getattr(conditions, name) if conditions is not None else None
@@ -635,7 +648,8 @@ def write_statistics(
 
 
 #: The rows a batch fills for each image, shown as :data:`BATCH_ROW_TEXT`
-#: while one is set: setting -> the batch folder it comes from.
+#: while one is set (the other files' only while given a folder): setting ->
+#: the batch folder it comes from.
 BATCH_ROW_FOLDERS = {
     "input_path": "segmented",
     "raw_image_path": "raw",
@@ -643,6 +657,7 @@ BATCH_ROW_FOLDERS = {
     "large_venule_mask_path": "large",
     "small_arteriole_mask_path": "small",
     "small_venule_mask_path": "small",
+    **{role.setting: role.key for role in FILE_ROLES},
 }
 BATCH_ROW_TEXT = "Batch run"
 BATCH_BUTTON_TEXT = "Batch run"
@@ -685,8 +700,8 @@ LEFT_BATCH_FOR_RUN = (
 
 #: The table's columns.
 TABLE_COLUMNS = (
-    "Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Condition",
-    "Time", "Peak RAM", "Vessels", "Status",
+    "Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Other files",
+    "Condition", "Time", "Peak RAM", "Vessels", "Status",
 )
 READY = "ready"
 
@@ -726,9 +741,45 @@ class BatchSetup:
         count = len(self.selected())
         return f"{BATCH_BUTTON_TEXT}: {count} image{'' if count == 1 else 's'}"
 
+    def fills(self, setting: str) -> bool:
+        """Whether the batch sets the row *setting* for each image: the
+        images, raw images and masks always, another file while it has a
+        folder of them."""
+        role = BATCH_ROW_FOLDERS.get(setting)
+        if role in IMAGE_FOLDER_ROLES:
+            return True
+        return role is not None and self.folders.file_folder(role) is not None
+
     def row_tooltip(self, setting: str) -> str:
-        folder = self.folders.folder(BATCH_ROW_FOLDERS[setting])
+        role = BATCH_ROW_FOLDERS[setting]
+        if role == "segmented" and self.folders.from_raw:
+            return (
+                f"Made for each image by ilastik, from its raw image in {self.folders.raw}; "
+                "open Batch run to change it"
+            )
+        if role in IMAGE_FOLDER_ROLES:
+            folder = self.folders.folder(role)
+        else:
+            folder = self.folders.file_folder(role)
         return f"Set for each image by the batch, from {folder}; open Batch run to change it"
+
+    def gates(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """*values* as the panel's greying reads them while this batch is set:
+        a row it fills reads as set when a ticked image has that file, so
+        what needs it (the raw image's switches, ilastik's among them) is not
+        greyed while the panel's own row is empty."""
+        gates = dict(values)
+        selected = self.selected()
+        for setting in BATCH_ROW_FOLDERS:
+            if gates.get(setting) not in (None, "") or not self.fills(setting):
+                continue
+            found = next(
+                (path for match in selected if (path := match.settings().get(setting)) is not None),
+                None,
+            )
+            if found is not None:
+                gates[setting] = found
+        return gates
 
     def condition_counts(self) -> str:
         """``"3 in WT, 3 in KO, 1 in neither"`` over the ticked images."""
@@ -767,6 +818,19 @@ def _mask_cell(found) -> str:
     if found.venule is not None:
         return f"{found.venule.name} (no arteriole)"
     return "none found"
+
+
+def _files_cell(match: BatchMatch) -> str:
+    """The table's Other files cell: each other file matched, by what it is."""
+    parts = []
+    for key, path in match.files.items():
+        tied = match.file_ties.get(key)
+        if tied:
+            text = f"{len(tied)} files tie: choose"
+        else:
+            text = path.name if path is not None else "none"
+        parts.append(f"{file_role(key).label}: {text}")
+    return "; ".join(parts)
 
 
 DONE_BEFORE_SKIPPED = "done before: will be skipped"
@@ -832,13 +896,17 @@ def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:
             raw = f"{len(match.raw_ties)} files tie: choose"
         else:
             raw = match.raw.name if match.raw is not None else "none"
+        segmented = (
+            match.segmented.name if match.segmented is not None else f"by ilastik: {match.stem}"
+        )
         rows.append(
             (
                 "no" if match.stem in setup.unticked else "yes",
-                match.segmented.name,
+                segmented,
                 raw,
                 _mask_cell(match.masks.get("large")),
                 _mask_cell(match.masks.get("small")),
+                _files_cell(match),
                 condition_cell(setup, match),
                 *setup.figures.get(match.stem, ("", "", "")),
                 match_status(
@@ -856,10 +924,17 @@ def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:
 def tied_cells(match: BatchMatch) -> dict[int, tuple[str, tuple[Path, ...]]]:
     """The table columns holding a tie for *match*: column -> (role, files).
     One role per column, the first; the next shows once it is chosen."""
-    columns = {"raw": 2, "large": 3, "small": 4}
+    columns = {
+        "raw": TABLE_COLUMNS.index("Raw image"),
+        "large": TABLE_COLUMNS.index("Large masks"),
+        "small": TABLE_COLUMNS.index("Small masks"),
+    }
     cells: dict[int, tuple[str, tuple[Path, ...]]] = {}
     for role in match.tied_roles:
-        column = columns[role.partition("_")[0]]
+        if role in FILE_ROLE_KEYS:
+            column = TABLE_COLUMNS.index("Other files")
+        else:
+            column = columns[role.partition("_")[0]]
         cells.setdefault(column, (role, match.ties(role)))
     return cells
 
@@ -982,7 +1057,8 @@ def read_batch_settings(path: Path | str) -> BatchRecord | None:
         if line.startswith("# batch_"):
             name, _colon, value = line[len("# batch_"):].partition(":")
             record[name.strip()] = value.strip()
-    if not record.get("segmented"):
+    from_raw = record.get("from_raw", "").startswith("yes")
+    if not record.get("raw" if from_raw else "segmented"):
         return None
 
     def folder(name: str) -> Path | None:
@@ -992,7 +1068,9 @@ def read_batch_settings(path: Path | str) -> BatchRecord | None:
     return BatchRecord(
         path=path,
         folders=BatchFolders(
-            record["segmented"], raw=folder("raw"), large=folder("large"), small=folder("small")
+            folder("segmented"),
+            **{name: folder(name) for name in IMAGE_FOLDER_ROLES[1:] + FILE_ROLE_KEYS},
+            from_raw=from_raw,
         ),
         output_root=folder("output") or path.parent,
         conditions=BatchConditions.from_text(
@@ -1040,7 +1118,8 @@ def settings_changed(values: Mapping[str, Any], schema: Schema) -> list[str]:
     return [
         name
         for name in schema.names
-        if name not in BATCH_ROW_FOLDERS and plain(values.get(name)) != plain(defaults.get(name))
+        if BATCH_ROW_FOLDERS.get(name) not in IMAGE_FOLDER_ROLES
+        and plain(values.get(name)) != plain(defaults.get(name))
     ]
 
 

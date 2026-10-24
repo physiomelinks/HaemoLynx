@@ -12,9 +12,15 @@ from pathlib import Path
 from typing import Sequence
 
 from haemolynx.gui import batch_run
-from haemolynx.io.batch_matching import BatchFolders, match_batch
+from haemolynx.io.batch_matching import FILE_ROLES, BatchFolders, match_batch
 from haemolynx.parsers import configure_console_logging
-from haemolynx.pipeline.batch import batch_mask_sizes, batch_preflight, default_output_root
+from haemolynx.pipeline.batch import (
+    batch_file_roles,
+    batch_from_raw,
+    batch_mask_sizes,
+    batch_preflight,
+    default_output_root,
+)
 from haemolynx.statistics.batch_comparison import (
     AGGREGATE_NONE,
     AGGREGATES,
@@ -33,10 +39,28 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--config", required=True, help="Settings file (a config YAML or a run's _run_settings.yaml).")
-    parser.add_argument("--segmented", required=True, help="Folder of segmented images.")
-    parser.add_argument("--raw", help="Folder of raw images (default: the segmented folder).")
-    parser.add_argument("--large", help="Folder of large vessel masks (default: the segmented folder).")
-    parser.add_argument("--small", help="Folder of small vessel masks (default: the segmented folder).")
+    parser.add_argument(
+        "--segmented",
+        help="Folder of segmented images: each is one run (not read while the config has ilastik segment).",
+    )
+    parser.add_argument(
+        "--raw",
+        help=(
+            "Folder of raw images (default: the segmented folder). While the config has "
+            "use_ilastik_segmentation on, each raw image here is one run, segmented by ilastik."
+        ),
+    )
+    parser.add_argument("--large", help="Folder of large vessel masks (default: the images' folder).")
+    parser.add_argument("--small", help="Folder of small vessel masks (default: the images' folder).")
+    for role in FILE_ROLES:
+        parser.add_argument(
+            f"--{role.key.replace('_', '-')}",
+            dest=role.key,
+            help=(
+                f"Folder of {role.label}s, each the {role.label} of the image sharing its name "
+                f"({role.setting}; default: the config's one file, which a batch refuses)."
+            ),
+        )
     parser.add_argument("--output", help="Output folder (default: the config's vtk_output_prefix folder).")
     parser.add_argument("--only", nargs="*", help="Run only these image stems.")
     parser.add_argument("--rerun", action="store_true", help="Run images whose .haemorun is already there again.")
@@ -112,14 +136,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_console_logging(timestamps=True)
     schema = default_schema()
     values = load_config(args.config, schema)
-    folders = BatchFolders(args.segmented, raw=args.raw, large=args.large, small=args.small)
+    from_raw = batch_from_raw(values)
+    try:
+        folders = BatchFolders(
+            None if from_raw else args.segmented,
+            raw=args.raw,
+            large=args.large,
+            small=args.small,
+            from_raw=from_raw,
+            **{role.key: getattr(args, role.key) for role in FILE_ROLES},
+        )
+    except ValueError as error:
+        print(f"{error} Pass {'--raw' if from_raw else '--segmented'}.")
+        return 1
+    if from_raw and args.segmented:
+        print("warning: the config has ilastik segment each raw image, so --segmented is not read.")
     output_root = Path(args.output) if args.output else default_output_root(values)
     if output_root is None:
         print("No output folder: pass --output, or set vtk_output_prefix to a path with a folder.")
         return 1
-    matches = batch_run.selected_matches(match_batch(folders, batch_mask_sizes(values)), args.only)
+    try:
+        found = match_batch(folders, batch_mask_sizes(values), batch_file_roles(values, schema))
+    except ValueError as error:
+        print(error)
+        return 1
+    matches = batch_run.selected_matches(found, args.only)
     if not matches:
-        print(f"No segmented images found in {folders.segmented}.")
+        print(f"No {'raw' if from_raw else 'segmented'} images found in {folders.images}.")
         return 1
     conditions = BatchConditions.from_text(
         args.condition_a,

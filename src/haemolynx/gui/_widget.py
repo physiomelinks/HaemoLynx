@@ -10089,9 +10089,9 @@ _GRAPH_EDITOR_STATUS = {
 
 def _show_batch_row(widget, label, setup, name: str) -> None:
     """A path row filled per image by a batch: its file box and button give
-    way to *label* ("Batch run") while *setup* is set. The row's own value is
-    left as it was, so leaving the batch puts it back."""
-    active = setup is not None
+    way to *label* ("Batch run") while *setup* is set and fills it. The row's
+    own value is left as it was, so leaving the batch puts it back."""
+    active = setup is not None and setup.fills(name)
     for part in (getattr(widget, "line_edit", None), getattr(widget, "choose_btn", None)):
         if part is not None:
             part.native.setVisible(not active)
@@ -10135,6 +10135,12 @@ class _BatchRunWindow:
         ("raw", "Raw images"),
         ("large", "Large vessel masks"),
         ("small", "Small vessel masks"),
+        # The other files read beside each image: a row shows while one is read.
+        ("pericyte", "Pericyte masks"),
+        ("cell", "Cell masks"),
+        ("vessel_3d", "Vessel masks (3D distances)"),
+        ("tissue", "Tissue images"),
+        ("capillary_block", "Masks of blocks"),
         ("output", "Output folder"),
     )
     CONDITION_ROWS = (
@@ -10220,6 +10226,7 @@ class _BatchRunWindow:
         grid = QGridLayout()
         self.fields: dict[str, Any] = {}
         self.browse_buttons: dict[str, Any] = {}
+        self.folder_labels: dict[str, Any] = {}
         for row, (key, text) in enumerate(self.FOLDER_ROWS):
             edit = QLineEdit()
             edit.setToolTip(tips[key])
@@ -10227,11 +10234,13 @@ class _BatchRunWindow:
             browse = QPushButton("Browse...")
             browse.setToolTip(tips["browse"])
             browse.clicked.connect(lambda _checked=False, field=edit: self._browse(field))
-            grid.addWidget(QLabel(text), row, 0)
+            label = QLabel(text)
+            grid.addWidget(label, row, 0)
             grid.addWidget(edit, row, 1)
             grid.addWidget(browse, row, 2)
             self.fields[key] = edit
             self.browse_buttons[key] = browse
+            self.folder_labels[key] = label
         folders_layout.addLayout(grid)
         self.last_batch_button = QPushButton("Use this folder's last batch")
         self.last_batch_button.setToolTip(tips["last_batch"])
@@ -10434,19 +10443,61 @@ class _BatchRunWindow:
 
         return batch_mask_sizes(self._values())
 
+    def _roles(self) -> tuple[str, ...]:
+        from haemolynx.pipeline.batch import batch_file_roles
+
+        return batch_file_roles(self._values(), self._schema)
+
+    def _from_raw(self) -> bool:
+        from haemolynx.pipeline.batch import batch_from_raw
+
+        return batch_from_raw(self._values())
+
+    def _images_key(self) -> str:
+        """The folder row the images are listed from."""
+        return "raw" if self._from_raw() else "segmented"
+
     def _refresh_mask_rows(self) -> None:
+        """Grey what the settings do not read, saying what would: the
+        segmented folder while ilastik segments the raw images, a mask size
+        no switch uses; show the other files' rows only while one is read."""
         from haemolynx.gui.batch_run import mask_switch_hint
+        from haemolynx.gui.form import label_for
+        from haemolynx.io.batch_matching import FILE_ROLES
 
         sizes = self._sizes()
         values = self._values()
+        from_raw = self._from_raw()
+        images = "raw" if from_raw else "segmented"
+        self.fields["segmented"].setEnabled(not from_raw)
+        self.browse_buttons["segmented"].setEnabled(not from_raw)
+        self.fields["segmented"].setPlaceholderText(
+            f"not read: ilastik segments each raw image ('{label_for('use_ilastik_segmentation')}')"
+            if from_raw
+            else ""
+        )
+        self.fields["raw"].setPlaceholderText(
+            "each raw image here is one run, segmented by ilastik"
+            if from_raw
+            else "blank: the segmented folder"
+        )
         for size in ("large", "small"):
             used = size in sizes
             self.fields[size].setEnabled(used)
             self.browse_buttons[size].setEnabled(used)
             self.fields[size].setPlaceholderText(
-                "blank: the segmented folder" if used else mask_switch_hint(self._schema, values, size)
+                f"blank: the {images} folder" if used else mask_switch_hint(self._schema, values, size)
             )
-        self.fields["raw"].setPlaceholderText("blank: the segmented folder")
+        roles = self._roles()
+        for role in FILE_ROLES:
+            shown = role.key in roles
+            for widget in (self.folder_labels[role.key], self.fields[role.key], self.browse_buttons[role.key]):
+                widget.setVisible(shown)
+            self.fields[role.key].setPlaceholderText(
+                f"blank: {role.fallback}"
+                if role.fallback
+                else f"blank: none (one {role.label} for every image is refused)"
+            )
 
     def _refresh_settings_line(self) -> None:
         from haemolynx.gui.batch_run import settings_changed
@@ -10472,7 +10523,7 @@ class _BatchRunWindow:
         """A folder typed or chosen: offer the output folder's last batch, and
         match again once there are images and somewhere to put them."""
         self._refresh_last_batch()
-        if self.fields["segmented"].text().strip() and self.fields["output"].text().strip():
+        if self.fields[self._images_key()].text().strip() and self.fields["output"].text().strip():
             self.match()
 
     def _refresh_last_batch(self) -> None:
@@ -10495,9 +10546,7 @@ class _BatchRunWindow:
             self._on_load_settings(record.path)
         self._filling = True
         try:
-            for key in ("segmented", "raw", "large", "small"):
-                value = getattr(record.folders, key)
-                self.fields[key].setText("" if value is None else str(value))
+            self._show_folders(record.folders)
             self.fields["output"].setText(str(record.output_root))
             self._show_conditions(record.conditions, record.exclude_sections)
         finally:
@@ -10507,6 +10556,13 @@ class _BatchRunWindow:
         matched = self.match()
         self._say(f"Filled from {record.path}, and the panel's settings with it. " + self.status.text())
         return matched
+
+    def _show_folders(self, folders) -> None:
+        from haemolynx.io.batch_matching import FILE_ROLE_KEYS, IMAGE_FOLDER_ROLES
+
+        for key in IMAGE_FOLDER_ROLES + FILE_ROLE_KEYS:
+            value = getattr(folders, key)
+            self.fields[key].setText("" if value is None else str(value))
 
     def _show_conditions(self, conditions, exclude_sections) -> None:
         for key, condition in zip(("condition_a", "condition_b"), (conditions.a, conditions.b)):
@@ -10522,9 +10578,7 @@ class _BatchRunWindow:
 
         if setup is not None:
             self.setup = setup
-            for key in ("segmented", "raw", "large", "small"):
-                value = getattr(setup.folders, key)
-                self.fields[key].setText("" if value is None else str(value))
+            self._show_folders(setup.folders)
             self.fields["output"].setText(str(setup.output_root))
             self._filling = True
             try:
@@ -10671,15 +10725,22 @@ class _BatchRunWindow:
     # -- matching --------------------------------------------------------
 
     def _folders(self):
+        """The batch's folders as the window holds them: only those the
+        settings read (no segmented folder while ilastik segments, no mask
+        size or other file nothing reads)."""
         from haemolynx.io.batch_matching import BatchFolders
 
         sizes = self._sizes()
+        roles = self._roles()
+        from_raw = self._from_raw()
         text = {key: self.fields[key].text().strip() for key, _label in self.FOLDER_ROWS}
         return BatchFolders(
-            text["segmented"],
+            None if from_raw else text["segmented"],
             raw=text["raw"] or None,
             large=text["large"] if "large" in sizes and text["large"] else None,
             small=text["small"] if "small" in sizes and text["small"] else None,
+            from_raw=from_raw,
+            **{key: text[key] or None for key in roles},
         )
 
     def match(self) -> bool:
@@ -10702,7 +10763,7 @@ class _BatchRunWindow:
             return False
         try:
             folders = self._folders()
-            matches = match_batch(folders, self._sizes())
+            matches = match_batch(folders, self._sizes(), self._roles())
         except ValueError as error:
             self._say(str(error))
             return False
@@ -10724,12 +10785,13 @@ class _BatchRunWindow:
         self.refresh_comparison()
         attention = sum(not match.ok for match in matches)
         counts = setup.condition_counts()
+        kind = "raw image(s), each segmented by ilastik," if folders.from_raw else "segmented image(s)"
         self._say(
-            f"{len(matches)} segmented image(s) in {folders.segmented}"
+            f"{len(matches)} {kind} in {folders.images}"
             + (f"; {attention} need attention" if attention else "")
             + (f"; {counts}." if counts else ".")
             if matches
-            else f"No segmented images found in {folders.segmented}."
+            else f"No {'raw' if folders.from_raw else 'segmented'} images found in {folders.images}."
         )
         self.setup = replace(setup, skip_done=self.skip_done.isChecked())
         return bool(matches)
@@ -10957,13 +11019,17 @@ class _BatchRunWindow:
         from qtpy.QtCore import Qt
         from qtpy.QtWidgets import QComboBox, QTableWidgetItem
 
-        from haemolynx.gui.batch_run import table_rows, tied_cells
+        from haemolynx.gui.batch_run import TABLE_COLUMNS, table_rows, tied_cells
 
         self._filling = True
         self.table.setSortingEnabled(False)
         try:
             setup = self.setup
             rows = table_rows(setup) if setup is not None else []
+            self.table.setColumnHidden(
+                TABLE_COLUMNS.index("Other files"),
+                setup is None or not any(match.files for match in setup.matches),
+            )
             self.table.setRowCount(len(rows))
             for row, cells in enumerate(rows):
                 match = setup.matches[row]
@@ -14194,6 +14260,11 @@ def settings_widget(napari_viewer=None):
         resolved = resolved_raw_image_stain(values)
         if resolved is not None and resolved != values.get("raw_image_stain"):
             gates = {**values, "raw_image_stain": resolved}
+        # A set batch fills the image rows for each image: what needs a raw
+        # image (ilastik's switch among them) is not greyed for the panel's
+        # own row being empty.
+        if batch_mode.setup is not None:
+            gates = batch_mode.setup.gates(gates)
         place_shared_ilastik()
         # The "Use open layer" row is an image run's: a synthetic network
         # reads no layer.

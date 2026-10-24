@@ -411,8 +411,34 @@ BATCH_RUN_TOOLTIPS = {
     "button_running": (
         "A run is going: Batch run opens once it ends, or press Cancel to stop it"
     ),
-    "segmented": "The folder of segmented images: each image file in it is one run",
-    "raw": "The folder of raw images; left blank, they are looked for in the segmented folder",
+    "segmented": (
+        "The folder of segmented images: each image file in it is one run. Not read "
+        "while ilastik segments the raw images"
+    ),
+    "raw": (
+        "The folder of raw images; left blank, they are looked for in the segmented "
+        "folder. While ilastik segments (Input tab), each raw image here is one run"
+    ),
+    "pericyte": (
+        "The folder of pericyte masks: every file in it is the pericyte mask of the "
+        "image sharing its name. Shown while a setting reads pericyte_mask_path"
+    ),
+    "cell": (
+        "The folder of cell masks: every file in it is the cell mask of the image "
+        "sharing its name. Shown while the 3D cell distances are measured"
+    ),
+    "vessel_3d": (
+        "The folder of vessel masks for the 3D cell distances, one per image by name; "
+        "left blank, each image's own segmentation"
+    ),
+    "tissue": (
+        "The folder of tissue images: every file in it is the tissue image of the image "
+        "sharing its name; left blank, each image's raw image"
+    ),
+    "capillary_block": (
+        "The folder of masks of blocks: every file in it is the mask of blocks of the "
+        "image sharing its name, read by each capillary block from a mask"
+    ),
     "large": (
         "The folder of large vessel masks; given on its own, every file in it is "
         "a large mask of the image sharing its name. Left blank, the segmented "

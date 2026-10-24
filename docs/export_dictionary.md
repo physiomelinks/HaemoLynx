@@ -573,12 +573,17 @@ Written to the batch's output folder. One row per image of a batch run.
 | `stem` | `-` | The image's stem. |
 | `status` | `-` | done, failed, skipped (done before), cancelled or not run. |
 | `condition` | `-` | Its condition (A or B), if any. |
-| `segmented` | `-` | Its segmented image. |
+| `segmented` | `-` | Its segmented image (blank where ilastik segments its raw image). |
 | `raw` | `-` | Its raw image. |
 | `large_arteriole_mask` | `-` | Its large arteriole mask. |
 | `large_venule_mask` | `-` | Its large venule mask. |
 | `small_arteriole_mask` | `-` | Its small arteriole mask. |
 | `small_venule_mask` | `-` | Its small venule mask. |
+| `pericyte_mask` | `-` | Its pericyte mask, from the batch's folder of them. |
+| `cell_mask` | `-` | Its cell mask, from the batch's folder of them. |
+| `measurement_3d_vessel_mask` | `-` | Its vessel mask for the 3D distances, from the batch's folder of them. |
+| `tissue_raw_tiff` | `-` | Its tissue image, from the batch's folder of them. |
+| `capillary_block_mask` | `-` | Its mask of blocks, from the batch's folder of them. |
 | `haemorun` | `-` | The .haemorun it saved. |
 | `nodes` | `count` | Nodes in its network. |
 | `vessels` | `vessels` | Vessels in its network. |

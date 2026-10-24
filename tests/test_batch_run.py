@@ -356,7 +356,7 @@ def test_statistics_that_cannot_be_written_never_fail_the_batch(tmp_path, schema
 def test_conditions_show_in_the_table_and_two_alike_fail_the_checks(tmp_path, schema):
     from dataclasses import replace
 
-    from haemolynx.gui.batch_run import BatchSetup, check_setup, table_rows
+    from haemolynx.gui.batch_run import TABLE_COLUMNS, BatchSetup, check_setup, table_rows
     from haemolynx.statistics.batch_comparison import BatchConditions
 
     folder = tmp_path / "seg"
@@ -365,9 +365,9 @@ def test_conditions_show_in_the_table_and_two_alike_fail_the_checks(tmp_path, sc
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
     folders = BatchFolders(folder)
     setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=match_batch(folders))
-    assert [row[5] for row in table_rows(setup)] == ["", "", ""]
+    assert [row[TABLE_COLUMNS.index("Condition")] for row in table_rows(setup)] == ["", "", ""]
     setup = replace(setup, conditions=BatchConditions.from_text("WT", "KO"))
-    assert [(row[1], row[5]) for row in table_rows(setup)] == [
+    assert [(row[1], row[TABLE_COLUMNS.index("Condition")]) for row in table_rows(setup)] == [
         ("HET_1.tif", "neither"), ("KO_1.tif", "KO"), ("WT_1.tif", "WT")
     ]
     assert setup.condition_counts() == "1 in WT, 1 in KO, 1 in neither"
@@ -450,7 +450,7 @@ def test_the_command_line_pairs_conditions_by_subject(tmp_path, schema, monkeypa
 def test_the_table_names_each_images_subject_or_why_it_has_no_partner(tmp_path):
     from dataclasses import replace
 
-    from haemolynx.gui.batch_run import BatchSetup, table_rows, write_batch_settings
+    from haemolynx.gui.batch_run import TABLE_COLUMNS, BatchSetup, table_rows, write_batch_settings
     from haemolynx.statistics.batch_comparison import BatchConditions
 
     folder = tmp_path / "seg"
@@ -464,7 +464,7 @@ def test_the_table_names_each_images_subject_or_why_it_has_no_partner(tmp_path):
         matches=match_batch(folders),
         conditions=BatchConditions.from_text("contra", "ipsi", paired=True),
     )
-    assert {row[1]: row[5] for row in table_rows(setup)} == {
+    assert {row[1]: row[TABLE_COLUMNS.index("Condition")] for row in table_rows(setup)} == {
         "s1_contra.tif": "contra, subject s1",
         "s1_ipsi.tif": "ipsi, subject s1",
         "s2_contra.tif": "contra: unpaired, no ipsi image of subject s2",
@@ -472,7 +472,7 @@ def test_the_table_names_each_images_subject_or_why_it_has_no_partner(tmp_path):
     }
     # Unticking an image unpairs its partner.
     unticked = replace(setup, unticked=frozenset({"s1_ipsi"}))
-    cells = {row[1]: row[5] for row in table_rows(unticked)}
+    cells = {row[1]: row[TABLE_COLUMNS.index("Condition")] for row in table_rows(unticked)}
     assert cells["s1_contra.tif"] == "contra: unpaired, no ipsi image of subject s1"
     assert cells["s1_ipsi.tif"] == "ipsi"
     out = tmp_path / "out"
@@ -1052,3 +1052,187 @@ def test_the_batch_run_button_greys_for_a_synthetic_network_and_a_run_of_one_ima
     # A batch set or running opens its window: where it is followed, stopped and left.
     for state in ({"batch_set": True}, {"running": True, "batch_running": True}):
         assert batch_button_greyed(synthetic, **{**idle, **state}) == ""
+
+# -- the other files beside each image, and a batch ilastik segments -------------
+
+
+def _copies(folder: Path, *stems: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    for stem in stems:
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+    return folder
+
+
+def test_the_summary_and_table_carry_each_images_other_files(tmp_path, schema, monkeypatch):
+    from haemolynx.gui.batch_run import BatchSetup, TABLE_COLUMNS, table_rows, tied_cells
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+    seg = _copies(tmp_path / "seg", "E14_seg", "E15_seg")
+    cells = tmp_path / "cells"
+    cells.mkdir()
+    for name in ("E14_cells.tif", "E15_cells_left.tif", "E15_cells_right.tif"):
+        (cells / name).write_bytes(b"")
+    folders = BatchFolders(seg, cell=cells)
+    matches = match_batch(folders, roles=["cell"])
+    summary = run_batch(_values(schema, tmp_path), schema, matches[:1], tmp_path / "out", folders=folders)
+    (row,) = _summary_rows(summary.csv_path)
+    assert row["cell_mask"] == str(cells / "E14_cells.tif")
+    assert row["pericyte_mask"] == "" and row["segmented"] == str(seg / "E14_seg.tif")
+    setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=matches)
+    column = TABLE_COLUMNS.index("Other files")
+    assert [cells[column] for cells in table_rows(setup)] == [
+        "cell mask: E14_cells.tif",
+        "cell mask: 2 files tie: choose",
+    ]
+    assert tied_cells(matches[1]) == {column: ("cell", matches[1].ties("cell"))}
+
+
+def test_a_batchs_other_folders_and_ilastik_are_read_back_from_its_settings_file(tmp_path, schema):
+    from haemolynx.gui.batch_run import read_batch_settings, write_batch_settings
+
+    out = tmp_path / "out"
+    out.mkdir()
+    folders = BatchFolders(
+        raw=tmp_path / "raw", small=tmp_path / "small", tissue=tmp_path / "tissue",
+        capillary_block=tmp_path / "blocks", from_raw=True,
+    )
+    path = write_batch_settings(_values(schema, tmp_path), schema, folders, out)
+    assert "# batch_from_raw: yes" in path.read_text(encoding="utf-8")
+    assert read_batch_settings(path).folders == folders
+
+
+def test_a_set_batch_greys_nothing_its_images_have_and_says_where_rows_come_from(tmp_path, schema):
+    from haemolynx.gui.batch_run import BatchSetup
+
+    raw = _copies(tmp_path / "raw", "E14", "E15")
+    folders = BatchFolders(raw=raw, from_raw=True, tissue=tmp_path / "tissue")
+    setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=match_batch(folders))
+    values = schema.defaults()
+    gates = setup.gates(values)
+    # The panel's raw image row is empty, but every image has one: ilastik's
+    # switch, and whatever else reads the raw image, is not greyed.
+    assert values["raw_image_path"] is None and gates["raw_image_path"] == raw / "E14.tif"
+    assert gates["input_path"] is None  # ilastik makes it
+    assert setup.fills("tissue_raw_tiff_path") and not setup.fills("cell_mask_path")
+    assert "Made for each image by ilastik" in setup.row_tooltip("input_path")
+    assert str(tmp_path / "tissue") in setup.row_tooltip("tissue_raw_tiff_path")
+
+
+def test_the_command_line_matches_a_folder_of_cell_masks(tmp_path, schema, monkeypatch, capsys):
+    from haemolynx.pipeline.provenance import write_settings_yaml
+
+    calls = []
+    monkeypatch.setattr(batch_run, "run_image", _fake_run(calls))
+    seg = _copies(tmp_path / "seg", "A_seg", "B_seg")
+    cells = _copies(tmp_path / "cells", "A_cells", "B_cells")
+    values = {**_values(schema, tmp_path), "measurement_3d_to_cell_mask": True, "cell_mask_path": cells / "A_cells.tif"}
+    config = write_settings_yaml(tmp_path / "config.yaml", values, schema)
+    out = tmp_path / "out"
+    # The config's one cell mask is refused for every image...
+    assert main(["--config", str(config), "--segmented", str(seg), "--output", str(out), "--dry-run"]) == 1
+    assert "give the batch a folder of cell masks" in capsys.readouterr().out
+    # ...and with a folder of them each image reads its own.
+    args = ["--config", str(config), "--segmented", str(seg), "--cell", str(cells), "--output", str(out)]
+    assert main(args) == 0
+    assert [Path(values["cell_mask_path"]).name for _stem, values in calls] == ["A_cells.tif", "B_cells.tif"]
+
+
+def _ilastik_config(tmp_path: Path, schema) -> Path:
+    from test_io import _fake_ilastik, _ilastik_project
+
+    from haemolynx.pipeline.provenance import write_settings_yaml
+
+    values = {
+        **_values(schema, tmp_path),
+        "use_ilastik_segmentation": True,
+        "ilastik_classifier_path": _ilastik_project(tmp_path / "vessels.ilp"),
+        "ilastik_vessel_label": "Vessel",
+        "ilastik_executable": str(_fake_ilastik(tmp_path)),
+        "measure_diameters_from_raw_image": False,
+    }
+    return write_settings_yaml(tmp_path / "config.yaml", values, schema)
+
+
+def test_the_command_line_runs_a_batch_of_raw_images_for_ilastik(tmp_path, schema, monkeypatch, capsys):
+    calls = []
+
+    def run_image(values, schema, *, progress=None, check_cancelled=None, haemorun=None):
+        calls.append(values)
+        haemorun.parent.mkdir(parents=True, exist_ok=True)
+        haemorun.write_bytes(b"run")
+        return None
+
+    monkeypatch.setattr(batch_run, "run_image", run_image)
+    raw = _copies(tmp_path / "raw", "E14", "E15")
+    config = _ilastik_config(tmp_path, schema)
+    out = tmp_path / "out"
+    # No raw folder: there are no images.
+    assert main(["--config", str(config), "--segmented", str(raw), "--output", str(out)]) == 1
+    assert "Pass --raw" in capsys.readouterr().out
+    assert main(["--config", str(config), "--raw", str(raw), "--output", str(out), "--dry-run"]) == 0
+    assert "All 2 image(s) passed their checks." in capsys.readouterr().out
+    assert main(["--config", str(config), "--raw", str(raw), "--output", str(out)]) == 0
+    assert [(Path(values["raw_image_path"]).name, values["input_path"]) for values in calls] == [
+        ("E14.tif", None),
+        ("E15.tif", None),
+    ]
+    assert Path(calls[0]["ilastik_output_dir"]) == out / "E14_segmented" / "segmentations"
+    assert (out / "E15_segmented" / "E15_segmented.haemorun").is_file()
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_a_real_batch_of_raw_images_is_segmented_by_ilastik_and_run(tmp_path, schema, monkeypatch):
+    """Two raw images, each segmented by a stand-in for ilastik (it labels the
+    seven-vessel fixture's vessels 1 and the rest 2) and run to the end: each
+    image's folder holds its segmentation, with the record that lets it be
+    reused, its outputs named after it, and its statistics, which the batch
+    reads back by the image's stem."""
+    import json
+
+    from haemolynx.gui.run_snapshot import read_run_snapshot
+    from haemolynx.io.ilastik import sidecar_path
+    from haemolynx.parsers import load_config
+
+    fake = tmp_path / "stand_in_ilastik.py"
+    # The vessel is what the run would read the fixture's grey values as.
+    fake.write_text(
+        "import sys, numpy as np, tifffile\n"
+        "from skimage.util import img_as_bool\n"
+        "pattern = next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--output_filename_format='))\n"
+        "image = sys.argv[-1]\n"
+        "nickname = image.replace('\\\\', '/').rsplit('/', 1)[-1].rsplit('.', 1)[0]\n"
+        "labels = np.where(img_as_bool(tifffile.imread(image)), 1, 2).astype(np.uint8)\n"
+        "tifffile.imwrite(pattern.replace('{nickname}', nickname), labels)\n",
+        encoding="utf-8",
+    )
+    config = _ilastik_config(tmp_path, schema)
+    values = load_config(config, schema)
+    import os
+    import sys
+
+    wrapper = tmp_path / ("ilastik.bat" if os.name == "nt" else "ilastik")
+    if os.name == "nt":
+        wrapper.write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
+    else:
+        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
+        wrapper.chmod(0o755)
+    values.update({"ilastik_executable": str(wrapper), "statistics": True})
+    raw = _copies(tmp_path / "raw", "E14", "E15")
+    folders = BatchFolders(raw=raw, from_raw=True)
+    out = tmp_path / "out"
+    summary = run_batch(values, schema, match_batch(folders), out, folders=folders)
+    assert [result.status for result in summary.results] == [DONE, DONE], [
+        result.error_detail for result in summary.results
+    ]
+    for result in summary.results:
+        stem = result.match.stem
+        folder = out / stem
+        segmentation = next((folder / "segmentations").glob(f"{stem}.tif*"))
+        assert json.loads(sidecar_path(segmentation).read_text(encoding="utf-8"))["vessel_label"]
+        snapshot = read_run_snapshot(folder / f"{stem}.haemorun")
+        assert Path(snapshot.settings["raw_image_path"]) == raw / f"{stem.rsplit('_', 1)[0]}.tif"
+        assert (folder / f"{stem}_run_manifest.json").is_file()
+        assert (folder / f"{stem}_statistics.csv").is_file()
+        assert result.vessels
+    assert summary.statistics is not None and summary.statistics.written

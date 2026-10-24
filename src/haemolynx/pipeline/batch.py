@@ -1,13 +1,15 @@
 """One image's settings in a batch run, and what a batch cannot carry over.
 
 A batch run (``PLAN_batch_run.md``) runs the panel's settings once per
-segmented image, each matched to its raw image and masks by name
+segmented image -- or, with ilastik segmenting (:func:`batch_from_raw`), once
+per raw image -- each matched to its raw image, masks and other files by name
 (:mod:`haemolynx.io.batch_matching`). :func:`item_settings` is those settings
 for one image: its own input files, and every output folder moved into
 ``{output root}/{image stem}``. :func:`check_batch` says which settings name
 something in one image that would mean something else, or nothing, in the
-next -- node IDs, a single pericyte or cell mask -- so the batch refuses them
-before anything runs. :func:`batch_preflight` is the run's own preflight with
+next -- node IDs, a single pericyte or cell mask with no folder of them --
+so the batch refuses them before anything runs.
+:func:`batch_preflight` is the run's own preflight with
 those checks added, per image. The run's own preflight includes
 :func:`check_output_path_lengths`, for a batch's images and single runs alike:
 Windows refuses a path past its limit while long paths are off, and a batch
@@ -30,7 +32,7 @@ from haemolynx.graph.boundaries import (
     vessel_masks_in_use,
 )
 from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
-from haemolynx.io.batch_matching import BatchMatch
+from haemolynx.io.batch_matching import FILE_ROLES, BatchFolders, BatchMatch, FileRole, file_role
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport
 
@@ -45,20 +47,50 @@ OUTPUT_FOLDERS = {
     "ilastik_output_dir": "segmentations",
 }
 
-#: Single files of one image that a batch cannot match per image (v1).
-PER_IMAGE_FILES = (
-    "pericyte_mask_path",
-    "cell_mask_path",
-    "measurement_3d_vessel_mask_path",
-    "tissue_raw_tiff_path",
-)
+#: Single files of one image, read beside it: a batch matches each per image
+#: from a folder of its own (:data:`~haemolynx.io.batch_matching.FILE_ROLES`),
+#: and refuses one file for every image.
+PER_IMAGE_FILES = tuple(role.setting for role in FILE_ROLES)
 
-#: ilastik switches whose input is one raw file, not the batch's.
-ILASTIK_SWITCHES = (
-    "use_ilastik_segmentation",
-    "use_ilastik_large_vessel_segmentation",
-    "use_ilastik_small_vessel_segmentation",
-)
+#: Settings nothing reads but a perturbation (an entry of a type reading them).
+READ_BY_PERTURBATIONS_ONLY = frozenset({"capillary_block_mask_path"})
+
+
+def batch_from_raw(settings: Mapping[str, Any]) -> bool:
+    """Whether a batch on *settings* lists raw images for ilastik to segment
+    (``use_ilastik_segmentation``) rather than segmented images. Its raw
+    image is each image's own, so the switch is read whatever the panel's
+    one raw image row holds."""
+    return bool(settings.get("use_ilastik_segmentation")) and not network_is_synthetic(settings)
+
+
+def _readers(schema: Schema, setting: str, settings: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """Who reads *setting* in a run on *settings*, each with the value it
+    reads: ``("", value)`` for the run itself, ``(name, value)`` for each
+    perturbation whose type reads it (its own override, else the run's)."""
+    readers: list[tuple[str, Any]] = []
+    if setting not in READ_BY_PERTURBATIONS_ONLY and _in_effect(schema, setting, settings):
+        readers.append(("", settings.get(setting)))
+    if not settings.get("run_perturbations"):
+        return readers
+    from haemolynx.haemodynamics.perturbations import (
+        perturbations_from_settings,
+        settings_for_perturbation_type,
+    )
+
+    for spec in perturbations_from_settings(settings):
+        if setting not in settings_for_perturbation_type(spec.type):
+            continue
+        merged = {**settings, **spec.applied_overrides(schema)}
+        if _in_effect(schema, setting, merged):
+            readers.append((spec.name, merged.get(setting)))
+    return readers
+
+
+def batch_file_roles(settings: Mapping[str, Any], schema: Schema) -> tuple[str, ...]:
+    """The other files (:data:`~haemolynx.io.batch_matching.FILE_ROLES`, by
+    key) a run on *settings* reads, so a batch matches them per image."""
+    return tuple(role.key for role in FILE_ROLES if _readers(schema, role.setting, settings))
 
 
 def batch_mask_sizes(settings: Mapping[str, Any]) -> tuple[str, ...]:
@@ -87,20 +119,43 @@ def image_output_folder(output_root: Path | str, match: BatchMatch) -> Path:
 def item_settings(
     base: Mapping[str, Any], match: BatchMatch, output_root: Path | str
 ) -> dict[str, Any]:
-    """*base* for one image: its input files from *match*, every output folder
-    in the image's own folder, and no pause for hand edits."""
+    """*base* for one image: its input files from *match* (a perturbation
+    naming one of them reads the image's own), every output folder in the
+    image's own folder, and no pause for hand edits. ilastik's segmentation
+    of a raw image goes in the image's folder too."""
     settings = dict(base)
     settings.update(match.settings())
+    files = {file_role(key).setting: path for key, path in match.files.items()}
+    if files and isinstance(base.get("perturbations"), (list, tuple)):
+        settings["perturbations"] = [
+            _with_files(entry, files) for entry in base["perturbations"]
+        ]
     folder = image_output_folder(output_root, match)
     prefix = base.get("vtk_output_prefix")
     name = Path(prefix).name if prefix not in (None, "") else DEFAULT_PREFIX_NAME
     settings["vtk_output_prefix"] = folder / (name or DEFAULT_PREFIX_NAME)
     # An unset folder (perturbation_output_dir) already follows the VTK output.
     for setting, subfolder in OUTPUT_FOLDERS.items():
-        if base.get(setting) not in (None, ""):
+        if base.get(setting) not in (None, "") or (
+            setting == "ilastik_output_dir" and match.folders.from_raw
+        ):
             settings[setting] = folder / subfolder
     settings["mid_run_postprocessing"] = False
     return settings
+
+
+def _with_files(entry: Any, files: Mapping[str, Path | None]) -> Any:
+    """A perturbation entry whose overrides name one of *files*' settings,
+    naming the image's own file instead."""
+    if not isinstance(entry, Mapping) or not isinstance(entry.get("overrides"), Mapping):
+        return entry
+    overrides = entry["overrides"]
+    if not set(overrides) & set(files):
+        return entry
+    return {
+        **entry,
+        "overrides": {key: files[key] if key in files else value for key, value in overrides.items()},
+    }
 
 
 def _in_effect(schema: Schema, name: str, settings: Mapping[str, Any]) -> bool:
@@ -122,25 +177,68 @@ def _role_read(schema: Schema, role: str, settings: Mapping[str, Any]) -> bool:
     return True
 
 
-def check_batch(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
+def _check_one_file(
+    report: CheckReport, schema: Schema, role: FileRole, settings: Mapping[str, Any], folder: Path | None
+) -> None:
+    """*role*'s file in a batch: matched per image from *folder*, or refused
+    where a run or a perturbation would read one file for every image."""
+    readers = _readers(schema, role.setting, settings)
+    if folder is not None:
+        if not readers:
+            report.add_warning(
+                f"The batch has a folder of {role.label}s, {folder}, but nothing in these "
+                f"settings reads {role.setting}: it is not used."
+            )
+        return
+    for who, value in readers:
+        if value in (None, ""):
+            continue
+        if not who:
+            report.add_error(
+                f"{role.setting} names one file, {Path(value).name}, which every image "
+                f"in the batch would read. Clear it, turn off what reads it, or give the "
+                f"batch a folder of {role.label}s."
+            )
+        else:
+            report.add_error(
+                f"perturbation '{who}' reads one {role.label}, {Path(value).name}, which "
+                f"every image in the batch would read. Give the batch a folder of "
+                f"{role.label}s, or remove it from the batch's perturbations."
+            )
+
+
+def check_batch(
+    settings: Mapping[str, Any], schema: Schema, folders: BatchFolders | None = None
+) -> CheckReport:
     """The settings a batch refuses (errors) or doubts (warnings), whatever
-    the image: each names something in one image."""
+    the image: each names something in one image. *folders* are the batch's:
+    a file read beside each image is refused unless they give a folder of
+    them, and they must list the images the settings ask for (raw images
+    while ilastik segments)."""
     report = CheckReport()
     if network_is_synthetic(settings):
         report.add_error("A batch runs segmented images: set Input back to a segmented image.")
         return report
-    for name in ILASTIK_SWITCHES:
-        if settings.get(name) and name in schema:
+    if folders is not None and folders.from_raw != batch_from_raw(settings):
+        report.add_error(
+            "use_ilastik_segmentation is on, so a batch's images are its raw folder's, "
+            "for ilastik to segment, but these were matched in the segmented folder: "
+            "match the folders again."
+            if batch_from_raw(settings)
+            else "These images were matched in the raw folder, for ilastik to segment, "
+            "but use_ilastik_segmentation is off: match the folders again."
+        )
+    for size, names in VESSEL_MASK_SETTINGS.items():
+        if vessel_masks_in_use(settings, size) and settings.get(names["use_ilastik"]):
             report.add_error(
-                f"{name} is on: a batch runs images already segmented, and ilastik "
-                "would segment the one file the Input tab names. Turn it off."
+                f"{names['use_ilastik']} is on: ilastik would make the {size} vessel masks "
+                "of every image in the batch from the one raw file that row names. Turn it "
+                f"off and give the batch its {size} vessel masks as files."
             )
-    for name in PER_IMAGE_FILES:
-        if settings.get(name) not in (None, "") and _in_effect(schema, name, settings):
-            report.add_error(
-                f"{name} names one file, {Path(settings[name]).name}, which every image "
-                "in the batch would read. Clear it or turn off what reads it."
-            )
+    for role in FILE_ROLES:
+        _check_one_file(
+            report, schema, role, settings, folders.file_folder(role.key) if folders else None
+        )
     for role, names in BOUNDARY_ROLE_SETTINGS.items():
         if not _role_read(schema, role, settings):
             continue
@@ -165,14 +263,6 @@ def check_batch(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
                 f"{name} is off: each image's saved result is looked for in its own "
                 "output folder, and an image with none fails."
             )
-    if settings.get("run_perturbations"):
-        for entry in settings.get("perturbations") or ():
-            if isinstance(entry, Mapping) and str(entry.get("type")) == "capillary_block_mask":
-                report.add_error(
-                    f"perturbation '{entry.get('name')}' blocks from one mask of blocks, "
-                    "which every image in the batch would read. Remove it from the batch's "
-                    "perturbations."
-                )
     if settings.get("mid_run_postprocessing"):
         report.add_warning(
             "mid_run_postprocessing is on, but a batch cannot pause for hand edits: "
@@ -302,8 +392,9 @@ def ilastik_output_paths(settings: Mapping[str, Any]) -> list[Path]:
     """The files ilastik's segmentations write in ``ilastik_output_dir``: the
     main image's while ilastik segments it, and each vessel-mask role's while
     ilastik makes its masks, each with the record of how it was made beside
-    it (:func:`haemolynx.io.ilastik.sidecar_path`). A batch refuses ilastik,
-    so only a single run has any."""
+    it (:func:`haemolynx.io.ilastik.sidecar_path`). A batch's image has only
+    the main image's (each in its own folder): a batch refuses ilastik's
+    vessel masks."""
     from haemolynx.io.ilastik import sidecar_path
     from haemolynx.io.vessel_masks import ilastik_vessel_mask_output_path
 
@@ -427,7 +518,7 @@ def batch_preflight(
 
     settings = item_settings(base, match, output_root)
     report = check_batch_item(match, base)
-    report.extend(check_batch(base, schema))
+    report.extend(check_batch(base, schema, match.folders))
     report.extend(preflight(settings, schema, echo=False))
     return report
 
@@ -442,6 +533,9 @@ __all__ = [
     "WRITTEN_BY_HAND",
     "WRITTEN_FOR_A_SYNTHETIC_NETWORK",
     "WRITTEN_WHILE",
+    "READ_BY_PERTURBATIONS_ONLY",
+    "batch_file_roles",
+    "batch_from_raw",
     "batch_mask_sizes",
     "batch_preflight",
     "check_batch",
