@@ -52,3 +52,15 @@ output is named `{template stem}_synthetic` (`pipeline/naming.py`'s `run_stem`, 
 Export writes `{stem}_template_comparison.csv` and a `synthetic_comparison` report section: each
 characteristic, template against synthetic, with the band the generator is held to (`compare.py`).
 A synthetic run's `.haemorun` is refused as a template.
+
+## 2026-10-24: diameter basis, one tolerance table, validation time
+
+`NetworkTemplate.diameter_basis` (`5b3b8fdc`): the basis most of the template's vessels' viscosity
+was read on, carried onto every drawn edge, so a synthetic run's resistances are the template's
+form of the Pries law whatever its own `segmentation_source` (preflight warns when they differ).
+Before it, a synthetic run of a Claudin (endothelial) template under the default plasma_column
+read every capillary through the in vitro form. The comparison's bands moved into one
+`TOLERANCES` table, rows unchanged. `validate_synthetic_graph` was half of generation on the
+fixture scaled to 9,500 vessels (11-12 s); with the same checks written without `np.allclose` per
+polyline end it is 1.3 s and generation 7-10 s (`4767c3c6`). What waits on Harvey (`vessel_box`,
+a Voronoi bed) is listed in `PLAN_synthetic_network.md`'s status.

@@ -48,6 +48,8 @@ src/haemolynx/synthetic/        # new subpackage (add to haemolynx/__init__, tes
 ├── trees.py                     # arterial/venous bifurcating trees, generation by generation from the order table
 ├── bed.py                       # capillary bed: degree-sequence arithmetic, jittered lattice, Delaunay fill, repair
 ├── polylines.py                 # vectorised bend-to-length + densify (batch form of secomb_io._fit_length)
+├── draft.py                     # NetworkDraft: the network while it is drawn (nodes, roles, edges with
+│                                #   lengths and widths, no polylines yet); trees.py and bed.py add to it
 ├── generate.py                  # generate_network orchestrator, roles, dead-end marks, metadata, validate_synthetic_graph
 └── compare.py                   # template vs synthetic rows, tolerances, CSV
 src/haemolynx/pipeline/naming.py # run_stem(settings): the output stem for both routes (leaf module)
@@ -374,9 +376,88 @@ through a private index, and do not edit `src/` while a long test run is in flig
 - Loading a 100 MB template in preflight stalls the GUI thread for a few seconds the first time; the
   memoised loader keeps it to once per template.
 
-## Status (2026-10-18, implemented)
+## Status (2026-10-24: done, bar what waits on Harvey and verification 2)
 
-Built as planned, with these departures and findings:
+Implemented 2026-10-18 (`bb831907`, merged `d098de1f`). Since:
+
+- `c8d6624d` (2026-10-18): the large-tier vessels the generator draws are tagged as lying in a
+  large mask (`large_mask_vessel_type`), so the branch-order hierarchy finds the Large_Art/Large_Ven
+  tier.
+- `ce3a7a2e` (2026-10-19): the hidden-settings check (`test_hidden_settings_cannot_affect_a_run.py`)
+  is given a template under `network_source=synthetic`.
+- `055be569` (2026-10-19): a batch run refuses `network_source=synthetic` (`pipeline/batch.py`).
+- `399a48f3` (2026-10-23), `2feb8764` (2026-10-24): the optimisers (segmentation/skeleton/graph,
+  FWHM and the endothelial ring fit) are greyed for a synthetic network.
+- `5b3b8fdc` (2026-10-24): **the template's diameter basis** (step 5 and the preflight list, never
+  built before). `NetworkTemplate.diameter_basis` is the basis most of the template's vessels'
+  viscosity was read on (`poiseuille.edge_diameter_basis`: a vessel's own mark, else the run's --
+  `G.graph["diameter_basis"]`, else its `segmentation_source`), the run's on a tie, with a note
+  when the vessels are on two bases; kept in the JSON, None for a template written before it.
+  Every drawn edge carries it (`validate_synthetic_graph(G, template)` checks), stamping keeps it,
+  so a synthetic run's viscosity is the template's form of the law whatever its own
+  `segmentation_source`; preflight warns when the two differ. The comparison has a "diameter
+  basis" row, and **every band is now in one `TOLERANCES` table** in `compare.py` (rows checked
+  unchanged before and after on four comparisons, 606 rows).
+- `4767c3c6` (2026-10-24): **the tests the plan listed and never had**: Murray's law reads synthetic
+  widths (`test_statistics.py`: counted as measured, and the generator's exponent read back at
+  every tree junction); stamping keeps them (`test_diameter_assignment.py`, where the stamping tests
+  live, not `test_hemodynamics.py`); a synthetic run's checkpoint stem and Clear
+  (`test_gui_stage_checkpoints.py`); its template relocated by name and no resume skeleton
+  (`test_gui_run_snapshot.py`); the thick-vessel rerun test now asserts the same network, widths,
+  resistances and flows as the run without the switch, and no bridge. The slow generator test is
+  back to the plan's 30 s: it measured 11-12 s for 9,500 vessels, half of it
+  `validate_synthetic_graph` (`np.allclose` four times an edge, each polyline converted twice);
+  the same checks written out take 1.3 s, and generation 7-10 s.
+- `1234d905` (2026-10-24): verification 3 (below); a `.haemorun` that is not a run now says what to
+  choose.
+
+**Verification 3, preflight's messages** (2026-10-24, through `preflight` on the fixture runs;
+each is the whole `synthetic_template_path:` error):
+
+- A `.tif`: "... stack.tif is not a .haemorun file. Fix: save the template run from the panel
+  (Save run) and point synthetic_template_path at it."
+- A `.haemorun` that is not a run: "Could not read ...: UnpicklingError: invalid load key, 'n'.
+  Fix: choose a run the panel saved (Save run), of a microscopy-image run."
+- Saved with `statistics` off: "The template run was saved with Statistics off, so it has no
+  statistics report: switch on statistics on its Additional measurements tab (with
+  statistics_vessel_density, statistics_vessel_classes, statistics_tortuosity,
+  statistics_murray_law, statistics_daughter_angles, statistics_intercapillary_distance,
+  statistics_dead_ends, statistics_network_analysis, statistics_loop_hierarchy) and run its Export
+  stage again."
+- `statistics_loop_hierarchy` off: "The template run's statistics lack 'loop_hierarchy': switch on
+  statistics_network_analysis, statistics_loop_hierarchy on the template run's Additional
+  measurements tab and run its Export stage again." Several missing sections are named in one
+  error.
+- A synthetic run: "The template run is itself a synthetic network: choose the microscopy-image
+  run it was generated from."
+- A missing file: `check_settings`' "checked: ... Fix: point 'synthetic_template_path' at an
+  existing file (the .haemorun file of a finished microscopy-image run ...)".
+- Another basis (a warning, not an error): "segmentation_source is plasma_column but the
+  template's diameters are endothelial: the drawn vessels keep the template's basis (and its form
+  of the viscosity law), while a width given by hand in Post processing is read as plasma_column.
+  Fix: set segmentation_source to endothelial."
+
+**Verification 2 (E14.5 as the template, end to end)**: not yet run at this commit; it needs an
+E14.5 image run with every required statistic first (no E14.5 `.haemorun` saved with them is on
+this machine), a large run that waited for RAM another session's E14.5 replay was using.
+
+**Waits on Harvey** (behaviour the plan leaves open; nothing built):
+
+- **`vessel_box`.** `NetworkTemplate.vessel_box_um` (the box the template's nodes span) is recorded,
+  scaled and kept in the JSON, and nothing reads it. The plan names the option ("a possible
+  follow-up") but not what it does. To decide: (1) whether the network is drawn in the node box or
+  the image box, and whether that is a setting (and its default); (2) where the inlets and outlets
+  go (the node box's faces, at the same relative positions, or where they were in the image);
+  (3) what the densities divide by -- the image volume, as the template's report did, or the node
+  box (every per-mm^3 row then moves by the ratio of the two volumes); (4) the synthetic run's
+  `image_extent_um` and statistics `image_dimensions` (the face dead ends are judged against
+  them).
+- **`bed_model="voronoi"`** ("later, if wanted"): a Voronoi bed as an option beside the Delaunay
+  fill, for a literature-identical bed. Whether it is wanted.
+- **The panel half of verification 2** (Harvey or a tester): the viewer shows the network after
+  stage 3, the Boundaries role tabs are greyed, the Statistics tab has the comparison section.
+
+Built as planned on 2026-10-18, with these departures and findings:
 
 - **Capillary bed**: a degree-constrained Delaunay fill on a jittered lattice (`bed.py`), not
   Voronoi -- the bed's degree sequence is worked out first from the handshake lemma, so the
@@ -403,5 +484,5 @@ Built as planned, with these departures and findings:
   draws in ~5 s (its counts are inconsistent by construction and exercise the fallbacks). A whole
   synthetic run from a generated-and-saved template: 6 s, every output named
   `{template}_synthetic_*`, 62 of 62 banded rows within band.
-- **Not yet done**: verification step 2 (E14.5 as the template, through the panel) and the
-  `vessel_box` option.
+- **Not yet done** (2026-10-18): verification step 2 (E14.5 as the template, through the panel)
+  and the `vessel_box` option: see above.
