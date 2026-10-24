@@ -7,7 +7,9 @@ code changes.
 **Status, 2026-10-24: all five items are done.** Item 3 is in 9c6a15ad, item 2 in b99758ba,
 item 5 in b6d9210d and 666cafe8 (the pieces still missing landed on 2026-10-24 in 3bfdbcef,
 c990f2ca, 88e97182 and da6ca014), item 4 in b71718b5 and item 1 in 3e25f87b. Item 2's E14.5
-before/after was run on 2026-10-24 (see item 2). Nothing waits on Harvey.
+before/after was run on 2026-10-24 (see item 2). Its follow-up found why the graph changed far
+from the faces: tie order in direction-aware collapse and in mask recovery's coverage. A fix
+for both is proposed in item 2 and waits on Harvey, because it changes graphs.
 
 **Order:** 3, 2, 5, 4, then 1 once it is decided. Use one commit per item, each with its tests
 (see the Testing policy in CLAUDE.md). After each commit, run `pytest -m "not slow and not gui"`
@@ -132,12 +134,124 @@ It also wouldn't find vessel loops.
   - Some vessels keep the same two ends but have a different middle: their centrelines are up to
     1.5 µm apart and their lengths 0.01–1 µm apart. Edge 1524–1564, 177 µm from the nearest
     changed skeleton voxel, is 23.93 µm before and 22.87 µm after. The build logs part at the
-    first steps after the skeleton (collapse merged 3,713 against 3,714 nodes). Which step makes
-    these far choices is not pinned down.
+    first steps after the skeleton (collapse merged 3,713 against 3,714 nodes). Which steps make
+    these far choices is found below.
 
   This is graph building's sensitivity to a small local change, not something the face fix does
   wrong. Files are in `outputs/dale_item2_faces/` (git-ignored): `face_check.py`, `compare.py`,
   `far_changes.py`, `far_edges.py` and `report_before_after.json`.
+
+**Why the graph changes far from the faces (2026-10-24, follow-up).** Two build steps break
+ties in an order that depends on the whole image. Neither is intended, and a fix for either
+changes graphs, so both wait on Harvey (proposal below). Both are deterministic, which is why a
+repeat run agreed. But a small change anywhere reorders their ties everywhere else.
+
+- **How it was found.** I replayed the same two runs (c990f2ca, low-RAM path; both final graphs
+  equal the earlier ones) and pickled the graph after each of the 13 `build_graph_from_skeleton`
+  steps (`step_callback`). Edges were compared by their whole centreline.
+  - Steps 1–4 (skan + gap bridges, loop edges, optimise, degree-2 pass 1) differ only within
+    1.7 µm of a changed skeleton voxel.
+  - **Step 5, direction-aware collapse, is the first to differ far away:** 28 and 25 edges more
+    than 10 µm from any change, up to 179 µm.
+  - For 51 of those 53 edges, collapse's input is identical in both runs within 15 µm of the
+    edge, node for node and edge for edge. The other 2 are 13 µm from a change.
+- **1. Collapse: tied pairs taken in hash order**
+  (`direction_aware_collapse.collapse_node_clusters_direction_aware`).
+  - It merges candidate pairs closest first with union-find, refusing a merge that would
+    cartwheel, spread too wide or absorb a vessel. The order in which pairs are tried therefore
+    decides the clusters.
+  - Every node at step 4 sits on the voxel lattice. E14.5's 25,188 candidate pairs have only 58
+    distinct distances, so nearly every pair ties with hundreds of others. Within one distance,
+    `sorted` keeps the order of `cKDTree.query_pairs`: a Python set of `(i, j)` array indices,
+    which is hash order.
+  - The two runs' node lists agree up to node 1,538 (z < 18 µm). After the first face change in
+    raster order, every later index shifts, so the tied pairs come out in a new order across the
+    rest of the image.
+  - Example, at (19.5, 303, 430) µm, 177 µm from any change. Both runs test the same 832 pairs
+    there, but in a different order among the 0.98 µm ties. 348 decisions differ, and the
+    junction becomes 4 nodes before and 2 after, about 2 µm apart. Edge 1524–1564 above is this
+    effect: collapse put the junction in its middle at (18.6, 436.6, 147.9) µm before and
+    (18.0, 434.5, 150.6) after, and degree-2 merging later folded it into that one edge.
+  - A smaller, second dependence: a merged group's members are walked in the set order of their
+    node IDs. That order sets which edges are rewired first and which duplicate edge is kept.
+  - **Test on one input** (the before run's step-4 graph):
+    - Two isolated, far-away nodes added at the front of the node list change 29/23 edges of
+      collapse's output; node IDs + 1000 change 4/4.
+    - Taking tied pairs in the order of their two node positions removes the first dependence.
+      Walking group members in position order removes the second.
+    - With both, all three presentations give the same graph.
+  - **On E14.5:** with this collapse patch, steps 1–10 differ only within 8.2 µm of a change.
+- **2. Mask recovery's coverage: tied nearest samples** (`mask_recovery.uncovered_mask_voxels`).
+  - With collapse patched, step 11 (mask recovery) still adds 5 far edges each way, all at
+    (15–20, 437–441, 131–148) µm, 175–178 µm from any change. Its input graph is identical there.
+  - A mask voxel counts as covered when one of its `_COVERAGE_NEIGHBOURS = 4` nearest centreline
+    samples covers it, by radius or by that sample's own cross-section. Each edge has a sample at
+    each of its end nodes, so a junction holds one copy of the same point per edge. On E14.5,
+    4,828 of 88,635 samples share their exact point with another, and 292 points have 4 or more
+    copies.
+  - When the 4 nearest are tied, `cKDTree` returns whichever copies come first in a tree built
+    over all the samples. Those copies carry different edges' cross-sections, so which mask is
+    covered depends on every sample in the image.
+  - **Measured.** Per-sample radii and reaches agree between the runs everywhere except 31
+    samples, all within 20 µm of a change. Even so, the uncovered mask differs by 721 and 672
+    voxels more than 20 µm from a change, up to 287 µm.
+  - With both of its queries tie-inclusive (every sample as close as the 4th nearest is judged),
+    the uncovered mask differs only within 14 µm of a change.
+  - Different uncovered pieces mean recovery works through a different set: 335 of the 1,751
+    pieces it considers in the before run are not the same voxels after. The order of recovery
+    changes with them: in the far spot, a recovered strand is already there in one run when a
+    neighbouring end looks for a join, and not yet in the other.
+  - With collapse patched, both runs add 48 recovered pieces, so the plain runs' 47 against 46
+    came from collapse; coverage changes which pieces and joins they are.
+- **With both patched**, the before/after pair was rebuilt end to end.
+  - All 13 build steps differ only within 8.2 µm of a changed skeleton voxel.
+  - The final graph's 10 and 8 edges beyond 10 µm reach at most 46 µm, all through edges joined
+    to the change, not through ties. The skeleton re-trace in `finish_network_graph` adds a
+    93 µm vessel in the after run that passes 11 µm from a face change. Its other end, 46 µm
+    from any change, joins a vessel and splits it there; the thick-vessel split and merges then
+    rework the edges around that join.
+  - The face fix's own effect, read that way: 1,226 → 1,224 nodes, 1,404 → 1,402 edges,
+    +112 µm (+0.24%), `leaves_image` 93 → 91 and no other dead-end kind changed. (The plain
+    runs' `broken` 3 → 4 was the tie effect.)
+  - No other step showed a tie effect on E14.5. Other capped nearest-neighbour queries have the
+    same pattern and are not checked: `prune.py` (`tree.query(path, k=k)`),
+    `skeleton_retrace.py`, and recovery's own join-target ranking (48 nearest) and
+    `_Attachments.nearest` (16 nearest).
+- **Intended? No.**
+  - Collapse's docstring promises "closest first", and its representative rule breaks ties by
+    node ID "for determinism" (`collapse._pick_representative`). Nothing chose hash order for
+    the hundreds of pairs at one distance.
+  - `uncovered_mask_voxels` says its answer is the same whatever the workers; nothing chose to
+    let a tree's internal order pick among a junction's copies.
+  - The effect is that any change anywhere (skeletonisation, a crop, a code change upstream)
+    moves vessels in dense junction clusters across the whole image. That makes every E14.5
+    before/after comparison noisier than its change.
+- **Proposed fix, for Harvey (it changes graphs; not landed).**
+  1. Collapse: take equal-distance candidate pairs in the order of their two node positions,
+     not the order `query_pairs` returns them in. Walk each merged group's members in position
+     order, which fixes the rewiring order and the centroid's summation order.
+  2. Coverage: judge every sample tied with the 4th-nearest (query more neighbours and drop
+     those past the 4th distance), so a junction's copies are all tested or none.
+  3. Test each on a lattice fixture: the same graph comes back when node IDs are shifted, when
+     isolated far-away nodes are inserted first, and when node or edge insertion order is
+     reversed. Those are the presentations that exposed both.
+  - **Effect on E14.5's before graph:**
+    - Both fixes: 1,229 → 1,226 nodes, 1,407 → 1,404 edges, 47,680.8 → 47,683.1 µm. 28/25
+      edges differ; dead ends `broken` 3 → 4, `stops_short` 96 → 95, `unknown` 94 → 93.
+    - Collapse fix alone: 1,223 nodes, 1,402 edges, 47,625.6 µm.
+    - The fix makes these picks fixed, not better: either way it is a different choice among
+      the same ties.
+  - **Cost:** the coverage query asks each mask voxel for 24 neighbours instead of 4. Recovery
+    took 33–120 s across these six runs with a peer session's job running, so time it on a
+    quiet machine before landing.
+- **Files.** The harness is in `outputs/gnl/` (git-ignored) of worktree `gracious-euclid-9149c3`,
+  with a copy in the side-session notes folder (`graph_nonlocality_harness/`):
+  - `steps.py <before|after>[_fixed|_both]` pickles every step's graph, plus inputs.
+  - `compare_steps.py` and `local_inputs.py` find the first far step and check its input.
+  - `order_test.py` and `order_fix_test.py` test collapse's presentations and fixes;
+    `trace_cluster.py` traces its pair decisions.
+  - `recovery_test.py`, `trace_recovery.py`, `trace_regions.py`, `uncovered_diff.py` and
+    `uncovered_ties.py` do the same for recovery.
 
 **What I found, and it is wider than reported.** I used a tube of radius 3 voxels running face to
 face along z (580 voxels in total).
