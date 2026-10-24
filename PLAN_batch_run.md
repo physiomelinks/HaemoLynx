@@ -21,7 +21,7 @@
 >   flag of the example script.
 > - **Harvey's decisions (2026-10-24):** decisions 1-5 kept as built; images stay one at a time;
 >   ilastik's vessel masks, in single runs and batches, read chosen channels of the run's raw
->   image, kept separate, each classifier its own (not built yet: "To build" below).
+>   image, kept separate, each classifier its own (built: `6cf026f7`, "Built" below).
 > - **Waits on Harvey:** the Input tab's help text for Batch run (`gui/stage_help.py`, his to
 >   write).
 >
@@ -330,10 +330,10 @@ the five folders, so the batch can be re-run.
 - **Several images at once:** no. Images run one at a time. A run already spreads its heavy
   steps over worker pools and, on a large stack, uses most of the RAM.
 - **ilastik's vessel masks per image:** they read the image's own raw image file, with a
-  chosen channel or a combination of channels of it. Today
+  chosen channel or a combination of channels of it. Before this,
   `use_ilastik_large_vessel_segmentation` and `use_ilastik_small_vessel_segmentation` read one
-  raw file each (`ilastik_unsegmented_*_image_path`, with no channel setting), so a batch still
-  refuses them while their masks are in use. The details:
+  raw file each (`ilastik_unsegmented_*_image_path`, with no channel setting), so a batch
+  refused them while their masks were in use. The details (built: see below):
   - **A combination** is the chosen channels kept separate: ilastik gets a multichannel image
     of them, as the classifier was trained on. No arithmetic on the voxels.
   - **Each classifier its own channels:** large and small, arteriole and venule each name theirs
@@ -343,25 +343,53 @@ the five folders, so the batch can be re-run.
     become old settings that still load (`Setting.migrates`/`replaces`, as the other raw-image
     paths did).
 
-### To build: ilastik's vessel masks from the raw image's channels (not started)
+### Built: ilastik's vessel masks from the raw image's channels (2026-10-24, `6cf026f7`)
 
-1. **Settings.** A channel list per classifier (`ilastik_arteriole_channels`, ... four of them),
-   each `requires` its classifier's switch and `raw_image_path`. The old
-   `ilastik_unsegmented_*_image_path` settings migrate: a file that is the run's raw image
-   keeps working, and any other file is reported, since one raw image per run is the rule.
-2. **ilastik's input.** ilastik headless reads a whole file, so the chosen channels are written
-   to one file first (channels kept separate, the raw image's voxel size and axis order kept).
-   It goes in `ilastik_output_dir` beside the masks, named by role and class.
-3. **Reuse.** The provenance record names the raw image and its channels, so a change of
-   channels segments again.
-4. **Outputs and checks.** `ilastik_vessel_mask_output_path` and `output_paths` keep their
-   names. Preflight refuses a channel the raw image lacks, and an empty list.
-5. **Batch.** The refusal of ilastik's vessel masks goes. Each image's classifiers read its own
-   raw image, and the masks go in its `segmentations/` folder.
-6. **Panel.** The channel rows sit under each classifier, with hover text. Help text is
-   Harvey's.
-7. **Tests.** The migration, the channel file (separate channels, metadata kept), provenance
-   with channels, preflight, a single run and a batch with the fake ilastik.
+1. **Settings.** `ilastik_arteriole_channels`, `ilastik_venule_channels`,
+   `ilastik_small_arteriole_channels`, `ilastik_small_venule_channels` (int lists, counting from
+   0 like `raw_image_channel`).
+   - Each sits under its classifier's vessel label, and `requires` that classifier's switch and
+     `raw_image_path` (the venule ones its classifier too).
+   - Unset, or an empty list, is the whole file.
+   - Each `migrates` one retired `ilastik_unsegmented_*_image_path`
+     (`schema._migrate_ilastik_mask_input`). A file that was the raw image loads silently; another
+     file, while ilastik made those masks, is reported in a warning.
+   - The example configs are regenerated.
+2. **ilastik's input.** `io.ilastik.write_ilastik_channels` writes the chosen channels, kept
+   separate and in order, to `channel_input_path(output)`
+   (`{ilastik_output_dir}/channels/{output stem}_input.tif`).
+   - Copied plane by plane where the file holds a page per plane.
+   - Keeps the file's axes (the channel axis dropped for one channel), its kind (ImageJ
+     hyperstack, else OME-TIFF) and its voxel size.
+   - Deleted once ilastik ends, whether it succeeded or failed.
+   - `run_ilastik_headless_segmentation(channels=)` does this; the rest of the run moved,
+     unchanged, into `_segment`.
+3. **Reuse.** `ilastik_provenance(channels=)` records them under `input`, so other channels, or
+   the whole file again, segment again. Nothing is written for ilastik when the output is reused.
+4. **Outputs and checks.**
+   - Masks keep their names, now after the raw image (`{raw stem}_{role}_{class}_segmented`).
+   - `ilastik_output_paths` counts the channel file for the path-length check.
+   - `checks.check_ilastik_vessel_mask_channels`, in preflight, refuses:
+     - no raw image while ilastik makes the masks;
+     - channels for a single-channel file;
+     - a channel the file lacks, or one named twice.
+   - Changed from the outline: an empty list is not refused. It reads as unset, the whole file.
+5. **Batch.** `check_batch` no longer refuses ilastik's vessel masks. Each image's classifiers read
+   its own raw image, and the masks go in its `segmentations/` folder. An image with no raw image
+   fails its checks.
+6. **Panel.** The rows come from the schema, with their help as hover text, labelled
+   "Ilastik ... classifier's raw channels" (`gui/form.py`). They are plain list boxes
+   (`[1, 2]`), not a channel picker; preflight names the file's channels when one is wrong.
+7. **Tests.**
+   - `tests/test_ilastik_vessel_mask_channels.py` covers:
+     - the channel file (ImageJ and OME, separate and in order, voxel size kept, refusals);
+     - ilastik given the file, and the file deleted on success and on failure;
+     - reuse following the channels;
+     - the vessel-mask loader end to end with the fake ilastik;
+     - preflight;
+     - the retired files loading.
+   - The loader, label and batch tests are updated to the raw image.
+   - Not checked on a real stack or a real vessel-mask project.
 
 ### Waits on Harvey
 
