@@ -158,6 +158,12 @@ DEFAULT_AUTO_SAMPLE_TARGET_SECONDS = 180.0
 #: Never sample fewer edges than this -- a handful of edges cannot
 #: represent a real network's own length distribution.
 _MIN_SAMPLE_EDGE_COUNT = 10
+#: What "Auto" never samples fewer than (a smaller pool is sampled whole):
+#: planting puts a vessel of known width beside about one sampled vessel in
+#: five (43 of 200 on E14.5), and the accuracy group needs some planted. A
+#: budget too small for this shows in the estimate; it is not met by sampling
+#: so few vessels that accuracy is never checked (PLAN_optimisers.md, B8).
+_MIN_AUTO_SAMPLE_EDGE_COUNT = 100
 
 #: A candidate rejected by a guard scores this much worse than any real
 #: trial -- see `.fwhm_metrics._GUARD_PENALTY`.
@@ -406,7 +412,7 @@ def _sample_edge_count_from_probe_seconds(
     budget_edges = int(
         (target_seconds - total_calls * fixed_seconds) / max(per_edge_seconds * total_calls, 1e-12)
     )
-    return max(_MIN_SAMPLE_EDGE_COUNT, min(budget_edges, total_edges))
+    return min(max(_MIN_AUTO_SAMPLE_EDGE_COUNT, budget_edges), total_edges)
 
 
 def _estimated_search_seconds(

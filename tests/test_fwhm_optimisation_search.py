@@ -274,6 +274,19 @@ def test_the_estimate_auto_reports_is_the_one_it_chose_the_sample_by():
     assert s._estimated_search_seconds(0.1, 10, count + 1) > 180.0
 
 
+def test_auto_never_samples_fewer_vessels_than_planting_needs():
+    """Regression (B8): on E14.5 Auto's budget fitted ten vessels, too few to
+    plant one of known width, so the accuracy group never ran."""
+    count = s._sample_edge_count_from_probe_seconds(
+        probe_seconds=5.0, probe_edge_count=10, total_edges=1342, target_seconds=180.0
+    )
+    assert count == s._MIN_AUTO_SAMPLE_EDGE_COUNT
+    assert s._estimated_search_seconds(5.0, 10, count) > 180.0
+    assert s._sample_edge_count_from_probe_seconds(
+        probe_seconds=5.0, probe_edge_count=10, total_edges=60, target_seconds=180.0
+    ) == 60
+
+
 def test_fwhm_search_shares_its_bookkeeping_base_class_with_search():
     """Regression: _FwhmSearch used to copy-paste _emit/_record/_group_enabled
     from search._Search verbatim instead of sharing them. Both now subclass
