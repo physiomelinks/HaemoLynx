@@ -600,3 +600,73 @@ def test_a_pericyte_change_that_places_none_still_gets_its_empty_layer():
     ]
     assert len(pericytes.data) == 0
     assert set(pericytes.features) == {"edge_index", "branch_order", "arc_length_um"}
+
+
+# --- the edges CSV says where a vessel's flow is no answer -----------------------
+
+
+def _network_with_unsolved_pieces():
+    """The stage tests' arteriole-capillary-venule line, plus a capillary
+    hanging off its middle (a blind end: its zero flow is the answer) and a
+    capillary on its own (no inlet or outlet reaches it: no answer at all)."""
+    import numpy as np
+
+    from test_perturbation_stage import DIAMETERS, _network
+    from haemolynx.haemodynamics import PoiseuilleModel
+    from haemolynx.pipeline import HaemodynamicModel
+
+    G = _network()
+    for node, pos in {5: (0.0, 50.0, 800.0), 6: (0.0, 500.0, 0.0), 7: (0.0, 500.0, 50.0)}.items():
+        G.add_node(node, pos=np.asarray(pos))
+    for u, v in ((2, 5), (6, 7)):
+        G.add_edge(u, v, key=0, length=50.0, branch_order="B01",
+                   voxels=[G.nodes[u]["pos"].tolist(), G.nodes[v]["pos"].tolist()])
+    G, _results = PoiseuilleModel(
+        constriction_length=40.0, constriction_spacing=100.0, viscosity_law="constant",
+    ).set_poiseuille_resistances(G, DIAMETERS)
+    return HaemodynamicModel(graph=G)
+
+
+def test_the_edges_csv_blanks_flows_where_no_inlet_and_outlet_reach_and_says_which_vessels_solved(tmp_path):
+    """PLAN_dale_review_fixes.md item 5, step 3: a vessel in a piece with no
+    inlet and outlet (flow_state no_boundary) has no flow and no pressure drop
+    in its perturbation's edges CSV -- blank, not the 0 the solve left there --
+    while a blind end keeps its exact zero, every row says whether its vessel
+    was solved, and a solved vessel's numbers are its own."""
+    import csv
+
+    from test_perturbation_stage import SCHEMA, _boundaries, _settings
+    from haemolynx.pipeline import run_perturbations
+    from haemolynx.pipeline.stages import solve
+
+    settings = _settings(tmp_path, [ARTERIOLE_DILATION], inlet_nodes=[0], outlet_nodes=[4])
+    model = _network_with_unsolved_pieces()
+    solve(settings, model, _boundaries(), SCHEMA)
+    run = run_perturbations(settings, model, _boundaries(), SCHEMA)
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    G = result.graph
+    with (result.output_dir / f"{ARTERIOLE_DILATION['name']}_edges.csv").open(encoding="utf-8") as handle:
+        rows = {(int(row["u"]), int(row["v"])): row for row in csv.DictReader(handle)}
+    assert len(rows) == G.number_of_edges() == 6
+
+    island = rows[(6, 7)]
+    assert island["flow_state"] == "no_boundary" and island["flow_solved"] == "False"
+    assert island["pressure_drop_pa"] == "" and island["flow_signed_m3_s"] == ""
+    # The blanks are the CSV's: the graph holds what the solve left there,
+    # and the vessel keeps its resistance and geometry.
+    assert G.edges[6, 7, 0]["flow_signed"] == 0.0
+    assert float(island["resistance_pa_s_per_m3"]) == pytest.approx(G.edges[6, 7, 0]["resistance"])
+    assert float(island["length_um"]) == 50.0
+
+    blind = rows[(2, 5)]
+    assert blind["flow_state"] == "blind_end" and blind["flow_solved"] == "False"
+    assert float(blind["flow_signed_m3_s"]) == 0.0 and float(blind["pressure_drop_pa"]) == 0.0
+
+    for u in range(4):
+        row, data = rows[(u, u + 1)], G.edges[u, u + 1, 0]
+        assert row["flow_state"] == "solved" and row["flow_solved"] == "True"
+        assert data["flow_signed"] > 0
+        assert float(row["flow_signed_m3_s"]) == pytest.approx(data["flow_signed"], rel=1e-12)
+        assert float(row["pressure_drop_pa"]) == pytest.approx(data["pressure_drop"], rel=1e-12)
