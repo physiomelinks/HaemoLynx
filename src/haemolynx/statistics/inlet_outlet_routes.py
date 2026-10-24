@@ -102,7 +102,8 @@ def compute_inlet_outlet_bottlenecks(
         raise ValueError(f"Invalid statistics_mode={statistics_mode!r}; use 'fast' or 'full'.")
     _clear_edge_attributes(G, BOTTLENECK_EDGE_ATTRIBUTES)
     effective, weighting_label = _effective_weighting(G, weighting)
-    inlets, outlets, both = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    terminals = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    inlets, outlets, both = terminals
     routes = _route_graph(G, effective)
     H = routes.graph
     problem = _terminal_problem(inlets, outlets, H)
@@ -199,6 +200,7 @@ def compute_inlet_outlet_bottlenecks(
     }
     if both:
         result["Bottleneck Nodes Both Inlet And Outlet (excluded)"] = both
+    result.update(terminals.rows("Bottleneck"))
     return result
 
 
@@ -240,7 +242,8 @@ def compute_inlet_outlet_shunts(
         raise ValueError(f"max_route_fraction must be >= 0, got {max_route_fraction!r}")
     _clear_edge_attributes(G, SHUNT_EDGE_ATTRIBUTES)
     effective, weighting_label = _effective_weighting(G, weighting)
-    inlets, outlets, both = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    terminals = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    inlets, outlets, both = terminals
     routes = _route_graph(G, effective)
     H = routes.graph
     problem = _terminal_problem(inlets, outlets, H)
@@ -327,6 +330,7 @@ def compute_inlet_outlet_shunts(
     }
     if both:
         result["Shunt Nodes Both Inlet And Outlet (excluded)"] = both
+    result.update(terminals.rows("Shunt"))
     return result
 
 

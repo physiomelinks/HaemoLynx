@@ -65,7 +65,8 @@ def compute_transit_times(
     end) onto every edge.
     """
     _clear_edge_attributes(G, TRANSIT_TIME_EDGE_ATTRIBUTES)
-    inlets, outlets, both = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    terminals = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    inlets, outlets, both = terminals
     if not inlets or not outlets:
         return _unavailable("Transit Time", "no inlet and outlet nodes", both=both)
     edges = list(_iter_edges(G))
@@ -182,4 +183,5 @@ def compute_transit_times(
     }
     if both:
         result["Transit Time Nodes Both Inlet And Outlet (excluded)"] = both
+    result.update(terminals.rows("Transit Time"))
     return result

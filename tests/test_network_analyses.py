@@ -275,3 +275,80 @@ def test_transit_time_writes_nothing_when_no_flow_reaches_an_outlet():
 
     assert result["Transit Time Status"].startswith("N/A")
     assert all("transit_time_s" not in d for _u, _v, d in G.edges(data=True))
+
+
+# --- open ends as sources and sinks (PLAN_dead_ends.md Phase 4) ----------------------
+
+
+def _network_with_open_ends(record=True):
+    """Inlet 0 (100 Pa) -> 1 (60 Pa) -> 4 (40 Pa) -> outlet 2 (0 Pa); open end
+    3 (80 Pa) feeds node 1 and open end 5 (20 Pa) drains node 4, each given a
+    condition by the solve. Flows are conserved at every node."""
+    G = nx.MultiGraph()
+    if record:
+        G.graph["open_end_conditions"] = {
+            "model": "estimated", "to_inlet": [[3, 1e-20]], "to_outlet": [[5, 1e-20]],
+            "as_outlets": [], "info": {},
+        }
+    for node, p in ((0, 100.0), (1, 60.0), (2, 0.0), (3, 80.0), (4, 40.0), (5, 20.0)):
+        G.add_node(node, pressure=p)
+    _flow_vessel(G, 0, 1, 4e-12, branch_order="Art1", resistance=1e13, conductance=1e-13)
+    _flow_vessel(G, 3, 1, 2e-12, branch_order="B01", resistance=1e13, conductance=1e-13)
+    _flow_vessel(G, 1, 4, 6e-12, branch_order="B01", resistance=1e13, conductance=1e-13)
+    _flow_vessel(G, 4, 5, 1e-12, branch_order="B01", resistance=1e13, conductance=1e-13)
+    _flow_vessel(G, 4, 2, 5e-12, branch_order="Ven1", resistance=1e13, conductance=1e-13)
+    return G
+
+
+def _without_open_end_rows(result):
+    return {k: v for k, v in result.items() if "Open Ends Taken As" not in k}
+
+
+@pytest.mark.parametrize("analysis", [
+    "transit", "territories", "current_flow", "bottlenecks", "shunts", "occlusion_impact", "occlusion_curves",
+])
+def test_an_open_end_feeding_or_draining_counts_as_an_inlet_or_an_outlet(analysis):
+    """An open end the solve gave a condition, with blood entering the
+    network through it, is an inlet to every inlet/outlet analysis, and one
+    blood leaves through an outlet: the answer is exactly the one with those
+    ends designated, plus two rows saying so."""
+    from haemolynx.statistics.current_flow import compute_current_flow
+    from haemolynx.statistics.inlet_outlet_routes import (
+        compute_inlet_outlet_bottlenecks,
+        compute_inlet_outlet_shunts,
+    )
+    from haemolynx.statistics.occlusion import (
+        compute_occlusion_curves,
+        compute_single_vessel_occlusion_impact,
+    )
+
+    run = {
+        "transit": lambda G, i, o: compute_transit_times(G, i, o),
+        "territories": lambda G, i, o: compute_perfusion_territories(G, i, o, weighting="length"),
+        "current_flow": lambda G, i, o: compute_current_flow(G, i, o, weighting="length"),
+        "bottlenecks": lambda G, i, o: compute_inlet_outlet_bottlenecks(G, i, o, weighting="length"),
+        "shunts": lambda G, i, o: compute_inlet_outlet_shunts(G, i, o, weighting="length"),
+        "occlusion_impact": lambda G, i, o: compute_single_vessel_occlusion_impact(G, i, o, weighting="length"),
+        "occlusion_curves": lambda G, i, o: compute_occlusion_curves(G, i, o, weighting="length"),
+    }[analysis]
+    with_open_ends = run(_network_with_open_ends(), [0], [2])
+    designated = run(_network_with_open_ends(record=False), [0, 3], [2, 5])
+
+    assert _without_open_end_rows(with_open_ends) == designated
+    prefix = next(k for k in with_open_ends if k.endswith("Open Ends Taken As Inlets"))[: -len(" Open Ends Taken As Inlets")]
+    assert with_open_ends[f"{prefix} Open Ends Taken As Inlets"] == 1
+    assert with_open_ends[f"{prefix} Open Ends Taken As Outlets"] == 1
+
+
+def test_an_open_end_with_no_flow_or_on_an_unsolved_graph_is_no_terminal():
+    from haemolynx.statistics._route_graph import _resolve_terminals
+
+    G = _network_with_open_ends()
+    inlets, outlets, both = terminals = _resolve_terminals(G, [0], [2])
+    assert (inlets, outlets, both) == ({0, 3}, {2, 5}, 0)
+    assert terminals.open_inlets == {3} and terminals.open_outlets == {5}
+
+    for *_e, data in G.edges(data=True):
+        data.pop("flow_abs")
+    terminals = _resolve_terminals(G, [0], [2])
+    assert tuple(terminals) == ({0}, {2}, 0) and terminals.rows("X") == {}

@@ -124,7 +124,8 @@ def compute_perfusion_territories(
     """
     _clear_edge_attributes(G, TERRITORY_EDGE_ATTRIBUTES)
     effective, label = _effective_weighting(G, weighting)
-    inlets, outlets, both = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    terminals = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    inlets, outlets, both = terminals
     if not inlets or not outlets:
         return _unavailable("Territory", "no inlet and outlet nodes", label, both)
     H = _route_graph(G, effective).graph
@@ -173,4 +174,5 @@ def compute_perfusion_territories(
     result.update(_side_summary("Venular", ven_labels, ven_shed, lengths))
     if both:
         result["Territory Nodes Both Inlet And Outlet (excluded)"] = both
+    result.update(terminals.rows("Territory"))
     return result

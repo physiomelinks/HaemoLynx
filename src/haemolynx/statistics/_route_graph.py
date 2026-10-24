@@ -120,14 +120,56 @@ def _route_graph(G: nx.Graph, weighting: str) -> _RouteGraph:
     return _RouteGraph(graph=H, members=members)
 
 
+class Terminals(tuple):
+    """``(inlets, outlets, both)`` as :func:`_resolve_terminals` gives them,
+    and which of those inlets and outlets are open ends the solve took them
+    from (``open_inlets``, ``open_outlets``)."""
+
+    open_inlets: frozenset
+    open_outlets: frozenset
+
+    def __new__(cls, inlets: set, outlets: set, both: int,
+                open_inlets: Iterable[Any] = (), open_outlets: Iterable[Any] = ()) -> "Terminals":
+        self = super().__new__(cls, (inlets, outlets, both))
+        self.open_inlets = frozenset(open_inlets)
+        self.open_outlets = frozenset(open_outlets)
+        return self
+
+    def rows(self, prefix: str) -> Dict[str, Any]:
+        """The rows saying how many open ends the analysis took as inlets
+        and as outlets; none when it took none."""
+        if not (self.open_inlets or self.open_outlets):
+            return {}
+        return {
+            f"{prefix} Open Ends Taken As Inlets": len(self.open_inlets),
+            f"{prefix} Open Ends Taken As Outlets": len(self.open_outlets),
+        }
+
+
 def _resolve_terminals(
     G: nx.Graph, inlet_nodes: Optional[Iterable[Any]], outlet_nodes: Optional[Iterable[Any]]
-) -> tuple[set, set, int]:
-    """Inlets and outlets present in *G*, minus any node given as both."""
+) -> Terminals:
+    """Inlets and outlets present in *G*, minus any node given as both.
+
+    With the designated ones, every open end leaving the image that the
+    solve gave a boundary condition (``open_end_model``) and that carries
+    flow: an inlet where blood enters the network through it, an outlet
+    where it leaves (``haemodynamics.open_ends.open_end_directions``,
+    PLAN_dead_ends.md Phase 4). Blood comes in and goes out there as surely
+    as at the designated boundaries; left out, a route, a territory or an
+    arrival time would end at an open end as if it were a wall. A graph not
+    solved, or solved with every open end closed, adds none."""
+    from haemolynx.haemodynamics.open_ends import DRAINS, FEEDS, open_end_directions
+
     inlets = {n for n in (inlet_nodes or ()) if n in G}
     outlets = {n for n in (outlet_nodes or ()) if n in G}
+    directions = {n: d for n, d in open_end_directions(G).items() if n not in inlets | outlets}
+    open_inlets = {n for n, d in directions.items() if d == FEEDS}
+    open_outlets = {n for n, d in directions.items() if d == DRAINS}
+    inlets |= open_inlets
+    outlets |= open_outlets
     both = inlets & outlets
-    return inlets - both, outlets - both, len(both)
+    return Terminals(inlets - both, outlets - both, len(both), open_inlets, open_outlets)
 
 
 def _clear_edge_attributes(G: nx.Graph, names: Iterable[str]) -> None:

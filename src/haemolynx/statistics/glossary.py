@@ -383,7 +383,7 @@ _add(T, "Graph Built With Short Loops Removed Under (microns)", "um", "remove_sh
 # -- Transit time -------------------------------------------------------------
 T = "Transit time"
 _add(T, "Transit Time Assumptions", TEXT, "What the transit-time model assumes.")
-_add(T, "Mean Transit Time (s)", "s", "The mean time blood takes from the inlets to the outlets, each vessel's time its volume over its flow, mixed by flow at every junction.")
+_add(T, "Mean Transit Time (s)", "s", "The mean time blood takes from the inlets to the outlets, each vessel's time its volume over its flow, mixed by flow at every junction. Open ends feeding or draining the network count as inlets and outlets; vessels behind dead ends carry no flow and take no part.")
 _add(T, "Transit Time SD (s)", "s", "The standard deviation of that inlet-to-outlet time.")
 _add(T, "Transit Time CV", "dimensionless", "Transit Time SD over Mean Transit Time.")
 _add(T, "Capillary Mean Transit Time (s)", "s", "The mean of the same time spent in capillaries alone.")
@@ -510,6 +510,8 @@ T = "Rows every analysis may write"
 _add(T, "(analysis) Route Weighting", TEXT, "The conductance model a route analysis used -- topology (one per vessel), length or resistance -- and any fallback; it sets the unit of the analysis's lengths and resistances.", pattern=r".+ Route Weighting")
 _add(T, "(analysis) Status", TEXT, "Why an analysis or section reported nothing (N/A and its reason).", pattern=r".+ Status")
 _add(T, "(analysis) Nodes Both Inlet And Outlet (excluded)", "count", "Nodes given as both inlet and outlet, left out of the analysis.", pattern=r".+ Nodes Both Inlet And Outlet \(excluded\)")
+_add(T, "(analysis) Open Ends Taken As Inlets", "count", "Open ends leaving the image, given a boundary condition by the solve (open_end_model), through which blood enters the network: the analysis took them as inlets beside the designated ones.", pattern=r".+ Open Ends Taken As Inlets")
+_add(T, "(analysis) Open Ends Taken As Outlets", "count", "Open ends through which blood leaves the network, taken as outlets beside the designated ones.", pattern=r".+ Open Ends Taken As Outlets")
 _add(T, "arteriole, capillary, venule ... (a vessel type)", _LOOP_LENGTH, "Under Median Loop Length By Vessel Type: the median shortest loop through that type's vessels.", pattern=r"[a-z_]+")
 
 # -- Branch order statistics (the branch_statistics CSV's columns) -----------

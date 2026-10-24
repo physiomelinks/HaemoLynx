@@ -282,7 +282,7 @@ names it lists.
 | Statistic | Unit | Definition |
 |---|---|---|
 | Transit Time Assumptions | (text) | What the transit-time model assumes. |
-| Mean Transit Time (s) | s | The mean time blood takes from the inlets to the outlets, each vessel's time its volume over its flow, mixed by flow at every junction. |
+| Mean Transit Time (s) | s | The mean time blood takes from the inlets to the outlets, each vessel's time its volume over its flow, mixed by flow at every junction. Open ends feeding or draining the network count as inlets and outlets; vessels behind dead ends carry no flow and take no part. |
 | Transit Time SD (s) | s | The standard deviation of that inlet-to-outlet time. |
 | Transit Time CV | dimensionless | Transit Time SD over Mean Transit Time. |
 | Capillary Mean Transit Time (s) | s | The mean of the same time spent in capillaries alone. |
@@ -425,6 +425,8 @@ names it lists.
 | (analysis) Route Weighting | (text) | The conductance model a route analysis used -- topology (one per vessel), length or resistance -- and any fallback; it sets the unit of the analysis's lengths and resistances. |
 | (analysis) Status | (text) | Why an analysis or section reported nothing (N/A and its reason). |
 | (analysis) Nodes Both Inlet And Outlet (excluded) | count | Nodes given as both inlet and outlet, left out of the analysis. |
+| (analysis) Open Ends Taken As Inlets | count | Open ends leaving the image, given a boundary condition by the solve (open_end_model), through which blood enters the network: the analysis took them as inlets beside the designated ones. |
+| (analysis) Open Ends Taken As Outlets | count | Open ends through which blood leaves the network, taken as outlets beside the designated ones. |
 | arteriole, capillary, venule ... (a vessel type) | by the route weighting (Loop Length Weighting): resistance vessels, length um, topology vessels | Under Median Loop Length By Vessel Type: the median shortest loop through that type's vessels. |
 
 ## Branch order statistics (the branch_statistics CSV's columns)

@@ -138,7 +138,8 @@ def compute_single_vessel_occlusion_impact(
     """
     _clear_edge_attributes(G, OCCLUSION_IMPACT_EDGE_ATTRIBUTES)
     effective, label = _effective_weighting(G, weighting)
-    inlets, outlets, both = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    terminals = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    inlets, outlets, both = terminals
     problem = _terminal_problem(inlets, outlets, _route_graph(G, effective).graph)
     if problem is not None:
         return _unavailable("Occlusion Impact", problem, label, both)
@@ -259,6 +260,7 @@ def compute_single_vessel_occlusion_impact(
     }
     if both:
         result["Occlusion Impact Nodes Both Inlet And Outlet (excluded)"] = both
+    result.update(terminals.rows("Occlusion Impact"))
     return result
 
 
@@ -328,7 +330,8 @@ def compute_occlusion_curves(
     if not (0.0 < max_fraction <= 1.0):
         raise ValueError(f"max_fraction must be in (0, 1], got {max_fraction!r}")
     effective, label = _effective_weighting(G, weighting)
-    inlets, outlets, both = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    terminals = _resolve_terminals(G, inlet_nodes, outlet_nodes)
+    inlets, outlets, both = terminals
     problem = _terminal_problem(inlets, outlets, _route_graph(G, effective).graph)
     if problem is not None:
         return _unavailable("Occlusion Curves", problem, label, both)
@@ -385,4 +388,5 @@ def compute_occlusion_curves(
         result["Occlusion Curve (narrowest_diameter)"] = "N/A (no diameter_um on every vessel)"
     if both:
         result["Occlusion Curves Nodes Both Inlet And Outlet (excluded)"] = both
+    result.update(terminals.rows("Occlusion Curves"))
     return result
