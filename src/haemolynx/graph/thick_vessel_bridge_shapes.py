@@ -3,28 +3,38 @@
 
 A bridge (:data:`~haemolynx.graph.thick_vessel_junctions.IS_ZERO_RESISTANCE`)
 is meant to be the thick vessel's radius between its centreline and a vessel
-opening into it. Measured against the centreline tree the split bridges to,
-each bridge is one of :data:`BRIDGE_SHAPES`, judged in this order:
+opening into it. Each bridge is one of :data:`BRIDGE_SHAPES`, judged in this
+order:
 
 - ``fork``: made at a fork of the thick centreline, over a narrower branch's
   stretch inside the trunk's lumen (``bridge_forks``; marked
   :data:`~haemolynx.graph.thick_vessel_junctions.THICK_FORK_BRIDGE`);
-- ``along_centreline``: at least half its length within the split's tolerance
-  of the tree -- the thick vessel's own centreline given no resistance;
-- ``radius_shaped``: its inner end (the one nearer the tree) on the tree, its
-  outer end at the thick-vessel region's wall, and no longer than
-  :data:`RADIUS_SHAPED_MAX_RATIO` times the thick vessel's lumen radius at the
-  tree point nearest its inner end;
-- ``longer_than_radius``: its inner end on the tree, but not radius-shaped;
-- ``on_another_bridge``: its inner end off the tree, on another bridge;
+- ``along_centreline``: at least half its length, and
+  :data:`ALONG_CENTRELINE_MIN_UM` or more, within the split's tolerance of the
+  centreline tree -- the thick vessel's own centreline given no resistance;
+- ``radius_shaped``: its inner end (the one nearer the tree) on the thick
+  centreline, its outer end at the thick-vessel region's wall, and no longer
+  than :data:`RADIUS_SHAPED_MAX_RATIO` times the thick vessel's lumen radius
+  at the tree point nearest its inner end;
+- ``longer_than_radius``: its inner end on the thick centreline, but not
+  radius-shaped;
+- ``on_another_bridge``: its inner end off it, on another bridge;
 - ``wall_to_wall``: never reaching the tree, both ends at the region's wall --
   a vessel passing through the region's margin given no resistance;
 - ``other``: never reaching the centreline otherwise.
 
-The six after ``fork`` are the categories of the 2026-10-09 audit of E14.5's
-bridges (the plan's finding 2), when 290 of 393 gave no resistance to
-something that is vessel. Each bridge's length over that lumen radius is
-reported too, and whether it keeps its drawn path rather than a straight line
+An inner end is on the thick centreline when it lies within the tolerance of
+the tree, or -- with *graph_centreline*, the default -- on the graph's own
+thick centreline where that strays off the tree: a node with a vessel whose
+first :data:`ALONG_CENTRELINE_MIN_UM` lie inside the thick lumen, within the
+lumen's radius of the tree. The split bridges to the graph's thick centreline,
+and on E14.5 (2026-10-24) every bridge ending off the tree ended on it, 2 to
+6 um away. Judged by the tree alone, the six shapes after ``fork`` are the
+categories of the 2026-10-09 audit of E14.5's bridges (the plan's finding 2),
+when 290 of 393 gave no resistance to something that is vessel.
+
+Each bridge's length over the lumen radius is reported too, and whether it
+keeps its drawn path rather than a straight line
 (:data:`~haemolynx.graph.thick_vessel_junctions.DRAWN_BRIDGE`: a bridge whose
 straight line would leave the segmentation).
 """
@@ -59,6 +69,11 @@ BRIDGE_SHAPES = (
     "fork",
 )
 
+#: The shapes the split never means to make: no resistance given to the thick
+#: vessel's own centreline or to a vessel in its margin, or a bridge that
+#: does not join the thick centreline.
+UNINTENDED_SHAPES = ("along_centreline", "on_another_bridge", "wall_to_wall", "other")
+
 #: How each shape reads in a sentence.
 SHAPE_WORDS = {
     "radius_shaped": "radius-shaped",
@@ -74,8 +89,14 @@ SHAPE_WORDS = {
 #: rule, kept so the counts compare with that audit's).
 RADIUS_SHAPED_MAX_RATIO = 1.5
 
-#: A bridge with at least this share of its length on the tree lies along it.
+#: A bridge with at least this share of its length on the tree lies along it...
 ALONG_CENTRELINE_MIN_SHARE = 0.5
+
+#: ... and at least this much of it (µm): the split's shortest stretch of the
+#: thick centreline at an edge's end (``thick_vessel_junctions``). A bridge
+#: shorter than twice the tolerance has most of its length on the tree
+#: whatever its direction.
+ALONG_CENTRELINE_MIN_UM = 3.0
 
 #: An end outside the thick-vessel region, or this close (µm) to its outside,
 #: is at its wall: the split's flicker length.
@@ -93,21 +114,24 @@ def diagnose_thick_vessel_bridges(
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     tree_radius_um: np.ndarray | None = None,
     centreline_tolerance_um: float = CENTRELINE_TOLERANCE_UM,
+    graph_centreline: bool = True,
 ) -> dict[str, Any]:
-    """Every bridge of *G* by shape (:data:`BRIDGE_SHAPES`), against the thick
-    vessels' centreline tree. Read-only.
+    """Every bridge of *G* by shape (:data:`BRIDGE_SHAPES`). Read-only.
 
-    *centreline* is the tree (a volume of it or its voxels), found again
-    from *thick_mask* when not given; *segmentation* the lumen its radius is
-    read in (the region stands in without one); *tree_radius_um* that
-    radius at each tree point, when a caller has it already. The tolerance is
-    the split's: *centreline_tolerance_um* or
+    *centreline* is the thick vessels' centreline tree (a volume of it or its
+    voxels), found again from *thick_mask* when not given; *segmentation*
+    the lumen its radius is read in (the region stands in without one);
+    *tree_radius_um* that radius at each tree point, when a caller has it
+    already. The tolerance is the split's: *centreline_tolerance_um* or
     :data:`~haemolynx.graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_PER_RADIUS`
-    of the radius, whichever is more.
+    of the radius, whichever is more. *graph_centreline* False judges the
+    inner end by the tree alone (the 2026-10-09 audit's rule).
 
-    Returns ``bridge_count``, ``counts`` and ``median_length_um`` per shape,
+    Returns ``bridge_count``; ``counts`` and ``median_length_um`` per shape;
+    ``unintended_count`` (:data:`UNINTENDED_SHAPES`); ``off_tree_count``,
+    the bridges ending on the graph's thick centreline off the tree;
     ``length_over_radius`` (``median``, ``p90``, ``max`` over every bridge
-    with a radius), ``drawn_path_count`` and ``bridges``: one row per bridge.
+    with a radius); ``drawn_path_count``; and ``bridges``, one row per bridge.
     """
     vs = np.asarray(voxel_size_zyx, dtype=float)
     bridges = [
@@ -118,6 +142,8 @@ def diagnose_thick_vessel_bridges(
         "bridge_count": len(bridges),
         "counts": {shape: 0 for shape in BRIDGE_SHAPES},
         "median_length_um": {shape: None for shape in BRIDGE_SHAPES},
+        "unintended_count": 0,
+        "off_tree_count": 0,
         "length_over_radius": {"median": None, "p90": None, "max": None},
         "drawn_path_count": 0,
         "bridges": [],
@@ -144,6 +170,23 @@ def diagnose_thick_vessel_bridges(
     tree = cKDTree(tree_points)
     node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
 
+    def on_graph_centreline(node) -> bool:
+        """A vessel leaves *node* along the thick lumen: its first
+        :data:`ALONG_CENTRELINE_MIN_UM` within the lumen's radius of the tree."""
+        for a, b, data in G.edges(node, data=True):
+            other = b if a == node else a
+            if data.get(IS_ZERO_RESISTANCE) or other == node or other not in node_pos:
+                continue
+            path = densify_polyline(edge_sample_points(node, other, data, node_pos), max_step_um=_SAMPLE_STEP_UM)
+            along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+            first = path[along <= ALONG_CENTRELINE_MIN_UM]
+            if along[-1] < ALONG_CENTRELINE_MIN_UM or not len(first):
+                continue
+            distance, nearest = tree.query(first)
+            if np.all(distance <= finite[nearest]):
+                return True
+        return False
+
     bridges_at: dict[Any, int] = {}
     for u, v, _key, _data in bridges:
         for n in (u, v):
@@ -167,18 +210,20 @@ def diagnose_thick_vessel_bridges(
         length = float(steps.sum())
         distance, nearest = tree.query(path)
         on = distance <= tolerance[nearest]
-        share = float(steps[on[:-1] & on[1:]].sum() / length) if length > 0 else 0.0
+        on_um = float(steps[on[:-1] & on[1:]].sum())
+        share = on_um / length if length > 0 else 0.0
         inner_at = 0 if distance[0] <= distance[-1] else len(path) - 1
         inner, outer = (u, v) if inner_at == 0 else (v, u)
         outer_at = len(path) - 1 - inner_at
         local_radius = float(finite[nearest[inner_at]])
         ratio = length / local_radius if local_radius > 0 else float("inf")
         inner_on_tree = bool(on[inner_at])
+        off_tree = bool(not inner_on_tree and graph_centreline and on_graph_centreline(inner))
         if data.get(THICK_FORK_BRIDGE):
             shape = "fork"
-        elif share >= ALONG_CENTRELINE_MIN_SHARE:
+        elif share >= ALONG_CENTRELINE_MIN_SHARE and on_um >= ALONG_CENTRELINE_MIN_UM:
             shape = "along_centreline"
-        elif inner_on_tree:
+        elif inner_on_tree or off_tree:
             radius_shaped = at_wall.get(outer, False) and ratio <= RADIUS_SHAPED_MAX_RATIO
             shape = "radius_shaped" if radius_shaped else "longer_than_radius"
         elif bridges_at.get(inner, 0) > 1:
@@ -193,6 +238,8 @@ def diagnose_thick_vessel_bridges(
             "local_radius_um": local_radius,
             "length_over_radius": ratio,
             "inner_node": inner, "inner_to_tree_um": float(distance[inner_at]),
+            "inner_on_tree": inner_on_tree,
+            "inner_on_graph_centreline_off_tree": off_tree,
             "outer_node": outer, "outer_to_tree_um": float(distance[outer_at]),
             "outer_at_wall": at_wall.get(outer, False),
             "share_on_centreline": share,
@@ -204,6 +251,11 @@ def diagnose_thick_vessel_bridges(
         lengths = [row["length_um"] for row in rows if row["shape"] == shape]
         report["counts"][shape] = len(lengths)
         report["median_length_um"][shape] = float(np.median(lengths)) if lengths else None
+    report["unintended_count"] = sum(report["counts"][shape] for shape in UNINTENDED_SHAPES)
+    report["off_tree_count"] = sum(
+        bool(row["inner_on_graph_centreline_off_tree"]) and row["shape"] not in ("fork", "along_centreline")
+        for row in rows
+    )
     ratios = np.asarray([row["length_over_radius"] for row in rows if np.isfinite(row["length_over_radius"])])
     if len(ratios):
         report["length_over_radius"] = {
@@ -225,6 +277,9 @@ def format_thick_vessel_bridges_report(report: dict[str, Any]) -> str:
     line = f"Thick-vessel bridges: {report.get('bridge_count', 0)} bridge(s)"
     if shapes:
         line += f": {shapes}"
+    off_tree = report.get("off_tree_count", 0)
+    if off_tree:
+        line += f"; {off_tree} of them ending on the graph's thick centreline where it strays off the tree"
     if ratio.get("median") is not None:
         line += (
             f"; length over the thick vessel's lumen radius median {ratio['median']:.2f} "

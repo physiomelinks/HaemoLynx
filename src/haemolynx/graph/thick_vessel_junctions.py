@@ -964,6 +964,11 @@ def insert_thick_vessel_junction_nodes(
     # the connector they belong to may still bridge its other stretches.
     tapers: set[int] = set()
     no_centreline_near = 0
+    shared = 0
+
+    def share_reach_um(point) -> float:
+        # One lumen radius of the thick vessel there (design C.4).
+        return max(_SNAP_UM, float(finite[tree.query(np.asarray(point, dtype=float))[1]]))
     for _attempt in range(len(touches_centreline) + len(inside_runs) + 2):
         bridges, failed, runs = _choose_bridges(
             sampled, inside_runs, find, touches_centreline - restored, tree, tree_radius,
@@ -974,6 +979,8 @@ def insert_thick_vessel_junction_nodes(
             no_centreline_near += len(failed - restored)
             restored |= failed
             continue
+        met_at = [target for _origin, target, _data in bridges]
+        bridges, shared = _share_centreline_nodes(bridges, sampled, result, share_reach_um)
         built, new_node_at, stats, bridge_ends = _rebuild(
             G, result, sampled, bridges, node_pos,
             tapered=[inside_runs[r] for r in tapers],
@@ -989,6 +996,17 @@ def insert_thick_vessel_junction_nodes(
             break
         tapers |= continuing
         restored |= blamed
+    drawn, left_straight = _draw_bridges_leaving_the_lumen(
+        built, sampled, bridge_ends, met_at, new_node_at, lumen, vs
+    )
+    if drawn or left_straight:
+        logger.info(
+            "Thick-vessel bridges: %d bridge(s) drawn along the way their vessel ran through the "
+            "thick lumen, the straight line leaving the segmentation (a curved thick vessel); "
+            "%d left straight across it, with no such way to draw.",
+            drawn, left_straight,
+        )
+
     def stub_length_um(inner_pos) -> float:
         # The prune's threshold, read with the thick vessel's lumen radius
         # at the tree point nearest the bridge's inner end.
@@ -1009,6 +1027,12 @@ def insert_thick_vessel_junction_nodes(
             "Thick-vessel bridges: %d vessel(s) carrying on from a thick centreline's end along "
             "its line left as vessel: the thick vessel narrowing, not a vessel opening into it.",
             len(tapers),
+        )
+    if shared:
+        logger.info(
+            "Thick-vessel bridges: %d bridge(s) ending within one lumen radius of another's end "
+            "on the thick centreline moved onto one node with it.",
+            shared,
         )
     cut_off_kept = len(restored) - no_centreline_near
     if no_centreline_near or cut_off_kept:
@@ -1092,6 +1116,156 @@ def _choose_bridges(
         bridges.append((origin, target, dict(source.data) if source is not None else {}))
         runs.append({run_of[c] for c in beside if c in run_of})
     return bridges, failed, runs
+
+
+def _share_centreline_nodes(bridges, sampled, graph, reach_um):
+    """Bridges whose centreline ends lie within one lumen radius of each other
+    end on one node (design C.4): two vessels opening into a thick vessel side
+    by side meet its centreline at one junction, not two a few microns apart
+    with a stub of thick vessel between them. Returns the bridges, each
+    ``(origin, (edge, sample), attributes)`` as :func:`_choose_bridges` gives
+    them, and how many moved.
+
+    Taken in order of their ends' positions, a bridge joins the first group
+    whose first end is within *reach_um* (of that end, µm) of its own. A group
+    ends on its junction already in the graph (an end of a sampled edge with
+    three or more edges), else on the member's end nearest the group's
+    middle."""
+    if len(bridges) < 2:
+        return bridges, 0
+    points = np.asarray([sampled[i].points[k] for _o, (i, k), _d in bridges], dtype=float)
+    order = sorted(range(len(bridges)), key=lambda b: tuple(points[b]))
+    groups: list[list[int]] = []
+    for b in order:
+        for group in groups:
+            first = points[group[0]]
+            if float(np.linalg.norm(points[b] - first)) <= reach_um(first):
+                group.append(b)
+                break
+        else:
+            groups.append([b])
+
+    def junction(b) -> bool:
+        i, k = bridges[b][1]
+        e = sampled[i]
+        if k not in (0, len(e.points) - 1):
+            return False
+        return graph.degree(e.u if k == 0 else e.v) >= 3
+
+    moved = 0
+    targets = [target for _o, target, _d in bridges]
+    for group in groups:
+        if len(group) < 2:
+            continue
+        middle = points[group].mean(axis=0)
+        at_junction = [b for b in group if junction(b)]
+        chosen = min(at_junction or group, key=lambda b: (float(np.linalg.norm(points[b] - middle)), b))
+        for b in group:
+            if targets[b] != targets[chosen]:
+                targets[b] = targets[chosen]
+                moved += 1
+    return [(origin, target, data) for (origin, _t, data), target in zip(bridges, targets)], moved
+
+
+def _longest_outside_um(points: np.ndarray, lumen: np.ndarray, vs: np.ndarray) -> float:
+    """The longest stretch (µm) of a polyline, densified, outside *lumen*."""
+    points = densify_polyline(np.asarray(points, dtype=float), max_step_um=_SAMPLE_STEP_UM)
+    if len(points) < 2:
+        return 0.0
+    outside = ~points_inside_mask(points, lumen, voxel_size_zyx=tuple(vs))
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    longest = run = 0.0
+    for step, out in zip(steps, outside[:-1] | outside[1:]):
+        run = run + float(step) if out else 0.0
+        longest = max(longest, run)
+    return longest
+
+
+def _draw_bridges_leaving_the_lumen(built, sampled, bridge_ends, met_at, new_node_at, lumen, vs):
+    """Draw, in *built*, each bridge whose straight line would cross more
+    than :data:`_MIN_RUN_UM` of background (design C.5: a curved thick
+    vessel) along the way its vessel ran through the lumen instead: from its
+    vessel's end through the stretch the split removed to where that stretch
+    met the thick centreline (*met_at*, per bridge), then to its centreline
+    end. Kept only when that way crosses less background; marked
+    :data:`DRAWN_BRIDGE`. Returns ``(drawn, left straight with no better way)``.
+
+    The way is the shortest through the removed samples (``keep`` False),
+    the samples beside them and the nodes they meet."""
+    sample_of = {node: key for key, node in new_node_at.items()}
+    ways = None
+    drawn = left = 0
+    for b, ends in enumerate(bridge_ends):
+        if ends is None or not built.has_node(ends[0]) or not built.has_node(ends[1]):
+            continue
+        start, end = ends
+        keys = [k for k, d in built[start][end].items() if d.get(IS_ZERO_RESISTANCE)] if built.has_edge(start, end) else []
+        if not keys:
+            continue
+        a = np.asarray(built.nodes[start]["pos"], dtype=float)
+        z = np.asarray(built.nodes[end]["pos"], dtype=float)
+        straight = _longest_outside_um(np.vstack([a, z]), lumen, vs)
+        if straight <= _MIN_RUN_UM:
+            continue
+        if ways is None:
+            ways = _removed_stretch_graph(sampled)
+        source = ("s", *sample_of[start]) if start in sample_of else ("n", start)
+        target = ("s", *met_at[b])
+        if source not in ways or target not in ways:
+            left += 1
+            continue
+        try:
+            route = nx.shortest_path(ways, source, target, weight="weight")
+        except nx.NetworkXNoPath:
+            left += 1
+            continue
+        points = [a]
+        for key in route[1:]:
+            if key[0] == "s":
+                points.append(np.asarray(sampled[key[1]].points[key[2]], dtype=float))
+        points.append(z)
+        path = np.vstack(points)
+        if _longest_outside_um(path, lumen, vs) >= straight:
+            left += 1
+            continue
+        data = built.edges[start, end, keys[0]]
+        data["voxels"] = [tuple(float(c) for c in p) for p in path]
+        data["length"] = float(calculate_path_length(data["voxels"]))
+        data[DRAWN_BRIDGE] = True
+        drawn += 1
+    return drawn, left
+
+
+def _removed_stretch_graph(sampled) -> nx.Graph:
+    """The samples the split removed (``keep`` False), those beside them and
+    the nodes they meet, joined along their edges: the ways a vessel ran
+    through the thick lumen, for :func:`_draw_bridges_leaving_the_lumen`."""
+    H = nx.Graph()
+    ends_at: dict[Any, list[tuple[int, int]]] = {}
+    for i, e in enumerate(sampled):
+        last = len(e.points) - 1
+        ends_at.setdefault(e.u, []).append((i, 0))
+        ends_at.setdefault(e.v, []).append((i, last))
+    met_nodes = set()
+    for i, e in enumerate(sampled):
+        if e.keep is None or e.keep.all():
+            continue
+        last = len(e.points) - 1
+        dropped = ~e.keep
+        near = dropped.copy()
+        near[1:] |= dropped[:-1]
+        near[:-1] |= dropped[1:]
+        steps = np.linalg.norm(np.diff(e.points, axis=0), axis=1)
+        for k in np.flatnonzero(near[:-1] & near[1:]):
+            H.add_edge(("s", i, int(k)), ("s", i, int(k) + 1), weight=float(steps[k]))
+        for k, node in ((0, e.u), (last, e.v)):
+            if near[k]:
+                H.add_edge(("s", i, k), ("n", node), weight=0.0)
+                met_nodes.add(node)
+    for node in met_nodes:
+        for i, k in ends_at.get(node, ()):
+            H.add_edge(("s", i, k), ("n", node), weight=0.0)
+    return H
 
 
 def _rebuild(G, base, sampled, bridges, node_pos, tapered=()):

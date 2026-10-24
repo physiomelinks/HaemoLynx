@@ -202,6 +202,150 @@ def test_a_vessel_crossing_the_thick_one_gets_two_bridges_to_one_node():
     assert all(REACH - 0.5 <= d["length"] <= REACH + 1.0 for *_e, d in bridges)
 
 
+def test_an_oblique_vessel_is_bridged_along_its_own_line_to_where_it_met_the_centreline():
+    """Entering at 49 degrees to the thick vessel's axis: the bridge runs from
+    where it leaves the region on along its own line to where it met the
+    centreline, longer than the radius by the slant; the rest is vessel."""
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 20), (20, 60, 55))
+    G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "T1", (20, 30, 20), T1),
+               ("X", "J", (20, 60, 55), (20, 30, 20)))
+
+    result = _split(G, lumen, body, tree)
+
+    (u, v, bridge), = _bridges(result)
+    assert "J" in (u, v)
+    slant = REACH / np.sin(np.arctan2(35.0, 30.0))
+    assert slant - 1.0 <= bridge["length"] <= slant + 1.0
+    along = np.subtract(*map(np.asarray, (bridge["voxels"][0], bridge["voxels"][-1])))
+    assert abs(along @ np.array([0.0, 30.0, 35.0])) / (np.linalg.norm(along) * np.hypot(30, 35)) > 0.99
+    (thin,) = [d for a, b, d in result.edges(data=True) if "X" in (a, b)]
+    assert thin["length"] == pytest.approx(np.hypot(30.0, 35.0) - bridge["length"], abs=0.6)
+
+
+def _side_by_side(gap: float, *, reach_the_centreline: bool = True):
+    """Two thin vessels entering the thick one at y = 30 and 30 + *gap*,
+    their centrelines meeting it at junctions J and K, or stopping 3 um
+    short of it."""
+    lumen, body, tree = _thick()
+    y2 = 30.0 + gap
+    _thin_vessel(lumen, (20, 30, 20), (20, 30, 63))
+    _thin_vessel(lumen, (20, y2, 20), (20, y2, 63))
+    if reach_the_centreline:
+        G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "K", (20, 30, 20), (20, y2, 20)),
+                   ("K", "T1", (20, y2, 20), T1),
+                   ("X", "J", (20, 30, 63), (20, 30, 20)), ("Y", "K", (20, y2, 63), (20, y2, 20)))
+    else:
+        G = _graph(("T0", "T1", T0, T1),
+                   ("X", "S", (20, 30, 63), (20, 30, 23)), ("Y", "R", (20, y2, 63), (20, y2, 23)))
+    return G, lumen, body, tree
+
+
+@pytest.mark.parametrize("reach_the_centreline", [True, False])
+def test_two_vessels_entering_side_by_side_share_one_centreline_node(reach_the_centreline):
+    """Design C.4: within one radius of each other (here 4 um, the thick
+    vessel's radius 6 um), two vessels meet the thick centreline at one
+    junction -- the one already there, or else where one of them would --
+    not at two with a 4 um stub of thick vessel between."""
+    G, lumen, body, tree = _side_by_side(4.0, reach_the_centreline=reach_the_centreline)
+
+    result = _split(G, lumen, body, tree)
+
+    bridges = _bridges(result)
+    assert len(bridges) == 2
+    (shared,) = set.intersection(*({u, v} for u, v, _d in bridges))
+    assert result.nodes[shared]["pos"][2] == pytest.approx(20.0, abs=0.6)
+    assert result.nodes[shared]["pos"][1] in (pytest.approx(30.0, abs=0.6), pytest.approx(34.0, abs=0.6))
+    assert result.degree(shared) == 4
+    thick = [d for a, b, d in result.edges(data=True) if not d.get(IS_ZERO_RESISTANCE) and not {a, b} & {"X", "Y"}]
+    assert len(thick) == 2, "the thick centreline: one edge each side of the shared node"
+    assert sum(d["length"] for d in thick) == pytest.approx(59.0, abs=0.6)
+    for u, v, d in bridges:
+        assert REACH - 0.5 <= d["length"] <= np.hypot(REACH, 4.0) + 1.0
+
+
+def test_two_vessels_further_apart_than_the_radius_keep_a_node_each():
+    G, lumen, body, tree = _side_by_side(10.0)
+
+    result = _split(G, lumen, body, tree)
+
+    bridges = _bridges(result)
+    assert len(bridges) == 2
+    assert not set.intersection(*({u, v} for u, v, _d in bridges))
+    assert {"J", "K"} <= set(result.nodes)
+
+
+def _curved_thick_vessel():
+    """A thick vessel 5 um in radius bent into a C round a centre 9 um from
+    its centreline (0 to 270 degrees), and a thin vessel coming up the C's
+    hole that enters its inner wall at 0 degrees and runs round inside the
+    lumen, along the wall, to meet the centreline at 150 degrees."""
+    shape, centre, bend, radius = (17, 64, 64), np.array([8.0, 32.0, 32.0]), 9.0, 5.0
+    p = np.stack(np.indices(shape), axis=-1).astype(float)
+    rho = np.hypot(p[..., 1] - centre[1], p[..., 2] - centre[2])
+    angle = np.degrees(np.arctan2(p[..., 1] - centre[1], p[..., 2] - centre[2])) % 360
+    body = ((rho - bend) ** 2 + (p[..., 0] - centre[0]) ** 2 <= radius**2) & (angle <= 270)
+
+    def at(r, degrees, z=8.0):
+        t = np.radians(degrees)
+        return (z, centre[1] + r * np.sin(t), centre[2] + r * np.cos(t))
+
+    def arc(r, start, stop, step=1.0):
+        count = max(2, int(np.ceil(abs(np.radians(stop - start)) * r / step)) + 1)
+        return [at(r, a) for a in np.linspace(start, stop, count)]
+
+    tree = np.zeros(shape, dtype=bool)
+    for point in arc(bend, 0, 270, step=0.3):
+        tree[tuple(np.rint(point).astype(int))] = True
+    lumen = body | _tube(at(2.5, 0, 0.0), at(2.5, 0, 8.0), 1.2, shape) | _tube(at(2.5, 0, 8.0), at(4.5, 0), 1.2, shape)
+    G = nx.MultiGraph()
+    for u, v, points in (("T0", "J", arc(bend, 0, 150)), ("J", "T1", arc(bend, 150, 270)),
+                         ("X", "J", [at(2.5, 0, 0.0), at(2.5, 0, 8.0), *arc(5.0, 0, 150), at(bend, 150)])):
+        points = [tuple(float(c) for c in q) for q in points]
+        G.add_node(u, pos=points[0])
+        G.add_node(v, pos=points[-1])
+        G.add_edge(u, v, voxels=points, length=float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1))))
+    return G, lumen, body, tree
+
+
+def test_a_bridge_round_a_curved_thick_vessel_keeps_the_way_its_vessel_ran():
+    """Design C.5: straight, the bridge would cut across the C's hole, 7 um
+    of background; it keeps the way the vessel ran through the lumen
+    instead, and is marked so."""
+    from haemolynx.graph.thick_vessel_junctions import DRAWN_BRIDGE, _longest_outside_um
+
+    G, lumen, body, tree = _curved_thick_vessel()
+
+    result = insert_thick_vessel_junction_nodes(G, body, voxel_size_zyx=VS, segmentation=lumen, centreline=tree)
+
+    (u, v, bridge), = _bridges(result)
+    assert "J" in (u, v)
+    assert bridge[DRAWN_BRIDGE] is True
+    path = np.asarray(bridge["voxels"])
+    assert _longest_outside_um(path, lumen, np.ones(3)) == 0.0
+    straight = np.vstack([path[0], path[-1]])
+    assert _longest_outside_um(straight, lumen, np.ones(3)) > 5.0
+    assert bridge["length"] == pytest.approx(float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1))))
+    assert bridge["length"] > float(np.linalg.norm(path[-1] - path[0])) + 5.0
+    assert {tuple(path[0]), tuple(path[-1])} == {tuple(result.nodes[n]["pos"]) for n in (u, v)}
+    (thin,) = [d for a, b, d in result.edges(data=True) if "X" in (a, b)]
+    assert not thin.get(IS_ZERO_RESISTANCE) and thin["length"] < 10.0
+    report = diagnose_thick_vessel_bridges(result, body, tree, lumen, voxel_size_zyx=VS)
+    assert report["drawn_path_count"] == 1
+
+
+def test_a_straight_bridge_inside_the_lumen_is_not_drawn_along_its_path():
+    from haemolynx.graph.thick_vessel_junctions import DRAWN_BRIDGE
+
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 20), (20, 30, 63))
+
+    result = _split(_graph(*JOINING), lumen, body, tree)
+
+    (_u, _v, bridge), = _bridges(result)
+    assert DRAWN_BRIDGE not in bridge and len(bridge["voxels"]) == 2
+
+
 def test_a_vessel_entering_the_lumen_but_never_reaching_the_centreline_is_bridged():
     """Inside the thick vessel, opening into it, though its centreline
     stops short of the tree: inside the region there is only the centreline
@@ -480,6 +624,40 @@ def test_each_bridge_is_reported_with_its_shape():
     assert report["drawn_path_count"] == 0
     G.remove_edges_from([(u, v) for u, v, d in G.edges(data=True) if d.get(IS_ZERO_RESISTANCE)])
     assert G.number_of_edges() == 1, "read-only: the graph is the one handed in"
+
+
+def test_a_bridge_ending_on_the_graphs_thick_centreline_off_the_tree_reaches_it():
+    """The split bridges to the graph's own thick centreline, which strays off
+    the tree by a few microns (on E14.5, 2026-10-24, every bridge ending off
+    the tree ended on it, 2-6 um away): judged by the tree alone, the
+    2026-10-09 audit's rule, it never reaches the centreline."""
+    lumen, body, tree = _thick()
+    G = _graph(("T0", "S", T0, (20, 30, 23.5)), ("S", "T1", (20, 30, 23.5), T1))
+    G = nx.compose(G, _graph(("B1", "S", (20, 30, 29.5), (20, 30, 23.5)), **{IS_ZERO_RESISTANCE: True}))
+
+    (row,) = diagnose_thick_vessel_bridges(G, _region(lumen, body), tree, lumen, voxel_size_zyx=VS)["bridges"]
+    assert row["inner_node"] == "S" and not row["inner_on_tree"]
+    assert row["inner_on_graph_centreline_off_tree"] and row["shape"] == "radius_shaped"
+    report = diagnose_thick_vessel_bridges(G, _region(lumen, body), tree, lumen, voxel_size_zyx=VS)
+    assert report["off_tree_count"] == 1 and report["unintended_count"] == 0
+    (row,) = diagnose_thick_vessel_bridges(
+        G, _region(lumen, body), tree, lumen, voxel_size_zyx=VS, graph_centreline=False
+    )["bridges"]
+    assert row["shape"] == "other"
+
+
+def test_a_bridge_too_short_to_follow_the_tree_does_not_lie_along_it():
+    """2.5 um from the region's edge 2 um off the tree to the tree: most of it
+    is within the tolerance of the tree whatever its direction."""
+    lumen, body, tree = _thick()
+    G = nx.compose(_graph(("T0", "T1", T0, T1)),
+                   _graph(("E1", "E0", (20, 30, 22.5), (20, 30, 20)), **{IS_ZERO_RESISTANCE: True}))
+    thin_region = _region(lumen, body) & (np.abs(np.indices(SHAPE)[2] - 20) <= 2)
+
+    (row,) = diagnose_thick_vessel_bridges(G, thin_region, tree, lumen, voxel_size_zyx=VS)["bridges"]
+
+    assert row["share_on_centreline"] > 0.5
+    assert row["shape"] == "radius_shaped"
 
 
 def test_the_bridge_shape_report_reads_as_one_line():

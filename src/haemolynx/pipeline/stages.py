@@ -1916,12 +1916,6 @@ def _log_graph_consistency_diagnostics(
         logger.info(artefacts_report)
 
 
-#: The bridge shapes (graph.thick_vessel_bridge_shapes) the split never means
-#: to make: a bridge giving no resistance to the thick vessel's own
-#: centreline or to a vessel in its margin, or one not joining the centreline.
-_UNINTENDED_BRIDGE_SHAPES = ("along_centreline", "on_another_bridge", "wall_to_wall", "other")
-
-
 def _log_thick_vessel_bridge_shapes(G: nx.MultiGraph, context: NetworkContext) -> None:
     """What shape each thick-vessel bridge has, against the tree the split
     bridged to (graph.diagnose_thick_vessel_bridges): a warning when any is
@@ -1933,7 +1927,7 @@ def _log_thick_vessel_bridge_shapes(G: nx.MultiGraph, context: NetworkContext) -
     if not report["bridge_count"]:
         return
     line = graph.format_thick_vessel_bridges_report(report)
-    if any(report["counts"][shape] for shape in _UNINTENDED_BRIDGE_SHAPES):
+    if report["unintended_count"]:
         logger.warning(line)
     else:
         logger.info(line)
