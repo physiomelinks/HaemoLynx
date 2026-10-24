@@ -307,6 +307,16 @@ def test_preflight_refuses_a_file_that_is_not_a_haemorun(tmp_path):
     bad.write_bytes(b"\x00")
     report = check_synthetic_template(_settings(bad, tmp_path))
     assert not report.ok and "not a .haemorun file" in report.errors[0]
+    assert "Fix: save the template run from the panel (Save run)" in report.errors[0]
+
+
+def test_preflight_refuses_a_haemorun_that_is_not_a_run_and_says_what_to_choose(tmp_path):
+    bad = tmp_path / "renamed.haemorun"
+    bad.write_bytes(b"not a run")
+    report = check_synthetic_template(_settings(bad, tmp_path))
+    assert not report.ok and len(report.errors) == 1
+    assert report.errors[0].startswith(f"synthetic_template_path: Could not read {bad}")
+    assert report.errors[0].endswith("Fix: choose a run the panel saved (Save run), of a microscopy-image run.")
 
 
 def test_preflight_names_the_statistics_a_template_lacks(tmp_path):

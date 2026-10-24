@@ -910,7 +910,13 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
 
     try:
         template = load_template(file, settings.get("synthetic_template_source", "statistics"))
-    except (RunSnapshotError, TemplateError) as error:
+    except RunSnapshotError as error:
+        report.add_error(
+            f"synthetic_template_path: {error} Fix: choose a run the panel saved (Save run), "
+            "of a microscopy-image run."
+        )
+        return report
+    except TemplateError as error:
         report.add_error(f"synthetic_template_path: {error}")
         return report
     report.add_pass(
