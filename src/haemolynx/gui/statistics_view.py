@@ -22,6 +22,7 @@ from haemolynx.pipeline.stages import (
     WEIGHTED_MEASURES_SECTION,
 )
 from haemolynx.statistics import STATISTIC_MEASURES, ZERO_RESISTANCE_BRIDGES
+from haemolynx.synthetic.compare import COMPARISON_SECTION
 
 #: The sections that are not a statistic measure, in the order their buttons
 #: follow the measures'.
@@ -31,6 +32,7 @@ OTHER_SECTIONS: tuple[str, ...] = (
     WEIGHTED_MEASURES_SECTION,
     ZERO_RESISTANCE_BRIDGES,
     TISSUE_VOLUME_SECTION,
+    COMPARISON_SECTION,
 )
 
 #: Their buttons' titles. A measure's is its name as its checkbox on the
@@ -41,6 +43,7 @@ SECTION_TITLES: dict[str, str] = {
     WEIGHTED_MEASURES_SECTION: "Weighted betweenness and communities",
     ZERO_RESISTANCE_BRIDGES: "Zero-resistance bridges",
     TISSUE_VOLUME_SECTION: "Tissue volume",
+    COMPARISON_SECTION: "Template comparison",
 }
 
 #: The weighted measures' three edge weightings, as their headings read.

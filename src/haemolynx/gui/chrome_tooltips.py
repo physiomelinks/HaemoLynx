@@ -374,6 +374,14 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "of its surface the image faces cut, the vessels inside it, and the "
         "intensities its threshold split"
     ),
+    # synthetic.compare.COMPARISON_SECTION: a synthetic network's run only.
+    "synthetic_comparison": (
+        "How close the synthetic network came to the template run it was drawn "
+        "to, characteristic by characteristic: the template's value, the "
+        "synthetic network's and their ratio, and whether it lies within the "
+        "band the generator is held to (OUTSIDE when not). The same rows as "
+        "the run's template comparison CSV"
+    ),
 }
 SAVE_CONFIG_TOOLTIP = (
     "Write the current form values to a YAML config file; relative "

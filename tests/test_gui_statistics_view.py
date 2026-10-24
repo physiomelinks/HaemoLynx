@@ -258,3 +258,22 @@ def test_the_report_is_read_from_the_graph_the_export_left_it_on():
     report = _report({"basic": {"Total Nodes": 1}})
     G.graph[STATISTICS_REPORT] = report
     assert statistics_report(G) is report
+
+
+def test_a_synthetic_runs_comparison_is_the_template_comparison_button_last():
+    """Harvey, 2026-10-24: the button read "Synthetic comparison", its key's
+    words; it is the template comparison, with hover text of its own."""
+    from haemolynx.gui.chrome_tooltips import STATISTICS_SECTION_TOOLTIP
+    from haemolynx.synthetic.compare import COMPARISON_SECTION
+
+    assert section_title(COMPARISON_SECTION) == "Template comparison"
+    assert section_tooltip(COMPARISON_SECTION) != STATISTICS_SECTION_TOOLTIP
+    assert "template" in section_tooltip(COMPARISON_SECTION)
+    report = _report({
+        COMPARISON_SECTION: {"endpoints: inlets": "1 -> 1 (x1) within exact"},
+        "tissue_volume": {"Tissue Volume (micron³)": 1.0},
+        "basic": {"Total Nodes": 3},
+    })
+    sections = statistics_sections(report)
+    assert [s.title for s in sections] == ["Basic", "Tissue volume", "Template comparison"]
+    assert sections[-1].rows[0].value == "1 -> 1 (x1) within exact"
