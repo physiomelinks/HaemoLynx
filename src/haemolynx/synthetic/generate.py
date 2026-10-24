@@ -149,25 +149,27 @@ def _choose_boundary_leaves(side: _Side, interior_dead_ends: bool, rng: np.rando
         return []
     interior = [t for t in result.leaves if not t.at_face]
     side.face = [t.node for t in result.leaves if t.at_face]
-    if not interior:
-        return []
-    wanted = side.boundary_count if interior_dead_ends else len(interior)
-    if wanted <= 0:
-        draft.note(f"{side.name} side: the template counts no boundary nodes; every tree leaf joins the bed")
-        wanted = len(interior)
-    if wanted >= len(interior):
-        if wanted > len(interior):
-            draft.note(
-                f"{side.name} side: {wanted} boundary nodes in the template, {len(interior)} tree leaves to give"
-            )
-        chosen = list(interior)
-    else:
-        keys = np.array([t.generation + rng.uniform(0.0, 0.5) for t in interior])
-        order = np.argsort(-keys, kind="stable")[:wanted]
-        chosen = [interior[int(i)] for i in sorted(int(i) for i in order)]
+    chosen: list = []
+    if interior:
+        wanted = side.boundary_count if interior_dead_ends else len(interior)
+        if wanted <= 0:
+            draft.note(f"{side.name} side: the template counts no boundary nodes; every tree leaf joins the bed")
+            wanted = len(interior)
+        if wanted >= len(interior):
+            if wanted > len(interior):
+                draft.note(
+                    f"{side.name} side: {wanted} boundary nodes in the template, {len(interior)} tree leaves to give"
+                )
+            chosen = list(interior)
+        else:
+            keys = np.array([t.generation + rng.uniform(0.0, 0.5) for t in interior])
+            order = np.argsort(-keys, kind="stable")[:wanted]
+            chosen = [interior[int(i)] for i in sorted(int(i) for i in order)]
     chosen_nodes = {t.node for t in chosen}
     # A tree none of whose leaves joins the bed would hang loose: each root's
-    # tree keeps its deepest interior leaf, or, with none, one at a face.
+    # tree keeps its deepest interior leaf, or, with none, one at a face --
+    # also when every leaf of the side is at a face (a root whose first
+    # vessel left the box).
     for root, nodes in result.trees.items():
         own = set(nodes)
         if any(t.node in own for t in chosen):

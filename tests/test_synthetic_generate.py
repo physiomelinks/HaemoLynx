@@ -34,6 +34,7 @@ from haemolynx.synthetic.generate import (
 from haemolynx.synthetic.template import (
     GRAPH_NETWORK_SOURCE,
     GRAPH_TEMPLATE_RECORD,
+    Endpoint,
     ROLES,
     OrderTarget,
     measure_template,
@@ -424,6 +425,26 @@ def test_a_large_tier_alone_hands_over_to_the_bed_at_large_boundary_nodes():
     for *_e, d in G.edges(data=True):
         expected = "capillary" if d["branch_order"].startswith("B") else ("large_arteriole" if "Art" in d["branch_order"] else "large_venule")
         assert d[SYNTHETIC_CLASS] == expected
+
+
+def test_a_tree_cut_by_a_face_at_its_first_vessel_still_joins_the_bed():
+    """Regression (E14.5's graph source, 2026-10-24): the one inlet's first
+    vessel left the box, so its side had no leaf inside it, and the rule
+    that a tree keeps a leaf on the bed was skipped: the inlet and its vessel
+    were a piece of their own and the network failed its contract."""
+    T = fixture_template()
+    T = replace(
+        T,
+        inlets=(Endpoint("x0", (0.5, 0.5, 0.0)),),
+        orders=tuple(replace(o, mean_length_um=4000.0) if o.label == "Art1" else o for o in T.orders),
+    )
+    G = generate_network(T, seed=SEED)  # validates: one piece
+    roles = boundary_nodes(G)
+    inlet = roles["inlet"][0]
+    (first,) = list(G.neighbors(inlet))
+    assert G.degree(first) == 3  # the cut vessel's end joins the bed
+    assert "arteriole_boundary" in G.nodes[first][SYNTHETIC_ROLES]
+    assert nx.is_connected(G)
 
 
 def test_a_template_without_capillaries_or_inlets_is_refused():
