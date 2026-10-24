@@ -15,7 +15,7 @@ from haemolynx.graph._helpers import calculate_path_length
 from haemolynx.graph.branch_order import assign_vessel_branch_orders
 from haemolynx.graph.dead_ends import BLIND, DEAD_END_KIND, DEAD_END_KIND_SOURCE, LEAVES_IMAGE, SOURCE_SYNTHETIC
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
-from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
+from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS
 from haemolynx.statistics import compute_vessel_statistics_by_measure
 from haemolynx.statistics.bifurcation import fitted_murray_exponent
 from haemolynx.synthetic import bed as bed_module
@@ -153,6 +153,21 @@ def test_the_validator_catches_a_broken_contract(generated):
     G.graph.pop("image_extent_um")
     with pytest.raises(ValueError, match="image_extent_um"):
         validate_synthetic_graph(G)
+
+
+def test_every_drawn_vessel_carries_the_templates_diameter_basis(generated):
+    T = replace(fixture_template(), diameter_basis="endothelial")
+    G = generate_network(T, seed=SEED)
+    assert {data[EDGE_DIAMETER_BASIS] for *_e, data in G.edges(data=True)} == {"endothelial"}
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["template"]["diameter_basis"] == "endothelial"
+    # The same draws: the basis is a mark, not a draw.
+    assert [d["diameter_um"] for *_e, d in G.edges(data=True)] == [d["diameter_um"] for *_e, d in generated.edges(data=True)]
+    # A template that names no basis leaves every vessel on the run's own.
+    assert fixture_template().diameter_basis is None
+    assert not any(EDGE_DIAMETER_BASIS in data for *_e, data in generated.edges(data=True))
+    validate_synthetic_graph(G, T)
+    with pytest.raises(ValueError, match="diameter basis is not the template's"):
+        validate_synthetic_graph(G, replace(T, diameter_basis="plasma_column"))
 
 
 # -- determinism ---------------------------------------------------------------

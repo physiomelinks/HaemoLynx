@@ -14,7 +14,9 @@ import numpy as np
 import pytest
 
 from haemolynx.graph.dead_ends import DEAD_END_KIND
-from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS, PoiseuilleModel
+from haemolynx.haemodynamics.viscosity import run_viscosity_law
 from haemolynx.io.vessel_masks import vessel_masks_are_global
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
 from haemolynx.pipeline.checks import check_synthetic_template
@@ -25,6 +27,7 @@ from haemolynx.pipeline.stages import (
     SkeletonisedVolume,
     assign_boundaries,
     assign_diameters,
+    build_haemodynamic_model,
     build_network,
     raw_image_is_set,
     segment,
@@ -49,6 +52,14 @@ def _fresh_cache():
 @pytest.fixture(scope="module")
 def template_run(tmp_path_factory) -> Path:
     return write_generated_run(tmp_path_factory.mktemp("template"))
+
+
+@pytest.fixture(scope="module")
+def endothelial_template_run(tmp_path_factory) -> Path:
+    """A template run whose segmentation was of the vessel wall."""
+    return write_generated_run(
+        tmp_path_factory.mktemp("endothelial"), name="claudin.haemorun", settings={"segmentation_source": "endothelial"}
+    )
 
 
 def _settings(template: Path, out: Path, **overrides) -> dict:
@@ -174,9 +185,30 @@ def test_the_diameters_stage_keeps_the_drawn_widths(template_run, tmp_path):
     for u, v, k, d in G.edges(keys=True, data=True):
         assert d["diameter_source"] == DIAMETER_SOURCE_SYNTHETIC
         assert d["diameter_um"] == drawn[(u, v, k)]
+        assert d[EDGE_DIAMETER_BASIS] == "plasma_column"  # the template run's
         assert d["branch_order"] is not None
     labels = {d["branch_order"] for *_e, d in G.edges(data=True)}
     assert {"Art1", "Art3", "Ven1", "Ven2", "B01"} <= labels
+
+
+def test_the_drawn_vessels_keep_the_templates_basis_through_the_haemodynamics(endothelial_template_run, tmp_path):
+    settings = _settings(endothelial_template_run, tmp_path)
+    assert settings["segmentation_source"] == "plasma_column"  # this run's own, not the template's
+    network = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA)
+    boundaries = assign_boundaries(settings, network)
+    model = build_haemodynamic_model(settings, assign_diameters(settings, network, boundaries, SCHEMA), SCHEMA)
+    G = model.graph
+    law = PoiseuilleModel(1.0, 1.0, viscosity_law=run_viscosity_law(settings), haematocrit=settings["haematocrit"])
+    assert law.diameter_basis == "plasma_column"
+    for *_e, d in G.edges(data=True):
+        assert d[EDGE_DIAMETER_BASIS] == "endothelial"
+        wall_to_wall = law.resistance_of_uniform_segment(d["length"], d["diameter_um"], diameter_basis="endothelial")
+        assert d["resistance"] == pytest.approx(wall_to_wall, rel=1e-9)
+    # Read on this run's own basis, every capillary would have had another resistance.
+    capillary = next(d for *_e, d in G.edges(data=True) if str(d["branch_order"]).startswith("B"))
+    assert law.resistance_of_uniform_segment(capillary["length"], capillary["diameter_um"]) != pytest.approx(
+        capillary["resistance"], rel=1e-3
+    )
 
 
 def test_no_vessel_mask_is_global_for_a_synthetic_network(template_run, tmp_path):
@@ -250,10 +282,21 @@ def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     assert "Network generation methods" in citations and "- skan" not in citations
 
 
-def test_a_synthetic_run_can_be_rerun_with_thick_vessel_skeletonisation_left_on(template_run, tmp_path):
+def test_a_synthetic_run_can_be_rerun_with_thick_vessel_skeletonisation_left_on(whole_run, template_run, tmp_path):
     settings = _settings(template_run, tmp_path, use_thick_vessel_skeletonisation=True, statistics=False)
+    warnings = check_synthetic_template(settings).warnings
+    assert any(w.startswith("use_thick_vessel_skeletonisation is on but not read") for w in warnings)
     G = run_pipeline_stages(settings, SCHEMA)
-    assert G.number_of_edges() > 100
+    # Nothing is skeletonised, so nothing is bridged: the network, its widths
+    # and its flows are those of the same seed's run without the switch.
+    _settings_, _report, base, _out = whole_run
+    assert not any(d.get(IS_ZERO_RESISTANCE) for *_e, d in G.edges(data=True))
+    assert sorted(G.edges(keys=True)) == sorted(base.edges(keys=True))
+    for u, v, k, d in G.edges(keys=True, data=True):
+        other = base.edges[u, v, k]
+        assert d["diameter_um"] == other["diameter_um"]
+        assert d["resistance"] == other["resistance"]
+        assert d["flow_abs"] == pytest.approx(other["flow_abs"], rel=1e-9, abs=1e-30)
 
 
 # -- preflight on what a template lacks ----------------------------------------
@@ -280,6 +323,17 @@ def test_preflight_refuses_a_synthetic_template(tmp_path):
     path = write_fixture_run(tmp_path, settings={"network_source": "synthetic"})
     report = check_synthetic_template(_settings(path, tmp_path))
     assert not report.ok and "itself a synthetic network" in report.errors[0]
+
+
+def test_preflight_warns_when_this_runs_basis_is_not_the_templates(endothelial_template_run, tmp_path):
+    report = check_synthetic_template(_settings(endothelial_template_run, tmp_path))
+    assert report.ok, report.errors
+    basis = [w for w in report.warnings if w.startswith("segmentation_source")]
+    assert len(basis) == 1
+    assert "segmentation_source is plasma_column but the template's diameters are endothelial" in basis[0]
+    assert "Fix: set segmentation_source to endothelial" in basis[0]
+    same = check_synthetic_template(_settings(endothelial_template_run, tmp_path, segmentation_source="endothelial"))
+    assert not any(w.startswith("segmentation_source") for w in same.warnings)
 
 
 def test_preflight_refuses_what_needs_an_image_and_warns_about_what_is_not_read(template_run, tmp_path):

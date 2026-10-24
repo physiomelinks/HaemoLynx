@@ -136,6 +136,7 @@ def test_statistics_source_reads_the_tiny_runs_hand_computed_values(tmp_path):
     assert template.inlets[0].position_rel == pytest.approx((0.5, 0.5, 0.0))
     assert (template.arteriole_boundary_count, template.venule_boundary_count) == (2, 1)
     assert (template.large_arteriole_boundary_count, template.large_venule_boundary_count) == (1, 1)
+    assert template.diameter_basis == "plasma_column"  # the run's segmentation_source
     assert template.provenance.notes == ()
 
 
@@ -451,6 +452,68 @@ def test_summary_names_what_a_log_line_needs(tmp_path):
     assert summary["inlets"] == 1 and summary["outlets"] == 1
     assert summary["orders"][0] == "Large_Art1"
     assert summary["source"] == "statistics"
+
+
+# -- the diameter basis ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("source", ["statistics", "graph"])
+def test_the_template_is_on_the_basis_its_run_segmented(tmp_path, source):
+    path = write_fixture_run(tmp_path, settings={"segmentation_source": "endothelial"})
+    template = load_template(path, source)
+    assert template.diameter_basis == "endothelial"
+    assert template.summary()["diameter_basis"] == "endothelial"
+    assert not any("basis" in note for note in template.provenance.notes)
+
+
+def test_a_vessels_own_basis_counts_and_most_vessels_decide(tmp_path):
+    G = tiny_hierarchical_graph()
+    edges = list(G.edges(keys=True, data=True))
+    for _u, _v, _k, data in edges[:7]:
+        data["diameter_basis"] = "endothelial"  # read inside the wall ring, as stamping marks it
+    template = load_template(write_fixture_run(tmp_path, graph=G), "statistics")
+    assert template.diameter_basis == "endothelial"
+    assert any("two bases (7 endothelial, 5 plasma_column)" in note for note in template.provenance.notes)
+
+
+def test_a_tie_goes_to_the_runs_own_basis():
+    G = tiny_hierarchical_graph()
+    for i, (*_e, data) in enumerate(G.edges(data=True)):
+        data["diameter_basis"] = "endothelial" if i % 2 else "plasma_column"
+    notes: list = []
+    assert tpl.template_diameter_basis(G, "endothelial", notes) == "endothelial"
+    assert tpl.template_diameter_basis(G, "plasma_column", []) == "plasma_column"
+    assert notes and "6 endothelial, 6 plasma_column" in notes[0]
+
+
+def test_the_graphs_record_wins_over_the_settings_and_old_names_read():
+    G = tiny_hierarchical_graph()
+    assert tpl.run_diameter_basis_of(G, {"segmentation_source": "endothelial"}) == "endothelial"
+    assert tpl.run_diameter_basis_of(G, {"diameter_basis": "anatomical"}) == "endothelial"
+    G.graph["diameter_basis"] = "plasma_column"  # what the run's haemodynamics recorded
+    assert tpl.run_diameter_basis_of(G, {"segmentation_source": "endothelial"}) == "plasma_column"
+    assert tpl.run_diameter_basis_of(tiny_hierarchical_graph(), {}) is None
+
+
+def test_a_template_whose_run_names_no_basis_has_none_and_says_so():
+    G = tiny_hierarchical_graph()
+    template = tpl.measure_template(G, inlet_nodes=TINY_ROLES["inlet"], outlet_nodes=TINY_ROLES["outlet"])
+    assert template.diameter_basis is None
+    assert any("records no diameter basis" in note for note in template.provenance.notes)
+    named = tpl.measure_template(G, inlet_nodes=TINY_ROLES["inlet"], outlet_nodes=TINY_ROLES["outlet"], run_basis="endothelial")
+    assert named.diameter_basis == "endothelial"
+
+
+def test_an_older_template_without_a_basis_still_loads(tmp_path):
+    template = replace(fixture_template(), diameter_basis="endothelial")
+    data = template.to_dict()
+    assert data["diameter_basis"] == "endothelial"
+    assert NetworkTemplate.from_dict(data) == template
+    assert template.scaled(2.0).diameter_basis == "endothelial"
+    data.pop("diameter_basis")  # a template written before the basis was read
+    assert NetworkTemplate.from_dict(data).diameter_basis is None
+    assert NetworkTemplate.from_dict({**data, "diameter_basis": "anatomical"}).diameter_basis == "endothelial"
+    assert NetworkTemplate.from_dict({**data, "diameter_basis": "lumen"}).diameter_basis is None
 
 
 # -- the data model on its own -----------------------------------------------

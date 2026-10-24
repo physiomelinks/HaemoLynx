@@ -8,7 +8,9 @@ gives every vessel a length and a width drawn from the template, bends each
 into a polyline of that length (:mod:`.polylines`) and returns the
 ``nx.MultiGraph`` the pipeline's Boundaries stage takes: node ``pos`` and
 edge ``voxels`` in (z, y, x) microns, ``length``, ``diameter_um`` with
-``diameter_source="synthetic"``, the node roles in :data:`SYNTHETIC_ROLES`
+``diameter_source="synthetic"`` and the template's ``diameter_basis`` (so each
+vessel's viscosity takes the form of the law the template's widths were
+measured for, whatever this run's ``segmentation_source``), the node roles in :data:`SYNTHETIC_ROLES`
 (:func:`boundary_nodes` reads them), ``dead_end_kind`` on every dead end,
 and the image extent and voxel size on the graph. Nothing here is a branch
 order: ``graph.assign_vessel_branch_orders`` labels the network from the
@@ -36,7 +38,7 @@ from haemolynx.graph.dead_ends import (
     graph_image_extent_um,
 )
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
-from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
+from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS
 
 from .bed import build_bed, degree_sequence_targets
 from .draft import BED, TREE, NetworkDraft
@@ -464,7 +466,7 @@ def generate_network(
         },
     }
     if validate:
-        validate_synthetic_graph(G)
+        validate_synthetic_graph(G, T)
     return G
 
 
@@ -537,7 +539,7 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
         paths.append(bend_path([draft.position(edge.u), *edge.via, draft.position(edge.v)], float(edge.length_um or 0.0), rng, bend_points=options.bend_points))
     voxels, lengths = densify_paths(paths, step_um=options.voxel_step_um)
     for edge, edge_voxels, length in zip(simple + with_via, voxels, lengths):
-        _add_edge(G, new_id, edge, edge_voxels, float(length))
+        _add_edge(G, new_id, edge, edge_voxels, float(length), template.diameter_basis)
     for node in G.nodes:
         if G.degree(node) == 1:
             on_face = face_distance_um(G.nodes[node]["pos"], extent) <= 1e-6
@@ -554,8 +556,10 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
     return G
 
 
-def _add_edge(G: nx.MultiGraph, new_id: Mapping[int, int], edge: Any, voxels: list, length: float) -> None:
+def _add_edge(G: nx.MultiGraph, new_id: Mapping[int, int], edge: Any, voxels: list, length: float, basis: Optional[str]) -> None:
     attributes = {SYNTHETIC_CLASS: edge.category}
+    if basis is not None:
+        attributes[EDGE_DIAMETER_BASIS] = basis
     if edge.category in _LARGE_MASK_SIDE:
         attributes[LARGE_MASK_VESSEL_TYPE] = _LARGE_MASK_SIDE[edge.category]
     G.add_edge(
@@ -644,6 +648,8 @@ def validate_synthetic_graph(G: nx.Graph, template: Optional[NetworkTemplate] = 
             problems.append(f"edge {u}-{v} has no diameter")
         if data.get("diameter_source") != DIAMETER_SOURCE_SYNTHETIC:
             problems.append(f"edge {u}-{v} is not marked {DIAMETER_SOURCE_SYNTHETIC}")
+        if template is not None and data.get(EDGE_DIAMETER_BASIS) != template.diameter_basis:
+            problems.append(f"edge {u}-{v}'s diameter basis is not the template's ({template.diameter_basis})")
         if data.get("branch_order") is not None:
             problems.append(f"edge {u}-{v} already has a branch order")
     if G.number_of_nodes() and not nx.is_connected(G):

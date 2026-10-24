@@ -6,8 +6,10 @@ from dataclasses import replace
 
 import pytest
 
+from haemolynx.synthetic import compare
 from haemolynx.synthetic.compare import (
     CSV_COLUMNS,
+    TOLERANCES,
     ComparisonRow,
     compare_run,
     compare_templates,
@@ -131,3 +133,43 @@ def test_compare_run_on_a_generated_network_scores_its_rows():
     assert all(isinstance(r, ComparisonRow) for r in rows)
     exact = [r for r in rows if r.tolerance == "exact"]
     assert exact and all(r.within is not False for r in exact)
+
+
+def test_the_diameter_basis_row_compares_the_names():
+    T = replace(fixture_template(), diameter_basis="endothelial")
+
+    def basis_row(template, synthetic):
+        return next(r for r in compare_templates(template, synthetic) if r.characteristic == "diameter basis")
+
+    r = basis_row(T, T)
+    assert (r.section, r.template, r.synthetic, r.ratio, r.tolerance, r.within) == (
+        "network", "endothelial", "endothelial", None, "exact", True,
+    )
+    assert basis_row(T, replace(T, diameter_basis="plasma_column")).within is False
+    assert basis_row(fixture_template(), fixture_template()).within is None  # a template naming none
+
+
+class _Recording(dict):
+    def __init__(self, data):
+        super().__init__(data)
+        self.read: set = set()
+
+    def get(self, key, default=None):
+        self.read.add(key)
+        return super().get(key, default)
+
+
+def test_every_band_in_the_table_is_one_a_row_reads(monkeypatch):
+    table = _Recording(TOLERANCES)
+    monkeypatch.setattr(compare, "TOLERANCES", table)
+    T = fixture_template()
+    G = generate_network(T, seed=5)
+    roles = boundary_nodes(G)
+    from haemolynx.graph.branch_order import assign_vessel_branch_orders
+
+    assign_vessel_branch_orders(G, roles["inlet"], outlet_nodes=roles["outlet"], arteriole_boundary_nodes=roles["arteriole_boundary"], venule_boundary_nodes=roles["venule_boundary"])
+    rows = compare_run(T, G, roles=roles)
+    assert set(TOLERANCES) <= table.read, set(TOLERANCES) - table.read
+    # The capillary orders the bed makes are reported, never banded.
+    assert all(r.tolerance == "" for r in rows if r.section.startswith("order B"))
+    assert any(r.section.startswith("order B") for r in rows)

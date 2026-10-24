@@ -300,8 +300,10 @@ distributions off its graph). `segment` reads and checks the template (`syntheti
 template missing a needed statistic is refused, naming the `statistics_*` toggle), `skeletonise`
 returns an empty `SkeletonisedVolume(synthetic=True)`, `build_network` draws the graph
 (`synthetic.generate_network`), `assign_boundaries` takes the roles the generator marked, the drawn
-widths are kept (`diameter_source="synthetic"`), and everything from Diameters on runs as for an
-image. Every image-only Input row requires `network_source=segmented_image`, every mask switch reads
+widths are kept (`diameter_source="synthetic"`) on the template's diameter basis (each edge's
+`diameter_basis` is `NetworkTemplate.diameter_basis`, the one most of the template's vessels were
+read on; preflight warns when `segmentation_source` differs), and everything from Diameters on runs
+as for an image. Every image-only Input row requires `network_source=segmented_image`, every mask switch reads
 as off, `raw_image_is_set` is False, and every output is named `{template stem}_synthetic`
 (`pipeline/naming.py`'s `run_stem`, the one answer). Export writes `{stem}_template_comparison.csv`
 and a `synthetic_comparison` report section. A synthetic run's `.haemorun` is refused as a template.
@@ -949,9 +951,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   pickles, thick-vessel region) are deleted once it ends (`batch_run.clear_image_caches`).
 - **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
-  (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic.
-  `validate_synthetic_graph` pins the graph contract (int ids, `pos`/`voxels` in µm, `length` the
-  polyline's, `diameter_source="synthetic"`, no degree-2 node, `dead_end_kind` on every dead end,
+  (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic,
+  every band from its one `TOLERANCES` table. `validate_synthetic_graph` pins the graph contract
+  (int ids, `pos`/`voxels` in µm, `length` the polyline's, `diameter_source="synthetic"` and, given
+  the template, its `diameter_basis`, no degree-2 node, `dead_end_kind` on every dead end,
   connected).
 - **Presets** (`pipeline/presets.py`) — `PRESETS`, named partial configs: the panel's Preset menu
   under Load config... sets the rows a preset names and nothing else, and keeps no state (a config

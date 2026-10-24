@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -50,6 +51,12 @@ from haemolynx.graph.dead_ends import (
     node_leaves_image,
 )
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.haemodynamics.poiseuille import edge_diameter_basis
+from haemolynx.haemodynamics.viscosity import (
+    DIAMETER_BASES,
+    SEGMENTATION_SOURCE_SETTING,
+    normalise_diameter_basis,
+)
 from haemolynx.statistics.bifurcation import _normalize_branch_order_tag, branch_order_category
 from haemolynx.statistics.dead_ends import DENSITY_KINDS, _KIND_ROWS
 from haemolynx.statistics.vessel_classes import (
@@ -279,6 +286,12 @@ class NetworkTemplate:
     dead_ends: DeadEndTarget
     tissue_volume_um3: Optional[float]
     provenance: Provenance
+    #: What the template's diameters measure (``viscosity.DIAMETER_BASES``):
+    #: the basis most of its vessels' viscosity was read on
+    #: (:func:`template_diameter_basis`). Every drawn vessel carries it, so its
+    #: viscosity takes the template's form of the law; None when the template
+    #: run records none (a template saved before this was read).
+    diameter_basis: Optional[str] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -322,6 +335,7 @@ class NetworkTemplate:
             "voxel_size_zyx": list(self.voxel_size_zyx),
             "image_shape": list(self.image_shape),
             "scheme": self.scheme,
+            "diameter_basis": self.diameter_basis,
             "vessels": self.vessel_count,
             "total_length_um": self.total_length_um,
             "inlets": self.inlet_count,
@@ -536,6 +550,7 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
         notes=tuple(prov.get("notes", ())),
     )
     box = data.get("vessel_box_um")
+    basis = normalise_diameter_basis(data.get("diameter_basis"))
     return NetworkTemplate(
         extent_um=tuple(float(v) for v in data["extent_um"]),
         voxel_size_zyx=tuple(float(v) for v in data["voxel_size_zyx"]),
@@ -566,6 +581,7 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
         dead_ends=dead_ends,
         tissue_volume_um3=_opt_float(data.get("tissue_volume_um3")),
         provenance=provenance,
+        diameter_basis=basis if basis in DIAMETER_BASES else None,
     )
 
 
@@ -668,6 +684,48 @@ def boundary_nodes_of(snapshot: Any, checkpoint: Any) -> dict[str, tuple]:
             nodes = settings.get(name) or ()
         out[role] = tuple(nodes)
     return out
+
+
+def run_diameter_basis_of(G: nx.Graph, settings: Optional[Mapping[str, Any]] = None) -> Optional[str]:
+    """The template run's own diameter basis, the one its unmarked vessels
+    are on: what its haemodynamics recorded on the graph
+    (``G.graph["diameter_basis"]``), else what its settings say
+    (``segmentation_source``, or an older run's ``diameter_basis``); None
+    when neither says."""
+    settings = settings or {}
+    for value in (G.graph.get("diameter_basis"), *(settings.get(k) for k in (SEGMENTATION_SOURCE_SETTING, "diameter_basis"))):
+        basis = normalise_diameter_basis(value)
+        if basis in DIAMETER_BASES:
+            return basis
+    return None
+
+
+def template_diameter_basis(G: nx.Graph, run_basis: Optional[str], notes: list[str]) -> Optional[str]:
+    """The basis the template's diameters are on: each vessel's own, as its
+    viscosity read it (``poiseuille.edge_diameter_basis``: its mark, else
+    *run_basis*), and of those the one most vessels are on (*run_basis* on a
+    tie). A template on two bases says so in *notes*; one whose vessels and
+    run name none is *run_basis* (None) with a note."""
+    counts: Counter = Counter()
+    for *_e, d in G.edges(data=True):
+        if d.get(IS_ZERO_RESISTANCE) or not _number(d.get("diameter_um")):
+            continue
+        basis = edge_diameter_basis(d, run_basis)
+        if basis in DIAMETER_BASES:
+            counts[basis] += 1
+    if not counts:
+        notes.append(
+            "the template run records no diameter basis; the drawn vessels are on this run's segmentation_source"
+        )
+        return run_basis
+    basis = min(counts, key=lambda b: (-counts[b], b != run_basis, b))
+    if len(counts) > 1:
+        notes.append(
+            "the template's diameters are on two bases ("
+            + ", ".join(f"{counts[b]} {b}" for b in sorted(counts))
+            + f"); every drawn vessel is on {basis}, the one most are on"
+        )
+    return basis
 
 
 def check_template_run(snapshot: Any, G: Optional[nx.Graph], boundaries: Mapping[str, Sequence]) -> None:
@@ -924,11 +982,14 @@ def template_from_report(
     statistics_mode: Optional[str] = None,
     run_version: Optional[str] = None,
     run_commit: Optional[str] = None,
+    run_basis: Optional[str] = None,
     notes: Sequence[str] = (),
 ) -> NetworkTemplate:
     """A template from report *sections* (``{section: {row: value}}``) and
     the graph they describe. Raises :class:`TemplateError` for a required
-    section that is missing, naming the settings that switch it on."""
+    section that is missing, naming the settings that switch it on.
+    *run_basis* is the template run's own diameter basis
+    (:func:`run_diameter_basis_of`; read off *G* when None)."""
     notes_out = list(notes)
     missing = missing_sections(sections, require)
     if missing:
@@ -985,6 +1046,7 @@ def template_from_report(
     loops = _read_loops(
         sections.get("loop_hierarchy"), sections.get("cyclomatic_number"), image_volume_um3 / 1e9, notes_out
     )
+    basis = template_diameter_basis(G, run_basis or run_diameter_basis_of(G), notes_out)
     provenance = Provenance(
         template_path=None if path is None else str(path),
         source=source,
@@ -1026,6 +1088,7 @@ def template_from_report(
         dead_ends=_read_dead_ends(sections.get("dead_ends")),
         tissue_volume_um3=_number(density.get("Tissue Volume (micron³)")),
         provenance=provenance,
+        diameter_basis=basis,
     )
 
 
@@ -1072,6 +1135,7 @@ def template_from_statistics(
         statistics_mode=report.get("mode") if isinstance(report, Mapping) else None,
         run_version=version,
         run_commit=commit,
+        run_basis=run_diameter_basis_of(G, _run_settings(snapshot)),
     )
 
 
@@ -1149,6 +1213,7 @@ def measure_template(
     path: Optional[Path | str] = None,
     source: str = SOURCE_GRAPH,
     checkpoint: Any = None,
+    run_basis: Optional[str] = None,
     notes: Sequence[str] = (),
 ) -> NetworkTemplate:
     """A template measured from *G* itself: the required report sections
@@ -1202,6 +1267,7 @@ def measure_template(
         source=source,
         path=path,
         statistics_mode=statistics_mode,
+        run_basis=run_basis,
         notes=notes_out,
     )
     if not samples:
@@ -1247,6 +1313,7 @@ def template_from_graph(
         statistics_mode=statistics_mode,
         path=path,
         checkpoint=checkpoint,
+        run_basis=run_diameter_basis_of(G, _run_settings(snapshot)),
     )
     return replace(template, provenance=replace(template.provenance, run_version=version, run_commit=commit))
 
@@ -1337,6 +1404,8 @@ __all__ = [
     "measure_template",
     "missing_sections",
     "required_statistics_for",
+    "run_diameter_basis_of",
+    "template_diameter_basis",
     "template_from_graph",
     "template_from_report",
     "template_from_statistics",

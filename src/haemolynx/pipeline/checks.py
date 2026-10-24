@@ -18,6 +18,7 @@ from haemolynx.graph.boundaries import (
     vessel_masks_in_use,
 )
 from haemolynx.graph.boundaries import network_is_synthetic
+from haemolynx.haemodynamics.viscosity import run_diameter_basis
 from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
@@ -919,6 +920,14 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     )
     for note in template.provenance.notes:
         report.add_warning(f"synthetic template: {note}")
+    basis = run_diameter_basis(settings)
+    if template.diameter_basis is not None and basis != template.diameter_basis:
+        report.add_warning(
+            f"segmentation_source is {basis} but the template's diameters are {template.diameter_basis}: "
+            f"the drawn vessels keep the template's basis (and its form of the viscosity law), while a "
+            f"width given by hand in Post processing is read as {basis}. Fix: set segmentation_source "
+            f"to {template.diameter_basis}."
+        )
     for name in ("measurement_3d_to_cell_mask", "measure_tissue_volume"):
         if settings.get(name):
             report.add_error(

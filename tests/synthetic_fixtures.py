@@ -299,6 +299,7 @@ def write_fixture_run(
         "vtk_output_prefix": tmp_path / "out" / "stack",
         "statistics": True,
         "network_source": "segmented_image",
+        "segmentation_source": "plasma_column",
         **dict(settings or {}),
     }
     role_lists = {f"{role}_nodes": tuple(roles.get(role, ())) for role in roles}
@@ -315,7 +316,13 @@ def write_fixture_run(
     return write_run_snapshot(tmp_path / name, snapshot)
 
 
-def write_generated_run(tmp_path: Path, *, seed: int = 11, name: str = "e14_5.haemorun") -> Path:
+def write_generated_run(
+    tmp_path: Path,
+    *,
+    seed: int = 11,
+    name: str = "e14_5.haemorun",
+    settings: Mapping[str, Any] | None = None,
+) -> Path:
     """A ``.haemorun`` of a network drawn to :func:`fixture_template`, saved as
     if it had come from an image: labelled, measured, its generator marks
     taken off. What the stage tests use as their template, so a run is
@@ -356,7 +363,7 @@ def write_generated_run(tmp_path: Path, *, seed: int = 11, name: str = "e14_5.ha
         )
     )
     sections[BRANCH_ORDERS_SECTION] = compute_branch_order_statistics(G, node_positions=positions)
-    return write_fixture_run(tmp_path, graph=G, roles=roles, sections=sections, name=name)
+    return write_fixture_run(tmp_path, graph=G, roles=roles, sections=sections, name=name, settings=settings)
 
 
 __all__ = [

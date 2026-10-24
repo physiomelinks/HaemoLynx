@@ -43,6 +43,60 @@ CSV_COLUMNS = ("Section", "Characteristic", "Template", "Synthetic", "Ratio", "T
 #: times the template's.
 EXACT = ("exact", 0.0)
 
+#: Every band the generator is held to, the one table the rows and the tests
+#: read: ``{(kind of row, characteristic): tolerance}``. The kinds are the
+#: row's section, or for the per-class and per-order sections ``class`` /
+#: ``capillary class`` and ``tree order`` / ``capillary order``; the face and
+#: role rows of ``endpoints`` share one key each. A characteristic not listed
+#: is reported with no band: it is what the generator cannot control.
+TOLERANCES: dict[tuple[str, str], tuple] = {
+    ("box", "extent z (um)"): EXACT,
+    ("box", "extent y (um)"): EXACT,
+    ("box", "extent x (um)"): EXACT,
+    ("box", "voxel size z (um)"): EXACT,
+    ("box", "voxel size y (um)"): EXACT,
+    ("box", "voxel size x (um)"): EXACT,
+    ("box", "image volume (um^3)"): ("rel", 0.02),
+    ("endpoints", "inlets"): EXACT,
+    ("endpoints", "outlets"): EXACT,
+    ("endpoints", "inlets or outlets on a face"): EXACT,
+    ("endpoints", "boundary nodes of a role"): EXACT,
+    ("network", "diameter basis"): EXACT,
+    ("network", "total vessel length (um)"): ("rel", 0.10),
+    ("network", "vessels"): ("rel", 0.05),
+    ("network", "average degree"): ("abs", 0.15),
+    ("network", "branching points"): ("rel", 0.10),
+    ("network", "mean tortuosity"): ("abs", 0.15),
+    ("network", "daughter angle (degrees)"): ("abs", 10.0),
+    ("network", "intercapillary distance mean (um)"): ("rel", 0.25),
+    ("network", "intercapillary distance median (um)"): ("rel", 0.25),
+    ("class", "vessels"): EXACT,
+    ("capillary class", "vessels"): ("rel", 0.03),
+    ("class", "total length (um)"): ("rel", 0.05),
+    ("capillary class", "total length (um)"): ("rel", 0.05),
+    ("class", "mean length (um)"): ("rel", 0.10),
+    ("capillary class", "mean length (um)"): ("rel", 0.10),
+    ("class", "median length (um)"): ("rel", 0.15),
+    ("capillary class", "median length (um)"): ("rel", 0.15),
+    ("class", "mean diameter (um)"): ("rel", 0.15),
+    ("capillary class", "mean diameter (um)"): ("rel", 0.05),
+    ("class", "mean tortuosity"): ("abs", 0.15),
+    ("capillary class", "mean tortuosity"): ("abs", 0.15),
+    # Per-order tortuosity and emergence angles are reported, not banded: an
+    # order of two vessels is the luck of two draws, and the emergence angle
+    # is read off the first ten microns of the bent polylines, the daughter
+    # angle (banded above) off the chords the generator set.
+    ("tree order", "vessels"): EXACT,
+    ("tree order", "mean length (um)"): ("rel", 0.15),
+    ("loops", "independent loops"): ("abs", 2.0),
+    ("loops", "independent loops per mm^3"): ("rel", 0.05),
+    ("dead ends", "dead ends"): ("abs", 2.0),
+    ("dead ends", "leaving the image"): ("abs", 2.0),
+    ("dead ends", "inside the tissue"): ("abs", 2.0),
+    ("dead ends", "interior per mm of vessel"): ("rel", 0.25),
+    ("dead ends", "chain length median (um)"): ("rel", 0.25),
+}
+
 
 @dataclass(frozen=True)
 class ComparisonRow:
@@ -90,6 +144,9 @@ def _within(t: Optional[float], s: Optional[float], tolerance: Optional[tuple]) 
 def row(section: str, characteristic: str, template: Any, synthetic: Any, tolerance: Optional[tuple] = None) -> ComparisonRow:
     t, s = _number(template), _number(synthetic)
     ratio = None if t is None or s is None or t == 0 else s / t
+    within = _within(t, s, tolerance)
+    if tolerance == EXACT and isinstance(template, str) and isinstance(synthetic, str):
+        within = template == synthetic  # a named value, such as the diameter basis
     return ComparisonRow(
         section=section,
         characteristic=characteristic,
@@ -97,8 +154,14 @@ def row(section: str, characteristic: str, template: Any, synthetic: Any, tolera
         synthetic=synthetic if synthetic is not None else "N/A (not measured)",
         ratio=ratio,
         tolerance=_tolerance_text(tolerance),
-        within=_within(t, s, tolerance),
+        within=within,
     )
+
+
+def banded(kind: str, section: str, characteristic: str, template: Any, synthetic: Any, key: Optional[str] = None) -> ComparisonRow:
+    """:func:`row` with its band from :data:`TOLERANCES` under ``(kind,
+    key or characteristic)``."""
+    return row(section, characteristic, template, synthetic, TOLERANCES.get((kind, key or characteristic)))
 
 
 def _face_counts(endpoints: Iterable) -> dict:
@@ -109,92 +172,97 @@ def _face_counts(endpoints: Iterable) -> dict:
 
 
 def compare_templates(template: NetworkTemplate, synthetic: NetworkTemplate) -> list[ComparisonRow]:
-    """One row per characteristic: see the module."""
+    """One row per characteristic, banded by :data:`TOLERANCES`: see the module."""
     rows: list[ComparisonRow] = []
     T, S = template, synthetic
 
-    for axis, name in enumerate("zyx"):
-        rows.append(row("box", f"extent {name} (um)", T.extent_um[axis], S.extent_um[axis], EXACT))
-    for axis, name in enumerate("zyx"):
-        rows.append(row("box", f"voxel size {name} (um)", T.voxel_size_zyx[axis], S.voxel_size_zyx[axis], EXACT))
-    rows.append(row("box", "image volume (um^3)", T.image_volume_um3, S.image_volume_um3, ("rel", 0.02)))
+    def add(section: str, characteristic: str, t: Any, s: Any, *, kind: Optional[str] = None, key: Optional[str] = None) -> None:
+        rows.append(banded(kind or section, section, characteristic, t, s, key))
 
-    rows.append(row("endpoints", "inlets", T.inlet_count, S.inlet_count, EXACT))
-    rows.append(row("endpoints", "outlets", T.outlet_count, S.outlet_count, EXACT))
+    for axis, name in enumerate("zyx"):
+        add("box", f"extent {name} (um)", T.extent_um[axis], S.extent_um[axis])
+    for axis, name in enumerate("zyx"):
+        add("box", f"voxel size {name} (um)", T.voxel_size_zyx[axis], S.voxel_size_zyx[axis])
+    add("box", "image volume (um^3)", T.image_volume_um3, S.image_volume_um3)
+
+    add("endpoints", "inlets", T.inlet_count, S.inlet_count)
+    add("endpoints", "outlets", T.outlet_count, S.outlet_count)
     for role, t_ends, s_ends in (("inlets", T.inlets, S.inlets), ("outlets", T.outlets, S.outlets)):
         t_faces, s_faces = _face_counts(t_ends), _face_counts(s_ends)
         for face in list(FACES) + ["interior"]:
             if face in t_faces or face in s_faces:
-                rows.append(row("endpoints", f"{role} on {face}", t_faces.get(face, 0), s_faces.get(face, 0), EXACT))
+                add("endpoints", f"{role} on {face}", t_faces.get(face, 0), s_faces.get(face, 0), key="inlets or outlets on a face")
     for role in ROLES[2:]:
-        rows.append(row("endpoints", f"{role} nodes", getattr(T, f"{role}_count"), getattr(S, f"{role}_count"), EXACT))
+        add("endpoints", f"{role} nodes", getattr(T, f"{role}_count"), getattr(S, f"{role}_count"), key="boundary nodes of a role")
 
-    rows.append(row("network", "total vessel length (um)", T.total_length_um, S.total_length_um, ("rel", 0.10)))
-    rows.append(row("network", "vessels", T.vessel_count, S.vessel_count, ("rel", 0.05)))
-    rows.append(row("network", "nodes", T.node_count, S.node_count))
-    rows.append(row("network", "edges", T.edge_count, S.edge_count))
-    rows.append(row("network", "average degree", T.average_degree, S.average_degree, ("abs", 0.15)))
-    rows.append(row("network", "branching points", T.branching_points, S.branching_points, ("rel", 0.10)))
-    rows.append(row("network", "mean tortuosity", T.mean_tortuosity, S.mean_tortuosity, ("abs", 0.15)))
-    rows.append(row("network", "daughter angle (degrees)", T.daughter_angle_deg, S.daughter_angle_deg, ("abs", 10.0)))
-    rows.append(row("network", "Murray exponent, median fitted", T.murray_exponent, S.murray_exponent))
+    add("network", "diameter basis", T.diameter_basis, S.diameter_basis)
+    add("network", "total vessel length (um)", T.total_length_um, S.total_length_um)
+    add("network", "vessels", T.vessel_count, S.vessel_count)
+    add("network", "nodes", T.node_count, S.node_count)
+    add("network", "edges", T.edge_count, S.edge_count)
+    add("network", "average degree", T.average_degree, S.average_degree)
+    add("network", "branching points", T.branching_points, S.branching_points)
+    add("network", "mean tortuosity", T.mean_tortuosity, S.mean_tortuosity)
+    add("network", "daughter angle (degrees)", T.daughter_angle_deg, S.daughter_angle_deg)
+    add("network", "Murray exponent, median fitted", T.murray_exponent, S.murray_exponent)
     t_iqr = T.murray_iqr or (None, None)
     s_iqr = S.murray_iqr or (None, None)
-    rows.append(row("network", "Murray exponent IQR low", t_iqr[0], s_iqr[0]))
-    rows.append(row("network", "Murray exponent IQR high", t_iqr[1], s_iqr[1]))
-    rows.append(row("network", "intercapillary distance mean (um)", T.intercapillary_distance_um, S.intercapillary_distance_um, ("rel", 0.25)))
-    rows.append(row("network", "intercapillary distance median (um)", T.intercapillary_distance_median_um, S.intercapillary_distance_median_um, ("rel", 0.25)))
+    add("network", "Murray exponent IQR low", t_iqr[0], s_iqr[0])
+    add("network", "Murray exponent IQR high", t_iqr[1], s_iqr[1])
+    add("network", "intercapillary distance mean (um)", T.intercapillary_distance_um, S.intercapillary_distance_um)
+    add("network", "intercapillary distance median (um)", T.intercapillary_distance_median_um, S.intercapillary_distance_median_um)
 
+    get = lambda target, name: None if target is None else getattr(target, name)  # noqa: E731
     for category in BRANCH_ORDER_CATEGORY_SEQUENCE:
         t_cls, s_cls = T.classes.get(category), S.classes.get(category)
         if t_cls is None and s_cls is None:
             continue
         section = f"class {VESSEL_CLASS_TITLES[category]}"
-        capillary = category == "capillary"
-        get = lambda target, name: None if target is None else getattr(target, name)  # noqa: E731
-        rows.append(row(section, "vessels", get(t_cls, "count") or 0, get(s_cls, "count") or 0, ("rel", 0.03) if capillary else EXACT))
-        rows.append(row(section, "total length (um)", get(t_cls, "total_length_um") or 0.0, get(s_cls, "total_length_um") or 0.0, ("rel", 0.05)))
-        rows.append(row(section, "mean length (um)", get(t_cls, "mean_length_um"), get(s_cls, "mean_length_um"), ("rel", 0.10)))
-        rows.append(row(section, "median length (um)", get(t_cls, "median_length_um"), get(s_cls, "median_length_um"), ("rel", 0.15)))
-        rows.append(row(section, "mean diameter (um)", get(t_cls, "mean_diameter_um"), get(s_cls, "mean_diameter_um"), ("rel", 0.05) if capillary else ("rel", 0.15)))
-        rows.append(row(section, "median diameter (um)", get(t_cls, "median_diameter_um"), get(s_cls, "median_diameter_um")))
-        rows.append(row(section, "mean tortuosity", get(t_cls, "mean_tortuosity"), get(s_cls, "mean_tortuosity"), ("abs", 0.15)))
-        rows.append(row(section, "median tortuosity", get(t_cls, "median_tortuosity"), get(s_cls, "median_tortuosity")))
+        kind = "capillary class" if category == "capillary" else "class"
+        add(section, "vessels", get(t_cls, "count") or 0, get(s_cls, "count") or 0, kind=kind)
+        add(section, "total length (um)", get(t_cls, "total_length_um") or 0.0, get(s_cls, "total_length_um") or 0.0, kind=kind)
+        for name, attribute in (
+            ("mean length (um)", "mean_length_um"),
+            ("median length (um)", "median_length_um"),
+            ("mean diameter (um)", "mean_diameter_um"),
+            ("median diameter (um)", "median_diameter_um"),
+            ("mean tortuosity", "mean_tortuosity"),
+            ("median tortuosity", "median_tortuosity"),
+        ):
+            add(section, name, get(t_cls, attribute), get(s_cls, attribute), kind=kind)
 
     t_orders = {o.label: o for o in T.orders}
     s_orders = {o.label: o for o in S.orders}
     labels = [o.label for o in T.orders] + [o.label for o in S.orders if o.label not in t_orders]
     for label in labels:
         t_o, s_o = t_orders.get(label), s_orders.get(label)
-        tree = (t_o or s_o).category != "capillary"
+        kind = "capillary order" if (t_o or s_o).category == "capillary" else "tree order"
         section = f"order {label}"
-        get = lambda target, name: None if target is None else getattr(target, name)  # noqa: E731
-        rows.append(row(section, "vessels", get(t_o, "edge_count") if t_o else 0, get(s_o, "edge_count") if s_o else 0, EXACT if tree else None))
-        rows.append(row(section, "mean length (um)", get(t_o, "mean_length_um"), get(s_o, "mean_length_um"), ("rel", 0.15) if tree else None))
-        # Per-order tortuosity and emergence angles are reported, not banded:
-        # an order of two vessels is the luck of two draws, and the emergence
-        # angle is read off the first ten microns of the bent polylines, the
-        # daughter angle (banded above) off the chords the generator set.
-        rows.append(row(section, "mean tortuosity", get(t_o, "mean_tortuosity"), get(s_o, "mean_tortuosity")))
-        rows.append(row(section, "mean emergence angle (degrees)", get(t_o, "mean_emergence_angle_deg"), get(s_o, "mean_emergence_angle_deg")))
-        rows.append(row(section, "mean diameter (um)", get(t_o, "mean_diameter_um"), get(s_o, "mean_diameter_um")))
-        rows.append(row(section, "diameter CV", get(t_o, "diameter_cv"), get(s_o, "diameter_cv")))
+        add(section, "vessels", get(t_o, "edge_count") if t_o else 0, get(s_o, "edge_count") if s_o else 0, kind=kind)
+        for name, attribute in (
+            ("mean length (um)", "mean_length_um"),
+            ("mean tortuosity", "mean_tortuosity"),
+            ("mean emergence angle (degrees)", "mean_emergence_angle_deg"),
+            ("mean diameter (um)", "mean_diameter_um"),
+            ("diameter CV", "diameter_cv"),
+        ):
+            add(section, name, get(t_o, attribute), get(s_o, attribute), kind=kind)
 
-    rows.append(row("loops", "independent loops", T.loops.independent_loops, S.loops.independent_loops, ("abs", 2.0)))
-    rows.append(row("loops", "independent loops per mm^3", T.loops.independent_loops_per_mm3, S.loops.independent_loops_per_mm3, ("rel", 0.05)))
+    add("loops", "independent loops", T.loops.independent_loops, S.loops.independent_loops)
+    add("loops", "independent loops per mm^3", T.loops.independent_loops_per_mm3, S.loops.independent_loops_per_mm3)
     for name in ("P10", "P25", "Median", "P75", "P90"):
-        rows.append(row("loops", f"loop length {name} (um)", T.loops.length_percentiles_um.get(name), S.loops.length_percentiles_um.get(name)))
-    rows.append(row("loops", "vessels on no loop (fraction)", T.loops.vessels_on_no_loop_fraction, S.loops.vessels_on_no_loop_fraction))
+        add("loops", f"loop length {name} (um)", T.loops.length_percentiles_um.get(name), S.loops.length_percentiles_um.get(name))
+    add("loops", "vessels on no loop (fraction)", T.loops.vessels_on_no_loop_fraction, S.loops.vessels_on_no_loop_fraction)
 
-    rows.append(row("dead ends", "dead ends", T.dead_ends.total, S.dead_ends.total, ("abs", 2.0)))
-    rows.append(row("dead ends", "leaving the image", T.dead_ends.leaves_image, S.dead_ends.leaves_image, ("abs", 2.0)))
-    rows.append(row("dead ends", "inside the tissue", T.dead_ends.interior, S.dead_ends.interior, ("abs", 2.0)))
-    rows.append(row("dead ends", "artefacts", T.dead_ends.artefacts, S.dead_ends.artefacts))
-    rows.append(row("dead ends", "ends of pieces without a junction", T.dead_ends.island_ends, S.dead_ends.island_ends))
-    rows.append(row("dead ends", "interior per mm of vessel", T.dead_ends.interior_per_mm, S.dead_ends.interior_per_mm, ("rel", 0.25)))
-    rows.append(row("dead ends", "chain length median (um)", T.dead_ends.chain_length_median_um, S.dead_ends.chain_length_median_um, ("rel", 0.25)))
-    rows.append(row("dead ends", "chain length P10 (um)", T.dead_ends.chain_length_p10_um, S.dead_ends.chain_length_p10_um))
-    rows.append(row("dead ends", "chain length P90 (um)", T.dead_ends.chain_length_p90_um, S.dead_ends.chain_length_p90_um))
+    add("dead ends", "dead ends", T.dead_ends.total, S.dead_ends.total)
+    add("dead ends", "leaving the image", T.dead_ends.leaves_image, S.dead_ends.leaves_image)
+    add("dead ends", "inside the tissue", T.dead_ends.interior, S.dead_ends.interior)
+    add("dead ends", "artefacts", T.dead_ends.artefacts, S.dead_ends.artefacts)
+    add("dead ends", "ends of pieces without a junction", T.dead_ends.island_ends, S.dead_ends.island_ends)
+    add("dead ends", "interior per mm of vessel", T.dead_ends.interior_per_mm, S.dead_ends.interior_per_mm)
+    add("dead ends", "chain length median (um)", T.dead_ends.chain_length_median_um, S.dead_ends.chain_length_median_um)
+    add("dead ends", "chain length P10 (um)", T.dead_ends.chain_length_p10_um, S.dead_ends.chain_length_p10_um)
+    add("dead ends", "chain length P90 (um)", T.dead_ends.chain_length_p90_um, S.dead_ends.chain_length_p90_um)
     return rows
 
 
@@ -282,6 +350,8 @@ __all__ = [
     "COMPARISON_SECTION",
     "CSV_COLUMNS",
     "ComparisonRow",
+    "TOLERANCES",
+    "banded",
     "compare_run",
     "compare_templates",
     "comparison_section",
