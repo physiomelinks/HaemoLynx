@@ -46,7 +46,7 @@ names it lists.
 | Total Nodes | count | Nodes of the graph the statistics read: junctions, dead ends and the nodes left along vessels, with each zero-resistance bridge contracted to one node. |
 | Total Edges | vessels | Vessels (graph edges) in the network; zero-resistance bridges are not vessels and are not counted. |
 | Total Edge Length (microns) | um | The sum of every vessel's centreline length (the smoothed centreline, as the haemodynamics use it). |
-| Average Edge Length (microns) | um | Total Edge Length divided by Total Edges: the mean vessel length. |
+| Average Edge Length (microns) | um | Total Edge Length divided by Total Edges: the mean vessel length, the vessels the image faces cut short included (the Dead Ends section gives it without them). |
 | Average Degree | dimensionless | The mean number of vessel ends meeting at a node (twice the vessels over the nodes). |
 | Number of Branching Points | count | Junctions: nodes where three or more vessel ends meet. |
 | Zero-resistance Bridges (not counted as vessels) | count | Bridges joining a vessel to a thick vessel's centreline through its lumen, modelled with negligible resistance. Contracted before every other statistic. |
@@ -176,6 +176,11 @@ names it lists.
 | Interior Dead-End Chain Length, 10th / 90th percentile (microns) | um | The 10th and 90th percentiles of those chain lengths. |
 | Vessel Length on Chains Cut by the Image Faces (microns) | um | Length of the chains ending at a dead end that leaves the image: lengths the image censored. |
 | Share of Vessel Length Cut by the Image Faces (fraction) | fraction | That length over the network's. |
+| Vessels Cut by the Image Faces | vessels | Vessels on those chains: the image cut them short, so each length is a lower bound (decision D5). The VTK's cut_by_image_face and the connectivity CSV flag each one. |
+| Mean Vessel Length, Not Cut by the Image Faces (microns) | um | The mean vessel length over the vessels the image faces did not cut: the uncensored lengths. |
+| Median Vessel Length, Not Cut by the Image Faces (microns) | um | Their median length. |
+| Mean Vessel Length, Cut by the Image Faces, Censored (microns) | um | The mean length of the vessels the image faces cut short, as far as the image shows them. |
+| Median Vessel Length, Cut by the Image Faces, Censored (microns) | um | Their median length. |
 | Pieces Without a Junction | count | Pieces of network with no junction (lone vessels and chains). |
 | Length of Pieces Without a Junction (microns) | um | Their summed length. |
 | Vessel Length Carrying Flow (microns) | um | Length the solve gave a flow. |
@@ -425,6 +430,8 @@ names it lists.
 | (analysis) Route Weighting | (text) | The conductance model a route analysis used -- topology (one per vessel), length or resistance -- and any fallback; it sets the unit of the analysis's lengths and resistances. |
 | (analysis) Status | (text) | Why an analysis or section reported nothing (N/A and its reason). |
 | (analysis) Nodes Both Inlet And Outlet (excluded) | count | Nodes given as both inlet and outlet, left out of the analysis. |
+| Flow Rows Leave Out the Image-Face Margin (microns) | um | With statistics_flow_face_margin_um: the vessels this close to an image face are left out of the section's flow rows, as though they carried no flow. |
+| Vessels Left Out Within the Image-Face Margin | vessels | How many vessels that margin left out of the section's flow rows. |
 | (analysis) Open Ends Taken As Inlets | count | Open ends leaving the image, given a boundary condition by the solve (open_end_model), through which blood enters the network: the analysis took them as inlets beside the designated ones. |
 | (analysis) Open Ends Taken As Outlets | count | Open ends through which blood leaves the network, taken as outlets beside the designated ones. |
 | arteriole, capillary, venule ... (a vessel type) | by the route weighting (Loop Length Weighting): resistance vessels, length um, topology vessels | Under Median Loop Length By Vessel Type: the median shortest loop through that type's vessels. |

@@ -4471,6 +4471,24 @@ SCHEMA = Schema(
             requires=("statistics",),
             advanced=True,
         ),
+        Setting(
+            name="statistics_flow_face_margin_um",
+            kind="float",
+            default=0.0,
+            help=(
+                "Leave every vessel within this distance of an image face out of "
+                "the per-vessel flow statistics -- the vessel classes' flow rows, "
+                "flux heterogeneity and its red cells, and flow hierarchy -- as "
+                "though it carried no flow: every boundary condition put on the "
+                "vessels leaving the image (open_end_model) is least certain next "
+                "to the faces. 0 keeps every vessel"
+            ),
+            section=_STATISTICS,
+            unit="um",
+            minimum=0.0,
+            requires=("statistics",),
+            advanced=True,
+        ),
         # The tissue's own volume, for vessel density: see
         # haemolynx.statistics.tissue_volume. Its own toggle, independent of
         # Statistics -- it writes its own CSV and surface either way, and

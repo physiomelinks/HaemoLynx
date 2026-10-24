@@ -380,3 +380,23 @@ def test_fixture_10_cluster_collapse_takes_a_tip_within_5_um_of_its_junction():
                for n in dead_ends), "only the trunk's two face ends are left"
     junctions = [n for n in collapsed if np.linalg.norm(np.asarray(collapsed.nodes[n]["pos"]) - JUNCTION) < 5.0]
     assert len(junctions) == 1
+
+
+def test_the_vessels_the_image_faces_cut_are_the_chains_of_the_ends_leaving_it():
+    """Decision D5: a vessel on a dead end's chain that leaves the image has
+    a censored length; the VTK and the connectivity CSV flag it from here."""
+    from dead_end_fixtures import leaves_through_face
+    from haemolynx.graph._helpers import edge_id
+
+    case = leaves_through_face()
+    G = case.graph
+    de.record_image_extent(G, SHAPE, VOXEL_SIZE)
+    support = MaskSupport(case.mask, VOXEL_SIZE)
+    de.classify_and_mark(G, support=support)
+
+    cut = de.vessels_cut_by_image_faces(G)
+
+    # The trunk's two halves leave through the x faces, the branch through y.
+    assert cut == {edge_id(*e) for e in G.edges(keys=True)}
+    G.nodes[case.tip][de.DEAD_END_KIND] = "unknown"
+    assert len(de.vessels_cut_by_image_faces(G)) == 2

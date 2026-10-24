@@ -10,8 +10,10 @@ never in a dead-end density. The density counts only the interior ones that
 could be the tissue's own blind ends (``blind``, ``unknown``, ``broken``,
 ``stops_short``), per mm of vessel and per mm^3 of tissue when the tissue was
 measured; a vessel the image cut has a censored length, and the share of the
-network on such chains is reported so the length statistics can be read with
-it (decision D5).
+network on such chains is reported, with the mean and median vessel length
+both without the cut vessels and of the cut vessels alone, so the length
+statistics can be read with it (decision D5). The VTK and the connectivity
+CSV flag each cut vessel.
 """
 from __future__ import annotations
 
@@ -101,6 +103,17 @@ def compute_dead_end_statistics(
     rows["Vessel Length on Chains Cut by the Image Faces (microns)"] = cut_um
     if total_um > 0:
         rows["Share of Vessel Length Cut by the Image Faces (fraction)"] = cut_um / total_um
+    # Decision D5: the length statistics both ways. A vessel the faces cut
+    # runs on outside the image, so its length is a lower bound.
+    lengths_by_cut: Dict[bool, list] = {True: [], False: []}
+    for u, v, k, d in multi.edges(keys=True, data=True):
+        if d.get("length") is not None:
+            lengths_by_cut[tuple(sorted((u, v), key=str)) + (k,) in cut].append(_length(d))
+    rows["Vessels Cut by the Image Faces"] = len(lengths_by_cut[True])
+    for was_cut, label in ((False, "Not Cut by the Image Faces"), (True, "Cut by the Image Faces, Censored")):
+        if lengths_by_cut[was_cut]:
+            rows[f"Mean Vessel Length, {label} (microns)"] = float(np.mean(lengths_by_cut[was_cut]))
+            rows[f"Median Vessel Length, {label} (microns)"] = float(np.median(lengths_by_cut[was_cut]))
 
     islands = [c for c in nx.connected_components(multi) if all(multi.degree(n) <= 2 for n in c) and len(c) > 1]
     rows["Pieces Without a Junction"] = len(islands)

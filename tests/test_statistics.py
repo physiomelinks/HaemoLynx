@@ -982,7 +982,7 @@ def test_export_statistics_to_csv(tmp_path):
     assert output_csv.exists()
     text = output_csv.read_text(encoding="utf-8")
     assert "Section,Metric,Value,Unit,Notes" in text
-    assert "Average Edge Length,10,um,Total Edge Length divided by Total Edges: the mean vessel length." in text
+    assert "Average Edge Length,10,um,Total Edge Length divided by Total Edges: the mean vessel length" in text
     assert "Path Efficiency Pair Coverage,0.5,fraction,Node pairs measured over all node pairs." in text
     assert "nested,Community Count,2,count," in text
 
@@ -1573,6 +1573,13 @@ def test_the_dead_ends_section_counts_kinds_density_cut_length_and_why_there_is_
     assert rows["Vessel Length Behind Interior Dead Ends, No Flow (microns)"] == pytest.approx(3.0)
     assert rows["Vessel Length Behind Closed Image-Face Ends, No Flow (microns)"] == pytest.approx(5.0)
     assert rows["Vessel Length Carrying Flow (microns)"] == pytest.approx(99.0)
+    # Decision D5: the lengths without the three cut vessels, and of them alone.
+    island = float(np.hypot(3, 5))
+    assert rows["Vessels Cut by the Image Faces"] == 3
+    assert rows["Mean Vessel Length, Not Cut by the Image Faces (microns)"] == pytest.approx((30 + 3 + island) / 3)
+    assert rows["Median Vessel Length, Not Cut by the Image Faces (microns)"] == pytest.approx(island)
+    assert rows["Mean Vessel Length, Cut by the Image Faces, Censored (microns)"] == pytest.approx((30 + 39 + 5) / 3)
+    assert rows["Median Vessel Length, Cut by the Image Faces, Censored (microns)"] == pytest.approx(30.0)
 
 
 # --- intercapillary distance between the vessels carrying flow ---------------------------

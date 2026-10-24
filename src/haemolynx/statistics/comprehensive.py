@@ -169,6 +169,86 @@ def _as_contracted(nodes: Any, became: dict) -> Any:
     return list(dict.fromkeys(became.get(n, n) for n in nodes))
 
 
+#: The flow state a vessel inside ``flow_face_margin_um`` reads as while the
+#: flow rows are computed: not "solved", so it carries no flow for them.
+NEAR_IMAGE_FACE = "near_image_face"
+
+
+def _vessels_within_face_margin(G: nx.Graph, margin_um: float) -> list:
+    """The edges of *G* with a centreline point within *margin_um* of an
+    image face (the graph's ``image_extent_um``): ``(u, v, key)``, key None
+    for a plain graph. None of them with no margin, or a graph that does not
+    know its image's extent (logged)."""
+    import logging
+
+    import numpy as np
+
+    from haemolynx.graph._helpers import edge_sample_points
+    from haemolynx.graph.dead_ends import graph_image_extent_um
+
+    if not margin_um or margin_um <= 0:
+        return []
+    extent = graph_image_extent_um(G)
+    if extent is None:
+        logging.getLogger(__name__).warning(
+            "statistics_flow_face_margin_um is %g um, but the graph does not record its image's "
+            "extent: no vessel is left out of the flow rows.", margin_um,
+        )
+        return []
+    every = G.edges(keys=True, data=True) if G.is_multigraph() else ((u, v, None, d) for u, v, d in G.edges(data=True))
+    near = []
+    for u, v, key, data in every:
+        if "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
+            continue
+        pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v)}
+        points = np.asarray(edge_sample_points(u, v, data, pos), dtype=float).reshape(-1, 3)
+        if float(np.min(np.minimum(points, extent - points))) <= margin_um:
+            near.append((u, v, key))
+    return near
+
+
+class _left_out_of_flow_rows:
+    """For the length of a ``with`` block, *edges* read as carrying no flow
+    (:data:`NEAR_IMAGE_FACE`); their own flow states come back after it."""
+
+    def __init__(self, G: nx.Graph, edges: list):
+        self.G, self.edges, self.saved = G, edges, []
+
+    def _data(self, edge) -> dict:
+        u, v, key = edge
+        return self.G.edges[u, v, key] if key is not None else self.G.edges[u, v]
+
+    def __enter__(self):
+        from haemolynx.graph.prune import FLOW_STATE
+
+        for edge in self.edges:
+            data = self._data(edge)
+            self.saved.append((edge, FLOW_STATE in data, data.get(FLOW_STATE)))
+            data[FLOW_STATE] = NEAR_IMAGE_FACE
+        return self
+
+    def __exit__(self, *_exc):
+        from haemolynx.graph.prune import FLOW_STATE
+
+        for edge, had, state in self.saved:
+            data = self._data(edge)
+            if had:
+                data[FLOW_STATE] = state
+            else:
+                data.pop(FLOW_STATE, None)
+        self.saved = []
+        return False
+
+
+def _face_margin_rows(margin_um: float, near_faces: list) -> Dict[str, Any]:
+    if not margin_um or margin_um <= 0:
+        return {}
+    return {
+        "Flow Rows Leave Out the Image-Face Margin (microns)": float(margin_um),
+        "Vessels Left Out Within the Image-Face Margin": len(near_faces),
+    }
+
+
 def flatten_statistics_sections(
     sections: Dict[str, Dict[str, Any]], statistics_mode: str
 ) -> Dict[str, Any]:
@@ -201,6 +281,7 @@ def compute_comprehensive_vessel_statistics(
     venule_boundary_nodes: Optional[Any] = None,
     short_loop_removal_um: Optional[float] = None,
     red_cell_volume_fl: float = DEFAULT_RED_CELL_VOLUME_FL,
+    flow_face_margin_um: float = 0.0,
 ) -> Dict[str, Any]:
     """Combine all vessel statistics.
 
@@ -229,6 +310,14 @@ def compute_comprehensive_vessel_statistics(
     *red_cell_volume_fl* is the mean red-cell volume "flux_heterogeneity"
     counts its red-cell flux and spacing by (the ``red_cell_volume_fl``
     setting; see :mod:`haemolynx.haemodynamics.red_cells`).
+
+    *flow_face_margin_um*, when positive, leaves every vessel with a point
+    within that distance of an image face (the graph's ``image_extent_um``)
+    out of the per-vessel flow rows -- "vessel_classes"' flow rows,
+    "flux_heterogeneity" (and its red cells) and "flow_hierarchy" -- as
+    though it carried no flow, since every open-end boundary condition's
+    errors sit next to the faces (PLAN_dead_ends.md Phase 7). Each of those
+    sections then says the margin and how many vessels it left out.
 
     "bottlenecks", "shunts", "occlusion_impact", "current_flow",
     "perfusion_territories", "capillary_bed_joins", "transit_time",
@@ -275,6 +364,7 @@ def compute_comprehensive_vessel_statistics(
         venule_boundary_nodes=venule_boundary_nodes,
         short_loop_removal_um=short_loop_removal_um,
         red_cell_volume_fl=red_cell_volume_fl,
+        flow_face_margin_um=flow_face_margin_um,
     )
     return flatten_statistics_sections(sections, statistics_mode)
 
@@ -299,6 +389,7 @@ def compute_vessel_statistics_by_measure(
     venule_boundary_nodes: Optional[Any] = None,
     short_loop_removal_um: Optional[float] = None,
     red_cell_volume_fl: float = DEFAULT_RED_CELL_VOLUME_FL,
+    flow_face_margin_um: float = 0.0,
 ) -> Dict[str, Dict[str, Any]]:
     """Every vessel statistic, one section per measure that ran.
 
@@ -350,6 +441,8 @@ def compute_vessel_statistics_by_measure(
         else G
     )
 
+    near_faces = _vessels_within_face_margin(G, flow_face_margin_um)
+
     sections: Dict[str, Dict[str, Any]] = {}
     if "basic" in enabled:
         sections["basic"] = compute_basic_statistics(G, is_mg)
@@ -376,13 +469,15 @@ def compute_vessel_statistics_by_measure(
         )
     if "vessel_classes" in enabled:
         # The original G: each parallel edge is a vessel of its own class.
-        sections["vessel_classes"] = compute_vessel_class_statistics(
-            G,
-            node_positions,
-            voxel_size,
-            image_dimensions,
-            tissue_volume_um3=tissue_volume_um3,
-        )
+        with _left_out_of_flow_rows(G, near_faces):
+            sections["vessel_classes"] = compute_vessel_class_statistics(
+                G,
+                node_positions,
+                voxel_size,
+                image_dimensions,
+                tissue_volume_um3=tissue_volume_um3,
+            )
+        sections["vessel_classes"].update(_face_margin_rows(flow_face_margin_um, near_faces))
     if "murray_law" in enabled:
         # The original G, not G_simple, for the same reason as fractal
         # dimension: a junction's parent/daughter diameters live on specific
@@ -471,9 +566,11 @@ def compute_vessel_statistics_by_measure(
     if "transit_time" in enabled:
         sections["transit_time"] = compute_transit_times(G, inlet_nodes, outlet_nodes)
     if "flux_heterogeneity" in enabled:
-        sections["flux_heterogeneity"] = compute_flux_heterogeneity(
-            G, red_cell_volume_fl=red_cell_volume_fl
-        )
+        with _left_out_of_flow_rows(G, near_faces):
+            sections["flux_heterogeneity"] = compute_flux_heterogeneity(
+                G, red_cell_volume_fl=red_cell_volume_fl
+            )
+        sections["flux_heterogeneity"].update(_face_margin_rows(flow_face_margin_um, near_faces))
     if "loop_hierarchy" in enabled:
         sections["loop_hierarchy"] = compute_loop_hierarchy(
             G,
@@ -499,7 +596,9 @@ def compute_vessel_statistics_by_measure(
     if "k_core" in enabled:
         sections["k_core"] = compute_k_core_structure(G)
     if "flow_hierarchy" in enabled:
-        sections["flow_hierarchy"] = compute_flow_hierarchy(G)
+        with _left_out_of_flow_rows(G, near_faces):
+            sections["flow_hierarchy"] = compute_flow_hierarchy(G)
+        sections["flow_hierarchy"].update(_face_margin_rows(flow_face_margin_um, near_faces))
 
     # Where their rows always were in the flattened report.
     if bridge_rows:

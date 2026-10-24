@@ -557,3 +557,64 @@ def test_the_csv_notes_call_the_red_cell_rows_predictions(tmp_path):
     # The plasma velocity keeps its own note.
     assert "plasma, not red-cell speed" in notes["Capillary Velocity CV"][1]
     assert "Fahraeus" not in notes["Capillary Velocity CV"][1]
+
+
+# --- a margin by the image faces left out of the flow rows (PLAN_dead_ends.md Phase 7) ------
+
+
+def _bed_in_an_image():
+    """:func:`_bed` placed in a 300 x 300 x 300 um image: the arteriole runs
+    in from the x = 0 face, the capillaries lie 50 um or more from every face."""
+    G = _bed()
+    for node, x in {0: 0.0, 1: 100.0, 2: 150.0, 3: 200.0}.items():
+        G.add_node(node, pos=np.asarray((150.0, 150.0, x)))
+    G.graph["image_extent_um"] = (300.0, 300.0, 300.0)
+    return G
+
+
+def test_a_face_margin_leaves_the_vessels_near_a_face_out_of_the_flow_rows_only():
+    """Every boundary model's errors sit by the faces (Fry 2012, Rasmussen
+    2025), so the flow rows can leave a margin out: the arteriole touching
+    the x = 0 face goes; the vessel counts, lengths and the graph's own flow
+    states do not change."""
+    G = _bed_in_an_image()
+    measures = frozenset({"basic", "flux_heterogeneity", "flow_hierarchy", "vessel_classes"})
+    whole = compute_vessel_statistics_by_measure(G, enabled_measures=measures)
+    margin = compute_vessel_statistics_by_measure(G, enabled_measures=measures, flow_face_margin_um=10.0)
+
+    assert whole["flux_heterogeneity"]["Vessels Carrying Flow"] == 5
+    assert margin["flux_heterogeneity"]["Vessels Carrying Flow"] == 4
+    assert margin["flux_heterogeneity"]["Flow Rows Leave Out the Image-Face Margin (microns)"] == 10.0
+    assert margin["flux_heterogeneity"]["Vessels Left Out Within the Image-Face Margin"] == 1
+    assert "Vessels Left Out Within the Image-Face Margin" not in whole["flux_heterogeneity"]
+    assert margin["flow_hierarchy"]["Vessels Left Out Within the Image-Face Margin"] == 1
+    assert margin["vessel_classes"]["Vessels Left Out Within the Image-Face Margin"] == 1
+    assert margin["basic"] == whole["basic"]
+    assert {d["flow_state"] for *_e, d in G.edges(data=True)} == {"solved"}
+
+
+def test_a_margin_wide_enough_takes_every_vessel_and_none_without_the_extent(caplog):
+    G = _bed_in_an_image()
+    every = compute_vessel_statistics_by_measure(
+        G, enabled_measures=frozenset({"flux_heterogeneity"}), flow_face_margin_um=150.0
+    )["flux_heterogeneity"]
+    assert every["Vessels Left Out Within the Image-Face Margin"] == 5
+
+    G.graph.pop("image_extent_um")
+    with caplog.at_level("WARNING"):
+        none = compute_vessel_statistics_by_measure(
+            G, enabled_measures=frozenset({"flux_heterogeneity"}), flow_face_margin_um=10.0
+        )["flux_heterogeneity"]
+    assert none["Vessels Carrying Flow"] == 5
+    assert none["Vessels Left Out Within the Image-Face Margin"] == 0
+    assert "does not record its image's extent" in caplog.text
+
+
+def test_the_face_margin_is_a_setting_off_by_default_read_into_the_statistics():
+    schema = default_schema()
+    setting = schema["statistics_flow_face_margin_um"]
+    assert setting.default == 0.0 and setting.advanced and setting.unit == "um"
+    settings = schema.defaults()
+    assert statistics_arguments(settings)["flow_face_margin_um"] == 0.0
+    settings["statistics_flow_face_margin_um"] = 25.0
+    assert statistics_arguments(settings)["flow_face_margin_um"] == 25.0

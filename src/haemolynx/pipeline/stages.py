@@ -6811,6 +6811,7 @@ def statistics_arguments(settings: dict) -> dict[str, Any]:
             settings["statistics_occlusion_hypoperfusion_fraction"]
         ),
         "occlusion_curve_max_fraction": float(settings["statistics_occlusion_curve_max_fraction"]),
+        "flow_face_margin_um": float(settings.get("statistics_flow_face_margin_um") or 0.0),
     }
 
 

@@ -632,6 +632,8 @@ statistics_and_measurements:
   statistics_intercapillary_distance: true
   # Dead ends by kind (leaving the image, stopped short, broken, artefact, blind, unknown, island), the interior ones per mm of vessel and per mm^3 of tissue, their length, the share of the network the image faces cut, and why vessels carry no flow  [needs statistics]
   statistics_dead_ends: true
+  # Leave every vessel within this distance of an image face out of the per-vessel flow statistics -- the vessel classes' flow rows, flux heterogeneity and its red cells, and flow hierarchy -- as though it carried no flow: every boundary condition put on the vessels leaving the image (open_end_model) is least certain next to the faces. 0 keeps every vessel  [um; range 0.0..; needs statistics]
+  statistics_flow_face_margin_um: 0.0
   # Measure the tissue's volume and surface mesh from the raw image -- the region whose background is brighter than the empty space around it -- and divide vessel density by that volume instead of by the box the network spans
   measure_tissue_volume: false
   # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use the raw image (raw_image_path)  [needs measure_tissue_volume; must exist if set]

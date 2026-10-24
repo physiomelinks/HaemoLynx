@@ -666,10 +666,6 @@ def open_end_nodes(G: nx.Graph, *, extent_um: Optional[Sequence[float]] = None) 
     return [node for node in G.nodes if G.degree(node) == 1 and node_leaves_image(G, node, extent)]
 
 
-#: The edge attribute :func:`mark_vessels_cut_by_image_faces` writes.
-CUT_BY_IMAGE_FACE = "cut_by_image_face"
-
-
 def vessels_cut_by_image_faces(G: nx.Graph, *, extent_um: Optional[Sequence[float]] = None) -> set:
     """The vessels whose length the image faces cut short: every edge on the
     chain of a dead end that leaves the image (:func:`node_leaves_image`),
@@ -682,16 +678,6 @@ def vessels_cut_by_image_faces(G: nx.Graph, *, extent_um: Optional[Sequence[floa
         _nodes, edges = chain_to_junction(multi, node)
         cut.update(edge_id(*e) for e in edges)
     return cut
-
-
-def mark_vessels_cut_by_image_faces(G: nx.Graph, *, extent_um: Optional[Sequence[float]] = None) -> int:
-    """Write :data:`CUT_BY_IMAGE_FACE` (True or False) on every edge of *G*
-    (:func:`vessels_cut_by_image_faces`). Returns how many are cut."""
-    cut = vessels_cut_by_image_faces(G, extent_um=extent_um)
-    every = G.edges(keys=True, data=True) if G.is_multigraph() else ((u, v, 0, d) for u, v, d in G.edges(data=True))
-    for u, v, key, data in every:
-        data[CUT_BY_IMAGE_FACE] = edge_id(u, v, key) in cut
-    return len(cut)
 
 
 def remove_pieces_without_junction(G: nx.MultiGraph) -> dict[str, float]:
@@ -776,7 +762,6 @@ __all__ = [
     "ARTEFACT",
     "BLIND",
     "BROKEN",
-    "CUT_BY_IMAGE_FACE",
     "DEAD_END_KIND",
     "DEAD_END_KINDS",
     "DEAD_END_KIND_SOURCE",
@@ -801,7 +786,6 @@ __all__ = [
     "image_extent_um",
     "leaves_image",
     "mark_dead_end_kinds",
-    "mark_vessels_cut_by_image_faces",
     "mask_run_um",
     "node_leaves_image",
     "open_end_nodes",
