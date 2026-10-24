@@ -4,6 +4,11 @@ Checked on `Devel_GUI_improvements_HD` at 9d247ed, 2026-10-09. All five findings
 4 and 5 turned out wider than the review said, and item 1 needs a modelling decision before any
 code changes.
 
+**Status, 2026-10-24: all five items are done.** Item 3 is in 9c6a15ad, item 2 in b99758ba,
+item 5 in b6d9210d and 666cafe8 (the pieces still missing landed on 2026-10-24 in 3bfdbcef,
+c990f2ca, 88e97182 and da6ca014), item 4 in b71718b5 and item 1 in 3e25f87b. Item 2's E14.5
+before/after was run on 2026-10-24 (see item 2). Nothing waits on Harvey.
+
 **Order:** 3, 2, 5, 4, then 1 once it is decided. Use one commit per item, each with its tests
 (see the Testing policy in CLAUDE.md). After each commit, run `pytest -m "not slow and not gui"`
 (about 13 min). Run the `gui` subset in the background before pushing. Don't edit `src/` while a
@@ -100,6 +105,40 @@ It also wouldn't find vessel loops.
 
 ## Item 2: morphology erodes the image faces: pad, operate, crop
 
+**Status, 2026-10-24: done, in b99758ba (2026-10-12), as planned below.**
+`memmap_support.at_faces_as_beyond` pads with edge replication and crops back. It wraps
+`close_binary_mask` (in RAM, and per block in the low-RAM path) and
+`segmentation_cleanup._morphology`. `tests/test_morphology_at_faces.py` has each test listed below.
+
+**E14.5 before/after, 2026-10-24.**
+- **Set-up.** Run at c990f2ca with `config.yaml` (skeleton closing radius 1, segmentation clean-up
+  off), on the low-RAM path, from segment to build_network. One run used `at_faces_as_beyond` as
+  it is; the other replaced it with the identity, which is exactly the code before b99758ba. A
+  second "after" run was identical in skeleton and graph, so every difference below comes from
+  the change.
+- **Skeleton.** 56,886 voxels before, 56,961 after. The 123 voxels gained and the 48 lost all lie
+  within 5 voxels of a face (95 and 22 of them within 1).
+- **Graph.**
+  - 1,229 → 1,228 nodes and 1,407 → 1,406 edges; length 47,681 → 47,813 µm (+0.28%).
+  - Dead ends: `leaves_image` 93 → 91 and `broken` 3 → 4; every other kind is unchanged. At the
+    x = 0 face, two `leaves_image` ends became a short stop or a join once their face voxel came
+    back, and one `island_end` became `leaves_image`.
+- **Not only near the faces.** Of the 45 edges found only after, 20 come within 5 µm of a face and
+  2 within 10 µm of a changed skeleton voxel. The other 23 are farther from both, up to 205 µm
+  from a changed skeleton voxel. The 46 edges found only before split 19, 2 and 25. Two things
+  show there:
+  - Mask recovery traced one more piece of uncovered mask (47 against 46). Such a piece can run
+    far from the face where its coverage changed.
+  - Some vessels keep the same two ends but have a different middle: their centrelines are up to
+    1.5 µm apart and their lengths 0.01–1 µm apart. Edge 1524–1564, 177 µm from the nearest
+    changed skeleton voxel, is 23.93 µm before and 22.87 µm after. The build logs part at the
+    first steps after the skeleton (collapse merged 3,713 against 3,714 nodes). Which step makes
+    these far choices is not pinned down.
+
+  This is graph building's sensitivity to a small local change, not something the face fix does
+  wrong. Files are in `outputs/dale_item2_faces/` (git-ignored): `face_check.py`, `compare.py`,
+  `far_changes.py`, `far_edges.py` and `report_before_after.json`.
+
 **What I found, and it is wider than reported.** I used a tube of radius 3 voxels running face to
 face along z (580 voxels in total).
 
@@ -146,6 +185,29 @@ are expected.
 
 ## Item 5: VTK export carries too little, and treats unsolved vessels as solved
 
+**Status, 2026-10-24: done.** Steps 2 and 3 landed with the dead-end work in b6d9210d
+(2026-10-12): the VTK's new arrays and field data, NaN where `graph.flow_is_undefined`, and the
+perturbation edges CSV's blanks and `flow_solved` column; 666cafe8 added the units. An audit on
+2026-10-24 found these pieces missing, now landed:
+- **Step 1, the one list**, in c990f2ca. `graph.SOLVE_DERIVED_EDGE_ATTRIBUTES` (now with
+  `discharge_haematocrit`) is what the VTK writes and blanks, what the edges CSV blanks
+  (`stages.PERTURBATION_EDGE_ATTRIBUTES`) and what `gui/results.SOLVED_FLOW_COLUMNS` is built from
+  (the same set as before, checked name for name). `tests/test_gui_unsolved_vessels.py` pins that
+  the three agree. The VTK's `discharge_haematocrit` is now blank where the flows are. In
+  da6ca014, a capillary block's `{name}_blocked_vessels.csv` reads the list too
+  (`stages._solve_value`, shared with the edges CSV): it had written the solve's 0 as the flow of
+  a blocked vessel no inlet and outlet reach.
+- **The haematocrit model**, in 88e97182. Nothing recorded it. The solve stage now writes
+  `G.graph["haematocrit_model"]`, and the VTK writes it to the field data (`vtk_io.RUN_FIELD_DATA`,
+  which the export dictionary's text is built from).
+- **Tests.** The edges CSV's blanks are tested in 3bfdbcef (`test_perturbation_outputs.py`, a
+  real solve with a blind end and an island). The `discharge_haematocrit` array and the
+  `diameter_basis`, `haematocrit` and `haematocrit_model` fields are tested in 88e97182
+  (`test_vtk_io.py`, `test_haematocrit_distribution.py`).
+
+Blanking only where the flow is undefined (`no_boundary`), rather than wherever `flow_solved` is
+False, is deliberate. A blind end's flow of exactly 0 is the answer (`PLAN_dead_ends.md`, D4).
+
 **What I found**
 - `graph_to_vtk` (vtk_io.py:177) writes `edge_u/v/key`, `branch_order`, `resistance`,
   `conductance` and the five flow fields.
@@ -175,7 +237,7 @@ are expected.
 
 ## Item 4: ilastik output, with an explicit vessel label and provenance-checked reuse
 
-**Done 2026-10-22, as planned below, with three additions found against the real ilastik
+**Done 2026-10-22 in b71718b5, as planned below, with three additions found against the real ilastik
 (1.4.1rc2, Harvey's claudin project):** ilastik is run `--readonly`, so a headless run never
 saves the project the sidecar records by its bytes; it is passed `--output_format` from the
 suffix, since without it ilastik writes the project's saved format (HDF5 by default) whatever
@@ -241,7 +303,7 @@ here: about 3.5 s for a 1 GB project, once per process.
 
 ## Item 1: viscosity law (decision for Harvey + Finbar)
 
-**Done 2026-10-13 (Harvey's decision): option A, plus the newest model as a choice.**
+**Done 2026-10-13 in 3e25f87b (Harvey's decision): option A, plus the newest model as a choice.**
 `pries_in_vitro_viscosity` is now Pries 1992 exactly, and `plasma_column` keeps reading it.
 Pries & Secomb 2005's in vivo model was added. A new Haemodynamics setting,
 `pries_viscosity_form`, holds every vessel to one form: in vivo 1994, in vivo 2005 or in vitro
