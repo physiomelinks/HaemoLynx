@@ -141,3 +141,35 @@ places on E14.5's two segmentations): 17/18 against 14 for drawing every one, wr
 step out to a face; leave-one-out about 15-16, the reach resting on one example. On Harvey's
 E14.5 Claudin segmentation (2026-10-20, rebuilt from his run's skeleton) it drew 12 thick
 centrelines on: dead ends in vessels of 5 um radius or more 124 -> 116, `stops_short` 102 -> 96.
+
+## Bridge shapes, shared nodes and drawn bridges (2026-10-24)
+
+`PLAN_thick_vessel_bridges.md`'s last items, on branch `claude/plan-thick-bridges-e32666`
+(`951c07c3`..`5fc30c06`). **The bridge-shape report** (`graph/thick_vessel_bridge_shapes.py`,
+`diagnose_thick_vessel_bridges`, logged by `build_network` after the split and written by
+`scripts/graph_artefacts.py`) puts each bridge in one of the 2026-10-09 audit's six shapes, or
+`fork`. Judged by the tree alone on that audit's graph (E14.5's 2026-10-07 checkpoint, 393 bridges)
+it finds 273 in the four shapes the split never means to make, against the audit's 284, with the
+same median lengths; the audit read the radius at the inner node with a fixed 1.5 um tolerance,
+the report the tree's radius with the split's own tolerance. On the current rule every bridge
+ending off the tree ends on the graph's own thick centreline where it strays, 2-6 um away, so by
+default that counts as reaching the centreline; and a bridge "lies along" it only with 3 um on the
+tree, since one shorter than twice the tolerance has most of its length there whatever its
+direction. **Design C.4**: bridges ending within one lumen radius of each other share one node
+(`_share_centreline_nodes`); on Harvey's E14.5 Claudin segmentation (the graph handed to the split
+at `6196f08a`, replayed) it moved 11 of 73, and the clean-up after the split then took a different
+path at one tangle at the image face (x < 30 um, y 95-150 um), where the split already joins two
+nodes by a 4 um bridge and a 47 um vessel: saved graph 1,226 -> 1,221 nodes, vessel length 47,314
+-> 47,139 um. **Design C.5**: a bridge whose straight line would cross more than 2 um of background
+keeps the way its vessel ran through the lumen (`DRAWN_BRIDGE`): 1 of 73 on E14.5.
+**`thick_bridge_centreline_tolerance_um`** (1.5 um, unfitted) replaces the constant;
+`thick_bridge_one_radius` was not made (the drawn-path rule it would switch back to is gone, and
+Phase 6 runs it from a script). The Phase 5 grid (30 bridges, 30 near-misses, E14.5 at `b5a45d2c`,
+`scripts/thick_bridge_review/build_grid.py`) went to Harvey on 2026-10-24 for marks. **Phase 6**,
+E14.5 built and solved at `b5a45d2c` with the rule before 43dcf453 and with this one: bridges 123
+(1,847 um) -> 63 (505 um), length over radius median 1.31 -> 1.08, vessel length 46,471 -> 47,139
+um, network resistance 5.70e15 -> 2.79e15 Pa.s/m^3 (open ends closed 1.22e16 -> 3.79e15, same
+inlet and outlets), `build_network` 218 -> 245 s (the split 0.4 -> 14.3 s); the 55 old bridges
+now mostly vessel carry a median 6.4 times their old flow. The thick vessel's own edges sum to
+about the same resistance both ways, so the network's fall lies elsewhere (not traced). The Nerve
+fixture has no thick vessel (largest inscribed radius 2.8 um).
