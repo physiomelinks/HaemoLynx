@@ -258,8 +258,6 @@ class NetworkTemplate:
     extent_um: tuple[float, float, float]
     voxel_size_zyx: tuple[float, float, float]
     image_shape: tuple[int, int, int]
-    #: The box the template's nodes span, ``(lo, hi)`` in um, or None.
-    vessel_box_um: Optional[tuple]
     inlets: tuple
     outlets: tuple
     arteriole_boundary_count: int
@@ -382,16 +380,11 @@ class NetworkTemplate:
             "island_ends": _scaled_count(self.dead_ends.island_ends, volume),
         }
         dead_ends = replace(self.dead_ends, total=sum(parts.values()), **parts)
-        box = None
-        if self.vessel_box_um is not None:
-            lo, hi = self.vessel_box_um
-            box = (tuple(float(v) * factor for v in lo), tuple(float(v) * factor for v in hi))
         notes = self.provenance.notes + (f"scaled by {factor:g} from the template's box",)
         return replace(
             self,
             extent_um=extent,
             image_shape=shape,
-            vessel_box_um=box,
             inlets=_scaled_endpoints(self.inlets, area),
             outlets=_scaled_endpoints(self.outlets, area),
             arteriole_boundary_count=_scaled_count(self.arteriole_boundary_count, volume),
@@ -549,13 +542,14 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
         run_commit=prov.get("run_commit"),
         notes=tuple(prov.get("notes", ())),
     )
-    box = data.get("vessel_box_um")
+    # A template written before 2026-10-24 carries a "vessel_box_um" (the
+    # box its nodes spanned), dropped since: the bed's own volume replaced
+    # it (``generate.bed_volume_um3``). It is read past, like any other key.
     basis = normalise_diameter_basis(data.get("diameter_basis"))
     return NetworkTemplate(
         extent_um=tuple(float(v) for v in data["extent_um"]),
         voxel_size_zyx=tuple(float(v) for v in data["voxel_size_zyx"]),
         image_shape=tuple(int(v) for v in data["image_shape"]),
-        vessel_box_um=None if box is None else (tuple(float(v) for v in box[0]), tuple(float(v) for v in box[1])),
         inlets=tuple(Endpoint(e["face"], tuple(float(v) for v in e["position_rel"])) for e in data["inlets"]),
         outlets=tuple(Endpoint(e["face"], tuple(float(v) for v in e["position_rel"])) for e in data["outlets"]),
         arteriole_boundary_count=int(data["arteriole_boundary_count"]),
@@ -1003,7 +997,7 @@ def template_from_report(
             reason="no_statistics",
             missing_statistics=toggles,
         )
-    extent, voxel, shape, box = _graph_box(G, checkpoint, notes_out)
+    extent, voxel, shape, _box = _graph_box(G, checkpoint, notes_out)
     image_volume_um3 = float(np.prod(np.asarray(shape, float) * voxel))
 
     basic = sections.get("basic") or {}
@@ -1062,7 +1056,6 @@ def template_from_report(
         extent_um=tuple(float(v) for v in extent),
         voxel_size_zyx=tuple(float(v) for v in voxel),
         image_shape=shape,
-        vessel_box_um=box,
         inlets=inlets,
         outlets=outlets,
         arteriole_boundary_count=len(boundaries.get("arteriole_boundary", ())),
@@ -1315,7 +1308,17 @@ def template_from_graph(
         checkpoint=checkpoint,
         run_basis=run_diameter_basis_of(G, _run_settings(snapshot)),
     )
-    return replace(template, provenance=replace(template.provenance, run_version=version, run_commit=commit))
+    # The tissue volume is measured from the raw image, not the graph: the
+    # run's saved report has it when the run measured it.
+    report = G.graph.get(STATISTICS_REPORT_KEY)
+    sections = report.get("sections") if isinstance(report, Mapping) else None
+    density = sections.get("vessel_density") if isinstance(sections, Mapping) else None
+    tissue = _number(density.get("Tissue Volume (micron³)")) if isinstance(density, Mapping) else None
+    return replace(
+        template,
+        tissue_volume_um3=template.tissue_volume_um3 if tissue is None else tissue,
+        provenance=replace(template.provenance, run_version=version, run_commit=commit),
+    )
 
 
 # ---------------------------------------------------------------------------

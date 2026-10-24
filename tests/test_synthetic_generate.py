@@ -753,6 +753,58 @@ def test_a_join_never_runs_through_a_dead_end():
         assert fill.degree[end] == 1
 
 
+def test_the_bed_volume_is_the_tissue_else_what_the_chord_needs_never_more_than_the_box():
+    from haemolynx.synthetic.generate import BED_AT_CHORD, BED_IN_BOX, BED_IN_TISSUE, bed_volume_um3
+
+    T = fixture_template()
+    box = 120.0 * 200.0 * 200.0
+    # The fixture's 106 vertices at its 43.5 um chord need more than its box: the whole box.
+    assert bed_volume_um3(T, 106) == (box, BED_IN_BOX)
+    big = replace(T, extent_um=(240.0, 400.0, 400.0))
+    chord = 50.0 / 1.15  # mean length over mean tortuosity
+    volume, source = bed_volume_um3(big, 106)
+    assert source == BED_AT_CHORD and volume == pytest.approx(106 * chord**3)
+    assert bed_volume_um3(replace(big, tissue_volume_um3=2.0e6), 106) == (2.0e6, BED_IN_TISSUE)
+    assert bed_volume_um3(replace(T, tissue_volume_um3=1.0e9), 106) == (box, BED_IN_BOX)
+
+
+def test_a_bed_in_a_box_too_big_for_it_keeps_the_templates_capillary_lengths():
+    """Harvey, 2026-10-24: the bed's spacing is the template's mean capillary
+    chord, filling only as much of the box as it needs, grown from the
+    trees. Spread over the whole box (E14.5's capillaries are clustered) its
+    vessels came out 16% longer than the template's, the median 40%."""
+    T = fixture_template()
+    big = replace(T, extent_um=(240.0, 400.0, 400.0), image_shape=(241, 409, 409))
+    G = generate_network(big, seed=SEED)
+    generated = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
+    assert generated["bed_volume_from"] == "chord"
+    assert generated["spacing_um"] == pytest.approx(50.0 / 1.15, rel=0.05)
+    assert any("the bed fills" in n and "grown from the trees" in n for n in generated["notes"])
+    capillaries = [d["length"] for *_e, d in G.edges(data=True) if d[SYNTHETIC_CLASS] == "capillary"]
+    assert np.mean(capillaries) == pytest.approx(50.0, rel=0.10)
+    assert sum(capillaries) == pytest.approx(160 * 50.0, rel=0.05)
+
+
+def test_a_bed_fills_the_templates_tissue_volume():
+    T = replace(fixture_template(), extent_um=(240.0, 400.0, 400.0), image_shape=(241, 409, 409), tissue_volume_um3=1.2e7)
+    G = generate_network(T, seed=SEED)
+    generated = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
+    assert generated["bed_volume_from"] == "tissue" and generated["bed_volume_um3"] == 1.2e7
+    assert any("the template's tissue volume" in n for n in generated["notes"])
+
+
+def test_lattice_vertices_grown_from_seeds_keep_the_nearest():
+    rng = np.random.default_rng(0)
+    extent = np.array([100.0, 100.0, 100.0])
+    seeds = np.array([[50.0, 50.0, 2.0]])
+    points = bed_module.lattice_vertices(extent, 40, rng=rng, keep_clear=None, spacing_um=10.0, grow_from=seeds)
+    assert len(points) == 40
+    distances = np.linalg.norm(points - seeds[0], axis=1)
+    assert distances.max() < 40.0  # a cap round the seed, not points over the box
+    spacing = np.min(np.linalg.norm(points[:, None] - points[None], axis=2) + np.eye(40) * 1e9, axis=1)
+    assert np.median(spacing) == pytest.approx(10.0, rel=0.4)
+
+
 def test_lattice_vertices_fill_the_box_and_keep_clear():
     rng = np.random.default_rng(0)
     extent = np.array([50.0, 100.0, 100.0])

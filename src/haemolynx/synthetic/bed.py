@@ -179,16 +179,21 @@ def lattice_vertices(
     rng: np.random.Generator,
     keep_clear: Optional[np.ndarray],
     spacing_um: float,
+    grow_from: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """About *count* jittered lattice points inside the box, none within
     half a spacing of a point of *keep_clear* nor within a quarter of a face,
-    thinned at random to *count* when there are more."""
+    thinned at random to *count* when there are more.
+
+    With *grow_from* (the trees' nodes) the lattice is laid over the whole
+    box at *spacing_um* and the *count* points nearest those nodes are kept:
+    a bed filling only part of the box, grown from the trees."""
     extent = np.asarray(extent_um, dtype=float)
     volume = float(np.prod(np.maximum(extent, 1e-9)))
     wanted = max(int(math.ceil(count * OVERSAMPLE)), 1)
-    step = (volume / wanted) ** (1.0 / 3.0)
+    step = (volume / wanted) ** (1.0 / 3.0) if grow_from is None else float(spacing_um)
     counts = np.maximum(np.round(extent / step).astype(int), 1)
-    while int(np.prod(counts)) < wanted:
+    while grow_from is None and int(np.prod(counts)) < wanted:
         axis = int(np.argmax(extent / counts))
         counts[axis] += 1
     steps = extent / counts
@@ -202,7 +207,13 @@ def lattice_vertices(
         near = tree.query_ball_point(points, r=CLEARANCE_SPACINGS * spacing_um)
         keep = np.array([len(n) == 0 for n in near])
         points = points[keep]
-    if len(points) > count:
+    if len(points) > count and grow_from is not None and len(grow_from):
+        # Nearest the trees first, the edge of the region left ragged by
+        # up to half a spacing.
+        distances, _ = cKDTree(np.asarray(grow_from, dtype=float)).query(points)
+        order = np.argsort(distances + rng.uniform(0.0, 0.5 * step, size=len(points)), kind="stable")
+        points = points[np.sort(order[:count])]
+    elif len(points) > count:
         chosen = rng.choice(len(points), size=count, replace=False)
         points = points[np.sort(chosen)]
     return points
@@ -490,6 +501,7 @@ def build_bed(
     max_degree: int = 4,
     category: str = "capillary",
     target_chord_um: Optional[float] = None,
+    grow_from: Optional[Sequence[int]] = None,
 ) -> BedResult:
     """Add the bed to *draft*. *attached* maps the draft nodes the bed joins
     (tree leaves, or the roots themselves) to the bed edges each takes;
@@ -497,12 +509,17 @@ def build_bed(
     the nodes the lattice stays away from; *face_ends* how many of the
     targets' dead ends go on the faces; *target_chord_um* the chord the
     template's capillaries have on average (the fill prefers candidates near
-    it; None, the shortest). See the module."""
+    it; None, the shortest); *grow_from*, draft nodes the bed is grown from
+    when it fills only part of the box (:func:`lattice_vertices`). See the
+    module."""
     extent = np.asarray(extent_um, dtype=float)
     result = BedResult()
     attached_nodes = list(attached)
     clear = np.stack([draft.position(n) for n in keep_clear]) if keep_clear else None
-    bed_points = lattice_vertices(extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um)
+    seeds = np.stack([draft.position(n) for n in grow_from]) if grow_from else None
+    bed_points = lattice_vertices(
+        extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, grow_from=seeds
+    )
     if len(bed_points) < targets.vertices:
         draft.note(f"the bed has {len(bed_points)} vertices of the {targets.vertices} wanted (no room beside the trees)")
     bed_nodes = [draft.add_node(p) for p in bed_points]

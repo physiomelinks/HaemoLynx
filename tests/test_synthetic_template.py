@@ -454,6 +454,14 @@ def test_summary_names_what_a_log_line_needs(tmp_path):
     assert summary["source"] == "statistics"
 
 
+def test_the_graph_source_reads_a_measured_tissue_volume_from_the_saved_report(tmp_path):
+    sections = tiny_sections()
+    sections["vessel_density"] = {**sections["vessel_density"], "Tissue Volume (micron³)": 4.5e6}
+    path = write_fixture_run(tmp_path, sections=sections)
+    assert load_template(path, "graph").tissue_volume_um3 == 4.5e6
+    assert load_template(path, "statistics").tissue_volume_um3 == 4.5e6
+
+
 # -- the diameter basis ---------------------------------------------------------
 
 
@@ -504,6 +512,15 @@ def test_a_template_whose_run_names_no_basis_has_none_and_says_so():
     assert named.diameter_basis == "endothelial"
 
 
+def test_a_template_written_with_a_vessel_box_still_loads():
+    """vessel_box_um was dropped on 2026-10-24 (Harvey: the bed's own volume
+    takes its place); a template written before carries it."""
+    data = fixture_template().to_dict()
+    assert "vessel_box_um" not in data
+    old = {**data, "vessel_box_um": [[0.0, 0.0, 0.0], [120.0, 200.0, 200.0]]}
+    assert NetworkTemplate.from_dict(old) == fixture_template()
+
+
 def test_an_older_template_without_a_basis_still_loads(tmp_path):
     template = replace(fixture_template(), diameter_basis="endothelial")
     data = template.to_dict()
@@ -550,7 +567,6 @@ def test_scaled_counts_go_as_the_volume_and_endpoints_as_the_faces():
     assert scaled.dead_ends.interior == 8 * 8
     assert scaled.dead_ends.total == 8 * 4 + 8 * 8
     assert scaled.arteriole_boundary_count == 48
-    assert scaled.vessel_box_um[1] == (240.0, 400.0, 400.0)
     assert any("scaled by 2" in n for n in scaled.provenance.notes)
     assert template.scaled(1.0) is template
 

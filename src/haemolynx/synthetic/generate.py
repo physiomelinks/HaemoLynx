@@ -357,7 +357,15 @@ def generate_network(
     if loops is None:
         loops = int(round(capillary_count / 3.0))
     bed_vertices = max(capillary_count - loops - root_count + 1, 1)
-    spacing = float((np.prod(extent) / bed_vertices) ** (1.0 / 3.0))
+    bed_volume, bed_volume_from = bed_volume_um3(T, bed_vertices)
+    spacing = float((bed_volume / bed_vertices) ** (1.0 / 3.0))
+    if bed_volume_from != BED_IN_BOX:
+        draft.note(
+            f"the bed fills {bed_volume / float(np.prod(extent)):.0%} of the box "
+            + ("(the template's tissue volume)" if bed_volume_from == BED_IN_TISSUE else
+               f"(its vertices {spacing:.1f} um apart, the template's mean capillary chord)")
+            + ", grown from the trees"
+        )
     min_separation = options.min_separation_um if options.min_separation_um is not None else 0.5 * spacing
     daughter_angle = T.daughter_angle_deg if T.daughter_angle_deg else DEFAULT_DAUGHTER_ANGLE_DEG
 
@@ -437,6 +445,7 @@ def generate_network(
         rng=rng,
         max_degree=options.max_bed_degree,
         target_chord_um=_capillary_chord(T),
+        grow_from=None if bed_volume_from == BED_IN_BOX else tree_nodes + [node for node, _f in roots["inlet"] + roots["outlet"]],
     )
 
     if bed.edges == 0:
@@ -487,12 +496,38 @@ def generate_network(
             "bed_face_ends_wanted": bed_face_ends,
             "bed_blind_ends_wanted": bed_blind_ends,
             "spacing_um": spacing,
+            "bed_volume_um3": bed_volume,
+            "bed_volume_from": bed_volume_from,
             "notes": list(draft.notes),
         },
     }
     if validate:
         validate_synthetic_graph(G, T)
     return G
+
+
+#: Where the bed's volume comes from (``generated["bed_volume_from"]``).
+BED_IN_BOX = "box"
+BED_IN_TISSUE = "tissue"
+BED_AT_CHORD = "chord"
+
+
+def bed_volume_um3(template: NetworkTemplate, vertices: int) -> tuple[float, str]:
+    """``(volume, where from)`` of the box the capillary bed fills (Harvey,
+    2026-10-24): the template's measured tissue volume when it has one;
+    else what *vertices* lattice points take at the template's mean
+    capillary chord apart, so its capillaries can be as short as the
+    template's; never more than the box, which a bed denser than the box
+    allows fills whole."""
+    box = float(np.prod(np.asarray(template.extent_um, dtype=float)))
+    tissue = template.tissue_volume_um3
+    if tissue is not None and math.isfinite(tissue) and tissue > 0:
+        return (min(float(tissue), box), BED_IN_TISSUE if tissue < box else BED_IN_BOX)
+    chord = _capillary_chord(template)
+    if chord is None or chord <= 0:
+        return box, BED_IN_BOX
+    volume = float(vertices) * float(chord) ** 3
+    return (volume, BED_AT_CHORD) if volume < box else (box, BED_IN_BOX)
 
 
 def _capillary_chord(template: NetworkTemplate) -> Optional[float]:
@@ -748,6 +783,10 @@ __all__ = [
     "SYNTHETIC",
     "SYNTHETIC_CLASS",
     "SYNTHETIC_ROLES",
+    "BED_AT_CHORD",
+    "BED_IN_BOX",
+    "BED_IN_TISSUE",
+    "bed_volume_um3",
     "boundary_nodes",
     "generate_network",
     "validate_synthetic_graph",

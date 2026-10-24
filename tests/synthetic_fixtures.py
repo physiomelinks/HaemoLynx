@@ -228,7 +228,6 @@ def fixture_template(*, notes: Sequence[str] = ()) -> NetworkTemplate:
         extent_um=(120.0, 200.0, 200.0),
         voxel_size_zyx=(1.0, 0.98, 0.98),
         image_shape=(121, 205, 205),
-        vessel_box_um=((0.0, 0.0, 0.0), (120.0, 200.0, 200.0)),
         inlets=(Endpoint("x0", (0.4, 0.3, 0.0)), Endpoint("x0", (0.6, 0.7, 0.0))),
         outlets=(Endpoint("x1", (0.4, 0.7, 1.0)), Endpoint("x1", (0.6, 0.3, 1.0))),
         arteriole_boundary_count=6,
