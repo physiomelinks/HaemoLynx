@@ -46,6 +46,9 @@ FACE_MARGIN_SPACINGS = 0.25
 ANGLE_WEIGHT = 0.5
 #: Nearest neighbours tried when the Delaunay candidates run out.
 FALLBACK_NEIGHBOURS = 16
+#: Junctions of the largest piece tried, nearest first, for a piece every one
+#: of whose junctions has a dead end nearest (:func:`join_pieces`' last resort).
+JOIN_NEIGHBOURS = 8
 
 
 @dataclass(frozen=True)
@@ -351,6 +354,127 @@ class _Fill:
                 break
 
 
+def join_pieces(fill: "_Fill", live: Sequence[int], linked: Sequence[tuple[int, int]] = ()) -> tuple[int, bool]:
+    """Join every piece of the bed to the largest, one edge per piece (which
+    keeps the loop count), and return ``(edges added, whether one piece is
+    left)``. *live* are the vertices in play, *linked* pairs already joined
+    outside the fill (a tree's nodes).
+
+    Each pass joins the piece with the shortest join, between junctions
+    (never through a terminal -- a root, a dead end -- nor two attached
+    nodes directly), whatever their count: a member's nearest vertex of the
+    largest piece, when that is a junction; else a lone terminal's nearest
+    junction with room for it; else -- a piece whose junctions all have a
+    dead end nearest, a junction whose every vessel is a dead end among them
+    -- its nearest junction to the largest piece's nearest junction, past
+    the dead ends.
+    """
+    points, caps, is_attached = fill.points, fill.caps, fill.attached
+    parent = list(range(len(points)))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i, j in fill.edges:
+        union(i, j)
+    for a, b in linked:
+        union(a, b)
+    live = list(live)
+    repairs = 0
+    # Every pass joins one piece, so there are at most as many passes as
+    # pieces; a pass that finds nothing to join ends the repair.
+    passes_left = len(live) + 1
+    while live and passes_left > 0:
+        passes_left -= 1
+        components: dict[int, list[int]] = {}
+        for v in live:
+            components.setdefault(find(v), []).append(v)
+        if len(components) <= 1:
+            return repairs, True
+        giant_root = max(components, key=lambda r: len(components[r]))
+        giant = components[giant_root]
+        giant_tree = cKDTree(points[giant])
+        hubs_in_giant = [g for g in giant if caps[g] > 1 and not is_attached[g]]
+        hub_only = cKDTree(points[hubs_in_giant]) if hubs_in_giant else None
+        best = None
+        for root, members in components.items():
+            if root == giant_root:
+                continue
+            d, idx = giant_tree.query(points[members], k=1)
+            d, idx = np.atleast_1d(d), np.atleast_1d(idx)
+            for m, dist, gi in sorted(zip(members, d, idx), key=lambda t: t[1]):
+                g = giant[int(gi)]
+                if fill.forbidden(m, g) or caps[m] == 1 or caps[g] == 1:
+                    continue
+                if best is None or dist < best[0]:
+                    best = (float(dist), m, g)
+                break
+        if best is None and hub_only is not None:
+            # A piece with no junction of its own (a lone terminal): it joins
+            # the nearest junction of the giant piece, which takes one more.
+            for root, members in components.items():
+                if root == giant_root:
+                    continue
+                d, idx = hub_only.query(points[members], k=1)
+                d, idx = np.atleast_1d(d), np.atleast_1d(idx)
+                order_m = np.argsort(d)
+                for i in order_m:
+                    m = members[int(i)]
+                    g = hubs_in_giant[int(idx[int(i)])]
+                    if g not in fill.neighbours[m] and m != g and fill.degree[m] < caps[m]:
+                        best = (float(d[int(i)]), m, g)
+                        break
+                if best is not None:
+                    break
+        if best is None:
+            best = _junction_join(fill, components, giant_root)
+        if best is None:
+            return repairs, False
+        _, m, g = best
+        fill.connect(m, g)
+        union(m, g)
+        repairs += 1
+    return repairs, len({find(v) for v in live}) <= 1
+
+
+def _junction_join(fill: "_Fill", components: Mapping[int, Sequence[int]], giant_root: int) -> Optional[tuple[float, int, int]]:
+    """The shortest join from a junction of a piece to a junction of the
+    largest piece *giant_root*, past any dead end nearer either: ``(length,
+    piece's vertex, largest's vertex)``, or None when no piece has one."""
+    points, caps = fill.points, fill.caps
+    junctions = [g for g in components[giant_root] if caps[g] > 1]
+    if not junctions:
+        return None
+    tree = cKDTree(points[junctions])
+    k = min(len(junctions), JOIN_NEIGHBOURS)
+    best = None
+    for root, members in components.items():
+        if root == giant_root:
+            continue
+        own = [m for m in members if caps[m] > 1]
+        if not own:
+            continue
+        d, idx = tree.query(points[own], k=k)
+        d, idx = np.asarray(d).reshape(len(own), -1), np.asarray(idx).reshape(len(own), -1)
+        for row, m in enumerate(own):
+            for dist, gi in zip(d[row], idx[row]):
+                g = junctions[int(gi)]
+                if fill.forbidden(m, g):
+                    continue
+                if best is None or dist < best[0]:
+                    best = (float(dist), m, g)
+                break
+    return best
+
+
 def build_bed(
     draft: NetworkDraft,
     *,
@@ -566,86 +690,19 @@ def build_bed(
     result.short_of_degree = int(sum(caps[v] - fill.degree[v] for v in range(len(all_nodes)) if fill.degree[v] < caps[v]))
 
     # Connectivity: every piece joined to the largest along the shortest pair.
-    parent = list(range(len(all_nodes)))
-
-    def find(a: int) -> int:
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = parent[a]
-        return a
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
     index_of = {node: i for i, node in enumerate(all_nodes)}
-    for i, j in fill.edges:
-        union(i, j)
+    linked: list[tuple[int, int]] = []
     for group in tree_groups:
         members = [index_of[n] for n in group if n in index_of]
-        for a, b in zip(members[:-1], members[1:]):
-            union(a, b)
+        linked += list(zip(members[:-1], members[1:]))
     isolated = [v for v in range(len(attached_nodes), len(all_nodes)) if fill.degree[v] == 0]
     for v in isolated:
         draft.removed.add(all_nodes[v])
     result.dropped = len(isolated)
     live = [v for v in range(len(all_nodes)) if v not in set(isolated)]
-    # Every pass joins one piece, so there are at most as many passes as
-    # pieces; a pass that finds nothing to join ends the repair.
-    passes_left = len(live) + 1
-    while live and passes_left > 0:
-        passes_left -= 1
-        components: dict[int, list[int]] = {}
-        for v in live:
-            components.setdefault(find(v), []).append(v)
-        if len(components) <= 1:
-            break
-        giant_root = max(components, key=lambda r: len(components[r]))
-        giant = components[giant_root]
-        giant_tree = cKDTree(points[giant])
-        hubs_in_giant = [g for g in giant if caps[g] > 1 and not is_attached[g]]
-        hub_only = cKDTree(points[hubs_in_giant]) if hubs_in_giant else None
-        best = None
-        for root, members in components.items():
-            if root == giant_root:
-                continue
-            d, idx = giant_tree.query(points[members], k=1)
-            d, idx = np.atleast_1d(d), np.atleast_1d(idx)
-            # Never join through a terminal (a root, a dead end: one edge
-            # each) nor two attached nodes directly: the join goes between
-            # junctions, whatever their count.
-            for m, dist, gi in sorted(zip(members, d, idx), key=lambda t: t[1]):
-                g = giant[int(gi)]
-                if fill.forbidden(m, g) or caps[m] == 1 or caps[g] == 1:
-                    continue
-                if best is None or dist < best[0]:
-                    best = (float(dist), m, g)
-                break
-        if best is None and hub_only is not None:
-            # A piece with no junction of its own (a lone terminal): it joins
-            # the nearest junction of the giant piece, which takes one more.
-            for root, members in components.items():
-                if root == giant_root:
-                    continue
-                d, idx = hub_only.query(points[members], k=1)
-                d, idx = np.atleast_1d(d), np.atleast_1d(idx)
-                order_m = np.argsort(d)
-                for i in order_m:
-                    m = members[int(i)]
-                    g = hubs_in_giant[int(idx[int(i)])]
-                    if g not in fill.neighbours[m] and m != g and fill.degree[m] < caps[m]:
-                        best = (float(d[int(i)]), m, g)
-                        break
-                if best is not None:
-                    break
-        if best is None:
-            draft.note("a piece of the bed could not be joined to the rest")
-            break
-        _, m, g = best
-        fill.connect(m, g)
-        union(m, g)
-        result.repairs += 1
+    result.repairs, joined = join_pieces(fill, live, linked)
+    if not joined:
+        draft.note("a piece of the bed could not be joined to the rest")
 
     # Degree-2 vertices: their two edges become one through them (a parallel
     # edge when the two neighbours are joined already: two vessels between
@@ -707,5 +764,6 @@ __all__ = [
     "build_bed",
     "candidate_edges",
     "degree_sequence_targets",
+    "join_pieces",
     "lattice_vertices",
 ]

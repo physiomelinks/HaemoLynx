@@ -517,6 +517,47 @@ def test_degree_sequence_targets_cap_the_junction_degree():
     assert targets.loops_shortfall > 0
 
 
+def _star_beside_a_dead_end():
+    """The largest piece: a junction (0) with four dead ends, one of them (4)
+    nearest the other piece. The other piece: a junction (5) whose three
+    vessels all end blind -- what the fill left on E14.5. Every vertex is
+    full, and the star's junction has a dead end, not a junction, nearest."""
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0], [-10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, -10.0, 0.0], [10.0, 0.0, 0.0],
+            [14.0, 0.0, 0.0], [18.0, 0.0, 0.0], [14.0, 3.0, 0.0], [14.0, -3.0, 0.0],
+        ]
+    )
+    caps = np.array([4, 1, 1, 1, 1, 3, 1, 1, 1])
+    fill = bed_module._Fill(points, caps, np.zeros(len(points), bool), np.random.default_rng(0), 75.0, 10.0)
+    for i, j in ((0, 1), (0, 2), (0, 3), (0, 4), (5, 6), (5, 7), (5, 8)):
+        fill.connect(i, j)
+    return fill
+
+
+def test_a_piece_whose_junctions_have_dead_ends_nearest_is_still_joined():
+    """Regression (E14.5 as a template, 2026-10-24): the repair looked only at
+    each vertex's nearest vertex of the largest piece; a dead end there, and
+    no spare vessel at the star's junction, left the star apart and the
+    network failed its contract."""
+    fill = _star_beside_a_dead_end()
+    edges_before = len(fill.edges)
+    repairs, joined = bed_module.join_pieces(fill, range(9))
+    assert (repairs, joined) == (1, True)
+    assert fill.edges[edges_before:] == [(0, 5)]  # junction to junction, past dead end 4
+    G = nx.Graph(fill.edges)
+    assert nx.is_connected(G)
+    # One edge for one piece: the loop count (E - N + pieces) is unchanged.
+    assert G.number_of_edges() - G.number_of_nodes() + 1 == edges_before - 9 + 2
+
+
+def test_a_join_never_runs_through_a_dead_end():
+    fill = _star_beside_a_dead_end()
+    bed_module.join_pieces(fill, range(9))
+    for end in (1, 2, 3, 4, 6, 7, 8):
+        assert fill.degree[end] == 1
+
+
 def test_lattice_vertices_fill_the_box_and_keep_clear():
     rng = np.random.default_rng(0)
     extent = np.array([50.0, 100.0, 100.0])
