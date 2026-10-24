@@ -394,10 +394,6 @@ def visualize_geometry_with_branch_orders(
         except ValueError:
             continue
         edge_branch_orders[(u, v, key)] = bo
-    visualizable = {
-        (u, v, k) for (u, v, k), bo in edge_branch_orders.items()
-        if len(edge_paths[(u, v, k)]) > 1
-    }
     all_bo = sort_branch_orders_numerically(list(all_branch_orders))
     branch_orders = all_bo
     color_mapping = create_color_mapping(

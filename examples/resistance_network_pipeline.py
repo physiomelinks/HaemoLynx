@@ -15,7 +15,6 @@ if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
 
-from haemolynx import haemodynamics
 from haemolynx.parsers import configure_console_logging, settings_from_command_line
 from haemolynx.pipeline import resolve_settings as _resolve_settings
 from haemolynx.pipeline import (

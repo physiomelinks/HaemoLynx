@@ -93,7 +93,7 @@ def test_selecting_the_image_layer_gives_it_a_clearer_3d_render(make_napari_view
     )
 
     viewer = make_napari_viewer()
-    panel = settings_widget(napari_viewer=viewer)
+    settings_widget(napari_viewer=viewer)
     for group in a_run():
         _apply_layers(viewer, group)
 

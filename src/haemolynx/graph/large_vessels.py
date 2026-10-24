@@ -7,7 +7,6 @@ from typing import Any
 import numpy as np
 from scipy.ndimage import (
     binary_dilation,
-    binary_erosion,
     distance_transform_edt,
 )
 

@@ -810,7 +810,7 @@ def edt_ridge_by_component(
         nonlocal filled
         flat = labels.reshape(-1)
         at = np.flatnonzero(flat)
-        part = combined[filled:filled + len(at)]
+        part = combined[filled:filled + len(at)]  # noqa: F821 (closure; `del combined` frees it below)
         part[:] = flat[at]
         part += int(offset)
         part <<= shift
@@ -844,7 +844,7 @@ def edt_ridge_by_component(
     large = [c for c in range(1, components.count + 1) if c != largest and sizes[c - 1] >= _THREADED_COMPONENT_VOXELS]
 
     def draw(component_id: int) -> None:
-        part = combined[bounds[component_id - 1]:bounds[component_id]] & low
+        part = combined[bounds[component_id - 1]:bounds[component_id]] & low  # noqa: F821 (closure; `del combined` frees it below)
         _draw_component(out, drawn, mask, relative, components, component_id, part, shape, exact_max_voxels)
 
     threads = min(_COMPONENT_THREADS, shared_volume_tasks.default_worker_count())

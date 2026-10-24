@@ -13,7 +13,7 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui import _widget as widget_mod  # noqa: E402
 from haemolynx.gui._widget import _apply_layers, _layer_controls, settings_widget  # noqa: E402
-from haemolynx.gui.results import VESSEL_TUBES, VESSELS  # noqa: E402
+from haemolynx.gui.results import VESSEL_TUBES  # noqa: E402
 from haemolynx.gui.vessel_tubes import (  # noqa: E402
     DEFAULT_TUBE_QUALITY,
     TUBE_QUALITY_SIDES,

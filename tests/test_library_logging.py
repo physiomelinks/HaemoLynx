@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 
 import networkx as nx
-import pytest
 
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 from haemolynx.parsers import Schema, Setting, configure_console_logging, print_settings

@@ -782,11 +782,9 @@ def test_describe_drawn_support_gives_the_fraction_and_the_longest_run():
 
 from haemolynx.graph import (  # noqa: E402
     IS_ZERO_RESISTANCE,
-    clear_edit_marks,
     edited_edges,
-    has_pending_edits,
 )
-from haemolynx.graph.post_processing import EDITED, PENDING  # noqa: E402
+from haemolynx.graph.post_processing import PENDING  # noqa: E402
 
 
 def _edited(G) -> set:
@@ -916,7 +914,7 @@ def test_a_bridge_is_never_merged_with_the_vessel_it_opens():
 
 # --- short loops: Manual loop review ---------------------------------------------
 
-from haemolynx.graph import ShortLoop, delete_loop_side, has_pending_edits, short_loops  # noqa: E402
+from haemolynx.graph import ShortLoop, delete_loop_side, short_loops  # noqa: E402
 
 
 def _two_loops() -> nx.MultiGraph:
@@ -1084,7 +1082,7 @@ def test_setting_a_diameter_refuses_a_bad_width_or_vessel_and_changes_nothing():
 
 # --- set_terminal_role (the Terminal nodes list's edit) ----------------------
 
-from haemolynx.graph import boundary_roles_with_edits, clear_edit_marks, set_terminal_role  # noqa: E402
+from haemolynx.graph import boundary_roles_with_edits, set_terminal_role  # noqa: E402
 from haemolynx.graph.post_processing import BOUNDARY_ROLES  # noqa: E402
 
 

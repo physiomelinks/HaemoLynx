@@ -71,7 +71,7 @@ genuine research project rather than the graph-level adaptation here.
 from __future__ import annotations
 
 import logging
-from typing import Any, Union
+from typing import Union
 
 import numpy as np
 import networkx as nx

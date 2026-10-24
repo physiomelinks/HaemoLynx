@@ -26,7 +26,6 @@ from haemolynx.haemodynamics.haematocrit_distribution import (
     pries_secomb_daughter_haematocrit,
 )
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
-from haemolynx.haemodynamics.resistance import build_conductance_matrix_from_graph
 
 
 def _directed(G: nx.MultiGraph, frm, to, *, diameter_um: float, flow: float, key: int = 0) -> None:

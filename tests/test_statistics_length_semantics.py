@@ -10,7 +10,7 @@ import networkx as nx
 import pytest
 
 from haemolynx import statistics as st
-from haemolynx.haemodynamics.poiseuille import PoiseuilleModel, set_edge_resistance
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 
 MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
 

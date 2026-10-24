@@ -24,7 +24,6 @@ from ._helpers import (
     densify_polyline,
     edge_sample_points,
     next_node_id,
-    orient_path_from_startpoint,
     points_inside_mask,
 )
 

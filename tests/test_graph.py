@@ -28,9 +28,6 @@ from haemolynx.graph.optimise import _reconnection_is_direction_safe
 from haemolynx.graph._helpers import (
     get_line_points_3d,
     calculate_path_length,
-    calculate_edge_length,
-    add_edge_safe,
-    get_all_edge_data,
     are_paths_similar,
     path_separation,
     paths_separated_by_background,

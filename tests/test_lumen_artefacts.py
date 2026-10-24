@@ -31,7 +31,6 @@ from lumen_artefact_fixtures import (
     polyline_graph,
     ring_in_one_lumen,
     two_strands_in_one_lumen,
-    wide_vessel,
 )
 
 

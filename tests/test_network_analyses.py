@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 
 import networkx as nx
-import numpy as np
 import pytest
 
 from haemolynx.statistics.loops import compute_loop_hierarchy

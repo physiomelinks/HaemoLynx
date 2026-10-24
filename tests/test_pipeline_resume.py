@@ -11,7 +11,6 @@ already has. How the run hands them over is in ``test_pipeline_progress.py``.
 from __future__ import annotations
 
 import networkx as nx
-import numpy as np
 
 from haemolynx.pipeline import SkeletonisedVolume
 from haemolynx.pipeline import stages

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import re
-import warnings
 
 import numpy as np
 import networkx as nx
@@ -617,7 +616,7 @@ def flag_fwhm_edt_disagreement(G: nx.MultiGraph, *, warn_ratio: float) -> int:
 # resistance a run produces and the laws do not agree. They live in
 # `viscosity.py` with their validity ranges; the names are re-exported here
 # because this is where callers have always found them.
-from .viscosity import (  # noqa: E402  (re-export, must follow the docstring)
+from .viscosity import (  # noqa: E402, F401  (re-export, must follow the docstring)
     CAPILLARY_REGIME_MAX_DIAMETER_UM,
     DEFAULT_HAEMATOCRIT,
     DIAMETER_BASES,
@@ -871,9 +870,6 @@ class PoiseuilleModel:
         --------
         dict : Summary of resistance assignments
         """
-        import numpy as np
-
-        PI = np.pi
         results = {
             'edges_set': 0,
             'missing_branch_order': [],

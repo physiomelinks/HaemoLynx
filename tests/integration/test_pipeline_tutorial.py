@@ -75,7 +75,6 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
 
     stem = INPUT_TIFF.stem
     graph_path = output_dir / f"{stem}_graph.pkl"
-    vtk_prefix = output_dir / f"{stem}_tutorial"
 
     assert graph_path.exists(), f"Missing graph pickle: {graph_path}"
 

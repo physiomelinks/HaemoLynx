@@ -561,7 +561,6 @@ def test_export_results_passes_the_occlusion_settings_through(tmp_path, monkeypa
 
 
 def test_the_export_leaves_what_it_measured_on_the_graph_section_by_section(tmp_path):
-    from haemolynx.statistics import compute_murray_law_compliance
 
     solution = stages.Solution(
         equivalent_resistance=2.5e15, equivalent_resistance_nodes=(0, 2), network_resistance=1.5e15
