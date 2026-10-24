@@ -78,12 +78,12 @@ run); and its capillaries are clustered, shorter than a uniform bed in the same 
 
 ## 2026-10-24: Harvey's decisions, built
 
-The large tier is a trunk with side branches at its orders' own widths (`c359b540`; Murray's law
+The large tier is a trunk with side branches at its orders' own widths (`78d7b1f0`; Murray's law
 stays in the Art/Ven tier), a root's first vessel stays in the box and the tree rescale stops at
-the template's longest and most tortuous vessel (`c359b540`), the bed fills the template's tissue
+the template's longest and most tortuous vessel (`78d7b1f0`), the bed fills the template's tissue
 volume or the volume its vertices take at the template's capillary chord, grown from the trees
-(`16294de4`, `vessel_box_um` dropped), and `synthetic_bed_model=voronoi` draws the bed along a
-Voronoi tessellation's cell edges (`18476642`). On E14.5 every large-tier order count is now the
+(`ff4f4dcb`, `vessel_box_um` dropped), and `synthetic_bed_model=voronoi` draws the bed along a
+Voronoi tessellation's cell edges (`9e49ddfc`). On E14.5 every large-tier order count is now the
 template's, its widths are, the haemodynamics solve, and 47 of 49 exact rows are equal (the two
 left are the large-vessel boundary counts); the Voronoi bed is more tortuous (1.42 against 1.20)
 with closer capillaries (12 against 22 um). The table is in `PLAN_synthetic_network.md`.

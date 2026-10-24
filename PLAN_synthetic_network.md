@@ -494,7 +494,7 @@ template's 94 ends of junction-less pieces).
 Built (templates the change does not concern draw as before: the fixture template's networks were
 compared edge for edge, position for position, at 12 seeds and 9,500 vessels before and after):
 
-- `c359b540` (1, 2): within the large tier a tip may go on as one child and hand a side branch to
+- `78d7b1f0` (1, 2): within the large tier a tip may go on as one child and hand a side branch to
   the bed, the node a large-vessel boundary node taking one bed vessel
   (`trees.trunk_children_per_tip`, `SideResult.handoffs`); its widths are each order's own
   (`draw_root_diameters`), Murray's law and its fitted asymmetry are the Art/Ven tier's only. A
@@ -503,13 +503,13 @@ compared edge for edge, position for position, at 12 seeds and 9,500 vessels bef
   most tortuous (the graph source's own vessels; else 6x the median length and the tortuosity two
   sigmas up the draw), noting the shortfall. The fixture's lengths move by at most 2% on a few
   vessels (the cap); nothing else.
-- `16294de4` (3, 4): `generate.bed_volume_um3`: the template's measured tissue volume, else what
+- `ff4f4dcb` (3, 4): `generate.bed_volume_um3`: the template's measured tissue volume, else what
   the bed's vertices take at the template's mean capillary chord apart, never more than the box (a
   bed denser than its box -- the fixture's -- fills it whole, as before). A smaller bed is the
   lattice at its spacing over the box, the points nearest the trees kept
   (`lattice_vertices(grow_from=)`). The graph source reads a measured tissue volume from the saved
   report too. `NetworkTemplate.vessel_box_um` is gone; a template written with it still loads.
-- `18476642` (5): `synthetic_bed_model` (`delaunay`, the default, or `voronoi`; Input tab, behind
+- `9e49ddfc` (5): `synthetic_bed_model` (`delaunay`, the default, or `voronoi`; Input tab, behind
   the synthetic Advanced button). The Voronoi bed's vertices are the corners of a tessellation of
   random seeds (`bed.voronoi_vertices`: Delaunay circumcentres, joined across shared faces; corners
   outside the bed's volume or beside the trees left out; more seeds when a small box keeps too
