@@ -10158,6 +10158,9 @@ class _BatchRunWindow:
     )
     #: Rows the window opens tall enough to show.
     VISIBLE_ROWS = 8
+    #: Lines the report box opens to, and the fewest it gets on a short screen.
+    REPORT_LINES = 6
+    REPORT_MIN_LINES = 3
 
     def __init__(
         self,
@@ -10219,6 +10222,7 @@ class _BatchRunWindow:
         images = QVBoxLayout(images_page)
         images.setContentsMargins(0, 0, 0, 0)
         self.tabs.addTab(images_page, "Images")
+        self.tabs.setTabToolTip(0, tips["images_tab"])
 
         # -- Images: the folders --------------------------------------------
         folders_box = QGroupBox("Images")
@@ -10387,6 +10391,7 @@ class _BatchRunWindow:
         comparison_buttons.addWidget(self.open_comparison_button)
         comparison.addLayout(comparison_buttons)
         self.tabs.addTab(comparison_page, "Comparison")
+        self.tabs.setTabToolTip(1, tips["comparison_tab"])
 
         # -- Under both tabs ----------------------------------------------------
         self.status = QLabel("")
@@ -10498,6 +10503,7 @@ class _BatchRunWindow:
                 if role.fallback
                 else f"blank: none (one {role.label} for every image is refused)"
             )
+        self._fit_rows()
 
     def _refresh_settings_line(self) -> None:
         from haemolynx.gui.batch_run import settings_changed
@@ -10532,6 +10538,7 @@ class _BatchRunWindow:
         output = self.fields["output"].text().strip()
         self._record = read_batch_settings(Path(output) / SETTINGS_FILENAME) if output else None
         self.last_batch_button.setVisible(self._record is not None)
+        self._fit_rows()
 
     def use_last_batch(self) -> bool:
         """Fill the window from the output folder's ``batch_settings.yaml``
@@ -10597,6 +10604,7 @@ class _BatchRunWindow:
         self._fill_table()
         self.refresh_comparison()
         self.native.show()
+        self._fit_rows()
         self.native.raise_()
 
     # -- conditions ------------------------------------------------------
@@ -11009,11 +11017,59 @@ class _BatchRunWindow:
         self.status.setText(text)
 
     def _report(self, lines) -> None:
-        """Put *lines* in the report box, opening it if it is folded away."""
+        """Put *lines* in the report box, opening it if it is folded away:
+        to a third of the space or REPORT_LINES lines, never at the cost of
+        the table's VISIBLE_ROWS rows unless the screen is too short for both."""
         self.details.setPlainText("\n".join(lines))
         if lines and self.splitter.sizes()[1] == 0:
+            want = self._report_height(self.REPORT_LINES)
+            page = self._fit_rows(want)
             total = sum(self.splitter.sizes()) or 400
-            self.splitter.setSizes([total * 2 // 3, total // 3])
+            if page is None:
+                report = total // 3
+            else:
+                report = max(
+                    min(max(want, total // 3), total - page),
+                    self._report_height(self.REPORT_MIN_LINES),
+                )
+            self.splitter.setSizes([total - report, report])
+
+    def _report_height(self, lines: int) -> int:
+        details = self.details
+        margin = int(details.document().documentMargin())
+        return details.fontMetrics().lineSpacing() * lines + 2 * (details.frameWidth() + margin)
+
+    def _fit_rows(self, report: int | None = None) -> int | None:
+        """Grow the window, as far as its screen allows, until the table shows
+        VISIBLE_ROWS rows whole above *report* pixels of report box (the
+        box's own height when None); a window made taller is never shrunk.
+        The height the table's half of the splitter needs for those rows, or
+        None while the window is hidden and nothing is laid out."""
+        from qtpy.QtCore import QEvent
+        from qtpy.QtWidgets import QApplication
+
+        if not self.native.isVisible():
+            return None
+        QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+        sizes = self.splitter.sizes()
+        if report is None:
+            report = sizes[1]
+        rows = self.VISIBLE_ROWS * self.table.verticalHeader().defaultSectionSize()
+        page = sizes[0] + rows - self.table.viewport().height()
+        grow = page + report - sum(sizes)
+        screen = self.native.screen()
+        if grow > 0 and screen is not None:
+            available = screen.availableGeometry()
+            frame = self.native.frameGeometry()
+            border = frame.height() - self.native.height()
+            height = min(self.native.height() + grow, available.height() - border)
+            if height > self.native.height():
+                self.native.resize(self.native.width(), height)
+                top = min(frame.top(), available.bottom() + 1 - (height + border))
+                if top < frame.top():
+                    self.native.move(frame.left(), max(top, available.top()))
+                QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+        return page
 
     def _fill_table(self) -> None:
         from qtpy.QtCore import Qt

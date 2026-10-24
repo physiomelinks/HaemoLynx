@@ -866,3 +866,136 @@ def test_with_ilastik_on_the_window_lists_the_raw_folders_images(panel, tmp_path
     assert "Made for each image by ilastik" in batch.labels["input_path"].toolTip()
     batch.leave()
     assert not rows["use_ilastik_segmentation"].enabled
+
+
+# -- the window's height, and hover text on everything in it --------------------
+
+
+def _rows_in_view(table) -> int:
+    """How many rows lie wholly inside the table's viewport."""
+    height = table.viewport().height()
+    return sum(
+        0 <= table.rowViewportPosition(row) <= height - table.rowHeight(row)
+        for row in range(table.rowCount())
+    )
+
+
+def _assert_rows_in_view(window) -> None:
+    """VISIBLE_ROWS rows in view, unless the screen is too short for the
+    window: then it is as tall as the screen allows, and the report box has
+    no more than its fewest lines."""
+    from qtpy.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    shown = _rows_in_view(window.table)
+    if shown >= window.VISIBLE_ROWS:
+        return
+    available = window.native.screen().availableGeometry()
+    assert window.native.frameGeometry().height() >= available.height() - 1, (
+        f"{shown} rows in view, and the window could have grown"
+    )
+    assert window.splitter.sizes()[1] <= window._report_height(window.REPORT_MIN_LINES)
+
+
+@pytest.mark.parametrize("every_file_row", [False, True], ids=["folders", "every-file-row"])
+def test_the_window_keeps_eight_rows_in_view_after_check(panel, tmp_path, monkeypatch, every_file_row):
+    """It opened at 800 px with 7 rows in view, and Check's report box left 4
+    (2 with the other files' rows shown)."""
+    from haemolynx.io.batch_matching import FILE_ROLE_KEYS
+
+    batch = panel._haemolynx_batch
+    batch.open()
+    if every_file_row:
+        # The tallest the folders box gets: a row for every other file.
+        monkeypatch.setattr(batch.window[0], "_roles", lambda: FILE_ROLE_KEYS)
+    _batch, window = _open_window(panel, tmp_path, *(f"im{index:02d}_seg" for index in range(10)))
+    assert window.table.rowCount() == 10
+    assert all(window.fields[key].isVisible() for key in FILE_ROLE_KEYS) is every_file_row
+    assert window.splitter.sizes()[1] == 0, "the report box starts folded"
+    _assert_rows_in_view(window)
+
+    window.check()
+    assert window.details.toPlainText().strip()
+    assert window.splitter.sizes()[1] > 0, "Check opens the report box"
+    _assert_rows_in_view(window)
+
+
+def _controls_without_hover_text(root) -> list[str]:
+    """Every control under *root* -- button, field, choice, list, table,
+    slider, tab -- whose hover text is empty. Qt's own parts of a control
+    (a choice's list, a table's headers, corner button and scroll bars, a
+    tab bar's arrows) count as that control's."""
+    from qtpy.QtWidgets import (
+        QAbstractButton,
+        QAbstractItemView,
+        QAbstractScrollArea,
+        QAbstractSlider,
+        QAbstractSpinBox,
+        QComboBox,
+        QLineEdit,
+        QPlainTextEdit,
+        QScrollBar,
+        QTabBar,
+        QTabWidget,
+        QTextEdit,
+        QWidget,
+    )
+
+    controls = (
+        QAbstractButton,
+        QAbstractItemView,
+        QAbstractSlider,
+        QAbstractSpinBox,
+        QComboBox,
+        QLineEdit,
+        QPlainTextEdit,
+        QTextEdit,
+    )
+
+    def part_of_another(widget) -> bool:
+        if isinstance(widget, QScrollBar) or isinstance(widget.parentWidget(), QAbstractScrollArea):
+            return True
+        ancestor = widget.parentWidget()
+        while ancestor is not None:
+            if isinstance(ancestor, (QComboBox, QAbstractSpinBox, QTabBar)):
+                return True
+            ancestor = ancestor.parentWidget()
+        return False
+
+    missing = [
+        f"{type(widget).__name__} {getattr(widget, 'text', lambda: '')()!r}"
+        for widget in root.findChildren(QWidget)
+        if isinstance(widget, controls) and not part_of_another(widget) and not widget.toolTip().strip()
+    ]
+    for tabs in root.findChildren(QTabWidget):
+        missing += [f"tab {tabs.tabText(i)!r}" for i in range(tabs.count()) if not tabs.tabToolTip(i).strip()]
+    return missing
+
+
+def test_every_control_in_the_window_has_hover_text(panel, tmp_path):
+    """The built window, every row and button in it whether shown or not
+    (the other files' rows, the last batch's button), with a tie in the
+    table so its choice box is there too."""
+    from qtpy.QtWidgets import QPushButton
+
+    from haemolynx.io.batch_matching import FILE_ROLE_KEYS
+
+    batch = panel._haemolynx_batch
+    _images(tmp_path / "seg", "E14_seg", "E15_seg")
+    for name in ("C1-E14", "C2-E14"):
+        shutil.copy(FIXTURE, tmp_path / "seg" / f"{name}.tif")
+    batch.open()
+    window = batch.window[0]
+    window.fields["segmented"].setText(str(tmp_path / "seg"))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    assert window.match()
+    assert window.table.cellWidget(0, 2) is not None, "the tie's choice box"
+    assert set(FILE_ROLE_KEYS) < set(window.fields)
+    assert _controls_without_hover_text(window.native) == []
+
+    # The scan finds a control with none.
+    bare = QPushButton("Bare", window.native)
+    try:
+        assert _controls_without_hover_text(window.native) == ["QPushButton 'Bare'"]
+    finally:
+        bare.setParent(None)

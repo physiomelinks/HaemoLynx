@@ -451,6 +451,14 @@ BATCH_RUN_TOOLTIPS = {
     ),
     "output": "Each image's outputs and .haemorun go in a folder of its own in here",
     "browse": "Choose the folder",
+    "images_tab": (
+        "The folders, the conditions and the images matched in them, with what "
+        "each image came to"
+    ),
+    "comparison_tab": (
+        "The two conditions compared statistic by statistic, as the output "
+        "folder's batch_condition_comparison.csv has them"
+    ),
     "skip_done": (
         "Leave out images whose folder already has a .haemorun, so a batch "
         "stopped part way picks up where it ended"
