@@ -346,6 +346,7 @@ def test_the_panel_has_exactly_the_stage_step_group_and_candidate_bars(panel):
     bars = widget._haemolynx_progress
     optimise_bars = widget._haemolynx_optimise_bars
     optimise_fwhm_bars = widget._haemolynx_optimise_fwhm_bars
+    optimise_endothelial_bars = widget._haemolynx_optimise_endothelial_bars
 
     found = set(widget.findChildren(QProgressBar))
     expected = {
@@ -355,6 +356,8 @@ def test_the_panel_has_exactly_the_stage_step_group_and_candidate_bars(panel):
         optimise_bars.candidate_bar,
         optimise_fwhm_bars.group_bar,
         optimise_fwhm_bars.candidate_bar,
+        optimise_endothelial_bars.group_bar,
+        optimise_endothelial_bars.candidate_bar,
     }
     assert found == expected
 

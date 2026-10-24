@@ -15,6 +15,7 @@ field data (``<array>_unit``, from :data:`haemolynx.visualization.vtk_io.ARRAY_U
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ from typing import Iterable, Union
 
 from haemolynx.statistics.glossary import UNITS as STATISTICS_UNITS
 from haemolynx.visualization.vtk_io import ARRAY_UNITS, POINTS_AXIS_ORDER, POINTS_UNIT
+
+logger = logging.getLogger(__name__)
 
 #: Every unit an output's column or array is in: the statistics glossary's,
 #: and those only an output file needs.
@@ -805,4 +808,10 @@ __all__ = [
 
 
 if __name__ == "__main__":  # pragma: no cover
-    print(write_export_dictionary_markdown(Path(__file__).resolve().parents[3] / EXPORT_DICTIONARY_PAGE))
+    from haemolynx.parsers import configure_console_logging
+
+    configure_console_logging()
+    logger.info(
+        "Wrote %s",
+        write_export_dictionary_markdown(Path(__file__).resolve().parents[3] / EXPORT_DICTIONARY_PAGE),
+    )

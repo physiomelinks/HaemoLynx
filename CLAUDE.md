@@ -74,7 +74,8 @@ haemolynx/
 │   │                       #   cross-section sampler/models/worker pool both share),
 │   │                       #   fwhm_decoys.py (FWHM where there is no vessel), fwhm_planted.py
 │   │                       #   (vessels of known width planted in the raw image, which the
-│   │                       #   FWHM optimiser scores accuracy by),
+│   │                       #   FWHM optimiser scores accuracy by), endothelial_planted.py
+│   │                       #   (the same for the ring fit: hollow vessels of known lumen),
 │   │                       #   haematocrit_distribution.py (Pries-Secomb phase
 │   │                       #   separation), red_cells.py (tube haematocrit by the Fahraeus
 │   │                       #   relation, red-cell velocity, flux and spacing, read off the
@@ -117,7 +118,8 @@ haemolynx/
 │   │                       #   Unit/Notes, docs/statistics_glossary.md; a new statistic needs a term)
 │   ├── optimisation/       # "Optimise settings": search.py (segmentation cleanup,
 │   │                       #   Skeletonise and Graph settings), fwhm_search.py (FWHM
-│   │                       #   settings), candidates/metrics (+ fwhm_ variants), report,
+│   │                       #   settings), endothelial_search.py (the ring fit's blur, wall
+│   │                       #   and gate), candidates/metrics (+ fwhm_ variants), report,
 │   │                       #   progress, trial_cache (a trial asked for again is not rerun),
 │   │                       #   scorecard (the starting settings against the chosen ones)
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
@@ -171,7 +173,8 @@ haemolynx/
 │                           #   image's settings in a batch, and the batch checks),
 │                           #   export_dictionary.py (every output file's columns, arrays and
 │                           #   units: docs/export_dictionary.md; a new output column needs an
-│                           #   entry); public:
+│                           #   entry), presets.py (the panel's Preset menu: named sets of
+│                           #   switches to start from, also offered by --preset); public:
 │                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
@@ -180,7 +183,7 @@ haemolynx/
 │   ├── simple_network_haemodynamics.py       # Hand-built graph: the haemodynamics API on its own
 │   ├── *_schema.py / *_config.yaml           # Settings an example adds on top of
 │   │                                         #   haemolynx.pipeline.schema; configs are generated
-│   ├── pipeline_presets.py                   # Named partial configs, validated against the schema
+│   ├── pipeline_presets.py                   # The panel's presets + the examples' own, for --preset
 │   └── regenerate_configs.py                 # Rewrite every *_config.yaml from its schema
 ├── tutorials/
 │   ├── pipeline_tutorial.ipynb   # **Source of truth** for the step-by-step tutorial
@@ -357,13 +360,13 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_tree.py` (the large-stack tree and the join's bounded last resort; digests of the in-RAM skeleton), `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
-| `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
+| `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_endothelial_planted.py` (planted vessels read at their lumen at several voxel sizes, walls and blurs), `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_capillary_block_mask.py` (which vessels a mask's blobs block, the perturbation, its checks), `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `test_statistics_glossary.py` (every row of a run with every statistic on has a term, a definition and a unit; the units a run decides; older CSVs read back alike; the page up to date), `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_exact_betweenness.py` (the parallel pass `==` networkx on every shape, weighting and scaling, in workers and here; the batched pass where path counts pass 2^53, at every batch size; the fallbacks of both worker programs), `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, one-to-one matching by name, every reason an image is left out, median/mean per subject, Wilcoxon/paired t by hand, Harvey's AIA names) |
-| `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
+| `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py`, `test_endothelial_optimisation_search.py` (a trial's widths `==` the run's; the search on a stand-in ring fit; slow: whole searches at two voxel sizes) |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
-| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off) |
-| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_export_dictionary.py` (every output's documented columns are its writer's, units in VTK field data and CSV names, the page up to date), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals) |
+| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off), `test_gui_fwhm_optimise_widget.py` / `test_gui_endothelial_optimise_widget.py` (the Diameters tab's two optimisers), `test_gui_presets_widget.py` (the Preset menu: what it sets, what replaces it) |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_export_dictionary.py` (every output's documented columns are its writer's, units in VTK field data and CSV names, the page up to date), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals), `test_pipeline_presets.py` (what a preset may name, every setting it names read, usages in any order, `--preset`) |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py`, `test_prefixed_settings.py` (every `fwhm_` / `skeleton_` / `segmentation_cleanup_` setting a parameter of its function or read by name) |
 | `src/haemolynx/synthetic/` | `tests/test_synthetic_template.py` (both sources, every refusal, JSON, scaling), `test_synthetic_generate.py` (the graph contract, determinism, the exact counts, the acceptance test against `tests/synthetic_fixtures.py`'s hand-set template, the polyline bender, the bed's arithmetic), `test_synthetic_compare.py`, `test_synthetic_stage.py` (each stage under `network_source=synthetic`, a whole run, preflight), `test_pipeline_naming.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
@@ -380,19 +383,29 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 ### CI
 
-GitHub Actions (`.github/workflows/pytest-pr.yml`) runs four jobs on pull requests, all on
-`ubuntu-latest`:
+GitHub Actions (`.github/workflows/pytest-pr.yml`) runs on pull requests, on pushes to `main` and
+`Devel_GUI_improvements_HD`, and weekly (Mondays). A newer push to a branch or pull request cancels
+the run still going for an older commit (`concurrency`), so only the newest commit is reported; a
+push never cancels the weekly run. Six jobs:
 
+- **`lint`** — `ruff check .`, rules `F` and `E9` only (`[tool.ruff]` in `pyproject.toml`). There is
+  no formatter: `ruff format` would rewrite most of the codebase, which is Harvey's decision.
+  `tutorials/pipeline_tutorial.py` and the notebook are excluded; `__init__.py` re-exports are
+  exempt from `F401`.
 - **`pytest`** — `pip install -e .[dev]` and `pytest` across a Python 3.9 / 3.10 / 3.11 / 3.12 matrix
-  (`fail-fast: false`, so one version failing still reports the others).
+  (`fail-fast: false`, so one version failing still reports the others). The 3.11 run measures
+  line coverage of `src/haemolynx` without `gui/` (`[tool.coverage]`, no threshold) into the job
+  summary and a `coverage-xml` artifact: 92.7% on the not-slow subset at `2e59fb68`.
+- **`windows`** — `windows-latest`, Python 3.11, `pytest -m "not slow and not gui" -n auto`.
 - **`installed-package`** — builds the wheel, installs it into an empty environment and runs
   `tests/installed_package_smoke.py` from outside the repository, then `tests/test_installed_package.py`.
 - **`dependency-floors`** — the suite against the oldest supported versions (`constraints-floor.txt`).
 - **`napari-gui`** — Python 3.11 with the `napari` extra and `pytest-qt`: `npe2 validate HaemoLynx`,
   then `xvfb-run -a pytest -m gui`.
 
-Nothing in CI runs on Windows, so Windows-only problems (paths, `SYSTEMROOT`, Qt platform plugins)
-are only caught locally.
+The slow and GUI tests, and macOS, are not covered on Windows. Locally, `pytest-xdist` is in `dev`:
+`pytest -m "not slow and not gui" -n 10` takes about 8 min on 20 cores (serial: 12-13 min); mind the
+RAM, each worker holds its own volumes.
 
 ---
 
@@ -859,7 +872,24 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
   FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself
   (`candidates.py`), trials are scored by pure functions (`metrics.py`), and the result is a
-  config file plus a readable report (`report.py`). **Check segmented image** is
+  config file plus a readable report (`report.py`). **A trial skeletonises as the run does**
+  (`PLAN_optimisers.md`): the panel hands the search the run's grid
+  (`stages.load_volume_on_run_grid`), its whole settings, voxel counts on that grid
+  (`skeleton_voxel_settings_on_grid` in, `_from_grid` out) and its thick-vessel restriction
+  (`stages.thick_vessel_restriction_mask`); plain trials go through
+  `io.load._skeletonize_loaded_volume`. Every step's arguments come from the pipeline's own
+  builders (`stages.segmentation_cleanup_arguments`, `skeleton_cleanup_arguments`,
+  `thick_region_settings` + `thick_vessel_refinement_arguments`, `graph_build_arguments`,
+  `centreline_smoothing_arguments`), so a setting a stage starts reading reaches the trials with
+  no change here; a setting a caller leaves out is read as its schema default.
+  `tests/test_optimisation_search.py` pins a trial's skeleton `==` `skeletonise`'s and each step's
+  arguments `==` the run's. **Optimise endothelial settings** (`endothelial_search.py`,
+  shown instead of the FWHM button when the raw image stains the wall) sweeps the ring fit's
+  contrast gate, and its blur and wall only where the image's rings will not calibrate them or the
+  settings fix them (then the image's own values, fixed; Harvey's rule); a trial reads
+  through `apply.measure_endothelial_diameters` with the run's config, each blur's calibration
+  fits made once (`apply.endothelial_calibration_fits`), scored on planted hollow vessels
+  (`haemodynamics/endothelial_planted.py`), the sample and decoys. **Check segmented image** is
   `preprocessing/segmentation_quality.py` + `segmentation_raw_comparison.py`.
 - **`visualization/geometry.py`** — `edge_polyline`: an edge's `voxels` (or its two node positions)
   turned into a polyline that runs `u`→`v` and touches both nodes. The VTK export, the pericyte
@@ -919,9 +949,13 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `validate_synthetic_graph` pins the graph contract (int ids, `pos`/`voxels` in µm, `length` the
   polyline's, `diameter_source="synthetic"`, no degree-2 node, `dead_end_kind` on every dead end,
   connected).
-- **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
-  checked against the schema at import, so a preset cannot quietly set something that no longer
-  exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.
+- **Presets** (`pipeline/presets.py`) — `PRESETS`, named partial configs: the panel's Preset menu
+  under Load config... sets the rows a preset names and nothing else, and keeps no state (a config
+  or run loaded afterwards puts the menu back to None). Switches and choices only, never a file or
+  a threshold. The `USAGE_PRESETS` between them name every setting any of them sets, so one chosen
+  after another gives the same run (`tests/test_pipeline_presets.py`); the rest add to a usage.
+  `examples/pipeline_presets.py` offers them on `--preset` beside its own (which name files), and
+  checks every one against the schema at import. The override engine is `parsers/cli.py`.
 ---
 
 ---

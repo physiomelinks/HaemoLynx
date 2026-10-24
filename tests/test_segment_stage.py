@@ -271,3 +271,105 @@ def test_ilastik_without_a_raw_image_or_a_segmented_image_is_named(tmp_path):
 
     with pytest.raises(ValueError, match="raw_image_path is not set, and there is no segmented image"):
         segment(settings)
+
+
+# -- an ilastik output read, never made (the panel's Optimise settings) ------
+
+
+def _ilastik_project(path: Path, label_names=("Vessel", "Background")) -> Path:
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as project:
+        project.create_dataset(
+            "PixelClassification/LabelNames",
+            data=[name.encode() for name in label_names],
+            dtype=h5py.string_dtype(),
+        )
+    return path
+
+
+def _ilastik_run(tmp_path: Path, *, record=True, **overrides):
+    """Settings segmenting a raw image with ilastik, and the output a run
+    of them made before -- recorded as ilastik's runner records it."""
+    from haemolynx.io.ilastik import _write_sidecar, ilastik_label_names, ilastik_provenance
+
+    raw = a_segmented_tiff(tmp_path)
+    project = _ilastik_project(tmp_path / "classifier.ilp")
+    output = tmp_path / "segmentations" / "mask_segmented.tif"
+    output.parent.mkdir()
+    output.write_bytes(raw.read_bytes())
+    if record:
+        provenance = ilastik_provenance(raw, project, 1, label_names=ilastik_label_names(project))
+        _write_sidecar(output, provenance, vessel_voxels=16, voxels=64)
+    settings = settings_for(
+        tmp_path,
+        **{
+            "use_ilastik_segmentation": True,
+            "input_path": None,
+            "raw_image_path": raw,
+            "ilastik_classifier_path": project,
+            "ilastik_output_dir": output.parent,
+            "ilastik_output_suffix": ".tif",
+            "ilastik_vessel_label": "Vessel",
+            **overrides,
+        },
+    )
+    return settings, output, project
+
+
+@pytest.fixture
+def no_ilastik(monkeypatch):
+    from haemolynx import io
+
+    def never(**_kwargs):
+        raise AssertionError("ilastik was run")
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", never)
+
+
+def test_a_current_ilastik_output_is_found_without_running_ilastik(tmp_path, no_ilastik):
+    from haemolynx.pipeline.stages import current_ilastik_output
+
+    settings, output, _project = _ilastik_run(tmp_path)
+
+    assert current_ilastik_output(settings) == (output, "")
+
+
+def test_an_ilastik_output_is_not_current_and_says_why(tmp_path, no_ilastik):
+    from haemolynx.pipeline.stages import current_ilastik_output
+
+    settings, output, project = _ilastik_run(tmp_path)
+    _ilastik_project(project, ("Vessel", "Background", "Other"))  # another project now
+    path, reason = current_ilastik_output(settings)
+    assert path is None
+    assert str(output) in reason and "project" in reason
+
+    other = tmp_path / "other"
+    other.mkdir()
+    unrecorded, _output, _project = _ilastik_run(other, record=False)
+    path, reason = current_ilastik_output(unrecorded)
+    assert path is None and "haemolynx.json" in reason
+
+
+def test_an_ilastik_output_cannot_be_current_without_its_vessel_label(tmp_path, no_ilastik):
+    from haemolynx.pipeline.stages import current_ilastik_output
+
+    for label, named in ((None, "ilastik_vessel_label"), ("Lumen", "'Lumen'")):
+        folder = tmp_path / str(label)
+        folder.mkdir()
+        settings, _output, _project = _ilastik_run(folder, ilastik_vessel_label=label)
+        path, reason = current_ilastik_output(settings)
+        assert path is None and named in reason
+
+
+def test_no_ilastik_output_is_current_when_ilastik_does_not_segment(tmp_path, no_ilastik):
+    from haemolynx.pipeline.stages import current_ilastik_output
+
+    for name, overrides in (
+        ("off", {"use_ilastik_segmentation": False}),
+        ("no_raw", {"raw_image_path": None}),
+        ("synthetic", {"network_source": "synthetic"}),
+    ):
+        folder = tmp_path / name
+        folder.mkdir()
+        settings, _output, _project = _ilastik_run(folder, **overrides)
+        assert current_ilastik_output(settings)[0] is None

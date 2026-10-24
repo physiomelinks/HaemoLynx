@@ -1,7 +1,6 @@
 """Tests for io module."""
 import pytest
 import numpy as np
-import tempfile
 from pathlib import Path
 
 from haemolynx.io import (
@@ -927,7 +926,7 @@ def test_h5_loader_drops_an_ilastik_exports_single_channel_axis(tmp_path, use_me
 def test_h5_ilastik_export_reaches_the_pipeline_as_its_vessel_mask(tmp_path):
     """The run's own read (the 2D-aware loader) and the skeletoniser's both
     get the (z, y, x) labels, and the vessel label is what is foreground."""
-    from haemolynx.io import load_and_skeletonize_3d_h5, load_image_with_voxel_size_2d_aware
+    from haemolynx.io import load_image_with_voxel_size_2d_aware
 
     labels = _ilastik_segmentation()
     path = _write_h5(

@@ -6,7 +6,6 @@ from __future__ import annotations
 import csv
 import math
 from pathlib import Path
-from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np

@@ -598,7 +598,6 @@ from haemolynx.graph import network_review as nr  # noqa: E402
 from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS  # noqa: E402
 from haemolynx.gui.post_processing import (  # noqa: E402
     ACTION_LABELS,
-    KEPT,
     NEEDS_BOUNDARIES,
     NEEDS_FLOW,
     NEEDS_MASK,

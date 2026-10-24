@@ -1,6 +1,10 @@
 # Plan: thick-vessel bridges as one radius
 
-Status: proposed, 2026-10-09. Supersedes Phase 6 of `PLAN_one_centreline_per_lumen.md`
+Status: built (43dcf453, 2026-10-11) but for the marked grid of Phase 5; decision 1 superseded by
+Harvey's rule A (2026-10-10). See **Status** below, checked 2026-10-24 against
+`origin/Devel_GUI_improvements_HD` at `60ea7681`. Proposed 2026-10-09.
+
+Supersedes Phase 6 of `PLAN_one_centreline_per_lumen.md`
 ("Thick-vessel bridges inside the fat lumen"), whose first step (arms aim at the ridge first)
 landed in `eb75435`.
 
@@ -215,10 +219,10 @@ way, then check on a fresh grid; turn each kind the marks reveal into a fixture.
 length, network resistance, flows in the vessels that regained resistance; build time; the
 `not slow and not gui` suite and the GUI files touching bridges.
 
-## Status (2026-10-11)
+## Status (2026-10-11; checked 2026-10-24 against `origin/Devel_GUI_improvements_HD` at `60ea7681`)
 
 Implemented on branch `claude/thick-bridge-radius` (worktree `.claude/worktrees/thick-bridges`),
-after Harvey's rules on the first version (2026-10-10): **A** a bridge reaches the thick
+landed as **43dcf453** (2026-10-11), after Harvey's rules on the first version (2026-10-10): **A** a bridge reaches the thick
 vessel's segmented boundary in every case; **B** it connects the centreline to an incoming
 vessel; a bridge is never a dead end nor attached to one.
 
@@ -245,13 +249,37 @@ leading to a junction (132) or out of the image (18); 42 blind vessels removed (
 connected pieces unchanged (155); dead ends 1,127 -> 1,085. Pictures:
 `outputs/bridge_radius/`.
 
-Done: the split (Phases 2-3), diameters, branch orders and statistics (Phase 4). Not done:
-review finders' bridge handling, the VTK flag (planned in `PLAN_dale_review_fixes.md`), running
-`consolidate_lumen` after the split, and the marked grid (Phase 5).
+Done: the split (Phases 2-3), diameters, branch orders and statistics (Phase 4), in 43dcf453.
+Of the four left undone on 2026-10-11, three are done:
+
+- **Review finders skip bridges**: `find_close_junctions`, `find_diameter_jumps`,
+  `find_unmeasured_diameters` and `find_flow_outliers` test `IS_ZERO_RESISTANCE`
+  (`graph/network_review.py:295, :381, :443, :605`), since 920eda6e (2026-10-09, already in the
+  base of 43dcf453; the list above missed it). `find_hairpins` (`network_review.py:324`) still
+  does not.
+- **The VTK flag**: an `is_zero_resistance` cell array (`visualization/vtk_io.py:258`, pinned by
+  `tests/test_vtk_io.py:336`), b6d9210d (2026-10-12).
+- **`consolidate_lumen` after the split**, with bridges taught to it (`pipeline/stages.py:2202`),
+  44218d30 (2026-10-12).
+
+Not done: **the marked grid (Phase 5)**. No grid of bridges against near-misses has been marked
+under `outputs/`; grid Y (Harvey, 2026-10-15, `docs/notes/thick_vessels.md:101-103`) judged the
+blind vessels beyond a bridge, not the bridge rule or its tolerance.
+
+**Decision 1 is superseded** by Harvey's rule A (2026-10-10, above): a bridge ends at the thick
+region's boundary, not at the segmented lumen's inscribed radius. In the code a bridge starts at
+the last sample of the joining vessel outside the region (`_bridge_origins`,
+`graph/thick_vessel_junctions.py:565`), and the connector's stretch inside the region is removed
+(`_decide_what_stays`, `:493`). The inscribed radius still judges stretches and joins (how far a
+bridge looks for the centreline, `_bridge_reach_um`, `:1035`; the centreline tolerance), not
+where a bridge ends. The module docstring (`:6-7`, `:23-27`) still describes the radius cut. Decisions 2
+and 3 hold as built (43dcf453). Decision 4
+holds for every run: the tree is always found again from the region (design A not needed).
 
 ## Decisions (Harvey, 2026-10-09)
 
 1. A bridge ends at the **segmented lumen wall** (the true radius), not the thick region's edge.
+   **Superseded 2026-10-10 by Harvey's rule A**: it ends at the thick region's boundary (see Status).
 2. Bridges are **straight from the wall to the centreline**, re-anchored.
 3. Bridges are **left out of the statistics and out of branch-order assignment**.
 4. A resumed run with no stored centreline **rebuilds it**.

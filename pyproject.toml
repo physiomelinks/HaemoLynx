@@ -64,7 +64,7 @@ Issues = "https://github.com/physiomelinks/HaemoLynx/issues"
 # whole run with "pytest-qt requires either PySide6, PyQt5 or PyQt6 installed"
 # when there is no Qt binding, rather than skipping. The napari-gui CI job
 # installs it alongside the napari extra, which brings a binding with it.
-dev = ["pytest", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'"]
+dev = ["pytest", "pytest-cov", "pytest-xdist", "ruff", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'"]
 notebook = ["ipykernel"]
 # The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
 # so this extra is installable only there -- deliberately, rather than
@@ -89,6 +89,33 @@ markers = [
     "integration: marks integration tests",
     "gui: marks tests that build real Qt widgets (need napari and a display)",
 ]
+
+[tool.coverage.run]
+source = ["haemolynx"]
+# The panel is exercised by the `napari-gui` job's tests; the figure that counts
+# for the library is what runs without Qt.
+omit = ["*/haemolynx/gui/*"]
+
+[tool.coverage.report]
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+# Deliberately small: pyflakes errors (F: unused and undefined names, redefined
+# functions) and syntax errors (E9). A formatter and wider rules are a separate
+# decision, because they would rewrite most of the codebase at once.
+[tool.ruff]
+extend-exclude = [
+    # Generated from the notebook (CLAUDE.md); the notebook is the source.
+    "tutorials/pipeline_tutorial.py",
+    "tutorials/pipeline_tutorial.ipynb",
+]
+
+[tool.ruff.lint]
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# `__init__` modules import names to re-export them (tests/test_public_api.py).
+"__init__.py" = ["F401"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

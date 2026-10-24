@@ -8,7 +8,6 @@ import networkx as nx
 import pytest
 
 from haemolynx.graph.cartwheel_guard import (
-    CartwheelHub,
     detect_cartwheel_hubs,
     format_cartwheel_hub_report,
     hub_radial_dispersion,

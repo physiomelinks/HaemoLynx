@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import re
-import warnings
 
 import numpy as np
 import networkx as nx
@@ -310,6 +309,45 @@ def set_edge_diameter_override(data: dict, diameter_um: float) -> None:
     data.pop(EDGE_DIAMETER_BASIS, None)  # a human value is on the run's basis
 
 
+#: What an edge was measured as: every width and its flags, and the
+#: resistance built on them.
+MEASUREMENT_PREFIXES = ("fwhm_", "edt_", "raw_section_", "endothelial_")
+MEASUREMENT_ATTRIBUTES = (
+    "diameter_um",
+    "diameter_source",
+    EDGE_DIAMETER_BASIS,
+    "resistance",
+    "conductance",
+)
+
+
+def clear_edge_measurements(data: dict, *, keep_prefixes: tuple[str, ...] = ()) -> None:
+    """Delete what *data* was measured as (:data:`MEASUREMENT_PREFIXES`,
+    :data:`MEASUREMENT_ATTRIBUTES`), but the attributes named with one of
+    *keep_prefixes*."""
+    stale = [
+        name
+        for name in data
+        if (name in MEASUREMENT_ATTRIBUTES or str(name).startswith(MEASUREMENT_PREFIXES))
+        and not str(name).startswith(keep_prefixes)
+    ]
+    for name in stale:
+        del data[name]
+
+
+def start_measurement_afresh(data: dict) -> None:
+    """Clear what *data* was measured as, keeping its diameter as provisional.
+
+    The provisional diameter is what the edit gave it -- its neighbours' mean
+    for a vessel drawn by hand, the cut vessel's for each half -- held as an
+    override: a measurement replaces it, the branch-order table does not.
+    """
+    provisional = positive_diameter_um(data.get("diameter_um"))
+    clear_edge_measurements(data)
+    if provisional is not None:
+        set_edge_diameter_override(data, provisional)
+
+
 def scale_stored_edge_diameters(data: dict, scale: float) -> bool:
     """Multiply ``fwhm_diameter_um`` and ``diameter_um`` when they are set.
 
@@ -578,7 +616,7 @@ def flag_fwhm_edt_disagreement(G: nx.MultiGraph, *, warn_ratio: float) -> int:
 # resistance a run produces and the laws do not agree. They live in
 # `viscosity.py` with their validity ranges; the names are re-exported here
 # because this is where callers have always found them.
-from .viscosity import (  # noqa: E402  (re-export, must follow the docstring)
+from .viscosity import (  # noqa: E402, F401  (re-export, must follow the docstring)
     CAPILLARY_REGIME_MAX_DIAMETER_UM,
     DEFAULT_HAEMATOCRIT,
     DIAMETER_BASES,
@@ -832,9 +870,6 @@ class PoiseuilleModel:
         --------
         dict : Summary of resistance assignments
         """
-        import numpy as np
-
-        PI = np.pi
         results = {
             'edges_set': 0,
             'missing_branch_order': [],

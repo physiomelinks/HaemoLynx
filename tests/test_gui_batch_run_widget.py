@@ -343,6 +343,7 @@ def _single_image_buttons(panel):
         panel._haemolynx_check_image_button,
         panel._haemolynx_optimise_button,
         panel._haemolynx_optimise_fwhm_button,
+        panel._haemolynx_optimise_endothelial_button,
     ]
 
 
@@ -380,6 +381,7 @@ def test_one_images_actions_refuse_while_a_batch_is_set(panel, tmp_path, monkeyp
         "_run_segmentation_quality_check_in_background",
         "_run_optimisation_in_background",
         "_run_fwhm_optimisation_in_background",
+        "_run_endothelial_optimisation_in_background",
         "_run_in_background",
         "_run_batch_in_background",
     ):

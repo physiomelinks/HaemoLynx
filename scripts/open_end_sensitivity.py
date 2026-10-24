@@ -34,7 +34,6 @@ import json
 import pickle
 from pathlib import Path
 
-import networkx as nx
 import numpy as np
 
 MODELS = (

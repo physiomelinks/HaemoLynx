@@ -1065,3 +1065,119 @@ def test_skeletonise_hands_on_the_thick_centreline_tree_it_drew(tmp_path, low_ra
 
     loaded = skeletonise(dict(settings, do_skeletonize=False), segment(settings))
     assert loaded.thick_vessel_centreline is None
+
+
+# --- a loaded skeleton's mask is the one a made skeleton came from ------------------
+
+
+def _thick_object_with_a_speck() -> np.ndarray:
+    """The plasma-labelled thick vessel and its capillaries, and one voxel on
+    its own that segmentation cleanup's remove-small-volumes takes away."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    assert not mask[0, 0, 0]
+    mask[0, 0, 0] = True
+    return mask
+
+
+def _cleanup_settings(tmp_path: Path) -> dict:
+    return settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _thick_object_with_a_speck()),
+        use_thick_vessel_skeletonisation=True,
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=5.0,
+    )
+
+
+def _attribute_key(value):
+    if isinstance(value, np.ndarray):
+        return ("array", value.shape, np.round(value.astype(float), 6).tolist())
+    if isinstance(value, (list, tuple)):
+        return tuple(_attribute_key(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((key, _attribute_key(item)) for key, item in value.items()))
+    if isinstance(value, float):
+        return round(value, 6)
+    return repr(value)
+
+
+def _graph_key(G) -> tuple:
+    """Every node and edge with all its attributes, keyed by position, so two
+    builds of one network compare equal whatever ids they gave the nodes."""
+    pos = {node: tuple(np.round(data["pos"], 6).tolist()) for node, data in G.nodes(data=True)}
+    nodes = sorted((pos[node], _attribute_key(data)) for node, data in G.nodes(data=True))
+    edges = sorted(
+        (tuple(sorted((pos[u], pos[v]))), _attribute_key(data)) for u, v, data in G.edges(data=True)
+    )
+    return tuple(nodes), tuple(edges)
+
+
+def test_a_loaded_skeleton_is_built_on_the_cleaned_mask_a_made_one_was(tmp_path, monkeypatch):
+    """With segmentation cleanup on, a run loading its skeleton (do_skeletonize
+    off) used to hand graph building the segmented image uncleaned: the speck
+    cleanup took away was back in its mask, the thick-vessel region (kept
+    under a digest of the cleaned mask) was not found, and the graph had no
+    thick-vessel split -- six nodes where the made run had four."""
+    from haemolynx.pipeline.stages import build_network
+    from haemolynx.preprocessing import thick_vessels as module
+
+    settings = _cleanup_settings(tmp_path)
+    made = skeletonise(settings, segment(settings))
+    made_graph = build_network(settings, made, SCHEMA).graph
+    assert not np.asarray(made.image)[0, 0, 0]
+    assert made.thick_vessel_mask is not None
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    loaded_settings = dict(settings, do_skeletonize=False)
+    loaded = skeletonise(loaded_settings, segment(loaded_settings))
+    loaded_graph = build_network(loaded_settings, loaded, SCHEMA).graph
+
+    np.testing.assert_array_equal(loaded.skeleton, made.skeleton)
+    np.testing.assert_array_equal(
+        np.asarray(loaded.image, dtype=bool), np.asarray(made.image, dtype=bool)
+    )
+    np.testing.assert_array_equal(loaded.raw_segmented_image, made.raw_segmented_image)
+    assert bool(loaded.raw_segmented_image[0, 0, 0])  # the speck, before cleanup
+    np.testing.assert_array_equal(loaded.thick_vessel_mask, made.thick_vessel_mask)
+    assert _graph_key(loaded_graph) == _graph_key(made_graph)
+
+
+def test_a_loaded_skeleton_with_cleanup_off_keeps_the_image_as_read(tmp_path):
+    """Cleanup off: a loaded skeleton's image is the segmented image, with no
+    raw image beside it, as a made skeleton's is."""
+    settings = settings_for(tmp_path, _write_mask(tmp_path, _thick_object_with_a_speck()))
+    skeletonise(settings, segment(settings))
+
+    loaded = skeletonise(dict(settings, do_skeletonize=False), segment(settings))
+
+    assert bool(np.asarray(loaded.image)[0, 0, 0])
+    assert loaded.raw_segmented_image is None
+
+
+def test_a_run_resumed_past_skeletonising_without_its_outputs_reads_the_cleaned_mask(tmp_path):
+    """The panel's run-from-a-tab for a run loaded from a file has no stored
+    stage outputs: it turns do_skeletonize off and the skeleton is loaded.
+    Graph building must still read the mask the skeleton was made from."""
+    from haemolynx.pipeline.stages import PipelineResume, run_pipeline_stages
+
+    settings = _cleanup_settings(tmp_path)
+    made = {}
+    made_graph = run_pipeline_stages(
+        dict(settings), SCHEMA, stop_after="build_network",
+        on_stage_output=lambda name, output: made.setdefault(name, output),
+    )
+    resumed = {}
+    resumed_graph = run_pipeline_stages(
+        dict(settings, do_skeletonize=False), SCHEMA,
+        resume=PipelineResume(start_from="build_network"), stop_after="build_network",
+        on_stage_output=lambda name, output: resumed.setdefault(name, output),
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(resumed["skeletonise"].image, dtype=bool),
+        np.asarray(made["skeletonise"].image, dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        resumed["skeletonise"].thick_vessel_mask, made["skeletonise"].thick_vessel_mask
+    )
+    assert _graph_key(resumed_graph) == _graph_key(made_graph)

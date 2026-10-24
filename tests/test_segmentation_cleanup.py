@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from haemolynx.preprocessing import segmentation_cleanup as sc
-from test_thick_vessel_skeletonisation import _disk_tube_along_axis
 
 
 def _cylinder_along_x(

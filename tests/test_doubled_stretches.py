@@ -12,7 +12,6 @@ import pytest
 from haemolynx.graph import diagnose_lumen_artefacts, diagnose_parallel_duplicates_in_lumen
 from haemolynx.graph.assemble import consolidate_lumen, lumen_cleanup
 from haemolynx.graph.doubled_stretches import doubled_stretches, resolve_doubled_stretches
-from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.preprocessing import MaskSupport
 

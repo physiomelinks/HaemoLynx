@@ -309,7 +309,7 @@ class LogView:
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(self.run_log.text())
-        except OSError as error:
+        except OSError:
             logger.exception("could not save the run log to %s", path)
             return None
         return path

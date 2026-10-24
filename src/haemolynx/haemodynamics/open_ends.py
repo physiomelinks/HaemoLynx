@@ -369,7 +369,6 @@ def estimate_open_end_conditions(
     F = np.flatnonzero(domain & ~np.isin(np.arange(n), K))
     is_open = np.isin(F, open_idx)
     interior = F[~is_open]
-    position = {int(i): j for j, i in enumerate(F)}
 
     # The closed solve: the targets, and the first flow directions.
     from .resistance import solve_reduced_laplacian_sparse

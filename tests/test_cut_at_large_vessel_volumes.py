@@ -4,7 +4,6 @@ from __future__ import annotations
 import inspect
 import pickle
 from pathlib import Path
-from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
@@ -1288,7 +1287,7 @@ def _post_cut_pipeline_graphs():
 
 def test_post_cut_graph_identity_through_diameters_and_solve(tmp_path, monkeypatch):
     """One MultiGraph object from cut through diameters and solve."""
-    from haemolynx.pipeline.stages import HaemodynamicModel, assign_diameters, solve
+    from haemolynx.pipeline.stages import assign_diameters, solve
 
     pre_cut, post_cut, arteriole, venule = _post_cut_pipeline_graphs()
     network = _network_for_cut(pre_cut, arteriole, venule, tmp_path)

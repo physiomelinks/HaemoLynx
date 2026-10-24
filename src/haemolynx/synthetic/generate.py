@@ -20,7 +20,7 @@ exactly. :func:`validate_synthetic_graph` checks the contract.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 import networkx as nx
@@ -38,7 +38,7 @@ from haemolynx.graph.dead_ends import (
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
 
-from .bed import BedResult, DegreeTargets, build_bed, degree_sequence_targets
+from .bed import build_bed, degree_sequence_targets
 from .draft import BED, TREE, NetworkDraft
 from .polylines import DEFAULT_POINTS, bend_path, bend_to_lengths, densify_paths
 from .template import (

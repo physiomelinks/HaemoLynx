@@ -17,6 +17,31 @@ exports, statistics and the Post processing review (8–9).
 
 ---
 
+## Implementation status (2026-10-12, branch `claude/dead-ends`; checked against `origin/Devel_GUI_improvements_HD` at `60ea7681` on 2026-10-24)
+
+Phases 0–10 landed as **b6d9210d** (2026-10-12). The grids' marks and fits are git-ignored and lie
+in the `dead-ends` worktree, `.claude/worktrees/dead-ends/outputs/dead_end_review/`, except G5's.
+
+| Phase | State |
+|---|---|
+| 0 Measure | done (b6d9210d): `scripts/graph_artefacts/dead_end_census.py` (census by kind, place, depth, step; flow coverage), in the graph-artefacts report and `dead_ends.csv`; fixtures `tests/dead_end_fixtures.py` |
+| 1 One definition | done (b6d9210d): `graph/dead_ends.py` (`DEAD_END_KINDS`, `dead_ends.py:56`); diagnostics, review lists, boundary review read it; `build_network` marks `dead_end_kind` and `image_extent_um` (`stages._mark_dead_end_kinds`, `stages.py:2657`). Since then, `post_process` re-judges the kinds at the nodes hand edits touched (`reclassify_dead_ends`, `dead_ends.py:596`; `stages._mark_touched_dead_end_kinds`, `stages.py:4642`; 40c99a4d, 2026-10-18) |
+| 2 Grids | marked by Harvey 2026-10-12 (87 judged; `G1_marked.csv`–`G3_marked.csv`); fitted by `scripts/dead_end_review/fit_marks.py`, read in `FIT.md`. No rule reaches 90%: G1 none, G2 the `leaves_image` rule 24/30 (vs 20 all-one-way, 23 distance), G3 turn <= 30.5 deg 24/27 (89%). Grids: G1 https://claude.ai/artifact/Hqtst8xFHBaLtAna4KxdVH, G2 https://claude.ai/artifact/BoBYsUw9Yd18YkczSZLuNx, G3 https://claude.ai/artifact/QNVRrGL9C8syjo8cwBVo5R. G4 (is the chain a real vessel? segmentation, dextran and claudin-5 side by side, two planes; 30 fresh interior dead ends spread by dextran and endothelial contrast; builder `scripts/dead_end_review/build_g4.py`): https://claude.ai/artifact/6DfV4aCrAeH42v8YNd1hTA, marked by Harvey (`G4_marked.csv`, file dated 2026-10-12 18:37; `FIT_G4.md` heads its reading 2026-10-13; N 15, V 12, P 2): every mark cites segmentation shape and context, none the endothelium; best measure claudin-5 chain contrast 20/27 LOO (74%) vs 15 all-one-way, no shape measure better than 17/27. G5 (Phase 5's route join, below; Harvey 2026-10-21, `outputs/stops_short_route_review/G5_marks.csv`). **No fresh grid (G1′, G2′, G3′) has been built**, so no rule is confirmed |
+| 3 Face ends, graph | Dale item 2 done, always on (b99758ba, 2026-10-12: `memmap_support.at_faces_as_beyond`, `memmap_support.py:118`); `extend_dead_ends_to_faces` (default off, `schema.py:3483`), `stub_face_protection` (default `threshold`, `schema.py:3528`) and `boundary_open_end_test` (default `distance`, `schema.py:2592`) built, the definition not used by default (G2 did not reach the bar) |
+| 4 Face ends, flow | done (b6d9210d): `haemodynamics/open_ends.py` (closed, terminal_resistance, outlet, estimated; `OPEN_END_MODELS`, `open_ends.py:63`), every solver path; `scripts/open_end_sensitivity.py`. D1 decided 2026-10-12: default `estimated` (cd71285c; `schema.py:5101`; see section 7). Flows behind blind and closed ends set to exactly 0 after every solve (`graph.zero_flows_behind_dead_ends`, `prune.py:452`; 0c6d13b3) |
+| 5 Stopped short | `trace_on_dead_ends` built, off (`schema.py:3497`). G1 found no rule, and G5 (2026-10-21) scored a route join where the route reaches a vessel two or more junctions away 23/29, the same as never joining (29 judged: 6 J, 6 W, 17 S; `G5_marks.csv`, `G5_measures.csv`), so it stays off. Separately, `remove_interior_dead_ends` (remove each interior dead end's chain, then recover the segmented vessels joined at both ends) was built on by default (94d26a26, 2026-10-22) and turned off the same day (ae814394; `schema.py:3304`): fitted on E14.5 alone, it took a fifth of the nerve crop |
+| 6 Broken | `join_dead_ends_to_vessel_sides` built, off (`schema.py:3513`), D3: review only |
+| 7 Blind ends | done (b6d9210d): `flow_state` (`prune.py:428`), statistics "Dead Ends" section (`statistics/dead_ends.py`). D4 (2026-10-15, 10c69230): `blind_end` vessels drawn as unsolved, grey, the hover "Unsolved: behind a dead end" (`branch_hover.py:75`); the exports keep 0 with `flow_state=blind_end` |
+| 8 Exports | done (b6d9210d): VTK flow_state/flow_solved/length/diameter/source/bridge arrays, NaN only for no_boundary, node dead_end_kind, run metadata (`vtk_io.py:258-339`); perturbation CSV |
+| 9 Review | done (b6d9210d): dead-end list grouped by kind (`graph/network_review.py:890`); Join to the vessel ahead, Mark as a real blind end, Mark as leaving the image (`gui/post_processing.py:1228-1234`, `:1290`); trace-on decision written when the trace finishes (`gui/_widget.py:12853`). Hovers name open ends and the dead-end kind of each node (41307bd0, 2026-10-22) |
+| 10 Validation | E14.5 baseline: `outputs/de0/REPORT.md`. Full E14.5 run through export (`outputs/e14_full/run.log`): 1,082 dead ends (121 leave the image); with the estimate, 68 open ends get a condition and no vessel stays behind a closed face end. Found and fixed three crashes on the way (pericyte perturbations on bridges and on unreached pieces, statistics on a contracted self-loop). Sensitivity: `outputs/open_end_sensitivity_e14/` (all in the `dead-ends` worktree). Not done: the Nerve invariant of Phase 10 (`tests/test_pipeline_invariants.py` has no dead-end test) |
+
+E14.5 baseline (code of 2026-10-12, graph as saved): 1,077 dead ends -- 115 leave the image, 124 stops short,
+42 broken, 36 artefact, 530 unknown, 230 island ends. Final dead ends first appear at: graph build
+682, cluster collapse 61, mask recovery 229, end-of-build clean-up 84, after the steps 18.
+
+---
+
 ## 0. Who is doing what (read first)
 
 Two sessions are working on parts of this right now. This plan does not touch their parts; it
@@ -620,6 +645,35 @@ Size M. After Phases 1, 5 and 6.
 
 ## 7. Decisions needed
 
+**Decided 2026-10-12 (Harvey): every recommendation below is adopted, and the plan is to be
+implemented.** How each one is carried out:
+
+- D1, **decided 2026-10-12: `estimated` is the default** (separate commit, revertable). On E14.5 at
+  this branch the estimate converged in 7 passes, nothing clamped. 39 of 68 open ends feed the
+  network and 29 drain it, at 1,168-2,459 Pa. Through the open ends 30% as much blood enters as
+  through the designated inlets. Its flow directions agree with closed on 86% of vessels, but
+  with the drain-only models (terminal resistance, outlet) on only 56-65%. Network resistance
+  moves under 8% across all five; solved share 57.7% closed, 64.9% open
+  (`outputs/open_end_sensitivity_e14/REPORT.md`). Runs that use it cite Fry et al. 2012.
+- D1 as first set out: the open-end role is built with (a) closed, (d) terminal resistance, (e) outlet and (c) Fry
+  estimation ((b) needs a published pressure–diameter table and is not built). (a) stays the
+  default until the sensitivity report has run; the default is then chosen from it.
+- D2, D3, D7, D8 wait for the user's marks on G1–G3. Until then every rule that changes the graph
+  ships behind a setting that keeps today's behaviour, and the classification (read only) uses the
+  first proposals of section 4.
+- D4, D5, D6: built as recommended.
+
+**The marks (Harvey, 2026-10-12; `outputs/dead_end_review/FIT.md`).**
+
+- D2: the definition of section 4 gets 24/30 on G2, against 23/30 for distance. The defaults stay
+  on distance until a fresh grid confirms it. Its misses are tips at the deep z face, which were
+  marked as ending inside, and one tip 2.0 µm from a face.
+- D3: review only. The best rule gets 89% and has not been checked on a fresh grid.
+- D7: open. Surface and deep dead ends are marked artefact equally often (8/14 and 7/15).
+- D8: no change. The radius ratio does not separate the marks.
+- New: 54 of 87 marks say the dead end is not a real vessel, and no measure here separates them.
+  That calls for the raw image in the grid (D6), not a threshold.
+
 | # | Question | Who | Recommendation |
 |---|---|---|---|
 | D1 | **The boundary condition at open face ends**, and the default | Harvey, Finbar | Build the open-end role with (a) and (d), then (c) Fry estimation, the literature's standard; run the sensitivity report; choose the default from it, most likely (c). Keep (a) as the default until then, so no number moves silently |
@@ -630,6 +684,24 @@ Size M. After Phases 1, 5 and 6.
 | D6 | The raw image and the endothelial channel as evidence for broken against blind | Harvey | Yes when the run has them; the mask alone otherwise. Kaufhold and Ji repair gaps from the raw image, and Coelho-Santos found unfilled sprouts only with an endothelial label |
 | D7 | The deep tissue's dead ends: biology or lost segmentation | Harvey, by G1's depth strata | Cassot et al. 2006 saw the same rise with depth and blamed filling and contrast. If G1 agrees, fix it upstream (segmentation, ilastik), not in graph building |
 | D8 | The stub prune's scale: the radius at the junction (today) or the stub's own radius with the part inside the parent left out (Voreen) | Harvey, by G1's radius-ratio strata | Decide from the marks; agree any change with the One centreline session, whose prune it is |
+
+**Where each decision stands (checked 2026-10-24 against `origin/Devel_GUI_improvements_HD` at
+`60ea7681`).**
+
+| # | State | Evidence |
+|---|---|---|
+| D1 | taken: `estimated` is the default | cd71285c; `schema.py:5101` |
+| D2 | open: the defaults stay on distance; the fresh grid G2′ that would confirm the definition was never built | `boundary_open_end_test` default `distance` (`schema.py:2592`), `stub_face_protection` default `threshold` (`schema.py:3528`); no G2′ in `outputs/` |
+| D3 | review only: joins listed, never automatic | `join_dead_ends_to_vessel_sides` default off (`schema.py:3513`); G3 best 24/27 fitted (`FIT.md`) |
+| D4 | taken 2026-10-15: unsolved in the viewer, 0 with `flow_state=blind_end` in the exports | 10c69230; `branch_hover.py:75` |
+| D5 | partly built: the share of vessel length on chains cut by the image faces is reported; the length statistics are not yet given both with and without them, nor the cut vessels flagged in them | `statistics/dead_ends.py:96-103` |
+| D6 | adopted, no rule: G4 put raw and endothelial contrast in the grid, best 20/27 LOO (74%); no dead-end rule reads the raw image | `FIT_G4.md`; `preprocessing/raw_evidence.py` is read by no `graph/` module |
+| D7 | open: the deep dead ends are no more often artefacts than the surface ones, so no upstream fix follows | `FIT.md` (G1, 8 X / 6 S at 0–40 µm, 7 X / 8 S deeper) |
+| D8 | no change: the prune keeps the radius at the junction | `FIT.md` (G1 radius ratio median 1.88 X, 1.74 S) |
+
+Every repair ships off: no rule reached 90% on G1–G3 (`FIT.md`, 2026-10-12), and G5's route join
+for `stops_short` scored 23/29, the same as never joining
+(`outputs/stops_short_route_review/G5_marks.csv`, Harvey, 2026-10-21).
 
 ---
 

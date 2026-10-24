@@ -6,21 +6,31 @@ image-derived candidate values, scores each with :mod:`.metrics`, and returns
 the winning value for every setting on the Skeletonise and Graph tabs.
 :func:`.fwhm_search.optimise_fwhm_settings` is the same coordinate-descent
 pattern applied to the FWHM diameter-measurement settings on the Diameters
-tab: it runs the real
-:func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`
-on a representative sample of the graph's own edges, scored with
+tab: it measures a representative sample of the graph's own vessels
+through the run's own FWHM call,
+:func:`haemolynx.haemodynamics.apply.measure_fwhm_diameters`, scored with
 :mod:`.fwhm_metrics`, instead of a proxy metric.
 
-The skeleton/graph search depends only on ``numpy``, ``scipy``, ``networkx``,
-and the sibling ``haemolynx.preprocessing`` / ``haemolynx.graph`` /
-``haemolynx.statistics`` subpackages -- never on ``haemolynx.pipeline``,
-``haemolynx.io``, or ``haemolynx.gui`` -- so it is testable with tiny
-synthetic arrays under plain pytest, no disk I/O and no GUI toolkit. The FWHM
-search adds one more dependency to that list, on
-``haemolynx.haemodynamics.fwhm_diameter`` specifically (the one real measurement
-function it calls) -- still never on ``haemolynx.pipeline``/``haemolynx.io``/
-``haemolynx.gui``, so the same "small synthetic array, no GUI, no disk I/O
-beyond a throwaway tiff" testability holds for it too.
+The skeleton/graph search, over its eleven groups (:data:`GROUP_NAMES`),
+depends only on ``numpy``, ``scipy``, ``networkx``, the sibling
+``haemolynx.preprocessing`` / ``haemolynx.graph`` / ``haemolynx.io``
+subpackages and ``haemolynx.pipeline.stages`` -- ``io`` for two of the run's
+own steps, never to read a file: the block reduction a search grid is made by
+(``io.downsample``) and the binarise-skeletonise-fill every loader
+skeletonises with (``io.load``); ``pipeline.stages`` for the run's argument
+builders, network context and graph finish, which trials call rather than
+copy (and the schema's defaults for any setting left out). It never imports
+``haemolynx.gui``, which hands it the run's mask, grid and settings, and reads
+nothing from disk, so it is testable with tiny synthetic arrays under plain
+pytest, no disk I/O and no GUI toolkit. The FWHM search, over its eight
+groups (:data:`FWHM_GROUP_NAMES`), adds ``haemolynx.haemodynamics``
+(``apply``: the run's own measurement calls and haemodynamics config) and
+``io.load``'s binarisation of the segmentation -- never ``haemolynx.pipeline``
+or ``haemolynx.gui``, which hand it the run's config, so the same "small
+synthetic array, no GUI, no disk I/O beyond a throwaway tiff" testability
+holds for it too. So does the endothelial ring fit's search
+(:mod:`.endothelial_search`, two groups), which has the FWHM search's
+dependencies.
 """
 from .fwhm_metrics import (
     FwhmMeasurementQuality,
@@ -66,6 +76,7 @@ from .search import (
     OptimisationResult,
     TrialRecord,
     estimate_downsample_factor_for_time_budget,
+    full_resolution_search_refusal,
     optimise_skeleton_and_graph_settings,
     resolve_auto_downsample_factor,
 )
@@ -107,6 +118,7 @@ __all__ = [
     "OptimisationResult",
     "TrialRecord",
     "estimate_downsample_factor_for_time_budget",
+    "full_resolution_search_refusal",
     "optimise_skeleton_and_graph_settings",
     "resolve_auto_downsample_factor",
 ]

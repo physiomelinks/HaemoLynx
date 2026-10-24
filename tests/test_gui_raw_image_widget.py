@@ -45,6 +45,17 @@ def _shown(panel, widget, word="Diameters") -> bool:
     return widget.native.isVisibleTo(_page(panel, word))
 
 
+def _a_raw_image(tmp_path):
+    """A raw image for the Input tab: without one the method rows under
+    "Measure diameters from the raw image" are hidden (gui/form.py's hidden_by)."""
+    import numpy as np
+    import tifffile
+
+    path = tmp_path / "raw.tif"
+    tifffile.imwrite(path, np.zeros((2, 4, 4), dtype=np.uint8))
+    return str(path)
+
+
 def test_the_input_tab_holds_the_segmented_and_the_raw_image(panel):
     rows = panel._haemolynx_rows()
     for name in ("input_path", "raw_image_path", "raw_image_channel", "raw_image_stain"):
@@ -72,11 +83,18 @@ def test_the_diameters_tab_has_one_switch_and_no_image_of_its_own(panel):
     "stain, fwhm_shown, endothelial_shown",
     [("auto", True, True), ("plasma_column", True, False), ("endothelial", False, True)],
 )
-def test_the_stain_decides_which_methods_rows_show(panel, stain, fwhm_shown, endothelial_shown):
+def test_the_stain_decides_which_methods_rows_show(
+    panel, tmp_path, stain, fwhm_shown, endothelial_shown
+):
     rows = panel._haemolynx_rows()
     rows["measure_diameters_from_raw_image"].value = True
     rows["raw_image_stain"].value = stain
     panel._haemolynx_expand_advanced(True)
+    _process()
+    assert not _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+    assert not _shown(panel, rows["endothelial_min_ring_contrast"])
+
+    rows["raw_image_path"].value = _a_raw_image(tmp_path)
     _process()
     assert _shown(panel, rows["fwhm_sample_spacing_along_edge_um"]) is fwhm_shown
     assert _shown(panel, rows["endothelial_min_ring_contrast"]) is endothelial_shown
@@ -147,7 +165,7 @@ def test_measuring_from_the_raw_image_turns_the_hidden_fwhm_measurement_on(panel
     assert rows["do_fwhm_measurement"].value is True
 
 
-def test_the_stain_row_says_what_a_run_read_an_auto_stain_as(panel):
+def test_the_stain_row_says_what_a_run_read_an_auto_stain_as(panel, tmp_path):
     """The row cannot know what auto resolved to; after a run the note under
     it says, and the Diameters tab's method rows follow that answer rather
     than showing both -- until the stain is named by hand."""
@@ -157,6 +175,7 @@ def test_the_stain_row_says_what_a_run_read_an_auto_stain_as(panel):
 
     rows = panel._haemolynx_rows()
     label = panel._haemolynx_stain_reading_label
+    rows["raw_image_path"].value = _a_raw_image(tmp_path)
     rows["measure_diameters_from_raw_image"].value = True
     rows["raw_image_stain"].value = "auto"
     panel._haemolynx_expand_advanced(True)

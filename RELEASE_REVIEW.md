@@ -33,7 +33,7 @@ confirming.
 | 11 | [Documentation and help](#11-documentation-and-help--docs) | **4** | help pages empty, 0 of 10, for Harvey to write (6a); guide skips Post processing and Perturbations (6b) |
 | 12 | [Robustness](#12-robustness--robust) | **4** | no edge-case suite through every stage (6a); open review bugs (6b) |
 | 13 | [Reproducibility](#13-reproducibility--repro) | **5** | no end-to-end identity test (6c) |
-| 14 | [Testing and CI](#14-testing-and-ci--tests) | **3** | no full-suite pass recorded since 2026-09-25 (4c) |
+| 14 | [Testing and CI](#14-testing-and-ci--tests) | **3** | no full-suite pass recorded since 2026-09-25 (4c); levels 6a-6c now pass, but level 4 comes first |
 | 15 | [Installation and packaging](#15-installation-and-packaging--package) | **4** | still 0.1.0 after 457 commits, no CHANGELOG (6a) |
 | 16 | [Code maintainability](#16-code-maintainability--code) | **3** | Cleanup plan not finished: the README presets note and the final full-suite check are left (4c) |
 
@@ -408,10 +408,10 @@ haematocrit, constriction and perturbations.
 | tests.4a | A | CI runs unit, integration and GUI tests on every PR. | ✓ | `pytest-pr.yml`: four jobs, Python 3.9–3.12, GUI under xvfb |
 | tests.4b | R | Bug fixes carry regression tests (the policy is in `CLAUDE.md`, and recent commits follow it). | ✓ | |
 | tests.4c | A | The whole suite, GUI and slow included, has a recorded pass at a commit under two weeks old. | ✗ | The last recorded baseline is 2026-09-25 (`CLAUDE.md` Cleanup plan) |
-| tests.6a | A | Line coverage is measured and reported, ≥ 70% of non-GUI code *(proposed)*. | ✗ | No coverage tooling |
-| tests.6b | A | CI also runs on pushes to the shared branches or on a schedule, not only on PRs. | ✗ | `pull_request` only |
-| tests.6c | A | The pre-commit suite (not slow, not gui) takes under 10 min *(proposed)*. | ✗ | 12 min 40 s; no `pytest-xdist` |
-| tests.8a | A | Windows (and macOS) run in CI. | ✗ | ubuntu only. Windows is tested only locally |
+| tests.6a | A | Line coverage is measured and reported, ≥ 70% of non-GUI code *(proposed)*. | ✓ | 92.7% (38,109 of 41,128 lines of `src/haemolynx` without `gui/`), from the not-slow, not-gui subset at `2e59fb68`: `pytest --cov` (`[tool.coverage]` in `pyproject.toml`), reported in the 3.11 CI job's summary. Slow tests are not in that figure. No threshold is enforced |
+| tests.6b | A | CI also runs on pushes to the shared branches or on a schedule, not only on PRs. | ✓ | `pytest-pr.yml` runs on `pull_request`, on pushes to `main` and `Devel_GUI_improvements_HD`, and weekly (Mondays 03:17 UTC), from `2e59fb68`. Not yet seen running on GitHub |
+| tests.6c | A | The pre-commit suite (not slow, not gui) takes under 10 min *(proposed)*. | ✓ | `pytest -m "not slow and not gui" -n 10` (`pytest-xdist`, now in `dev`): 7,216 passed in 8 min 20 s on this 20-core machine at `2e59fb68`; `-n 6` took 11 min 15 s, and serially it was 12 min 40 s. The same 2 tests fail with or without xdist, and fail at the base `2feb8764` too (`test_no_library_module_prints`, `test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset`) |
+| tests.8a | A | Windows (and macOS) run in CI. | ✗ | A `windows-latest` job (3.11, not slow and not gui, `-n auto`) is in `pytest-pr.yml` from `2e59fb68` but has not been seen running on GitHub, and macOS is not covered |
 | tests.8b | A | Coverage ≥ 80% *(proposed)*, and no known flaky test. | ✗ | |
 | tests.10a | A | Coverage ≥ 90% of non-GUI code, with property-based tests for the core maths. | ✗ | |
 
@@ -441,7 +441,7 @@ haematocrit, constriction and perturbations.
 | code.4a | A | The public API is guarded. | ✓ | `test_public_api.py` |
 | code.4b | A | At least 80% of functions have type hints. | ✓ | 91% of returns and 84% of parameters annotated; `py.typed` ships |
 | code.4c | R | The `CLAUDE.md` Cleanup plan is finished. | ✗ | Phase 2 done 2026-10-23: `io/vessel_masks.py`, `graph/terminal_node_assignment.py`, `haemodynamics/fwhm_diameter.py`, one commit each; the full non-GUI suite (slow and integration included) at `666cafe8` and at each rename gave 7,447 passed and the same 2 failures already there (`test_no_library_module_prints`, `test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset`); the GUI tests through the renamed modules (5 files, 235) passed at the last. Open: the README presets note (Phase 4) and the final check (the whole suite, GUI included, green) |
-| code.6a | A | A linter and formatter are configured and clean in CI. | ✗ | None configured |
+| code.6a | A | A linter and formatter are configured and clean in CI. | ✗ | Linter half done: ruff (`F`, `E9` only, `[tool.ruff]` in `pyproject.toml`) is clean on the tree at `2e59fb68` and runs as the `lint` CI job. No formatter: adopting `ruff format` would rewrite most of ~100k lines at once, a separate decision for Harvey |
 | code.6b | R | No module is over 3,000 lines *(proposed)* without a stated reason. | ✗ | `gui/_widget.py` 14,178, `pipeline/stages.py` 5,114. `pipeline/schema.py` (5,867) is declarations, which is a reason |
 | code.6c | R | The repository root holds only project files. Personal configs, debug scripts and plans are ignored or kept elsewhere. | ✗ | Five configs, `hang_debug.*`, `PLAN_*.md` and `mason_claude.md` at the root |
 | code.8a | A | A type checker is clean on the core subpackages in CI. | ✗ | |
@@ -477,3 +477,4 @@ Add a row for every scoring, and for every change to a check or a target.
 | 2026-10-22 | after `1a9c2eb` | Claude | Statistics glossary and units (`statistics/glossary.py`, `docs/statistics_glossary.md`): every statistics row has a definition and a unit from one ASCII list, the units a run decides read from its own rows, and older CSVs read back to the same metrics and units in a batch. `stats.6a` and `stats.6b` pass, so level 6 is complete and one of level 8's two checks passes (8a): Statistics 5 -> 7, mean 4.2 -> 4.3. The headline stays 3. `stats.10a` now has a glossary for George, Rebecca or Mike to review. |
 | 2026-10-23 | after `f1b2289` | Claude | Output data dictionary and units (`pipeline/export_dictionary.py`, `docs/export_dictionary.md`): `export.6a` and `export.6b` pass. Every output file, column and VTK array documented with its unit and pinned to its writer; VTK units in field data, CSV units in column names (Harvey's choice, 2026-10-22), so perturbation, block, sweep, batch-summary and cell-distance column names changed. Level 6 is complete and level 8 has none of two, so Exports 5 → 6, mean 4.3 → 4.4. The headline stays 3 (testing, maintainability). |
 | 2026-10-23 | after `666cafe8` | Claude | Cleanup Phase 2: the three renames, one commit each, each followed by the full non-GUI suite (7,447 passed, the 2 failures already at `666cafe8`). `code.4c` evidence updated; it still fails on the README presets note and the final check. No score changes. |
+| 2026-10-24 | `2e59fb68` | Claude | CI and tooling: pushes and a weekly schedule, a Windows job, coverage in the 3.11 job, a ruff `lint` job (143 findings fixed, no formatter), `pytest-cov`, `pytest-xdist` and `ruff` in `dev`. `tests.6a` (92.7%), `tests.6b` and `tests.6c` (8 min 20 s at `-n 10`) pass; `tests.8a` and `code.6a` stay ✗ (the Windows job is unrun and macOS absent; no formatter). No score changes: Testing stays 3 because `tests.4c` fails, and the two tests failing at the base are not fixed. |

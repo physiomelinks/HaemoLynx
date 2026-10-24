@@ -61,20 +61,24 @@ def test_optimise_fwhm_button_sits_right_after_the_measure_row(panel):
     assert button_index < next_row_index
 
 
-def test_optimise_fwhm_button_hidden_until_fwhm_measurement_is_turned_on(panel):
+def test_optimise_fwhm_button_hidden_until_fwhm_measurement_is_turned_on(panel, tmp_path):
     """A nested widget's own ``.visible`` only reflects reality once its
     top-level ancestor is shown *and* its tab is the active one (an inactive
     QTabWidget page stays hidden regardless) -- see
     test_gui_optimise_settings_widget.py's own
     test_ticking_choose_groups_reveals_the_checkbox_list for the same
     caveat; that one only needed `.show()` because its widget lives on the
-    already-active "1. Input" tab, while this button lives on "5. Diameters"."""
+    already-active "1. Input" tab, while this button lives on "5. Diameters".
+    FWHM can run only with a raw image to read, so one is set first."""
     from haemolynx.gui.tabs import tab_titles
 
     panel.show()
     diameters_index = list(tab_titles()).index("5. Diameters")
     panel._haemolynx_tabs.setCurrentIndex(diameters_index)
     rows = panel._haemolynx_rows()
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    rows["raw_image_path"].value = raw_file
     rows["measure_diameters_from_raw_image"].value = False
     assert panel._haemolynx_optimise_fwhm_button.visible is False
 
@@ -200,6 +204,98 @@ def test_optimise_fwhm_settings_hands_the_worker_the_runs_segmented_image(
     panel._haemolynx_optimise_fwhm_settings()
 
     assert (started[0]["vessel_mask"] is mask) if skeletonised else started[0]["vessel_mask"] is None
+
+
+@pytest.mark.parametrize("has_boundaries", [True, False])
+def test_optimise_fwhm_settings_hands_the_worker_the_runs_boundaries(
+    panel, monkeypatch, tmp_path, has_boundaries
+):
+    """The boundary nodes decide which vessels boundary_handling keeps, and
+    so which a run calibrates its widths on; a run without a Boundaries
+    checkpoint (stopped at Graph, or loaded) calibrates on every vessel."""
+    from haemolynx.gui.stage_checkpoints import StageCheckpoint
+
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_fwhm_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    if has_boundaries:
+        panel._haemolynx_checkpoints.replace_all(
+            [StageCheckpoint(stage="assign_boundaries", title="4. Boundaries", group=None,
+                             inlet_nodes=(0,), outlet_nodes=(1,))]
+        )
+    panel._haemolynx_view.results = _fake_results(_tiny_graph())
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    panel._haemolynx_rows()["raw_image_path"].value = raw_file
+
+    panel._haemolynx_optimise_fwhm_settings()
+
+    expected = panel._haemolynx_checkpoints.get("assign_boundaries") if has_boundaries else None
+    assert started[0]["boundaries"] is expected
+
+
+def _branched_graph():
+    """0 - 1 - 2 with a dead end 1 - 3 off it: with inlet 0 and outlet 2,
+    remove_disconnected removes the dead end."""
+    import networkx as nx
+    import numpy as np
+
+    G = nx.MultiGraph()
+    ends = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 10.0), 2: (0.0, 0.0, 20.0), 3: (0.0, 10.0, 10.0)}
+    for node, pos in ends.items():
+        G.add_node(node, pos=np.asarray(pos))
+    for u, v in ((0, 1), (1, 2), (1, 3)):
+        a, b = np.asarray(ends[u]), np.asarray(ends[v])
+        G.add_edge(u, v, length=10.0, voxels=[tuple(a + (b - a) * t / 10.0) for t in range(11)])
+    return G
+
+
+@pytest.mark.parametrize("handling", ["leave_unsolved", "remove_disconnected"])
+def test_the_fwhm_optimiser_measures_with_the_runs_config_and_calibration_edges(
+    monkeypatch, tmp_path, handling
+):
+    """Regression: the optimiser built its own FWHM call and calibrated on
+    every vessel. It now gets the run's haemodynamics config, as the
+    Diameters stage builds it, and the vessels network handling keeps."""
+    from haemolynx.pipeline import default_schema, resolve_settings, stages
+
+    calls = []
+    monkeypatch.setattr(
+        widget_mod, "optimise_fwhm_settings", lambda graph, **kwargs: calls.append(kwargs) or "done"
+    )
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    schema = default_schema()
+    settings = resolve_settings(
+        {
+            "input_path": raw_file,
+            "raw_image_path": raw_file,
+            "measure_diameters_from_raw_image": True,
+            "boundary_handling": handling,
+        },
+        schema=schema,
+        config_path=None,
+    )
+    graph = _branched_graph()
+    boundaries = SimpleNamespace(inlet_nodes=(0,), outlet_nodes=(2,))
+
+    result = widget_mod._optimise_fwhm_settings_for_run(
+        graph, (2.0, 1.0, 1.0), settings, schema, boundaries=boundaries, progress=None,
+        groups=None, vessel_mask=None, sample_edge_count=None, max_passes=1,
+    )
+
+    assert result == "done"
+    kwargs = calls[0]
+    assert kwargs["config"] == stages._haemodynamics_apply_config(
+        settings, schema, voxel_size_zyx=(2.0, 1.0, 1.0),
+        stain=stages.recorded_raw_image_stain(settings, graph),
+    )
+    assert kwargs["calibration_edges"] == (
+        None if handling == "leave_unsolved" else [(0, 1, 0), (1, 2, 0)]
+    )
 
 
 def test_the_settings_the_fwhm_optimiser_reads_are_real_settings():
@@ -358,12 +454,15 @@ def test_the_fwhm_options_are_passed_through(panel, monkeypatch, tmp_path):
     assert kwargs["max_passes"] == 2
 
 
-def test_the_fwhm_options_and_review_show_only_with_fwhm_measurement(panel):
+def test_the_fwhm_options_and_review_show_only_with_fwhm_measurement(panel, tmp_path):
     from haemolynx.gui.tabs import tab_titles
 
     panel.show()
     panel._haemolynx_tabs.setCurrentIndex(list(tab_titles()).index("5. Diameters"))
     rows = panel._haemolynx_rows()
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    rows["raw_image_path"].value = raw_file
     box = panel._haemolynx_optimise_fwhm_box
 
     rows["measure_diameters_from_raw_image"].value = False
@@ -407,3 +506,32 @@ def test_on_clear_drops_a_pending_fwhm_proposal(panel):
     panel._haemolynx_clear(ask=False)
 
     assert not review.pending
+
+
+# --- a synthetic network: no image to optimise on (PLAN_optimisers.md, Phase 5)
+
+
+def test_optimise_fwhm_settings_greys_and_refuses_for_a_synthetic_network(panel, monkeypatch, tmp_path):
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_fwhm_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    button = panel._haemolynx_optimise_fwhm_button
+    before = (button.enabled, button.tooltip)
+    rows = panel._haemolynx_rows()
+    panel._haemolynx_view.results = _fake_results(_tiny_graph())
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    rows["raw_image_path"].value = raw_file
+
+    rows["network_source"].value = "synthetic"
+    assert not button.enabled
+    assert button.tooltip == OPTIMISE_SYNTHETIC_TOOLTIP
+    panel._haemolynx_optimise_fwhm_settings()
+    assert not started
+    assert panel._haemolynx_report() == OPTIMISE_SYNTHETIC_TOOLTIP
+
+    rows["network_source"].value = "segmented_image"
+    assert (button.enabled, button.tooltip) == before

@@ -77,6 +77,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.SHOW_BOUNDARIES_TOOLTIP,
         chrome.SNAP_BOUNDARIES_TOOLTIP,
         chrome.LOAD_CONFIG_TOOLTIP,
+        chrome.PRESET_TOOLTIP,
         chrome.SAVE_CONFIG_TOOLTIP,
         chrome.RUN_CHECKS_TOOLTIP,
         chrome.RUN_PIPELINE_TOOLTIP,
@@ -88,6 +89,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.HELP_TOOLTIP,
         chrome.USE_LAYER_TOOLTIP,
         chrome.OPTIMISE_SETTINGS_TOOLTIP,
+        chrome.OPTIMISE_SYNTHETIC_TOOLTIP,
         chrome.CHECK_SEGMENTED_IMAGE_TOOLTIP,
         *chrome.BATCH_RUN_TOOLTIPS.values(),
         chrome.REVERT_STAGE_TOOLTIP,
@@ -112,6 +114,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.STOP_PICKING_NODES_TOOLTIP,
         *chrome.POST_PROCESSING_TOOLTIPS.values(),
         *chrome.OPTIMISE_TOOLTIPS.values(),
+        *chrome.ENDOTHELIAL_OPTIMISE_TOOLTIPS.values(),
     ]
     empty = [text for text in named if not text.strip()]
     assert not empty

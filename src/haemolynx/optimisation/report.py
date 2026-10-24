@@ -163,6 +163,7 @@ def build_report_text(
             )
         )
     lines.extend(scorecard_lines(result.scorecard))
+    lines.extend(getattr(result, "notes", ()))
     skipped_groups = [name for name in group_names if name not in result.groups_run]
     if skipped_groups:
         lines.append(

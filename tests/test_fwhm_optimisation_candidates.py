@@ -7,7 +7,6 @@ Every generator must (a) always include the schema default/current value
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from haemolynx.optimisation import fwhm_candidates as c
 

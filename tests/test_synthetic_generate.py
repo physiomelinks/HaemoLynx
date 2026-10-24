@@ -35,7 +35,6 @@ from haemolynx.synthetic.template import (
     GRAPH_NETWORK_SOURCE,
     GRAPH_TEMPLATE_RECORD,
     ROLES,
-    Endpoint,
     OrderTarget,
     measure_template,
 )

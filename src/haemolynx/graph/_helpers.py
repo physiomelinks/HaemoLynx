@@ -326,7 +326,7 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     skeleton_array = parse_skeleton_data(skeleton_data)
     if skeleton_array is None:
         if debug:
-            logger.debug(f"       Could not parse skeleton data")
+            logger.debug("       Could not parse skeleton data")
         return None
     
     start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_vox, spacing=relative)
@@ -334,7 +334,7 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     
     if start_skeleton is None or end_skeleton is None:
         if debug:
-            logger.debug(f"       Could not find skeleton voxels near start/end positions")
+            logger.debug("       Could not find skeleton voxels near start/end positions")
         return None
     
     if debug:
@@ -352,7 +352,7 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
         return phys_path
     else:
         if debug:
-            logger.debug(f"       No skeleton path found")
+            logger.debug("       No skeleton path found")
         return None
 
 def parse_skeleton_data(skeleton_data):
@@ -661,11 +661,11 @@ def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False, inside
             # Prefer curved over straight
             if new_is_curved and not existing_is_curved:
                 if debug:
-                    logger.debug(f"     Replacing straight with curved path")
+                    logger.debug("     Replacing straight with curved path")
                 return True, edge_key
             elif not new_is_curved and existing_is_curved:
                 if debug:
-                    logger.debug(f"     Keeping existing curved over new straight")
+                    logger.debug("     Keeping existing curved over new straight")
                 return False, None
             else:
                 # Same type - prefer shorter

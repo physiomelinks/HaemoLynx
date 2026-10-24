@@ -43,6 +43,7 @@ summed up before and after by :func:`network_summary` and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
