@@ -3,7 +3,10 @@
 > **Status (2026-10-23):** Phase 0 measured on E14.5 at `405364d7` (see **Measured**): A5, and
 > A10 and B7 (both found in Phase 0), are the largest drifts. Phase 3 is pushed (`9328c668`).
 > Phase 2 is pushed (`f1184f25`: A1, A2, A5, A9, A10; a trial's E14.5 skeleton now equals the
-> run's), and Optimise settings re-measured on E14.5 after it. Findings were first read in the
+> run's), and Optimise settings re-measured on E14.5 after it. Phase 3 checked on E14.5 (a trial
+> equals the run; B8 found). Phases 1 and 4 done (a trial's E14.5 graph now equals the run's),
+> not yet committed. Phase 5 done and the endothelial ring-fit optimiser built, each on its own
+> session's branch, not yet merged. Still open: B8, D6 and the two marked grids. Findings were first read in the
 > code at `666cafe8`. Decisions D1-D6 are Harvey's.
 
 ## Context
@@ -55,6 +58,7 @@ would make, through the same functions the run calls, so the two cannot drift ap
 | B4 | **Its own copy of the measurement call.** `_measure` builds the call itself; the run's `_measure_fwhm_diameters` also passes `use_memmap`, `memmap_directory`, the graph's `image_voxel_size_zyx` and the axis order from its config. | `fwhm_search.py:495` | Same drift risk as A3. |
 | B5 | **Run switches not honoured.** Trials always run the decoy check and demotion, whatever `fwhm_decoy_check` / `fwhm_demote_flagged_edges` say, and use `fwhm_decoys.DECOY_SAMPLE_SIZE` rather than `fwhm_decoy_check_sample_size`. | `fwhm_search.py:456-553` | Arguably right for scoring (see D3); the sample size is not. |
 | B6 | **The raw-section fallback is unseen.** With `use_raw_section_fallback` on, vessels FWHM fails are measured by the fallback; the optimiser's coverage term does not know. | — | Report-only gap. |
+| B8 | **Auto samples too few vessels to judge accuracy** (found checking Phase 3, 2026-10-23). Auto's time model overestimates a trial about fourfold, so on E14.5 it picks 10 of 1,342 vessels (estimated 857 s against its 180 s budget; the whole search took 209 s). With 10, no vessel of known width is planted and only 4 decoys are placed, so the accuracy group (`measurement_model`) is skipped and every choice rests on 1-3 measured vessels. With 200: 43 planted, 53 decoys. | `fwhm_search.py` (`_time_budget_sample`, `estimate_sample_edge_count_for_time_budget`) | The panel's default FWHM search on E14.5 never checks accuracy. Not yet fixed: recalibrate the time model, and never sample fewer vessels than planting needs. |
 | B7 | **The sample is measured as a graph of its own** (found in Phase 0). `_representative_subgraph` returns `G.edge_subgraph(sample)`, and each trial measures that alone, so the neighbouring vessels and junctions FWHM reads round each sampled vessel are missing. | `fwhm_search.py:263, 518` | The largest FWHM drift on E14.5 (see **Measured**): measured as a subgraph, 25 of 47 widths match the run's; measured inside the whole vessel graph with `edges=`, all 47 do, at the same cost. |
 
 ## Principles
@@ -220,6 +224,13 @@ on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
 
 ## Decisions needed (Harvey)
 
+**Decided 2026-10-23 (Harvey: "go with recommended"):** D1 `pipeline/stages.py`, the optimisers
+import it; D2 keep block max, say so in the report; D3 confirmed as Phase 3 built it; D4 yes,
+an optimiser for the endothelial ring fit that works on any endothelial dataset (under way in its
+own session); D5 accept slower Phase 4 searches; D6 calibrate on a marked grid. Order: verify
+Phase 3 on E14.5, then Phase 1, then Phase 4 here; Phase 5 in its own session meanwhile; the
+grids built for Harvey to mark.
+
 - **D1. Where the shared builders live.** Recommend `pipeline/stages.py`, where
   `graph_build_arguments` already is; the optimisers then import the pipeline (no cycle: the
   pipeline does not import them). The alternative, a light module both import, keeps the
@@ -239,6 +250,15 @@ on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
   whichever raw skeleton has the larger connected share, so on E14.5 thick vessels go off by 0.966
   against 0.953 even with the run's restriction. Keep it; or calibrate a measure on a marked grid
   of thick vessels (a sheet or a centreline), which is what the toggle is for.
+  **Grids built 2026-10-24, awaiting Harvey's marks** (git-ignored, with their keys):
+  - `outputs/thick_vessel_review/` (`harness/thick_grid.py`): 30 places on E14.5's restricted
+    thick region, spread over the local radius and at least 40 um apart, the thick path's skeleton
+    and plain Lee's as A and B in random order, a 4 um slab. Marks: A, B, = or X. Candidate
+    measures in the key: each skeleton's voxels, junction voxels and braid factor in the region.
+  - `outputs/component_filter_review/` (`harness/island_grid.py`): 30 of the 75 pieces
+    `skeleton_min_component_percent` = 1 drops under R1's choices, spread over size. Marks: V
+    (vessel, keep) or N (noise). Candidate measures in the key: skeleton voxels, the mask
+    component's volume, distance to the kept skeleton, whether it touches a face, raw contrast.
 
 ## Risks
 
@@ -372,6 +392,81 @@ skeletons the Phase 0 runs saved (`harness/phase2_check.py`, on the worktree's s
 
 Not done from Phase 2: the report's list of pass-through settings that differ from their
 defaults; it needs the fallback table that Phase 1's shared builders give, so it moves there.
+
+### Phase 1 (2026-10-23, on `1b7fdf04`, E14.5 MCA)
+
+Done (A3; the deferred report line). `pipeline/stages.py` gains the shared builders
+(`segmentation_cleanup_arguments`, `segmentation_cleanup_in_effect`, `skeleton_cleanup_arguments`,
+`thick_region_settings`, `thick_vessel_refinement_arguments`, `centreline_smoothing_arguments`, beside
+`graph_build_arguments`); `skeletonise` and `build_network` call them, and the search's four copies
+are gone (D1: the search imports `pipeline.stages`). A setting a caller leaves out is read as its
+schema default, and the report names the settings the trials read but the search does not tune
+that are not at their defaults. Graph trials are held in RAM whatever `use_memmap_loading` says.
+
+- `tests/test_optimisation_search.py`: a real `skeletonise` + `build_network` beside a search's
+  trials, with six pass-through settings off their defaults: every step (cleanup, thick skeleton,
+  skeleton clean-up, graph building) gets the same setting arguments.
+- E14.5 (`harness/phase1_check.py`, the worktree's source): `skeletonise` and `build_network` made
+  again against Phase 0's run: skeleton 56,961 voxels, **0 differing**; graph 1,228 nodes / 1,406
+  edges / 47,812.6581 um, **every edge identical**.
+
+### Phase 4 (2026-10-23, on `1b7fdf04` with Phase 1, E14.5 MCA)
+
+Done (A4). `pipeline/stages.py`: `NetworkContext` / `network_context` (the radius sampler, the
+one `MaskSupport`, the thick centreline tree and what the clean-ups keep its strand by, made once
+per mask) and `finish_network_graph` (smoothing by the vessel radius, the clean-up after it, the
+thick-vessel split and the clean-up after that, the re-trace, straight steps, the optional
+interior dead-end and junctionless-piece removals); `build_network` calls both. The search: a thick
+trial keeps its region and tree as `skeletonise` does; graphs are built through the same context
+and finished, cached at two levels (graph building by its arguments, the finish by the whole
+settings); every graph sweep scores the finished graph, the reconnect sweep's gap candidates
+still coming from graph building's own graph; the smoothing sweep counts each edge's
+`centreline_smoothing` outcome on the finished graph, its length shrink measured against graph
+building's. The scorecard measures finished graphs and adds dead ends, short loops and pairs of
+edges in one lumen (measures only). Auto's time model times a finish ("finish" calls counted below).
+
+- `tests/test_optimisation_search.py`: on a thick-vessel fixture and a plain one, a trial's graph
+  `==` `build_network`'s, edge for edge (end positions, length, voxels, bridges).
+- E14.5 (`harness/phase4_check.py`): `build_network` still makes Phase 0's graph (**identical**,
+  1,228 / 1,406), and a trial set up as the panel sets it up scores that graph (**identical**; 263 s
+  for the trial's skeleton, clean-up, graph and finish at full resolution).
+- **Optimise settings on E14.5 with Phases 1 and 4** (`harness/optimiser_phase4.py`, as the panel
+  calls it, Auto 2x), against `f1184f25`: the same choices but these --
+  `centreline_max_deviation` 1.0 -> **1.96** and `centreline_smoothing_iterations` 10 -> **5** (the
+  smoothing sweep now judges the saved graph, with the run's radius tolerance), and
+  `cluster_collapse_persistence_search_multiple` kept at 3 (`f1184f25` moved it to 5). Thick
+  vessels still go off (D6) and one component is still kept. Scorecard, start -> chosen: skeleton
+  the graph traces 0.712 -> 0.809; the new measures dead ends 288 -> 183, short loops 69 -> 69,
+  pairs of edges in one lumen 15 -> 2. **2,608 s against 1,356 s** before Phase 4 (1.9x; D5's limit
+  was 2x), the smoothing sweep 891 s of it (40 finished graphs; 40 s before). Auto estimated
+  4,110 s with the provisional counts; counted, a search builds 19 graphs and finishes 57, which
+  `_SEARCH_STEP_CALLS` now holds.
+
+### Phase 3 checked (2026-10-23, `1b7fdf04`, E14.5 MCA)
+
+`harness/fwhm_end_to_end.py`: dextran (channel 0) read as a plasma column, the run's widths from
+its own Diameters call, then the panel's FWHM optimiser call on the old (`405364d7`) and the
+fixed (`1b7fdf04`) code.
+
+- **A trial is the run.** One trial at the starting settings on its 200-vessel sample: 56 vessels
+  measured by both, **56 equal** (largest difference 0), none measured by one alone, no bridge
+  sampled; a strict candidate (`fwhm_min_fit_r2` 0.995) leaves no failed vessel with a width.
+- **What Optimise FWHM settings chooses (Auto, every group, one pass):**
+
+| setting | start | chosen at `405364d7` | chosen at `1b7fdf04` |
+|---|---|---|---|
+| `fwhm_clip_re_rise_fraction_of_center` | 0.08 | 0.05 | 0.05 |
+| `fwhm_diameter_guess_um` | 4.0 | None | None |
+| `fwhm_min_fit_r2` | 0.85 | 0.85 | 0.90 |
+| `fwhm_min_total_extent_multiplier` | 3.0 | 3.0 | 2.0 |
+
+  Scorecard, start -> chosen: vessels with a usable width 0.3 -> 0.3 (old) and 0.1 -> 0.1 (fixed);
+  mean fit R2 0.902 -> 0.898 and 0.907 -> 0.943; width spread along a vessel 0.343 -> 0.286 and
+  0.182 -> 0.200; no decoy given a width in either. Old 140 s (estimated 752 s), fixed 209 s (896 s).
+- **But Auto sampled about 10 vessels in both (B8)**, so these choices rest on 1-3 measured vessels
+  and the accuracy group never ran: the comparison says the fixed code measures as the run does,
+  not that its choices are better. `harness/fwhm_auto_probe.py`: Auto 10 vessels, 0 planted, 4
+  decoys; a fixed 200, 43 planted, 53 decoys.
 
 ### Optimise settings again, at `f1184f25` (2026-10-23, E14.5 MCA)
 

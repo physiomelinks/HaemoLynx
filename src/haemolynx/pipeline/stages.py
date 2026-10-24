@@ -1200,10 +1200,8 @@ def _thick_region_arguments(
     """What decides the thick-vessel region: shared by skeletonisation and by
     :func:`thick_vessel_mask_from_image`, so the two find the same voxels."""
     return {
-        "min_radius_um": float(settings["skeleton_thick_vessel_min_radius_um"]),
+        **thick_region_settings(settings),
         "voxel_size_zyx": io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz)),
-        "fill_mask_holes": bool(settings["skeleton_fill_mask_holes_before_thickness"]),
-        "wall_absorption_um": settings["skeleton_thick_vessel_wall_absorption_um"],
         "restrict_thick_to_mask": thick_vessel_restriction_mask(
             binary, settings, voxel_size_xyz, crop, downsample
         ),
@@ -1212,7 +1210,32 @@ def _thick_region_arguments(
     }
 
 
-def large_stack_thick_tree(settings: dict) -> bool:
+def thick_region_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The settings that decide the thick-vessel region, as
+    ``preprocessing.thick_vessel_region`` and ``skeletonize_thickness_gated``
+    take them (the voxel size and the restriction, not settings, aside)."""
+    return {
+        "min_radius_um": float(settings["skeleton_thick_vessel_min_radius_um"]),
+        "fill_mask_holes": bool(settings["skeleton_fill_mask_holes_before_thickness"]),
+        "wall_absorption_um": settings["skeleton_thick_vessel_wall_absorption_um"],
+    }
+
+
+def thick_vessel_refinement_arguments(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The rest of what ``skeletonize_thickness_gated`` takes from the
+    settings: how the thin arms are joined to the thick tree, and which tree
+    is drawn. With :func:`thick_region_settings`, what a run's thick
+    skeleton and a settings-optimiser trial's are both made with."""
+    return {
+        "flake_filter_um": settings["skeleton_thick_vessel_flake_filter_um"],
+        "max_bridge_radius_multiple": settings["skeleton_thick_vessel_max_bridge_radius_multiple"],
+        "max_bridge_distance_um": settings["skeleton_thick_vessel_max_bridge_distance_um"],
+        "bridge_radius_smoothing_um": float(settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]),
+        "large_stack_tree": large_stack_thick_tree(settings),
+    }
+
+
+def large_stack_thick_tree(settings: Mapping[str, Any]) -> bool:
     """Whether the thick vessels' centreline tree is drawn for a large stack
     (``skeleton_thick_vessel_large_stack_tree``, which applies under the
     low-RAM option only): skeletonisation, graph building and post
@@ -1359,21 +1382,13 @@ def _skeletonize_loaded_mask(
         skeleton, thick = preprocessing.skeletonize_thickness_gated(
             binary,
             **arguments,
-            flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
-            max_bridge_radius_multiple=settings[
-                "skeleton_thick_vessel_max_bridge_radius_multiple"
-            ],
-            max_bridge_distance_um=settings["skeleton_thick_vessel_max_bridge_distance_um"],
-            bridge_radius_smoothing_um=float(
-                settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]
-            ),
+            **thick_vessel_refinement_arguments(settings),
             return_thick_mask=True,
             tile_large_components=settings["skeletonize_tile_large_components"],
             tile_max_voxels=settings["skeletonize_tile_max_voxels"],
             tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
             thick_region=region if found else None,
             centreline_voxels=centreline,
-            large_stack_tree=large_stack_thick_tree(settings),
         )
         if cache is not None and not found:
             cache.store(key, thick, binary.shape)
@@ -1391,6 +1406,58 @@ def _skeletonize_loaded_mask(
     )
 
 
+def segmentation_cleanup_arguments(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``segmentation_cleanup_*`` settings as
+    ``preprocessing.clean_segmented_mask_for_skeletonisation`` takes them --
+    for skeletonising and for the settings optimiser's trials alike."""
+    return prefixed_arguments(
+        settings, "segmentation_cleanup_",
+        parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
+    )
+
+
+def segmentation_cleanup_in_effect(settings: Mapping[str, Any]) -> bool:
+    """Whether a run with *settings* cleans the segmented image before it
+    skeletonises it: ``segmentation_cleanup`` on and at least one step."""
+    arguments = segmentation_cleanup_arguments(settings)
+    return bool(settings.get("segmentation_cleanup")) and any(
+        arguments.get(flag) for flag in _SEGMENTATION_CLEANUP_STEPS
+    )
+
+
+def skeleton_cleanup_arguments(
+    settings: Mapping[str, Any], downsample: Downsample | None = None
+) -> dict[str, Any]:
+    """What ``preprocessing.preprocess_skeleton_for_graph`` takes from the
+    settings: the ``skeleton_*`` settings, their voxel counts on
+    *downsample*'s grid (:func:`skeleton_voxel_settings_on_grid`), the
+    component percentage as a fraction, and the bridge gates graph building
+    shares. Not the volumes, nor the low-RAM and tiling choices, which give
+    the same skeleton either way. For skeletonising and for the settings
+    optimiser's trials alike."""
+    return {
+        **prefixed_arguments(
+            {**settings, **skeleton_voxel_settings_on_grid(settings, downsample)},
+            "skeleton_",
+            parameters_of(preprocessing.preprocess_skeleton_for_graph),
+        ),
+        "min_component_fraction": settings["skeleton_min_component_percent"] / 100.0,
+        "bridge_require_mask_support": settings["bridge_require_mask_support"],
+        "bridge_max_background_gap_um": settings["bridge_max_background_gap_um"],
+        "bridge_min_mask_fraction": settings["bridge_min_mask_fraction"],
+    }
+
+
+def centreline_smoothing_arguments(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The centreline smoothing settings as ``graph.smooth_graph_centrelines``
+    (and ``smooth_straight_steps``) take them."""
+    return {
+        "method": settings["centreline_smoothing_method"],
+        "iterations": settings["centreline_smoothing_iterations"],
+        "max_deviation": settings["centreline_max_deviation"],
+    }
+
+
 def _mask_skeleton_is_made_from(
     settings: dict, image: np.ndarray, voxel_size_xyz
 ) -> tuple[np.ndarray, np.ndarray | None]:
@@ -1403,13 +1470,8 @@ def _mask_skeleton_is_made_from(
     here, so graph building reads the same mask either way -- and the
     thick-vessel region, cached under a digest of this mask, is found again.
     """
-    cleanup_kwargs = prefixed_arguments(
-        settings, "segmentation_cleanup_",
-        parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
-    )
-    if not settings["segmentation_cleanup"] or not any(
-        cleanup_kwargs.get(flag) for flag in _SEGMENTATION_CLEANUP_STEPS
-    ):
+    cleanup_kwargs = segmentation_cleanup_arguments(settings)
+    if not segmentation_cleanup_in_effect(settings):
         return image, None
     logger.info(
         "Segmentation cleanup: fill_cavities=%s remove_whiskers=%s "
@@ -1545,17 +1607,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         raw_skeleton = skeleton
         skeleton = preprocessing.preprocess_skeleton_for_graph(
             raw_skeleton,
-            **prefixed_arguments(
-                {**settings, **skeleton_voxel_settings_on_grid(settings, downsample)},
-                "skeleton_",
-                parameters_of(preprocessing.preprocess_skeleton_for_graph),
-            ),
-            min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
+            **skeleton_cleanup_arguments(settings, downsample),
             voxel_size_zyx=io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size)),
             segmentation_mask=binary,
-            bridge_require_mask_support=settings["bridge_require_mask_support"],
-            bridge_max_background_gap_um=settings["bridge_max_background_gap_um"],
-            bridge_min_mask_fraction=settings["bridge_min_mask_fraction"],
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
             tile_large_components=settings["skeletonize_tile_large_components"],
@@ -1948,6 +2002,237 @@ def _no_vessels_left_error(
     )
 
 
+@dataclass
+class NetworkContext:
+    """What graph building and every step after it read the segmentation
+    through, made once per mask (:func:`network_context`): shared by
+    :func:`build_network` and the settings optimiser's trials."""
+
+    binary_mask: np.ndarray | None
+    voxel_size_zyx: tuple[float, float, float]
+    #: The mask's radius at a point, for the stub prune and the smoothing.
+    radius_at: Any = None
+    #: The one reader of the mask every step asks.
+    mask_support: Any = None
+    thick_vessel_mask: np.ndarray | None = None
+    #: The thick vessels' centreline tree (its voxels), its radius, and what
+    #: the clean-ups keep the strand on the tree by.
+    thick_tree: Any = None
+    thick_tree_radius: Any = None
+    along_thick_centreline: Any = None
+
+
+def network_context(
+    settings: Mapping[str, Any],
+    binary_mask: np.ndarray | None,
+    voxel_size_zyx,
+    thick_vessel_mask: np.ndarray | None = None,
+    *,
+    thick_centreline: np.ndarray | None = None,
+) -> NetworkContext:
+    """Everything graph building and :func:`finish_network_graph` read the
+    segmentation through, made once.
+
+    Stubs are judged against the radius of the vessel they leave, a
+    smoothed centreline may stray further inside a wider vessel, and two
+    edges joining the same two nodes are one vessel unless background
+    separates them: all three read the binary mask the skeleton was made
+    from, the radius through one sampler. One reader of the mask serves
+    every step that asks about it -- graph building, the clean-ups after
+    it, the thick-vessel split and the dead-end marks -- so it is packed to
+    bits and its surface tree built once a run, not once a step. The thick
+    vessels' centreline tree is found once too (*thick_centreline*, as
+    skeletonisation drew it, when it did): the split bridges to it, and
+    every clean-up keeps the strand on it of two in one lumen. Judged by the
+    wall alone, the clean-up took the strand on the tree as often as not and
+    left the thick vessel broken.
+    """
+    voxel_size_zyx = tuple(float(v) for v in voxel_size_zyx)
+    stub_radius_multiple = float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0)
+    radius_at = None
+    if binary_mask is not None and (stub_radius_multiple > 0 or settings["smooth_centrelines"]):
+        radius_at = graph.assemble.mask_radius_sampler(
+            binary_mask, voxel_size_zyx, 1.0, low_memory=settings["use_memmap_loading"]
+        )
+    mask_support = None
+    if binary_mask is not None:
+        mask_support = preprocessing.MaskSupport(
+            binary_mask,
+            voxel_size_zyx,
+            max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+            min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+            feature_distance=getattr(radius_at, "feature_distance", None),
+            low_memory=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+        )
+    context = NetworkContext(
+        binary_mask=binary_mask, voxel_size_zyx=voxel_size_zyx, radius_at=radius_at,
+        mask_support=mask_support, thick_vessel_mask=thick_vessel_mask,
+    )
+    if thick_vessel_mask is not None:
+        thick_tree = thick_centreline
+        if thick_tree is None:
+            thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
+                thick_vessel_mask,
+                voxel_size_zyx,
+                use_memmap=settings["use_memmap_loading"],
+                large_stack_tree=large_stack_thick_tree(settings),
+            )
+        follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
+            thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
+        )
+        context.thick_tree = thick_tree
+        context.along_thick_centreline = None if follower is None else follower.along_um
+        context.thick_tree_radius = None if follower is None else follower.radius_um
+    return context
+
+
+def finish_network_graph(
+    G: nx.MultiGraph,
+    skeleton: np.ndarray,
+    settings: Mapping[str, Any],
+    context: NetworkContext,
+    *,
+    edges_after_step: list | None = None,
+) -> nx.MultiGraph:
+    """Every step :func:`build_network` takes after
+    ``graph.build_graph_from_skeleton``: the centreline smoothing, the
+    lumen clean-up after it, the thick-vessel split and the clean-up after
+    that, the skeleton re-trace, the smoothing of straight steps, and the
+    optional removal of interior dead ends and of pieces with no junction.
+    The graph a run saves, and the one a settings-optimiser trial scores.
+    *edges_after_step* (a list) is given each step's label and edge count."""
+    steps = edges_after_step if edges_after_step is not None else []
+    binary_mask = context.binary_mask
+    voxel_size_zyx = context.voxel_size_zyx
+    radius_at = context.radius_at
+    stub_radius_multiple = float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0)
+    # Last thing before the graph is saved: take the voxel staircase out of
+    # each centreline. A skeleton path steps voxel to voxel, so a vessel at
+    # an angle comes back 7% longer than it is, and resistance follows
+    # length -- so this is a measurement fix, not a cosmetic one.
+    if settings["smooth_centrelines"]:
+        graph.smooth_graph_centrelines(
+            G,
+            skeleton,
+            voxel_size_zyx=voxel_size_zyx,
+            **centreline_smoothing_arguments(settings),
+            radius_at=radius_at,
+        )
+    # Smoothing moves every centreline, so what graph building's last
+    # step judged is judged again on the curves that are saved: on E14.5
+    # smoothing alone turned 2 loops inside one lumen into 12. The same
+    # clean-up runs once more after the thick-vessel split below: nothing
+    # is the last step, and on E14.5 the split alone made 7 loops inside
+    # one lumen through its bridges.
+    lumen_cleanup = None
+    if binary_mask is not None:
+        lumen_cleanup = graph.assemble.lumen_cleanup(
+            binary_mask,
+            voxel_size_zyx,
+            image_shape=skeleton.shape,
+            min_stub_length=settings["min_stub_length"],
+            min_stub_length_radius_multiple=stub_radius_multiple,
+            stub_radius_at=radius_at,
+            bridge_require_mask_support=settings["bridge_require_mask_support"],
+            bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+            bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+            debug=settings["verbose_logging"],
+            stub_face_protection=settings.get("stub_face_protection") or "threshold",
+            remove_short_loops_under_um=float(settings.get("remove_short_loops_under_um") or 0.0),
+            short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
+            along_thick_centreline=context.along_thick_centreline,
+            mask_support=context.mask_support,
+            max_rounds=_lumen_cleanup_max_rounds(settings),
+        )
+        if settings["smooth_centrelines"]:
+            G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
+            steps.append(("consolidate_lumen after centreline smoothing", G.number_of_edges()))
+    # After every topology step and the centreline smoothing above: a
+    # vessel joined to a thick one runs on through its lumen with no
+    # marker of where the vessel ends and the thick vessel begins. Each
+    # gets one bridge, from where it enters the lumen (the segmentation's
+    # radius round the thick centreline) to that centreline -- see
+    # graph.insert_thick_vessel_junction_nodes. Done on the fully-built
+    # graph, so nothing has to protect it through the degree-2/collapse/
+    # prune passes; the clean-up that follows knows a bridge (never merged
+    # with a vessel, never dropped as a second strand, never left dangling).
+    if context.thick_vessel_mask is not None:
+        G = graph.insert_thick_vessel_junction_nodes(
+            G, context.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
+            segmentation=binary_mask, centreline=context.thick_tree,
+            **thick_junction_bridge_arguments(settings),
+            mask_support=context.mask_support, tree_radius_um=context.thick_tree_radius,
+        )
+        steps.append(("thick-vessel split", G.number_of_edges()))
+        if lumen_cleanup is not None:
+            G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
+            steps.append(("consolidate_lumen after the thick-vessel split", G.number_of_edges()))
+    # Skeleton the clean-up took round a wide hole, drawn back after the last
+    # clean-up so no rule takes it again (Harvey's grid N): the pair and
+    # in-lumen loop rules never read the hole a loop runs round. A hole limit
+    # of 0 keeps no loop for its hole, so nothing is drawn back for one.
+    if (
+        settings.get("retrace_lost_skeleton")
+        and _short_loop_keep_hole_um(settings) > 0
+        and lumen_cleanup is not None
+        and lumen_cleanup.support is not None
+    ):
+        graph.skeleton_retrace.retrace_lost_skeleton(
+            G, skeleton, lumen_cleanup.support, keep_hole_over_um=_short_loop_keep_hole_um(settings),
+        )
+        retraced = graph.skeleton_retrace.retraced_edges(G)
+        if retraced and settings["smooth_centrelines"]:
+            graph.smooth_graph_centrelines(
+                G,
+                skeleton,
+                voxel_size_zyx=voxel_size_zyx,
+                **centreline_smoothing_arguments(settings),
+                radius_at=radius_at,
+                edges=retraced,
+            )
+        steps.append(("skeleton re-trace", G.number_of_edges()))
+    # The clean-ups after smoothing join a cut piece to the vessel it
+    # doubled with a straight chord across the lumen: those vessels only
+    # are smoothed again (PLAN_bridging.md 6b).
+    if settings["smooth_centrelines"]:
+        graph.smooth_straight_steps(
+            G,
+            skeleton,
+            voxel_size_zyx=voxel_size_zyx,
+            **centreline_smoothing_arguments(settings),
+            radius_at=radius_at,
+        )
+    # Interior dead ends out, the mask they leave uncovered recovered as
+    # vessels joined at both ends, and the clean-up run again (Harvey's
+    # grids G5, L1 and L2, 2026-10-21; off by default).
+    if (
+        settings.get("remove_interior_dead_ends")
+        and lumen_cleanup is not None
+        and lumen_cleanup.support is not None
+    ):
+        G = _remove_and_recover_interior_dead_ends(
+            settings, G, skeleton=skeleton, binary_mask=binary_mask, voxel_size_zyx=voxel_size_zyx,
+            radius_at=radius_at, cleanup=lumen_cleanup, thick_mask=context.thick_vessel_mask,
+            thick_tree=context.thick_tree, thick_tree_radius=context.thick_tree_radius,
+        )
+        steps.append(("removal and recovery of interior dead ends", G.number_of_edges()))
+    # Pieces with no junction (their dead ends are graph.dead_ends'
+    # island ends), taken out last so no step after rejoins or re-makes
+    # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
+    # specks and 3 real vessel the segmentation cut off.
+    if settings.get("remove_pieces_without_junction"):
+        removed = graph.dead_ends.remove_pieces_without_junction(G)
+        G.graph["pieces_without_junction_removed"] = removed["pieces"]
+        G.graph["pieces_without_junction_removed_um"] = removed["length_um"]
+        logger.info(
+            "Removed %d piece(s) with no junction: %d vessel(s), %.0f um of centreline.",
+            removed["pieces"], removed["vessels"], removed["length_um"],
+        )
+        steps.append(("removal of pieces with no junction", G.number_of_edges()))
+    return G
+
+
 def build_network(
     settings: dict,
     volume: SkeletonisedVolume,
@@ -2104,204 +2389,33 @@ def build_network(
                 extra_plot_names=(plot_png,),
             )
 
-        # Stubs are judged against the radius of the vessel they leave, a
-        # smoothed centreline may stray further inside a wider vessel, and two
-        # edges joining the same two nodes are one vessel unless background
-        # separates them: all three read the binary mask the skeleton was
-        # made from, the radius through one sampler.
-        stub_radius_multiple = float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0)
+        # Stubs are judged against the radius of the vessel they leave, the
+        # clean-ups read the mask through one MaskSupport, and the thick
+        # vessels' centreline tree is found once: all of it made here, once,
+        # and shared with the settings optimiser's trials (network_context).
         binary_mask = None
-        radius_at = None
         if image is not None:
             binary_mask = _to_binary_volume_for_skeletonization(
                 image,
                 use_memmap=settings["use_memmap_loading"],
                 memmap_directory=settings["memmap_directory"],
             )
-        if binary_mask is not None and (stub_radius_multiple > 0 or settings["smooth_centrelines"]):
-            radius_at = graph.assemble.mask_radius_sampler(
-                binary_mask, voxel_size_zyx, 1.0, low_memory=settings["use_memmap_loading"]
-            )
-        # One reader of the mask for every step below that asks about it --
-        # graph building, the clean-ups after it, the thick-vessel split and
-        # the dead-end marks -- so it is packed to bits and its surface tree
-        # built once a run, not once a step.
-        mask_support = None
-        if binary_mask is not None:
-            mask_support = preprocessing.MaskSupport(
-                binary_mask,
-                voxel_size_zyx,
-                max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
-                min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
-                feature_distance=getattr(radius_at, "feature_distance", None),
-                low_memory=settings["use_memmap_loading"],
-                memmap_directory=settings["memmap_directory"],
-            )
-        # The thick vessels' centreline tree, found once: the split below
-        # bridges to it, and every clean-up keeps the strand on it of two in
-        # one lumen. Judged by the wall alone, the clean-up took the strand
-        # on the tree as often as not and left the thick vessel broken.
-        thick_tree = None
-        thick_tree_radius = None
-        along_thick_centreline = None
-        if volume.thick_vessel_mask is not None:
-            # As skeletonisation drew it, when it did; else drawn here.
-            thick_tree = getattr(volume, "thick_vessel_centreline", None)
-            if thick_tree is None:
-                thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
-                    volume.thick_vessel_mask,
-                    voxel_size_zyx,
-                    use_memmap=settings["use_memmap_loading"],
-                    large_stack_tree=large_stack_thick_tree(settings),
-                )
-            follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
-                volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
-            )
-            along_thick_centreline = None if follower is None else follower.along_um
-            thick_tree_radius = None if follower is None else follower.radius_um
+        context = network_context(
+            settings, binary_mask, voxel_size_zyx, volume.thick_vessel_mask,
+            thick_centreline=getattr(volume, "thick_vessel_centreline", None),
+        )
+        radius_at, mask_support = context.radius_at, context.mask_support
         G = graph.build_graph_from_skeleton(
             skeleton,
             voxel_size=voxel_size_zyx,
             stub_radius_at=radius_at,
             segmentation_mask=binary_mask,
             step_callback=_graph_build_step_callback,
-            along_thick_centreline=along_thick_centreline,
+            along_thick_centreline=context.along_thick_centreline,
             mask_support=mask_support,
             **graph_build_arguments(settings),
         )
-
-        # Last thing before the graph is saved: take the voxel staircase out of
-        # each centreline. A skeleton path steps voxel to voxel, so a vessel at
-        # an angle comes back 7% longer than it is, and resistance follows
-        # length -- so this is a measurement fix, not a cosmetic one.
-        if settings["smooth_centrelines"]:
-            graph.smooth_graph_centrelines(
-                G,
-                skeleton,
-                voxel_size_zyx=voxel_size_zyx,
-                method=settings["centreline_smoothing_method"],
-                iterations=settings["centreline_smoothing_iterations"],
-                max_deviation=settings["centreline_max_deviation"],
-                radius_at=radius_at,
-            )
-        # Smoothing moves every centreline, so what graph building's last
-        # step judged is judged again on the curves that are saved: on E14.5
-        # smoothing alone turned 2 loops inside one lumen into 12. The same
-        # clean-up runs once more after the thick-vessel split below: nothing
-        # is the last step, and on E14.5 the split alone made 7 loops inside
-        # one lumen through its bridges.
-        lumen_cleanup = None
-        if binary_mask is not None:
-            lumen_cleanup = graph.assemble.lumen_cleanup(
-                binary_mask,
-                voxel_size_zyx,
-                image_shape=skeleton.shape,
-                min_stub_length=settings["min_stub_length"],
-                min_stub_length_radius_multiple=stub_radius_multiple,
-                stub_radius_at=radius_at,
-                bridge_require_mask_support=settings["bridge_require_mask_support"],
-                bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
-                bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
-                debug=settings["verbose_logging"],
-                stub_face_protection=settings.get("stub_face_protection") or "threshold",
-                remove_short_loops_under_um=float(settings.get("remove_short_loops_under_um") or 0.0),
-                short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
-                along_thick_centreline=along_thick_centreline,
-                mask_support=mask_support,
-                max_rounds=_lumen_cleanup_max_rounds(settings),
-            )
-            if settings["smooth_centrelines"]:
-                G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
-                edges_after_step.append(
-                    ("consolidate_lumen after centreline smoothing", G.number_of_edges())
-                )
-        # After every topology step and the centreline smoothing above: a
-        # vessel joined to a thick one runs on through its lumen with no
-        # marker of where the vessel ends and the thick vessel begins. Each
-        # gets one bridge, from where it enters the lumen (the segmentation's
-        # radius round the thick centreline) to that centreline -- see
-        # graph.insert_thick_vessel_junction_nodes. Done on the fully-built
-        # graph, so nothing has to protect it through the degree-2/collapse/
-        # prune passes; the clean-up that follows knows a bridge (never merged
-        # with a vessel, never dropped as a second strand, never left dangling).
-        if volume.thick_vessel_mask is not None:
-            G = graph.insert_thick_vessel_junction_nodes(
-                G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
-                segmentation=binary_mask, centreline=thick_tree, **thick_junction_bridge_arguments(settings),
-                mask_support=mask_support, tree_radius_um=thick_tree_radius,
-            )
-            edges_after_step.append(("thick-vessel split", G.number_of_edges()))
-            if lumen_cleanup is not None:
-                G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
-                edges_after_step.append(
-                    ("consolidate_lumen after the thick-vessel split", G.number_of_edges())
-                )
-        # Skeleton the clean-up took round a wide hole, drawn back after the last
-        # clean-up so no rule takes it again (Harvey's grid N): the pair and
-        # in-lumen loop rules never read the hole a loop runs round. A hole limit
-        # of 0 keeps no loop for its hole, so nothing is drawn back for one.
-        if (
-            settings.get("retrace_lost_skeleton")
-            and _short_loop_keep_hole_um(settings) > 0
-            and lumen_cleanup is not None
-            and lumen_cleanup.support is not None
-        ):
-            graph.skeleton_retrace.retrace_lost_skeleton(
-                G, skeleton, lumen_cleanup.support, keep_hole_over_um=_short_loop_keep_hole_um(settings),
-            )
-            retraced = graph.skeleton_retrace.retraced_edges(G)
-            if retraced and settings["smooth_centrelines"]:
-                graph.smooth_graph_centrelines(
-                    G,
-                    skeleton,
-                    voxel_size_zyx=voxel_size_zyx,
-                    method=settings["centreline_smoothing_method"],
-                    iterations=settings["centreline_smoothing_iterations"],
-                    max_deviation=settings["centreline_max_deviation"],
-                    radius_at=radius_at,
-                    edges=retraced,
-                )
-            edges_after_step.append(("skeleton re-trace", G.number_of_edges()))
-        # The clean-ups after smoothing join a cut piece to the vessel it
-        # doubled with a straight chord across the lumen: those vessels only
-        # are smoothed again (PLAN_bridging.md 6b).
-        if settings["smooth_centrelines"]:
-            graph.smooth_straight_steps(
-                G,
-                skeleton,
-                voxel_size_zyx=voxel_size_zyx,
-                method=settings["centreline_smoothing_method"],
-                iterations=settings["centreline_smoothing_iterations"],
-                max_deviation=settings["centreline_max_deviation"],
-                radius_at=radius_at,
-            )
-        # Interior dead ends out, the mask they leave uncovered recovered as
-        # vessels joined at both ends, and the clean-up run again (Harvey's
-        # grids G5, L1 and L2, 2026-10-21; off by default).
-        if (
-            settings.get("remove_interior_dead_ends")
-            and lumen_cleanup is not None
-            and lumen_cleanup.support is not None
-        ):
-            G = _remove_and_recover_interior_dead_ends(
-                settings, G, skeleton=skeleton, binary_mask=binary_mask, voxel_size_zyx=voxel_size_zyx,
-                radius_at=radius_at, cleanup=lumen_cleanup, thick_mask=volume.thick_vessel_mask,
-                thick_tree=thick_tree, thick_tree_radius=thick_tree_radius,
-            )
-            edges_after_step.append(("removal and recovery of interior dead ends", G.number_of_edges()))
-        # Pieces with no junction (their dead ends are graph.dead_ends'
-        # island ends), taken out last so no step after rejoins or re-makes
-        # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
-        # specks and 3 real vessel the segmentation cut off.
-        if settings.get("remove_pieces_without_junction"):
-            removed = graph.dead_ends.remove_pieces_without_junction(G)
-            G.graph["pieces_without_junction_removed"] = removed["pieces"]
-            G.graph["pieces_without_junction_removed_um"] = removed["length_um"]
-            logger.info(
-                "Removed %d piece(s) with no junction: %d vessel(s), %.0f um of centreline.",
-                removed["pieces"], removed["vessels"], removed["length_um"],
-            )
-            edges_after_step.append(("removal of pieces with no junction", G.number_of_edges()))
+        G = finish_network_graph(G, skeleton, settings, context, edges_after_step=edges_after_step)
 
         # Nothing after this can run on no vessels, and what tried failed on
         # something else (the 3D drawing on no node positions, boundary
@@ -2326,7 +2440,7 @@ def build_network(
         if binary_mask is not None:
             # The support holds the mask's bits and surface tree: let them go
             # with the mask.
-            lumen_cleanup = mask_support = None
+            context = mask_support = None
             preprocessing.release_superseded(binary_mask, G, keep=image)
             binary_mask = radius_at = None
         if no_vessels is not None:
@@ -2619,9 +2733,7 @@ def _remove_and_recover_interior_dead_ends(
             G,
             skeleton,
             voxel_size_zyx=voxel_size_zyx,
-            method=settings["centreline_smoothing_method"],
-            iterations=settings["centreline_smoothing_iterations"],
-            max_deviation=settings["centreline_max_deviation"],
+            **centreline_smoothing_arguments(settings),
             radius_at=radius_at,
             edges=drawn,
         )

@@ -858,8 +858,13 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`stages.load_volume_on_run_grid`), its whole settings, voxel counts on that grid
   (`skeleton_voxel_settings_on_grid` in, `_from_grid` out) and its thick-vessel restriction
   (`stages.thick_vessel_restriction_mask`); plain trials go through
-  `io.load._skeletonize_loaded_volume`. `tests/test_optimisation_search.py` pins a trial's
-  skeleton `==` `skeletonise`'s. **Check segmented image** is
+  `io.load._skeletonize_loaded_volume`. Every step's arguments come from the pipeline's own
+  builders (`stages.segmentation_cleanup_arguments`, `skeleton_cleanup_arguments`,
+  `thick_region_settings` + `thick_vessel_refinement_arguments`, `graph_build_arguments`,
+  `centreline_smoothing_arguments`), so a setting a stage starts reading reaches the trials with
+  no change here; a setting a caller leaves out is read as its schema default.
+  `tests/test_optimisation_search.py` pins a trial's skeleton `==` `skeletonise`'s and each step's
+  arguments `==` the run's. **Check segmented image** is
   `preprocessing/segmentation_quality.py` + `segmentation_raw_comparison.py`.
 - **`visualization/geometry.py`** — `edge_polyline`: an edge's `voxels` (or its two node positions)
   turned into a polyline that runs `u`→`v` and touches both nodes. The VTK export, the pericyte
