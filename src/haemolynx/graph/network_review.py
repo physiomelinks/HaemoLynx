@@ -329,11 +329,12 @@ def find_hairpins(
 ) -> list[ReviewItem]:
     """Vessels at least *min_ratio* times longer than the straight line
     between their ends, and *min_length_um* long: a trace that doubled back.
-    Most doubled first; a loop on one node is the short-loop list's."""
+    Most doubled first; a loop on one node is the short-loop list's.
+    Thick-vessel bridges are not vessels, and are left out."""
     pos = _node_pos(G)
     items = []
-    for u, v, key in G.edges(keys=True):
-        if u == v:
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if u == v or data.get(IS_ZERO_RESISTANCE):
             continue
         edge = (u, v, key)
         path = _path(G, edge, pos)
@@ -397,6 +398,11 @@ def find_diameter_jumps(
             points_um=_points(G, edges, pos),
         ))
     for node, parent, daughters in _iter_parent_daughter_junctions(G):
+        # A bridge has no branch order of its own, so it is never one of
+        # these; one a hand edit labelled is still not a vessel.
+        if parent[3].get(IS_ZERO_RESISTANCE):
+            continue
+        daughters = [item for item in daughters if not item[3].get(IS_ZERO_RESISTANCE)]
         parent_width = _measured_diameter_or_none(parent[3])
         if parent_width is None:
             continue

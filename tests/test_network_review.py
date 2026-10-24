@@ -98,6 +98,15 @@ def test_a_vessel_doubling_back_is_a_hairpin_and_a_straight_or_short_one_is_not(
     assert len(item.points_um) == 4
 
 
+def test_a_thick_vessel_bridge_drawn_round_a_bend_is_not_a_hairpin():
+    """A bridge keeps its drawn path where a straight one would leave the
+    segmentation (a curved thick vessel), so it can double back; it is not a
+    vessel, and is not listed."""
+    G = _graph({0: (0, 0, 0), 1: (0, 5, 0)})
+    _vessel(G, 0, 1, points=[(0, 0, 0), (0, 0, 15), (0, 5, 15), (0, 5, 0)], **{IS_ZERO_RESISTANCE: True})
+    assert nr.find_hairpins(G) == []
+
+
 # --- diameter jumps ----------------------------------------------------------------
 
 
@@ -131,6 +140,26 @@ def test_a_daughter_wider_than_its_parent_is_a_jump():
     assert "Art1" in item.why
 
 
+def test_a_thick_vessel_bridge_is_no_side_of_a_diameter_jump():
+    """A bridge takes the widest diameter at its ends (``diameter_source=
+    "bridge"``), for drawing: a thin vessel running on into its bridge, or a
+    bridge a hand edit gave a branch order, is no jump in a measured width."""
+    bridge = {IS_ZERO_RESISTANCE: True, "diameter_source": "bridge"}
+    G = _graph({0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20)})
+    _vessel(G, 0, 1, diameter_um=4.0, diameter_source="measured")
+    _vessel(G, 1, 2, diameter_um=12.0, **bridge)
+    assert nr.find_diameter_jumps(G) == []
+
+    G = _graph({0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 10, 20), 3: (0, -10, 20)})
+    _vessel(G, 0, 1, diameter_um=5.0, diameter_source="measured", branch_order="Art1")
+    _vessel(G, 1, 2, diameter_um=12.0, branch_order="Art2", **bridge)
+    _vessel(G, 1, 3, diameter_um=4.0, diameter_source="measured", branch_order="Art2")
+    assert nr.find_diameter_jumps(G) == []
+    G.edges[1, 2, 0].pop(IS_ZERO_RESISTANCE)
+    (item,) = nr.find_diameter_jumps(G)
+    assert item.measures["at"] == "junction" and item.measures["ratio"] == pytest.approx(2.4)
+
+
 # --- unmeasured diameters -------------------------------------------------------
 
 
@@ -161,6 +190,16 @@ def test_an_unsolved_vessel_keeps_its_place_at_the_end_with_no_share():
     items = nr.find_unmeasured_diameters(G)
     assert [item.nodes for item in items] == [(1, 2), (0, 1)]
     assert items[1].measures["flow_share"] is None
+
+
+def test_a_thick_vessel_bridge_is_never_an_unmeasured_width():
+    """A bridge is not measured, by design: its resistance is zeroed whatever
+    its width, so a width in doubt there moves nothing."""
+    G = _graph({0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20)})
+    _vessel(G, 0, 1, diameter_um=5.0, diameter_source="table", flow_abs=1.0)
+    _vessel(G, 1, 2, diameter_um=5.0, diameter_source="table", flow_abs=1.0,
+            fwhm_low_confidence_vs_edt=True, **{IS_ZERO_RESISTANCE: True})
+    assert [item.nodes for item in nr.find_unmeasured_diameters(G)] == [(0, 1)]
 
 
 # --- unsolved pieces ------------------------------------------------------------------
@@ -264,6 +303,18 @@ def test_a_class_too_small_to_judge_has_no_outliers_and_a_still_vessel_is_always
     (item,) = nr.find_flow_outliers(G)
     assert item.nodes == (0, 1)
     assert item.why == "A solved vessel with no flow through it."
+
+
+def test_a_thick_vessel_bridge_is_never_a_flow_outlier():
+    """A bridge's velocity is its flow over a width it was never measured at,
+    and a bridge whose vessel was cut off carries none: neither says anything
+    about the network, fast or still."""
+    G = _capillary_bed(count=12)
+    G.edges[0, 1, 0]["flow_abs"] = 0.0
+    assert {item.nodes for item in nr.find_flow_outliers(G)} == {(0, 1), (11, 12)}
+    G.edges[11, 12, 0][IS_ZERO_RESISTANCE] = True
+    G.edges[0, 1, 0][IS_ZERO_RESISTANCE] = True
+    assert nr.find_flow_outliers(G) == []
 
 
 # --- boundary nodes --------------------------------------------------------------------
