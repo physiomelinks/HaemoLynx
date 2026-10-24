@@ -849,10 +849,14 @@ def test_passes_are_passed_through(panel, monkeypatch, tmp_path):
 # --- what the button may optimise on (PLAN_optimisers.md, Phase 5) ------------
 
 
-def test_a_synthetic_network_greys_both_optimisers_and_an_image_restores_them(panel):
+def test_a_synthetic_network_greys_the_optimisers_and_an_image_restores_them(panel):
     from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
 
-    buttons = [panel._haemolynx_optimise_button, panel._haemolynx_optimise_fwhm_button]
+    buttons = [
+        panel._haemolynx_optimise_button,
+        panel._haemolynx_optimise_fwhm_button,
+        panel._haemolynx_optimise_endothelial_button,
+    ]
     before = [(button.enabled, button.tooltip) for button in buttons]
     assert all(enabled for enabled, _tooltip in before)
     rows = panel._haemolynx_rows()
