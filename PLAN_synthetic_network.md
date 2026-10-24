@@ -376,7 +376,7 @@ through a private index, and do not edit `src/` while a long test run is in flig
 - Loading a 100 MB template in preflight stalls the GUI thread for a few seconds the first time; the
   memoised loader keeps it to once per template.
 
-## Status (2026-10-24: done, bar what waits on Harvey and verification 2)
+## Status (2026-10-24: done, bar what waits on Harvey)
 
 Implemented 2026-10-18 (`bb831907`, merged `d098de1f`). Since:
 
@@ -437,11 +437,67 @@ each is the whole `synthetic_template_path:` error):
   of the viscosity law), while a width given by hand in Post processing is read as plasma_column.
   Fix: set segmentation_source to endothelial."
 
-**Verification 2 (E14.5 as the template, end to end)**: not yet run at this commit; it needs an
-E14.5 image run with every required statistic first (no E14.5 `.haemorun` saved with them is on
-this machine), a large run that waited for RAM another session's E14.5 replay was using.
+**Verification 2 (E14.5 as the template, end to end; 2026-10-24, scripted, not through the
+panel).** The template: the main checkout's `config.yaml` (Claudin E14.5, large-vessel masks
+alone, `segmentation_source=endothelial`), low-RAM, perturbations off, run whole at `2a749a95` (953
+s; 1,228 nodes, 1,406 edges; 1 inlet, 2 outlets, 34 + 47 large-vessel hand-off nodes, no
+arteriole/venule boundary nodes; every statistics section), and saved as the panel's Save run
+would (an Export checkpoint with the graph and the six lists). Harness and outputs:
+`outputs/synthetic_e14p5/` (git-ignored) in the `plan-synthetic-e08d0c` worktree. Read as a
+template: 1,267 vessels (27 Large_Art over 15 orders, 1,181 capillaries over 24 B orders, 59
+Large_Ven over 15), basis endothelial, both sources agree; reading takes 0.9 s (statistics) and
+6.2 s (graph). Generation takes **1.2-1.3 s** at three seeds from either source (target < 10 s).
+The synthetic run's own `.haemorun` is refused: "The template run is itself a synthetic network:
+choose the microscopy-image run it was generated from."
+
+It found three bugs, fixed with tests that fail on the code before (fixture templates draw
+exactly as before, edge for edge, at 12 seeds and 9,500 vessels):
+
+- `89cb4b9b`: the network was **not connected** at every seed (2-4 pieces): stars (a junction
+  whose every vessel ends blind) beside a dead end of the largest piece, which the connectivity
+  repair (now `bed.join_pieces`) gave up on. It now joins junction to junction past the dead end.
+- `68d6885e`: with **no Art/Ven tier** (large masks alone), the large tier's leaves were given the
+  small tier's role, so the run labelled the large tier Art1..15/Ven1..15 and counted no large
+  boundary nodes (68 of 79 exact rows outside). They are now `large_*_boundary`, the run assigns in
+  `large_tier` mode.
+- `5dda9ac9`: the graph source's default seed drew the one inlet's first vessel out through a face,
+  and the side's early return skipped the rule that a tree keeps a leaf on the bed: the inlet was a
+  piece of its own.
+- `f505c0be` (the comparison): the dead-end total is no longer banded when the template has
+  artefact ends or ends of pieces without a junction (17 and 94 here), which one connected
+  network cannot have; the kinds it draws were exact (91 leaving the image, 194 inside).
+
+The comparison then (`{stem}_template_comparison.csv`, haemodynamics off -- see the first item
+below): **statistics source, 41 of 49 exact rows equal, 50 of 63 banded rows within; graph
+source, 30 of 49 and 34 of 49.** Equal: box, voxel size, inlets and outlets by face, diameter basis,
+dead ends by kind, capillary count (1,185 / 1,186 of 1,181) and mean diameter (10.40 / 10.33 of
+10.40 um). What is outside, and why, is in the first four items below; the rest outside: loops 243
+/ 238 of 231 (the generator's note: 231 loops and 277 dead ends cannot both be met with 1,181
+capillaries, so 237 are drawn), daughter angle 97 of 114 degrees, average degree 2.47 of 2.31 (the
+template's 94 ends of junction-less pieces).
 
 **Waits on Harvey** (behaviour the plan leaves open; nothing built):
+
+- **How to draw a large tier like E14.5's.** Its Large_Art/Large_Ven orders are a trunk whose
+  order rises at every junction where a capillary leaves it (27 vessels over 15 orders, 1-3 a
+  order, widths 15-27 um throughout, 34 hand-off nodes). The generator draws each order as a
+  generation of a bifurcating tree and holds Murray's law exactly at the template's exponent
+  (1.75): every generation is 0.67 of the last, so the drawn large vessels narrow to **0.02-0.08 um**
+  at the deepest generation (class means 4.1 and 1.5 um against 18.4 and 21.1), and the trees'
+  leaves give 16 + 29 hand-off nodes, not 34 + 47. On an endothelial template the haemodynamics then stops: the in vivo law is singular
+  below 1.1 um ("Diameter must exceed 1.1 um for the Pries in vivo law"). The choices: draw a trunk
+  with side branches handed to the bed (Murray then sets the side branch's width, the trunk keeps
+  the order's), relax Murray in the large tier, or floor the widths (which only hides it). Until
+  then a synthetic run of a large-masks-only template needs `run_haemodynamics` off.
+- **A root's first vessel leaving the box.** When it does (the graph source's default seed on
+  E14.5), the side's tree is that one vessel, and the class-total rescale stretches it to the
+  class's whole length (904 um, tortuosity 14.6). Re-aim or shorten the first vessel, or cap the
+  rescale per vessel.
+- **The capillary bed's uniform lattice.** E14.5's capillaries are shorter (median 28 um) than the
+  lattice spacing its counts give in its box (42 um): the class length comes out 16% over
+  (49.5 of 42.5 mm), the median length 40% over, the intercapillary distance 30 of 19-22 um.
+  The template's nodes span 99.3% of its image box, so `vessel_box` would not change this: the
+  vessels are clustered within the box, which a uniform bed cannot draw.
 
 - **`vessel_box`.** `NetworkTemplate.vessel_box_um` (the box the template's nodes span) is recorded,
   scaled and kept in the JSON, and nothing reads it. The plan names the option ("a possible

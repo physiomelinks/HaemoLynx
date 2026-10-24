@@ -64,3 +64,14 @@ read every capillary through the in vitro form. The comparison's bands moved int
 fixture scaled to 9,500 vessels (11-12 s); with the same checks written without `np.allclose` per
 polyline end it is 1.3 s and generation 7-10 s (`4767c3c6`). What waits on Harvey (`vessel_box`,
 a Voronoi bed) is listed in `PLAN_synthetic_network.md`'s status.
+
+## 2026-10-24: E14.5 as the template
+
+The first real template (verification 2 of `PLAN_synthetic_network.md`, whose status has the
+numbers). Generation 1.2-1.3 s. It broke the contract three ways, all fixed: stars left apart by
+the connectivity repair (`89cb4b9b`), a large tier with no Art/Ven tier labelled Art/Ven
+(`68d6885e`), a tree cut at its first vessel left hanging (`5dda9ac9`). What it shows about the
+model, for Harvey: E14.5's large tier is a trunk with side branches, which Murray-exact
+bifurcating generations shrink to sub-micron widths (the endothelial in vivo law then refuses the
+run); and its capillaries are clustered, shorter than a uniform bed in the same box can draw
+(16% more length), which `vessel_box` would not fix (its nodes span 99% of the box).
