@@ -19,10 +19,11 @@
 >   "Later, as built" below.
 > - **"A CLI"** (Later) is `python -m haemolynx.gui.batch_run` (`gui/batch_run_cli.py`), not a
 >   flag of the example script.
+> - **Harvey's decisions (2026-10-24):** decisions 1-5 kept as built; images stay one at a time;
+>   ilastik's vessel masks in a batch would read a chosen channel, or a combination of channels,
+>   of the image's own raw image file (not built: see "Waits on Harvey").
 > - **Waits on Harvey:**
->   - decisions 1-5 at the end, built as proposed and never confirmed;
->   - several images at once;
->   - ilastik's vessel masks per image;
+>   - the details of ilastik's vessel masks from the raw image's channels;
 >   - the Input tab's help text for Batch run (`gui/stage_help.py`, his to write).
 >
 > Line numbers below are as of 2026-10-18 and have moved since.
@@ -265,7 +266,7 @@ the five folders, so the batch can be re-run.
   ...]` over the same `run_batch`, for running a batch on a machine with no display. *Built as
   `python -m haemolynx.gui.batch_run` (`gui/batch_run_cli.py`).*
 - **Parallel images.** One image at a time in v1: a run already uses worker pools and most of
-  the RAM on a large stack. *Not built: waits on Harvey (below).*
+  the RAM on a large stack. *Not built: Harvey kept one image at a time (2026-10-24).*
 
 ### Later, as built (2026-10-24, `3d9d071a`)
 
@@ -324,24 +325,26 @@ the five folders, so the batch can be re-run.
   the seven-vessel fixture, and each image is run to the end.
 - Nothing was run on a real stack or by a tester.
 
+### Decided by Harvey (2026-10-24)
+
+- **Decisions 1-5** below: kept as built.
+- **Several images at once:** no. Images run one at a time. A run already spreads its heavy
+  steps over worker pools and, on a large stack, uses most of the RAM.
+- **ilastik's vessel masks per image:** they would read the image's own raw image file, with a
+  chosen channel or a combination of channels of it. Today
+  `use_ilastik_large_vessel_segmentation` and `use_ilastik_small_vessel_segmentation` read one
+  raw file each (`ilastik_unsegmented_*_image_path`, with no channel setting), so a batch still
+  refuses them while their masks are in use.
+
 ### Waits on Harvey
 
-- **Decisions 1-5** below were built as proposed and were never recorded as confirmed.
-- **Several images at once.** Not built. A run already spreads its heavy steps over worker
-  pools and, on a large stack, uses most of the RAM. Two questions:
-  - whether images should share the machine;
-  - if so, how many at once, by memory per image. The batch panel plan saw about 35 MB of
-    working set grow per image on a six-image demo, never measured on a real batch.
-- **ilastik's vessel masks per image.** `use_ilastik_large_vessel_segmentation` and
-  `use_ilastik_small_vessel_segmentation` read one raw file each
-  (`ilastik_unsegmented_*_image_path`), so a batch refuses them while their masks are in use.
-  Which file of each image they should read (the image's raw image, another channel, a folder of
-  their own) is his to say.
+- **ilastik's vessel masks from the raw image's channels:** the details before it is built
+  (what "a combination" means, per classifier or per role, single runs too).
 - **The Input tab's help text** for Batch run (`gui/stage_help.py`): his to write.
 
 ## Decisions to confirm with Harvey
 
-*Built as proposed (2026-10-19); none recorded as confirmed by Harvey yet (2026-10-24).*
+*Built as proposed (2026-10-19); all five confirmed by Harvey, kept as built (2026-10-24).*
 
 1. **Filled folder replaces, not adds.** A filled raw/large/small folder replaces the
    segmented folder for that role. It does not search both.
