@@ -1213,9 +1213,11 @@ def _skeletonize_loaded_volume(
     different skeleton depending on the file it was saved in. The hole fill was
     added deliberately to the TIFF path (issue #4) and the graph builder has
     been tuned against skeletons that have it, so the H5 path was the one that
-    was wrong. It is a no-op on the normal case anyway: a thin 3D curve
-    encloses no background, which is what
-    ``test_fill_binary_holes_on_a_sparse_skeleton_changes_nothing`` pins.
+    was wrong. It is no no-op: a thin 3D curve encloses no background
+    (``test_fill_binary_holes_on_a_sparse_skeleton_changes_nothing``), but
+    Lee thinning can leave closed surfaces where the mask holds fat or hollow
+    vessels, and the fill makes each solid -- on E14.5's cleaned Claudin mask
+    with plain Lee it added 49% to the skeleton (PLAN_optimisers.md, A10).
 
     *use_memmap* is forwarded to :func:`skeletonize_by_component` (whose
     per-component splitting, when it actually shrinks what skimage's own
