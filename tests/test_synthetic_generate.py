@@ -374,6 +374,58 @@ def test_a_large_tier_on_one_side_hands_over_at_its_boundary():
     assert all(d[SYNTHETIC_CLASS] == "large_arteriole" for *_e, d in G.edges(data=True) if d["branch_order"] == "Large_Art1")
 
 
+def _large_tier_only_template():
+    """The fixture template as a run with large-vessel masks alone leaves one
+    (E14.5's): Large_Art/Large_Ven orders straight into the capillary bed, no
+    Art/Ven tier, the hand-off nodes counted as large-vessel boundary nodes."""
+    T = fixture_template()
+    renamed = {"arteriole": ("large_arteriole", "Large_Art"), "venule": ("large_venule", "Large_Ven")}
+    orders = tuple(
+        replace(o, label=f"{renamed[o.category][1]}{o.index}", category=renamed[o.category][0]) for o in T.orders
+    )
+    classes = {
+        "capillary": T.classes["capillary"],
+        "large_arteriole": replace(T.classes["arteriole"], category="large_arteriole"),
+        "large_venule": replace(T.classes["venule"], category="large_venule"),
+    }
+    return replace(
+        T,
+        orders=orders,
+        classes=classes,
+        arteriole_boundary_count=0,
+        venule_boundary_count=0,
+        large_arteriole_boundary_count=6,
+        large_venule_boundary_count=4,
+    )
+
+
+def test_a_large_tier_alone_hands_over_to_the_bed_at_large_boundary_nodes():
+    """Regression (E14.5 as a template, 2026-10-24): with no Art/Ven tier the
+    large tier's leaves were marked arteriole/venule boundary nodes, so the
+    run labelled the large tier Art/Ven and counted no large boundary nodes."""
+    T = _large_tier_only_template()
+    G = generate_network(T, seed=SEED)
+    roles = boundary_nodes(G)
+    assert roles["arteriole_boundary"] == [] and roles["venule_boundary"] == []
+    assert len(roles["large_arteriole_boundary"]) == 6 and len(roles["large_venule_boundary"]) == 4
+    summary = assign_vessel_branch_orders(
+        G,
+        roles["inlet"],
+        outlet_nodes=roles["outlet"],
+        large_arteriole_boundary_nodes=roles["large_arteriole_boundary"],
+        large_venule_boundary_nodes=roles["large_venule_boundary"],
+        expects_hierarchical=False,
+    )
+    assert summary["mode"] == "large_tier"
+    labels = Counter(d["branch_order"] for *_e, d in G.edges(data=True))
+    trees = {label: n for label, n in labels.items() if not label.startswith("B")}
+    assert trees == {o.label: o.edge_count for o in T.orders}
+    assert not any(label.startswith(("Art", "Ven")) for label in labels)
+    for *_e, d in G.edges(data=True):
+        expected = "capillary" if d["branch_order"].startswith("B") else ("large_arteriole" if "Art" in d["branch_order"] else "large_venule")
+        assert d[SYNTHETIC_CLASS] == expected
+
+
 def test_a_template_without_capillaries_or_inlets_is_refused():
     T = fixture_template()
     with pytest.raises(ValueError, match="no capillaries"):

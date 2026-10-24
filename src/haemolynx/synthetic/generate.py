@@ -364,6 +364,12 @@ def generate_network(
                 if T.scheme == "hierarchical":
                     draft.add_role(node, side.boundary_role)
             continue
+        if large and not small:
+            # The large tier is the whole tree: its leaves are where it hands
+            # over to the bed, the large-vessel boundary nodes (the template's
+            # count of them), as the large masks alone leave a run.
+            side.boundary_role = side.large_role
+            side.boundary_count = getattr(T, f"{side.large_role}_count")
         side.result = grow_side(
             draft, T, side.name, side.roots,
             rng=rng, spacing_um=spacing, extent_um=extent, min_separation_um=min_separation,
