@@ -255,7 +255,7 @@ Of the four left undone on 2026-10-11, three are done:
 - **Review finders skip bridges**: `find_close_junctions`, `find_diameter_jumps`,
   `find_unmeasured_diameters` and `find_flow_outliers` test `IS_ZERO_RESISTANCE`
   (`graph/network_review.py:295, :381, :443, :605`), since 920eda6e (2026-10-09, already in the
-  base of 43dcf453; the list above missed it). `find_hairpins` did not until `951c07c3`
+  base of 43dcf453; the list above missed it). `find_hairpins` did not until `d0ca6387`
   (2026-10-24, below).
 - **The VTK flag**: an `is_zero_resistance` cell array (`visualization/vtk_io.py:258`, pinned by
   `tests/test_vtk_io.py:336`), b6d9210d (2026-10-12).
@@ -279,17 +279,20 @@ for every run: the tree is always found again from the region (design A not need
 
 Everything the plan asks that can be done without Harvey. E14.5 below is Harvey's Claudin
 segmentation with the repo-root `config.yaml`, built from a `git archive` of the commit named.
+E14.5 was measured on this branch before its rebase onto origin (as `6196f08a` and
+`b5a45d2c`); the rebased commits named here have the same build code (the commits rebased over
+touch ilastik's vessel masks, synthetic networks and the panel).
 
 | Item | Commit | What |
 |---|---|---|
-| Phase 0 diagnostic | `6196f08a`, refined in `2764811b` | `graph.diagnose_thick_vessel_bridges` (`graph/thick_vessel_bridge_shapes.py`): every bridge in one of finding 2's six shapes, plus `fork` (`bridge_forks`' bridges, now marked `THICK_FORK_BRIDGE`), with length over the thick lumen's radius at the tree point nearest its inner end, and whether it is drawn (C.5). Logged by `build_network` after the split, a warning when any bridge is a shape the split never means to make; a table and `bridges.csv` per side in `scripts/graph_artefacts.py` (whose sides now split with the run's own `thick_junction_bridge_arguments`). One fixture per shape (`tests/test_graph_thick_vessel_junctions.py`). |
-| `find_hairpins` skips bridges | `951c07c3` | And the junction half of `find_diameter_jumps`; tests of the bridge exclusion for hairpins, both halves of diameter jumps, unmeasured widths and flow outliers (`tests/test_network_review.py`). |
-| C.4, a shared node | `2764811b` | Bridges whose centreline ends lie within one lumen radius of each other end on one node: the junction already there, else the member's end nearest the group's middle (`_share_centreline_nodes`). Fixtures: an oblique join (bridged along its own line to where it met the centreline, longer than the radius by the slant), two vessels side by side (at junctions, and stopping short), two further apart than the radius. |
-| C.5, curved thick vessels | `2764811b` | A bridge whose straight line would cross more than 2 um of background keeps the way its vessel ran through the lumen, when that crosses less; marked `DRAWN_BRIDGE`, logged with the count left straight. Fixture: a C-shaped thick vessel. |
-| Settings | `6f0dfb8d` | `thick_bridge_centreline_tolerance_um` built (advanced, requires `use_thick_vessel_skeletonisation`, default 1.5 um, the constant it replaces): the split, every clean-up keeping the strand on the thick centreline (`ThickCentreline` in `network_context`), the wall join's reach and the shape report read it through `stages.thick_bridge_centreline_tolerance_um`. **`thick_bridge_one_radius` dropped**: the drawn-path rule it would switch back to was removed in 43dcf453 and gave no resistance to vessel at 290 of 393 E14.5 bridges; the comparison it was for runs that rule from a script (Phase 6). Listed for Harvey. |
-| Docstring | `b5a45d2c` | The split's module docstring describes rule A, C.4 and C.5, not the radius cut. |
-| Grid script | `5fc30c06` | `scripts/thick_bridge_review/build_grid.py` (Phase 5, below), tested in `tests/test_thick_bridge_review_grid.py`. |
-| Docs | the commit after `5fc30c06` | This status, CLAUDE.md's thick-vessel entry, `docs/notes/thick_vessels.md`, `RELEASE_REVIEW.md` (`graph.6b` evidence, log row; no score change). |
+| Phase 0 diagnostic | `00611a47`, refined in `5115da9e` | `graph.diagnose_thick_vessel_bridges` (`graph/thick_vessel_bridge_shapes.py`): every bridge in one of finding 2's six shapes, plus `fork` (`bridge_forks`' bridges, now marked `THICK_FORK_BRIDGE`), with length over the thick lumen's radius at the tree point nearest its inner end, and whether it is drawn (C.5). Logged by `build_network` after the split, a warning when any bridge is a shape the split never means to make; a table and `bridges.csv` per side in `scripts/graph_artefacts.py` (whose sides now split with the run's own `thick_junction_bridge_arguments`). One fixture per shape (`tests/test_graph_thick_vessel_junctions.py`). |
+| `find_hairpins` skips bridges | `d0ca6387` | And the junction half of `find_diameter_jumps`; tests of the bridge exclusion for hairpins, both halves of diameter jumps, unmeasured widths and flow outliers (`tests/test_network_review.py`). |
+| C.4, a shared node | `5115da9e` | Bridges whose centreline ends lie within one lumen radius of each other end on one node: the junction already there, else the member's end nearest the group's middle (`_share_centreline_nodes`). Fixtures: an oblique join (bridged along its own line to where it met the centreline, longer than the radius by the slant), two vessels side by side (at junctions, and stopping short), two further apart than the radius. |
+| C.5, curved thick vessels | `5115da9e` | A bridge whose straight line would cross more than 2 um of background keeps the way its vessel ran through the lumen, when that crosses less; marked `DRAWN_BRIDGE`, logged with the count left straight. Fixture: a C-shaped thick vessel. |
+| Settings | `94b28297` | `thick_bridge_centreline_tolerance_um` built (advanced, requires `use_thick_vessel_skeletonisation`, default 1.5 um, the constant it replaces): the split, every clean-up keeping the strand on the thick centreline (`ThickCentreline` in `network_context`), the wall join's reach and the shape report read it through `stages.thick_bridge_centreline_tolerance_um`. **`thick_bridge_one_radius` dropped**: the drawn-path rule it would switch back to was removed in 43dcf453 and gave no resistance to vessel at 290 of 393 E14.5 bridges; the comparison it was for runs that rule from a script (Phase 6). Listed for Harvey. |
+| Docstring | `47edef60` | The split's module docstring describes rule A, C.4 and C.5, not the radius cut. |
+| Grid script | `a857e40b` | `scripts/thick_bridge_review/build_grid.py` (Phase 5, below), tested in `tests/test_thick_bridge_review_grid.py`. |
+| Docs | `84443acc` | This status, CLAUDE.md's thick-vessel entry, `docs/notes/thick_vessels.md`, `RELEASE_REVIEW.md` (`graph.6b` evidence, log row; no score change). |
 
 **Phase 0 against finding 2.** The diagnostic, judging inner ends by the tree alone
 (`graph_centreline=False`), on the graph finding 2 measured (E14.5's 2026-10-07 checkpoint, the
@@ -311,7 +314,7 @@ bridge" and "other". By default an inner end on the graph's own thick centreline
 off the tree counts as reaching it: on E14.5 every bridge of the current rule ending off the tree
 ended on it, 2-6 um away.
 
-**E14.5 at the current rule.** The graph handed to the split at `6196f08a`, replayed
+**E14.5 at the current rule.** The graph handed to the split at `00611a47`, replayed
 (`outputs/tb/` in this worktree): straight out of the split 72 bridges (54 radius-shaped, 11
 longer, 2 along the centreline, 5 fork; 8 ending on the graph's thick centreline off the tree;
 length over radius median 1.00, 90th percentile 1.67). With C.4 and C.5: 73 (53, 13, 2, 5), 11
@@ -327,7 +330,7 @@ one is left in the saved graph, and the grid shows it, with the one drawn bridge
 
 **Phase 6** (before: the rule before 43dcf453, `outputs/tb/old_thick_split.py`, every inside run
 of an edge crossing the region a bridge along its drawn path; after: this checkout; both built
-and solved at `b5a45d2c`, one process each, `outputs/tb/e14_run.py`, `compare.py`,
+and solved at `47edef60`, one process each, `outputs/tb/e14_run.py`, `compare.py`,
 `outputs/tb/phase6.json`):
 
 | | before (the old rule) | after |
@@ -356,7 +359,7 @@ after.
 
 **Phase 5, the grid: sent to Harvey 2026-10-24, waiting on his marks.** 30 bridges and 30
 near-misses (stretches of vessel inside, or within 2 um of, the thick region and off its tree)
-from E14.5 at `b5a45d2c`, spread across distance from the tree over the tolerance and length over
+from E14.5 at `47edef60`, spread across distance from the tree over the tolerance and length over
 radius, shuffled into IDs 1-60 on two sheets, each in its own plane on the segmentation:
 `outputs/thick_bridge_review/grid_1.png`, `grid_2.png`, `key.csv`, `cases.json`,
 `marks_template.csv` (this worktree; `scripts/thick_bridge_review/build_grid.py` draws it again,
@@ -399,7 +402,7 @@ the graph differences along the least-resistance paths between the two runs' sav
   lumen radius, instead of a fixed margin, would put fewer real vessels inside the margin. The
   margin is the fixed `skeleton_thick_vessel_wall_absorption_um` ball round the body
   (`preprocessing/thick_vessels.py`'s `thick_vessel_region`); since rule A a bridge reaches the
-  region's boundary, so the margin is in every bridge's length (on E14.5 at `b5a45d2c` the 11
+  region's boundary, so the margin is in every bridge's length (on E14.5 at `47edef60` the 11
   bridges longer than 1.5 radii run 3.2-13.7 um past the lumen radius, median 5.4: the margin and
   the slant of an oblique join). It changes the graph, so it needs calibrating on marks first. Not
   built (2026-10-24): listed for Harvey.
