@@ -8,8 +8,8 @@ code changes.
 item 5 in b6d9210d and 666cafe8 (the pieces still missing landed on 2026-10-24 in 3bfdbcef,
 c990f2ca, 88e97182 and da6ca014), item 4 in b71718b5 and item 1 in 3e25f87b. Item 2's E14.5
 before/after was run on 2026-10-24 (see item 2). Its follow-up found why the graph changed far
-from the faces: tie order in direction-aware collapse and in mask recovery's coverage. A fix
-for both is proposed in item 2 and waits on Harvey, because it changes graphs.
+from the faces: tie order in direction-aware collapse and in mask recovery's coverage. Harvey
+approved a fix for both, which is in 581d1800 (2026-10-24). Nothing waits on Harvey.
 
 **Order:** 3, 2, 5, 4, then 1 once it is decided. Use one commit per item, each with its tests
 (see the Testing policy in CLAUDE.md). After each commit, run `pytest -m "not slow and not gui"`
@@ -141,10 +141,10 @@ It also wouldn't find vessel loops.
   wrong. Files are in `outputs/dale_item2_faces/` (git-ignored): `face_check.py`, `compare.py`,
   `far_changes.py`, `far_edges.py` and `report_before_after.json`.
 
-**Why the graph changes far from the faces (2026-10-24, follow-up).** Two build steps break
-ties in an order that depends on the whole image. Neither is intended, and a fix for either
-changes graphs, so both wait on Harvey (proposal below). Both are deterministic, which is why a
-repeat run agreed. But a small change anywhere reorders their ties everywhere else.
+**Why the graph changes far from the faces (2026-10-24, follow-up).** Two build steps broke
+ties in an order that depends on the whole image. Neither was intended. Both are deterministic,
+which is why a repeat run agreed, but a small change anywhere reordered their ties everywhere
+else. Harvey approved the fix below, which changes graphs; it is in 581d1800.
 
 - **How it was found.** I replayed the same two runs (c990f2ca, low-RAM path; both final graphs
   equal the earlier ones) and pickled the graph after each of the 13 `build_graph_from_skeleton`
@@ -226,26 +226,43 @@ repeat run agreed. But a small change anywhere reorders their ties everywhere el
   - The effect is that any change anywhere (skeletonisation, a crop, a code change upstream)
     moves vessels in dense junction clusters across the whole image. That makes every E14.5
     before/after comparison noisier than its change.
-- **Proposed fix, for Harvey (it changes graphs; not landed).**
-  1. Collapse: take equal-distance candidate pairs in the order of their two node positions,
-     not the order `query_pairs` returns them in. Walk each merged group's members in position
-     order, which fixes the rewiring order and the centroid's summation order.
-  2. Coverage: judge every sample tied with the 4th-nearest (query more neighbours and drop
-     those past the 4th distance), so a junction's copies are all tested or none.
-  3. Test each on a lattice fixture: the same graph comes back when node IDs are shifted, when
-     isolated far-away nodes are inserted first, and when node or edge insertion order is
-     reversed. Those are the presentations that exposed both.
-  - **Effect on E14.5's before graph:**
-    - Both fixes: 1,229 → 1,226 nodes, 1,407 → 1,404 edges, 47,680.8 → 47,683.1 µm. 28/25
-      edges differ; dead ends `broken` 3 → 4, `stops_short` 96 → 95, `unknown` 94 → 93.
-    - Collapse fix alone: 1,223 nodes, 1,402 edges, 47,625.6 µm.
-    - The fix makes these picks fixed, not better: either way it is a different choice among
-      the same ties.
-  - **Cost:** the coverage query asks each mask voxel for 24 neighbours instead of 4. Recovery
-    took 33–120 s across these six runs with a peer session's job running, so time it on a
-    quiet machine before landing.
+- **Fix (Harvey approved; 581d1800, 2026-10-24).**
+  1. Collapse (`collapse_node_clusters_direction_aware`) takes equal-distance candidate pairs in
+     the order of their two node positions, not the order `query_pairs` yields them. It also
+     processes merged groups, and each group's members, in position order. The patch tried
+     above lacked the group order, and reversing node order still changed 4 edges.
+  2. Coverage (`uncovered_mask_voxels`) judges every sample tied with the 4th nearest
+     (`mask_recovery._nearest_with_ties`). It asks for 5 neighbours and widens the query only
+     for the rows where the 5th ties the 4th. A flat 24-neighbour query would have held about
+     2.8 GB for one E14.5 slab, against about 470 MB.
+  3. Tests:
+     - `test_collapse_does_not_depend_on_node_order_or_ids`: a 1 µm lattice, 3 seeds × 4
+       presentations (IDs shifted, two isolated nodes first, nodes reversed, edges reversed). The
+       old code fails 6 of the 12.
+     - `test_the_mask_left_uncovered_does_not_depend_on_edge_order` and
+       `test_a_tied_junction_sample_reaching_across_a_flattened_lumen_covers_it`: a flat
+       six-vessel junction. The old code fails all three cases; either order changed 33 of its
+       uncovered voxels.
+     - `test_nearest_samples_include_every_one_tied_with_the_last`: 30 copies of one point are
+       all returned, in either order.
+     - The not-slow suite: 7,397 passed, 17 skipped. One earlier run of it exited non-zero near
+       the end; its log was overwritten, so the cause is unknown. The full rerun passed, and so
+       did the last tenth run on its own.
+  - **E14.5 face check rebuilt on the fixed code** (snapshot of 581d1800's `src`, same set-up):
+    - All 13 build steps differ only within 8.2 µm of a changed skeleton voxel.
+    - The final graph's last 10 and 8 far edges (≤ 46 µm) are the retrace-linked ones above.
+    - The face fix's own effect: 1,228 → 1,226 nodes, 1,406 → 1,404 edges, 47,695.3 →
+      47,807.7 µm (+0.24%), `leaves_image` 93 → 91, and no other dead-end kind changed.
+  - **What the fix itself changes on E14.5** (the before run, old code → new):
+    - 1,229 → 1,228 nodes, 1,407 → 1,406 edges, 47,680.8 → 47,695.3 µm; 39/38 edges differ.
+    - Dead ends: `broken` 3 → 4, `stops_short` 96 → 95, `unknown` 94 → 93.
+    - The picks are now fixed, not better: it is a different choice among the same ties. Saved
+      E14.5 graphs and counts pinned on them will move by about this much.
+  - **Cost:** about 2–3 s more per recovery coverage pass on E14.5. Timed alternately, two
+    repeats each, with napari idle: old code 15.0–18.7 s, new code 19.1–21.4 s.
 - **Files.** The harness is in `outputs/gnl/` (git-ignored) of worktree `gracious-euclid-9149c3`,
-  with a copy in the side-session notes folder (`graph_nonlocality_harness/`):
+  with a copy in the side-session notes folder (`graph_nonlocality_harness/`). The rerun on the
+  fixed code and `time_coverage.py` are in `outputs/gnl2/` there:
   - `steps.py <before|after>[_fixed|_both]` pickles every step's graph, plus inputs.
   - `compare_steps.py` and `local_inputs.py` find the first far step and check its input.
   - `order_test.py` and `order_fix_test.py` test collapse's presentations and fixes;
