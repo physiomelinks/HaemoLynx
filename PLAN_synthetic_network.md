@@ -376,7 +376,7 @@ through a private index, and do not edit `src/` while a long test run is in flig
 - Loading a 100 MB template in preflight stalls the GUI thread for a few seconds the first time; the
   memoised loader keeps it to once per template.
 
-## Status (2026-10-24: done, bar what waits on Harvey)
+## Status (2026-10-24: done; the panel check is Harvey's)
 
 Implemented 2026-10-18 (`bb831907`, merged `d098de1f`). Since:
 
@@ -476,7 +476,7 @@ dead ends by kind, capillary count (1,185 / 1,186 of 1,181) and mean diameter (1
 capillaries, so 237 are drawn), daughter angle 97 of 114 degrees, average degree 2.47 of 2.31 (the
 template's 94 ends of junction-less pieces).
 
-**Decided by Harvey, 2026-10-24** (on the options below; being built in this order):
+**Decided by Harvey, 2026-10-24** (on the options listed under "Before the decisions" below), and built:
 
 1. The large tier: **a trunk with side branches handed to the bed, its widths the template's per
    order** (Murray's law not enforced in the large tier, its exponent reported only; Murray stays
@@ -491,7 +491,66 @@ template's 94 ends of junction-less pieces).
 5. **A Voronoi bed as an option** (`bed_model`), beside the Delaunay fill.
 6. The panel half of verification 2: **Harvey checks it himself.**
 
-**Waits on Harvey** (behaviour the plan left open, as it stood before the decisions above):
+Built (templates the change does not concern draw as before: the fixture template's networks were
+compared edge for edge, position for position, at 12 seeds and 9,500 vessels before and after):
+
+- `c359b540` (1, 2): within the large tier a tip may go on as one child and hand a side branch to
+  the bed, the node a large-vessel boundary node taking one bed vessel
+  (`trees.trunk_children_per_tip`, `SideResult.handoffs`); its widths are each order's own
+  (`draw_root_diameters`), Murray's law and its fitted asymmetry are the Art/Ven tier's only. A
+  root's first vessel is re-aimed (up to 12 directions in its cone) when the one drawn leaves the
+  box, else shortened inside it, noted; the tree length rescale stops at the class's longest and
+  most tortuous (the graph source's own vessels; else 6x the median length and the tortuosity two
+  sigmas up the draw), noting the shortfall. The fixture's lengths move by at most 2% on a few
+  vessels (the cap); nothing else.
+- `16294de4` (3, 4): `generate.bed_volume_um3`: the template's measured tissue volume, else what
+  the bed's vertices take at the template's mean capillary chord apart, never more than the box (a
+  bed denser than its box -- the fixture's -- fills it whole, as before). A smaller bed is the
+  lattice at its spacing over the box, the points nearest the trees kept
+  (`lattice_vertices(grow_from=)`). The graph source reads a measured tissue volume from the saved
+  report too. `NetworkTemplate.vessel_box_um` is gone; a template written with it still loads.
+- `18476642` (5): `synthetic_bed_model` (`delaunay`, the default, or `voronoi`; Input tab, behind
+  the synthetic Advanced button). The Voronoi bed's vertices are the corners of a tessellation of
+  random seeds (`bed.voronoi_vertices`: Delaunay circumcentres, joined across shared faces; corners
+  outside the bed's volume or beside the trees left out; more seeds when a small box keeps too
+  few; the shortest edges contracted down to the vertex count), and the same fill prunes its cell
+  edges to the template's counts. 75-80% of the bed's vessels are cell edges (the record's
+  `voronoi_edges`); the repairs draw the rest. Plumbed through the schema (choices pinned to
+  `bed.BED_MODELS`), the stage, the form labels, the layout, the manifest, the citation text, the
+  example configs.
+
+**E14.5 again, after the decisions** (the same template, haemodynamics on, which now solves:
+`outputs/synthetic_e14p5/`). Generation 1.2-1.4 s. Comparison:
+
+| bed / source | exact rows equal | banded rows within |
+|---|---|---|
+| Delaunay / statistics | 47 of 49 | 57 of 63 |
+| Delaunay / graph | 47 of 49 | 56 of 63 |
+| Voronoi / statistics | 47 of 49 | 55 of 63 |
+| Voronoi / graph | 47 of 49 | 53 of 63 |
+
+Every large-tier order's vessel count is the template's (it was 68 of 79 exact rows outside); the
+large classes' mean widths are 18.4 and 21.1 um as measured; capillary length 43.9 mm against 42.5
+(was 49.5), mean 36.9 against 36.0 um. Still outside: the large-vessel boundary counts (22 / 49
+drawn against 34 / 47: the trunk's hand-offs and leaves, not the template's count), the daughter
+angle (97-101 against 114 degrees), the average degree (the template's 94 ends of junction-less
+pieces), loops (239-249 against 231: the bed's note, 231 loops and 277 dead ends cannot both be met
+with 1,181 capillaries), the capillary median length (32.4 against 28.1 um, 15.4% where the band is
+15%), and with the Voronoi bed the tortuosity (1.42 against 1.20) and the intercapillary distance
+(12 against 22 um): its cell edges are shorter than the template's chords, so its vessels are
+bent further to their lengths. Network resistance: 1.19 (Delaunay) and 1.43 (Voronoi) x 10^15
+Pa.s/m^3 against the template's 1.99.
+
+**Harvey's panel check (item 6).** On the Input tab set Input to "Synthetic network from a template
+run" and pick `C:\Users\hd01\Documents\GitHub\ImageLynx\.claude\worktrees\plan-synthetic-e08d0c\outputs\synthetic_e14p5\template\e14p5.haemorun`
+(the E14.5 template run above; it goes if the `plan-synthetic-e08d0c` worktree is cleaned up), set
+an output folder, Run. Check: the network appears after stage 3; the Boundaries role tabs are greyed
+with the note that the generator chose them; the Statistics tab has the template comparison
+section; Save run, then pick the saved file as a template: preflight refuses it ("The template run
+is itself a synthetic network ..."). Try the Advanced button's "Capillary bed model" too.
+
+**Before the decisions** (the options as they were put to Harvey):
+
 
 - **How to draw a large tier like E14.5's.** Its Large_Art/Large_Ven orders are a trunk whose
   order rises at every junction where a capillary leaves it (27 vessels over 15 orders, 1-3 a
