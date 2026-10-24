@@ -384,6 +384,37 @@ def test_relocation_prefers_the_file_nearest_the_run(tmp_path):
     assert snapshot.settings["input_path"] == str(tmp_path / "a" / "stack.tiff")
 
 
+def test_a_synthetic_run_loads_under_its_templates_stem_and_finds_its_template(tmp_path):
+    """A synthetic run saved on the server names its template there; loading
+    it here finds the template beside the run file, as an image run's input
+    is found, and writes no resume skeleton (a synthetic run has none)."""
+    from pathlib import PurePosixPath
+
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths, write_resume_artefacts
+    from haemolynx.pipeline.naming import run_stem
+
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "e14_5.haemorun").write_bytes(b"template")
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    settings = {
+        "network_source": "synthetic",
+        "synthetic_template_path": PurePosixPath(blocker / "runs" / "e14_5.haemorun"),
+        "vtk_output_prefix": blocker / "outputs" / "run",
+    }
+    snapshot = RunSnapshot(settings=settings, results_state={"settings": dict(settings)})
+
+    moved = relocate_run_paths(snapshot, tmp_path / "e14_5_synthetic.haemorun")
+
+    assert {m.name for m in moved} == {"synthetic_template_path", "vtk_output_prefix"}
+    assert Path(snapshot.settings["synthetic_template_path"]) == tmp_path / "templates" / "e14_5.haemorun"
+    assert run_stem(snapshot.settings) == "e14_5_synthetic"
+    loaded = StageCheckpoints()
+    assert write_resume_artefacts(snapshot, snapshot.settings, loaded) is None
+    assert not (tmp_path / "outputs" / "e14_5_synthetic_skeleton.npy").exists()
+    assert loaded.session_artefact_paths == ()
+
+
 # --- a run paused for post-processing, and runs saved before that stage existed ----------
 
 

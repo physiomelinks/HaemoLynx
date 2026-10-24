@@ -596,6 +596,38 @@ def test_clear_looks_for_checkpoints_under_the_input_stem_they_are_named_with(
     assert stems_for_cached_artefacts(ilastik) == ("raw_segmented",)
 
 
+def test_a_synthetic_run_names_and_clears_its_checkpoints_after_its_template(tmp_path):
+    """A synthetic run has no segmented input: its pickles carry the one
+    stem every output of the run does, ``{template stem}_synthetic``, and
+    Clear removes those, never an image run's left in the same folder by
+    a stale input_path."""
+    from haemolynx.gui.stage_checkpoints import (
+        discard_cached_artefacts_for_settings,
+        stems_for_cached_artefacts,
+    )
+
+    settings = {
+        "network_source": "synthetic",
+        "synthetic_template_path": tmp_path / "e14_5.haemorun",
+        "input_path": tmp_path / "stack.tif",  # left from an image run, not read
+        "vtk_output_prefix": tmp_path / "out" / "run",
+    }
+    checkpoints = StageCheckpoints()
+    results = built()
+    results.stage_finished("build_network", network(a_graph()))
+    checkpoint = checkpoints.record("build_network", _group("build_network", "3. Graph"), results, settings=settings)
+
+    ours = checkpoint_pickle_path(tmp_path / "out", "e14_5_synthetic", "build_network")
+    assert checkpoint.pickle_path == ours and ours.is_file()
+    image_runs = checkpoint_pickle_path(tmp_path / "out", "stack", "build_network")
+    image_runs.write_bytes(b"an image run's")
+    assert stems_for_cached_artefacts(settings) == ("e14_5_synthetic",)
+    assert discard_cached_artefacts_for_settings(settings) == (ours,)
+    assert not ours.is_file() and image_runs.is_file()
+    # With no template chosen there is no stem: nothing is named, nothing cleared.
+    assert stems_for_cached_artefacts({**settings, "synthetic_template_path": None}) == ()
+
+
 # --- a run from a tab starts from, and leaves, the earlier tabs as they were ---
 
 

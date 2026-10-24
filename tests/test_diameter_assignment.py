@@ -512,6 +512,58 @@ def test_stamp_edge_diameters_keeps_an_edt_sourced_diameter_on_resume():
     assert graph[0][1][0]["diameter_um"] == pytest.approx(5.0)
 
 
+def _drawn_network() -> nx.MultiGraph:
+    """Three B01 vessels of a synthetic network drawn at their own widths, on
+    the template's (endothelial) basis, and a fourth with no width."""
+    from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS
+
+    graph = nx.MultiGraph()
+    for index, width in enumerate((6.0, 7.0, 9.0)):
+        graph.add_edge(index, index + 10, key=0, branch_order="B01", length=EDGE_LENGTH_UM,
+                       diameter_um=width, diameter_source=DIAMETER_SOURCE_SYNTHETIC,
+                       **{EDGE_DIAMETER_BASIS: "endothelial"})
+    graph.add_edge(3, 13, key=0, branch_order="B01", length=EDGE_LENGTH_UM)
+    return graph
+
+
+@pytest.mark.parametrize("keep_existing", [False, True])
+def test_stamping_keeps_a_synthetic_networks_drawn_widths_and_their_basis(keep_existing):
+    """A synthetic vessel was drawn at its width: neither the class median nor
+    the table replaces it, whether the stage runs afresh or keeps what it has,
+    and the template's basis it carries stays with it."""
+    from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS
+
+    graph = _drawn_network()
+    counts = stamp_edge_diameters(
+        graph, DIAMETERS, keep_existing=keep_existing, use_edt_fallback=True, class_median_min_edges=2
+    )
+
+    assert counts["synthetic"] == 3
+    assert counts["table"] == 0 and counts["override"] == 0 and counts["unset"] == 0
+    for index, width in enumerate((6.0, 7.0, 9.0)):
+        data = graph[index][index + 10][0]
+        assert (data["diameter_um"], data["diameter_source"], data[EDGE_DIAMETER_BASIS]) == (
+            width, DIAMETER_SOURCE_SYNTHETIC, "endothelial",
+        )
+    # The vessel with no width takes the drawn widths' median, on their basis.
+    unwidthed = graph[3][13][0]
+    assert counts["class_median"] == 1
+    assert (unwidthed["diameter_um"], unwidthed["diameter_source"], unwidthed[EDGE_DIAMETER_BASIS]) == (
+        7.0, DIAMETER_SOURCE_CLASS_MEDIAN, "endothelial",
+    )
+
+
+def test_a_synthetic_vessel_without_a_width_falls_to_the_table():
+    from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
+
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, branch_order="B01", length=EDGE_LENGTH_UM,
+                   diameter_source=DIAMETER_SOURCE_SYNTHETIC)
+    counts = stamp_edge_diameters(graph, DIAMETERS)
+    assert counts["synthetic"] == 0 and counts["table"] == 1
+    assert graph[0][1][0]["diameter_um"] == pytest.approx(DIAMETERS["B01"])
+
+
 def test_fwhm_edt_disagreement_flag_fires_past_the_ratio():
     graph = _network()
     graph[0][1][0]["fwhm_diameter_um"] = 10.0

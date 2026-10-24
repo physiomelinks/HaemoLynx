@@ -28,7 +28,6 @@ from typing import Any, Mapping, Optional, Sequence
 import networkx as nx
 import numpy as np
 
-from haemolynx.graph._helpers import calculate_path_length
 from haemolynx.graph.dead_ends import (
     BLIND,
     DEAD_END_KIND,
@@ -584,6 +583,13 @@ def boundary_nodes(G: nx.Graph) -> dict:
     return out
 
 
+#: How near a polyline's end must lie to its node: ``np.allclose``'s test at
+#: ``atol=1e-6`` and its default ``rtol``, written out (it was most of the
+#: validation's time on a 10,000-vessel network).
+_END_ATOL = 1e-6
+_END_RTOL = 1e-5
+
+
 def validate_synthetic_graph(G: nx.Graph, template: Optional[NetworkTemplate] = None) -> None:
     """Raise ``ValueError`` unless *G* keeps the contract in the module docstring."""
     problems: list[str] = []
@@ -633,16 +639,20 @@ def validate_synthetic_graph(G: nx.Graph, template: Optional[NetworkTemplate] = 
             problems.append(f"edge {u}-{v} has no polyline")
             continue
         arr = np.asarray(voxels, float)
-        pu, pv = G.nodes[u]["pos"], G.nodes[v]["pos"]
+        pu, pv = np.asarray(G.nodes[u]["pos"], float), np.asarray(G.nodes[v]["pos"], float)
         # NetworkX yields an undirected edge's ends in node order, so the
         # polyline may run either way; it must touch both nodes.
-        forward = np.allclose(arr[0], pu, atol=1e-6) and np.allclose(arr[-1], pv, atol=1e-6)
-        backward = np.allclose(arr[0], pv, atol=1e-6) and np.allclose(arr[-1], pu, atol=1e-6)
-        if not (forward or backward):
+        ends = np.abs(np.stack([arr[0] - pu, arr[-1] - pv, arr[0] - pv, arr[-1] - pu]))
+        close = (ends <= _END_ATOL + _END_RTOL * np.abs(np.stack([pu, pv, pv, pu]))).all(axis=1)
+        if not ((close[0] and close[1]) or (close[2] and close[3])):
             problems.append(f"edge {u}-{v}'s polyline does not join its nodes")
-        if np.max(np.linalg.norm(np.diff(arr, axis=0), axis=1)) > 0.5 + 1e-6:
+        # One pass over the steps for both checks: calculate_path_length's
+        # sum of step lengths, read once rather than converting the polyline twice.
+        steps = np.diff(arr, axis=0)
+        step_lengths = np.sqrt(np.einsum("ij,ij->i", steps, steps))
+        if step_lengths.max() > 0.5 + 1e-6:
             problems.append(f"edge {u}-{v}'s polyline steps more than 0.5 um")
-        if not math.isclose(float(data.get("length", -1.0)), calculate_path_length(voxels), rel_tol=1e-6, abs_tol=1e-6):
+        if not math.isclose(float(data.get("length", -1.0)), float(step_lengths.sum()), rel_tol=1e-6, abs_tol=1e-6):
             problems.append(f"edge {u}-{v}'s length is not its polyline's")
         if not (data.get("diameter_um") or 0) > 0:
             problems.append(f"edge {u}-{v} has no diameter")

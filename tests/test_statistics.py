@@ -1,4 +1,5 @@
 """Tests for statistics module."""
+import math
 import re
 
 import pytest
@@ -894,6 +895,55 @@ def test_measured_sources_all_count():
     })
 
     assert compute_murray_law_compliance(G)["Mean Murray Ratio"] == pytest.approx(1.024)
+
+
+def test_a_synthetic_networks_drawn_widths_count_as_measured():
+    """A synthetic network's widths are what it was drawn with -- the
+    template's measurements -- so Murray's law reads them; a filled-in width
+    beside them still skips the junction."""
+    G = _bifurcation(10.0, [8.0, 8.0], sources={
+        (0, 1, 0): "synthetic", (1, 2, 0): "synthetic", (1, 3, 0): "synthetic",
+    })
+    result = compute_murray_law_compliance(G)
+    assert result["Murray Ratio Sample Count"] == 1
+    assert result["Mean Murray Ratio"] == pytest.approx(1.024)
+    assert result["Median Fitted Murray Exponent"] == pytest.approx(
+        math.log(2) / math.log(10.0 / 8.0), rel=1e-6
+    )
+    G = _bifurcation(10.0, [8.0, 8.0], sources={
+        (0, 1, 0): "synthetic", (1, 2, 0): "synthetic", (1, 3, 0): "table",
+    })
+    assert compute_murray_law_compliance(G)["Murray Ratio Sample Count"] == 0
+
+
+def test_murray_reads_a_generated_networks_exponent_off_its_trees():
+    """The generator holds Murray's law exactly at every tree junction with
+    the template's exponent: the statistic, reading the drawn widths, finds
+    that exponent at every junction of the trees, and skips none."""
+    import sys
+    from dataclasses import replace
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from haemolynx.graph.branch_order import assign_vessel_branch_orders
+    from haemolynx.synthetic import boundary_nodes, generate_network
+    from synthetic_fixtures import fixture_template
+
+    G = generate_network(replace(fixture_template(), murray_exponent=2.6), seed=4)
+    roles = boundary_nodes(G)
+    assign_vessel_branch_orders(
+        G, roles["inlet"], outlet_nodes=roles["outlet"],
+        arteriole_boundary_nodes=roles["arteriole_boundary"], venule_boundary_nodes=roles["venule_boundary"],
+    )
+    assert compute_murray_law_compliance(G)["Murray Junctions Without Measured Diameters"] == 0
+    trees = G.edge_subgraph(
+        (u, v, k) for u, v, k, d in G.edges(keys=True, data=True) if d["synthetic_class"] in ("arteriole", "venule")
+    )
+    result = compute_murray_law_compliance(trees)
+    assert result["Fitted Murray Exponent Sample Count"] >= 6
+    assert result["Median Fitted Murray Exponent"] == pytest.approx(2.6, rel=1e-6)
+    assert result["Fitted Murray Exponent IQR Low"] == pytest.approx(2.6, rel=1e-6)
+    assert result["Fitted Murray Exponent IQR High"] == pytest.approx(2.6, rel=1e-6)
 
 
 def test_each_junction_gets_its_own_fitted_exponent():

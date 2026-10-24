@@ -384,11 +384,14 @@ def test_a_template_without_capillaries_or_inlets_is_refused():
 
 @pytest.mark.slow
 def test_a_ten_thousand_vessel_template_generates_in_seconds():
+    """The plan's bound. Measured 7-10 s here (2026-10-24, three seeds, the
+    validation included); it was 11-12 s, half of it the validation, before
+    the validation stopped calling np.allclose on every polyline end."""
     T = fixture_template().scaled(3.76)
     start = time.perf_counter()
     G = generate_network(T, seed=0)
     seconds = time.perf_counter() - start
-    assert seconds < 60.0
+    assert seconds < 30.0
     record = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
     assert G.number_of_edges() > 9000
     assert record["capillaries"] == pytest.approx(T.classes["capillary"].count, rel=0.03)
