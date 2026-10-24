@@ -343,3 +343,40 @@ def test_a_tree_loses_every_interior_chain_whatever_the_node_order():
 
         assert removed == {"dead_ends": 4, "vessels": 4, "nodes": 5, "length_um": pytest.approx(40.0)}
         assert G.number_of_nodes() == 0
+
+
+def test_fixture_5_the_facing_pair_is_what_the_facing_join_joins():
+    """PLAN_dead_ends.md Phase 0, fixture 5: the two tips are a pair the join
+    accepts, and joining them leaves no dead end on either vessel."""
+    from dead_end_fixtures import facing_pair
+    from haemolynx.graph.facing_ends import facing_dead_end_pairs, join_facing_dead_ends
+
+    case = facing_pair()
+    support = MaskSupport(case.mask, VOXEL_SIZE)
+    other_tip = (10.0, 46.0, 40.0)
+    (pair,) = [p for p in facing_dead_end_pairs(case.graph, support) if {p.a, p.b} == {case.tip, other_tip}]
+    assert pair.refused is None and pair.gap_um == pytest.approx(6.0)
+
+    joined = join_facing_dead_ends(case.graph.copy(), support)
+
+    assert joined.degree(case.tip) == 2 and joined.degree(other_tip) == 2
+    assert case.tip not in de.classify_dead_ends(joined, extent_um=EXTENT, support=support)
+
+
+def test_fixture_10_cluster_collapse_takes_a_tip_within_5_um_of_its_junction():
+    """PLAN_dead_ends.md Phase 0, fixture 10 (inconsistency 8): cluster
+    collapse merges every node within 5 um, so the 4 um stub's tip goes into
+    its junction -- before any dead-end rule could judge it -- and the
+    junction is left with the trunk alone."""
+    from dead_end_fixtures import JUNCTION, tip_near_own_junction
+    from haemolynx.graph.collapse import collapse_node_clusters
+
+    case = tip_near_own_junction()
+    collapsed = collapse_node_clusters(case.graph.copy(), distance_threshold=5.0)
+
+    assert case.tip not in collapsed
+    dead_ends = [n for n in collapsed if collapsed.degree(n) == 1]
+    assert all(min(np.min(np.asarray(collapsed.nodes[n]["pos"])), 79.0 - np.max(collapsed.nodes[n]["pos"])) < 1.0
+               for n in dead_ends), "only the trunk's two face ends are left"
+    junctions = [n for n in collapsed if np.linalg.norm(np.asarray(collapsed.nodes[n]["pos"]) - JUNCTION) < 5.0]
+    assert len(junctions) == 1

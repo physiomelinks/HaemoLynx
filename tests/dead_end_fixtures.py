@@ -96,6 +96,19 @@ def broken_towards_side() -> Case:
                 "another vessel lies straight ahead across one stretch of background")
 
 
+def facing_pair() -> Case:
+    """Fixture 5: two dead ends heading straight for each other across 6 um of
+    background -- the branch off the junction, and one off a second vessel
+    along x at y = 56 -- with the segmentation broken between them."""
+    other = [[(10, 56, 0), (10, 56, 40)], [(10, 56, 40), (10, 56, 79)], [(10, 56, 40), (10, 46, 40)]]
+    mask, G = _with_branch(
+        [(10, 40, 40)], mask_to=(10, 37.5, 40), extra_paths=other,
+        extra_mask=[((10, 56, -5), (10, 56, 85)), ((10, 56, 40), (10, 48.5, 40))],
+    )
+    return Case("facing_pair", mask, G, _node((10, 40, 40)), "broken",
+                "another dead end faces it across one 6 um stretch of background")
+
+
 def short_spur() -> Case:
     """A blind stub 5 um long off a capillary of radius 2.5: under 3 radii."""
     mask, G = _with_branch([(10, 35, 40)])
@@ -116,6 +129,15 @@ def blind_sprout() -> Case:
     mask, G = _with_branch([(10, 20, 40)])
     return Case("blind_sprout", mask, G, _node((10, 20, 40)), "unknown",
                 "an interior blind end with no evidence either way")
+
+
+def tip_near_own_junction() -> Case:
+    """Fixture 10: a stub whose tip lies 4 um from the junction it hangs from,
+    within cluster collapse's 5 um, which merges the tip into its junction
+    before any rule judges it."""
+    mask, G = _with_branch([(10, 34, 40)])
+    return Case("tip_near_own_junction", mask, G, _node((10, 34, 40)), "artefact",
+                "4 um long: under the stub prune's three radii")
 
 
 def island() -> Case:
@@ -139,4 +161,6 @@ CASES = (
     off_the_mask,
     blind_sprout,
     island,
+    facing_pair,
+    tip_near_own_junction,
 )
