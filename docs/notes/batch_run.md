@@ -112,7 +112,7 @@ an output folder holding a `batch_settings.yaml` offers its batch (`read_batch_s
 fills the window and loads its settings into the panel. Greyed mask rows name their switches
 (`mask_switch_hint`), and a line counts the settings that differ from the defaults
 (`settings_changed`). Not done: remembering the window between napari sessions (the panel has
-no per-user store yet).
+no per-user store yet); Harvey does not want it (2026-10-24).
 Found on the way: Check used done-before from when the folders were matched, so after a batch it
 said "ready (checked)" of images Skip done would skip; it now reads them again. The summary's
 `peak_rss_bytes` was the manifest's process peak, which in one process includes every earlier

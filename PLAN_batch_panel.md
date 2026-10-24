@@ -1,6 +1,6 @@
 # Batch run panel: improvements (plan, 2026-10-23)
 
-> **Status (2026-10-24): complete, bar what waits on Harvey, a tester or free RAM** (the
+> **Status (2026-10-24): complete, bar what waits on a tester or free RAM** (the
 > lists at the end of this box).
 > - Phase 1 at `d4bdfd0c`; Phases 2-4 and the per-image cache clearing at `92dbc815`. It builds
 >   on `PLAN_batch_run.md` (implemented 2026-10-19). Harvey's decisions are at the end.
@@ -20,16 +20,8 @@
 >     scans every control in the window, shown or not, including the other files' rows and a
 >     tie's choice box. The two tabs had none; they now do. `usability.6d` still fails: the
 >     panel itself is not scanned.
-> - **Waits on Harvey:**
->   - *Remembering the window between napari sessions* (see "Later"). It would store the
->     window's last output folder and its size, per user. Two choices are his:
->     - whether the panel gets a per-user store at all;
->     - where. `QSettings("HaemoLynx", "HaemoLynx")` writes to the registry on Windows
->       (`HKEY_CURRENT_USER\Software\HaemoLynx\HaemoLynx`), a plist on macOS and
->       `~/.config/HaemoLynx/HaemoLynx.conf` on Linux. The INI format puts one readable file
->       under the user's application data instead (`%APPDATA%\HaemoLynx\HaemoLynx.ini`).
->     The tests would point it at a temporary folder (`QSettings.setPath`), so no test reads or
->     writes the user's own.
+> - **Not wanted (Harvey, 2026-10-24):** remembering the window between napari sessions
+>   (decision 8). Nothing is stored per user.
 > - **Waits on free RAM:** *the working set's growth across a real batch* (see "Later").
 >   Measuring it is a large run: an E14.5 image peaks at about 5.1 GiB. On 2026-10-24 only
 >   8.8 GB of 31.7 was free, with Harvey's Fiji and two napari windows open and another
@@ -140,9 +132,9 @@ Tests: 8 in `test_batch_settings.py`, 6 in `test_batch_run.py`, 8 in
 
 As planned below, with Harvey's decisions 2, 3, 4 and 6, except:
 
-- **Not done: remembering the window between napari sessions** (moved to "Later"). Within a
-  session the window keeps everything; across sessions the output folder's last batch is
-  offered as soon as the folder is typed.
+- **Not done: remembering the window between napari sessions** (moved to "Later"; not wanted,
+  decision 8). Within a session the window keeps everything; across sessions the output
+  folder's last batch is offered as soon as the folder is typed.
 - **Found and fixed:** Check kept the done-before read at Match, so after a batch it called
   every image "ready (checked)" though Skip done would skip them all. The summary's Peak RAM
   was the process's peak, which in a batch includes every earlier image; it is now the largest
@@ -267,7 +259,7 @@ Tests:
   comparison, subject pattern, aggregate, sections), then the table. The report box sits in a
   splitter under the table and starts folded, so Check no longer squeezes the table. The default
   size grows to whatever fits eight rows. Choices are remembered per user through `QSettings`,
-  never in the run's settings.
+  never in the run's settings. *Not built: Harvey does not want it (decision 8).*
 - **Table conveniences:** tick all, tick none and tick failed; sort by any column.
 - **Which settings run:** one line, "Settings: the panel's, 14 differ from the defaults [Show]".
   Show lists them.
@@ -304,7 +296,7 @@ tests/test_gui_batch_run_widget.py tests/test_gui_tooltips.py`).
 
 - **Remembering the window between napari sessions:** its last output folder and its size. The
   panel has no per-user store yet, and adding one, with the tests kept off the user's own, is
-  its own decision. *Waits on Harvey: what it would store and where are in the status box.*
+  its own decision. *Not wanted: Harvey, 2026-10-24 (decision 8).*
 - **The working set's growth across a batch:** about 35 MB an image on the six-image demo
   (440 to 619 MB), not measured on a real batch. *Waits on a machine with the RAM free; see the
   status box.*
@@ -328,3 +320,5 @@ tests/test_gui_batch_run_widget.py tests/test_gui_tooltips.py`).
 7. **On-disk caches** (added 2026-10-23): each image's are deleted once it ends, since the next
    image never reads them -- its decompressed input in `memmap_directory`, scratch volumes
    Windows kept while mapped, its stage checkpoint pickles and its thick-vessel region cache.
+8. **Remembering the window between napari sessions** (its last output folder and size): not
+   wanted (2026-10-24). The panel keeps no per-user store.
