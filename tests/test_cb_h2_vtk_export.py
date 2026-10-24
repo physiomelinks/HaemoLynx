@@ -195,6 +195,16 @@ def test_an_unreachable_edge_records_nan_rather_than_infinity(tmp_path):
     assert np.isfinite(transit).sum() == 1
 
 
+@pytest.mark.parametrize("attr", ["flow_abs", "hematocrit", "viscosity",
+                                  "assigned_diameter_um", "length"])
+def test_an_edge_missing_a_solved_quantity_raises_naming_it(tmp_path, attr):
+    """These used to read .get(attr, nan), so an edge the solve skipped became a NaN cell."""
+    state = _vessel_state({("a", "b", 0): 0.9, ("b", "c", 0): 0.0})
+    del state["graph"].edges["b", "c", 0][attr]
+    with pytest.raises(ValueError, match=rf"edge \('b', 'c', 0\) has no '{attr}'"):
+        write_vessels(state, "T", tmp_path)
+
+
 def test_flow_is_written_in_physical_units_not_solver_units(tmp_path):
     """The correction that moved absolute perfusion by five orders. Unit-less here would pass
     every other assertion in this file and be wrong by 1.3e5."""

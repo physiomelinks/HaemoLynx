@@ -62,8 +62,8 @@ CODES = {
 
 # Numbers copied from the edge table onto every cell, through the reader, so a blank or
 # non-finite cell raises. The pipeline's .vtp already carries the same values; the table is the
-# one source. fwhm_diameter_um is left out: the CB pipeline never measures it, so the .vtp's
-# array is left as the pipeline wrote it.
+# one source. fwhm_diameter_um is left out: the CB pipeline never measures it, and since package
+# AB graph_to_vtk writes no array for it (an older .vtp still holds an all-NaN one).
 FLOAT_COLUMNS = ("length_um", "euclidean_um", "tortuosity", "curvature",
                  "edt_diameter_um", "assigned_diameter_um")
 INT_COLUMNS = ("n_centreline_points",)

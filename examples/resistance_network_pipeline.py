@@ -1348,7 +1348,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
     if run_haemodynamics and VTK_export:
-        vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix)
+        # Edges no inlet reaches carry no branch order, diameter or resistance, and a failed
+        # FWHM fit leaves an edge without one: written as gaps, with a warning (package AB).
+        vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix, partial_edges="gap")
         print("\n=== VTK Export ===")
         print(f"  Vessels:   {vtk_export['vessels_path']}")
         print(f"  Pericytes: {vtk_export['pericytes_path']}")

@@ -36,6 +36,7 @@ from ImageLynx.batch_outputs import open_batch_run                     # noqa: E
 from ImageLynx.graph.boundaries import (                               # noqa: E402
     select_boundary_terminal_nodes_by_face,
 )
+from ImageLynx.graph.edge_attributes import edge_float                 # noqa: E402
 from ImageLynx.haemodynamics.rheology import (                         # noqa: E402
     report_unconverged,
     rheology_status,
@@ -53,6 +54,27 @@ TH_THRESHOLD = cb_settings.TH_THRESHOLD
 #: An edge counts as penetrating when this much of its length lies inside the TH mask.
 PENETRATION = cb_settings.PENETRATION_FRACTION
 INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
+
+
+def edge_rows(G, frac, arrival):
+    """One row per edge of the solved graph; a missing solved quantity raises, naming the edge."""
+    rows = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        edge = (u, v, key)
+        f = frac[edge]
+        # The transit time to reach this edge's far end, taking the later of its two ends so
+        # a penetrating capillary is scored by how long blood takes to get through it.
+        reach = max(arrival.get(u, float("inf")), arrival.get(v, float("inf")))
+        rows.append({
+            "th_fraction": f,
+            # solve_coupled_flow_and_hematocrit writes flow_abs and flow_signed.
+            "flow": edge_float(data, "flow_abs", edge),
+            "hematocrit": edge_float(data, "hematocrit", edge),
+            "diameter": edge_float(data, "assigned_diameter_um", edge),
+            "length": edge_float(data, "length", edge),
+            "transit": reach,
+        })
+    return rows
 
 
 def analyse(specimen):
@@ -73,21 +95,7 @@ def analyse(specimen):
     # flow directions. Absolute values are in arbitrary units, so only the ratio is reported.
     arrival = transit_time_from_inlets(G, inlets)
 
-    rows = []
-    for u, v, key, data in G.edges(keys=True, data=True):
-        f = frac.get((u, v, key), float("nan"))
-        # The transit time to reach this edge's far end, taking the later of its two ends so
-        # a penetrating capillary is scored by how long blood takes to get through it.
-        reach = max(arrival.get(u, float("inf")), arrival.get(v, float("inf")))
-        rows.append({
-            "th_fraction": f,
-            # solve_coupled_flow_and_hematocrit writes flow_abs and flow_signed.
-            "flow": float(data.get("flow_abs", float("nan"))),
-            "hematocrit": float(data.get("hematocrit", float("nan"))),
-            "diameter": float(data.get("assigned_diameter_um", float("nan"))),
-            "length": float(data.get("length", 0.0)),
-            "transit": reach,
-        })
+    rows = edge_rows(G, frac, arrival)
     return {
         "specimen_id": specimen.specimen_id,
         "group": specimen.group,

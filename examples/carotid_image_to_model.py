@@ -1542,8 +1542,9 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     rheology_arrays = _rheology_cell_arrays(G, vessels)
     # graph_to_vtk ran before the rheology solve. Its resistance array used to hold
     # set_poiseuille_resistances' power-law values, and since aecc53d (no provisional
-    # resistance on this path) it holds NaN. solve_flow_from_conductance_matrix computes each
-    # cell's flow as pressure drop / this array, so the refresh has to come first. It used to
+    # resistance on this path) it held NaN; since package AB it is left out, as no edge has a
+    # resistance yet. solve_flow_from_conductance_matrix computes each cell's flow as pressure
+    # drop / this array, so writing it has to come first. It used to
     # come after, and every exported flow was NaN, and so was every flow_abs copied back into
     # G below.
     vessels.cell_data["hematocrit"] = rheology_arrays["hematocrit"]

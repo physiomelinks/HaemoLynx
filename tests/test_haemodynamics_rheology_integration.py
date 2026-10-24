@@ -405,8 +405,9 @@ def _driver_cell_data_writes(function_name):
 def test_the_vtk_resistance_array_is_refreshed_after_the_rheology_solve():
     """The exported mesh must not carry a resistance and a viscosity from different models.
 
-    ``graph_to_vtk`` runs before the solver and writes a ``resistance`` cell array from
-    ``set_poiseuille_resistances``' power-law values. The post-solve pass then adds
+    ``graph_to_vtk`` runs before the solver. It used to write a ``resistance`` cell array from
+    ``set_poiseuille_resistances``' power-law values (since package AB, with no resistance on
+    the graph yet, it writes none, so this pass is the only writer). The post-solve pass adds
     ``hematocrit``, ``viscosity`` and ``wall_shear_stress_pa`` from the converged graph. It
     used not to touch ``resistance``, so a reader of the file had a resistance and a
     viscosity that do not satisfy R = 128 mu L / (pi d^4) together, and no way to tell.

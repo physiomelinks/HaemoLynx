@@ -46,16 +46,29 @@ def _export(G, tmp_path):
     return conductance, node_list, vtk_export, last
 
 
-def test_a_file_with_nan_resistance_is_refused_not_turned_into_nan_flow(tmp_path):
+def test_a_file_written_before_any_resistance_is_refused_not_turned_into_nan_flow(tmp_path):
     # The graph has resistances (so the matrix and pressures are fine); the file was written
-    # before they existed, which is the carotid body order that broke.
+    # before they existed, which is the carotid body order that broke. Since package AB the
+    # export leaves the array out rather than writing it as NaN.
     G = _chain([None, None, None])
     vtk_export = graph_to_vtk(G, tmp_path / "net")
     for _, _, d in G.edges(data=True):
         d["resistance"] = 2.0
     conductance, node_list = build_conductance_matrix_from_graph(G)
-    with pytest.raises(ValueError, match="None of the 3 cells .* has a finite, positive resistance"):
+    with pytest.raises(ValueError, match="missing resistance cell array"):
         solve_flow_from_conductance_matrix(conductance, node_list, 100.0, 0.0, [0], [3], vtk_export)
+
+
+def test_a_file_with_all_nan_resistance_is_refused_not_turned_into_nan_flow(tmp_path):
+    G = _chain([2.0, 2.0, 2.0])
+    conductance, node_list, vtk_export, last = _export(G, tmp_path)
+    import pyvista as pv
+    mesh = pv.read(vtk_export["vessels_path"])
+    mesh.cell_data["resistance"] = np.full(3, np.nan)
+    mesh.save(vtk_export["vessels_path"])
+    with pytest.raises(ValueError, match="None of the 3 cells .* has a finite, positive resistance"):
+        solve_flow_from_conductance_matrix(conductance, node_list, 100.0, 0.0, [0], [last],
+                                           vtk_export)
 
 
 @pytest.mark.parametrize("bad", [np.nan, 0.0])

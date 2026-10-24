@@ -6,6 +6,7 @@ import networkx as nx
 import numpy as np
 
 from ImageLynx.graph import assign_hierarchical_branch_orders
+from ImageLynx.graph.branch_order import NO_BRANCH_ORDER
 
 
 def _edge_id(u: int, v: int, key: int) -> tuple[int, int, int]:
@@ -180,7 +181,7 @@ def _render_rotatable_3d_html(
         edge_label_x.append(float(midpoint[0]))
         edge_label_y.append(float(midpoint[1]))
         edge_label_z.append(float(midpoint[2]))
-        edge_label_text.append(str(data.get("branch_order", "No_BO")))
+        edge_label_text.append(str(data.get("branch_order", NO_BRANCH_ORDER)))
     traces.append(
         go.Scatter3d(
             x=edge_label_x,

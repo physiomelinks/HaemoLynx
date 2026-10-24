@@ -121,7 +121,7 @@ def _morphometry_graph():
         G.add_node(n, pos=np.array(pos, dtype=float))
     G.add_edge(0, 1, length=14.0, weight=14.0, branch_order="B01",
                voxels=[[0, 0, 0], [0, 3, 5], [0, 0, 10]],
-               assigned_diameter_um=6.37, edt_diameter_um=6.37, fwhm_diameter_um=8.2,
+               assigned_diameter_um=6.37, edt_diameter_um=6.37,
                diameter_provenance="measured_edt", edt_junction_trim="trimmed",
                centreline_smoothing="bspline", resistance=1.0)
     G.add_edge(1, 2, length=10.0, weight=10.0, branch_order="B02",
@@ -192,3 +192,100 @@ def test_smoothing_tag_codes_keep_their_meaning():
     assert levels == ("bspline", "bspline_relaxed", "raw_fallback", "raw_too_short",
                       "raw_unchanged")
     assert list(levels) == CODES["centreline_smoothing"]
+
+
+# --- An array is written for every edge or for none (package AB) ---------------------------
+
+def _two_edges(**per_edge):
+    """Two edges in a line; ``per_edge[attr] = (first, second)``, None leaving it off."""
+    G = nx.MultiGraph()
+    for n in range(3):
+        G.add_node(n, pos=np.array([10.0 * n, 0.0, 0.0]))
+    for i in range(2):
+        attrs = {attr: values[i] for attr, values in per_edge.items() if values[i] is not None}
+        G.add_edge(i, i + 1, key=0, voxels=[[10.0 * i, 0, 0], [10.0 * i + 10, 0, 0]], **attrs)
+    return G
+
+
+@pytest.mark.parametrize("attr", ["resistance", "assigned_diameter_um", "fwhm_diameter_um"])
+def test_an_attribute_no_edge_carries_is_left_out_not_written_as_nan(tmp_path, attr):
+    """The H1 VTK's fwhm_diameter_um was all NaN: an edt_radius run never measures FWHM.
+
+    The carotid body pipeline also exports before its rheology solve, so no edge has a
+    resistance yet; it writes the solved array into the file afterwards.
+    """
+    mesh = pv.read(graph_to_vtk(_two_edges(), tmp_path / "net")["vessels_path"])
+    assert attr not in mesh.cell_data
+
+
+@pytest.mark.parametrize("attr", ["resistance", "assigned_diameter_um", "fwhm_diameter_um"])
+def test_an_attribute_every_edge_carries_is_written(tmp_path, attr):
+    mesh = pv.read(graph_to_vtk(_two_edges(**{attr: (2.0, 5.0)}),
+                                tmp_path / "net")["vessels_path"])
+    assert list(mesh.cell_data[attr]) == [2.0, 5.0]
+
+
+@pytest.mark.parametrize("attr", ["resistance", "assigned_diameter_um", "fwhm_diameter_um",
+                                  "branch_order"])
+def test_an_attribute_only_some_edges_carry_raises_naming_the_edges(tmp_path, attr):
+    G = _two_edges(**{attr: ("B01" if attr == "branch_order" else 2.0, None)})
+    with pytest.raises(ValueError, match=rf"1 of 2 .*'{attr}'.*\(1, 2, 0\)"):
+        graph_to_vtk(G, tmp_path / "net")
+
+
+def test_a_nan_value_raises_rather_than_being_written(tmp_path):
+    with pytest.raises(ValueError, match=r"edge \(1, 2, 0\) has a non-finite 'resistance'"):
+        graph_to_vtk(_two_edges(resistance=(2.0, np.nan)), tmp_path / "net")
+
+
+def test_branch_order_no_edge_carries_is_labelled_unassigned(tmp_path):
+    """No_BO says the order was never assigned, so it stays when no edge has one."""
+    mesh = pv.read(graph_to_vtk(_two_edges(), tmp_path / "net")["vessels_path"])
+    assert list(mesh.cell_data["branch_order"]) == ["No_BO", "No_BO"]
+
+
+def test_pericyte_points_raise_when_only_some_edges_have_a_branch_order():
+    G = _two_edges(branch_order=("B01", None))
+    with pytest.raises(ValueError, match=r"1 of 2 .*'branch_order'.*\(1, 2, 0\)"):
+        derive_pericyte_points_from_graph(G, constriction_spacing=5.0, constriction_length=2.0)
+
+
+def test_the_check_covers_only_the_edges_written_to_the_file(tmp_path):
+    """An edge with no geometry is never exported, so its missing value cannot matter."""
+    G = _two_edges(resistance=(2.0, 5.0))
+    G.add_edge(7, 8, key=0)                      # no voxels, no node positions: skipped
+    mesh = pv.read(graph_to_vtk(G, tmp_path / "net")["vessels_path"])
+    assert list(mesh.cell_data["resistance"]) == [2.0, 5.0]
+
+
+@pytest.mark.parametrize("bad", ["Raise", "nan", None])
+def test_partial_edges_takes_only_raise_or_gap(tmp_path, bad):
+    with pytest.raises(ValueError, match="partial_edges"):
+        graph_to_vtk(_two_edges(), tmp_path / "net", partial_edges=bad)
+
+
+def test_gap_writes_a_missing_value_as_a_gap_and_says_how_many(tmp_path, caplog):
+    """The nerve pipeline's unreached edges carry no order, diameter or resistance."""
+    G = _two_edges(resistance=(2.0, None), assigned_diameter_um=(6.0, None),
+                   branch_order=("B01", None))
+    with caplog.at_level("WARNING", logger="ImageLynx.visualization.vtk_io"):
+        mesh = pv.read(graph_to_vtk(G, tmp_path / "net", partial_edges="gap")["vessels_path"])
+
+    assert mesh.cell_data["resistance"][0] == 2.0 and np.isnan(mesh.cell_data["resistance"][1])
+    assert list(mesh.cell_data["branch_order"]) == ["B01", "No_BO"]
+    assert "fwhm_diameter_um" not in mesh.cell_data          # none still means left out
+    for attr in ("resistance", "assigned_diameter_um", "branch_order"):
+        assert f"1 of 2 exported edges have no '{attr}'" in caplog.text
+
+
+def test_gap_still_refuses_a_present_nan(tmp_path):
+    with pytest.raises(ValueError, match="non-finite 'resistance'"):
+        graph_to_vtk(_two_edges(resistance=(2.0, np.nan)), tmp_path / "net",
+                     partial_edges="gap")
+
+
+def test_pericyte_points_label_an_unordered_edge_under_gap():
+    out = derive_pericyte_points_from_graph(
+        _two_edges(branch_order=("B01", None)), constriction_spacing=5.0,
+        constriction_length=2.0, partial_edges="gap")
+    assert set(out["branch_order"]) == {"B01", "No_BO"}

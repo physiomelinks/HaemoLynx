@@ -266,8 +266,7 @@ custom_edges= [
 def _solve_system_smart(A: sp.csr_matrix, b: np.ndarray, iterative_threshold: int = 50000) -> np.ndarray:
     """Solve Ax=b using direct solver for small systems and iterative for large ones."""
     n = A.shape[0]
-    import scipy.sparse.linalg as splinalg
-    
+
     # Direct solver (spsolve) is very fast for small to medium systems
     if n < iterative_threshold:
         try:
@@ -1616,7 +1615,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
     if VTK_export:
-        vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix)
+        # Edges no inlet reaches carry no branch order, diameter or resistance, and a failed
+        # FWHM fit leaves an edge without one: written as gaps, with a warning (package AB).
+        vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix, partial_edges="gap")
         print("\n=== VTK Export ===")
         print(f"  Vessels:   {vtk_export['vessels_path']}")
         print(f"  Pericytes: {vtk_export['pericytes_path']}")

@@ -57,6 +57,7 @@ from ImageLynx.batch_outputs import open_batch_run                       # noqa:
 from ImageLynx.graph.boundaries import (                                 # noqa: E402
     select_boundary_terminal_nodes_by_face,
 )
+from ImageLynx.graph.edge_attributes import edge_float                   # noqa: E402
 from ImageLynx.haemodynamics.perfusion import (                          # noqa: E402
     VESSEL_MAPPINGS, PerfusionGrid, build_adr_matrix, cell_discharge_hematocrit,
     map_vessels_to_grid, solve_perfusion_steady_state,
@@ -219,16 +220,17 @@ def write_vessels(state, stem, out_dir):
         start = len(points)
         points.extend(poly.tolist())
         lines.extend([len(poly)] + list(range(start, start + len(poly))))
-        f = float(frac.get((u, v, key), np.nan))
+        edge = (u, v, key)
+        f = float(frac[edge])
         reach = max(arrival.get(u, np.inf), arrival.get(v, np.inf))
         cells.append({
             "th_fraction": f,
             "penetrating": 1.0 if f >= PENETRATION else 0.0,
-            "flow_um3_s": poiseuille_flow_to_um3_per_s(abs(float(data.get("flow_abs", np.nan)))),
-            "hematocrit": float(data.get("hematocrit", np.nan)),
-            "viscosity_cP": float(data.get("viscosity", np.nan)),
-            "diameter_um": float(data.get("assigned_diameter_um", np.nan)),
-            "length_um": float(data.get("length", np.nan)),
+            "flow_um3_s": poiseuille_flow_to_um3_per_s(abs(edge_float(data, "flow_abs", edge))),
+            "hematocrit": edge_float(data, "hematocrit", edge),
+            "viscosity_cP": edge_float(data, "viscosity", edge),
+            "diameter_um": edge_float(data, "assigned_diameter_um", edge),
+            "length_um": edge_float(data, "length", edge),
             # inf is not writable to VTK; unreachable edges become nan, which ParaView hides.
             "transit_time": float(reach) if np.isfinite(reach) else np.nan,
         })

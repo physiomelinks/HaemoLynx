@@ -6,6 +6,9 @@ import networkx as nx
 
 logger = logging.getLogger(__name__)
 
+#: The label shown for an edge with no branch order: no inlet reaches it, or none was assigned.
+NO_BRANCH_ORDER = "No_BO"
+
 
 def _edge_id(u: int, v: int, key: int) -> tuple[int, int, int]:
     """Return an orientation-independent edge id for MultiGraph edges."""
@@ -61,7 +64,6 @@ def _compute_node_distances(
     except ImportError:
         # Fallback to pure Python BFS if igraph is not available
         node_distances: dict[int, int] = {}
-        from collections import deque
         queue: deque[tuple[int, int]] = deque()
 
         for start_node in start_nodes:

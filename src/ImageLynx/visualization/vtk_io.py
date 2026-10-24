@@ -1,11 +1,17 @@
 """VTK export and rendering for vessel graphs and constriction points."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 import numpy as np
 import networkx as nx
+
+from ..graph.branch_order import NO_BRANCH_ORDER
+from ..graph.edge_attributes import edge_float
+
+logger = logging.getLogger(__name__)
 
 # What graph_to_vtk adds to its output prefix. ImageLynx.batch_outputs builds the batch-run
 # file names from these, so the writer and the reader name the same files.
@@ -110,34 +116,83 @@ def _interpolate_at_length(points: np.ndarray, cumlen: np.ndarray, s: float) -> 
     return points[idx] + t * (points[idx + 1] - points[idx])
 
 
+#: Per-edge numbers carried onto the vessels when the graph has them. Each is written for every
+#: exported edge or for none, never as NaN fill-ins: an edt_radius run never measures FWHM, and
+#: the carotid body pipeline exports before its rheology solve and writes the solved resistance
+#: in itself.
+_OPTIONAL_EDGE_NUMBERS = ("resistance", "assigned_diameter_um", "fwhm_diameter_um")
+
+#: What to do when only some exported edges carry one of these: "raise" (the default), or
+#: "gap" for a caller whose graph legitimately has such edges (the nerve pipeline's edges no
+#: inlet reaches carry no order, diameter or resistance; a failed FWHM fit leaves none). A gap
+#: is NaN, or NO_BRANCH_ORDER for the order, and a warning gives the count.
+PARTIAL_EDGES = ("raise", "gap")
+
+
+def _check_partial_edges(partial_edges: str) -> None:
+    if partial_edges not in PARTIAL_EDGES:
+        raise ValueError(f"partial_edges must be one of {PARTIAL_EDGES}, got {partial_edges!r}.")
+
+
+def _iter_edges(graph: nx.Graph) -> Iterable[Any]:
+    """``(u, v, key, data)`` for every edge; a simple graph's edges get key 0."""
+    if isinstance(graph, nx.MultiGraph):
+        return graph.edges(keys=True, data=True)
+    return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+
+def _edge_column(cells, attr: str, partial_edges: str, *, number: bool,
+                 what: str = "exported edges"):
+    """``attr`` for each ``(edge, data)`` in ``cells``, or None when none carries it.
+
+    ``cells`` are the edges written out (``what`` names them in messages).
+
+    Only some carrying it raises, naming the edges, unless ``partial_edges`` is "gap". A
+    present number goes through ``edge_float``, so NaN or text raises in either mode.
+    """
+    missing = [edge for edge, data in cells if data.get(attr) is None]
+    if cells and len(missing) == len(cells):
+        return None
+    gap = np.nan if number else NO_BRANCH_ORDER
+    if missing:
+        shown = ", ".join(str(edge) for edge in missing[:3])
+        message = (f"{len(missing)} of {len(cells)} {what} have no {attr!r}, for "
+                   f"example {shown}.")
+        if partial_edges == "raise":
+            raise ValueError(f"{message} The VTK export writes it for every edge or for none; "
+                             f"pass partial_edges='gap' where such edges are expected.")
+        logger.warning("%s Written as %s.", message, gap)
+    return [gap if data.get(attr) is None
+            else edge_float(data, attr, edge) if number else str(data[attr])
+            for edge, data in cells]
+
+
 def derive_pericyte_points_from_graph(
     graph: nx.Graph,
     *,
     constriction_spacing: float = 100.0,
     constriction_length: float = 40.0,
+    partial_edges: str = "raise",
 ) -> Dict[str, Any]:
     """Derive pericyte (constriction center) points along each edge path.
 
     Pericyte centers are placed at `constriction_length/2 + k*constriction_spacing`.
+    ``partial_edges`` decides an edge with no ``branch_order`` when others have one (see
+    ``PARTIAL_EDGES``).
     """
     if constriction_spacing <= 0 or constriction_length <= 0:
         raise ValueError("constriction_spacing and constriction_length must be > 0")
+    _check_partial_edges(partial_edges)
 
     points: List[np.ndarray] = []
     edge_u: List[int] = []
     edge_v: List[int] = []
     edge_key: List[int] = []
-    branch_order: List[str] = []
-
-    is_multigraph = isinstance(graph, nx.MultiGraph)
-    edge_iter: Iterable[Any]
-    if is_multigraph:
-        edge_iter = graph.edges(keys=True, data=True)
-    else:
-        edge_iter = ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+    sampled: List[tuple] = []
+    point_edge: List[int] = []
 
     first_center = constriction_length / 2.0
-    for u, v, k, data in edge_iter:
+    for u, v, k, data in _iter_edges(graph):
         try:
             line_pts = _edge_points(u, v, data, graph)
         except ValueError:
@@ -148,14 +203,21 @@ def derive_pericyte_points_from_graph(
             continue
 
         sample_pos = first_center
+        if sample_pos <= length:
+            sampled.append(((u, v, k), data))
         while sample_pos <= length:
             pt = _interpolate_at_length(line_pts, cumlen, sample_pos)
             points.append(pt)
             edge_u.append(int(u) if isinstance(u, (int, np.integer)) else -1)
             edge_v.append(int(v) if isinstance(v, (int, np.integer)) else -1)
             edge_key.append(int(k) if isinstance(k, (int, np.integer)) else 0)
-            branch_order.append(str(data.get("branch_order", "No_BO")))
+            point_edge.append(len(sampled) - 1)
             sample_pos += constriction_spacing
+
+    labels = (_edge_column(sampled, "branch_order", partial_edges, number=False,
+                           what="edges given pericyte points")
+              or [NO_BRANCH_ORDER] * len(sampled))
+    branch_order = [labels[i] for i in point_edge]
 
     return {
         "points": np.asarray(points, dtype=float) if points else np.empty((0, 3), dtype=float),
@@ -232,8 +294,16 @@ def graph_to_vtk(
     constriction_spacing: float = 100.0,
     constriction_length: float = 40.0,
     point_merge_decimals: int = 6,
+    partial_edges: str = "raise",
 ) -> Dict[str, Any]:
-    """Export vessels, pericytes, and nodes to VTK PolyData files."""
+    """Export vessels, pericytes, and nodes to VTK PolyData files.
+
+    ``resistance``, ``assigned_diameter_um``, ``fwhm_diameter_um`` and ``branch_order`` are
+    written for every exported edge, or left out when none has one (``branch_order`` is then
+    NO_BRANCH_ORDER throughout). ``partial_edges`` decides the mixed case (see
+    ``PARTIAL_EDGES``).
+    """
+    _check_partial_edges(partial_edges)
     try:
         import pyvista as pv
     except ImportError as exc:
@@ -252,19 +322,9 @@ def graph_to_vtk(
     edge_u: List[int] = []
     edge_v: List[int] = []
     edge_key: List[int] = []
-    branch_order: List[str] = []
-    resistances: List[float] = []
-    assigned_diameters: List[float] = []
-    fwhm_diameters: List[float] = []
+    exported: List[tuple] = []
 
-    is_multigraph = isinstance(graph, nx.MultiGraph)
-    edge_iter: Iterable[Any]
-    if is_multigraph:
-        edge_iter = graph.edges(keys=True, data=True)
-    else:
-        edge_iter = ((u, v, 0, data) for u, v, data in graph.edges(data=True))
-
-    for u, v, k, data in edge_iter:
+    for u, v, k, data in _iter_edges(graph):
         try:
             pts = _edge_points(u, v, data, graph)
         except ValueError:
@@ -291,16 +351,12 @@ def graph_to_vtk(
         edge_u.append(int(u) if isinstance(u, (int, np.integer)) else -1)
         edge_v.append(int(v) if isinstance(v, (int, np.integer)) else -1)
         edge_key.append(int(k) if isinstance(k, (int, np.integer)) else 0)
-        branch_order.append(str(data.get("branch_order", "No_BO")))
-        
-        r = data.get("resistance")
-        resistances.append(float(r) if r is not None else np.nan)
-        
-        ad = data.get("assigned_diameter_um")
-        assigned_diameters.append(float(ad) if ad is not None else np.nan)
+        exported.append(((u, v, k), data))
 
-        fd = data.get("fwhm_diameter_um")
-        fwhm_diameters.append(float(fd) if fd is not None else np.nan)
+    branch_order = (_edge_column(exported, "branch_order", partial_edges, number=False)
+                    or [NO_BRANCH_ORDER] * len(exported))
+    numbers = {attr: _edge_column(exported, attr, partial_edges, number=True)
+               for attr in _OPTIONAL_EDGE_NUMBERS}
 
     vessel_mesh = pv.PolyData()
     vessel_mesh.points = np.asarray(all_points, dtype=float) if all_points else np.empty((0, 3), dtype=float)
@@ -310,9 +366,9 @@ def graph_to_vtk(
         vessel_mesh.cell_data["edge_v"] = np.asarray(edge_v, dtype=np.int64)
         vessel_mesh.cell_data["edge_key"] = np.asarray(edge_key, dtype=np.int64)
         vessel_mesh.cell_data["branch_order"] = np.asarray(branch_order)
-        vessel_mesh.cell_data["resistance"] = np.asarray(resistances, dtype=float)
-        vessel_mesh.cell_data["assigned_diameter_um"] = np.asarray(assigned_diameters, dtype=float)
-        vessel_mesh.cell_data["fwhm_diameter_um"] = np.asarray(fwhm_diameters, dtype=float)
+        for attr, values in numbers.items():
+            if values is not None:
+                vessel_mesh.cell_data[attr] = np.asarray(values, dtype=float)
         _attach_morphometry(vessel_mesh, graph, list(zip(edge_u, edge_v, edge_key)))
     vessel_mesh.save(vessel_path)
 
@@ -320,6 +376,7 @@ def graph_to_vtk(
         graph,
         constriction_spacing=constriction_spacing,
         constriction_length=constriction_length,
+        partial_edges=partial_edges,
     )
     pericyte_mesh = pv.PolyData(pericyte["points"])
     pericyte_mesh.point_data["edge_u"] = pericyte["edge_u"]

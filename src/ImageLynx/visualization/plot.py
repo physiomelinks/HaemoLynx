@@ -8,6 +8,7 @@ import networkx as nx
 from matplotlib.colors import Normalize
 import plotly.graph_objects as go
 
+from ..graph.branch_order import NO_BRANCH_ORDER
 from ._helpers import (
     sort_branch_orders_numerically,
     create_color_mapping,
@@ -270,11 +271,11 @@ def visualize_geometry_with_branch_orders(
     edge_branch_orders = {}
     edge_paths = {}
     for u, v, key, data in G.edges(keys=True, data=True):
-        bo = data.get("branch_order", "No_BO")
+        bo = data.get("branch_order", NO_BRANCH_ORDER)
         path = data.get("voxels", [])
-        if bo != "No_BO":
+        if bo != NO_BRANCH_ORDER:
             all_branch_orders.add(bo)
-        if bo != "No_BO" and len(path) > 1:
+        if bo != NO_BRANCH_ORDER and len(path) > 1:
             edge_branch_orders[(u, v, key)] = bo
             edge_paths[(u, v, key)] = path
     visualizable = {
