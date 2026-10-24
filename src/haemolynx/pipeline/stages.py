@@ -455,6 +455,42 @@ def segmented_input_path(settings: dict) -> Path | None:
     return None if produced is None else Path(produced)
 
 
+def current_ilastik_output(settings: Mapping[str, Any]) -> tuple[Path | None, str]:
+    """``(path, "")``: the segmented image ilastik made before from the run's
+    raw image (:func:`segmented_input_path`), when its record says it is the
+    one `segment` would make now -- the same project, raw image and vessel
+    label (``io.ilastik.ilastik_output_is_current``) -- else ``(None, why
+    not)``. Never runs ilastik: for a caller that must not start a
+    segmentation, which can take hours (the panel's Optimise settings)."""
+    from haemolynx.io.ilastik import (
+        ilastik_label_names,
+        ilastik_output_is_current,
+        ilastik_provenance,
+        resolve_vessel_label,
+    )
+
+    output = segmented_input_path(dict(settings))
+    if output is None or not ilastik_segments(settings):
+        return None, "ilastik does not segment this run's image"
+    classifier = settings.get("ilastik_classifier_path")
+    if classifier in (None, ""):
+        return None, "ilastik_classifier_path is not set"
+    classifier = Path(classifier)
+    if not classifier.is_file():
+        return None, f"the ilastik project {classifier} does not exist"
+    try:
+        raw = io.resolve_image_path_with_optional_zip(Path(settings["raw_image_path"]))
+        names = ilastik_label_names(classifier)
+        label = resolve_vessel_label(
+            settings.get("ilastik_vessel_label"), names, setting="ilastik_vessel_label", project=classifier
+        )
+        provenance = ilastik_provenance(raw, classifier, label, label_names=names)
+    except (OSError, ValueError) as error:
+        return None, str(error)
+    current, reason = ilastik_output_is_current(output, provenance)
+    return (output, "") if current else (None, f"{output}: {reason}")
+
+
 def segment(
     settings: dict,
     *,

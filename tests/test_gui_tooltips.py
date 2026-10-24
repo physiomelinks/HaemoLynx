@@ -88,6 +88,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.HELP_TOOLTIP,
         chrome.USE_LAYER_TOOLTIP,
         chrome.OPTIMISE_SETTINGS_TOOLTIP,
+        chrome.OPTIMISE_SYNTHETIC_TOOLTIP,
         chrome.CHECK_SEGMENTED_IMAGE_TOOLTIP,
         *chrome.BATCH_RUN_TOOLTIPS.values(),
         chrome.REVERT_STAGE_TOOLTIP,

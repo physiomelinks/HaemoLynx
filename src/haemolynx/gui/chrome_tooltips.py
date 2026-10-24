@@ -380,6 +380,12 @@ OPTIMISE_SETTINGS_TOOLTIP = (
     "segmented input image, write a config file beside it, and show what "
     "would change for you to Apply or Discard"
 )
+#: Both settings optimisers while the run draws a synthetic network, greyed:
+#: there is no image for their trials to read. Also what each says if pressed.
+OPTIMISE_SYNTHETIC_TOOLTIP = (
+    "The run draws a synthetic network, so there is no image to optimise "
+    "settings on: set the Input tab's Input to Segmented image to use this"
+)
 CHECK_SEGMENTED_IMAGE_TOOLTIP = (
     "Score the segmented input image out of 10 -- fragmentation, "
     "connectivity, vessels leaving the image, surface noise and resolution "

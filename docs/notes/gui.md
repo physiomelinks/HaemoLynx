@@ -105,3 +105,35 @@ the "Tube diameter" choice, on the view panel and on the same controls (`set_tub
 the session's): `per_vessel` (default) as above, or `uniform`, every vessel `uniform_diameter_um`
 across whatever its `diameter_um`, which stays as it was. That width is the µm box shown beside
 the choice while it is Uniform (`set_tube_uniform_diameter`; 4 µm to start, 0.5-1000 µm).
+
+## The settings optimisers (Optimise settings, Optimise FWHM settings)
+
+History of `PLAN_optimisers.md` (2026-10-23), which brings both optimisers in line with the
+pipeline as it now runs; the plan's **Measured** section has the E14.5 numbers.
+
+- **Phase 2** (`f1184f25`): Optimise settings starts from what a run's skeletonise reads
+  (`stages.load_volume_on_run_grid`): the run's grid and whole settings, voxel counts on that grid
+  and back, the run's thick-vessel restriction, the plain skeleton through
+  `io.load._skeletonize_loaded_volume`. A trial's E14.5 skeleton equals the run's.
+- **Phase 3** (`9328c668`): FWHM trials measure through the run's own call
+  (`apply.measure_fwhm_diameters`) with the run's config and mask, inside the whole vessel graph,
+  on a template cleared of the run's widths.
+- **Phase 5** (panel, low RAM, words): both optimisers grey under `network_source=synthetic`,
+  saying why in their hover text (`chrome_tooltips.OPTIMISE_SYNTHETIC_TOOLTIP`) and refusing if
+  pressed; a set batch already greyed them (`d4bdfd0c`). The panel greys and gives back only what
+  it greyed, so a change of settings mid-run never frees a running optimiser's button. With
+  ilastik segmenting, Optimise settings uses its output when that output's record says it is the
+  one a run would make now (`stages.current_ilastik_output`), and otherwise refuses saying why; it
+  never runs ilastik (a segmentation can take hours, and a run makes it). Before, it refused with
+  no input path, and with one it called `segment`, which ran ilastik. Under `use_memmap_loading`
+  the worker (`_widget._optimise_settings_for_run`) binarises the mask onto disk and reads the raw
+  image onto disk as the stages do (`load_single_channel_tiff_volume(use_memmap=True)`, cut and
+  reduced a slab at a time; `io.raw_volume_cache` serves only the segmented image, which
+  `load_volume_on_run_grid` already reads through it). `block_reduce_volume` already read a
+  memmap a slab at a time; the search's raw-image reduction cast the whole image to float64 first
+  (eight bytes a voxel), and now casts a plane of blocks at a time, bit for bit the same.
+  "Off" is refused when the mask will not fit in free memory
+  (`search.full_resolution_search_refusal`, 128 B a voxel: a full-resolution search's traced
+  peak on the dense capillary bed fixture, tiled, was 56, 122 and 267 MB at 0.29, 1.15 and
+  2.30 M voxels, growing 76 then 126 B a voxel; measured with tracemalloc, so memory allocated
+  outside numpy and Python is not counted). Auto is not capped by it.
