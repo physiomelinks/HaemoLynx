@@ -38,6 +38,18 @@ ARRAY_UNITS: Dict[str, str] = {
     "pressure": "Pa",
 }
 
+#: The vessels file's field data beyond the units: the HaemoLynx version and
+#: what produced its numbers -- the blood model and the boundaries, from the
+#: graph a run solved, each written once the graph records it.
+RUN_FIELD_DATA = (
+    "haemolynx_version",
+    "viscosity_law",
+    "diameter_basis",
+    "haematocrit",
+    "haematocrit_model",
+    "open_end_model",
+)
+
 #: Every point of every file HaemoLynx writes is physical (z, y, x) microns.
 POINTS_UNIT = "um"
 POINTS_AXIS_ORDER = "z, y, x"
@@ -156,8 +168,8 @@ def graph_to_vtk(
     ``dead_end_kind`` ("" where it is not a dead end) and a NaN pressure
     where the solve could not set one. The run's
     blood model and boundaries (viscosity law, diameter basis, haematocrit,
-    open-end model) and the HaemoLynx version go in the vessels file's field
-    data.
+    haematocrit model, open-end model) and the HaemoLynx version go in the
+    vessels file's field data (:data:`RUN_FIELD_DATA`).
     """
     try:
         import pyvista as pv
@@ -332,7 +344,7 @@ def _run_metadata(graph: nx.Graph) -> Dict[str, Any]:
     from haemolynx import __version__
 
     meta: Dict[str, Any] = {"haemolynx_version": str(__version__)}
-    for name in ("viscosity_law", "diameter_basis", "haematocrit"):
+    for name in ("viscosity_law", "diameter_basis", "haematocrit", "haematocrit_model"):
         if graph.graph.get(name) is not None:
             meta[name] = graph.graph[name]
     record = graph.graph.get("open_end_conditions")

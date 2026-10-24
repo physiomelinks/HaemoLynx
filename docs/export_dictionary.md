@@ -43,7 +43,7 @@ Units are spelled one way everywhere. A column name in code style (lower case, u
 
 ## `{stem}_vessels.vtp`
 
-Written to the run's output folder (vtk_output_prefix's). Every vessel as a polyline (VTK PolyData), one cell per vessel. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit and open_end_model. Flow arrays are written once the network is solved.
+Written to the run's output folder (vtk_output_prefix's). Every vessel as a polyline (VTK PolyData), one cell per vessel. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit, haematocrit_model and open_end_model. Flow arrays are written once the network is solved.
 
 | Column | Unit | Meaning |
 |---|---|---|

@@ -5239,6 +5239,9 @@ def solve(
     flow_solver = _flow_solver(settings)
     if settings["run_haemodynamics"]:
         _warn_about_dense_solver_memory(settings, G)
+        # Which haematocrit the flows were solved with travels with them,
+        # beside the law, basis and haematocrit the resistances record.
+        G.graph["haematocrit_model"] = "distributed_iterative" if distribute_hct else "fixed"
     open_ends = (
         _open_end_conditions(settings, G, flow_solver)
         if settings["run_haemodynamics"] else haemodynamics.open_ends.OpenEndConditions()

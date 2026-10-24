@@ -665,51 +665,53 @@ def test_bifurcating_network_produces_a_pinned_median_haematocrit_signature():
 # --- end to end through the pipeline stages ---------------------------------
 
 
+def _solve_bifurcation(distribute: bool):
+    """`stages.build_haemodynamic_model` + `stages.solve` on the bifurcation,
+    with haematocrit_model distributed_iterative or fixed."""
+    from haemolynx.pipeline import BoundaryNodes, HaemodynamicModel, default_schema, resolve_settings
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    schema = default_schema()
+    G = _bifurcating_network()
+    G.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
+    model = HaemodynamicModel(graph=G)
+    boundaries = BoundaryNodes(
+        inlet_nodes=[0], outlet_nodes=[2, 3], resistance_node_pair=(0, 2),
+    )
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "run_haemodynamics": True,
+            "viscosity_law": "pries",
+            "haematocrit": 0.45,
+            "all_diams_const": False,
+            "haematocrit_model": (
+                "distributed_iterative" if distribute else "fixed"
+            ),
+            "haematocrit_distribution_max_iterations": 30,
+            "haematocrit_distribution_tolerance": 1e-3,
+            "inlet_p_bc": 1000.0,
+            "outlet_p_bc": 0.0,
+            "inlet_nodes": [0],
+            "outlet_nodes": [2, 3],
+            "do_equiv_resistance_calculation": False,
+            "diameter_by_branch_order": {"B01": 15.0, "B02": 20.0, "B03": 8.0},
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    model = build_haemodynamic_model(settings, model, schema)
+    return solve(settings, model, boundaries, schema)
+
+
 def test_solve_stage_with_the_toggle_on_converges_and_changes_resistances():
     """`stages.build_haemodynamic_model` + `stages.solve`, the real call
     chain a pipeline run makes, with haematocrit_model set to
     distributed_iterative -- proving the wiring (not just the module in
     isolation) works."""
-    from haemolynx.pipeline import BoundaryNodes, HaemodynamicModel, default_schema, resolve_settings
-    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
-
-    schema = default_schema()
-
-    def _run(distribute: bool):
-        G = _bifurcating_network()
-        G.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
-        model = HaemodynamicModel(graph=G)
-        boundaries = BoundaryNodes(
-            inlet_nodes=[0], outlet_nodes=[2, 3], resistance_node_pair=(0, 2),
-        )
-        values = {setting.name: setting.default for setting in schema}
-        values.update(
-            {
-                "run_haemodynamics": True,
-                "viscosity_law": "pries",
-                "haematocrit": 0.45,
-                "all_diams_const": False,
-                "haematocrit_model": (
-                    "distributed_iterative" if distribute else "fixed"
-                ),
-                "haematocrit_distribution_max_iterations": 30,
-                "haematocrit_distribution_tolerance": 1e-3,
-                "inlet_p_bc": 1000.0,
-                "outlet_p_bc": 0.0,
-                "inlet_nodes": [0],
-                "outlet_nodes": [2, 3],
-                "do_equiv_resistance_calculation": False,
-                "diameter_by_branch_order": {"B01": 15.0, "B02": 20.0, "B03": 8.0},
-            }
-        )
-        settings = resolve_settings(values, schema=schema, config_path=None)
-        model = build_haemodynamic_model(settings, model, schema)
-        return solve(settings, model, boundaries, schema)
-
-    off = _run(False)
+    off = _solve_bifurcation(False)
     assert "haematocrit_distribution" not in off.statistics
 
-    on = _run(True)
+    on = _solve_bifurcation(True)
     diag = on.statistics["haematocrit_distribution"]
     assert diag["converged"] is True
     assert on.pressure is not None
@@ -720,6 +722,28 @@ def test_solve_stage_with_the_toggle_on_converges_and_changes_resistances():
     assert on.graph[1][3][0]["resistance"] != pytest.approx(
         off.graph[1][3][0]["resistance"]
     )
+
+
+@pytest.mark.parametrize("distribute", [False, True], ids=["fixed", "distributed_iterative"])
+def test_the_solve_stage_records_its_haematocrit_model_and_the_vtk_carries_it(tmp_path, distribute):
+    """PLAN_dale_review_fixes.md item 5, step 2: the graph a solve leaves says
+    which haematocrit model its flows came from, beside the law, basis and
+    haematocrit its resistances record -- the run's ``haematocrit`` alone does
+    not say whether it was every vessel's or only the inlet's -- and the VTK
+    vessels file carries it in its field data, with a per-vessel discharge
+    haematocrit only where the model distributed one."""
+    pv = pytest.importorskip("pyvista")
+    from haemolynx.visualization import graph_to_vtk
+
+    expected = "distributed_iterative" if distribute else "fixed"
+    G = _solve_bifurcation(distribute).graph
+    assert G.graph["haematocrit_model"] == expected
+    assert G.graph["haematocrit"] == 0.45
+
+    vessels = pv.read(graph_to_vtk(G, tmp_path / "run")["vessels_path"])
+    assert str(vessels.field_data["haematocrit_model"][0]) == expected
+    assert float(vessels.field_data["haematocrit"][0]) == 0.45
+    assert ("discharge_haematocrit" in vessels.cell_data) is distribute
 
 
 TRIFURCATION_DIAMETERS = {"B01": 15.0, "B02": 12.0, "B03": 8.0, "B04": 10.0}

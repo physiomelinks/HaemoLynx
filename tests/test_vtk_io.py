@@ -347,6 +347,88 @@ def test_each_vessel_says_whether_its_flow_is_an_answer_and_why(tmp_path):
     assert "haemolynx_version" in vessels.field_data
 
 
+def _run_field_data(vessels) -> dict:
+    """The vessels file's field data beyond the units."""
+    return {
+        name: vessels.field_data[name][0]
+        for name in vessels.field_data.keys()
+        if not name.endswith("_unit") and not name.startswith("points_")
+    }
+
+
+def test_the_field_data_names_the_blood_model_and_boundaries_that_made_the_numbers(tmp_path):
+    """PLAN_dale_review_fixes.md item 5, step 2: every field of
+    ``RUN_FIELD_DATA`` reads back as the graph recorded it -- the law, the
+    diameter basis, the haematocrit, the haematocrit model and the open-end
+    model -- with the version, and nothing else beside the units."""
+    from haemolynx import __version__
+    from haemolynx.visualization.vtk_io import RUN_FIELD_DATA
+
+    G = _straight_edge_graph(10.0)
+    G.graph.update(
+        viscosity_law="pries_in_vivo_1994", diameter_basis="endothelial", haematocrit=0.4,
+        haematocrit_model="distributed_iterative", open_end_conditions={"model": "estimated"},
+    )
+
+    fields = _run_field_data(pv.read(graph_to_vtk(G, tmp_path / "model")["vessels_path"]))
+
+    assert set(fields) == set(RUN_FIELD_DATA)
+    assert str(fields["haemolynx_version"]) == str(__version__)
+    assert str(fields["viscosity_law"]) == "pries_in_vivo_1994"
+    assert str(fields["diameter_basis"]) == "endothelial"
+    assert float(fields["haematocrit"]) == 0.4
+    assert str(fields["haematocrit_model"]) == "distributed_iterative"
+    assert str(fields["open_end_model"]) == "estimated"
+
+
+def test_discharge_haematocrit_follows_its_own_vessel_and_is_blank_where_the_flow_is_no_answer(tmp_path):
+    """Item 5: each vessel's own discharge haematocrit, as float64; NaN on a
+    vessel that has none and on one no inlet and outlet reach, where it is no
+    more an answer than the flows are."""
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE
+
+    G = nx.MultiGraph()
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (20.0, 5.0, 0.0), 3: (20.0, -5.0, 0.0),
+           4: (50.0, 0.0, 0.0), 5: (60.0, 0.0, 0.0)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p))
+    for (u, v), state, haematocrit in (
+        ((0, 1), "solved", 0.45), ((1, 2), "solved", 0.3), ((1, 3), "solved", None),
+        ((4, 5), "no_boundary", 0.45),
+    ):
+        extra = {} if haematocrit is None else {"discharge_haematocrit": haematocrit}
+        G.add_edge(u, v, voxels=[pos[u], pos[v]], flow_abs=1e-15,
+                   **extra, **{FLOW_SOLVED: state == "solved", FLOW_STATE: state})
+
+    vessels = pv.read(graph_to_vtk(G, tmp_path / "haematocrit")["vessels_path"])
+
+    by_edge = {
+        (int(u), int(v)): index
+        for index, (u, v) in enumerate(zip(vessels.cell_data["edge_u"], vessels.cell_data["edge_v"]))
+    }
+    haematocrit = vessels.cell_data["discharge_haematocrit"]
+    assert haematocrit.dtype == np.float64
+    assert haematocrit[by_edge[(0, 1)]] == 0.45
+    assert haematocrit[by_edge[(1, 2)]] == 0.3
+    assert np.isnan(haematocrit[by_edge[(1, 3)]])
+    assert np.isnan(haematocrit[by_edge[(4, 5)]])
+    assert str(vessels.field_data["discharge_haematocrit_unit"][0]) == "fraction"
+
+
+def test_a_graph_with_no_diameters_haematocrit_or_blood_model_still_writes(tmp_path):
+    """Item 5: nothing measured or solved yet -- the diameters are NaN, the
+    source empty, no haematocrit array, and the field data says only which
+    version wrote it."""
+    vessels = pv.read(graph_to_vtk(_straight_edge_graph(10.0), tmp_path / "bare")["vessels_path"])
+
+    assert vessels.n_lines == 1
+    assert np.isnan(vessels.cell_data["diameter_um"]).all()
+    assert vessels.cell_data["length_um"] == pytest.approx([10.0])
+    assert [str(s) for s in vessels.cell_data["diameter_source"]] == [""]
+    assert "discharge_haematocrit" not in vessels.cell_data
+    assert set(_run_field_data(vessels)) == {"haemolynx_version"}
+
+
 # --- degenerate inputs are dropped, not exported as broken cells ------------
 
 

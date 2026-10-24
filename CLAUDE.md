@@ -806,7 +806,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   discharge haematocrit from Pries & Secomb's phase-separation law, iterated with the flow solve
   and under-relaxed each pass. `haematocrit_junction_rule` decides every junction that is not one
   vessel dividing in two: `no_separation` (default), `sequential_bifurcations` or
-  `split_junctions`. The default `"fixed"` uses one `haematocrit` everywhere. The loop ends with one
+  `split_junctions`. The default `"fixed"` uses one `haematocrit` everywhere. The solve stage records
+  which ran in `G.graph["haematocrit_model"]`, and the VTK writes it to its field data
+  (`vtk_io.RUN_FIELD_DATA`). The loop ends with one
   more solve (`final_solve=True`), so a vessel's flow is its drop over its reported resistance; a
   caller that re-solves itself passes `final_solve=False`.
 - **`haemodynamics/resistance.py`** — the flow solve and the two-point resistance.

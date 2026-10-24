@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Iterable, Union
 
 from haemolynx.statistics.glossary import UNITS as STATISTICS_UNITS
-from haemolynx.visualization.vtk_io import ARRAY_UNITS, POINTS_AXIS_ORDER, POINTS_UNIT
+from haemolynx.visualization.vtk_io import ARRAY_UNITS, POINTS_AXIS_ORDER, POINTS_UNIT, RUN_FIELD_DATA
 
 logger = logging.getLogger(__name__)
 
@@ -219,8 +219,8 @@ FILES: tuple[OutputFile, ...] = (
     OutputFile(
         "{stem}_vessels.vtp", _RUN,
         "Every vessel as a polyline (VTK PolyData), one cell per vessel. " + _VTK_POINTS
-        + " Field data also holds haemolynx_version, viscosity_law, diameter_basis, "
-        "haematocrit and open_end_model. Flow arrays are written once the network is solved.",
+        + f" Field data also holds {', '.join(RUN_FIELD_DATA[:-1])} and {RUN_FIELD_DATA[-1]}."
+        " Flow arrays are written once the network is solved.",
         _vtk(tuple(VESSEL_ARRAYS), VESSEL_ARRAYS),
     ),
     OutputFile(
