@@ -20,11 +20,10 @@
 > - **"A CLI"** (Later) is `python -m haemolynx.gui.batch_run` (`gui/batch_run_cli.py`), not a
 >   flag of the example script.
 > - **Harvey's decisions (2026-10-24):** decisions 1-5 kept as built; images stay one at a time;
->   ilastik's vessel masks in a batch would read a chosen channel, or a combination of channels,
->   of the image's own raw image file (not built: see "Waits on Harvey").
-> - **Waits on Harvey:**
->   - the details of ilastik's vessel masks from the raw image's channels;
->   - the Input tab's help text for Batch run (`gui/stage_help.py`, his to write).
+>   ilastik's vessel masks, in single runs and batches, read chosen channels of the run's raw
+>   image, kept separate, each classifier its own (not built yet: "To build" below).
+> - **Waits on Harvey:** the Input tab's help text for Batch run (`gui/stage_help.py`, his to
+>   write).
 >
 > Line numbers below are as of 2026-10-18 and have moved since.
 
@@ -330,16 +329,42 @@ the five folders, so the batch can be re-run.
 - **Decisions 1-5** below: kept as built.
 - **Several images at once:** no. Images run one at a time. A run already spreads its heavy
   steps over worker pools and, on a large stack, uses most of the RAM.
-- **ilastik's vessel masks per image:** they would read the image's own raw image file, with a
+- **ilastik's vessel masks per image:** they read the image's own raw image file, with a
   chosen channel or a combination of channels of it. Today
   `use_ilastik_large_vessel_segmentation` and `use_ilastik_small_vessel_segmentation` read one
   raw file each (`ilastik_unsegmented_*_image_path`, with no channel setting), so a batch still
-  refuses them while their masks are in use.
+  refuses them while their masks are in use. The details:
+  - **A combination** is the chosen channels kept separate: ilastik gets a multichannel image
+    of them, as the classifier was trained on. No arithmetic on the voxels.
+  - **Each classifier its own channels:** large and small, arteriole and venule each name theirs
+    (e.g. arteriole from channel 2, venule from channel 3 of the same file).
+  - **Single runs too:** vessel-mask ilastik always reads the run's raw image
+    (`raw_image_path`) by its channels. The separate `ilastik_unsegmented_*_image_path` files
+    become old settings that still load (`Setting.migrates`/`replaces`, as the other raw-image
+    paths did).
+
+### To build: ilastik's vessel masks from the raw image's channels (not started)
+
+1. **Settings.** A channel list per classifier (`ilastik_arteriole_channels`, ... four of them),
+   each `requires` its classifier's switch and `raw_image_path`. The old
+   `ilastik_unsegmented_*_image_path` settings migrate: a file that is the run's raw image
+   keeps working, and any other file is reported, since one raw image per run is the rule.
+2. **ilastik's input.** ilastik headless reads a whole file, so the chosen channels are written
+   to one file first (channels kept separate, the raw image's voxel size and axis order kept).
+   It goes in `ilastik_output_dir` beside the masks, named by role and class.
+3. **Reuse.** The provenance record names the raw image and its channels, so a change of
+   channels segments again.
+4. **Outputs and checks.** `ilastik_vessel_mask_output_path` and `output_paths` keep their
+   names. Preflight refuses a channel the raw image lacks, and an empty list.
+5. **Batch.** The refusal of ilastik's vessel masks goes. Each image's classifiers read its own
+   raw image, and the masks go in its `segmentations/` folder.
+6. **Panel.** The channel rows sit under each classifier, with hover text. Help text is
+   Harvey's.
+7. **Tests.** The migration, the channel file (separate channels, metadata kept), provenance
+   with channels, preflight, a single run and a batch with the fake ilastik.
 
 ### Waits on Harvey
 
-- **ilastik's vessel masks from the raw image's channels:** the details before it is built
-  (what "a combination" means, per classifier or per role, single runs too).
 - **The Input tab's help text** for Batch run (`gui/stage_help.py`): his to write.
 
 ## Decisions to confirm with Harvey
