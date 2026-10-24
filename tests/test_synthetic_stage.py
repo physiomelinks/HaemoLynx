@@ -139,6 +139,13 @@ def test_the_graph_stage_draws_the_network_and_pickles_it(template_run, tmp_path
     )
 
 
+def test_the_graph_stage_draws_the_bed_model_the_settings_choose(template_run, tmp_path):
+    settings = _settings(template_run, tmp_path, synthetic_bed_model="voronoi")
+    G = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA).graph
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["options"]["bed_model"] == "voronoi"
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["fill_phases"]["voronoi_edges"] > 0
+
+
 def test_the_graph_stage_hands_a_resumed_network_back(template_run, tmp_path):
     settings = _settings(template_run, tmp_path)
     volume = skeletonise(settings, segment(settings))
@@ -276,6 +283,7 @@ def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     assert manifest["status"] == "finished"
     assert manifest["network_source"] == "synthetic"
     assert manifest["synthetic"]["seed"] == 3
+    assert manifest["synthetic"]["bed_model"] == "delaunay"
     assert manifest["synthetic"]["source"] == "statistics"
     assert manifest["synthetic"]["template"].endswith("e14_5.haemorun")
     citations = (out / "out" / "e14_5_synthetic_citations.txt").read_text(encoding="utf-8")

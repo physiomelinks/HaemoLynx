@@ -17,6 +17,15 @@ repaired along the Delaunay edges (one edge per piece joined, which keeps the
 loop count) or merged away (a degree-2 vertex's two edges become one), and
 reported. Degree-1 vertices nearest the faces are set on them: they are the
 vessels the box cuts; the rest end blind inside.
+
+``model="voronoi"`` (the ``synthetic_bed_model`` setting) draws the bed's
+vertices and candidates from a **Voronoi tessellation** of random points
+instead (:func:`voronoi_vertices`): the vertices are its cells' corners and
+the candidates its cells' edges, the classic Voronoi capillary network. The
+same fill prunes them to the template's degree sequence, so the counts stay
+exact; what the Voronoi edges cannot fill the same repairs draw from nearest
+neighbours, and the bed's record counts how many of its vessels are Voronoi
+edges.
 """
 from __future__ import annotations
 
@@ -49,6 +58,16 @@ FALLBACK_NEIGHBOURS = 16
 #: Junctions of the largest piece tried, nearest first, for a piece every one
 #: of whose junctions has a dead end nearest (:func:`join_pieces`' last resort).
 JOIN_NEIGHBOURS = 8
+#: The bed models (the ``synthetic_bed_model`` choices; ``pipeline/schema.py``
+#: repeats them and a test pins the two equal).
+BED_MODEL_DELAUNAY = "delaunay"
+BED_MODEL_VORONOI = "voronoi"
+BED_MODELS: tuple[str, ...] = (BED_MODEL_DELAUNAY, BED_MODEL_VORONOI)
+#: Corners per cell of a Poisson-Voronoi tessellation in 3-D (27.07), each
+#: shared by four cells: the tessellation's vertices per seed point.
+VORONOI_VERTICES_PER_SEED = 27.07 / 4.0
+#: Tessellations drawn, each with more seeds, before a short one is kept.
+VORONOI_ATTEMPTS = 6
 
 
 @dataclass(frozen=True)
@@ -217,6 +236,119 @@ def lattice_vertices(
         chosen = rng.choice(len(points), size=count, replace=False)
         points = points[np.sort(chosen)]
     return points
+
+
+def _circumcentres(tetrahedra: np.ndarray) -> np.ndarray:
+    """The circumcentre of each tetrahedron (``(n, 4, 3)``); NaN for a flat one."""
+    a = tetrahedra[:, 0, :]
+    rest = tetrahedra[:, 1:, :] - a[:, None, :]
+    rhs = 0.5 * np.einsum("nij,nij->ni", rest, rest)
+    out = np.full(a.shape, np.nan)
+    det = np.linalg.det(rest)
+    scale = np.maximum(np.abs(rest).max(axis=(1, 2)), 1e-12) ** 3
+    ok = np.abs(det) > 1e-9 * scale
+    if ok.any():
+        out[ok] = a[ok] + np.linalg.solve(rest[ok], rhs[ok][..., None])[..., 0]
+    return out
+
+
+def voronoi_vertices(
+    extent_um: np.ndarray,
+    count: int,
+    *,
+    rng: np.random.Generator,
+    keep_clear: Optional[np.ndarray],
+    spacing_um: float,
+    grow_from: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """About *count* corners of a Voronoi tessellation of random points in
+    the box, and the cell edges between them (index pairs).
+
+    The seeds are uniform random points over the box padded by two
+    spacings, as many as give :data:`OVERSAMPLE` corners per *spacing_um*
+    cubed; the corners are the circumcentres of the seeds' Delaunay
+    tetrahedra, joined where two tetrahedra share a face. Corners outside
+    the box or within a quarter spacing of a face, or near *keep_clear*,
+    are left out; with *grow_from*, only the nearest are kept, as many as
+    fill the bed's share of the box. Then the shortest edges are contracted
+    (their two corners become one, at their midpoint) until *count* remain:
+    a random tessellation's corners come in close pairs, and its shortest
+    edges are a hundredth of its longest.
+    """
+    extent = np.asarray(extent_um, dtype=float)
+    spacing = float(spacing_um)
+    pad = 2.0 * spacing
+    low, high = -pad * np.ones(3), extent + pad
+    wanted = max(int(math.ceil(count * OVERSAMPLE)), 1)
+    seed_count = max(int(round(OVERSAMPLE * float(np.prod(high - low)) / (VORONOI_VERTICES_PER_SEED * spacing**3))), 8)
+    margin = np.minimum(FACE_MARGIN_SPACINGS * spacing, extent / 4.0)
+    clear_tree = cKDTree(np.asarray(keep_clear, dtype=float)) if keep_clear is not None and len(keep_clear) else None
+    for _attempt in range(VORONOI_ATTEMPTS):
+        seeds = rng.uniform(low, high, size=(seed_count, 3))
+        triangulation = Delaunay(seeds, qhull_options="QJ")
+        centres = _circumcentres(seeds[triangulation.simplices])
+        inside = np.all(np.isfinite(centres), axis=1)
+        inside &= np.all(centres >= margin, axis=1) & np.all(centres <= extent - margin, axis=1)
+        if clear_tree is not None:
+            near = clear_tree.query_ball_point(np.where(inside[:, None], centres, 0.0), r=CLEARANCE_SPACINGS * spacing)
+            inside &= np.array([len(n) == 0 for n in near])
+        kept = np.flatnonzero(inside)
+        if len(kept) >= wanted:
+            break
+        # A small box loses many corners to its faces and the trees: more
+        # seeds, by the shortfall.
+        seed_count = int(math.ceil(seed_count * max(1.2, 1.05 * wanted / max(len(kept), 1))))
+    if grow_from is not None and len(grow_from):
+        if len(kept) > wanted:
+            distances, _ = cKDTree(np.asarray(grow_from, dtype=float)).query(centres[kept])
+            order = np.argsort(distances + rng.uniform(0.0, 0.5 * spacing, size=len(kept)), kind="stable")
+            kept = np.sort(kept[order[:wanted]])
+    index = -np.ones(len(centres), dtype=int)
+    index[kept] = np.arange(len(kept))
+    pairs: set = set()
+    for t in kept:
+        for k in triangulation.neighbors[t]:
+            if k >= 0 and index[k] >= 0:
+                i, j = int(index[t]), int(index[k])
+                pairs.add((min(i, j), max(i, j)))
+    points = centres[kept]
+    # Contract the shortest edges until *count* corners remain.
+    parent = list(range(len(points)))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    groups = len(points)
+    if groups > count:
+        ordered = sorted(pairs, key=lambda e: float(np.linalg.norm(points[e[0]] - points[e[1]])))
+        for i, j in ordered:
+            if groups <= count:
+                break
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+                groups -= 1
+    roots = sorted({find(i) for i in range(len(points))})
+    new_index = {root: n for n, root in enumerate(roots)}
+    members: dict[int, list[int]] = {}
+    for i in range(len(points)):
+        members.setdefault(new_index[find(i)], []).append(i)
+    merged = np.array([points[members[n]].mean(axis=0) for n in range(len(roots))]) if roots else np.zeros((0, 3))
+    edges = sorted({
+        (min(a, b), max(a, b))
+        for a, b in ((new_index[find(i)], new_index[find(j)]) for i, j in pairs)
+        if a != b
+    })
+    if len(merged) > count:
+        # More corners than edges can contract (separate pieces): a few at random go.
+        chosen = np.sort(rng.choice(len(merged), size=count, replace=False))
+        remap = {int(old): n for n, old in enumerate(chosen)}
+        merged = merged[chosen]
+        edges = [(remap[a], remap[b]) for a, b in edges if a in remap and b in remap]
+    return merged, edges
 
 
 def candidate_edges(points: np.ndarray) -> list[tuple[int, int, float]]:
@@ -502,6 +634,7 @@ def build_bed(
     category: str = "capillary",
     target_chord_um: Optional[float] = None,
     grow_from: Optional[Sequence[int]] = None,
+    model: str = BED_MODEL_DELAUNAY,
 ) -> BedResult:
     """Add the bed to *draft*. *attached* maps the draft nodes the bed joins
     (tree leaves, or the roots themselves) to the bed edges each takes;
@@ -510,16 +643,24 @@ def build_bed(
     targets' dead ends go on the faces; *target_chord_um* the chord the
     template's capillaries have on average (the fill prefers candidates near
     it; None, the shortest); *grow_from*, draft nodes the bed is grown from
-    when it fills only part of the box (:func:`lattice_vertices`). See the
-    module."""
+    when it fills only part of the box (:func:`lattice_vertices`); *model*
+    one of :data:`BED_MODELS`. See the module."""
+    if model not in BED_MODELS:
+        raise ValueError(f"bed model must be one of {BED_MODELS}, got {model!r}")
     extent = np.asarray(extent_um, dtype=float)
     result = BedResult()
     attached_nodes = list(attached)
     clear = np.stack([draft.position(n) for n in keep_clear]) if keep_clear else None
     seeds = np.stack([draft.position(n) for n in grow_from]) if grow_from else None
-    bed_points = lattice_vertices(
-        extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, grow_from=seeds
-    )
+    voronoi_pairs: Optional[list] = None
+    if model == BED_MODEL_VORONOI:
+        bed_points, voronoi_pairs = voronoi_vertices(
+            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, grow_from=seeds
+        )
+    else:
+        bed_points = lattice_vertices(
+            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, grow_from=seeds
+        )
     if len(bed_points) < targets.vertices:
         draft.note(f"the bed has {len(bed_points)} vertices of the {targets.vertices} wanted (no room beside the trees)")
     bed_nodes = [draft.add_node(p) for p in bed_points]
@@ -572,7 +713,17 @@ def build_bed(
     fill = _Fill(points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um)
 
     candidates: dict[int, list[tuple[int, float]]] = {i: [] for i in range(len(all_nodes))}
-    for i, j, length in candidate_edges(points):
+    pairs = candidate_edges(points)
+    if voronoi_pairs is not None:
+        # A Voronoi bed's own vertices are joined along the cells' edges
+        # only; the attached nodes, off the tessellation, as before.
+        offset = len(attached_nodes)
+        pairs = [(i, j, length) for i, j, length in pairs if is_attached[i] or is_attached[j]]
+        pairs += [
+            (offset + a, offset + b, float(np.linalg.norm(points[offset + a] - points[offset + b])))
+            for a, b in voronoi_pairs
+        ]
+    for i, j, length in pairs:
         limit = MAX_ATTACHED_SPACINGS if (is_attached[i] or is_attached[j]) else MAX_CANDIDATE_SPACINGS
         if length <= limit * spacing_um:
             candidates[i].append((j, length))
@@ -705,6 +856,12 @@ def build_bed(
                 if fill.degree[v] >= caps[v]:
                     break
     result.short_of_degree = int(sum(caps[v] - fill.degree[v] for v in range(len(all_nodes)) if fill.degree[v] < caps[v]))
+    if voronoi_pairs is not None:
+        offset = len(attached_nodes)
+        cells = {(offset + a, offset + b) for a, b in voronoi_pairs}
+        bed_only = [e for e in fill.edges if not is_attached[e[0]] and not is_attached[e[1]]]
+        result.phases["voronoi_edges"] = int(sum(1 for e in bed_only if e in cells))
+        result.phases["bed_only_edges"] = len(bed_only)
 
     # Connectivity: every piece joined to the largest along the shortest pair.
     index_of = {node: i for i, node in enumerate(all_nodes)}
@@ -776,6 +933,9 @@ def build_bed(
 
 
 __all__ = [
+    "BED_MODELS",
+    "BED_MODEL_DELAUNAY",
+    "BED_MODEL_VORONOI",
     "BedResult",
     "DegreeTargets",
     "build_bed",
@@ -783,4 +943,5 @@ __all__ = [
     "degree_sequence_targets",
     "join_pieces",
     "lattice_vertices",
+    "voronoi_vertices",
 ]

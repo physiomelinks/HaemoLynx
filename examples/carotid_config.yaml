@@ -18,6 +18,8 @@ input_and_segmentation:
   synthetic_scale: 1.0
   # Give the synthetic network the template's number of dead ends inside the tissue as well as the vessels cut by the box; off, every dead end lies on a face  [needs network_source = synthetic]
   synthetic_interior_dead_ends: true
+  # How the synthetic capillary bed is drawn: delaunay joins jittered lattice points along Delaunay edges, voronoi runs the capillaries along the edges of a Voronoi tessellation of random points; both are pruned to the template's capillary count, loops and dead ends  [one of: delaunay, voronoi; needs network_source = synthetic]
+  synthetic_bed_model: delaunay
   # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off and network_source = segmented_image; must exist]
   input_path: examples/images/carotid_mask.tif
   # What the segmented vessels are, and so what a diameter taken from the segmentation measures: plasma_column for a mask of the channel blood flows in (a luminal label, as a plasma stain images it), or endothelial (anatomical) for a mask of the vessel wall to wall, which includes the ~1.1 um endothelial surface layer. The pries viscosity law takes the matching form for every diameter the segmentation gave -- the mask's own widths, the class medians and the table; a diameter measured from the raw image carries the raw image's own. Choosing endothelial for a plasma label subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, endothelial]

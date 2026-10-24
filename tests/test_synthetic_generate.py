@@ -805,6 +805,65 @@ def test_lattice_vertices_grown_from_seeds_keep_the_nearest():
     assert np.median(spacing) == pytest.approx(10.0, rel=0.4)
 
 
+# -- the Voronoi bed (bed_model="voronoi", Harvey 2026-10-24) -----------------
+
+
+def test_circumcentres_are_equidistant_and_a_flat_tetrahedron_has_none():
+    tetrahedra = np.array([
+        [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 8.0]],
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+    ])
+    centres = bed_module._circumcentres(tetrahedra)
+    assert centres[0] == pytest.approx([2.0, 3.0, 4.0])
+    distances = np.linalg.norm(tetrahedra[0] - centres[0], axis=1)
+    assert distances == pytest.approx([distances[0]] * 4)
+    assert np.isnan(centres[1]).all()
+
+
+def test_voronoi_vertices_are_corners_joined_along_cell_edges():
+    rng = np.random.default_rng(3)
+    extent = np.array([200.0, 200.0, 200.0])
+    points, edges = bed_module.voronoi_vertices(extent, 300, rng=rng, keep_clear=None, spacing_um=200.0 / 300 ** (1 / 3))
+    assert len(points) == 300
+    assert np.all(points > 0) and np.all(points < extent)
+    assert all(0 <= a < b < 300 for a, b in edges) and len(set(edges)) == len(edges)
+    degree = np.bincount(np.array(edges).ravel(), minlength=300)
+    # A tessellation's corners meet four cell edges; contracting its
+    # shortest edges merges a few into corners of five or six.
+    assert np.median(degree) == 4
+    assert np.mean(degree) == pytest.approx(4.0, abs=0.6)
+
+
+def test_a_voronoi_bed_keeps_the_templates_counts_along_cell_edges():
+    T = fixture_template()
+    G = generate_network(T, seed=SEED, options=GenerationOptions(bed_model="voronoi"))
+    record = G.graph[GRAPH_TEMPLATE_RECORD]
+    generated = record["generated"]
+    assert record["options"]["bed_model"] == "voronoi"
+    assert generated["capillaries"] == pytest.approx(160, rel=0.03)
+    assert generated["loops"] == pytest.approx(51, abs=2)
+    assert generated["bed_face_ends"] == generated["bed_face_ends_wanted"]
+    assert generated["bed_blind_ends"] == generated["bed_blind_ends_wanted"]
+    # Most of the bed's own vessels run along the tessellation's cell edges.
+    assert generated["fill_phases"]["voronoi_edges"] >= 0.6 * generated["fill_phases"]["bed_only_edges"]
+    again = generate_network(T, seed=SEED, options=GenerationOptions(bed_model="voronoi"))
+    assert sorted(again.edges(keys=True)) == sorted(G.edges(keys=True))
+    delaunay = generate_network(T, seed=SEED)
+    assert "voronoi_edges" not in delaunay.graph[GRAPH_TEMPLATE_RECORD]["generated"]["fill_phases"]
+
+
+def test_an_unknown_bed_model_is_refused():
+    with pytest.raises(ValueError, match="bed model"):
+        generate_network(fixture_template(), seed=SEED, options=GenerationOptions(bed_model="lattice"))
+
+
+def test_the_schemas_bed_models_are_the_generators():
+    from haemolynx.pipeline import default_schema
+
+    assert default_schema()["synthetic_bed_model"].choices == bed_module.BED_MODELS
+    assert default_schema()["synthetic_bed_model"].default == bed_module.BED_MODEL_DELAUNAY
+
+
 def test_lattice_vertices_fill_the_box_and_keep_clear():
     rng = np.random.default_rng(0)
     extent = np.array([50.0, 100.0, 100.0])

@@ -39,7 +39,7 @@ from haemolynx.graph.dead_ends import (
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS
 
-from .bed import build_bed, degree_sequence_targets
+from .bed import BED_MODEL_DELAUNAY, build_bed, degree_sequence_targets
 from .draft import BED, TREE, NetworkDraft
 from .polylines import DEFAULT_POINTS, bend_path, bend_to_lengths, densify_paths
 from .template import (
@@ -106,6 +106,9 @@ class GenerationOptions:
     min_separation_um: Optional[float] = None
     voxel_step_um: float = 0.5
     bend_points: int = DEFAULT_POINTS
+    #: ``bed.BED_MODELS``: the Delaunay fill of a jittered lattice, or the
+    #: edges of a Voronoi tessellation (the ``synthetic_bed_model`` setting).
+    bed_model: str = BED_MODEL_DELAUNAY
 
 
 @dataclass
@@ -446,6 +449,7 @@ def generate_network(
         max_degree=options.max_bed_degree,
         target_chord_um=_capillary_chord(T),
         grow_from=None if bed_volume_from == BED_IN_BOX else tree_nodes + [node for node, _f in roots["inlet"] + roots["outlet"]],
+        model=options.bed_model,
     )
 
     if bed.edges == 0:

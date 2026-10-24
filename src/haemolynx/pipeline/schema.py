@@ -246,6 +246,22 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="synthetic_bed_model",
+            kind="choice",
+            # Kept equal to haemolynx.synthetic.bed's BED_MODELS.
+            default="delaunay",
+            choices=("delaunay", "voronoi"),
+            help=(
+                "How the synthetic capillary bed is drawn: delaunay joins jittered "
+                "lattice points along Delaunay edges, voronoi runs the capillaries along "
+                "the edges of a Voronoi tessellation of random points; both are pruned "
+                "to the template's capillary count, loops and dead ends"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
+        Setting(
             name="input_path",
             # No default: there is no image every run should read, and a
             # plausible-looking path that is not there costs more to diagnose

@@ -697,6 +697,7 @@ def _build_synthetic_network(
         options = synthetic.GenerationOptions(
             scale=float(settings.get("synthetic_scale") or 1.0),
             interior_dead_ends=bool(settings.get("synthetic_interior_dead_ends", True)),
+            bed_model=str(settings.get("synthetic_bed_model") or "delaunay"),
         )
         logger.info(
             "Drawing a synthetic network to the template (seed %s, scale %g, dead ends inside the tissue %s)...",

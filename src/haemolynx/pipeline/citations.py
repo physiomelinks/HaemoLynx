@@ -821,8 +821,10 @@ NETWORK_GENERATION_CITATIONS: tuple[Citation, ...] = (
             "arterial and venous trees grown to the template run's branch-order "
             "table under Murray's law, and a capillary bed drawn as a "
             "degree-constrained random spatial network on jittered lattice "
-            "points joined along Delaunay edges, matched to the template's "
-            "capillary count, loops and dead ends; the organisational "
+            "points joined along Delaunay edges (or, with synthetic_bed_model "
+            "voronoi, along the edges of a Voronoi tessellation of random "
+            "points), matched to the template's capillary count, loops and "
+            "dead ends; the organisational "
             "requirements a synthetic capillary bed is matched on follow"
         ),
         reference=(
