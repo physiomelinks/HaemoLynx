@@ -85,6 +85,37 @@ def test_a_run_that_ended_leaves_the_panel_free():
     assert state.worker is None
 
 
+def test_listeners_hear_a_run_start_end_and_be_superseded():
+    """What greys while a run goes (the Batch run button) follows the run
+    through every way it can end, not only the ones that know about it."""
+    state = RunState()
+    heard = []
+    state.on_change(lambda: heard.append(state.running))
+
+    state.start(worker=FakeWorker())
+    state.stopped()
+    state.start(worker=FakeWorker())
+    state.cancel()  # asks; the panel is freed by supersede, which is heard
+    assert heard == [True, False, True]
+    state.supersede()
+    assert heard == [True, False, True, False]
+
+
+def test_a_listener_that_raises_never_stops_the_run_state(caplog):
+    state = RunState()
+    heard = []
+
+    def broken() -> None:
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    state.on_change(broken)
+    state.on_change(lambda: heard.append(state.running))
+    state.start(worker=FakeWorker())
+    assert state.running is True
+    assert heard == [True]
+    assert "listener failed" in caplog.text
+
+
 # --- the regression: a cancelled run must let the next one start -------------
 
 

@@ -403,6 +403,14 @@ BATCH_RUN_TOOLTIPS = {
         "matched to its raw image and vessel masks by file name, saving a "
         ".haemorun and the run's outputs in a folder named after the image"
     ),
+    #: The button, greyed, under a synthetic network and while a run goes.
+    "button_synthetic": (
+        "A batch runs segmented images, and this run draws a synthetic network: "
+        "set the Input tab's Input to Segmented image to use Batch run"
+    ),
+    "button_running": (
+        "A run is going: Batch run opens once it ends, or press Cancel to stop it"
+    ),
     "segmented": "The folder of segmented images: each image file in it is one run",
     "raw": "The folder of raw images; left blank, they are looked for in the segmented folder",
     "large": (

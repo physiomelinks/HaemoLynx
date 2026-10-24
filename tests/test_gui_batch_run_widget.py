@@ -763,3 +763,47 @@ def test_the_settings_line_counts_what_differs_from_the_defaults(panel, tmp_path
     assert "differ from the defaults" in window.settings_line.text()
     window.show_settings()
     assert "statistics: True" in window.details.toPlainText()
+
+
+# -- the button: greyed where no batch can start ------------------------------
+
+
+def test_the_batch_run_button_greys_under_a_synthetic_network(panel, tmp_path):
+    from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS
+
+    batch = panel._haemolynx_batch
+    rows = panel._haemolynx_rows()
+    assert batch.button.enabled
+    rows["network_source"].value = "synthetic"
+    assert not batch.button.enabled
+    assert batch.button.tooltip == BATCH_RUN_TOOLTIPS["button_synthetic"]
+    rows["network_source"].value = "segmented_image"
+    assert batch.button.enabled
+    assert batch.button.tooltip == BATCH_RUN_TOOLTIPS["button"]
+    # A batch already set stays in reach, to be left, whatever the input.
+    batch.use(_setup(tmp_path, "A_seg"))
+    rows["network_source"].value = "synthetic"
+    assert batch.button.enabled
+
+
+def test_the_batch_run_button_greys_while_one_image_runs_but_not_a_batch(panel, tmp_path, monkeypatch):
+    from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS
+
+    batch = panel._haemolynx_batch
+    state = panel._haemolynx_run_state
+    state.start(worker=None)
+    assert not batch.button.enabled
+    assert batch.button.tooltip == BATCH_RUN_TOOLTIPS["button_running"]
+    state.stopped()
+    assert batch.button.enabled
+    state.start(worker=None)
+    state.supersede()  # Clear, mid-run: the panel is free at once
+    assert batch.button.enabled
+    # A batch running: the button opens its window, to follow and stop it.
+    monkeypatch.setattr(
+        widget_mod, "_run_batch_in_background", lambda *args, **kwargs: state.start(worker=None)
+    )
+    batch.use(_setup(tmp_path, "A_seg"))
+    panel._haemolynx_run()
+    assert batch.mode.running and state.running
+    assert batch.button.enabled

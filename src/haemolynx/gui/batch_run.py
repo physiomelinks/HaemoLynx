@@ -653,6 +653,26 @@ SINGLE_IMAGE_IN_BATCH = (
     "This acts on one image, and a batch is set: open Batch run and press "
     "Leave batch run to use it"
 )
+
+def batch_button_greyed(
+    values: Mapping[str, Any], *, batch_set: bool, running: bool, batch_running: bool
+) -> str:
+    """Why the Input tab's Batch run button is greyed, or "" while it is not:
+    under a synthetic network, which has no images to run, and while a run of
+    one image (or an optimiser) is going. Never while a batch is set or
+    running: its window is where a batch is followed, stopped and left."""
+    from haemolynx.graph.boundaries import network_is_synthetic
+    from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS
+
+    if batch_set or batch_running:
+        return ""
+    if network_is_synthetic(values):
+        return BATCH_RUN_TOOLTIPS["button_synthetic"]
+    if running:
+        return BATCH_RUN_TOOLTIPS["button_running"]
+    return ""
+
+
 #: Load run while a batch runs would stop the batch.
 BATCH_RUNNING_NO_LOAD = (
     "A batch is running: open its images once it is done, or Cancel it first."
@@ -1063,6 +1083,7 @@ __all__ = [
     "SUMMARY_FILENAME",
     "TABLE_COLUMNS",
     "COMPARISON_VIEW_COLUMNS",
+    "batch_button_greyed",
     "check_setup",
     "clear_image_caches",
     "comparison_table",

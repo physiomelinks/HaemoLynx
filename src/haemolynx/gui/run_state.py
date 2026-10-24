@@ -32,7 +32,7 @@ run broke when the user stopped it.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,7 @@ class RunState:
         #: again (Continue); None when no run is paused. Not cleared by
         #: :meth:`start`: an optimisation run during a pause leaves it paused.
         self.paused_after: str | None = None
+        self._listeners: list[Callable[[], None]] = []
 
     # -- what the panel asks ------------------------------------------------
 
@@ -187,6 +188,20 @@ class RunState:
         """What the run in flight is turning its stages into."""
         return self._results
 
+    def on_change(self, listener: Callable[[], None]) -> None:
+        """Call *listener* whenever a run starts or the panel is freed of one
+        (:meth:`start`, :meth:`stopped`, :meth:`supersede`), so what greys
+        while a run goes can follow :attr:`running` without every way a run
+        ends knowing about it. A listener that raises is logged, not passed on."""
+        self._listeners.append(listener)
+
+    def _changed(self) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener()
+            except Exception:  # noqa: BLE001 - the run's own bookkeeping comes first
+                logger.exception("a run-state listener failed")
+
     # -- the run's own lifecycle -------------------------------------------
 
     def start(
@@ -206,6 +221,7 @@ class RunState:
         self._worker = worker
         self._results = results
         self._running = True
+        self._changed()
         return self._flag
 
     def stopped(self) -> None:
@@ -218,6 +234,7 @@ class RunState:
         self._running = False
         self._worker = None
         self._results = None
+        self._changed()
 
     def supersede(self) -> None:
         """Free the panel while a cancelled worker is still winding down.
@@ -230,6 +247,7 @@ class RunState:
         self._running = False
         self._worker = None
         self._results = None
+        self._changed()
 
     # -- stopping one on purpose -------------------------------------------
 

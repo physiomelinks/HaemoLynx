@@ -15277,6 +15277,22 @@ def settings_widget(napari_viewer=None):
     #: The window, made the first time it is asked for.
     batch_window: list[Any] = [None]
 
+    def refresh_batch_button(values: "Mapping[str, Any] | None" = None) -> None:
+        """Grey Batch run under a synthetic network and while a run of one
+        image goes, saying why; never while a batch is set or running."""
+        from haemolynx.gui.batch_run import batch_button_greyed
+
+        reason = batch_button_greyed(
+            current_values() if values is None else values,
+            batch_set=batch_mode.setup is not None,
+            running=run_state.running,
+            batch_running=batch_mode.running,
+        )
+        batch_button.enabled = not reason
+        batch_button.tooltip = reason or BATCH_RUN_TOOLTIPS["button"]
+
+    run_state.on_change(refresh_batch_button)
+
     #: What acts on the one image the Input tab names, with its own hover
     #: text: off while a batch is set. Save run stays on: it saves the run
     #: shown, which is never the batch's. The optimisers are off too
@@ -15316,6 +15332,7 @@ def settings_widget(napari_viewer=None):
                 greyed_here.discard(id(button))
                 button.enabled = True
                 button.tooltip = tooltip
+        refresh_batch_button(values)
 
     def refresh_batch_controls() -> None:
         """Grey what acts on one image while a batch is set, saying why."""
@@ -15936,6 +15953,7 @@ def settings_widget(napari_viewer=None):
         def batch_stopped() -> None:
             batch_mode.running = False
             batch_mode.stop = False
+            refresh_batch_button()
             if batch_window[0] is not None:
                 batch_window[0].set_running(False)
 

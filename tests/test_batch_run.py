@@ -1037,3 +1037,18 @@ def test_the_settings_every_image_runs_with_that_differ_from_the_defaults(schema
     assert settings_changed(values, schema) == []
     changed = {**values, "statistics": True, "input_path": tmp_path / "one.tif"}
     assert settings_changed(changed, schema) == ["statistics"]
+
+
+def test_the_batch_run_button_greys_for_a_synthetic_network_and_a_run_of_one_image(schema):
+    from haemolynx.gui.batch_run import batch_button_greyed
+    from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS
+
+    values = schema.defaults()
+    synthetic = {**values, "network_source": "synthetic"}
+    idle = dict(batch_set=False, running=False, batch_running=False)
+    assert batch_button_greyed(values, **idle) == ""
+    assert batch_button_greyed(synthetic, **idle) == BATCH_RUN_TOOLTIPS["button_synthetic"]
+    assert batch_button_greyed(values, **{**idle, "running": True}) == BATCH_RUN_TOOLTIPS["button_running"]
+    # A batch set or running opens its window: where it is followed, stopped and left.
+    for state in ({"batch_set": True}, {"running": True, "batch_running": True}):
+        assert batch_button_greyed(synthetic, **{**idle, **state}) == ""
