@@ -1,13 +1,21 @@
 # Plan: the two optimisers, in line with the pipeline as it now runs (2026-10-23)
 
-> **Status (2026-10-24):** Phases 0-5 done: a trial's E14.5 skeleton and graph equal the run's
-> (see **Measured**), and an optimiser for the endothelial ring fit is built (D4). Phase 3 was
-> pushed as `9328c668`, Phase 2 as `f1184f25`; Phases 1, 4 and 5 and the endothelial optimiser land
-> together with this plan. B8 fixed 2026-10-24 (`claude/optimiser-b8`): Auto samples at least
-> 100 vessels and its time estimate is within 3% on E14.5; it found FWHM's planted-vessel error
-> about 0.54 there (see **B8** under **Measured**). Still open: that error,
-> D6 and the component filter's two marked grids (built, awaiting Harvey's marks). Findings were
-> first read in the code at `666cafe8`. Decisions D1-D6 are Harvey's (taken 2026-10-23).
+> **Status (2026-10-24): done but for what waits on Harvey or on a large run.** Phases 0-5 and
+> the endothelial optimiser (D4) are on `Devel_GUI_improvements_HD`: Phase 2 `f1184f25`, Phase 3
+> `9328c668`, Phases 1 and 4 `e1314748`, Phase 5 `399a48f3` + `924b9910`, the endothelial
+> optimiser `65068bc1` .. `56be0b79`, B8 `ca5df387` + `aee7da34`. A trial's E14.5 skeleton and graph
+> equal the run's, and so do FWHM and ring-fit trials' widths (see **Measured**). The last pieces
+> are under **Finishing (2026-10-24)** at the end: the scorecard's dead ends by kind and loops
+> inside one lumen, D2's report line, Principle 4's check, the docs.
+>
+> **Waiting on Harvey:** the two marked grids (D6's thick-vessel grid and the component filter's;
+> built, no marks yet); whether the stub sweep may move `min_stub_length_radius_multiple` from the
+> 3 radii he decided (see Principle 4's check); FWHM's planted-vessel error of about 0.54 on E14.5
+> (B8), which needs looking at before the accuracy term is trusted there.
+> **Waiting on a large run** (the machine had under 6 GB free on 2026-10-24): the "Off" refusal's
+> 128 B a voxel at real size (about 9.6 GB on E14.5), and Optimise endothelial settings on E14.5
+> under `56be0b79`'s rule. Findings were first read in the code at `666cafe8`. Decisions D1-D6 are
+> Harvey's (taken 2026-10-23).
 
 ## Context
 
@@ -104,7 +112,8 @@ would make, through the same functions the run calls, so the two cannot drift ap
   `skeleton_voxel_settings_on_grid`), `thick_skeleton_arguments(settings, binary, voxel_size_xyz,
   crop, downsample)` (today's `_thick_region_arguments` plus the refinement knobs and the
   large-stack tree), `smoothing_arguments(settings)` and `lumen_cleanup_arguments(settings, ...)`.
-  `skeletonise` and `build_network` call them.
+  `skeletonise` and `build_network` call them. (`lumen_cleanup_arguments` was not built: it has
+  one caller, see **Finishing (2026-10-24)**.)
 - `search.py` drops `_cleanup_kwargs`, `_skeleton_kwargs`, `_thick_vessel_kwargs` and
   `_graph_kwargs` and calls these. Fixes A3.
 - Tests: every argument `skeletonise` / `build_network` pass reaches a trial (monkeypatch the
@@ -180,9 +189,11 @@ The largest change; it alters what the graph sweeps choose.
 - The thickness-gated trial skeleton returns its thick region (`return_thick_mask=True`), which
   feeds the finish's split (the restriction mask itself arrives in Phase 2).
 - Auto's time model gains a timed "finish" step and `_SEARCH_STEP_CALLS` is counted again on
-  E14.5 at 4x and 16x (the test pinning the model's arithmetic is updated, its rule kept).
+  E14.5 at 4x and 16x (the test pinning the model's arithmetic is updated, its rule kept). (The
+  finish was counted at 2x with Phase 4; 4x and 16x under **Finishing (2026-10-24)**.)
 - Scorecard, measures only (Principle 4): dead ends by kind, loops inside one lumen, the
-  lumen-artefact report's counts.
+  lumen-artefact report's counts. (Dead ends and pairs in one lumen with Phase 4; the kinds and
+  loops inside one lumen in `610e2899`.)
 - Tests: on `tests/dense_capillary_fixtures.py` and a thick-vessel fixture, a trial's graph equals
   `build_network`'s at the same settings (node positions, edge voxels, lengths); a thick vessel
   restricted by a large mask gives the trial the run's region.
@@ -204,8 +215,8 @@ The largest change; it alters what the graph sweeps choose.
 - Tests: `test_gui_optimise_settings_widget.py`, `test_gui_fwhm_optimise_widget.py` (greying,
   the ilastik output used), `test_gui_tooltips.py`.
 
-**Done (2026-10-23, branch `claude/optimiser-phase5-c7ec9e`, in its own session beside Phases 1
-and 4; A6, A7 and A8 but the CLAUDE.md rule):**
+**Done (2026-10-23, `399a48f3` and `924b9910`, merged as `add3241f`; built in its own session
+beside Phases 1 and 4; A6, A7 and A8, the CLAUDE.md rule since 2026-10-24):**
 - **A7.** Both optimisers grey under synthetic (`graph.network_is_synthetic`), hover text and
   report line `chrome_tooltips.OPTIMISE_SYNTHETIC_TOOLTIP`; batch greying was already in
   (`d4bdfd0c`). `_widget.py`'s `refresh_single_image_buttons` now holds both reasons, runs from
@@ -235,9 +246,11 @@ and 4; A6, A7 and A8 but the CLAUDE.md rule):**
   `pipeline` or `gui` -- Phase 1 will change that) and group counts, `search.py`'s "21 settings"
   and "all ten". `fwhm_search.py` already said eight. `_SEARCH_STEP_CALLS` left for Phase 4.
   History in `docs/notes/gui.md`.
-- **Not done:** CLAUDE.md's *Optimisation* rule waits for Phase 4's `finish_network_graph`.
-  "Check segmented image" still calls `segment` (so runs ilastik when it is on) and binarises in
-  RAM; out of this phase's scope.
+- **CLAUDE.md's *Optimisation* rule** landed with the finishing pieces (2026-10-24): trials go
+  through the pipeline's argument builders, `network_context` and `finish_network_graph`.
+- **Out of this plan's scope, listed:** "Check segmented image" still calls `segment`
+  (`gui/_widget.py`'s Check button), so runs ilastik when it is on, and binarises the segmented
+  image in RAM whatever `use_memmap_loading` says.
 
 ## Order
 
@@ -246,7 +259,8 @@ Phases 1-3 fix plain bugs and are cheap; Phase 4 is where the chosen settings mo
 last so its effect is measured on its own. After Phase 0 (2026-10-23): Phase 0 is done, Phase 3 is
 under way in its own session, and A5 in Phase 2 is the next most valuable change. After Phase 2
 (pushed as `f1184f25`): the search still turns thick vessels off on E14.5, now because of what the
-on/off sweep scores (D6), not A5; Phases 1, 4 and 5 remain.
+on/off sweep scores (D6), not A5. After 2026-10-24: every phase is done (Phases 1 and 4
+`e1314748`, Phase 5 `399a48f3`); what is left waits on Harvey or a large run (see Status).
 
 ## Verification
 
@@ -293,7 +307,8 @@ grids built for Harvey to mark.
   - `outputs/component_filter_review/` (`harness/island_grid.py`): 30 of the 75 pieces
     `skeleton_min_component_percent` = 1 drops under R1's choices, spread over size. Marks: V
     (vessel, keep) or N (noise). Candidate measures in the key: skeleton voxels, the mask
-    component's volume, distance to the kept skeleton, whether it touches a face, raw contrast.
+    component's volume, distance to the kept skeleton, whether it touches a face, raw contrast
+    (recomputed 2026-10-24: it was the raw mean times a million, see **Finishing**).
 
 ## Risks
 
@@ -428,7 +443,7 @@ skeletons the Phase 0 runs saved (`harness/phase2_check.py`, on the worktree's s
 Not done from Phase 2: the report's list of pass-through settings that differ from their
 defaults; it needs the fallback table that Phase 1's shared builders give, so it moves there.
 
-### Phase 1 (2026-10-23, on `1b7fdf04`, E14.5 MCA)
+### Phase 1 (2026-10-23, on `1b7fdf04`, landed as `e1314748`, E14.5 MCA)
 
 Done (A3; the deferred report line). `pipeline/stages.py` gains the shared builders
 (`segmentation_cleanup_arguments`, `segmentation_cleanup_in_effect`, `skeleton_cleanup_arguments`,
@@ -445,7 +460,7 @@ that are not at their defaults. Graph trials are held in RAM whatever `use_memma
   again against Phase 0's run: skeleton 56,961 voxels, **0 differing**; graph 1,228 nodes / 1,406
   edges / 47,812.6581 um, **every edge identical**.
 
-### Phase 4 (2026-10-23, on `1b7fdf04` with Phase 1, E14.5 MCA)
+### Phase 4 (2026-10-23, on `1b7fdf04` with Phase 1, landed as `e1314748`, E14.5 MCA)
 
 Done (A4). `pipeline/stages.py`: `NetworkContext` / `network_context` (the radius sampler, the
 one `MaskSupport`, the thick centreline tree and what the clean-ups keep its strand by, made once
@@ -550,7 +565,7 @@ voxels). Against Phase 0's R1 (`harness/compare_r1.py`; settings either run move
   gating 13 s (72 s). Phase 0's run shared the machine with the Phase 3 session's suites, this one
   with a peer's small pytest, so not all of the difference is Phase 2's.
 
-### Phase 5 (2026-10-23, `claude/optimiser-phase5-c7ec9e`, the dense capillary bed fixture)
+### Phase 5 (2026-10-23, landed as `399a48f3` + `924b9910`, the dense capillary bed fixture)
 
 What a full-resolution search ("Off") holds in RAM, for `FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL`:
 `optimise_skeleton_and_graph_settings(downsample_factor=1)`, every group, schema defaults, under
@@ -577,7 +592,7 @@ the size the refusal is for (E14.5 is 75 M voxels: about 9.6 GB at this rate); a
   case"; on E14.5's cleaned Claudin mask with plain Lee it adds 49% to the raw skeleton. Whether
   that is right is a question for a grid, not this plan.
 
-### B8 (2026-10-24, `claude/optimiser-b8`, E14.5 MCA)
+### B8 (2026-10-24, landed as `ca5df387` + `aee7da34`, E14.5 MCA)
 
 `harness/fwhm_end_to_end.py --code c4` (a `git archive` of `4724f6ce`, the 100-vessel floor alone)
 and `harness/fwhm_b8_probe.py`, as Phase 3's check: dextran (channel 0) as a plasma column, the
@@ -613,7 +628,8 @@ Harvey asked for it: the counterpart of Optimise FWHM settings for a raw image t
 wall (claudin-5, CD31, isolectin), where the run reads diameters with the ring fit
 (`haemodynamics/endothelial.py`). **It must work on any endothelial dataset**: no constant is
 fitted to one stack; every candidate is the image's own or a multiple of the setting's value.
-Built in its own session, on `claude/endothelial-optimiser-52c5f2` (first commit `65068bc1`).
+Built in its own session (`65068bc1`, `42c4be53`, `a525ad9c`, `56be0b79`; merged as `6f565ac7`
+and `718f326d`).
 
 **What it sweeps** (`optimisation/endothelial_search.py`, `ENDOTHELIAL_SETTING_NAMES`):
 
@@ -673,10 +689,11 @@ worker processes (`run_edge_tasks` keeps no pool between calls), a cost a probe 
 see. The calibrations come on top (up to four blurs a pass, about a minute each on E14.5), and
 "Every vessel" on a large network is slow for the same reason.
 
-**Measured on E14.5 MCA (2026-10-24, `42c4be53`)**, the Claudin channel (raw image channel 1,
-endothelial) and Phase 0's run graph (`run_base/G_run.pkl`: 1,406 edges, 64 bridges), alone on
-the machine; harness `outputs/endothelial_optimiser/e14p5_check.py` (git-ignored, run on a
-`git archive` of the commit):
+**Measured on E14.5 MCA (2026-10-24, `42c4be53`, before `56be0b79`'s rule)**, the Claudin channel
+(raw image channel 1, endothelial) and Phase 0's run graph (`run_base/G_run.pkl`: 1,406 edges, 64
+bridges), alone on the machine; harness `outputs/endothelial_optimiser/e14p5_check.py`
+(git-ignored, run on a `git archive` of the commit). The search below still swept the blur and
+wall against fixed values where E14.5's rings calibrate them, which `56be0b79` stopped:
 
 - The run's Diameters call: 541 of 1,342 vessels measured in 178 s; the rings calibrated at
   sigma_xy 1.08 um (95% 1.05-1.11), sigma_z 2.77 um (2.68-2.86), wall 1.14 um (1.12-1.16).
@@ -710,5 +727,74 @@ of 10) the search fixed the blur and wall at other values inside their intervals
 vessels -- noise.
 
 **Decided (Harvey, 2026-10-24):** fixed blur and wall candidates only where the rings will not
-calibrate on their own, or the settings already fix them; done in the commit after `a525ad9c`.
-E14.5 under that rule is below.
+calibrate on their own, or the settings already fix them; done in `56be0b79`. On E14.5 the rings
+calibrate (the intervals above), so under that rule the blur and wall stay the image's estimate
+and are not swept: the wall's move to 1.125 um above cannot happen, and only the gate group
+searches. **Not yet run on E14.5 under the rule** (2026-10-24: under 6 GB free beside a peer's GUI
+suite and Harvey's panel); `outputs/endothelial_optimiser/e14p5_check.py` on a `git archive` of
+the current commit is the check, expected to choose the gate alone (4 -> 3 before) at about the
+6 min 44 s search above less the fixed-blur calibrations.
+
+## Finishing (2026-10-24)
+
+An audit on 2026-10-24 found these pieces outstanding after Phases 0-5, the endothelial optimiser
+and B8. Each, and where it stands:
+
+- **The scorecard's dead ends and loops** (Phase 4's scorecard bullet; `610e2899`). Trials never
+  marked dead-end kinds: `build_network` marks them after `finish_network_graph`. The marking is
+  now public, `stages.mark_dead_end_kinds(settings, G, context)`, which `build_network` calls in
+  place of its private call and the scorecard calls on its graphs. The scorecard counts each kind
+  (`dead ends: leaves image`, `stops short`, `broken`, `artefact`, `unknown`, `island end`; a
+  person's `blind` is never on a search's graph) and loops inside one lumen beside short loops and
+  pairs of edges in one lumen. The kinds are measures only (Principle 4): `ScoreRow`'s
+  `higher_is_better=None` shows a row that is never better or worse, so they raise no warning.
+  Pinned in `tests/test_optimisation_search.py`: the scorecard's counts equal the kinds and
+  in-lumen loops of `build_network`'s saved graph, with thick vessels and without.
+- **D2** (`610e2899`): a search on a coarser grid says in its report that the grid was reduced by
+  block max, not by the block majority a run's downsample on import uses. In the search's own
+  notes rather than `report.py`'s downsample line, which the FWHM report also prints (see below).
+- **Docs**: CLAUDE.md's *optimisation/* entry gains the rule (trials through `network_context` and
+  `finish_network_graph`, so a step added there reaches the optimiser for free); `docs/notes/gui.md`
+  gains Phases 1 and 4, the endothelial optimiser, B8 and these pieces, under a heading naming the
+  three optimisers.
+- **`lumen_cleanup_arguments`** (Phase 1's list): **not built, and not needed.**
+  `finish_network_graph` is the one place a run's settings become `graph.assemble.lumen_cleanup`'s
+  arguments (graph building makes its own inside `build_graph_from_skeleton`, from
+  `graph_build_arguments`), and the optimiser reaches that place through `finish_network_graph`
+  itself, so there is no second copy to drift. `scripts/graph_artefacts/build_side.py` also calls
+  `lumen_cleanup`, from a job's recorded build arguments filtered to what each checked-out version
+  accepts: it compares branches on older code, where a `stages` builder would not exist. Build one
+  when a second caller of the settings map appears.
+- **Principle 4's check: no swept default came from a marked grid.** Each of the 92 settings the
+  three optimisers sweep (`OPTIMISE_SETTING_NAMES` 54, `FWHM_SETTING_NAMES` 34,
+  `ENDOTHELIAL_SETTING_NAMES` 4) was looked up in `docs/notes/`, every `PLAN_*.md`, CLAUDE.md and
+  `RELEASE_REVIEW.md` for a grid or marks within two lines, and the six names with hits read:
+  `segmentation_cleanup` (clean-graph D4 and raw-confirmation P5 propose a pinhole option for after
+  a grid; nothing fitted), `skeleton_thick_vessel_min_radius_um` (surface-coverage D2, a proposal),
+  `skeleton_min_component_percent` (this plan's own grid), `min_stub_length` and
+  `min_stub_length_radius_multiple` (grid Y's rule for blind vessels beyond a thick-vessel bridge
+  reads them; it did not set them), `centreline_max_deviation` (this plan's A4). The values Harvey's
+  grids fitted are all on settings or constants the searches read and never move: the short-loop
+  rule and its hole limit (`remove_short_loops_under_um`, `short_loop_keep_hole_over_um`; grids I,
+  I2, Q, Q2, N, N2), the re-trace, the thick-vessel rules (grids V, W-Z, Y), the bridges' turn rule
+  (grid R), the dead-end kinds (G1-G3, P1) and the interior dead-end removal (G5, L1, L2). Phase 2's
+  pass-through keeps each at the user's value. **One for Harvey:** the stub multiple's default of 3
+  radii is his decision rather than a grid (`PLAN_one_centreline_per_lumen.md` D2, 2026-10-08: do
+  not keep real short sprouts, the 3 x radius rule stays), and the stub sweep moves it: to 2 on
+  E14.5 at `f1184f25` and with Phase 4. Whether a decision binds like a grid (take the setting out
+  of `GRAPH_SETTING_NAMES`) or the sweep may move it is his call.
+- **The hole-fill docstring** (`97f79a1c`): `io.load._skeletonize_loaded_volume` no longer calls
+  the fill a no-op; it says what A10 measured. Words only.
+- **The two grids** (D6; the component filter): **no marks yet** (checked 2026-10-24: no marks
+  file beside either). `outputs/thick_vessel_review/` (marks A, B, = or X) and
+  `outputs/component_filter_review/` (V or N) wait on Harvey; once marked, fit them by CLAUDE.md's
+  *Marked example grids* and check on a fresh grid. **The component key's `raw_contrast` was
+  wrong**: `island_grid.py` divided each piece's mean raw by the median raw outside the mask,
+  clamped at 1e-6, and E14.5's Claudin channel is 0 outside the mask (52% of those voxels are 0),
+  so the column held the piece's mean raw times a million (1.6e7-2.9e8). Recomputed by
+  `harness/island_contrast.py` from the grid's saved skeleton, each ID's piece found again by its
+  label with its voxel count and centroid checked: `raw_contrast` is now the piece's mean raw over
+  the median raw inside the mask (287), 0.055-1.025 across the 30, with `raw_piece_mean`,
+  `raw_component_mean` and `raw_local_background_median` (tissue 2-6 um round its mask component;
+  0 for 7 of 30) beside it. IDs, labels and `grid.png` are unchanged; the old key is kept as
+  `key_raw_contrast_clamped.csv`, and the folder's README says so.

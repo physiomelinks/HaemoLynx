@@ -903,7 +903,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
-  FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself
+  FWHM diameter settings (`fwhm_search.py`; a trial measures through the run's own call, inside
+  the whole vessel graph). Candidates come from the image itself
   (`candidates.py`), trials are scored by pure functions (`metrics.py`), and the result is a
   config file plus a readable report (`report.py`). **A trial skeletonises as the run does**
   (`PLAN_optimisers.md`): the panel hands the search the run's grid
@@ -914,9 +915,15 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   builders (`stages.segmentation_cleanup_arguments`, `skeleton_cleanup_arguments`,
   `thick_region_settings` + `thick_vessel_refinement_arguments`, `graph_build_arguments`,
   `centreline_smoothing_arguments`), so a setting a stage starts reading reaches the trials with
-  no change here; a setting a caller leaves out is read as its schema default.
-  `tests/test_optimisation_search.py` pins a trial's skeleton `==` `skeletonise`'s and each step's
-  arguments `==` the run's. **Optimise endothelial settings** (`endothelial_search.py`,
+  no change here; a setting a caller leaves out is read as its schema default. **A trial's graph
+  is the run's**: built through `stages.network_context` and finished by
+  `stages.finish_network_graph`, as `build_network` does, so a step added to the finish reaches
+  the optimiser for free; the scorecard marks dead ends with `stages.mark_dead_end_kinds` and
+  counts them by kind, measures only (no kind is better until a marked grid says so).
+  `tests/test_optimisation_search.py` pins a trial's skeleton `==` `skeletonise`'s, its graph `==`
+  `build_network`'s edge for edge, and each step's arguments `==` the run's. The search's own
+  coarser grid is reduced by block max, not import's majority, and its report says so (D2).
+  **Optimise endothelial settings** (`endothelial_search.py`,
   shown instead of the FWHM button when the raw image stains the wall) sweeps the ring fit's
   contrast gate, and its blur and wall only where the image's rings will not calibrate them or the
   settings fix them (then the image's own values, fixed; Harvey's rule); a trial reads

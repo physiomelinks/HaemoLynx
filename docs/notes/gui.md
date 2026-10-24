@@ -106,11 +106,18 @@ the session's): `per_vessel` (default) as above, or `uniform`, every vessel `uni
 across whatever its `diameter_um`, which stays as it was. That width is the µm box shown beside
 the choice while it is Uniform (`set_tube_uniform_diameter`; 4 µm to start, 0.5-1000 µm).
 
-## The settings optimisers (Optimise settings, Optimise FWHM settings)
+## The settings optimisers (Optimise settings, Optimise FWHM settings, Optimise endothelial settings)
 
-History of `PLAN_optimisers.md` (2026-10-23), which brings both optimisers in line with the
-pipeline as it now runs; the plan's **Measured** section has the E14.5 numbers.
+History of `PLAN_optimisers.md` (2026-10-23 to 2026-10-24), which brings the optimisers in line
+with the pipeline as it now runs and adds the third; the plan's **Measured** section has the E14.5
+numbers.
 
+- **Phase 1** (`e1314748`): the pipeline's own argument builders in `pipeline/stages.py`
+  (`segmentation_cleanup_arguments`, `skeleton_cleanup_arguments`, `thick_region_settings`,
+  `thick_vessel_refinement_arguments`, `centreline_smoothing_arguments`, beside
+  `graph_build_arguments`), which `skeletonise` and `build_network` call and the search's four hand
+  copies gave way to; the report names the settings a search read but does not tune that are not at
+  their defaults. E14.5's skeleton and graph unchanged by it.
 - **Phase 2** (`f1184f25`): Optimise settings starts from what a run's skeletonise reads
   (`stages.load_volume_on_run_grid`): the run's grid and whole settings, voxel counts on that grid
   and back, the run's thick-vessel restriction, the plain skeleton through
@@ -118,6 +125,13 @@ pipeline as it now runs; the plan's **Measured** section has the E14.5 numbers.
 - **Phase 3** (`9328c668`): FWHM trials measure through the run's own call
   (`apply.measure_fwhm_diameters`) with the run's config and mask, inside the whole vessel graph,
   on a template cleared of the run's widths.
+- **Phase 4** (`e1314748`): `build_network`'s graph work split into `stages.network_context` (the
+  radius sampler, the one `MaskSupport`, the thick centreline tree, made once per mask) and
+  `stages.finish_network_graph` (everything after graph building: smoothing by the vessel radius,
+  the clean-ups, the thick-vessel split, the re-trace, straight steps, the optional removals). Every
+  graph sweep scores the finished graph, so a trial's E14.5 graph equals the run's edge for edge.
+  The smoothing sweep moved most (it now judges the saved graph with the run's radius tolerance),
+  and the search took 1.9 times as long (D5 allowed 2).
 - **Phase 5** (panel, low RAM, words): both optimisers grey under `network_source=synthetic`,
   saying why in their hover text (`chrome_tooltips.OPTIMISE_SYNTHETIC_TOOLTIP`) and refusing if
   pressed; a set batch already greyed them (`d4bdfd0c`). The panel greys and gives back only what
@@ -136,4 +150,24 @@ pipeline as it now runs; the plan's **Measured** section has the E14.5 numbers.
   (`search.full_resolution_search_refusal`, 128 B a voxel: a full-resolution search's traced
   peak on the dense capillary bed fixture, tiled, was 56, 122 and 267 MB at 0.29, 1.15 and
   2.30 M voxels, growing 76 then 126 B a voxel; measured with tracemalloc, so memory allocated
-  outside numpy and Python is not counted). Auto is not capped by it.
+  outside numpy and Python is not counted). Auto is not capped by it. (`399a48f3`, `924b9910`.)
+- **The endothelial optimiser** (D4; `65068bc1`, `42c4be53`, `56be0b79`): **Optimise endothelial
+  settings**, the counterpart of the FWHM button for a raw image that stains the wall. It sweeps
+  the ring fit's contrast gate first (it decides which rings calibrate), then the blur and wall --
+  only where the image's rings will not calibrate them, or the settings already fix them (Harvey,
+  2026-10-24): where they calibrate, a fixed value inside the estimate's interval is no different
+  from it. A trial is the run's ring fit on the same vessels, each blur's calibration fits made
+  once; scored on hollow vessels of known lumen planted with the image's own blur, wall and noise,
+  the sample's spread and decoys. Auto times reading and caps the sample under 64 vessels, where
+  every trial would start worker processes.
+- **B8** (`ca5df387`, `aee7da34`): Optimise FWHM settings' Auto sampled about 10 of E14.5's 1,342
+  vessels, too few to plant any vessel of known width, so the accuracy group never ran. Auto now
+  samples at least 100, and its time model counts the trials a pass makes (77) and the planted
+  vessels and decoys each measures (half a vessel per sampled one): 1,530 s estimated against the
+  1,488 s the E14.5 search took. It found FWHM's planted-vessel error about 0.54 there, still open.
+- **The scorecard and the report** (2026-10-24, `610e2899`): the scorecard marks its graphs' dead ends as the
+  run does (`stages.mark_dead_end_kinds`, which `build_network` calls too) and counts each kind,
+  with loops inside one lumen beside short loops; a kind is a measure only (`ScoreRow`'s
+  `higher_is_better=None`: never better or worse), since which way is better waits on a marked
+  grid. A search on a coarser grid says that grid was reduced by block max, where a run's
+  downsample on import uses block majority (D2: kept, and said).
