@@ -514,6 +514,9 @@ def map_vessels_to_grid(
     so a graph that had never been through the rheology solve was given systemic haematocrit
     everywhere and delivered oxygen as if it had.
 
+    Also raises if any edge's ``voxels`` polyline is absent or has fewer than two points. Such
+    an edge used to be skipped, so its flow reached no tissue cell and nothing said so.
+
     ``vessel_mapping`` says which cells a vessel occupies (open item 30):
 
     - ``"centreline"`` (default): only the cells its centreline crosses, whatever its diameter.
@@ -585,12 +588,32 @@ def map_vessels_to_grid(
             f"one on every edge."
         )
 
+    no_voxels = [
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if data.get("voxels") is None
+    ]
+    short_voxels = [
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if data.get("voxels") is not None and len(data["voxels"]) < 2
+    ]
+    if no_voxels or short_voxels:
+        bad = no_voxels + short_voxels
+        shown = ", ".join(str(e) for e in bad[:3])
+        raise ValueError(
+            f"{len(bad)} of {G.number_of_edges()} edges have no usable centreline "
+            f"({len(no_voxels)} absent, {len(short_voxels)} with fewer than 2 points), for "
+            f"example {shown}. The 'voxels' polyline places the edge in the grid; fewer than "
+            f"two points have no length to share among cells, and either way the edge's flow "
+            f"would reach no tissue cell, so it is not skipped silently. Build the graph with "
+            f"a polyline of at least two points on every edge."
+        )
+
     _raise_on_non_finite_flow(G)
 
     cell_to_vessels = {}
 
     for u, v, key, data in G.edges(keys=True, data=True):
-        voxels = data.get("voxels")
+        voxels = data["voxels"]
         flow = float(data["flow_abs"]) * flow_to_um3_per_s
         # Not cast to float: a few graph lengths are numpy float64, and making them exact floats
         # moves the per-cell sums by 1 ulp (sum() is compensated only over exact floats).
@@ -598,10 +621,7 @@ def map_vessels_to_grid(
         
         diameter = _edge_diameter_um(data, default_diameter_um)
         radius = diameter / 2.0
-        
-        if voxels is None or len(voxels) < 2:
-            continue
-            
+
         # ImageLynx edges store 'voxels' natively in physical ZYX space from build.py!
         # No spacing multiplication needed here.
         vox_phys_zyx = np.array(voxels, dtype=float)
@@ -609,7 +629,7 @@ def map_vessels_to_grid(
         # Incremental length per voxel segment
         # In a real model, we'd use line-plane intersection, but for high-res microscopy,
         # point-sampling the voxels is a robust and fast approximation.
-        len_per_vox = edge_len / (len(voxels) - 1) if len(voxels) > 1 else 0.0
+        len_per_vox = edge_len / (len(voxels) - 1)
 
         if vessel_mapping == "cross_section":
             cells, weight = _cross_section_cells(vox_phys_zyx, radius, grid, (u, v, key))

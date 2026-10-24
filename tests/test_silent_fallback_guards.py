@@ -145,6 +145,39 @@ def test_edges_missing_flow_are_counted():
         map_vessels_to_grid(G, grid)
 
 
+# --- Package AH: edges with no centreline skipped by Tier 1 --------------------------------
+
+@pytest.mark.parametrize(
+    "value",
+    [_ABSENT, None, [], [(20.0, 20.0, 20.0)]],
+    ids=["absent", "none", "empty", "one-point"],
+)
+def test_an_edge_without_a_usable_centreline_is_refused_not_skipped(value):
+    """The edge was skipped with `continue`, so its flow reached no tissue cell and nothing said so.
+
+    One sample has no direction and no length to share among cells, so it is refused like an
+    absent centreline rather than given a made-up delivery rule.
+    """
+    G = _grid_graph([8.0, 6.0, 10.0])
+    _set_or_delete(G.edges["hub", "n1", 0], "voxels", value)
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError,
+                       match=r"1 of 3 edges have no usable centreline.*\('hub', 'n1', 0\)"):
+        map_vessels_to_grid(G, grid)
+
+
+def test_edges_without_a_centreline_are_counted_by_kind():
+    G = _grid_graph([8.0, 6.0, 10.0, 7.0])
+    del G.edges["hub", "n0", 0]["voxels"]
+    G.edges["hub", "n2", 0]["voxels"] = []
+    G.edges["hub", "n3", 0]["voxels"] = [(20.0, 20.0, 20.0)]
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError,
+                       match=r"3 of 4 edges have no usable centreline \(1 absent, 2 with fewer "
+                             r"than 2 points\)"):
+        map_vessels_to_grid(G, grid)
+
+
 def test_a_vessel_entry_without_a_length_share_is_refused_by_both_readers():
     """A missing share used to count as 1.0: the edge's whole flow in every cell it crossed."""
     G = _grid_graph([8.0])
