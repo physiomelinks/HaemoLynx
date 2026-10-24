@@ -332,13 +332,43 @@ def test_the_removal_counts_what_it_removed_without_touching_the_graph():
         "removed_component_vessels": 1,
         "removed_component_nodes": 3,
         "removed_component_length_um": 7.0,
-        "removed_dead_end_vessels": 3,
+        "removed_dead_end_vessels": 2,
         "removed_dead_end_nodes": 2,
-        "removed_dead_end_length_um": 35.0,
+        "removed_dead_end_length_um": 30.0,
+        "removed_loop_vessels": 1,
+        "removed_loop_nodes": 0,
+        "removed_loop_length_um": 5.0,
         "remaining_nodes": 3,
         "remaining_vessels": 2,
     }
     assert graph.number_of_edges() == 6 and graph.number_of_nodes() == 8
+
+
+def test_a_loop_hanging_off_one_node_is_not_counted_as_a_dead_end(caplog):
+    """A loop off one node, a parallel pair off it and a self-loop end
+    nowhere: they reach no outlet, but none of them is a dead end. The stick
+    leading to a loop is a branch reaching no outlet, so it is counted as one."""
+    import logging
+
+    graph = _chain(0, 1, 2)
+    graph.add_edges_from([(1, 5), (5, 6), (6, 1)], length=10.0)  # a loop off node 1
+    graph.add_edges_from([(2, 7), (2, 7)], length=4.0)  # a parallel pair off node 2
+    graph.add_edge(1, 1, length=3.0)  # a self-loop
+    graph.add_edges_from([(1, 8), (8, 9), (9, 10), (10, 8)], length=2.0)  # a lollipop
+
+    with caplog.at_level(logging.INFO, logger="haemolynx"):
+        pruned, stats = graph_module.remove_vessels_off_inlet_outlet_paths(graph, [0], [2])
+        _remove(graph.copy(), [0], [2])
+
+    assert _vessels(pruned) == [(0, 1, 0), (1, 2, 0)]
+    assert stats["removed_loop_vessels"] == 3 + 2 + 1 + 3
+    assert stats["removed_loop_length_um"] == 30.0 + 8.0 + 3.0 + 6.0
+    assert stats["removed_loop_nodes"] == 2 + 1 + 2
+    assert stats["removed_dead_end_vessels"] == 1  # the lollipop's stick, 1-8
+    assert stats["removed_dead_end_nodes"] == 1  # node 8, where the stick ends
+    (message,) = [r.getMessage() for r in caplog.records if "remove_disconnected" in r.getMessage()]
+    assert "1 dead-end vessel(s) that reach no outlet (1 node(s), 2.0 um)" in message
+    assert "9 vessel(s) on loops hanging off one node (5 node(s), 47.0 um)" in message
 
 
 def test_boundary_lists_follow_the_dead_ends_removed():
@@ -855,7 +885,9 @@ def test_the_prune_button_removes_dead_ends_and_keeps_parallel_routes():
     assert _vessels(pruned) == [(0, 1, 0), (1, 2, 0), (1, 2, 1), (1, 8, 0), (2, 3, 0),
                                 (2, 8, 0)]
     assert stats["removed_components"] == 1
-    assert stats["removed_dead_end_vessels"] == 6
+    assert stats["removed_dead_end_vessels"] == 3
+    assert stats["removed_loop_vessels"] == 3
+    assert stats["removed_dead_end_nodes"] == 3 and stats["removed_loop_nodes"] == 2
     assert stats["removed_vessels"] == 7
     assert stats["removed_nodes"] == 7
     assert stats["removed_boundary_nodes"] == [20]

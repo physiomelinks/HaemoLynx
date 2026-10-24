@@ -129,43 +129,6 @@ def _index_without(index, dead_owners: set):
     return cKDTree(points[keep]), radii[keep], owners[keep], ids, points[keep]
 
 
-def _edge_data(G, edge) -> dict:
-    a, b, key = edge
-    return G.edges[a, b, key] if G.is_multigraph() else G.edges[a, b]
-
-
-def _chain_path(G: nx.MultiGraph, edges: list) -> np.ndarray:
-    """A chain's points from its junction to its tip, every half micron."""
-    pieces = []
-    for a, b, key in reversed(edges):
-        node_pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (a, b)}
-        piece = edge_sample_points(b, a, _edge_data(G, (a, b, key)), node_pos)
-        pieces.append(piece if not pieces else piece[1:])
-    return densify_polyline(np.vstack(pieces), max_step_um=0.5)
-
-
-def _vessels_not_dead_ends(G: nx.MultiGraph, chains: dict, lumen_radius_at):
-    """``(tree, radii)`` over the centrelines of every edge in no dead-end
-    chain, or ``None`` when there are none."""
-    from scipy.spatial import cKDTree
-
-    in_chains = {(frozenset(e[:2]), e[2]) for _nodes, edges in chains.values() for e in edges}
-    points = []
-    every = (
-        G.edges(keys=True, data=True) if G.is_multigraph()
-        else ((u, v, None, data) for u, v, data in G.edges(data=True))
-    )
-    for u, v, key, data in every:
-        if u == v or (frozenset((u, v)), key) in in_chains:
-            continue
-        node_pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v)}
-        points.append(densify_polyline(edge_sample_points(u, v, data, node_pos), max_step_um=1.0))
-    if not points:
-        return None
-    points = np.vstack(points)
-    return cKDTree(points), np.asarray(lumen_radius_at(points), dtype=float).reshape(-1)
-
-
 def prune_vascular_stubs(
     G: Union[nx.Graph, nx.MultiGraph],
     min_stub_length: float = 10.0,

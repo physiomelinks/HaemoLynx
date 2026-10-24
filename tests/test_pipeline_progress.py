@@ -329,6 +329,26 @@ def test_each_graph_step_names_the_one_that_starts_after_it():
     assert step_after("not_a_step") is None
 
 
+def test_every_count_of_the_topology_steps_in_words_is_the_real_one():
+    """The docs said fifteen topology steps long after there were thirteen."""
+    import re
+
+    words = {
+        "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    }
+    root = Path(__file__).resolve().parents[1]
+    files = [*sorted((root / "src" / "haemolynx").rglob("*.py")), root / "CLAUDE.md"]
+    counts = {}
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"\b(\w+)\s+(?:extra rebuilds|topology\s+steps)\b", text):
+            if match.group(1).lower() in words:
+                counts[f"{path.relative_to(root)}: {match.group(0)}"] = words[match.group(1).lower()]
+    assert counts, "no count of the topology steps found: the pattern no longer matches"
+    assert {place: n for place, n in counts.items() if n != len(STEP_LABELS)} == {}
+
+
 def test_log_progress_names_the_step_now_running(caplog):
     import logging
 

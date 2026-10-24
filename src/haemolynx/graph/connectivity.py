@@ -186,6 +186,19 @@ def unsolved_pieces(
     return pieces
 
 
+def _vessels_on_a_loop(G: nx.MultiGraph) -> set[tuple[Any, Any, Any]]:
+    """The vessels ``(u, v, key)`` that lie on a cycle of *G*: self-loops,
+    parallel vessels, and every vessel that is no bridge."""
+    simple = nx.Graph()
+    simple.add_edges_from((u, v) for u, v in G.edges() if u != v)
+    bridges = {frozenset(edge) for edge in nx.bridges(simple)}
+    return {
+        (u, v, k)
+        for u, v, k in G.edges(keys=True)
+        if u == v or frozenset((u, v)) not in bridges or G.number_of_edges(u, v) > 1
+    }
+
+
 def remove_vessels_off_inlet_outlet_paths(
     G: nx.MultiGraph,
     inlet_nodes: Sequence[Any],
@@ -201,10 +214,13 @@ def remove_vessels_off_inlet_outlet_paths(
     pressure difference drives a flow along any of them. The inlets and
     outlets of a kept piece stay, as does every node a kept vessel ends on.
 
-    The counts separate the two: ``removed_components`` with
-    ``removed_component_vessels`` / ``_nodes`` / ``_length_um``, and
-    ``removed_dead_end_vessels`` / ``_nodes`` / ``_length_um``; then
-    ``remaining_nodes`` and ``remaining_vessels``.
+    The counts separate the three: ``removed_components`` with
+    ``removed_component_vessels`` / ``_nodes`` / ``_length_um``;
+    ``removed_dead_end_vessels`` / ``_nodes`` / ``_length_um``, the branches
+    and trees hanging off a kept piece; and ``removed_loop_vessels`` /
+    ``_nodes`` / ``_length_um``, the vessels on a loop hanging off it (a
+    self-loop, or a cycle meeting the rest at one node), which end nowhere and
+    are no dead end; then ``remaining_nodes`` and ``remaining_vessels``.
     """
     kept_edges = inlet_to_outlet_vessels(G, inlet_nodes, outlet_nodes)
     boundary = {n for n in (*inlet_nodes, *outlet_nodes) if n in G}
@@ -228,18 +244,32 @@ def remove_vessels_off_inlet_outlet_paths(
         "removed_dead_end_vessels": 0,
         "removed_dead_end_nodes": 0,
         "removed_dead_end_length_um": 0.0,
+        "removed_loop_vessels": 0,
+        "removed_loop_nodes": 0,
+        "removed_loop_length_um": 0.0,
     }
+    on_a_loop = _vessels_on_a_loop(G)
     removed_edges = []
+    reaches_a_dead_end: set[Any] = set()
     for u, v, k, data in G.edges(keys=True, data=True):
         if (u, v, k) in kept_edges:
             continue
         removed_edges.append((u, v, k))
-        kind = "dead_end" if u in in_kept_piece else "component"
+        if u not in in_kept_piece:
+            kind = "component"
+        elif (u, v, k) in on_a_loop:
+            kind = "loop"
+        else:
+            kind = "dead_end"
+            reaches_a_dead_end.update((u, v))
         stats[f"removed_{kind}_vessels"] += 1
         stats[f"removed_{kind}_length_um"] += _summed_length(data)
     removed_nodes = [n for n in G if n not in kept_nodes]
     for n in removed_nodes:
-        kind = "dead_end" if n in in_kept_piece else "component"
+        if n not in in_kept_piece:
+            kind = "component"
+        else:
+            kind = "dead_end" if n in reaches_a_dead_end else "loop"
         stats[f"removed_{kind}_nodes"] += 1
 
     pruned = G.copy()

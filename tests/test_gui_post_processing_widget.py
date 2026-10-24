@@ -671,7 +671,7 @@ def test_prune_removes_a_dead_end_tree_and_keeps_the_routes(make_napari_viewer):
     assert graph.number_of_edges() == 5
     assert all(graph.has_edge(u, v) for u, v in [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4)])
     assert len(viewer.layers[VESSELS].data) == 5
-    assert "pruned 0 disconnected piece(s) and 2 dead-end vessel(s), 2 vessel(s)" in report.value
+    assert "pruned 0 disconnected piece(s), 2 dead-end vessel(s) and 0 on loops off one node, 2 vessel(s)" in report.value
 
     c.prune_button.click()
     assert "Nothing to prune" in c.status.text()
@@ -705,7 +705,7 @@ def test_the_log_records_each_change_with_its_branch_ids(make_napari_viewer):
     assert "Scanned the network: 1 junction(s) where 4+ vessels meet, in 7 vessels." in lines[0]
     assert f"Node 1 (4 vessels): deleted branchID {to_5} (node 1-5, 20 µm, 5 µm)" in lines[1]
     # The prune names the vessel it removed by its branchID at the time.
-    assert "Pruned 1 disconnected piece(s) and 0 dead-end vessel(s), 1 vessel(s): branchID" in lines[2]
+    assert "Pruned 1 disconnected piece(s), 0 dead-end vessel(s) and 0 on loops off one node, 1 vessel(s): branchID" in lines[2]
     assert "(node 5-6, 10 µm, 5 µm)" in lines[2]
     assert "refused" in lines[3] and "boundary node" in lines[3]
     assert all(line[:2].isdigit() and line[2] == ":" for line in lines)  # timestamped

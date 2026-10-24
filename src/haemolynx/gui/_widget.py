@@ -6380,7 +6380,7 @@ def _run_in_background(
 
         `run_pipeline_stages` takes no cancel argument, so this and `produced`
         are where a cancellation acts.         Both are called between stages, or
-        between graph building's fifteen topology steps, so a run stops with
+        between graph building's thirteen topology steps, so a run stops with
         nothing half-written -- and soon after being asked, rather than at the
         end of whatever stage it is in.
 
@@ -12471,8 +12471,9 @@ def _post_processing_controls(
         removed = [e for e in edge_keys(state.graph) if not pruned.has_edge(*e)]
         lost = stats["removed_boundary_nodes"]
         what = (
-            f"{stats['removed_components']} disconnected piece(s) and "
-            f"{stats['removed_dead_end_vessels']} dead-end vessel(s), "
+            f"{stats['removed_components']} disconnected piece(s), "
+            f"{stats['removed_dead_end_vessels']} dead-end vessel(s) and "
+            f"{stats['removed_loop_vessels']} on loops off one node, "
             f"{stats['removed_vessels']} vessel(s)"
         )
         log_edit(
