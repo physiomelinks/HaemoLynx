@@ -9,13 +9,11 @@ import pickle
 from pathlib import Path
 from types import SimpleNamespace
 
-import networkx as nx
 import numpy as np
 import pytest
 
 from haemolynx.gui.results import ResultLayers, StageLayers, LayerSpec, SKELETON
 from haemolynx.gui.stage_checkpoints import (
-    SKIP_FOR_RESUME,
     StageCheckpoint,
     StageCheckpoints,
     can_revert_from,

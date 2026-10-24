@@ -140,7 +140,6 @@ def test_a_region_found_before_to_be_empty_is_no_volume(tmp_path, monkeypatch):
 def _graph_through(mask):
     """A graph with a vessel running into the trunk and one along it."""
     G = nx.MultiGraph()
-    spacing = np.asarray(SPACING)
     z = np.linspace(2.0, 40.0, 60)
     trunk = np.column_stack([z, np.full_like(z, 0.5 * 90 * 0.6), np.full_like(z, 0.47 * 90 * 0.6)])
     G.add_node(0, pos=trunk[0])

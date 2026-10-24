@@ -164,7 +164,7 @@ _TERMS: list[Term] = []
 
 def _add(topic: str, name: str, unit: Unit, definition: str, *, pattern: Optional[str] = None) -> None:
     """One term: *name* as shown, matched literally unless *pattern* is given."""
-    _TERMS.append(Term(pattern or re.escape(name), unit, definition, topic, name))
+    _TERMS.append(Term(pattern or re.escape(name), unit, definition, topic, name))  # noqa: F821 (module list, deleted once GLOSSARY is built)
 
 
 # -- Network size -------------------------------------------------------------

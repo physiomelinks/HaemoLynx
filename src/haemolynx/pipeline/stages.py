@@ -24,7 +24,6 @@ per topology step inside graph building.
 from __future__ import annotations
 
 import csv
-import inspect
 import json
 import logging
 import pickle
@@ -36,7 +35,6 @@ from typing import Any, Callable, Mapping, Sequence
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import tifffile
 
 from haemolynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from haemolynx.preprocessing import raw_stain
@@ -84,7 +82,7 @@ from haemolynx.haemodynamics.poiseuille import (
     set_edge_diameter_override,
 )
 from haemolynx.io.crop import GRAPH_ATTRIBUTE as CROP_GRAPH_ATTRIBUTE
-from haemolynx.io.crop import CropBox, crop_box_from_settings, crop_volume_and_box, crop_volume_like_graph
+from haemolynx.io.crop import CropBox, crop_box_from_settings, crop_volume_and_box
 from haemolynx.io.downsample import GRAPH_ATTRIBUTE as DOWNSAMPLE_GRAPH_ATTRIBUTE
 from haemolynx.io.downsample import (
     RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
@@ -1339,7 +1337,6 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         output_dir.mkdir(parents=True, exist_ok=True)
     skeleton_path = output_dir / f"{run_stem(settings)}_skeleton.npy"
     voxel_meta_path = output_dir / f"{run_stem(settings)}_voxel_size.json"
-    graph_path = output_dir / f"{run_stem(settings)}_graph.pkl"
     projection_path = settings["plot_dir"] / "skeleton_projection.png"
     if not settings["plot_dir"].exists():
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)

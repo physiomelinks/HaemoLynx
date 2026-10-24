@@ -120,7 +120,6 @@ def _two_branches_in_one_octant():
 def test_two_branches_leaving_a_hub_in_the_same_octant_both_get_a_link():
     """Regression: links were kept one per sign of the direction, so the
     nearer of two branches in one octant was left disconnected."""
-    import numpy as np
     from scipy.ndimage import generate_binary_structure, label
 
     from haemolynx.preprocessing.skeleton import _draw_hub_links
@@ -148,7 +147,6 @@ def test_adjacent_boundary_voxels_are_one_branch_with_one_link():
 
 
 def test_the_link_cap_keeps_the_farthest_branches():
-    import numpy as np
 
     from haemolynx.preprocessing.skeleton import _draw_hub_links
 

@@ -560,7 +560,7 @@ def test_after_run_from_boundaries_cached_artefacts_pass_preflight(panel):
     """Preparing Boundaries leaves the resumed run nothing to fail preflight
     on: the skeleton it loads is on disk, and graph building stays on (the
     graph is handed over), so no graph pickle is needed."""
-    from haemolynx.pipeline import default_schema, preflight, resolve_settings
+    from haemolynx.pipeline import default_schema, resolve_settings
     from haemolynx.pipeline.checks import check_cached_artefacts
 
     widget, viewer, tmp_path = panel
@@ -916,7 +916,6 @@ def _add_a_shortcut(page):
     """A vessel between two nodes of the inlet's piece that no vessel joins yet --
     what the tab's Add vessel ends in (graph.add_vessel_between) -- then the
     page refreshed, as its own edits do."""
-    import networkx as nx
 
     from haemolynx.graph import add_vessel_between
 

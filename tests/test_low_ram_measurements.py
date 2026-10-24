@@ -467,7 +467,6 @@ from types import SimpleNamespace  # noqa: E402
 
 from haemolynx.gui import results as gui_results  # noqa: E402
 from haemolynx.gui import _widget as gui_widget  # noqa: E402
-from haemolynx.preprocessing.memmap_support import new_memmap_array  # noqa: E402
 
 
 def _on_disk(array: np.ndarray, tmp_path: Path) -> np.memmap:

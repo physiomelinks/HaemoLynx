@@ -208,7 +208,7 @@ def main(argv=None) -> int:
     if calibration is None:
         raise SystemExit("The raw image could not be calibrated")
     evidence = make_raw_evidence(raw, mask.shape, args.voxel_size_zyx, calibration)
-    report = [f"# Raw re-score of grids H and H2 (wall_between on the dextran channel)", "",
+    report = ["# Raw re-score of grids H and H2 (wall_between on the dextran channel)", "",
               f"Calibration: {calibration.describe()}.", ""]
     for grid, graph_path, positive, negative in (("H", args.graph_h, "D", "T"), ("H2", args.graph_h2, "X", "V")):
         G = pickle.load(open(graph_path, "rb"))

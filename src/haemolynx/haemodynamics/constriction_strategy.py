@@ -23,7 +23,6 @@ import numpy as np
 
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 
-from .constriction import resolve_generator
 from . import pericyte_mask as pericyte_mask_strategy
 from . import probability as probability_strategy
 from .poiseuille import PoiseuilleModel

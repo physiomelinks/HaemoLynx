@@ -24,6 +24,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
+import networkx as nx
 import numpy as np
 
 from haemolynx.gui.form import (
@@ -1989,11 +1990,11 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         )
     vessels.visible = False
     _ensure_tube_colour_follow(viewer, vessels)
-    for attach in (_attach_tube_quality_slider, _attach_tube_diameter_choice):
+    for attach_control in (_attach_tube_quality_slider, _attach_tube_diameter_choice):
         try:
-            attach(viewer, tubes_layer)
+            attach_control(viewer, tubes_layer)
         except Exception:  # noqa: BLE001 - a missing control must not stop drawing
-            logger.debug("could not run %s", attach.__name__, exc_info=True)
+            logger.debug("could not run %s", attach_control.__name__, exc_info=True)
     return name
 
 
@@ -7456,12 +7457,10 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     if viewer is None:
         return None
 
-    import napari
     from magicgui.widgets import (
         ComboBox,
         Container,
         FloatSlider,
-        FloatSpinBox,
         Label,
         PushButton,
     )
@@ -7505,11 +7504,8 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         volume_setting,
         wanted_rows,
         BC_BOX_NODES,
-        BOX_NODE_COLUMNS,
         box_node_styles,
         rectangle_from_box,
-        DEFAULT_BOX_SIZE_UM,
-        MOVE_DIRECTIONS,
         box_around,
         box_centre,
         box_node_rows,
@@ -10943,7 +10939,6 @@ def _post_processing_controls(
         DEAD_END_SHOW,
         DEAD_END_SHOW_ALL,
         DEAD_END_SHOW_BY_LABEL,
-        NEEDS_MASK,
         REVIEW_JUNCTIONS,
         action_applies,
         REVIEW_LIST_BY_KEY,
@@ -13391,7 +13386,6 @@ def settings_widget(napari_viewer=None):
         CheckBox,
         ComboBox,
         Container,
-        FileEdit,
         Label,
         PushButton,
         SpinBox,
@@ -14409,7 +14403,7 @@ def settings_widget(napari_viewer=None):
     show_steps.native.setObjectName("haemolynx_show_steps")
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
-        QButtonGroup, QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
+        QButtonGroup, QCheckBox, QFormLayout, QHBoxLayout,
         QLabel, QMenu, QPushButton, QRadioButton, QToolButton, QWidget,
     )
     from superqt import QDoubleSlider

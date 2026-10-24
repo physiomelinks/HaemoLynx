@@ -408,7 +408,6 @@ def test_singular_network_does_not_fall_back_to_lstsq(monkeypatch):
 def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
     """Boundary nodes that all land outside the conductive part (or on one
     side of it) leave a component with a single imposed pressure: zero flow."""
-    import logging
 
     G = nx.MultiGraph()
     G.add_edge(0, 1, conductance=SI_CONDUCTANCE)

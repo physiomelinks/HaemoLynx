@@ -303,7 +303,6 @@ def test_windowed_cost_matches_the_global_field_away_from_the_pad(
     scattered_skeleton,
 ):
     """Inside the pad the windowed transform is exact; that is the guarantee."""
-    from haemolynx.graph import reconnect as reconnect_mod
 
     skeleton = scattered_skeleton
     global_cost = 1 + distance_transform_edt(~skeleton) ** 2
@@ -535,7 +534,6 @@ def test_reconnect_falls_back_to_one_global_field_when_windows_get_large(
     monkeypatch.setattr(reconnect_mod, "COST_WINDOW_PAD", max(scattered_skeleton.shape))
 
     G = nx.MultiGraph()
-    shape = np.array(scattered_skeleton.shape)
     for node, position in enumerate([(5, 5, 5), (5, 20, 20), (12, 40, 8), (30, 12, 45)]):
         G.add_node(node, pos=np.array(position, dtype=float))
     for u, v in [(0, 1), (1, 2), (2, 3)]:

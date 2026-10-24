@@ -1,7 +1,6 @@
 """The lamp written onto a surface, without a viewer."""
 from __future__ import annotations
 
-import pytest
 
 from haemolynx.gui.canvas_illumination import (
     CanvasIllumination,

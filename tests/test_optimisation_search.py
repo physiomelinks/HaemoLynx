@@ -256,7 +256,7 @@ def test_optimise_settings_thick_vessel_refinement_sweeps_run_when_on(monkeypatc
 # Input-data-consistency guards (reusing the existing diagnose_* functions)
 # ---------------------------------------------------------------------------
 def test_regression_penalty_is_zero_when_current_meets_or_beats_baseline():
-    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+    from haemolynx.optimisation.search import _Search
 
     assert _Search._regression_penalty(current=0.9, baseline=0.9, tolerance=0.02) == 0.0
     assert _Search._regression_penalty(current=0.95, baseline=0.9, tolerance=0.02) == 0.0
@@ -802,7 +802,7 @@ def test_segmentation_cleanup_raw_image_guard_rejects_invented_foreground():
     support -- quality() alone (fragmentation/connectivity) would favour
     bridging it, but the raw-image guard must reject that once a reference
     image shows there is nothing there."""
-    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+    from haemolynx.optimisation.search import _Search
 
     shape = (16, 16, 16)
     mask = np.zeros(shape, dtype=bool)
@@ -851,7 +851,7 @@ def test_segmentation_cleanup_raw_image_guard_rejects_erasing_real_signal():
     candidate, the guard itself must independently reject one that erases
     real signal a reference image confirms is genuinely there.
     """
-    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+    from haemolynx.optimisation.search import _Search
 
     shape = (20, 20, 20)
     mask = np.zeros(shape, dtype=bool)

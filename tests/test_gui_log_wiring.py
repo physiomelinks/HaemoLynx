@@ -89,7 +89,7 @@ def a_run_that_logs(*messages: str, events: tuple = ()):
     return fake_run, seen
 
 
-def start(log_view, state=None, viewer=None, results=None):
+def start(log_view, state=None, viewer=None, results=None):  # noqa: F811 (the imported fixture)
     """`_run_in_background` with the arguments a panel would give it."""
     report = SimpleNamespace(value="")
     button = SimpleNamespace(enabled=True)
@@ -266,7 +266,7 @@ def test_nothing_arrives_after_the_cancel_banner(
 
 
 def test_the_panel_docks_the_log_in_the_viewer(make_napari_viewer) -> None:
-    viewer = make_napari_viewer()
+    viewer = make_napari_viewer()  # noqa: F811 (the imported fixture)
 
     panel = settings_widget(napari_viewer=viewer)
 
@@ -281,7 +281,7 @@ def test_the_log_keeps_the_bottom_with_the_view_tabbed_on_the_left(make_napari_v
     """A left view strip used to take the bottom corners and hide the log."""
     from qtpy.QtCore import Qt
 
-    viewer = make_napari_viewer()
+    viewer = make_napari_viewer()  # noqa: F811 (the imported fixture)
     panel = settings_widget(napari_viewer=viewer)
     main_window = viewer.window._qt_window
 
@@ -310,7 +310,7 @@ def test_starting_a_run_brings_the_log_window_back(
     """The user's choice: a run opens its log, even one they had closed."""
     from haemolynx.gui import _widget
 
-    viewer = make_napari_viewer()
+    viewer = make_napari_viewer()  # noqa: F811 (the imported fixture)
     panel = settings_widget(napari_viewer=viewer)
     dock = panel._haemolynx_log_dock
     dock.setVisible(False)
@@ -335,7 +335,7 @@ def test_the_window_starts_at_the_level_the_settings_asked_for(
     """`verbose_logging` already means "tell me everything"; no new setting."""
     from haemolynx.gui import _widget
 
-    viewer = make_napari_viewer()
+    viewer = make_napari_viewer()  # noqa: F811 (the imported fixture)
     panel = settings_widget(napari_viewer=viewer)
     monkeypatch.setattr(_widget, "preflight", lambda *a, **k: SimpleNamespace(ok=True))
     fake_run, _seen = a_run_that_logs("Pruning complete: removed 2")

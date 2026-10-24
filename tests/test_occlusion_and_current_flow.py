@@ -4,7 +4,6 @@ from __future__ import annotations
 import math
 
 import networkx as nx
-import numpy as np
 import pytest
 
 from haemolynx.haemodynamics.resistance import (

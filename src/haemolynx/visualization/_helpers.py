@@ -2,7 +2,6 @@
 import re
 from typing import List, Dict, Optional, Tuple
 
-import numpy as np
 import matplotlib.pyplot as plt
 
 from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE

@@ -29,7 +29,7 @@ sys.path.insert(0, str(HERE.parent / "bridge_review"))
 
 
 def chord_measures(evidence, points: np.ndarray, radius_um: float) -> dict:
-    from haemolynx.preprocessing.raw_evidence import BRIGHT_THRESHOLD, _along
+    from haemolynx.preprocessing.raw_evidence import BRIGHT_THRESHOLD
     from haemolynx.graph.lumen_loops import _evenly_round
 
     ring = _evenly_round(points, evidence._step_um)
@@ -83,7 +83,7 @@ def main(argv=None) -> int:
     mask = np.load(args.mask).astype(bool)
     raw = load_raw_channel(args.raw, args.raw_channel)
     vs = tuple(args.voxel_size_zyx)
-    support = MaskSupport(mask, vs)
+    _support = MaskSupport(mask, vs)
     evidence = make_raw_evidence(raw, mask.shape, vs, calibrate_raw(raw, mask, vs, stain=ENDOTHELIAL))
     loops = {";".join("-".join(str(x) for x in e) for e in loop.edges): loop for loop in short_loops(G, search_um=200.0)}
     rows = []
