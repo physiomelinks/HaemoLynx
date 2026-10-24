@@ -1916,13 +1916,14 @@ def _log_graph_consistency_diagnostics(
         logger.info(artefacts_report)
 
 
-def _log_thick_vessel_bridge_shapes(G: nx.MultiGraph, context: NetworkContext) -> None:
+def _log_thick_vessel_bridge_shapes(G: nx.MultiGraph, context: NetworkContext, settings: Mapping[str, Any]) -> None:
     """What shape each thick-vessel bridge has, against the tree the split
     bridged to (graph.diagnose_thick_vessel_bridges): a warning when any is
     one the split never means to make. Read-only, like the graph checks."""
     report = graph.diagnose_thick_vessel_bridges(
         G, context.thick_vessel_mask, context.thick_tree, context.binary_mask,
         voxel_size_zyx=context.voxel_size_zyx, tree_radius_um=context.thick_tree_radius,
+        centreline_tolerance_um=thick_bridge_centreline_tolerance_um(settings),
     )
     if not report["bridge_count"]:
         return
@@ -1940,6 +1941,7 @@ def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
     the same limits on the background it may cross; and a blind vessel
     beyond a bridge goes only when the stub prune would take it."""
     return dict(
+        centreline_tolerance_um=thick_bridge_centreline_tolerance_um(settings),
         join_dead_ends_at_walls=bool(settings["bridge_require_mask_support"]),
         max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
         min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
@@ -1950,6 +1952,17 @@ def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
         min_stub_length=float(settings.get("min_stub_length", 10.0)),
         min_stub_length_radius_multiple=float(settings.get("min_stub_length_radius_multiple", 3.0) or 0.0),
     )
+
+
+def thick_bridge_centreline_tolerance_um(settings: Mapping[str, Any]) -> float:
+    """``thick_bridge_centreline_tolerance_um``: how near the thick vessels'
+    centreline tree a graph centreline is their own, for the split and for
+    every clean-up keeping the strand on it. Its default when a caller's
+    settings predate it."""
+    value = settings.get(
+        "thick_bridge_centreline_tolerance_um", graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM
+    )
+    return float(graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM if value is None else value)
 
 
 def _short_loop_keep_hole_um(settings: dict) -> float:
@@ -2138,6 +2151,7 @@ def network_context(
             )
         follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
             thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
+            centreline_tolerance_um=thick_bridge_centreline_tolerance_um(settings),
         )
         context.thick_tree = thick_tree
         context.along_thick_centreline = None if follower is None else follower.along_um
@@ -2475,7 +2489,7 @@ def build_network(
         )
         G = finish_network_graph(G, skeleton, settings, context, edges_after_step=edges_after_step)
         if context.thick_vessel_mask is not None and G.number_of_edges():
-            _log_thick_vessel_bridge_shapes(G, context)
+            _log_thick_vessel_bridge_shapes(G, context, settings)
 
         # Nothing after this can run on no vessels, and what tried failed on
         # something else (the 3D drawing on no node positions, boundary

@@ -272,6 +272,24 @@ def test_the_built_network_logs_the_shape_of_its_thick_vessel_bridges(tmp_path, 
     assert line.levelno == logging.INFO, "a bridge from the wall to the centreline is what the split means to make"
 
 
+def test_the_clean_ups_judge_the_strand_on_the_thick_centreline_by_the_runs_tolerance(tmp_path):
+    """``thick_bridge_centreline_tolerance_um`` reaches what every clean-up
+    keeps the strand on the thick centreline by, as it reaches the split: a
+    strand 3 um off the thick vessel's axis follows its centreline at a 4 um
+    tolerance, not at the default."""
+    from haemolynx.pipeline.stages import network_context
+
+    _skeleton, image, region = _thick_tee()
+    strand = np.array([[24.0, 27.0, float(x)] for x in range(8, 40)])
+    lengths = {}
+    for tolerance in (1.5, 4.0):
+        settings = _settings(tmp_path, thick_bridge_centreline_tolerance_um=tolerance)
+        context = network_context(settings, image.astype(bool), (1.0, 1.0, 1.0), region)
+        lengths[tolerance] = context.along_thick_centreline(strand)
+    assert lengths[1.5] == 0.0
+    assert lengths[4.0] > 25.0
+
+
 def test_a_run_without_a_thick_vessel_region_leaves_the_choice_to_the_wall(tmp_path, monkeypatch):
     seen = _spy_on_graph_building(monkeypatch)
     build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)

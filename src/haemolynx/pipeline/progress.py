@@ -202,6 +202,7 @@ STAGES: tuple[Stage, ...] = (
             # Read by the thick-vessel split, graph building's last step.
             "thick_vessel_fill_centreline_gaps",
             "thick_vessel_extend_centreline_ends",
+            "thick_bridge_centreline_tolerance_um",
             "extend_dead_ends_to_faces",
             "trace_on_dead_ends",
             "join_dead_ends_to_vessel_sides",

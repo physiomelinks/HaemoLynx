@@ -542,6 +542,33 @@ def test_the_run_judges_blind_vessels_beyond_bridges_with_its_stub_settings():
     assert "TIP" not in result, "21 um beyond its bridge is under the run's 25 um"
 
 
+def test_the_run_reads_the_centreline_tolerance_from_its_setting():
+    """``thick_bridge_centreline_tolerance_um``: a vessel stopping 1 um off
+    the thick vessel's axis. At the default (1.5 um, or 30% of the 6 um
+    radius) its stretch inside the lumen goes and it is bridged to the thick
+    centreline. At 4.5 um its last 3.5 um are within the tolerance of the
+    tree, the thick vessel's own centreline ending there, and the vessel
+    carrying it on is a taper: no bridge, and nothing removed."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import thick_junction_bridge_arguments
+
+    settings = default_schema().defaults() | {"thick_vessel_extend_centreline_ends": False}
+    assert thick_junction_bridge_arguments(settings)["centreline_tolerance_um"] == 1.5
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 21), (20, 30, 63))
+    G = _graph(("T0", "T1", T0, T1), ("X", "S", (20, 30, 63), (20, 30, 21)))
+
+    default = _split(G, lumen, body, tree, **thick_junction_bridge_arguments(settings))
+    wide = _split(G, lumen, body, tree, **thick_junction_bridge_arguments(
+        settings | {"thick_bridge_centreline_tolerance_um": 4.5}
+    ))
+
+    (_u, _v, bridge), = _bridges(default)
+    assert "S" not in default and REACH - 0.5 <= bridge["length"] <= REACH + 1.0
+    assert not _bridges(wide)
+    assert "S" in wide and wide.number_of_edges() == 2
+
+
 # --- the network with its bridges contracted (what statistics measure) --------------
 
 

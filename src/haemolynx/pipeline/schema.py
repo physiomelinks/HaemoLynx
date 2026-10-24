@@ -4064,6 +4064,25 @@ SCHEMA = Schema(
             requires=("use_thick_vessel_skeletonisation",),
             advanced=True,
         ),
+        Setting(
+            name="thick_bridge_centreline_tolerance_um",
+            kind="float",
+            default=1.5,
+            help=(
+                "How near the centreline drawn through the thick-vessel region a "
+                "graph centreline must lie to be the thick vessel's own centreline, "
+                "where vessels opening into it are bridged to it: this, or 30% of "
+                "the thick vessel's lumen radius there, whichever is more. Graph "
+                "building moves centrelines by about a micron after skeletonisation "
+                "drew that one. The stretches it must run for stay 3 um at an "
+                "edge's end and 6 um within it. Not yet fitted on marked examples"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
         # A purely additive, read-only QC check on the tree
         # skeletonize_thickness_gated just built: off by default, and even on,
         # it only logs a warning -- it never changes the skeleton. See

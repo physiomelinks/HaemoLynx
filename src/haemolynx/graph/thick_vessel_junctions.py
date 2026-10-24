@@ -803,7 +803,7 @@ def insert_thick_vessel_junction_nodes(
             result, near_tree, tree, tree_radius, lumen, thick, vs, chosen,
             max_background_gap_um=max_background_gap_um, min_mask_fraction=min_mask_fraction,
             max_short_loop_um=max_short_loop_um, short_loop_keep_hole_um=short_loop_keep_hole_um,
-            support=mask_support,
+            support=mask_support, tolerance_um=float(centreline_tolerance_um),
         )
     node_pos = {
         n: np.asarray(d["pos"], dtype=float) for n, d in result.nodes(data=True) if "pos" in d
@@ -1878,7 +1878,7 @@ def _centreline_samples(G, near_tree, thick, vs):
 def _join_dead_ends_at_walls(
     G, near_tree, tree, tree_radius, lumen, thick, vs, chosen, *,
     max_background_gap_um=None, min_mask_fraction=None, max_short_loop_um=None, short_loop_keep_hole_um=None,
-    support=None,
+    support=None, tolerance_um: float = CENTRELINE_TOLERANCE_UM,
 ) -> int:
     """Draw each dead end that stops at a thick vessel's wall on to the
     nearest point of the thick centreline in *G*, in place, so the split
@@ -1949,7 +1949,7 @@ def _join_dead_ends_at_walls(
         w = b if a == n else a
         p = np.asarray(G.nodes[n]["pos"], dtype=float)
         radius = tree_radius[tree.query(p)[1]]
-        reach = (float(radius) if np.isfinite(radius) else 0.0) + WALL_JOIN_REACH_UM + CENTRELINE_TOLERANCE_UM
+        reach = (float(radius) if np.isfinite(radius) else 0.0) + WALL_JOIN_REACH_UM + float(tolerance_um)
         nearby = samples.query_ball_point(p, reach)
         if any(not G.has_edge(*owners[j]) for j in nearby):
             # An earlier join split the edge a sample was on: sample again.
