@@ -173,3 +173,20 @@ def test_every_band_in_the_table_is_one_a_row_reads(monkeypatch):
     # The capillary orders the bed makes are reported, never banded.
     assert all(r.tolerance == "" for r in rows if r.section.startswith("order B"))
     assert any(r.section.startswith("order B") for r in rows)
+
+
+def test_the_dead_end_total_is_unbanded_when_the_template_has_kinds_a_network_cannot_draw():
+    """E14.5's template counts 17 artefact ends and 94 ends of pieces without
+    a junction; one connected network draws neither, so its total was marked
+    outside while the kinds drawn (leaving the image, inside) were exact."""
+    T = fixture_template()
+    with_islands = replace(T, dead_ends=replace(T.dead_ends, total=T.dead_ends.total + 5, island_ends=3, artefacts=2))
+
+    def by_name(template, synthetic):
+        return {r.characteristic: r for r in compare_templates(template, synthetic) if r.section == "dead ends"}
+
+    rows = by_name(with_islands, T)
+    assert rows["dead ends"].tolerance == "" and rows["dead ends"].within is None
+    assert rows["leaving the image"].within is True and rows["inside the tissue"].within is True
+    rows = by_name(T, T)
+    assert rows["dead ends"].tolerance == "abs 2" and rows["dead ends"].within is True

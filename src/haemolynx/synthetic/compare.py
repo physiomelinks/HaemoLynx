@@ -254,7 +254,11 @@ def compare_templates(template: NetworkTemplate, synthetic: NetworkTemplate) -> 
         add("loops", f"loop length {name} (um)", T.loops.length_percentiles_um.get(name), S.loops.length_percentiles_um.get(name))
     add("loops", "vessels on no loop (fraction)", T.loops.vessels_on_no_loop_fraction, S.loops.vessels_on_no_loop_fraction)
 
-    add("dead ends", "dead ends", T.dead_ends.total, S.dead_ends.total)
+    # The generator draws one connected network: a template's artefact ends
+    # and ends of pieces without a junction are never drawn, so its total is
+    # reported, not banded; the kinds drawn are banded below.
+    undrawn = bool(T.dead_ends.artefacts or T.dead_ends.island_ends)
+    add("dead ends", "dead ends", T.dead_ends.total, S.dead_ends.total, key="dead ends, kinds not drawn" if undrawn else None)
     add("dead ends", "leaving the image", T.dead_ends.leaves_image, S.dead_ends.leaves_image)
     add("dead ends", "inside the tissue", T.dead_ends.interior, S.dead_ends.interior)
     add("dead ends", "artefacts", T.dead_ends.artefacts, S.dead_ends.artefacts)
