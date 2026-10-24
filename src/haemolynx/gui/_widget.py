@@ -125,6 +125,11 @@ from haemolynx.gui.run_snapshot import (
     write_run_snapshot,
 )
 from haemolynx.gui.tabs import tabs_for
+from haemolynx.gui.template_basis import (
+    TARGET_SETTING as TEMPLATE_BASIS_TARGET,
+    TRIGGER_SETTINGS as TEMPLATE_BASIS_TRIGGERS,
+    template_basis_update,
+)
 from haemolynx.gui.vessel_mask_search import (
     TRIGGER_SETTINGS as MASK_SEARCH_TRIGGERS,
     fill_vessel_mask_rows,
@@ -14534,6 +14539,28 @@ def settings_widget(napari_viewer=None):
     for name in MASK_SEARCH_TRIGGERS:
         if name in rows:
             rows[name].changed.connect(search_for_vessel_masks)
+
+    #: The trigger settings as the template-basis follower last saw them.
+    template_basis_seen = {name: current_values().get(name) for name in TEMPLATE_BASIS_TRIGGERS}
+
+    def follow_template_basis(*_args) -> None:
+        """Set Segmentation source to a synthetic template's diameter basis
+        when the template is picked (`gui/template_basis.py`); never while a
+        config or a saved run fills the rows."""
+        values = current_values()
+        before = dict(template_basis_seen)
+        template_basis_seen.update({name: values.get(name) for name in TEMPLATE_BASIS_TRIGGERS})
+        if restoring_settings[0]:
+            return
+        update = template_basis_update(before, values)
+        if update.value is not None and TEMPLATE_BASIS_TARGET in rows:
+            rows[TEMPLATE_BASIS_TARGET].value = display_value_for(schema[TEMPLATE_BASIS_TARGET], update.value)
+        if update.line:
+            report.value = update.line
+
+    for name in TEMPLATE_BASIS_TRIGGERS:
+        if name in rows:
+            rows[name].changed.connect(follow_template_basis)
 
     bars = ProgressBars()
     run_state = RunState(bars=bars)

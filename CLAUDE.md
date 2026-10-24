@@ -148,6 +148,8 @@ haemolynx/
 │   │                       #   help_view.py (the ? window: directory and text),
 │   │                       #   vessel_mask_search.py (when the panel looks for vessel
 │   │                       #   masks and which rows it fills, pure),
+│   │                       #   template_basis.py (Segmentation source set to a picked
+│   │                       #   synthetic template's diameter basis, pure),
 │   │                       #   batch_run.py (a batch: one run and .haemorun per image,
 │   │                       #   no Qt; `python -m haemolynx.gui.batch_run`) + batch_run_cli.py
 │   │                       #   (its command line: the one gui module allowed to print),
@@ -315,7 +317,8 @@ returns an empty `SkeletonisedVolume(synthetic=True)`, `build_network` draws the
 (`synthetic.generate_network`), `assign_boundaries` takes the roles the generator marked, the drawn
 widths are kept (`diameter_source="synthetic"`) on the template's diameter basis (each edge's
 `diameter_basis` is `NetworkTemplate.diameter_basis`, the one most of the template's vessels were
-read on; preflight warns when `segmentation_source` differs), and everything from Diameters on runs
+read on; the panel sets `segmentation_source` to it when the template is picked, never on a config
+or run load (`gui/template_basis.py`), and preflight warns when they differ), and everything from Diameters on runs
 as for an image. Every image-only Input row requires `network_source=segmented_image`, every mask switch reads
 as off, `raw_image_is_set` is False, and every output is named `{template stem}_synthetic`
 (`pipeline/naming.py`'s `run_stem`, the one answer). Export writes `{stem}_template_comparison.csv`

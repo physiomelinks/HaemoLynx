@@ -85,3 +85,36 @@ def test_the_advanced_synthetic_rows_sit_behind_their_own_button(panel):
     for name in ("synthetic_seed", "synthetic_scale", "synthetic_interior_dead_ends", "synthetic_bed_model"):
         assert rows[name].visible, name
     assert rows["synthetic_seed"].value == 20240917
+
+
+def test_picking_a_template_sets_the_segmentation_source_to_its_basis(panel, tmp_path):
+    """Harvey, 2026-10-24: the row follows the template's diameter basis when
+    the template is picked; a config loaded afterwards says what it says."""
+    from synthetic_fixtures import write_fixture_run
+
+    template = write_fixture_run(tmp_path, settings={"segmentation_source": "endothelial"}, name="claudin.haemorun")
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    assert rows["segmentation_source"].value == "plasma_column"
+    rows["network_source"].value = "synthetic"
+    rows["synthetic_template_path"].value = template
+    _process()
+    assert rows["segmentation_source"].value == "endothelial"
+    assert widget._haemolynx_values()["segmentation_source"] == "endothelial"
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join(
+            (
+                "network_source: synthetic",
+                f"synthetic_template_path: {template.as_posix()}",
+                "segmentation_source: plasma_column",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    widget._haemolynx_load_config(config)
+    _process()
+    assert rows["segmentation_source"].value == "plasma_column"

@@ -1326,10 +1326,37 @@ def template_from_graph(
 # ---------------------------------------------------------------------------
 
 _CACHE: dict[tuple, NetworkTemplate] = {}
+_BASIS_CACHE: dict[tuple, Optional[str]] = {}
 
 
 def clear_template_cache() -> None:
     _CACHE.clear()
+    _BASIS_CACHE.clear()
+
+
+def diameter_basis_of_run(path: Path | str) -> Optional[str]:
+    """The diameter basis a template read from the ``.haemorun`` at *path*
+    would record (:attr:`NetworkTemplate.diameter_basis`), without reading
+    the rest of the template: what the panel sets a synthetic run's
+    ``segmentation_source`` to when the template is picked
+    (``gui.template_basis``). Remembered per file identity, as
+    :func:`load_template` is. Raises ``gui.run_snapshot.RunSnapshotError``
+    for a file that is not a run snapshot; None for one with no network or
+    no basis to read."""
+    file = Path(path)
+    stat = os.stat(file)
+    key = (str(file.resolve()), stat.st_size, stat.st_mtime_ns)
+    if key in _BASIS_CACHE:
+        return _BASIS_CACHE[key]
+    from haemolynx.gui.run_snapshot import read_run_snapshot
+
+    snapshot = read_run_snapshot(file)
+    G, _checkpoint = template_graph(snapshot)
+    basis = None
+    if G is not None:
+        basis = template_diameter_basis(G, run_diameter_basis_of(G, _run_settings(snapshot)), [])
+    _BASIS_CACHE[key] = basis
+    return basis
 
 
 def load_template(path: Path | str, source: str = SOURCE_STATISTICS) -> NetworkTemplate:
@@ -1399,6 +1426,7 @@ __all__ = [
     "boundary_nodes_of",
     "check_template_run",
     "clear_template_cache",
+    "diameter_basis_of_run",
     "endpoints_from_nodes",
     "load_template",
     "lognormal_from_mean_cv",

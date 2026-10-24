@@ -521,6 +521,19 @@ def test_a_template_written_with_a_vessel_box_still_loads():
     assert NetworkTemplate.from_dict(old) == fixture_template()
 
 
+def test_the_basis_of_a_run_is_the_templates_without_reading_the_template(tmp_path):
+    path = write_fixture_run(tmp_path, settings={"segmentation_source": "endothelial"})
+    assert tpl.diameter_basis_of_run(path) == "endothelial"
+    assert tpl.diameter_basis_of_run(path) == load_template(path, "statistics").diameter_basis
+    assert tpl.diameter_basis_of_run(path) == load_template(path, "graph").diameter_basis
+    other = write_fixture_run(tmp_path, name="plasma.haemorun")
+    assert tpl.diameter_basis_of_run(other) == "plasma_column"
+    bad = tmp_path / "bad.haemorun"
+    bad.write_bytes(b"not a run")
+    with pytest.raises(RunSnapshotError):
+        tpl.diameter_basis_of_run(bad)
+
+
 def test_an_older_template_without_a_basis_still_loads(tmp_path):
     template = replace(fixture_template(), diameter_basis="endothelial")
     data = template.to_dict()

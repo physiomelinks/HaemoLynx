@@ -541,6 +541,12 @@ with 1,181 capillaries), the capillary median length (32.4 against 28.1 um, 15.4
 bent further to their lengths. Network resistance: 1.19 (Delaunay) and 1.43 (Voronoi) x 10^15
 Pa.s/m^3 against the template's 1.99.
 
+**Segmentation source follows the template** (Harvey, 2026-10-24, after his first panel run, which
+ran on a checkout without the decisions and with the row at plasma_column): picking a template, or
+switching the Input to synthetic with one picked, sets Segmentation source to the template's
+diameter basis (`gui/template_basis.py`, `synthetic.diameter_basis_of_run`: the basis without
+reading the whole template, 0.6 s on E14.5); loading a config or a saved run never changes it.
+
 **Harvey's panel check (item 6).** On the Input tab set Input to "Synthetic network from a template
 run" and pick `C:\Users\hd01\Documents\GitHub\ImageLynx\.claude\worktrees\plan-synthetic-e08d0c\outputs\synthetic_e14p5\template\e14p5.haemorun`
 (the E14.5 template run above; it goes if the `plan-synthetic-e08d0c` worktree is cleaned up), set
