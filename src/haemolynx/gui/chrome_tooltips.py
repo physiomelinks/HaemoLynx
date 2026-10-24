@@ -100,6 +100,11 @@ LOAD_CONFIG_TOOLTIP = (
     "Open a YAML config into these form rows without loading the image "
     "paths it names"
 )
+PRESET_TOOLTIP = (
+    "Load a standard set of settings to start from: a preset sets the rows "
+    "it names and leaves the rest, so a config loaded afterwards or a row "
+    "changed by hand replaces what it set; None loads nothing"
+)
 EDIT_GRAPH_TOOLTIP = (
     "Open the graph editor: add a branch by clicking along the segmented "
     "image, or delete a vessel by clicking it, then Regenerate to catch "

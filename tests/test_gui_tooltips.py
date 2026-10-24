@@ -77,6 +77,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.SHOW_BOUNDARIES_TOOLTIP,
         chrome.SNAP_BOUNDARIES_TOOLTIP,
         chrome.LOAD_CONFIG_TOOLTIP,
+        chrome.PRESET_TOOLTIP,
         chrome.SAVE_CONFIG_TOOLTIP,
         chrome.RUN_CHECKS_TOOLTIP,
         chrome.RUN_PIPELINE_TOOLTIP,

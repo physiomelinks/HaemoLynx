@@ -1,9 +1,11 @@
 """Named sets of setting overrides for the resistance pipeline.
 
 A preset is just a partial config: the settings it names replace what the
-config file says, and everything else is untouched. Every name is validated
-against the pipeline's schema when this module is imported, so
-a preset cannot quietly set something that no longer exists.
+config file says, and everything else is untouched. The panel's presets
+(``haemolynx.pipeline.presets``) are offered here too, beside these, which
+name files and command-line plotting of their own. Every name is validated
+against the pipeline's schema when this module is imported, so a preset
+cannot quietly set something that no longer exists.
 """
 from __future__ import annotations
 
@@ -15,11 +17,12 @@ for _path in (_ROOT / "src", _ROOT / "examples"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from haemolynx.pipeline.presets import PRESETS as PANEL_PRESETS, check_presets  # noqa: E402
 from haemolynx.pipeline.schema import default_schema  # noqa: E402
 
 SCHEMA = default_schema()
 
-PRESETS: dict[str, dict] = {
+_EXAMPLE_PRESETS: dict[str, dict] = {
     "all_automated": {
         "description": (
             "Fully automated profile: large/small vessel masks and FWHM "
@@ -219,20 +222,10 @@ PRESETS: dict[str, dict] = {
 }
 
 
-def _check() -> None:
-    """Fail at import if a preset names or mis-types a setting.
+_shared = sorted(PANEL_PRESETS.keys() & _EXAMPLE_PRESETS.keys())
+if _shared:
+    raise ValueError(f"Presets named both here and in the panel's list: {_shared}")
+PRESETS: dict[str, dict] = {**PANEL_PRESETS, **_EXAMPLE_PRESETS}
 
-    Each value is checked on its own rather than through ``Schema.validate``: a
-    preset is a partial config, so its prerequisites are usually satisfied by
-    the config file it is applied to, not by the preset itself.
-    """
-    for name, spec in PRESETS.items():
-        unknown = sorted(k for k in spec["overrides"] if k not in SCHEMA)
-        if unknown:
-            raise ValueError(f"Preset '{name}' sets unknown settings: {unknown}")
-        for setting_name, value in spec["overrides"].items():
-            SCHEMA[setting_name].coerce(value)
-
-
-_check()
+check_presets(PRESETS, SCHEMA)
 

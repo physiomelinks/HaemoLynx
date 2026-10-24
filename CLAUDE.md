@@ -173,7 +173,8 @@ haemolynx/
 │                           #   image's settings in a batch, and the batch checks),
 │                           #   export_dictionary.py (every output file's columns, arrays and
 │                           #   units: docs/export_dictionary.md; a new output column needs an
-│                           #   entry); public:
+│                           #   entry), presets.py (the panel's Preset menu: named sets of
+│                           #   switches to start from, also offered by --preset); public:
 │                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
@@ -182,7 +183,7 @@ haemolynx/
 │   ├── simple_network_haemodynamics.py       # Hand-built graph: the haemodynamics API on its own
 │   ├── *_schema.py / *_config.yaml           # Settings an example adds on top of
 │   │                                         #   haemolynx.pipeline.schema; configs are generated
-│   ├── pipeline_presets.py                   # Named partial configs, validated against the schema
+│   ├── pipeline_presets.py                   # The panel's presets + the examples' own, for --preset
 │   └── regenerate_configs.py                 # Rewrite every *_config.yaml from its schema
 ├── tutorials/
 │   ├── pipeline_tutorial.ipynb   # **Source of truth** for the step-by-step tutorial
@@ -364,8 +365,8 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `test_statistics_glossary.py` (every row of a run with every statistic on has a term, a definition and a unit; the units a run decides; older CSVs read back alike; the page up to date), `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_exact_betweenness.py` (the parallel pass `==` networkx on every shape, weighting and scaling, in workers and here; the batched pass where path counts pass 2^53, at every batch size; the fallbacks of both worker programs), `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, one-to-one matching by name, every reason an image is left out, median/mean per subject, Wilcoxon/paired t by hand, Harvey's AIA names) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py`, `test_endothelial_optimisation_search.py` (a trial's widths `==` the run's; the search on a stand-in ring fit; slow: whole searches at two voxel sizes) |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
-| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off), `test_gui_fwhm_optimise_widget.py` / `test_gui_endothelial_optimise_widget.py` (the Diameters tab's two optimisers) |
-| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_export_dictionary.py` (every output's documented columns are its writer's, units in VTK field data and CSV names, the page up to date), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals) |
+| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off), `test_gui_fwhm_optimise_widget.py` / `test_gui_endothelial_optimise_widget.py` (the Diameters tab's two optimisers), `test_gui_presets_widget.py` (the Preset menu: what it sets, what replaces it) |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_export_dictionary.py` (every output's documented columns are its writer's, units in VTK field data and CSV names, the page up to date), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals), `test_pipeline_presets.py` (what a preset may name, every setting it names read, usages in any order, `--preset`) |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py`, `test_prefixed_settings.py` (every `fwhm_` / `skeleton_` / `segmentation_cleanup_` setting a parameter of its function or read by name) |
 | `src/haemolynx/synthetic/` | `tests/test_synthetic_template.py` (both sources, every refusal, JSON, scaling), `test_synthetic_generate.py` (the graph contract, determinism, the exact counts, the acceptance test against `tests/synthetic_fixtures.py`'s hand-set template, the polyline bender, the bed's arithmetic), `test_synthetic_compare.py`, `test_synthetic_stage.py` (each stage under `network_source=synthetic`, a whole run, preflight), `test_pipeline_naming.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
@@ -940,9 +941,13 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `validate_synthetic_graph` pins the graph contract (int ids, `pos`/`voxels` in µm, `length` the
   polyline's, `diameter_source="synthetic"`, no degree-2 node, `dead_end_kind` on every dead end,
   connected).
-- **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
-  checked against the schema at import, so a preset cannot quietly set something that no longer
-  exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.
+- **Presets** (`pipeline/presets.py`) — `PRESETS`, named partial configs: the panel's Preset menu
+  under Load config... sets the rows a preset names and nothing else, and keeps no state (a config
+  or run loaded afterwards puts the menu back to None). Switches and choices only, never a file or
+  a threshold. The `USAGE_PRESETS` between them name every setting any of them sets, so one chosen
+  after another gives the same run (`tests/test_pipeline_presets.py`); the rest add to a usage.
+  `examples/pipeline_presets.py` offers them on `--preset` beside its own (which name files), and
+  checks every one against the schema at import. The override engine is `parsers/cli.py`.
 ---
 
 ---

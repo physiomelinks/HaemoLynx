@@ -197,6 +197,7 @@ from haemolynx.pipeline import (
     segment,
 )
 from haemolynx.pipeline import stages as pipeline_stages
+from haemolynx.pipeline.presets import PRESETS, preset_menu, preset_settings
 from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
 
 logger = logging.getLogger(__name__)
@@ -14372,6 +14373,8 @@ def settings_widget(napari_viewer=None):
     #: it filled each mask row with (`gui/vessel_mask_search.py`).
     mask_search_seen = {name: current_values().get(name) for name in MASK_SEARCH_TRIGGERS}
     mask_rows_filled: dict[str, Any] = {}
+    #: While a preset loads, every line the searches report, not just the last.
+    preset_search_lines: list[list[str] | None] = [None]
 
     def search_for_vessel_masks(*_args) -> None:
         """Fill a vessel-mask role's rows from the masks beside the input image
@@ -14389,6 +14392,8 @@ def settings_widget(napari_viewer=None):
                 mask_rows_filled[name] = value
         if fill.lines:
             report.value = "\n".join(fill.lines)
+            if preset_search_lines[0] is not None:
+                preset_search_lines[0].extend(fill.lines)
 
     for name in MASK_SEARCH_TRIGGERS:
         if name in rows:
@@ -14866,6 +14871,7 @@ def settings_widget(napari_viewer=None):
         EDIT_GRAPH_TOOLTIP,
         LOAD_CONFIG_TOOLTIP,
         LOAD_RUN_TOOLTIP,
+        PRESET_TOOLTIP,
         REOPEN_VIEW_TOOLTIP,
         RUN_CHECKS_TOOLTIP,
         RUN_PIPELINE_TOOLTIP,
@@ -14896,6 +14902,33 @@ def settings_widget(napari_viewer=None):
     load_run_button.tooltip = LOAD_RUN_TOOLTIP
     save_run_button.native.setObjectName("haemolynx_save_run")
     load_run_button.native.setObjectName("haemolynx_load_run")
+
+    # A standard set of settings to start from, under Load/Save config. It
+    # holds nothing once loaded (see `load_preset`), so loading a config or a
+    # run puts it back to None.
+    from qtpy.QtWidgets import QComboBox, QLabel
+
+    preset_label = QLabel("Preset")
+    preset_label.setToolTip(PRESET_TOOLTIP)
+    preset_dropdown = QComboBox()
+    preset_dropdown.setObjectName("haemolynx_preset")
+    preset_dropdown.setToolTip(PRESET_TOOLTIP)
+    for entry in preset_menu():
+        if entry is None:
+            preset_dropdown.insertSeparator(preset_dropdown.count())
+            continue
+        text, name = entry
+        preset_dropdown.addItem(text, name)
+        if name is not None:
+            preset_dropdown.setItemData(
+                preset_dropdown.count() - 1, PRESETS[name]["description"], Qt.ToolTipRole
+            )
+    # Fills the room left of the run-file buttons; `_wrap_row_labels` lets it
+    # shrink with the panel, as every dropdown does. The list it opens is as
+    # wide as its longest name, every entry in view, whatever its width.
+    preset_dropdown.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    preset_dropdown.setMaxVisibleItems(preset_dropdown.count())
+    preset_dropdown.view().setMinimumWidth(preset_dropdown.view().sizeHintForColumn(0) + 24)
 
     # What a run puts in the viewer, and how it is coloured. These are panel
     # controls rather than settings: a config file is read by CLI runs too,
@@ -15561,6 +15594,8 @@ def settings_widget(napari_viewer=None):
 
         apply_prerequisites()
         snapshot_skip_toggles()
+        # The config replaced whatever a preset set.
+        preset_dropdown.setCurrentIndex(0)
         report.value = f"Loaded {path}{kept}"
         if boundaries is not None and any(
             name in viewer.layers for name in boundaries.layer_names
@@ -15568,6 +15603,49 @@ def settings_widget(napari_viewer=None):
             # Only if they are already on screen: opening a config should not
             # add layers nobody asked for.
             boundaries.redraw()
+
+    def load_preset(name: str | None) -> None:
+        """Set the rows preset *name* names (`pipeline/presets.py`) and no
+        others; None, the menu's "None", loads nothing.
+
+        The preset is not kept: a row changed afterwards, or a config loaded,
+        simply replaces what it set. Unlike a config it may tick a vessel-mask
+        switch, and then the masks beside the image are searched for, as when
+        the user ticks it.
+        """
+        if name is None:
+            return
+        preset_dropdown.setCurrentIndex(preset_dropdown.findData(name))
+        before = current_values()
+        found: list[str] = []
+        preset_search_lines[0] = found
+        try:
+            for setting, value in preset_settings(name, schema).items():
+                if setting in rows:
+                    rows[setting].value = display_value_for(schema[setting], value)
+            apply_prerequisites()
+        finally:
+            preset_search_lines[0] = None
+        after = current_values()
+        changed = [
+            fields[setting].label
+            for setting in PRESETS[name]["overrides"]
+            if setting in rows and before.get(setting) != after.get(setting)
+        ]
+        label = PRESETS[name]["label"]
+        line = (
+            f"Loaded preset {label}: set {', '.join(changed)}"
+            if changed
+            else f"Loaded preset {label}: its settings were already set"
+        )
+        report.value = "\n".join([line, *found])
+
+    def on_preset_chosen(index: int) -> None:
+        load_preset(preset_dropdown.itemData(index))
+
+    # `activated`, not `currentIndexChanged`: choosing the preset already
+    # shown loads it again, over rows changed since.
+    preset_dropdown.activated.connect(on_preset_chosen)
 
     def on_load() -> None:
         from qtpy.QtWidgets import QFileDialog
@@ -16578,6 +16656,7 @@ def settings_widget(napari_viewer=None):
         finally:
             restoring_settings[0] = False
         mask_rows_filled.clear()
+        preset_dropdown.setCurrentIndex(0)
         show_results.value = snapshot.show_results
         show_steps.value = snapshot.show_steps
         skip_toggle_snapshot.clear()
@@ -16686,7 +16765,10 @@ def settings_widget(napari_viewer=None):
     run_file_row.setObjectName("haemolynx_run_file_row")
     run_file_layout = QHBoxLayout(run_file_row)
     run_file_layout.setContentsMargins(0, 0, 0, 0)
-    run_file_layout.addStretch(1)
+    # The preset sits under Load config... and Save config..., the run-file
+    # buttons to its right.
+    run_file_layout.addWidget(preset_label)
+    run_file_layout.addWidget(preset_dropdown, 1)
     run_file_layout.addWidget(view_button.native)
     run_file_layout.addWidget(edit_button.native)
     # Editing lives in the "7. Post processing" tab now: the button keeps
@@ -17066,6 +17148,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_after_layers_applied = _after_layers_applied
     panel._haemolynx_load_config = load_config_file
     panel._haemolynx_save_config = save_config_file
+    panel._haemolynx_preset = preset_dropdown
+    panel._haemolynx_load_preset = load_preset
     panel._haemolynx_save_run = save_run_file
     panel._haemolynx_saving_run = lambda: saving_run[0] is not None
     panel._haemolynx_load_run = load_run_file
