@@ -573,7 +573,11 @@ def compute_branch_order_statistics(
         # not physically meaningful, so this aggregates magnitude -- "how
         # much of the network's total pressure loss happens in this order",
         # the classic answer being mostly small arterioles, not capillaries.
-        pressure_drop = data.get("pressure_drop")
+        # A vessel the solve's flow state says carries no flow (behind a dead
+        # end, or in a piece with no inlet and outlet) has a drop of exactly 0
+        # that is no loss at all, and is left out.
+        state = data.get("flow_state")
+        pressure_drop = data.get("pressure_drop") if state in (None, "solved") else None
         if pressure_drop is not None:
             try:
                 drop_abs = abs(float(pressure_drop))

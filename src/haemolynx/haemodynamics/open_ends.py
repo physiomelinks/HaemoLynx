@@ -283,6 +283,50 @@ def open_end_flows(
     return {"in": float(into), "out": float(out)}
 
 
+#: :func:`open_end_directions`' answers: blood enters the network through the
+#: open end (a source), or leaves through it (a sink).
+FEEDS = "in"
+DRAINS = "out"
+
+
+def open_end_directions(G: nx.Graph) -> dict[Any, str]:
+    """Each open end the solve gave a condition (``G.graph[GRAPH_RECORD]``)
+    and which way its solved flow runs: :data:`FEEDS` (blood enters the
+    network through it) or :data:`DRAINS`, read off the node pressures and
+    the flows of its vessels. An open end whose flow is at or below the
+    statistics' carrying floor (``CARRYING_FLOOR_FRACTION`` of the network's
+    largest flow), or a graph not solved, gives none. Routes, transit time,
+    territories, current flow and occlusion take these as sources and sinks
+    beside the designated inlets and outlets, and the VTK names them."""
+    from haemolynx.statistics.flux_heterogeneity import CARRYING_FLOOR_FRACTION
+
+    conditions = OpenEndConditions.from_record(G.graph.get(GRAPH_RECORD))
+    if not conditions:
+        return {}
+    flows = [abs(float(d.get("flow_abs"))) for *_e, d in G.edges(data=True) if d.get("flow_abs") is not None]
+    finite = [q for q in flows if np.isfinite(q)]
+    if not finite:
+        return {}
+    floor = CARRYING_FLOOR_FRACTION * max(finite)
+    found: dict[Any, str] = {}
+    for node in conditions.nodes:
+        if node not in G or G.nodes[node].get("pressure") is None:
+            continue
+        p_node = float(G.nodes[node]["pressure"])
+        out_of_node = 0.0
+        for _n, other, data in G.edges(node, data=True):
+            q = data.get("flow_abs")
+            p_other = G.nodes[other].get("pressure")
+            if other == node or q is None or p_other is None or not np.isfinite(float(q)):
+                continue
+            out_of_node += float(np.sign(p_node - float(p_other))) * abs(float(q))
+        if out_of_node > floor:
+            found[node] = FEEDS
+        elif out_of_node < -floor:
+            found[node] = DRAINS
+    return found
+
+
 # --- the estimate (Fry et al. 2012) ---------------------------------------------------------
 
 
@@ -556,7 +600,9 @@ def open_end_conditions(
 
 __all__ = [
     "CLOSED",
+    "DRAINS",
     "ESTIMATED",
+    "FEEDS",
     "GRAPH_RECORD",
     "INLET_GHOST",
     "OPEN_END_MODELS",
@@ -570,6 +616,7 @@ __all__ = [
     "keep_on_graph",
     "open_end_candidates",
     "open_end_conditions",
+    "open_end_directions",
     "open_end_flows",
     "outlet_conditions",
     "terminal_resistance_conditions",

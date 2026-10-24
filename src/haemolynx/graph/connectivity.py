@@ -294,8 +294,11 @@ def connectivity_rows(
     Rows run from the inlets outwards (by the distance of each vessel's
     "from" end from the nearest inlet, then branchID). A vessel in a piece of
     the network with no inlet keeps the graph's own end order and says so in
-    its notes, as do dead ends (a tip that is no inlet or outlet), self-loops
-    and the arteriole/venule boundary roles of its ends.
+    its notes, as do dead ends (a tip that is no inlet or outlet, at either
+    end, with its kind where the build judged one: "Dead end (leaves_image)"),
+    vessels the image faces cut short (on a dead end's chain that leaves the
+    image, so its length is censored), self-loops and the arteriole/venule
+    boundary roles of its ends.
 
     With *only_inlet_to_outlet*, only the vessels
     :func:`inlet_to_outlet_vessels` keeps are listed, and upstream/downstream
@@ -338,6 +341,15 @@ def connectivity_rows(
         out_of.setdefault(start, []).append(branch_id)
         into.setdefault(end, []).append(branch_id)
 
+    from ._helpers import edge_id
+    from .dead_ends import DEAD_END_KIND, vessels_cut_by_image_faces
+
+    cut = vessels_cut_by_image_faces(G)
+
+    def dead_end_note(node: Any, where: str = "") -> str:
+        kind = G.nodes[node].get(DEAD_END_KIND)
+        return f"Dead end{where}" + (f" ({kind})" if kind else "")
+
     def role_notes(node: Any) -> list[str]:
         notes = []
         if node in arterioles:
@@ -357,12 +369,16 @@ def connectivity_rows(
                 notes.append("Inlet")
                 if degree[start] == 1:
                     from_cell = ""
+            elif start not in outlets and degree[start] == 1:
+                notes.append(dead_end_note(start, " at the from node"))
             if end in outlets:
                 notes.append("Outlet")
                 if degree[end] == 1:
                     to_cell = ""
             elif end not in inlets and degree[end] == 1:
-                notes.append("Dead end")
+                notes.append(dead_end_note(end))
+            if edge_id(edges[branch_id][0], edges[branch_id][1], k) in cut:
+                notes.append("Cut by the image face")
         for node in dict.fromkeys((start, end)):
             notes.extend(role_notes(node))
         if not reached:

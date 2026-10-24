@@ -331,10 +331,12 @@ def compute_inlet_outlet_shunts(
 
 
 def _shunt_outflow_fraction(G: nx.Graph, outlets: set, shunt_edges: set) -> Any:
+    from haemolynx.graph.prune import flow_is_undefined
+
     total = 0.0
     shunted = 0.0
     for u, v, key, data in _iter_edges(G):
-        if u == v or (u not in outlets and v not in outlets):
+        if u == v or (u not in outlets and v not in outlets) or flow_is_undefined(data):
             continue
         flow = data.get("flow_abs")
         try:

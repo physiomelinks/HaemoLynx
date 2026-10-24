@@ -5247,8 +5247,11 @@ def _warn_about_dense_solver_memory(settings: Mapping[str, Any], G: nx.Graph) ->
 def resistance_statistics(solution: Solution) -> dict[str, Any]:
     """The solve's two resistances, as the statistics CSV's Haemodynamics
     section: the two-point one between the first inlet and the first outlet,
-    and the whole network's (pressure drop over total inflow). Empty when the
-    solve produced neither."""
+    and the whole network's (pressure drop over total inflow through the
+    designated inlets). Beside them, when open ends leaving the image were
+    given a condition (``open_end_model``), the flow entering the network
+    through them and leaving through them. Empty when the solve produced
+    none of these."""
     rows: dict[str, Any] = {}
     equivalent = getattr(solution, "equivalent_resistance", None)
     if equivalent is not None:
@@ -5259,6 +5262,12 @@ def resistance_statistics(solution: Solution) -> dict[str, Any]:
     network = getattr(solution, "network_resistance", None)
     if network is not None:
         rows["Network Resistance, Pressure Drop / Total Inflow (Pa.s/m^3)"] = float(network)
+    open_ends = (getattr(solution, "statistics", None) or {}).get("open_ends")
+    if open_ends:
+        rows["Open-End Model"] = str(open_ends.get("model"))
+        rows["Open Ends Given a Condition"] = int(open_ends.get("open_ends", 0))
+        rows["Inflow Through Open Ends (m^3/s)"] = float(open_ends.get("inflow_m3_s", 0.0))
+        rows["Outflow Through Open Ends (m^3/s)"] = float(open_ends.get("outflow_m3_s", 0.0))
     return {"Haemodynamics": rows} if rows else {}
 
 
@@ -7257,7 +7266,10 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
     if settings["run_haemodynamics"] and settings["vtk_export"]:
-        vtk_export = visualization.graph_to_vtk(G, settings["vtk_output_prefix"])
+        vtk_export = visualization.graph_to_vtk(
+            G, settings["vtk_output_prefix"],
+            inlet_nodes=settings["inlet_nodes"], outlet_nodes=settings["outlet_nodes"],
+        )
         logger.info("=== VTK Export ===")
         logger.info(f"  Vessels:   {vtk_export['vessels_path']}")
         logger.info(f"  Pericytes: {vtk_export['pericytes_path']}")

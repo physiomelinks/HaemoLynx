@@ -640,6 +640,23 @@ def flow_solution_values(graph: Any, edge_index: np.ndarray) -> np.ndarray:
     return np.asarray(text, dtype=object)[np.asarray(edge_index, dtype=int)]
 
 
+def unsolved_node_pressures(graph: Any, ids: Any, values: Any) -> np.ndarray:
+    """*values*, the pressures of nodes *ids*, NaN at every node whose every
+    vessel is unsolved (:data:`haemolynx.graph.FLOW_SOLVED` False): the
+    vessels layer greys those vessels and blanks their flows, and the solve
+    left their nodes a pressure of 0 or their junction's, which is no reading
+    of either. A node with no vessel, or a graph not solved, keeps its value."""
+    from haemolynx.graph.prune import FLOW_SOLVED
+
+    pressures = np.array(values, dtype=float)
+    for i, node in enumerate(ids):
+        if node not in graph or not graph.degree(node):
+            continue
+        if all(data.get(FLOW_SOLVED) is False for *_e, data in graph.edges(node, data=True)):
+            pressures[i] = np.nan
+    return pressures
+
+
 def mask_unsolved_flow_columns(columns: dict[str, Any]) -> None:
     """NaN in every :data:`SOLVED_FLOW_COLUMNS` column on the rows of an
     unsolved vessel, as the rows' own :data:`FLOW_SOLUTION` column says."""
@@ -2258,7 +2275,9 @@ class ResultLayers:
             # before dropping any node that has no position.
             by_node = {node_id: float(p) for node_id, p in zip(node_list, pressure)}
             points, ids = node_points(self._graph, node_list)
-            values = np.asarray([by_node[node_id] for node_id in ids], dtype=float)
+            values = unsolved_node_pressures(
+                self._graph, ids, [by_node[node_id] for node_id in ids]
+            )
             if len(points):
                 layers.append(
                     LayerSpec(
@@ -2358,12 +2377,8 @@ class ResultLayers:
             # `set_edge_flows` writes `pressure` onto every node it solved, so
             # a perturbation's pressures travel on its own graph -- there is no
             # `Solution` to read them out of here.
-            pressures = np.asarray(
-                [
-                    float(graph.nodes[node_id].get("pressure", np.nan))
-                    for node_id in ids
-                ],
-                dtype=float,
+            pressures = unsolved_node_pressures(
+                graph, ids, [float(graph.nodes[node_id].get("pressure", np.nan)) for node_id in ids]
             )
             layers.append(
                 LayerSpec(

@@ -231,6 +231,22 @@ def test_flow_hierarchy_detects_a_genuine_flow_recirculation():
     assert s["Flow Hierarchy"] == pytest.approx(0.0)
 
 
+def test_flow_hierarchy_reads_the_flow_state_and_counts_the_vessels_behind_dead_ends():
+    """PLAN_dead_ends.md, inconsistency 10: the statistics read the solve's
+    flow state, not a zero test. A vessel behind a dead end or in a piece
+    with no inlet and outlet is skipped whatever its flow says, and the
+    vessels behind dead ends are counted apart."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, flow_signed=2.0, flow_abs=2.0, flow_state="solved")
+    G.add_edge(1, 2, flow_signed=1e-30, flow_abs=1e-30, flow_state="blind_end")
+    G.add_edge(1, 3, flow_signed=0.0, flow_abs=0.0, flow_state="closed_end")
+    G.add_edge(5, 6, flow_signed=3.0, flow_abs=3.0, flow_state="no_boundary")
+    s = st.compute_flow_hierarchy(G)
+    assert s["Flow Hierarchy"] == pytest.approx(1.0)
+    assert s["Flow Hierarchy Edges Skipped"] == 3
+    assert s["Flow Hierarchy Vessels Behind Dead Ends (excluded)"] == 2
+
+
 def test_flow_hierarchy_skips_edges_with_no_determinate_flow():
     G = nx.MultiGraph()
     G.add_edge(0, 1, flow_signed=1.0, flow_abs=1.0)

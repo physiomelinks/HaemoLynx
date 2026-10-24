@@ -27,6 +27,7 @@ ARRAY_UNITS: Dict[str, str] = {
     "is_zero_resistance": "flag",
     "flow_solved": "flag",
     "flow_state": "-",
+    "cut_by_image_face": "flag",
     "discharge_haematocrit": "fraction",
     "pressure_u": "Pa",
     "pressure_v": "Pa",
@@ -35,8 +36,15 @@ ARRAY_UNITS: Dict[str, str] = {
     "flow_abs": "m^3/s",
     "node_id": "-",
     "dead_end_kind": "-",
+    "boundary_role": "-",
     "pressure": "Pa",
 }
+
+#: A node's ``boundary_role`` in the nodes file: a designated inlet or
+#: outlet, an open end leaving the image that the solve gave a condition and
+#: that feeds the network or drains it (``haemodynamics.open_ends.open_end_directions``),
+#: one given a condition that carries no flow, or "" for every other node.
+BOUNDARY_ROLES = ("inlet", "outlet", "open_end_feeds", "open_end_drains", "open_end", "")
 
 #: The vessels file's field data beyond the units: the HaemoLynx version and
 #: what produced its numbers -- the blood model and the boundaries, from the
@@ -155,6 +163,8 @@ def graph_to_vtk(
     constriction_spacing: float = 100.0,
     constriction_length: float = 40.0,
     point_merge_decimals: int = 6,
+    inlet_nodes: Iterable[Any] = (),
+    outlet_nodes: Iterable[Any] = (),
 ) -> Dict[str, Any]:
     """Export vessels, pericytes, and nodes to VTK PolyData files.
 
@@ -170,6 +180,12 @@ def graph_to_vtk(
     blood model and boundaries (viscosity law, diameter basis, haematocrit,
     haematocrit model, open-end model) and the HaemoLynx version go in the
     vessels file's field data (:data:`RUN_FIELD_DATA`).
+
+    Each vessel also says whether the image faces cut it
+    (``cut_by_image_face``: on the chain of a dead end leaving the image, its
+    length censored), and each node its ``boundary_role``
+    (:data:`BOUNDARY_ROLES`): *inlet_nodes* and *outlet_nodes* are the run's
+    designated ones, the open ends come from the solve's record on *graph*.
     """
     try:
         import pyvista as pv
@@ -198,6 +214,9 @@ def graph_to_vtk(
     zero_resistance: List[int] = []
     solved_flags: List[int] = []
     flow_states: List[str] = []
+    cut_flags: List[int] = []
+    from haemolynx.graph.dead_ends import vessels_cut_by_image_faces
+    from haemolynx.graph._helpers import edge_id
     from haemolynx.graph.prune import (
         FLOW_SOLVED,
         FLOW_STATE,
@@ -209,6 +228,7 @@ def graph_to_vtk(
     flow_fields: Dict[str, List[float]] = {
         name: [] for name in SOLVE_DERIVED_EDGE_ATTRIBUTES if name in ARRAY_UNITS
     }
+    cut = vessels_cut_by_image_faces(graph)
 
     is_multigraph = isinstance(graph, nx.MultiGraph)
     edge_iter: Iterable[Any]
@@ -253,6 +273,7 @@ def graph_to_vtk(
         zero_resistance.append(int(bool(data.get(IS_ZERO_RESISTANCE))))
         solved_flags.append(int(data.get(FLOW_SOLVED) is True))
         flow_states.append(str(data.get(FLOW_STATE) or ""))
+        cut_flags.append(int(edge_id(u, v, k) in cut))
         undefined = flow_is_undefined(data)
         for name, values in flow_fields.items():
             values.append(np.nan if undefined else _number(data.get(name)))
@@ -273,6 +294,7 @@ def graph_to_vtk(
         vessel_mesh.cell_data["is_zero_resistance"] = np.asarray(zero_resistance, dtype=np.uint8)
         vessel_mesh.cell_data["flow_solved"] = np.asarray(solved_flags, dtype=np.uint8)
         vessel_mesh.cell_data["flow_state"] = np.asarray(flow_states)
+        vessel_mesh.cell_data["cut_by_image_face"] = np.asarray(cut_flags, dtype=np.uint8)
         for name, values in flow_fields.items():
             array = np.asarray(values, dtype=float)
             if np.any(np.isfinite(array)):
@@ -295,9 +317,30 @@ def graph_to_vtk(
     _write_units(pericyte_mesh, pericyte_mesh.point_data.keys())
     pericyte_mesh.save(pericyte_path)
 
+    from haemolynx.haemodynamics.open_ends import (
+        DRAINS,
+        FEEDS,
+        OpenEndConditions,
+        open_end_directions,
+    )
+
+    inlets, outlets = set(inlet_nodes), set(outlet_nodes)
+    given_a_condition = set(OpenEndConditions.from_record(graph.graph.get("open_end_conditions")).nodes)
+    directions = open_end_directions(graph)
+
+    def boundary_role(node: Any) -> str:
+        if node in inlets:
+            return "inlet"
+        if node in outlets:
+            return "outlet"
+        if node in given_a_condition:
+            return {FEEDS: "open_end_feeds", DRAINS: "open_end_drains"}.get(directions.get(node), "open_end")
+        return ""
+
     node_ids: List[int] = []
     node_points: List[np.ndarray] = []
     node_kinds: List[str] = []
+    node_roles: List[str] = []
     node_pressures: List[float] = []
     for n, data in graph.nodes(data=True):
         pos = data.get("pos")
@@ -306,6 +349,7 @@ def graph_to_vtk(
         node_points.append(np.asarray(pos, dtype=float)[:3])
         node_ids.append(int(n) if isinstance(n, (int, np.integer)) else -1)
         node_kinds.append(str(data.get("dead_end_kind") or "") if graph.degree(n) == 1 else "")
+        node_roles.append(boundary_role(n))
         incident = [d for *_e, d in graph.edges(n, data=True)]
         undefined = bool(incident) and all(flow_is_undefined(d) for d in incident)
         node_pressures.append(np.nan if undefined else _number(data.get("pressure")))
@@ -315,6 +359,7 @@ def graph_to_vtk(
     )
     node_mesh.point_data["node_id"] = np.asarray(node_ids, dtype=np.int64)
     node_mesh.point_data["dead_end_kind"] = np.asarray(node_kinds)
+    node_mesh.point_data["boundary_role"] = np.asarray(node_roles)
     if np.any(np.isfinite(node_pressures)):
         node_mesh.point_data["pressure"] = np.asarray(node_pressures, dtype=float)
     _write_units(node_mesh, node_mesh.point_data.keys())

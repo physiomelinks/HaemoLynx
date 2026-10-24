@@ -244,7 +244,7 @@ _add(T, "Vessel Surface Area (micron²)", "um^2", "The class's wall area, a cyli
 _add(T, "Surface Density in Tissue (micron²/micron³)", "um^2/um^3", "Vessel Surface Area over Vessel Class Density Volume.")
 _add(T, "Mean Tortuosity Index", "dimensionless", "Mean centreline length over straight end-to-end distance of the class's vessels.")
 _add(T, "Median Tortuosity Index", "dimensionless", "Median centreline length over straight end-to-end distance of the class's vessels.")
-_add(T, "Vessels Carrying Flow", "vessels", "Vessels with a solved flow (in the flux section, above the carrying floor too).")
+_add(T, "Vessels Carrying Flow", "vessels", "Vessels with a solved flow (in the flux section, above the carrying floor too). Vessels behind dead ends carry exactly none and are left out of every flow row of the class.")
 _add(T, "Mean Flow (nL/min)", "nL/min", "Mean |flow| of the class's vessels carrying flow.")
 _add(T, "Median Flow (nL/min)", "nL/min", "Median |flow| of the class's vessels carrying flow.")
 _add(T, "Mean Velocity (mm/s)", "mm/s", "Mean of each flowing vessel's flow over its lumen's cross-section (plasma mean velocity, not red-cell speed).")
@@ -396,7 +396,7 @@ _add(T, "Median (s)", "s", "The median of the type's single-vessel transit times
 # -- Flux heterogeneity -------------------------------------------------------
 T = "Flux heterogeneity and red cells"
 _add(T, "Flux Heterogeneity Assumptions", TEXT, "What the rows assume.")
-_add(T, "Carrying Flow Floor (m³/s)", "m^3/s", "A vessel carries flow when the solve reached it and its |flow| is above this: 1e-9 of the network's largest.")
+_add(T, "Carrying Flow Floor (m³/s)", "m^3/s", "A vessel carries flow when the solve reached it and its |flow| is above this: 1e-9 of the network's largest. Vessels behind dead ends carry exactly none, so no row of this section counts them.")
 _add(T, "Red Cell Volume (fL)", "fL", "The mean red-cell volume the red-cell rows count cells by (red_cell_volume_fl).")
 _add(T, "Haematocrit Source", TEXT, "Which discharge haematocrit the red-cell rows used: the vessels' own, or the run's one.")
 _add(T, "Vessels", "vessels", "Vessels in the group.")
@@ -464,7 +464,8 @@ _add(T, "Max Core Number", "count", "The highest k for which a k-core (every nod
 _add(T, "Mean Core Number", "count", "The mean over nodes of each node's core number.")
 _add(T, "Innermost Core Size", "count", "Nodes in the innermost core.")
 _add(T, "Flow Hierarchy", "fraction", "The share of vessels, oriented by their solved flow, on no directed cycle; 1 means the flow never recirculates.")
-_add(T, "Flow Hierarchy Edges Skipped", "vessels", "Vessels with no determinate flow direction, left out.")
+_add(T, "Flow Hierarchy Edges Skipped", "vessels", "Vessels with no determinate flow direction, left out: those the solve's flow state says carry no flow (behind dead ends, in pieces with no inlet and outlet) and those with zero or no flow.")
+_add(T, "Flow Hierarchy Vessels Behind Dead Ends (excluded)", "vessels", "Of those, the vessels behind dead ends (inside the tissue, or at an image face with no boundary condition): their flow is exactly 0, so they have no direction.")
 _add(T, "Path Efficiency", "1/um", "1 over the mean shortest-path length between node pairs.")
 _add(T, "Average Shortest Path Length (microns)", "um", "The mean shortest path, by centreline length, between node pairs.")
 _add(T, "Path Efficiency Pair Sample Size", "count", "Node pairs measured.")
@@ -484,7 +485,11 @@ _add(T, "A node ID", "fraction", "Full mode: that node's betweenness centrality.
 T = "Haemodynamics"
 _add(T, "Two-Point Equivalent Resistance (Pa.s/m^3)", "Pa.s/m^3", "The resistance between the first inlet and the first outlet: the pressure difference driving a unit flow between them alone.")
 _add(T, "Two-Point Resistance Nodes", TEXT, "The two nodes it was found between.")
-_add(T, "Network Resistance, Pressure Drop / Total Inflow (Pa.s/m^3)", "Pa.s/m^3", "Inlet pressure minus outlet pressure over the total flow in through every inlet.")
+_add(T, "Network Resistance, Pressure Drop / Total Inflow (Pa.s/m^3)", "Pa.s/m^3", "Inlet pressure minus outlet pressure over the total flow in through every designated inlet; the flow through open ends is reported beside it, not in it.")
+_add(T, "Open-End Model", TEXT, "The boundary condition on vessels leaving the image (open_end_model): estimated, terminal_resistance or outlet. Written only when open ends were given one.")
+_add(T, "Open Ends Given a Condition", "count", "Dead ends leaving the image, in a piece with a designated inlet or outlet, that the solve gave the boundary condition.")
+_add(T, "Inflow Through Open Ends (m^3/s)", "m^3/s", "The flow entering the network through those open ends.")
+_add(T, "Outflow Through Open Ends (m^3/s)", "m^3/s", "The flow leaving the network through them.")
 
 # -- The per-bed table (the capillary_bed_joins CSV's columns) ---------------
 T = "Capillary bed table (the capillary_bed_joins CSV's columns)"
@@ -514,9 +519,9 @@ _add(T, "Edge Count", "vessels", "Vessels of that branch order.")
 _add(T, "Tortuosity Sample Count", "vessels", "Vessels whose tortuosity was measured.")
 _add(T, "Mean Emergence Angle (degrees)", "degrees", "The mean angle between the parent's and each daughter's tangent where a vessel of that order leaves its parent.")
 _add(T, "Emergence Angle Sample Count", "count", "Emergence angles measured.")
-_add(T, "Mean Pressure Drop (Pa)", "Pa", "The mean pressure drop along the order's vessels.")
-_add(T, "Total Pressure Drop (Pa)", "Pa", "The summed pressure drop along the order's vessels.")
-_add(T, "Pressure Drop Sample Count", "vessels", "Vessels with a pressure drop.")
+_add(T, "Mean Pressure Drop (Pa)", "Pa", "The mean pressure drop along the order's vessels carrying flow; vessels behind dead ends and in pieces with no inlet and outlet are left out.")
+_add(T, "Total Pressure Drop (Pa)", "Pa", "The summed pressure drop along the same vessels.")
+_add(T, "Pressure Drop Sample Count", "vessels", "Vessels with a pressure drop, those behind dead ends left out.")
 _add(T, "Diameter Coefficient of Variation", "dimensionless", "The standard deviation over the mean of the order's diameters.")
 _add(T, "Diameter Sample Count", "vessels", "Vessels with a diameter.")
 

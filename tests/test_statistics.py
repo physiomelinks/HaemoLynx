@@ -1057,6 +1057,24 @@ def test_branch_order_pressure_drop_aggregates_magnitude_not_signed_value():
     assert s["BO1"]["Total Pressure Drop (Pa)"] == pytest.approx(30.0)
 
 
+def test_branch_order_pressure_drop_leaves_out_vessels_carrying_no_flow():
+    """A vessel behind a dead end or in a piece with no inlet and outlet has a
+    drop of exactly 0 that is no pressure loss: it pulled the order's mean
+    towards 0 (PLAN_dead_ends.md, inconsistency 10)."""
+    G = nx.MultiGraph()
+    for node in range(5):
+        G.add_node(node, pos=(0.0, 0.0, float(node)))
+    G.add_edge(0, 1, branch_order="B01", length=1.0, pressure_drop=10.0, flow_state="solved")
+    G.add_edge(1, 2, branch_order="B01", length=1.0, pressure_drop=0.0, flow_state="blind_end")
+    G.add_edge(2, 3, branch_order="B01", length=1.0, pressure_drop=0.0, flow_state="no_boundary")
+    G.add_edge(3, 4, branch_order="B01", length=1.0, pressure_drop=-20.0)  # solved before flow states
+
+    s = compute_branch_order_statistics(G, node_positions=nx.get_node_attributes(G, "pos"))
+
+    assert s["BO1"]["Pressure Drop Sample Count"] == 2
+    assert s["BO1"]["Mean Pressure Drop (Pa)"] == pytest.approx(15.0)
+
+
 def test_branch_order_diameter_mean_and_coefficient_of_variation():
     G = nx.MultiGraph()
     for node in range(3):

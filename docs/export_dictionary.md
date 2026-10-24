@@ -59,6 +59,7 @@ Written to the run's output folder (vtk_output_prefix's). Every vessel as a poly
 | `is_zero_resistance` | `flag` | 1 for a thick-vessel bridge (a join drawn inside a lumen, given negligible resistance). |
 | `flow_solved` | `flag` | 1 where the solve gave the vessel a flow; 0 where it did not (see flow_state). |
 | `flow_state` | `-` | solved, blind_end (behind a dead end inside the tissue: flow exactly 0), closed_end (behind a face end with no condition: flow exactly 0) or no_boundary (no inlet and outlet reach it: flows blank). |
+| `cut_by_image_face` | `flag` | 1 for a vessel on the chain of a dead end that leaves the image: the image faces cut it, so its length is censored. |
 | `discharge_haematocrit` | `fraction` | The red-cell volume fraction of the blood the vessel carries (with a distributed haematocrit model only); blank where no inlet and outlet reach it, as the flows are. |
 | `pressure_u` | `Pa` | Pressure at the edge_u end. |
 | `pressure_v` | `Pa` | Pressure at the edge_v end. |
@@ -74,6 +75,7 @@ Written to the run's output folder (vtk_output_prefix's). Every node as a point:
 |---|---|---|
 | `node_id` | `-` | The graph's node ID (the IDs boundary settings and the panel use). |
 | `dead_end_kind` | `-` | For a dead end: leaves_image, island_end, artefact, stops_short, broken, blind or unknown; empty for every other node. |
+| `boundary_role` | `-` | inlet, outlet, open_end_feeds or open_end_drains (an open end leaving the image that the solve gave a condition, by which way its flow runs), open_end (given a condition, no flow), or empty. |
 | `pressure` | `Pa` | The node's pressure; blank where no inlet and outlet reach it. |
 
 ## `{stem}_pericytes.vtp`

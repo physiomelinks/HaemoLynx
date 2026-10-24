@@ -296,14 +296,19 @@ def compute_flow_hierarchy(
     is worth checking as a modelling artefact (e.g. two boundary conditions
     fighting each other) rather than a real anatomical finding.
 
-    An edge with no determinate flow (missing/zero/non-finite
-    ``flow_signed`` -- dead after a large-vessel cut, or haemodynamics never
-    solved) is left out of the directed graph entirely, the same way a
-    missing resistance or length drops an edge from the weighted
-    betweenness/community models above; how many were dropped is reported
-    alongside so a high hierarchy reading is not silently inflated by
-    ignoring exactly the edges most likely to have an ambiguous direction.
+    An edge with no determinate flow is left out of the directed graph
+    entirely, the same way a missing resistance or length drops an edge from
+    the weighted betweenness/community models above: one the solve's
+    ``flow_state`` says carries none (behind a dead end inside the tissue or
+    a closed image-face end, or in a piece with no inlet and outlet), and
+    one with a missing, zero or non-finite ``flow_signed`` (haemodynamics
+    never solved, or a graph solved before flow states). How many were
+    dropped is reported alongside -- and of those, how many are behind dead
+    ends -- so a high hierarchy reading is not silently inflated by ignoring
+    exactly the edges most likely to have an ambiguous direction.
     """
+    from haemolynx.graph.prune import FLOW_STATE
+
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     directed = nx.MultiDiGraph()
     directed.add_nodes_from(G.nodes())
@@ -313,7 +318,13 @@ def compute_flow_hierarchy(
         else ((u, v, 0, data) for u, v, data in G.edges(data=True))
     )
     skipped = 0
+    behind_dead_ends = 0
     for u, v, _key, data in edge_iter:
+        state = data.get(FLOW_STATE)
+        if state is not None and state != "solved":
+            skipped += 1
+            behind_dead_ends += state in ("blind_end", "closed_end")
+            continue
         flow_val = data.get(signed_flow_attr)
         try:
             flow_float = float(flow_val) if flow_val is not None else float("nan")
@@ -331,8 +342,10 @@ def compute_flow_hierarchy(
         return {
             "Flow Hierarchy": "N/A (no solved flow)",
             "Flow Hierarchy Edges Skipped": skipped,
+            "Flow Hierarchy Vessels Behind Dead Ends (excluded)": behind_dead_ends,
         }
     return {
         "Flow Hierarchy": float(nx.flow_hierarchy(directed)),
         "Flow Hierarchy Edges Skipped": skipped,
+        "Flow Hierarchy Vessels Behind Dead Ends (excluded)": behind_dead_ends,
     }

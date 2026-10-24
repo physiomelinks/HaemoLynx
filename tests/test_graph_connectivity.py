@@ -218,3 +218,23 @@ def test_a_network_with_every_vessel_solved_has_no_pieces_and_one_without_an_out
     assert unsolved_pieces(_example(), [0], [8]) == []
     (everything,) = unsolved_pieces(_example(), [0], [])
     assert len(everything.edges) == 7 and everything.disconnected
+
+
+def test_a_dead_end_is_noted_with_its_kind_at_either_end_and_a_cut_vessel_is_flagged():
+    """PLAN_dead_ends.md Phase 8 and decision D5: the notes say what each dead
+    end is, at the "from" end too (a piece no inlet reaches), and which
+    vessels the image faces cut short."""
+    G = _example()
+    G.add_edge(2, 9, length=20.0)
+    G.add_edge(2, 10, length=20.0)
+    G.add_edge(20, 21, length=5.0)
+    G.nodes[9]["dead_end_kind"] = "leaves_image"
+    G.nodes[10]["dead_end_kind"] = "stops_short"
+    G.nodes[20]["dead_end_kind"] = "island_end"
+    rows = connectivity_rows(G, [0], [8])
+    find = {(r["Edge u"], r["Edge v"]): r for r in rows}
+
+    assert find[("2", "9")]["Notes"] == "Dead end (leaves_image); Cut by the image face"
+    assert find[("2", "10")]["Notes"] == "Dead end (stops_short)"
+    notes = find[("20", "21")]["Notes"].split("; ")
+    assert notes[:2] == ["Dead end at the from node (island_end)", "Dead end"]

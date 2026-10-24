@@ -2759,3 +2759,27 @@ def test_post_processing_draws_the_boundary_nodes_it_left_keeping_the_layers_tog
     del solution.post_processed["boundary_nodes"]
     group = results.stage_finished("post_process", solution)
     assert BOUNDARY_NODES not in [spec.name for spec in group.layers]
+
+
+def test_a_node_whose_every_vessel_is_unsolved_shows_no_pressure():
+    """PLAN_dead_ends.md Phase 8: the solve leaves 0 Pa (or its junction's
+    pressure) on the nodes of vessels it did not solve; the viewer greys those
+    vessels and must not colour their nodes as a reading. The graph keeps the
+    value: transit time and a resumed run read it."""
+    import networkx as nx
+
+    from haemolynx.graph import FLOW_SOLVED
+    from haemolynx.gui.results import unsolved_node_pressures
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, **{FLOW_SOLVED: True})
+    G.add_edge(1, 2, **{FLOW_SOLVED: False})
+    G.add_edge(3, 4, **{FLOW_SOLVED: False})
+    G.add_node(5)
+    G.add_edge(6, 7)  # a graph part never solved keeps its values
+
+    values = unsolved_node_pressures(G, [0, 1, 2, 3, 4, 5, 6], [9.0, 8.0, 8.0, 0.0, 0.0, 1.0, 2.0])
+
+    assert values[0] == 9.0 and values[1] == 8.0 and np.isnan(values[2])
+    assert np.isnan(values[3]) and np.isnan(values[4])
+    assert values[5] == 1.0 and values[6] == 2.0

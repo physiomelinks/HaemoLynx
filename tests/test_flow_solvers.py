@@ -433,6 +433,30 @@ def test_both_resistances_go_into_the_statistics_csv(tmp_path):
     assert resistance_statistics(Solution()) == {}
 
 
+def test_the_flow_through_open_ends_goes_beside_the_network_resistance(tmp_path):
+    """PLAN_dead_ends.md Phase 8: the solve logged the flow entering and
+    leaving through open ends and kept it on the graph, but the statistics
+    CSV never said it."""
+    from haemolynx.pipeline.stages import Solution, resistance_statistics
+    from haemolynx.statistics import export_statistics_to_csv
+    from haemolynx.statistics.glossary import unit_for
+
+    solution = Solution(network_resistance=1.5e16, statistics={"open_ends": {
+        "model": "estimated", "open_ends": 68, "inflow_m3_s": 3e-12, "outflow_m3_s": 2e-12, "iterations": 7,
+    }})
+    rows = resistance_statistics(solution)["Haemodynamics"]
+
+    assert rows["Open-End Model"] == "estimated"
+    assert rows["Open Ends Given a Condition"] == 68
+    assert rows["Inflow Through Open Ends (m^3/s)"] == 3e-12
+    assert rows["Outflow Through Open Ends (m^3/s)"] == 2e-12
+    assert unit_for("Inflow Through Open Ends (m^3/s)") == "m^3/s"
+    text = export_statistics_to_csv(resistance_statistics(solution), tmp_path / "s.csv").read_text(encoding="utf-8")
+    assert "Inflow Through Open Ends" in text and "Outflow Through Open Ends" in text
+    closed = Solution(network_resistance=1.5e16)
+    assert "Open-End Model" not in resistance_statistics(closed)["Haemodynamics"]
+
+
 # --- warning before a dense solve runs out of memory -------------------------------
 
 

@@ -347,6 +347,52 @@ def test_each_vessel_says_whether_its_flow_is_an_answer_and_why(tmp_path):
     assert "haemolynx_version" in vessels.field_data
 
 
+def _open_end_network() -> nx.MultiGraph:
+    """Inlet 0 (100 Pa) -> 1 (60 Pa) -> outlet 2 (0 Pa), and three open ends
+    leaving the image off node 1, each given a condition: 3 feeds the network
+    (80 Pa), 4 drains it (20 Pa), 5 carries no flow (60 Pa)."""
+    G = nx.MultiGraph(open_end_conditions={
+        "model": "estimated", "to_inlet": [[3, 1e-17]], "to_outlet": [[4, 1e-17], [5, 1e-17]],
+        "as_outlets": [], "info": {},
+    })
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (20.0, 0.0, 0.0), 3: (10.0, 10.0, 0.0),
+           4: (10.0, -10.0, 0.0), 5: (10.0, 0.0, 10.0)}
+    pressure = {0: 100.0, 1: 60.0, 2: 0.0, 3: 80.0, 4: 20.0, 5: 60.0}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p), pressure=pressure[n])
+    for n in (3, 4, 5):
+        G.nodes[n]["dead_end_kind"] = "leaves_image"
+    for (u, v), flow in (((0, 1), 4e-15), ((1, 2), 6e-15), ((1, 3), 3e-15), ((1, 4), 1e-15), ((1, 5), 0.0)):
+        G.add_edge(u, v, voxels=[pos[u], pos[v]], length=10.0, diameter_um=5.0, flow_abs=flow,
+                   flow_signed=flow if pressure[u] >= pressure[v] else -flow, flow_state="solved")
+    return G
+
+
+def test_each_node_names_its_boundary_role_and_each_vessel_whether_the_faces_cut_it(tmp_path):
+    """PLAN_dead_ends.md Phase 8: the nodes file says which node is an inlet,
+    an outlet, or an open end the solve gave a condition -- feeding the
+    network or draining it, by its solved flow -- and the vessels file which
+    vessels the image faces cut short (decision D5)."""
+    G = _open_end_network()
+
+    out = graph_to_vtk(G, tmp_path / "roles", inlet_nodes=[0], outlet_nodes=[2])
+    vessels, nodes = pv.read(out["vessels_path"]), pv.read(out["nodes_path"])
+
+    assert list(nodes.point_data["node_id"]) == [0, 1, 2, 3, 4, 5]
+    assert list(nodes.point_data["boundary_role"]) == [
+        "inlet", "", "outlet", "open_end_feeds", "open_end_drains", "open_end",
+    ]
+    assert list(vessels.cell_data["cut_by_image_face"]) == [0, 0, 1, 1, 1]
+    assert vessels.cell_data["cut_by_image_face"].dtype == np.uint8
+    assert str(nodes.field_data["boundary_role_unit"][0]) == "-"
+
+
+def test_without_boundaries_given_no_node_has_a_role(tmp_path, simple_graph):
+    out = graph_to_vtk(simple_graph, tmp_path / "plain")
+    nodes = pv.read(out["nodes_path"])
+    assert set(nodes.point_data["boundary_role"]) == {""}
+
+
 def _run_field_data(vessels) -> dict:
     """The vessels file's field data beyond the units."""
     return {

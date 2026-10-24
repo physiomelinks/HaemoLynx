@@ -323,3 +323,34 @@ def test_a_perturbation_may_not_change_the_open_end_model():
     # D1 (PLAN_dead_ends.md, 2026-10-12): the Fry estimate, chosen from the
     # E14.5 sensitivity report.
     assert default_schema()["open_end_model"].default == "estimated"
+
+
+def test_each_open_end_feeds_or_drains_the_network_by_its_solved_flow():
+    """PLAN_dead_ends.md Phase 4: an open end with blood entering the network
+    through it is a source, one with blood leaving a sink; one carrying no
+    flow (at or below the carrying floor) is neither, nor is an open end
+    given no condition."""
+    from haemolynx.haemodynamics.open_ends import DRAINS, FEEDS, open_end_directions
+
+    G = nx.MultiGraph(open_end_conditions={
+        "model": "estimated", "to_inlet": [[3, 1.0]], "to_outlet": [[4, 1.0], [5, 1.0]],
+        "as_outlets": [], "info": {},
+    })
+    pressure = {0: 100.0, 1: 60.0, 2: 0.0, 3: 80.0, 4: 20.0, 5: 60.0, 6: 30.0}
+    for n, p in pressure.items():
+        G.add_node(n, pressure=p)
+    for (u, v), flow in (((0, 1), 4e-15), ((1, 2), 6e-15), ((1, 3), 3e-15), ((1, 4), 1e-15),
+                         ((1, 5), 1e-26), ((2, 6), 1e-15)):
+        G.add_edge(u, v, flow_abs=flow)
+
+    assert open_end_directions(G) == {3: FEEDS, 4: DRAINS}
+    G.graph.pop("open_end_conditions")
+    assert open_end_directions(G) == {}
+
+
+def test_an_unsolved_graph_has_no_open_end_directions():
+    from haemolynx.haemodynamics.open_ends import open_end_directions
+
+    G = nx.MultiGraph(open_end_conditions={"model": "outlet", "as_outlets": [1]})
+    G.add_edge(0, 1)
+    assert open_end_directions(G) == {}
