@@ -384,7 +384,9 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 ### CI
 
 GitHub Actions (`.github/workflows/pytest-pr.yml`) runs on pull requests, on pushes to `main` and
-`Devel_GUI_improvements_HD`, and weekly (Mondays). Six jobs:
+`Devel_GUI_improvements_HD`, and weekly (Mondays). A newer push to a branch or pull request cancels
+the run still going for an older commit (`concurrency`), so only the newest commit is reported; a
+push never cancels the weekly run. Six jobs:
 
 - **`lint`** — `ruff check .`, rules `F` and `E9` only (`[tool.ruff]` in `pyproject.toml`). There is
   no formatter: `ruff format` would rewrite most of the codebase, which is Harvey's decision.

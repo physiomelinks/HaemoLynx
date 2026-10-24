@@ -11,6 +11,13 @@ on:
   schedule:
     - cron: "17 3 * * 1"   # Mondays, 03:17 UTC
 
+# One run per branch or pull request at a time: a newer push cancels the run
+# still going for an older commit, so only the newest commit is reported. The
+# event is in the group, so a push to main never cancels the weekly run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Pyflakes errors and syntax errors only (`[tool.ruff.lint]` in
   # pyproject.toml): unused and undefined names, redefined functions. No
