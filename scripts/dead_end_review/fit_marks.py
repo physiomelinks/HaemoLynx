@@ -15,18 +15,82 @@ import argparse
 import csv
 import json
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-#: Which marks each grid's rule separates, as (positive, negative).
-QUESTIONS = {"G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N"), "G4": ("N", "V")}
+#: Which marks each grid's rule separates, as (positive, negative). G1b-G3b
+#: are the fresh grids G1'-G3' (PLAN_dead_ends.md Phase 2), asked the same.
+QUESTIONS = {
+    "G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N"), "G4": ("N", "V"),
+    "G1b": ("X", "S"), "G2b": ("F", "I"), "G3b": ("J", "N"),
+}
 MEANING = {
     "G1": "X = not a vessel end (remove) against S = a real blind end",
     "G2": "F = leaves the image against I = ends inside it",
     "G3": "J = join (same vessel) against N = not the same vessel",
     "G4": "N = not a vessel (remove) against V = a vessel (P, partly, reported apart)",
 }
+MEANING.update({f"{grid}b": MEANING[grid] for grid in ("G1", "G2", "G3")})
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One rule fitted on G1-G3 (FIT.md, 2026-10-12), fixed before the fresh
+    grid that checks it was built: it says *positive* when *measure* is
+    *above* (or not above) *threshold*; a measure that is unset says the
+    negative. A *threshold* of None reads *measure* as a string equal to
+    *equals*."""
+
+    name: str
+    measure: str
+    threshold: float | None = None
+    above: bool = True
+    equals: str | None = None
+
+    def says_positive(self, row: dict) -> bool:
+        value = row.get(self.measure)
+        if self.threshold is None:
+            return value == self.equals
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return False
+        if not np.isfinite(number):
+            return False
+        return number > self.threshold if self.above else number <= self.threshold
+
+
+#: The rules each fresh grid checks; the first is the one the grid was spread
+#: across. The bar for relying on one is 90% (``graph.8b``).
+FRESH_RULES = {
+    "G1b": (Rule("beside_share > 0.0104 is X", "beside_share", 0.0104),),
+    "G2b": (
+        Rule("the classifier's leaves_image is F", "kind", equals="leaves_image"),
+        Rule("face_distance_um <= 11.3 is F", "face_distance_um", 11.3, above=False),
+        Rule("depth_um <= 10.4 is F", "depth_um", 10.4, above=False),
+    ),
+    "G3b": (Rule("ahead_turn_deg <= 30.5 is J", "ahead_turn_deg", 30.5, above=False),),
+}
+
+
+def check_rules(grid: str, rows: list[dict], marks: dict[str, dict]) -> list[dict]:
+    """Each of *grid*'s :data:`FRESH_RULES` scored on the marks, unfitted:
+    ``{"rule", "right", "judged", "baseline", "wrong"}`` -- how many judged
+    examples it gets right, against marking all of them one way, and the IDs
+    it gets wrong."""
+    positive, negative = QUESTIONS[grid]
+    judged = [r for r in rows if (marks.get(r["id"]) or {}).get("verdict") in (positive, negative)]
+    truth = [marks[r["id"]]["verdict"] == positive for r in judged]
+    baseline = max(sum(truth), len(truth) - sum(truth))
+    results = []
+    for rule in FRESH_RULES.get(grid, ()):
+        said = [rule.says_positive(r) for r in judged]
+        wrong = [r["id"] for r, s, t in zip(judged, said, truth) if s != t]
+        results.append({"rule": rule.name, "right": len(judged) - len(wrong), "judged": len(judged),
+                        "baseline": baseline, "wrong": wrong})
+    return results
 
 
 def read_marks(folder: Path) -> dict[str, dict]:
@@ -161,6 +225,12 @@ def main(argv=None) -> int:
             kinds.setdefault(r["kind"], []).append(r["mark"])
         report += ["| kind (classifier) | marks |", "|---|---|"]
         report += [f"| {k} | {', '.join(f'{m}:{v.count(m)}' for m in sorted(set(v)))} |" for k, v in sorted(kinds.items())]
+        checked = check_rules(grid, rows, marks)
+        if checked:
+            report += ["", "Rules fixed before this grid was built, checked (bar: 90%):", "",
+                       "| rule | right | all one way | wrong IDs |", "|---|---|---|---|"]
+            report += [f"| {c['rule']} | {c['right']}/{c['judged']} | {c['baseline']}/{c['judged']} | "
+                       f"{', '.join(c['wrong']) or '-'} |" for c in checked]
         report += ["", "| measure | LOO right | fitted rule | fitted right |", "|---|---|---|---|"]
         results = []
         for key in keys:

@@ -18,6 +18,15 @@ following CLAUDE.md's "Marked example grids":
   background and how many junctions away the vessel ahead is, and pairs of
   facing dead ends the join refused.
 
+With ``--fresh`` it builds the fresh grids G1', G2' and G3' instead (files
+and IDs ``G1b``, ``G2b``, ``G3b``): the same questions on dead ends no earlier
+grid showed (``--exclude-key``: every key CSV with a ``tip_zyx_vox`` column),
+each spread across the rule fitted on its first grid that it checks
+(``fit_marks.FRESH_RULES``): G1' half each side of ``beside_share`` 0.0104
+in each depth stratum, G2' half the classifier calls ``leaves_image`` and
+half not, each spread by face distance, G3' half each side of a 30.5 deg turn
+onto the vessel ahead, each spread by the gap.
+
 Each example is drawn in its own plane (its heading and the direction its
 chain bends in): the segmentation (what the code sees) as a slab through the
 plane, and the raw image beside it (the "Raw image" toggle), because "sprout
@@ -215,6 +224,78 @@ def _pages(G, ends, facing_pairs, protected_tips):
     return {"G1": g1, "G2": g2, "G3": g3, "L": grid_l}
 
 
+#: An earlier grid's tip within this many microns of a dead end's tip is the
+#: same dead end: the fresh grids leave it out.
+SHOWN_TIP_TOLERANCE_UM = 3.0
+
+
+def shown_tips_um(key_paths, voxel_size_zyx) -> np.ndarray:
+    """The tips earlier grids showed, ``(n, 3)`` physical microns, from their
+    keys' ``tip_zyx_vox`` column (a key without one adds nothing)."""
+    tips = []
+    for path in key_paths:
+        with open(path, encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                text = (row.get("tip_zyx_vox") or "").strip("()[] ")
+                if text:
+                    tips.append([float(c) for c in text.replace(";", ",").split(",")])
+    if not tips:
+        return np.empty((0, 3))
+    return np.asarray(tips, dtype=float) * np.asarray(voxel_size_zyx, dtype=float)
+
+
+def _not_shown(ends, shown_um: np.ndarray) -> list:
+    if not len(shown_um):
+        return list(ends)
+    return [e for e in ends
+            if float(np.min(np.linalg.norm(shown_um - np.asarray(e.tip_um), axis=1))) > SHOWN_TIP_TOLERANCE_UM]
+
+
+def _halves(pool: list, count: int, says, key) -> list:
+    """*count* of *pool*, half on each side of a rule (*says*), each half
+    spread across *key*; a side with too few is made up from the other."""
+    first = [e for e in pool if says(e)]
+    second = [e for e in pool if not says(e)]
+    take_first = min(len(first), count // 2)
+    take_second = min(len(second), count - take_first)
+    take_first = min(len(first), count - take_second)
+    return _evenly(first, take_first, key=key) + _evenly(second, take_second, key=key)
+
+
+def fresh_pages(ends, facing_pairs, shown_um: np.ndarray, *, ahead_ends=None) -> dict:
+    """The fresh grids G1'-G3' (``{grid: [(end, extra), ...]}``, before
+    shuffling), from dead ends no earlier grid showed, each dead end in one
+    of them only: G3' (the rarest, a vessel ahead) is chosen first, then G2'
+    (near a face), then G1' from the interior ends left. *ahead_ends*, the
+    same dead ends judged with a longer look ahead (``--g3-reach``), is what
+    G3' is chosen from and drawn with, when given."""
+    from fit_marks import FRESH_RULES
+
+    unseen = {e.tip: e for e in _not_shown(ends.values(), shown_um)}
+    interior = [e for e in unseen.values() if e.kind not in ("leaves_image", "island_end")]
+    turn = FRESH_RULES["G3b"][0]
+    pairs = [p for p in facing_pairs if p.a in unseen and p.b in unseen][:6]
+    taken = {t for pair in pairs for t in (pair.a, pair.b)}
+    looked = ahead_ends or ends
+    ahead = [looked[e.tip] for e in interior if looked[e.tip].ahead_um is not None and e.tip not in taken]
+    g3 = [(e, {"target": True}) for e in _halves(
+        ahead, 30 - len(pairs), lambda e: turn.says_positive({"ahead_turn_deg": e.ahead_turn_deg}),
+        lambda e: e.ahead_um)]
+    g3 += [(unseen[pair.a], {"partner": unseen[pair.b], "pair": pair}) for pair in pairs]
+    taken |= {e.tip for e, _extra in g3}
+    near = [e for e in unseen.values() if e.kind != "island_end" and e.face_distance_um is not None
+            and 2.0 <= e.face_distance_um <= 25.0 and e.tip not in taken]
+    g2 = _halves(near, 30, lambda e: e.kind == "leaves_image", lambda e: e.face_distance_um)
+    taken |= {e.tip for e in g2}
+    in_radii = lambda e: e.chain_length_um / max(e.junction_radius_um or 1.0, 1e-6)
+    beside = FRESH_RULES["G1b"][0]
+    g1 = []
+    for surface in (True, False):
+        layer = [e for e in interior if (e.tip_um[0] < SURFACE_DEPTH_UM) == surface and e.tip not in taken]
+        g1 += _halves(layer, 15, lambda e: beside.says_positive({"beside_share": e.beside_share}), in_radii)
+    return {"G1b": [(e, {}) for e in g1], "G2b": [(e, {}) for e in g2], "G3b": g3}
+
+
 PAGES = {
     "G1": dict(
         title="Dead End Review G1: interior dead ends",
@@ -260,6 +341,11 @@ PAGES = {
         verdicts=[("J", "Join: same vessel", "good"), ("N", "Not the same vessel", "bad"), ("?", "Unsure", "unsure")],
     ),
 }
+for _grid, _prime in (("G1", "G1′"), ("G2", "G2′"), ("G3", "G3′")):
+    PAGES[f"{_grid}b"] = {
+        **PAGES[_grid],
+        "title": PAGES[_grid]["title"].replace(f"Review {_grid}:", f"Review {_prime}: a fresh grid,"),
+    }
 
 
 def main(argv=None) -> int:
@@ -271,6 +357,12 @@ def main(argv=None) -> int:
     parser.add_argument("--protected-key", help="a CSV with tip_zyx_vox of the stubs the prune keeps at a face")
     parser.add_argument("--out", required=True)
     parser.add_argument("--only", action="append", default=[], help="build only these grids (repeatable)")
+    parser.add_argument("--raw-channel", type=int, help="the raw image's channel, for a multi-channel file (z c y x)")
+    parser.add_argument("--fresh", action="store_true", help="build the fresh grids G1'-G3' (G1b-G3b) instead")
+    parser.add_argument("--g3-reach", type=float, default=None,
+                        help="with --fresh, look this far ahead (um) for G3' (the classifier's kinds are kept)")
+    parser.add_argument("--exclude-key", action="append", default=[],
+                        help="an earlier grid's key CSV: its tips are left out of the fresh grids (repeatable)")
     args = parser.parse_args(argv)
 
     import tifffile
@@ -283,7 +375,10 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     G = pickle.load(open(args.graph, "rb"))
     mask = np.load(args.mask).astype(bool)
-    raw = tifffile.imread(args.raw).astype(np.float32) if args.raw else None
+    raw = tifffile.imread(args.raw) if args.raw else None
+    if raw is not None and args.raw_channel is not None:
+        raw = raw[:, args.raw_channel]
+    raw = raw.astype(np.float32) if raw is not None else None
     if raw is not None and raw.shape != mask.shape:
         raise SystemExit(f"raw image {raw.shape} and mask {mask.shape} differ")
     vs = tuple(args.voxel_size_zyx)
@@ -299,8 +394,19 @@ def main(argv=None) -> int:
                 protected.add(tip)
     drawer = Drawer(G, mask, raw, vs)
     template = (HERE / "template.html").read_text(encoding="utf-8")
-    rng = random.Random(SEED)
-    for grid, chosen in _pages(G, ends, pairs, protected).items():
+    rng = random.Random(SEED + 1 if args.fresh else SEED)
+    ahead_ends = None
+    if args.fresh and args.g3_reach:
+        from dataclasses import replace
+
+        wider = classify_dead_ends(G, extent_um=image_extent_um(mask.shape, vs), support=support,
+                                   ahead_reach_um=args.g3_reach)
+        ahead_ends = {tip: replace(wider[tip], kind=end.kind) for tip, end in ends.items()}
+    pages = (
+        fresh_pages(ends, pairs, shown_tips_um(args.exclude_key, vs), ahead_ends=ahead_ends) if args.fresh
+        else _pages(G, ends, pairs, protected)
+    )
+    for grid, chosen in pages.items():
         if args.only and grid not in args.only:
             continue
         rng.shuffle(chosen)
@@ -326,7 +432,7 @@ def main(argv=None) -> int:
             "verdicts": [{"value": v, "label": label, "short": v, "tone": tone} for v, label, tone in page["verdicts"]],
             "examples": examples,
         }
-        html = (template.replace("__TITLE__", f"Dead End Review {grid}").replace("__SECOND_PANEL__", "Raw image (not the segmentation)")
+        html = (template.replace("__TITLE__", page["title"].split(":")[0]).replace("__SECOND_PANEL__", "Raw image (not the segmentation)")
                 .replace("__EXAMPLES_JSON__", json.dumps(data, separators=(",", ":")).replace("</", "<\\/")))
         (out / f"{grid}_review.html").write_text(html, encoding="utf-8")
         keys = list(dict.fromkeys(k for row in rows for k in row))
