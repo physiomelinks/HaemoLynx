@@ -144,3 +144,37 @@ def comparison_table(sides: Mapping[str, Mapping[str, Any]]) -> str:
                 row.append(f"{second - first:+,.0f}")
         rows.append(row)
     return _markdown(header, rows)
+
+
+def bridge_shapes(G: nx.MultiGraph, thick: np.ndarray, mask: np.ndarray, voxel_size_zyx) -> dict[str, Any]:
+    """What shape each thick-vessel bridge of *G* has, by this checkout's
+    ``graph.diagnose_thick_vessel_bridges`` (PLAN_thick_vessel_bridges.md,
+    Phase 0), against the tree of *thick* found again here."""
+    from haemolynx.graph import diagnose_thick_vessel_bridges
+
+    return diagnose_thick_vessel_bridges(G, thick, None, mask, voxel_size_zyx=tuple(voxel_size_zyx))
+
+
+def bridge_shapes_table(sides: Mapping[str, Mapping[str, Any]]) -> str:
+    """One row per bridge shape, one column per side: how many, and their
+    median length; then length over the lumen radius, and the bridges drawn
+    along their path."""
+    from haemolynx.graph.thick_vessel_bridge_shapes import BRIDGE_SHAPES, SHAPE_WORDS
+
+    names = list(sides)
+    rows = []
+    for shape in BRIDGE_SHAPES:
+        cells = []
+        for name in names:
+            count = sides[name]["counts"].get(shape, 0)
+            median = sides[name]["median_length_um"].get(shape)
+            cells.append(f"{count:,}" + (f" ({median:.1f} um)" if median is not None else ""))
+        rows.append([SHAPE_WORDS[shape]] + cells)
+    rows.append(["all bridges"] + [f"{sides[name]['bridge_count']:,}" for name in names])
+    ratio_cells = []
+    for name in names:
+        ratio = sides[name]["length_over_radius"]
+        ratio_cells.append("" if ratio["median"] is None else f"{ratio['median']:.2f} ({ratio['p90']:.2f})")
+    rows.append(["length / lumen radius, median (90th pct)"] + ratio_cells)
+    rows.append(["drawn along their path"] + [f"{sides[name]['drawn_path_count']:,}" for name in names])
+    return _markdown(["bridge shape (count, median length)"] + names, rows)

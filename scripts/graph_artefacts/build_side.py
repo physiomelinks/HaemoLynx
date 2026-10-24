@@ -5,7 +5,7 @@ version (a ``git archive`` of a ref) builds with its own code. It writes the
 graph after every topology step (``steps/<label>.pkl``), the graph as
 ``build_network`` saves it (``final.pkl``: after smoothing, the clean-up run
 again on the smoothed curves, and -- when the job names a thick-vessel region
--- the thick-vessel split), the graph before that split
+-- the thick-vessel split, with the job's ``split`` arguments), the graph before that split
 (``before_thick_split.pkl``) and ``side.json`` (timings, and the build
 arguments this version does not take).
 """
@@ -102,6 +102,9 @@ def main(job_path: str) -> None:
         # The segmentation too, in the versions whose split reads it.
         split = graph.insert_thick_vessel_junction_nodes
         extra = {"segmentation": mask} if "segmentation" in inspect.signature(split).parameters else {}
+        # The run's own choices (``thick_junction_bridge_arguments``), those
+        # this version takes.
+        extra.update(accepted_arguments(split, job.get("split") or {})[0])
         G = split(G, np.load(job["thick_vessel_mask"]), voxel_size_zyx=voxel_size, **extra)
         thick_split = True
         # A version whose clean-up knows bridges runs it again after the split.

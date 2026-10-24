@@ -236,6 +236,42 @@ def test_the_tree_skeletonisation_drew_is_used_not_drawn_again(tmp_path, monkeyp
     assert split["centreline"] is drawn
 
 
+def _thick_tee(size: int = 48):
+    """A thick vessel 5 um in radius along x, a thin one 1.5 um in radius
+    leaving it along y to the image's edge, their skeletons, and the thick
+    region (the segmentation within 3 um of the thick vessel)."""
+    p = np.stack(np.indices((size, size, size)), axis=-1).astype(float)
+    centre = size // 2
+    thick_tube = np.hypot(p[..., 0] - centre, p[..., 1] - centre) <= 5.0
+    thin_tube = (np.hypot(p[..., 0] - centre, p[..., 2] - centre) <= 1.5) & (p[..., 1] >= centre)
+    image = thick_tube | thin_tube
+    skeleton = np.zeros(image.shape, dtype=bool)
+    skeleton[centre, centre, 2 : size - 2] = True
+    skeleton[centre, centre:, centre] = True
+    region = image & (ndimage.distance_transform_edt(~thick_tube) <= 3.0)
+    return skeleton, image.astype(np.uint8), region
+
+
+def test_the_built_network_logs_the_shape_of_its_thick_vessel_bridges(tmp_path, caplog):
+    """graph.diagnose_thick_vessel_bridges, with the graph checks: the one
+    vessel opening into the thick one has one bridge, from the region's wall
+    to the centreline."""
+    skeleton, image, region = _thick_tee()
+    volume = _volume(tmp_path, skeleton, image)
+    volume.thick_vessel_mask = region
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.stages"):
+        network = build_network(_settings(tmp_path, visualize_results=False), volume, SCHEMA)
+
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    bridges = [d for *_e, d in network.graph.edges(data=True) if d.get(IS_ZERO_RESISTANCE)]
+    (line,) = [r for r in caplog.records if r.getMessage().startswith("Thick-vessel bridges: ")
+               and r.name == "haemolynx.pipeline.stages"]
+    assert len(bridges) == 1
+    assert line.getMessage().startswith("Thick-vessel bridges: 1 bridge(s): 1 ")
+    assert line.levelno == logging.INFO, "a bridge from the wall to the centreline is what the split means to make"
+
+
 def test_a_run_without_a_thick_vessel_region_leaves_the_choice_to_the_wall(tmp_path, monkeypatch):
     seen = _spy_on_graph_building(monkeypatch)
     build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)

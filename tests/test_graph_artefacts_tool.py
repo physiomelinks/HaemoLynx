@@ -13,10 +13,12 @@ import numpy as np
 import pytest
 
 from graph_artefacts import build_side
-from graph_artefacts.report import COLUMNS, comparison_table, measure, steps_table
+from graph_artefacts.report import (
+    COLUMNS, bridge_shapes, bridge_shapes_table, comparison_table, measure, steps_table,
+)
 from haemolynx.graph import build_graph_from_skeleton
 from haemolynx.pipeline import default_schema
-from haemolynx.pipeline.stages import graph_build_arguments
+from haemolynx.pipeline.stages import graph_build_arguments, thick_junction_bridge_arguments
 from haemolynx.preprocessing import MaskSupport
 
 from lumen_artefact_fixtures import VOXEL_SIZE, loop_round_tissue, two_strands_in_one_lumen
@@ -131,6 +133,7 @@ def test_a_side_given_a_thick_vessel_region_splits_the_graph_as_build_network_sa
         "build": graph_build_arguments(default_schema().defaults()),
         "smoothing": None,
         "thick_vessel_mask": str(tmp_path / "thick.npy"),
+        "split": thick_junction_bridge_arguments(default_schema().defaults()) | {"a_setting_from_the_future": 1},
     }
     (tmp_path / "job.json").write_text(json.dumps(job))
 
@@ -146,6 +149,67 @@ def test_a_side_given_a_thick_vessel_region_splits_the_graph_as_build_network_sa
     assert len(bridges) == 1
     assert not any(d.get(IS_ZERO_RESISTANCE) for *_, d in before.edges(data=True))
     assert saved.number_of_edges() == before.number_of_edges() + 1
+    # Its shape, measured by this checkout against the region's tree.
+    report = bridge_shapes(saved, thick, mask, (1.0, 1.0, 1.0))
+    assert report["bridge_count"] == 1
+    assert report["counts"]["radius_shaped"] + report["counts"]["longer_than_radius"] == 1
+
+
+def test_a_side_splits_with_the_runs_thick_junction_choices(tmp_path, monkeypatch):
+    """The split takes the run's settings (``thick_junction_bridge_arguments``),
+    as build_network does, not the function's defaults: those this version
+    takes."""
+    from haemolynx import graph
+
+    seen = {}
+
+    def split(G, thick, *, voxel_size_zyx, segmentation=None, extend_thick_ends=False, bridge_forks=True):
+        seen.update(extend_thick_ends=extend_thick_ends, bridge_forks=bridge_forks)
+        return G
+
+    monkeypatch.setattr(graph, "insert_thick_vessel_junction_nodes", split)
+    skeleton = np.zeros((20, 20, 20), dtype=bool)
+    skeleton[2:18, 10, 10] = True
+    from scipy import ndimage
+
+    for name, volume in (("skeleton", skeleton), ("mask", ndimage.binary_dilation(skeleton, iterations=2))):
+        np.save(tmp_path / f"{name}.npy", volume)
+    np.save(tmp_path / "thick.npy", np.zeros_like(skeleton))
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0],
+        "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": None,
+        "thick_vessel_mask": str(tmp_path / "thick.npy"),
+        "split": {"extend_thick_ends": True, "bridge_forks": False, "fill_tree_gaps": True},
+    }
+    (tmp_path / "job.json").write_text(json.dumps(job))
+
+    build_side.main(str(tmp_path / "job.json"))
+
+    assert seen == {"extend_thick_ends": True, "bridge_forks": False}
+
+
+def test_the_bridge_shape_table_has_a_row_per_shape_and_a_column_per_side():
+    from haemolynx.graph.thick_vessel_bridge_shapes import BRIDGE_SHAPES
+
+    empty = {shape: 0 for shape in BRIDGE_SHAPES}
+    none = {shape: None for shape in BRIDGE_SHAPES}
+    before = {"bridge_count": 3, "counts": empty | {"wall_to_wall": 3}, "median_length_um": none | {"wall_to_wall": 5.2},
+              "length_over_radius": {"median": 0.9, "p90": 1.4, "max": 2.0}, "drawn_path_count": 0}
+    after = {"bridge_count": 2, "counts": empty | {"radius_shaped": 2}, "median_length_um": none | {"radius_shaped": 7.24},
+             "length_over_radius": {"median": None, "p90": None, "max": None}, "drawn_path_count": 1}
+
+    lines = bridge_shapes_table({"5fab427": before, "working tree": after}).splitlines()
+
+    assert lines[0] == "| bridge shape (count, median length) | 5fab427 | working tree |"
+    assert "| radius-shaped | 0 | 2 (7.2 um) |" in lines
+    assert "| wall to wall through the margin | 3 (5.2 um) | 0 |" in lines
+    assert "| all bridges | 3 | 2 |" in lines
+    assert "| length / lumen radius, median (90th pct) | 0.90 (1.40) |  |" in lines
+    assert lines[-1] == "| drawn along their path | 0 | 1 |"
+    assert len(lines) == 2 + len(BRIDGE_SHAPES) + 3
 
 
 def test_a_row_counts_the_pairs_a_thick_vessel_bridge_is_in():

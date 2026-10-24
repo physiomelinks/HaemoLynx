@@ -211,6 +211,10 @@ from .large_vessel_network import (
     select_large_vessel_stump_terminal_nodes,
 )
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, insert_thick_vessel_junction_nodes
+from .thick_vessel_bridge_shapes import (
+    diagnose_thick_vessel_bridges,
+    format_thick_vessel_bridges_report,
+)
 from . import skeleton_retrace
 from .skeleton_retrace import judge_lost_skeleton, retrace_lost_skeleton
 from . import dead_ends
@@ -429,6 +433,8 @@ __all__ = [
     "select_large_vessel_stump_terminal_nodes",
     "IS_ZERO_RESISTANCE",
     "insert_thick_vessel_junction_nodes",
+    "diagnose_thick_vessel_bridges",
+    "format_thick_vessel_bridges_report",
     "skeleton_retrace",
     "judge_lost_skeleton",
     "retrace_lost_skeleton",

@@ -15,8 +15,14 @@ import numpy as np
 import pytest
 from scipy.ndimage import distance_transform_edt
 
+from haemolynx.graph.thick_vessel_bridge_shapes import (
+    BRIDGE_SHAPES,
+    diagnose_thick_vessel_bridges,
+    format_thick_vessel_bridges_report,
+)
 from haemolynx.graph.thick_vessel_junctions import (
     IS_ZERO_RESISTANCE,
+    THICK_FORK_BRIDGE,
     insert_thick_vessel_junction_nodes,
 )
 
@@ -419,6 +425,95 @@ def test_contracting_bridges_joins_each_vessel_to_the_thick_centreline():
     assert H.nodes["J"] is G.nodes["J"]
 
 
+# --- what shape each bridge has (the plan's Phase 0 diagnostic) ---------------------
+
+
+def _bridge_of_each_shape():
+    """The thick vessel's centreline, and one hand-drawn bridge of each of
+    the 2026-10-09 audit's shapes, each at its own place along y."""
+    lumen, body, tree = _thick()
+    G = _graph(("T0", "T1", T0, T1))
+    bridge = {IS_ZERO_RESISTANCE: True}
+    shapes = {
+        # From the region's wall straight in to the centreline: 7.5 um, 1.2 radii.
+        "radius_shaped": [("R1", "R0", (20, 10, 27.5), (20, 10, 20))],
+        # From the wall to the centreline 10 um along: 12.5 um, 2 radii.
+        "longer_than_radius": [("L1", "L0", (20, 30, 27.5), (20, 20, 20))],
+        # Along the thick vessel's own centreline.
+        "along_centreline": [("A0", "A1", (20, 34, 20), (20, 44, 20))],
+        # From the wall to a node off the centreline another bridge reaches.
+        # (C2-C0 is radius-shaped: C2 is within a voxel's step of the wall.)
+        "on_another_bridge": [("C1", "C2", (20, 50, 27.5), (20, 50, 24.5)),
+                              ("C2", "C0", (20, 50, 24.5), (20, 50, 20))],
+        # Across the margin, both ends outside the lumen, never on the centreline.
+        "wall_to_wall": [("W1", "W2", (27, 58, 20), (20, 58, 27))],
+        # Inside the lumen, short of the centreline.
+        "other": [("O1", "O0", (20, 62, 26), (20, 62, 23.5))],
+    }
+    for edges in shapes.values():
+        G = nx.compose(G, _graph(*edges, **bridge))
+    return G, lumen, body, tree, shapes
+
+
+def test_each_bridge_is_reported_with_its_shape():
+    G, lumen, body, tree, shapes = _bridge_of_each_shape()
+
+    report = diagnose_thick_vessel_bridges(G, _region(lumen, body), tree, lumen, voxel_size_zyx=VS)
+
+    shape_of = {frozenset((row["u"], row["v"])): row["shape"] for row in report["bridges"]}
+    assert shape_of[frozenset(("C2", "C0"))] == "radius_shaped"
+    for shape, edges in shapes.items():
+        assert shape_of[frozenset(edges[0][:2])] == shape
+    assert report["bridge_count"] == 7
+    assert report["counts"] == {
+        "radius_shaped": 2, "longer_than_radius": 1, "along_centreline": 1, "on_another_bridge": 1,
+        "wall_to_wall": 1, "other": 1, "fork": 0,
+    }
+    assert set(report["counts"]) == set(BRIDGE_SHAPES)
+    (radius,) = [row for row in report["bridges"] if row["inner_node"] == "R0"]
+    assert radius["inner_node"] == "R0" and radius["outer_at_wall"]
+    assert radius["length_um"] == pytest.approx(7.5)
+    assert radius["local_radius_um"] == pytest.approx(RADIUS, abs=0.5)
+    assert radius["length_over_radius"] == pytest.approx(7.5 / radius["local_radius_um"])
+    assert report["median_length_um"]["longer_than_radius"] == pytest.approx(12.5)
+    assert report["median_length_um"]["radius_shaped"] == pytest.approx((7.5 + 4.5) / 2)
+    assert report["drawn_path_count"] == 0
+    G.remove_edges_from([(u, v) for u, v, d in G.edges(data=True) if d.get(IS_ZERO_RESISTANCE)])
+    assert G.number_of_edges() == 1, "read-only: the graph is the one handed in"
+
+
+def test_the_bridge_shape_report_reads_as_one_line():
+    G, lumen, body, tree, _shapes = _bridge_of_each_shape()
+
+    line = format_thick_vessel_bridges_report(
+        diagnose_thick_vessel_bridges(G, _region(lumen, body), tree, lumen, voxel_size_zyx=VS)
+    )
+
+    assert line.startswith("Thick-vessel bridges: 7 bridge(s): 2 radius-shaped, 1 reaching the centreline")
+    assert "1 wall to wall through the margin" in line and "length over the thick vessel's lumen radius" in line
+    assert format_thick_vessel_bridges_report(
+        diagnose_thick_vessel_bridges(_graph(("T0", "T1", T0, T1)), _region(lumen, body), tree, lumen)
+    ) == "Thick-vessel bridges: 0 bridge(s)."
+
+
+def test_the_splits_bridges_reach_from_the_wall_to_the_centreline():
+    """What the split makes is the shape it means to: the region's wall to
+    the centreline, the radius and the margin (here 9 um, 1.5 radii)."""
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 20), (20, 30, 63))
+    _thin_vessel(lumen, (20, 45, 0), (20, 45, 63))
+    G = nx.compose(_graph(*JOINING), _graph(("Y1", "Y2", (20, 45, 63), (20, 45, 0))))
+    result = _split(G, lumen, body, tree)
+
+    report = diagnose_thick_vessel_bridges(result, _region(lumen, body), tree, lumen, voxel_size_zyx=VS)
+
+    assert report["bridge_count"] == 3
+    assert {row["shape"] for row in report["bridges"]} <= {"radius_shaped", "longer_than_radius"}
+    for row in report["bridges"]:
+        assert row["outer_at_wall"] and row["inner_to_tree_um"] <= 1.0
+        assert row["length_over_radius"] == pytest.approx(REACH / row["local_radius_um"], abs=0.2)
+
+
 def test_a_flicker_is_judged_by_its_length_in_microns_not_in_samples():
     """A stretch under 2 um between two others takes its neighbours' label.
     Sampled every 0.49 um (a 0.98 um voxel path densified to half a voxel),
@@ -613,6 +708,11 @@ def test_a_narrower_branch_of_the_thick_centreline_is_bridged_where_it_leaves_th
     assert branch["length"] == pytest.approx(43.0 - bridge["length"], abs=0.6)
     for a, b in (("T0", "J"), ("J", "T1")):
         assert result.edges[a, b, 0]["voxels"] == G.edges[a, b, 0]["voxels"]
+    # Both its ends lie on the tree, so it is marked: the bridge-shape report
+    # would read it as lying along the thick centreline.
+    assert bridge[THICK_FORK_BRIDGE] is True
+    shapes = diagnose_thick_vessel_bridges(result, _region(lumen, body), tree, lumen, voxel_size_zyx=VS)
+    assert [row["shape"] for row in shapes["bridges"]] == ["fork"]
 
 
 def test_a_fork_of_equal_thick_vessels_gets_no_bridge():

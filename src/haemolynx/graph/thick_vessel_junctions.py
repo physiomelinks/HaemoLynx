@@ -179,6 +179,17 @@ FORK_BRANCH_MAX_RADIUS_FRACTION = 0.8
 #: the tree.
 FORK_ARM_UM = 10.0
 
+#: Edge attribute on a bridge drawn along the way its vessel ran through the
+#: thick vessel's lumen rather than straight: the straight one would leave
+#: the segmentation (a curved thick vessel).
+DRAWN_BRIDGE = "thick_bridge_drawn"
+
+#: Edge attribute on a bridge made at a fork (``bridge_forks``): both its
+#: ends lie on the thick centreline, and it is still the trunk's radius, so
+#: the bridge-shape report (``graph.thick_vessel_bridge_shapes``) tells it
+#: from a bridge lying along the thick vessel's own centreline.
+THICK_FORK_BRIDGE = "thick_fork_bridge"
+
 _OUTSIDE, _CENTRELINE, _INSIDE = 0, 1, 2
 
 
@@ -1920,6 +1931,7 @@ def _bridge_thick_forks(G, near_tree, lumen, vs, chosen) -> int:
                 data["voxels"] = [tuple(float(c) for c in here), tuple(float(c) for c in end)]
                 data["length"] = float(np.linalg.norm(end - here))
                 data[IS_ZERO_RESISTANCE] = True
+                data[THICK_FORK_BRIDGE] = True
             made += 1
     return made
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Rebuild a run's graph step by step and measure what each step leaves in a
 segmented vessel that is not a vessel: two edges in one lumen, loops inside
-one lumen, dead ends by kind (``graph.diagnose_lumen_artefacts``).
+one lumen, dead ends by kind (``graph.diagnose_lumen_artefacts``), and what
+shape each thick-vessel bridge has (``graph.diagnose_thick_vessel_bridges``).
 
 The working tree, and each ``--ref`` (a ``git archive`` of it), builds the
 graph from the run's saved skeleton in a process of its own, with its own code
@@ -46,7 +47,9 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from graph_artefacts.dead_end_census import census, census_markdown, made_by_step  # noqa: E402
-from graph_artefacts.report import comparison_table, measure, steps_table  # noqa: E402
+from graph_artefacts.report import (  # noqa: E402
+    bridge_shapes, bridge_shapes_table, comparison_table, measure, steps_table,
+)
 
 WORKING_TREE = "working tree"
 
@@ -87,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.pipeline import default_schema, resolve_settings
     from haemolynx.pipeline.stages import (
-        graph_build_arguments, thick_vessel_mask_from_image, thick_vessel_region_cache,
+        graph_build_arguments, thick_junction_bridge_arguments, thick_vessel_mask_from_image,
+        thick_vessel_region_cache,
     )
     from haemolynx.preprocessing import MaskSupport
 
@@ -143,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             "build": graph_build_arguments(settings),
             "smoothing": smoothing,
             "thick_vessel_mask": None if thick_path is None else str(thick_path.resolve()),
+            "split": thick_junction_bridge_arguments(settings),
         }
         (side / "job.json").write_text(json.dumps(job, indent=1), encoding="utf-8")
         print(f"Building {name} ...", flush=True)
@@ -164,6 +169,25 @@ def main(argv: list[str] | None = None) -> int:
         lines.append(f"- **{name}**: built in {info['seconds']:.0f} s"
                      + (f"; settings it does not take: {', '.join(info['arguments_not_taken'])}"
                         if info["arguments_not_taken"] else ""))
+
+    # What shape each thick-vessel bridge has (PLAN_thick_vessel_bridges.md,
+    # Phase 0), every side against the one region, by this checkout.
+    if thick_path is not None:
+        import csv
+
+        thick = np.load(thick_path)
+        shapes = {}
+        for name in sides:
+            with open(_side_dir(out, name) / "final.pkl", "rb") as f:
+                shapes[name] = bridge_shapes(pickle.load(f), thick, support.mask, voxel_size)
+        lines += ["", "## Thick-vessel bridges by shape", "", bridge_shapes_table(shapes)]
+        rows = [{"side": name, **row} for name, report in shapes.items() for row in report["bridges"]]
+        if rows:
+            with open(out / "bridges.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
+            lines.append(f"Every bridge and its measures: `{out / 'bridges.csv'}`.")
 
     # What each dead end is (PLAN_dead_ends.md, Phase 0), every side by this
     # checkout's one definition.

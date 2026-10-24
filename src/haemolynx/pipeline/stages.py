@@ -1916,6 +1916,29 @@ def _log_graph_consistency_diagnostics(
         logger.info(artefacts_report)
 
 
+#: The bridge shapes (graph.thick_vessel_bridge_shapes) the split never means
+#: to make: a bridge giving no resistance to the thick vessel's own
+#: centreline or to a vessel in its margin, or one not joining the centreline.
+_UNINTENDED_BRIDGE_SHAPES = ("along_centreline", "on_another_bridge", "wall_to_wall", "other")
+
+
+def _log_thick_vessel_bridge_shapes(G: nx.MultiGraph, context: NetworkContext) -> None:
+    """What shape each thick-vessel bridge has, against the tree the split
+    bridged to (graph.diagnose_thick_vessel_bridges): a warning when any is
+    one the split never means to make. Read-only, like the graph checks."""
+    report = graph.diagnose_thick_vessel_bridges(
+        G, context.thick_vessel_mask, context.thick_tree, context.binary_mask,
+        voxel_size_zyx=context.voxel_size_zyx, tree_radius_um=context.thick_tree_radius,
+    )
+    if not report["bridge_count"]:
+        return
+    line = graph.format_thick_vessel_bridges_report(report)
+    if any(report["counts"][shape] for shape in _UNINTENDED_BRIDGE_SHAPES):
+        logger.warning(line)
+    else:
+        logger.info(line)
+
+
 def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
     """What ``graph.insert_thick_vessel_junction_nodes`` takes from a run's
     settings: drawing a vessel on from a thick vessel's wall is a
@@ -2457,6 +2480,8 @@ def build_network(
             **graph_build_arguments(settings),
         )
         G = finish_network_graph(G, skeleton, settings, context, edges_after_step=edges_after_step)
+        if context.thick_vessel_mask is not None and G.number_of_edges():
+            _log_thick_vessel_bridge_shapes(G, context)
 
         # Nothing after this can run on no vessels, and what tried failed on
         # something else (the 3D drawing on no node positions, boundary
