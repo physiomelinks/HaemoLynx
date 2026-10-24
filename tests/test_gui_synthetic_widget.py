@@ -118,3 +118,44 @@ def test_picking_a_template_sets_the_segmentation_source_to_its_basis(panel, tmp
     widget._haemolynx_load_config(config)
     _process()
     assert rows["segmentation_source"].value == "plasma_column"
+
+
+def _wheel(bar, notch_fraction: float):
+    from qtpy.QtCore import QPoint, QPointF, Qt
+    from qtpy.QtGui import QWheelEvent
+
+    centre = QPointF(bar.rect().center())
+    return QWheelEvent(
+        centre, bar.mapToGlobal(centre), QPoint(0, 0), QPoint(0, int(120 * notch_fraction)),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+
+
+def test_a_fine_wheel_over_the_greyed_role_tabs_does_not_hang_the_panel(panel):
+    """Regression (Harvey, 2026-10-24: opening the Boundaries tab under a
+    synthetic network hung napari in QTabBar::wheelEvent). From a disabled
+    current tab, a wheel turned less than a notch makes Qt look for the next
+    enabled tab with a step of nought, forever; the panel swallows it."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    state = widget._haemolynx_boundaries.state
+    tabs = state.tabs
+    bar = tabs.tabBar()
+    guard = state.tab_wheel_guard
+    rows["network_source"].value = "synthetic"
+    _process()
+    assert not any(tabs.isTabEnabled(i) for i in range(tabs.count()))
+    fine = _wheel(bar, 0.1)
+    assert guard.eventFilter(bar, fine) is True
+    # The guard is in place (asserted above), so delivering the event returns.
+    before = tabs.currentIndex()
+    QApplication.sendEvent(bar, fine)
+    assert tabs.currentIndex() == before
+    # Over an enabled tab the wheel is Qt's again.
+    rows["network_source"].value = "segmented_image"
+    _process()
+    assert tabs.isTabEnabled(tabs.currentIndex())
+    assert guard.eventFilter(bar, _wheel(bar, 1.0)) is False

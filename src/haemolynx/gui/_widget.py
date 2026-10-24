@@ -295,6 +295,30 @@ def _give_bottom_docks_the_corners(viewer) -> None:
         logger.debug("could not prefer bottom dock corners", exc_info=True)
 
 
+def _guard_tab_bar_wheel(tabs) -> Any:
+    """Swallow a mouse-wheel event over *tabs*' bar while its current tab is
+    disabled, and return the filter doing it.
+
+    Qt's ``QTabBar::wheelEvent`` looks for the next enabled tab a step at a
+    time, and a wheel turned less than a notch -- a trackpad, a fine wheel --
+    is a step of nought: from a disabled tab the search never ends and the
+    panel hangs (Harvey, 2026-10-24: a synthetic network disables every
+    Boundaries role tab). Over an enabled tab the wheel turns tabs as Qt has it.
+    """
+    from qtpy.QtCore import QEvent, QObject
+
+    class _WheelGuard(QObject):
+        def eventFilter(self, watched, event):  # noqa: N802 -- Qt's name
+            if event.type() == QEvent.Type.Wheel and not watched.isTabEnabled(watched.currentIndex()):
+                return True
+            return False
+
+    bar = tabs.tabBar()
+    guard = _WheelGuard(bar)
+    bar.installEventFilter(guard)
+    return guard
+
+
 def _in_a_scroll_area(widget, *, horizontal: bool = True):
     """*widget* in a frameless QScrollArea that grows with it.
 
@@ -9580,6 +9604,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
 
         role_tabs.currentChanged.connect(on_tab_changed)
         state.tabs = role_tabs
+        state.tab_wheel_guard = _guard_tab_bar_wheel(role_tabs)
         refresh_role_tabs()
         state.shared_ilastik_holder = shared_ilastik_holder
         return body
