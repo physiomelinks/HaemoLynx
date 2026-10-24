@@ -555,6 +555,19 @@ with the note that the generator chose them; the Statistics tab has the template
 section; Save run, then pick the saved file as a template: preflight refuses it ("The template run
 is itself a synthetic network ..."). Try the Advanced button's "Capillary bed model" too.
 
+Harvey's results (2026-10-24, the panel on `43bdcb41`, the E14.5 template above):
+
+- His first run failed at Haemodynamics ("Diameter must exceed 1.1 um for the Pries in vivo law"):
+  his checkout was at `9b02d50c`, without the decisions above. Fast-forwarded, **it runs**.
+- **The network shows in the viewer** after stage 3.
+- Opening the Boundaries tab **hung napari**: Qt's `QTabBar::wheelEvent`, from a disabled current
+  tab, looks for the next enabled one with a step of nought when the wheel turns less than a notch,
+  and every role tab is disabled under a synthetic network. Fixed in `43bdcb41` (the panel swallows
+  the wheel over the role tab bar while its current tab is disabled).
+- **The Boundaries role tabs are greyed.**
+- Not yet reported: the Statistics tab's comparison section; the saved run refused as a template;
+  the Voronoi bed.
+
 **Before the decisions** (the options as they were put to Harvey):
 
 
