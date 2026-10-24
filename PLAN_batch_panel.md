@@ -1,11 +1,48 @@
 # Batch run panel: improvements (plan, 2026-10-23)
 
-> **Status (2026-10-23): complete.** Phase 1 at `d4bdfd0c`; Phases 2-4 and the per-image
-> cache clearing at `92dbc815`. It builds on `PLAN_batch_run.md` (implemented 2026-10-19).
-> Harvey's decisions are at the end. Where the code showed the plan was wrong, the build
-> changed; see "Phase 1 as built" and "Phases 2-4 as built". Item 7 is settled by the
-> per-image clearing (decision 7). What was not built is under "Later". Not yet tried by hand
-> in napari: the window was driven off-screen and by the tests.
+> **Status (2026-10-24): complete, bar what waits on Harvey, a tester or free RAM** (the
+> lists at the end of this box).
+> - Phase 1 at `d4bdfd0c`; Phases 2-4 and the per-image cache clearing at `92dbc815`. It builds
+>   on `PLAN_batch_run.md` (implemented 2026-10-19). Harvey's decisions are at the end.
+> - Where the code showed the plan was wrong, the build changed; see "Phase 1 as built" and
+>   "Phases 2-4 as built". Item 7 is settled by the per-image clearing (decision 7).
+> - **Loose ends found on 2026-10-24, landed in `19aea11b`:**
+>   - *Eight rows in view.* Phase 4 said the window kept eight rows in view after Check, but
+>     no test pinned it, and on the real display it did not hold. At its 800 px it showed 7
+>     rows, and Check's report box left 4 (4 and 2 once the other files' rows from
+>     `3d9d071a` showed). The window now grows, as far as its screen allows, to keep
+>     `VISIBLE_ROWS` rows whole: on opening, when a folder row appears, and when the report
+>     box opens (`_fit_rows`). The report box opens to a third or 6 lines, and on a screen
+>     too short for both it gets 3 lines. On a 1920 × 1032 screen that is 8 rows before and
+>     after Check, and 7 after Check with all five other files' rows shown.
+>     Test: `test_gui_batch_run_widget.py::test_the_window_keeps_eight_rows_in_view_after_check`.
+>   - *Hover text checked on the built window.* `test_every_control_in_the_window_has_hover_text`
+>     scans every control in the window, shown or not, including the other files' rows and a
+>     tie's choice box. The two tabs had none; they now do. `usability.6d` still fails: the
+>     panel itself is not scanned.
+> - **Waits on Harvey:**
+>   - *Remembering the window between napari sessions* (see "Later"). It would store the
+>     window's last output folder and its size, per user. Two choices are his:
+>     - whether the panel gets a per-user store at all;
+>     - where. `QSettings("HaemoLynx", "HaemoLynx")` writes to the registry on Windows
+>       (`HKEY_CURRENT_USER\Software\HaemoLynx\HaemoLynx`), a plist on macOS and
+>       `~/.config/HaemoLynx/HaemoLynx.conf` on Linux. The INI format puts one readable file
+>       under the user's application data instead (`%APPDATA%\HaemoLynx\HaemoLynx.ini`).
+>     The tests would point it at a temporary folder (`QSettings.setPath`), so no test reads or
+>     writes the user's own.
+> - **Waits on free RAM:** *the working set's growth across a real batch* (see "Later").
+>   Measuring it is a large run: an E14.5 image peaks at about 5.1 GiB. On 2026-10-24 only
+>   8.8 GB of 31.7 was free, with Harvey's Fiji and two napari windows open and another
+>   session's test suite running, so it was not run. To measure it: three or more real stacks
+>   through `python -m haemolynx.gui.batch_run`, reading the process's working set as each
+>   image ends. Does it grow by a fixed amount an image, or by the image's size? Harvey kept
+>   images one at a time (`PLAN_batch_run.md`, 2026-10-24), so what it bears on is how long a
+>   batch can run in one process.
+> - **Waits on a tester:** a hand check in napari on a real batch (Harvey, or George, Rebecca
+>   or Mike). Open the window on a real folder and Check it; run a batch and follow it; Stop
+>   after this image; the row actions; the Comparison tab; the folder's last batch; and the
+>   window at their own screen size. It has only been driven by the tests and the screenshots
+>   below.
 
 ## How this was looked at
 
@@ -15,6 +52,10 @@ copies of `tests/data/seven_vessel_noisy_3d.tif`, named like Harvey's AIA batch
 raw tie), and screenshotted at each step. Two of the images were run for real through
 `run_batch` (21.6 s). The window was then matched again and screenshotted. The scripts are in the
 session scratchpad, not the repo. Nothing was checked on a real stack or by a tester.
+
+On 2026-10-24 (at `7fe36c4d`) the window was built on the real display (1920 × 1032 free of the
+taskbar), over ten and twelve copies of the same fixture, to count the rows in view before and
+after Check. That is how the eight rows were found not to hold (see the status box).
 
 ## What was found
 
@@ -84,8 +125,8 @@ session scratchpad, not the repo. Nothing was checked on a real stack or by a te
   "stage not saved" status and no `warnings` column: the premise for them was wrong (above).
 - **Done before and the last batch**, **the live table**, **the Statistics warning** and
   **the quiet Check**: as planned below.
-- **Batch mode greys** Check segmented image, both optimisers and Run from this stage, and each
-  handler refuses if pressed anyway. **Save run is not greyed:** it saves the run shown, never
+- **Batch mode greys** Check segmented image, the optimisers (settings and FWHM, and since then
+  the endothelial one) and Run from this stage, and each handler refuses if pressed anyway. **Save run is not greyed:** it saves the run shown, never
   the batch's. **Run checks** with a batch set checks every ticked image.
 - **Found and fixed on the way:** Load run (a double-click in the table included) cancelled a
   running batch, because loading stops the live run. It is now refused while a batch runs.
@@ -119,29 +160,40 @@ greyed mask rows, the settings line), and each cache's own file (`test_raw_volum
 
 ### 1. Defects (1-6), as planned
 
-- **Path length.** `pipeline/batch.py` gains `longest_output_path(settings, match, output_root)`.
+*The plan as written before Phase 1 was built. Where it differs from the code, "Phase 1 as
+built" above is what holds; the differences are marked here.*
+
+- **Path length.** *As built: `check_output_path_lengths`, counting the files the settings
+  write (`WRITTEN_WHILE`), not a `longest_output_path`; since 2026-10-24 in every run's
+  preflight, not only a batch image's.* `pipeline/batch.py` gains
+  `longest_output_path(settings, match, output_root)`.
   It returns the longest file path the image will write: its checkpoint names
   (`stage_checkpoints`), the `.haemorun`, the manifest, and the perturbation and sweep folders when
   those are on. `check_batch_item` then adds a problem when that path passes 259 characters on
   Windows without long paths. Whether that problem is an error or a warning is decision 1.
-  `run_image` also counts what failed to save: `StageCheckpoints.record` failures and a failed
-  snapshot. `BatchResult` gains `warnings`, and its status becomes `done (1 stage not saved)`
-  rather than `done`. The summary CSV gains a `warnings` column, and its entry in
-  `pipeline/export_dictionary.py`.
+  *Dropped, since its premise was wrong (a lost checkpoint pickle leaves the `.haemorun`
+  whole):* `run_image` also counts what failed to save: `StageCheckpoints.record` failures and
+  a failed snapshot. `BatchResult` gains `warnings`, and its status becomes
+  `done (1 stage not saved)` rather than `done`. The summary CSV gains a `warnings` column, and
+  its entry in `pipeline/export_dictionary.py`.
 - **Done before.** `table_rows` takes the output root's state. A `.haemorun` already there reads
   `done before: will be skipped`, or `done before: runs again` with Skip done off. When the output
   folder has a `batch_summary.csv`, its statuses fill the Status column until Check or a run
   replaces them. `BatchSetup` gains `last_statuses`, read by `read_batch_summary(output_root)`.
+  *As built: `stems_done_before`, and the summary read by `read_summary_statuses` (and, since
+  Phase 2, `read_summary_figures` for Time, Peak RAM and Vessels).*
 - **Live table.** `_run_batch_in_background`'s `item_changed` also calls
   `window.show_progress(index, result)`. That sets the row's Status to `running`, then `done`,
-  `failed: ...` or `cancelled`, and selects the row that is running.
+  `failed: ...` or `cancelled`, and selects the row that is running. *As built:
+  `show_progress(setup, stem, text)`, fed by `on_item`.*
 - **Grey in batch mode.** `apply_prerequisites` greys Run from this stage, Check segmented image,
   Optimise settings and Save run while `batch_mode.setup` is set. Their hover text says why
   ("acts on one image: leave the batch run first"). `on_run(start_from=...)` refuses while a batch
-  is set, in case a script calls it.
+  is set, in case a script calls it. *As built: all three optimisers (settings, FWHM and
+  endothelial) are greyed; Save run is not, since it saves the run shown.*
 - **Statistics off.** `check_batch` adds a problem when conditions are set and `statistics` is
   off. Whether it is an error or a warning is decision 5. Compare statistics with no CSVs already
-  says so.
+  says so. *As built: a warning, `statistics_warning`.*
 - **Quiet Check.** `batch_preflight` gets `pipeline.preflight(..., echo=False)`, a new keyword
   that defaults to today's printing, so the CLI and the examples still print. The window's report
   box already holds the text.
@@ -149,12 +201,14 @@ greyed mask rows, the settings line), and each cache's own file (`test_raw_volum
 Tests:
 - `test_batch_settings.py`: a path over the limit is flagged, and one under it is not. The
   platform and long-path reads are patched, so this runs on Linux CI.
-- `test_batch_run.py`: a checkpoint write made to fail gives status `done (1 stage not saved)` and
-  a `warnings` cell. `table_rows` shows "done before" both ways. Statuses are read back from a
-  summary.
+- `test_batch_run.py`: *dropped with its feature:* a checkpoint write made to fail gives status
+  `done (1 stage not saved)` and a `warnings` cell. `table_rows` shows "done before" both ways.
+  Statuses are read back from a summary.
 - `test_gui_batch_run_widget.py`: the four controls are greyed in batch mode, and Run from this
-  stage refuses. `show_progress` changes the row.
-- `test_pipeline_invariants.py` or `test_parsers_checks.py`: `echo=False` prints nothing.
+  stage refuses. `show_progress` changes the row. *As built: the three optimisers, Check
+  segmented image and Run from this stage; Save run is not greyed.*
+- `test_pipeline_invariants.py` or `test_parsers_checks.py`: `echo=False` prints nothing. *As
+  built: `test_batch_settings.py::test_batch_preflight_checks_the_paths_and_prints_nothing`.*
 
 ### 2. Following a batch while it runs
 
@@ -165,13 +219,14 @@ Tests:
 - **Columns filled in as each image ends:** Time, Peak RAM, Vessels. All three are already in
   `BatchResult`.
 - **Stop after this image.** This needs a button and a flag that `run_batch` checks between images
-  (`stop_after_current`). The image that is running finishes, gets saved, and the rest are
+  (`stop_after_current`; *as built, `run_batch(stop_requested=)`, a callable, and
+  `BatchSummary.stopped`*). The image that is running finishes, gets saved, and the rest are
   recorded `not run`. Cancel keeps its present meaning. Whether to add this is decision 3.
 
 Tests:
 - `batch_progress_text` on hand-made summaries: no image finished, some finished, cancelled.
-- `run_batch` with `stop_after_current` set during image 1 of 3: image 1 is `done` and the other
-  two are `not run`.
+- `run_batch` with `stop_after_current` (*as built, `stop_requested`*) set during image 1 of 3:
+  image 1 is `done` and the other two are `not run`.
 - GUI: the line and the columns update from `on_item` events.
 
 ### 3. Acting on the results
@@ -222,7 +277,10 @@ Tests:
   folders, paired designs and sections.
 - GUI: the folder from a `batch_settings.yaml` fills the window. Leaving a field matches again.
   The mask placeholders name a real setting. The box layout keeps eight rows visible after Check.
-- `test_gui_tooltips.py`: every new control has hover text.
+  *Not tested until 2026-10-24, when it was found not to hold; see the status box.*
+- `test_gui_tooltips.py`: every new control has hover text. *As built, that file only checks
+  that the strings are not empty. Since 2026-10-24 the built window is scanned in
+  `test_gui_batch_run_widget.py`.*
 
 ## Docs
 
@@ -231,6 +289,8 @@ Tests:
 - The Input tab's help page (`gui/stage_help.py`) is Harvey's to write. Nothing is added there.
 - `RELEASE_REVIEW.md`: no score changes unless a check's evidence changes. `usability.6d` (hover
   text checked by scanning the built panel) is not met by adding entries to `chrome_tooltips.py`.
+  *2026-10-24: the Batch run window is now scanned built, and the row says so; the check still
+  fails until the panel itself is scanned.*
 
 ## Order
 
@@ -244,12 +304,16 @@ tests/test_gui_batch_run_widget.py tests/test_gui_tooltips.py`).
 
 - **Remembering the window between napari sessions:** its last output folder and its size. The
   panel has no per-user store yet, and adding one, with the tests kept off the user's own, is
-  its own decision.
+  its own decision. *Waits on Harvey: what it would store and where are in the status box.*
 - **The working set's growth across a batch:** about 35 MB an image on the six-image demo
-  (440 to 619 MB), not measured on a real batch.
+  (440 to 619 MB), not measured on a real batch. *Waits on a machine with the RAM free; see the
+  status box.*
 - From `PLAN_batch_run.md`'s "Later": ilastik batches, more per-image inputs (pericyte, cell and
-  tissue mask folders), and several images at once. *The first two were built on 2026-10-24
-  (`PLAN_batch_run.md`, "Later, as built"); several images at once waits on Harvey.*
+  tissue mask folders), and several images at once. *ilastik batches and a folder for each other
+  file a run reads (pericyte, cell, the 3D distances' vessel mask, tissue, blocks) were built
+  on 2026-10-24 in `3d9d071a`; see `PLAN_batch_run.md`, "Later, as built". Several images at
+  once: Harvey kept one at a time. ilastik's vessel masks per image: decided by him, and listed
+  there under "To build".*
 
 ## Decisions (Harvey)
 

@@ -180,3 +180,17 @@ reaches), never while a batch is set or running: its window is where a batch is 
 and left. Checked by the tests only (`tests/test_batch_*.py`, `test_gui_batch_run_widget.py`; the
 ilastik batch end to end with a stand-in for ilastik on the seven-vessel fixture), not on a real
 stack or by a tester.
+
+**The window's eight rows, and its hover text** (2026-10-24, `19aea11b`, `PLAN_batch_panel.md`'s loose ends).
+Phase 4 said the window kept eight table rows in view after Check, but nothing tested it. Built on
+the real display (1920 x 1032 free of the taskbar, ten fixture copies), the window opened at 800 px
+with 7 rows in view, and Check's report box, opened to a third, left 4. With the other files' rows
+`3d9d071a` added (cell, 3D-distance vessel, tissue) it was 4 and 2. The window now grows, as far as
+its screen allows, to keep `VISIBLE_ROWS` rows whole (`_BatchRunWindow._fit_rows`): on opening,
+when a folder row or the last batch's button appears, and when the report box opens. The box opens
+to a third or `REPORT_LINES` (6) lines, never at the table's cost unless the screen is too short
+for both, and then gets `REPORT_MIN_LINES` (3). Measured after it: 8 rows before and after Check,
+the window 819 px, 915 px with three other-file rows; with all five shown, 7 rows after Check and
+a 3-line box, the window as tall as the screen. Hover text is now checked on the built window:
+every control in it, shown or not, including a tie's choice box. Its two tabs had none and now
+do. Neither was tried by hand by Harvey or a tester.
