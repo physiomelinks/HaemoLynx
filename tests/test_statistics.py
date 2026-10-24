@@ -982,7 +982,7 @@ def test_export_statistics_to_csv(tmp_path):
     assert output_csv.exists()
     text = output_csv.read_text(encoding="utf-8")
     assert "Section,Metric,Value,Unit,Notes" in text
-    assert "Average Edge Length,10,um,Total Edge Length divided by Total Edges: the mean vessel length" in text
+    assert 'Average Edge Length,10,um,"Total Edge Length divided by Total Edges: the mean vessel length, the' in text
     assert "Path Efficiency Pair Coverage,0.5,fraction,Node pairs measured over all node pairs." in text
     assert "nested,Community Count,2,count," in text
 
