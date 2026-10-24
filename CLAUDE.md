@@ -382,19 +382,27 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 ### CI
 
-GitHub Actions (`.github/workflows/pytest-pr.yml`) runs four jobs on pull requests, all on
-`ubuntu-latest`:
+GitHub Actions (`.github/workflows/pytest-pr.yml`) runs on pull requests, on pushes to `main` and
+`Devel_GUI_improvements_HD`, and weekly (Mondays). Six jobs:
 
+- **`lint`** — `ruff check .`, rules `F` and `E9` only (`[tool.ruff]` in `pyproject.toml`). There is
+  no formatter: `ruff format` would rewrite most of the codebase, which is Harvey's decision.
+  `tutorials/pipeline_tutorial.py` and the notebook are excluded; `__init__.py` re-exports are
+  exempt from `F401`.
 - **`pytest`** — `pip install -e .[dev]` and `pytest` across a Python 3.9 / 3.10 / 3.11 / 3.12 matrix
-  (`fail-fast: false`, so one version failing still reports the others).
+  (`fail-fast: false`, so one version failing still reports the others). The 3.11 run measures
+  line coverage of `src/haemolynx` without `gui/` (`[tool.coverage]`, no threshold) into the job
+  summary and a `coverage-xml` artifact: 92.7% on the not-slow subset at `2e59fb68`.
+- **`windows`** — `windows-latest`, Python 3.11, `pytest -m "not slow and not gui" -n auto`.
 - **`installed-package`** — builds the wheel, installs it into an empty environment and runs
   `tests/installed_package_smoke.py` from outside the repository, then `tests/test_installed_package.py`.
 - **`dependency-floors`** — the suite against the oldest supported versions (`constraints-floor.txt`).
 - **`napari-gui`** — Python 3.11 with the `napari` extra and `pytest-qt`: `npe2 validate HaemoLynx`,
   then `xvfb-run -a pytest -m gui`.
 
-Nothing in CI runs on Windows, so Windows-only problems (paths, `SYSTEMROOT`, Qt platform plugins)
-are only caught locally.
+The slow and GUI tests, and macOS, are not covered on Windows. Locally, `pytest-xdist` is in `dev`:
+`pytest -m "not slow and not gui" -n 10` takes about 8 min on 20 cores (serial: 12-13 min); mind the
+RAM, each worker holds its own volumes.
 
 ---
 
