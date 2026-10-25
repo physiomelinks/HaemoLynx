@@ -488,6 +488,255 @@ def test_build_network_refuses_a_raw_image_of_another_shape(tmp_path):
         stages.build_network(settings, stages.skeletonise(settings, stages.segment(settings)), schema)
 
 
+# --------------------------------------------------------------------------
+# Dead ends under an endothelial label: E1 ring_along, E2 inside_walls,
+# E3 walls_ahead (PLAN_dead_ends_raw.md, Phase A)
+# --------------------------------------------------------------------------
+
+WIDE = (40, 40, 70)
+#: The fixtures' blur and wall, as the ring fit is told them.
+PSF = (1.0, 1.0, 1.0)
+WALL = 1.5
+
+
+def _walls(rings, seed=0):
+    """Wall voxels as an endothelial channel: blurred by a voxel, with noise."""
+    from scipy.ndimage import gaussian_filter
+
+    raw = gaussian_filter(np.where(rings, BRIGHT, BACKGROUND).astype(float), 1.0)
+    return _noisy(raw, seed=seed).astype(np.float32)
+
+
+def _walled_tube(lumen=4.0, centre_zy=(20, 20), x_range=(0, WIDE[2]), shape=WIDE):
+    """A wall ring of thickness :data:`WALL` round a lumen of radius *lumen*,
+    along x over *x_range*, and its mask out to the wall's outer face."""
+    r = _radial(shape, centre_zy)
+    xs = np.arange(shape[2])
+    along = ((xs >= x_range[0]) & (xs < x_range[1]))[None, None, :]
+    return (r > lumen) & (r <= lumen + WALL) & along, (r <= lumen + WALL) & along
+
+
+def _endothelial_evidence(rings, mask, seed=0):
+    raw = _walls(rings, seed=seed)
+    calibration = calibrate_raw(raw, mask, VOXEL, stain=ENDOTHELIAL)
+    assert calibration is not None
+    return make_raw_evidence(raw, mask.shape, VOXEL, calibration)
+
+
+def _x_axis(z, y, x0, x1):
+    xs = np.arange(x0, x1 + 1, dtype=float)
+    return np.column_stack([np.full(len(xs), float(z)), np.full(len(xs), float(y)), xs])
+
+
+def test_ring_along_a_chain_in_its_own_ring():
+    """A ring round the chain: every section is walled, and every ring fitted
+    at the tip's five sections is centred on it -- with the blur and wall
+    given, or fitted free."""
+    evidence = _endothelial_evidence(*_walled_tube())
+    path = _x_path(20, 20, 50, 10)  # tip first
+    for given in ({"psf_sigma_zyx": PSF, "wall_um": WALL}, {}):
+        support = evidence.ring_along(path, 4.0, **given)
+        assert support.fraction == 1.0 and support.tip_fraction == 1.0
+        assert (support.sections, support.tip_sections) == (20, 5)
+        assert [r.at_um for r in support.readings] == [1.0, 3.0, 5.0, 7.0, 9.0]
+        assert support.rings_seen == 5 and support.rings(module.RING_OWN) == 5
+        assert support.own_ring_fraction == 1.0
+        for reading in support.readings:
+            assert reading.diameter_um == pytest.approx(8.0, abs=0.5)
+            assert np.linalg.norm(np.subtract(reading.centre_um[:2], (20, 20))) < 0.2
+            assert reading.centre_um[2] == pytest.approx(50.0 - reading.at_um)
+
+
+def test_ring_along_a_strand_inside_a_neighbours_ring():
+    """A strand running 2.5 um off the axis of a 12 um vessel: there is a
+    vessel there (walls either side), but every ring fitted round the strand
+    is the neighbour's -- centred on the other centreline."""
+    evidence = _endothelial_evidence(*_walled_tube(lumen=6.0))
+    strand = _x_path(20, 22.5, 50, 10)
+    support = evidence.ring_along(strand, 3.5, others_um=_x_axis(20, 20, 5, 65), psf_sigma_zyx=PSF, wall_um=WALL)
+    assert support.tip_fraction == 1.0
+    assert support.rings_seen == 5
+    assert support.rings(module.RING_OTHER) == 5 and support.own_ring_fraction == 0.0
+    assert all(r.diameter_um == pytest.approx(12.0, abs=0.5) for r in support.readings)
+
+
+def test_ring_along_through_tissue_finds_no_ring():
+    rings, mask = _walled_tube()
+    evidence = _endothelial_evidence(rings, mask)
+    support = evidence.ring_along(_x_path(10, 32, 50, 10), 3.0, psf_sigma_zyx=PSF, wall_um=WALL)
+    assert support.fraction == 0.0 and support.tip_fraction == 0.0
+    assert support.rings_seen == 0
+    assert evidence.ring_along(np.zeros((1, 3)), 3.0).sections == 0
+
+
+def test_ring_along_fits_as_on_the_whole_volume_and_reads_the_calibrations_rings():
+    """The fit reads a window round its section and gives exactly what
+    ``fit_ring_section`` gives on the whole volume; without a blur and wall
+    of its own it takes the calibration's ring fields."""
+    from haemolynx.haemodynamics.endothelial import fit_ring_section
+    from haemolynx.haemodynamics.fwhm_diameter import _arc_length_parameterize
+
+    evidence = _endothelial_evidence(*_walled_tube())
+    path = module._distinct(_x_path(20, 20, 50, 10))
+    s, total = _arc_length_parameterize(path)
+    whole, _why = fit_ring_section(
+        evidence.raw, path, s, total, 3.0, VOXEL, guide_um=8.0, psf_sigma_zyx=PSF, wall_um=WALL,
+    )
+    support = evidence.ring_along(path, 4.0, psf_sigma_zyx=PSF, wall_um=WALL)
+    assert support.readings[1].diameter_um == whole.diameter_um
+    assert support.readings[1].contrast == whole.contrast
+
+    evidence.calibration = evidence.calibration.with_rings(PSF, WALL, 900.0)
+    assert evidence.ring_along(path, 4.0).readings == support.readings
+
+
+def test_inside_walls_tells_own_lumen_shared_lumen_wall_and_tissue():
+    rings, mask = _walled_tube(lumen=6.0)
+    evidence = _endothelial_evidence(rings, mask)
+    axis = _x_axis(20, 20, 5, 65)
+    on_axis = evidence.inside_walls(_x_axis(20, 20, 20, 40)[::5], 6.0)
+    assert on_axis.lumen.all() and not on_axis.wall.any() and not on_axis.shared.any()
+    assert on_axis.lumen_fraction == 1.0
+    # A strand off the axis shares the vessel's lumen with its centreline.
+    strand = evidence.inside_walls(_x_axis(20, 22.5, 20, 40)[::5], 3.5, others_um=axis)
+    assert strand.lumen.all() and strand.shared.all() and strand.shared_fraction == 1.0
+    on_wall = evidence.inside_walls(np.array([[20.0, 26.7, 30.0]]), 2.0)
+    assert on_wall.wall.all() and not on_wall.lumen.any()
+    tissue = evidence.inside_walls(np.array([[6.0, 6.0, 30.0], [20.0, 20.0, 500.0]]), 3.0, others_um=axis)
+    assert not (tissue.lumen.any() or tissue.wall.any() or tissue.shared.any())
+
+
+def test_inside_walls_keeps_two_vessels_lumens_apart():
+    """Two vessels side by side, a wall each between them: a point in one
+    shares no lumen with the other's centreline."""
+    first, first_mask = _walled_tube(lumen=4.0, centre_zy=(20, 13))
+    second, second_mask = _walled_tube(lumen=4.0, centre_zy=(20, 26))
+    evidence = _endothelial_evidence(first | second, first_mask | second_mask)
+    answer = evidence.inside_walls(
+        _x_axis(20, 13, 20, 40)[::5], 4.0, others_um=_x_axis(20, 26, 5, 65), reach_um=15.0
+    )
+    assert answer.lumen.all() and not answer.shared.any()
+
+
+def test_walls_running_on_past_the_tip():
+    evidence = _endothelial_evidence(*_walled_tube())
+    ahead = evidence.walls_ahead([20.0, 20.0, 20.0], [0.0, 0.0, 1.0], 4.0)
+    assert ahead.stop == module.AHEAD_RUNS_ON
+    assert ahead.run_um == module.AHEAD_LIMIT_UM and ahead.gap_um == 0.0 and ahead.gap_stretches == 0
+    assert (ahead.start_um, ahead.step_um, len(ahead.profile)) == (4.0, 1.0, 30)
+    assert ahead.meets_um is None and ahead.face_um is None
+    # Running on to the image face: the line leaves the image 29 um out.
+    to_face = evidence.walls_ahead([20.0, 20.0, 40.0], [0.0, 0.0, 1.0], 4.0)
+    assert to_face.stop == module.AHEAD_FACE and to_face.face_um == pytest.approx(29.0)
+    assert to_face.run_um == pytest.approx(25.0) and to_face.gap_um == 0.0
+
+
+def test_walls_stopping_at_the_tip():
+    evidence = _endothelial_evidence(*_walled_tube(x_range=(0, 40)))
+    ahead = evidence.walls_ahead([20.0, 20.0, 35.0], [0.0, 0.0, 1.0], 4.0)
+    assert ahead.stop == module.AHEAD_ENDS
+    assert ahead.run_um <= 3.0
+    assert ahead.gap_um >= 25.0 and ahead.gap_stretches == 1
+    assert max(ahead.profile[3:]) < BRIGHT_THRESHOLD
+
+
+def test_walls_ahead_into_another_vessel_with_and_without_a_gap():
+    """A vessel the line meets: reached with the walls running on all the
+    way, or across a stretch with no walls (a vessel the segmentation broke
+    and the raw image too, or none)."""
+    rings, mask = _walled_tube(x_range=(0, 52))
+    zz, _yy, xx = np.indices(WIDE)
+    across = np.sqrt((zz - 20.0) ** 2 + (xx - 57.0) ** 2)  # a vessel along y at x = 57
+    cross_rings, cross_mask = (across > 4.0) & (across <= 4.0 + WALL), across <= 4.0 + WALL
+    others = np.column_stack([np.full(31, 20.0), np.arange(5, 36, dtype=float), np.full(31, 57.0)])
+    evidence = _endothelial_evidence(rings | cross_rings, mask | cross_mask)
+    joined = evidence.walls_ahead([20.0, 20.0, 30.0], [0.0, 0.0, 1.0], 4.0, others_um=others, others_radius_um=4.0)
+    assert joined.stop == module.AHEAD_MEETS_VESSEL
+    assert joined.meets_um == pytest.approx(23.0) and joined.gap_um == 0.0
+    assert joined.run_um == pytest.approx(18.0)  # 5 to 22 um past the tip
+
+    gapped_rings = rings.copy()
+    gapped_rings[:, :, 40:46] = False
+    broken = _endothelial_evidence(gapped_rings | cross_rings, mask | cross_mask)
+    gap = broken.walls_ahead([20.0, 20.0, 30.0], [0.0, 0.0, 1.0], 4.0, others_um=others, others_radius_um=4.0)
+    assert gap.stop == module.AHEAD_ENDS and gap.meets_um == pytest.approx(23.0)
+    assert gap.gap_stretches == 1 and gap.gap_um == pytest.approx(6.0, abs=2.0)
+    with pytest.raises(ValueError, match="heading"):
+        broken.walls_ahead([20.0, 20.0, 30.0], [0.0, 0.0, 0.0], 4.0)
+
+
+def test_wall_primitives_read_a_memory_map_in_windows_as_in_ram(tmp_path):
+    """The low-RAM option's memory map gives the same answers, read in
+    windows, none of them a quarter of the volume."""
+    shape = (40, 40, 240)
+    rings, mask = _walled_tube(lumen=6.0, x_range=(0, 240), shape=shape)
+    raw = _walls(rings).astype(np.uint16)
+    path = tmp_path / "walls.memmap"
+    stored = np.memmap(path, dtype=np.uint16, mode="w+", shape=shape)
+    stored[:] = raw
+    stored.flush()
+    watched = _Watched(np.memmap(path, dtype=np.uint16, mode="r", shape=shape))
+    calibration = calibrate_raw(raw.astype(np.float32), mask, VOXEL, stain=ENDOTHELIAL)
+    in_ram = make_raw_evidence(raw.astype(np.float32), shape, VOXEL, calibration)
+    on_disk = make_raw_evidence(watched, shape, VOXEL, calibration)
+    strand, axis = _x_path(20, 22.5, 140, 100), _x_axis(20, 20, 5, 235)
+    asks = {
+        "ring_along": lambda e: e.ring_along(strand, 3.5, others_um=axis, psf_sigma_zyx=PSF, wall_um=WALL),
+        "walls_ahead": lambda e: e.walls_ahead([20.0, 20.0, 100.0], [0.0, 0.0, 1.0], 6.0),
+    }
+    for name, ask in asks.items():
+        assert ask(on_disk) == ask(in_ram), name
+    points = _x_axis(20, 22.5, 110, 130)[::5]
+    disk, ram = on_disk.inside_walls(points, 3.5, others_um=axis), in_ram.inside_walls(points, 3.5, others_um=axis)
+    for field in ("lumen", "wall", "shared"):
+        assert np.array_equal(getattr(disk, field), getattr(ram, field)), field
+    assert watched.reads and max(watched.reads) < raw.size / 4
+    assert on_disk.stats.queries == len(watched.reads)
+
+
+def test_the_calibrations_ring_fields_round_trip_and_old_records_read():
+    raw, mask = _endothelial_tube()
+    calibration = calibrate_raw(_noisy(raw), mask, VOXEL)
+    old = calibration.as_dict()
+    for name in ("ring_psf_sigma_zyx", "ring_wall_um", "ring_wall_level"):
+        old.pop(name)
+    read = RawCalibration.from_record(old)
+    assert read == calibration
+    assert (read.ring_psf_sigma_zyx, read.ring_wall_um, read.ring_wall_level) == (None, None, None)
+    ringed = calibration.with_rings([2.9, 1.2, 1.2], 1.2, 480.0)
+    assert ringed.ring_psf_sigma_zyx == (2.9, 1.2, 1.2) and ringed.ring_wall_um == 1.2
+    assert RawCalibration.from_record(ringed.as_dict()) == ringed
+    assert "wall 1.20 um" in ringed.describe() and "rings" not in calibration.describe()
+
+
+def test_ring_calibration_fills_the_fields_only_when_the_rings_calibrate(monkeypatch):
+    """The image's own rings: the blur and wall ``calibrate_from_rings``
+    gives, and the median wall level of the fits its gate passes."""
+    from haemolynx.haemodynamics import endothelial
+    from haemolynx.haemodynamics.endothelial import RingCalibrationFits, RingFit
+
+    def ring(level, contrast):
+        return RingFit(
+            diameter_um=8.0, wall_um=1.2, contrast=contrast, resolution=4.0, wall_coverage=1.0,
+            centre_offset_um=0.1, aspect=1.0, sigma_across_um=1.1, sigma_other_um=2.9, other_axis_z=0.8,
+            wall_level=level,
+        )
+
+    fits = RingCalibrationFits(None, 4, 2, ((
+        (ring(400.0, 10.0), "ok"), (ring(600.0, 10.0), "ok")), ((ring(5000.0, 1.0), "ok"), (None, "no_dark_lumen")),
+    ))
+    monkeypatch.setattr(endothelial, "ring_calibration_fits", lambda *a, **k: fits)
+    monkeypatch.setattr(endothelial, "calibrate_from_rings", lambda *a, **k: ((2.9, 1.1, 1.1), 1.2, {}))
+    evidence = _endothelial_evidence(*_walled_tube())
+    calibrated = module.ring_calibration(object(), evidence)
+    assert calibrated.ring_psf_sigma_zyx == (2.9, 1.1, 1.1) and calibrated.ring_wall_um == 1.2
+    assert calibrated.ring_wall_level == 500.0  # the low-contrast ring is left out
+    assert calibrated.vessel == evidence.calibration.vessel
+
+    monkeypatch.setattr(endothelial, "calibrate_from_rings", lambda *a, **k: (None, None, {"reason": "few"}))
+    assert module.ring_calibration(object(), evidence) is evidence.calibration
+
+
 def test_raw_evidence_from_settings_reads_a_channel_of_a_composite(tmp_path):
     raw, mask = _plasma_tube()
     other = np.full(SHAPE, BACKGROUND)

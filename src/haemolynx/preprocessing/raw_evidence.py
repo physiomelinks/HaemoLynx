@@ -38,12 +38,22 @@ wall (endothelial) -- so every threshold is in those units.
 (:func:`raw_evidence_from_settings`) and keeps its calibration on the graph
 (:data:`GRAPH_ATTRIBUTE`); the rules that will read it land one at a time
 (``PLAN_raw_confirmation.md``).
+
+An endothelial label also answers what a dead end raises
+(``PLAN_dead_ends_raw.md``), across the chain rather than along it: whether a
+wall ring runs round the chain, and whether it is the chain's own or a
+neighbour's (:meth:`RawEvidenceEndothelial.ring_along`, E1); whether walls
+enclose a point, in a lumen another centreline shares
+(:meth:`RawEvidenceEndothelial.inside_walls`, E2); whether the walls run on
+past the tip, into another vessel or out of the image
+(:meth:`RawEvidenceEndothelial.walls_ahead`, E3). They measure only: no rule
+reads them until a marked grid says what they are worth.
 """
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -122,13 +132,27 @@ class RawCalibration:
     #: How the stain was told from the image when it was ``auto``
     #: (``raw_stain.StainReading.as_dict``); None when the run named it.
     reading: Optional[dict] = None
+    #: What the image's own wall rings say (``endothelial.calibrate_from_rings``),
+    #: when a run has paid for them (:func:`ring_calibration`, 90-120 s on
+    #: E14.5): the blur, Gaussian sigma in microns along ``(z, y, x)``; the
+    #: wall's thickness in microns; the median fitted wall brightness above
+    #: the background, before the blur. None until then: the block levels
+    #: above are the default, and :meth:`RawEvidenceEndothelial.ring_along`
+    #: fits its rings' blur and wall free without them.
+    ring_psf_sigma_zyx: Optional[tuple[float, float, float]] = None
+    ring_wall_um: Optional[float] = None
+    ring_wall_level: Optional[float] = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> "RawCalibration":
+        """From :meth:`as_dict`'s record, including one a graph saved before
+        the ring fields existed (they read as None)."""
         reading = record.get("reading")
+        psf = record.get("ring_psf_sigma_zyx")
+        wall_um, wall_level = record.get("ring_wall_um"), record.get("ring_wall_level")
         return cls(
             stain=str(record["stain"]),
             vessel=float(record["vessel"]),
@@ -139,6 +163,23 @@ class RawCalibration:
             blocks=int(record.get("blocks", 0)),
             sigma_vox=float(record.get("sigma_vox", WINDOW_SMOOTHING_SIGMA_VOX)),
             reading=dict(reading) if reading is not None else None,
+            ring_psf_sigma_zyx=None if psf is None else tuple(float(v) for v in psf),
+            ring_wall_um=None if wall_um is None else float(wall_um),
+            ring_wall_level=None if wall_level is None else float(wall_level),
+        )
+
+    def with_rings(
+        self,
+        psf_sigma_zyx: Sequence[float],
+        wall_um: float,
+        wall_level: Optional[float] = None,
+    ) -> "RawCalibration":
+        """This calibration with the ring-fitted blur, wall and wall level."""
+        return replace(
+            self,
+            ring_psf_sigma_zyx=tuple(float(v) for v in psf_sigma_zyx),
+            ring_wall_um=float(wall_um),
+            ring_wall_level=None if wall_level is None else float(wall_level),
         )
 
     @classmethod
@@ -168,10 +209,14 @@ class RawCalibration:
 
     def describe(self) -> str:
         what = {PLASMA_COLUMN: "plasma (lumen) label", ENDOTHELIAL: "endothelial (wall) label"}
+        rings = ""
+        if self.ring_psf_sigma_zyx is not None and self.ring_wall_um is not None:
+            sz, sy, sx = self.ring_psf_sigma_zyx
+            rings = f"; rings: blur {sz:.2f}/{sy:.2f}/{sx:.2f} um (z/y/x), wall {self.ring_wall_um:.2f} um"
         return (
             f"{what.get(self.stain, self.stain)}: lumen {self.vessel:.4g}, wall {self.wall:.4g}, "
             f"background {self.background:.4g} (spread {self.background_spread:.3g}), "
-            f"contrast {self.contrast:+.2f}, {self.blocks} blocks"
+            f"contrast {self.contrast:+.2f}, {self.blocks} blocks{rings}"
         )
 
 
@@ -194,6 +239,146 @@ class RawSignal:
     #: The longest run of samples that do not, in microns.
     longest_dark_um: float
     samples: int
+
+
+# --------------------------------------------------------------------------
+# Dead-end evidence under an endothelial label (PLAN_dead_ends_raw.md, E1-E3)
+# --------------------------------------------------------------------------
+
+#: E1 reads a chain's sections this far apart (um), at 1, 3, 5 ... um from
+#: its tip, and its tip's stretch is its first this many microns: five
+#: sections, the ones a ring is fitted at.
+RING_SECTION_STEP_UM = 2.0
+RING_TIP_REACH_UM = 10.0
+#: A fitted ring is the chain's own when its centre lies within this, or
+#: this share of its diameter, of the centreline: the ring fit's own
+#: centring limit (``haemodynamics.endothelial._gate``'s ``off_centre``).
+RING_CENTRE_LIMIT_UM = 1.5
+RING_CENTRE_LIMIT_FRACTION = 0.3
+#: E2 judges each point in a window reaching this many of its lumen radii
+#: round it, and at least its radius plus this many microns: enough to
+#: hold its own ring. A caller asking whether it lies in a wider vessel's
+#: lumen passes that vessel's reach.
+INSIDE_WALLS_REACH_RADII = 3.0
+INSIDE_WALLS_MIN_REACH_UM = 4.0
+#: E3 reads the line ahead of a tip every this many microns, from one lumen
+#: radius past the tip (its own lumen does not count, as for the mask's
+#: ``dead_ends.mask_run_um``) up to this far.
+AHEAD_STEP_UM = 1.0
+AHEAD_LIMIT_UM = 30.0
+#: How the line ahead stops (:attr:`WallsAhead.stop`): in another vessel's
+#: lumen with the walls running on all the way, at the image face with them
+#: running on, still running on at the limit, or ending in the tissue.
+AHEAD_MEETS_VESSEL = "vessel"
+AHEAD_FACE = "face"
+AHEAD_RUNS_ON = "runs_on"
+AHEAD_ENDS = "ends"
+#: Whose a fitted ring is (:attr:`RingReading.whose`).
+RING_OWN = "own"
+RING_OTHER = "other"
+RING_OFF_CENTRE = "off_centre"
+
+
+@dataclass(frozen=True)
+class RingReading:
+    """One of :meth:`RawEvidenceEndothelial.ring_along`'s ring fits."""
+
+    #: Where along the chain, microns from its tip.
+    at_um: float
+    #: ``"ring"`` when a wall ring was seen round the section, else why not:
+    #: ``fit_ring_section``'s reason (``no_dark_lumen``, ``ring_not_closed``,
+    #: ``off_volume``, ``fit_failed``), ``low_contrast`` or ``partial_wall``.
+    status: str
+    #: The fitted ring's centre (physical ``(z, y, x)`` microns), internal
+    #: diameter and contrast, whenever the section was fitted.
+    centre_um: Optional[tuple] = None
+    diameter_um: Optional[float] = None
+    contrast: Optional[float] = None
+    #: A seen ring's owner: :data:`RING_OWN`, :data:`RING_OTHER` (its centre
+    #: nearer another centreline than the chain) or :data:`RING_OFF_CENTRE`.
+    whose: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RingSupport:
+    """E1, :meth:`RawEvidenceEndothelial.ring_along`'s answer for one chain:
+    is there a wall ring round it, and is it the chain's own?"""
+
+    #: The share of the chain's sections, every :data:`RING_SECTION_STEP_UM`,
+    #: with a wall on both sides of the centreline across it
+    #: (:meth:`RawEvidence.vesselness`), over the whole chain and over its
+    #: tip's stretch (:data:`RING_TIP_REACH_UM`).
+    fraction: float
+    tip_fraction: float
+    sections: int
+    tip_sections: int
+    #: The ring fitted at each of the tip's sections; empty when not asked for.
+    readings: tuple = ()
+
+    @property
+    def rings_seen(self) -> int:
+        return sum(1 for r in self.readings if r.status == "ring")
+
+    def rings(self, whose: str) -> int:
+        """How many seen rings are *whose* (:data:`RING_OWN` ...)."""
+        return sum(1 for r in self.readings if r.status == "ring" and r.whose == whose)
+
+    @property
+    def own_ring_fraction(self) -> Optional[float]:
+        """The share of the fitted sections whose ring is the chain's own;
+        None when none was fitted."""
+        return self.rings(RING_OWN) / len(self.readings) if self.readings else None
+
+
+@dataclass(frozen=True, eq=False)
+class InsideWalls:
+    """E2, :meth:`RawEvidenceEndothelial.inside_walls`' answer, per point."""
+
+    #: Whether each point lies in a lumen the walls enclose, off the walls.
+    lumen: np.ndarray
+    #: Whether each point lies on a wall (a capillary under the blur reads
+    #: as one bright line, so its centreline is on "wall").
+    wall: np.ndarray
+    #: Whether each point's lumen -- the enclosed region it lies in, walls
+    #: between regions -- also holds a point of another centreline.
+    shared: np.ndarray
+
+    @property
+    def lumen_fraction(self) -> float:
+        return float(self.lumen.mean()) if len(self.lumen) else 0.0
+
+    @property
+    def shared_fraction(self) -> float:
+        return float(self.shared.mean()) if len(self.shared) else 0.0
+
+
+@dataclass(frozen=True)
+class WallsAhead:
+    """E3, :meth:`RawEvidenceEndothelial.walls_ahead`'s answer for one tip:
+    does the vessel go on past it along its heading, and into what?"""
+
+    #: How far the vessel reads on, without a break, from :attr:`start_um`
+    #: past the tip (stopping where it meets another vessel's lumen).
+    run_um: float
+    #: :data:`AHEAD_MEETS_VESSEL`, :data:`AHEAD_FACE`, :data:`AHEAD_RUNS_ON`
+    #: or :data:`AHEAD_ENDS`.
+    stop: str
+    #: How far ahead of the tip the line enters another vessel's lumen; None
+    #: when it does not within the limit.
+    meets_um: Optional[float]
+    #: How far ahead of the tip the line leaves the image; None when the face
+    #: is past the limit.
+    face_um: Optional[float]
+    #: The stretches that do not read as vessel before the line meets another
+    #: vessel (or within the limit): how many, their length, the longest (um).
+    gap_stretches: int
+    gap_um: float
+    longest_gap_um: float
+    #: Where the readings start past the tip and how far apart they are
+    #: (um), and each one's vesselness (0 to 1), for drawing.
+    start_um: float
+    step_um: float
+    profile: tuple = ()
 
 
 # --------------------------------------------------------------------------
@@ -474,11 +659,13 @@ class RawEvidence:
 
     # -- reading ---------------------------------------------------------
 
-    def _read(self, lo: np.ndarray, hi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _read(self, lo: np.ndarray, hi: np.ndarray, *, blur: bool = True) -> tuple[np.ndarray, np.ndarray]:
         """The blurred window ``[lo, hi)`` (voxel indices, clipped to the
         image), padded by the blur's reach so it has no edge, as float32,
-        with the index its corner sits at."""
-        pad = int(np.ceil(3.0 * self.sigma_vox)) if self.sigma_vox > 0 else 0
+        with the index its corner sits at. Unblurred, and unpadded, when
+        *blur* is False: a ring fit models the image's blur itself."""
+        sigma = self.sigma_vox if blur else 0.0
+        pad = int(np.ceil(3.0 * sigma)) if sigma > 0 else 0
         plo = np.maximum(np.asarray(lo, dtype=int) - pad, 0)
         phi = np.minimum(np.asarray(hi, dtype=int) + pad, np.asarray(self.shape))
         if np.any(phi <= plo):
@@ -486,10 +673,10 @@ class RawEvidence:
         crop = np.asarray(self.raw[tuple(slice(int(a), int(b)) for a, b in zip(plo, phi))], dtype=np.float32)
         self.stats.queries += 1
         self.stats.voxels_read += int(crop.size)
-        if self.sigma_vox > 0 and crop.size:
+        if sigma > 0 and crop.size:
             from scipy.ndimage import gaussian_filter
 
-            crop = gaussian_filter(crop, self.sigma_vox)
+            crop = gaussian_filter(crop, sigma)
         return crop, plo
 
     def _chunks(self, index: np.ndarray, reach: np.ndarray):
@@ -706,6 +893,301 @@ class RawEvidenceEndothelial(RawEvidence):
             return float("nan")
         return float(1.0 - np.median(self.brightness(points[band])))
 
+    # -- dead ends (PLAN_dead_ends_raw.md) --------------------------------
+
+    def ring_along(
+        self,
+        path_um: np.ndarray,
+        radius_um: float,
+        *,
+        others_um: Optional[np.ndarray] = None,
+        fit_rings: bool = True,
+        min_contrast: Optional[float] = None,
+        psf_sigma_zyx: Optional[Sequence[float]] = None,
+        wall_um: Optional[float] = None,
+        average_um: Optional[float] = None,
+    ) -> RingSupport:
+        """E1: whether a wall ring runs round the chain *path_um* (tip first),
+        of lumen radius about *radius_um*.
+
+        Every :data:`RING_SECTION_STEP_UM` along it, a wall on both sides of
+        the centreline across it (:meth:`vesselness`): the share of sections
+        that have one, over the chain and over its tip's stretch. At the tip's
+        sections a ring is also fitted
+        (``haemodynamics.endothelial.fit_ring_section``, on a window round
+        the section) when *fit_rings*, to say whose it is: the chain's own,
+        centred on it, or another centreline's (*others_um*, the points of
+        the centrelines near it that are not the chain) -- a spur inside a
+        fat lumen sits inside its parent's ring and has none of its own.
+        A ring is seen when its contrast reaches *min_contrast*
+        (``endothelial_min_ring_contrast``'s default when None) and its wall
+        runs round it. The blur and the wall are *psf_sigma_zyx* and
+        *wall_um*, else the calibration's ring fields, else fitted free (as
+        noisy as a section alone)."""
+        from haemolynx.haemodynamics.edt_diameter import _centreline_tangents
+        from haemolynx.haemodynamics.endothelial import DEFAULT_AVERAGE_ALONG_VESSEL_UM, ENDOTHELIAL_MIN_RING_CONTRAST
+        from haemolynx.haemodynamics.fwhm_diameter import _arc_length_parameterize, _interpolate_centerline
+
+        path = _distinct(path_um)
+        if len(path) < 2:
+            return RingSupport(0.0, 0.0, 0, 0)
+        s, total = _arc_length_parameterize(path)
+        at = np.arange(0.5 * RING_SECTION_STEP_UM, total, RING_SECTION_STEP_UM)
+        if not len(at):
+            at = np.array([0.5 * total])
+        points = _interpolate_centerline(path, s, at)
+        tangents = _centreline_tangents(path, s, total, at)
+        walled = self.vesselness(points, radius_um, tangents) >= BRIGHT_THRESHOLD
+        tip = at < RING_TIP_REACH_UM
+        readings: list[RingReading] = []
+        if fit_rings:
+            psf = psf_sigma_zyx if psf_sigma_zyx is not None else self.calibration.ring_psf_sigma_zyx
+            wall = wall_um if wall_um is not None else self.calibration.ring_wall_um
+            gate = ENDOTHELIAL_MIN_RING_CONTRAST if min_contrast is None else float(min_contrast)
+            others = None if others_um is None else np.asarray(others_um, dtype=float).reshape(-1, 3)
+            for where in at[tip]:
+                readings.append(self._ring_reading(
+                    path, s, total, float(where), radius_um, psf=psf, wall_um=wall,
+                    average_um=DEFAULT_AVERAGE_ALONG_VESSEL_UM if average_um is None else float(average_um),
+                    min_contrast=gate, others=others,
+                ))
+        return RingSupport(
+            fraction=float(walled.mean()),
+            tip_fraction=float(walled[tip].mean()),
+            sections=int(len(at)),
+            tip_sections=int(tip.sum()),
+            readings=tuple(readings),
+        )
+
+    def _ring_reading(
+        self, path, s, total, at, radius_um, *, psf, wall_um, average_um, min_contrast, others,
+    ) -> RingReading:
+        """One section's ring, fitted on a window holding every point the fit
+        samples, so it reads as it would on the whole volume."""
+        from haemolynx.haemodynamics.edt_diameter import _centreline_tangents
+        from haemolynx.haemodynamics.endothelial import MIN_WALL_COVERAGE, fit_ring_section
+        from haemolynx.haemodynamics.fwhm_diameter import _interpolate_centerline
+        from haemolynx.haemodynamics.sections import section_axes
+
+        started = time.perf_counter()
+        guide = 2.0 * max(float(radius_um), 0.5 * float(self._spacing.min()))
+        # fit_ring_section's own plane: half-width at most this (its blur
+        # is the PSF projected onto the section, or 1 um fitted free),
+        # averaged over average_um of the centreline.
+        blur = float(max(psf)) if psf is not None else 1.0
+        extent = max(6.0, 1.2 * guide + 3.0 + 3.0 * blur)
+        half = 0.5 * max(float(average_um), 0.0)
+        lo_s, hi_s = max(0.0, at - half), min(total, at + half)
+        spine = np.vstack([path[(s >= lo_s) & (s <= hi_s)], _interpolate_centerline(path, s, np.array([lo_s, at, hi_s]))])
+        reach = np.sqrt(2.0) * (extent + 1.0) + 2.0 * self._spacing
+        lo = np.maximum(np.floor((spine.min(axis=0) - reach) / self._spacing).astype(int), 0)
+        hi = np.minimum(np.ceil((spine.max(axis=0) + reach) / self._spacing).astype(int) + 1, np.asarray(self.shape))
+        if np.any(hi <= lo):
+            return RingReading(at, "off_volume")
+        window, corner = self._read(lo, hi, blur=False)
+        fit, why = fit_ring_section(
+            window, path - corner * self._spacing, s, total, at, self.voxel_size_zyx, guide_um=guide,
+            psf_sigma_zyx=psf, average_um=average_um, wall_um=wall_um,
+        )
+        self.stats.seconds += time.perf_counter() - started
+        if fit is None:
+            return RingReading(at, why)
+        _t, a, b = section_axes(_centreline_tangents(path, s, total, np.array([at]))[0])
+        point = _interpolate_centerline(path, s, np.array([at]))[0]
+        centre = point + fit.centre_ab_um[0] * a + fit.centre_ab_um[1] * b
+        status = "ring"
+        if fit.contrast < min_contrast:
+            status = "low_contrast"
+        elif fit.wall_coverage < MIN_WALL_COVERAGE:
+            status = "partial_wall"
+        whose = None
+        if status == "ring":
+            # The ring is the nearest centreline's: a wide ring's centring
+            # limit is generous, and would lend a neighbour's ring to a
+            # strand running inside it.
+            if others is not None and len(others) and (
+                float(np.linalg.norm(others - centre, axis=1).min())
+                < float(np.linalg.norm(path - centre, axis=1).min())
+            ):
+                whose = RING_OTHER
+            elif fit.centre_offset_um <= max(RING_CENTRE_LIMIT_UM, RING_CENTRE_LIMIT_FRACTION * fit.diameter_um):
+                whose = RING_OWN
+            else:
+                whose = RING_OFF_CENTRE
+        return RingReading(
+            at, status, centre_um=tuple(float(v) for v in centre), diameter_um=float(fit.diameter_um),
+            contrast=float(fit.contrast), whose=whose,
+        )
+
+    def inside_walls(
+        self,
+        points_um: np.ndarray,
+        radius_um: float,
+        *,
+        others_um: Optional[np.ndarray] = None,
+        reach_um: Optional[float] = None,
+    ) -> InsideWalls:
+        """E2: whether walls enclose each point, and whether the lumen they
+        enclose there is shared with another centreline (*others_um*) -- a
+        chain running inside another vessel's walls is two centrelines in one
+        lumen, seen in the raw image instead of the mask.
+
+        Each point is judged on its own window, reaching *reach_um* round it
+        (:data:`INSIDE_WALLS_REACH_RADII` of *radius_um*, at least the
+        radius plus :data:`INSIDE_WALLS_MIN_REACH_UM`, when None), blurred
+        and normalised as every reading is: walls are what reads as the stain
+        (:data:`BRIGHT_THRESHOLD`), and a lumen is what they enclose in some
+        slice (``segmentation_raw_comparison.enclosed_by_walls``, once per
+        window). The answer at a point never depends on the others asked
+        with it. Near the chain's own junction its lumen opens into its
+        parent's, so read the share along the chain, not one point."""
+        from scipy import ndimage
+
+        from .segmentation_raw_comparison import enclosed_by_walls
+
+        started = time.perf_counter()
+        points = np.asarray(points_um, dtype=float).reshape(-1, 3)
+        count = len(points)
+        lumen, wall, shared = (np.zeros(count, dtype=bool) for _ in range(3))
+        radius = max(float(radius_um), 0.0)
+        reach = float(reach_um) if reach_um is not None else max(
+            INSIDE_WALLS_REACH_RADII * radius, radius + INSIDE_WALLS_MIN_REACH_UM
+        )
+        half = np.ceil(reach / self._spacing).astype(int)
+        shape = np.asarray(self.shape)
+        others = (
+            np.rint(np.asarray(others_um, dtype=float).reshape(-1, 3) / self._spacing).astype(int)
+            if others_um is not None else np.zeros((0, 3), dtype=int)
+        )
+        for i, point in enumerate(points):
+            centre = np.rint(point / self._spacing).astype(int)
+            if np.any(centre < 0) or np.any(centre >= shape):
+                continue
+            lo, hi = np.maximum(centre - half, 0), np.minimum(centre + half + 1, shape)
+            crop, corner = self._read(lo, hi)
+            start = lo - corner
+            window = crop[tuple(slice(int(a), int(a + n)) for a, n in zip(start, hi - lo))]
+            walls = self._normalise(window) >= BRIGHT_THRESHOLD
+            here = tuple(int(v) for v in centre - lo)
+            if walls[here]:
+                wall[i] = True
+                continue
+            open_lumen = enclosed_by_walls(walls) & ~walls
+            if not open_lumen[here]:
+                continue
+            lumen[i] = True
+            if len(others):
+                local = others - lo
+                within = np.all((local >= 0) & (local < hi - lo), axis=1)
+                if within.any():
+                    labels, _count = ndimage.label(open_lumen)
+                    hits = local[within]
+                    shared[i] = bool(np.any(labels[hits[:, 0], hits[:, 1], hits[:, 2]] == labels[here]))
+        self.stats.seconds += time.perf_counter() - started
+        return InsideWalls(lumen=lumen, wall=wall, shared=shared)
+
+    def walls_ahead(
+        self,
+        tip_um: Sequence[float],
+        heading: Sequence[float],
+        radius_um: float,
+        *,
+        others_um: Optional[np.ndarray] = None,
+        others_radius_um: Any = 0.0,
+        limit_um: float = AHEAD_LIMIT_UM,
+        step_um: float = AHEAD_STEP_UM,
+    ) -> WallsAhead:
+        """E3: whether the vessel goes on past a tip along its *heading* (a
+        unit vector out of the tip, ``dead_ends.tip_heading``), the raw
+        analogue of ``dead_ends.mask_run_um``.
+
+        From one lumen radius past the tip, every *step_um* up to *limit_um*
+        further, the line reads as vessel where a wall runs on both sides of
+        it across the heading (:meth:`vesselness`). It stops where it enters
+        another vessel's lumen -- within *others_radius_um* (one value, or
+        one per point) of a point of *others_um*, the centrelines that are
+        not the chain -- or leaves the image. :attr:`WallsAhead.stop` says
+        how it ended, and the gaps before it how much of the way was not
+        vessel: a join across a gap would need the walls to run on across
+        it (Q2), a vessel whose plasma faded before the face runs on to it
+        (Q3). Straight along the heading: a vessel that turns away soon
+        after the tip reads as ending."""
+        tip = np.asarray(tip_um, dtype=float).reshape(3)
+        direction = np.asarray(heading, dtype=float).reshape(3)
+        norm = float(np.linalg.norm(direction))
+        if not norm > 0:
+            raise ValueError("walls_ahead needs a heading of non-zero length")
+        direction = direction / norm
+        start = max(float(radius_um), 0.0)
+        step = float(step_um)
+        offsets = start + step * np.arange(1, int(np.ceil(float(limit_um) / step)) + 1)
+        samples = tip + offsets[:, None] * direction
+        extent = (np.asarray(self.shape, dtype=float) - 1.0) * self._spacing
+        in_image = np.all((samples >= -1e-6) & (samples <= extent + 1e-6), axis=1)
+        leaving = int(np.argmin(in_image)) if not in_image.all() else None
+        face_um = None
+        if leaving is not None:
+            samples, offsets = samples[:leaving], offsets[:leaving]
+            face_um = float(_distance_along_to_box(tip, direction, extent))
+        readings = (
+            self.vesselness(samples, radius_um, np.tile(direction, (len(samples), 1)))
+            if len(samples) else np.zeros(0)
+        )
+        vessel = readings >= BRIGHT_THRESHOLD
+        meets = None
+        if others_um is not None and len(samples):
+            others = np.asarray(others_um, dtype=float).reshape(-1, 3)
+            if len(others):
+                from scipy.spatial import cKDTree
+
+                distance, nearest = cKDTree(others).query(samples)
+                limit = np.broadcast_to(np.asarray(others_radius_um, dtype=float), (len(others),))[nearest]
+                entered = np.flatnonzero(distance <= limit)
+                meets = int(entered[0]) if len(entered) else None
+        judged = vessel[:meets] if meets is not None else vessel
+        run = int(np.argmin(judged)) if not judged.all() else len(judged)
+        dark = ~judged
+        stretches = int(np.count_nonzero(dark[1:] & ~dark[:-1]) + (1 if len(dark) and dark[0] else 0))
+        if meets is not None and judged.all():
+            stop = AHEAD_MEETS_VESSEL
+        elif meets is None and vessel.all():
+            stop = AHEAD_FACE if leaving is not None else AHEAD_RUNS_ON
+        else:
+            stop = AHEAD_ENDS
+        return WallsAhead(
+            run_um=float(run * step),
+            stop=stop,
+            meets_um=None if meets is None else float(offsets[meets]),
+            face_um=face_um,
+            gap_stretches=stretches,
+            gap_um=float(np.count_nonzero(dark) * step),
+            longest_gap_um=float(_longest_run(dark) * step),
+            start_um=start,
+            step_um=step,
+            profile=tuple(float(v) for v in readings),
+        )
+
+
+def _distinct(path_um) -> np.ndarray:
+    """*path_um* as an ``(n, 3)`` array without repeated consecutive points,
+    so its arc length rises strictly."""
+    path = np.asarray(path_um, dtype=float).reshape(-1, 3)
+    if len(path) < 2:
+        return path
+    keep = np.concatenate([[True], np.linalg.norm(np.diff(path, axis=0), axis=1) > 1e-9])
+    return path[keep]
+
+
+def _distance_along_to_box(point: np.ndarray, direction: np.ndarray, extent: np.ndarray) -> float:
+    """How far from *point* along unit *direction* the box ``[0, extent]`` ends."""
+    limits = []
+    for axis in range(3):
+        if direction[axis] > 1e-8:
+            limits.append((extent[axis] - point[axis]) / direction[axis])
+        elif direction[axis] < -1e-8:
+            limits.append(point[axis] / -direction[axis])
+    return float(min(limits)) if limits else float("inf")
+
 
 _CLASSES = {PLASMA_COLUMN: RawEvidencePlasma, ENDOTHELIAL: RawEvidenceEndothelial}
 
@@ -738,6 +1220,48 @@ def make_raw_evidence(
     if cls is None:
         raise ValueError(f"Unknown stain {calibration.stain!r}; expected one of {STAINS}")
     return cls(raw, voxel_size_zyx, calibration)
+
+
+def ring_calibration(
+    G: Any,
+    evidence: RawEvidence,
+    *,
+    guide_attribute: Optional[str] = "edt_diameter_um",
+    min_contrast: Optional[float] = None,
+    seed: int = 0,
+    edges: Any = None,
+    workers: int = 1,
+    memmap_directory: Any = None,
+) -> RawCalibration:
+    """*evidence*'s calibration with its ring fields filled from the image's
+    own wide vessels' rings (``endothelial.calibrate_from_rings``, its
+    arguments): the blur, the wall's thickness, and the median fitted wall
+    brightness of the rings that pass the contrast gate. Unchanged, with the
+    calibration's log line saying why, when the rings do not calibrate.
+
+    Optional and costly (90-120 s on E14.5 with 8 workers, against the block
+    calibration's second): a run that has measured endothelial diameters has
+    paid for it already. Assign the result to ``evidence.calibration`` for
+    :meth:`RawEvidenceEndothelial.ring_along` to fit with it."""
+    from haemolynx.haemodynamics import endothelial
+
+    gate = endothelial.ENDOTHELIAL_MIN_RING_CONTRAST if min_contrast is None else float(min_contrast)
+    fits = endothelial.ring_calibration_fits(
+        G, evidence.raw, evidence.voxel_size_zyx, guide_attribute=guide_attribute, seed=seed, edges=edges,
+        workers=workers, memmap_directory=memmap_directory,
+    )
+    psf, wall_um, _details = endothelial.calibrate_from_rings(
+        G, evidence.raw, evidence.voxel_size_zyx, guide_attribute=guide_attribute, min_contrast=gate,
+        seed=seed, edges=edges, fits=fits,
+    )
+    if psf is None or wall_um is None:
+        return evidence.calibration
+    levels = [
+        fit.wall_level
+        for readings in fits.readings for fit, _why in readings
+        if fit is not None and endothelial._gate(fit, min_contrast=gate, min_diameter_um=0.0) == "ok"
+    ]
+    return evidence.calibration.with_rings(psf, wall_um, float(np.median(levels)) if levels else None)
 
 
 # --------------------------------------------------------------------------
@@ -885,12 +1409,20 @@ def raw_evidence_from_settings(
 
 
 __all__ = [
+    "AHEAD_ENDS",
+    "AHEAD_FACE",
+    "AHEAD_MEETS_VESSEL",
+    "AHEAD_RUNS_ON",
     "AUTO",
     "BRIGHT_THRESHOLD",
     "ENDOTHELIAL",
     "GRAPH_ATTRIBUTE",
     "PLASMA_COLUMN",
+    "RING_OFF_CENTRE",
+    "RING_OTHER",
+    "RING_OWN",
     "STAINS",
+    "InsideWalls",
     "RawCalibration",
     "RawEvidence",
     "RawEvidenceEndothelial",
@@ -898,9 +1430,13 @@ __all__ = [
     "RawEvidenceStats",
     "RawImageSpec",
     "RawSignal",
+    "RingReading",
+    "RingSupport",
+    "WallsAhead",
     "calibrate_raw",
     "load_raw_channel",
     "make_raw_evidence",
     "raw_evidence_from_settings",
     "raw_image_for_build",
+    "ring_calibration",
 ]
