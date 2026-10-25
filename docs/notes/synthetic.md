@@ -186,5 +186,5 @@ vessels regress to capillary width (arteriolar median 19 -> 7 um, venular 21 -> 
 shunting the 1998 paper describes; the paper's conducted weight (2.45) holds the arterioles but not
 the venules. The template's widths follow its flows weakly (D ~ Q^0.11-0.17 by class, R2
 0.21-0.29), and those flows are computed from the widths. So nothing was built: a law that turns
-the template's own large vessels into capillaries would draw widths less like the template's. The
-options put to Harvey are in `PLAN_synthetic_physiology.md`'s status.
+the template's own large vessels into capillaries would draw widths less like the template's.
+Harvey chose to leave the widths as the template's (D7a only): phase 7 stays unbuilt.
