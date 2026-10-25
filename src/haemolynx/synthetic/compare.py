@@ -117,6 +117,11 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     # row said so. Not calibrated: E14.5 draws 22-25.
     ("organisation", "capillary curvature (degrees per 10 um)"): ("abs", 6.0),
     ("organisation", "tree curvature (degrees per 10 um)"): ("abs", 6.0),
+    # The trees' shape (Harvey, grid D1b): their side branches and how well
+    # their trunks hold their course. Not calibrated: E14.5 draws its 27
+    # leaves exactly and its trunks at 0.55-0.62 against 0.63.
+    ("organisation", "tree leaves"): ("abs", 3.0),
+    ("organisation", "trunk straightness, root to leaf"): ("abs", 0.08),
     ("organisation", "capillary runs along an axis spanning 100 um (per mm^2)"): ("rel", 0.35),
 }
 
@@ -471,6 +476,11 @@ def organisation_rows(
     add("box within 20 um of a capillary", get(T, "within_near"), get(S, "within_near"))
     add("box beyond 50 um of a capillary", get(T, "beyond_far"), get(S, "beyond_far"))
     add("trunk turn (degrees)", get(T, "trunk_turn_deg"), get(S, "trunk_turn_deg"))
+    leaves = lambda target: None if target is None or target.tree_leaves_by_order is None else sum(  # noqa: E731
+        count for _label, count in target.tree_leaves_by_order
+    )
+    add("tree leaves", leaves(T), leaves(S))
+    add("trunk straightness, root to leaf", get(T, "trunk_straightness"), get(S, "trunk_straightness"))
     add("capillary curvature (degrees per 10 um)", get(T, "capillary_curvature_deg"), get(S, "capillary_curvature_deg"))
     add("tree curvature (degrees per 10 um)", get(T, "tree_curvature_deg"), get(S, "tree_curvature_deg"))
     return rows

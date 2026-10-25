@@ -324,3 +324,26 @@ Being built in the phase order above.
   its side branches straight to the bed as one capillary each, `generate.HANDOFF_BED_EDGES`); and
   the template's trunks hold their course better, root-to-leaf chord over path 0.65-0.68 against
   0.44-0.62 drawn, though each vessel curves alike (29 against 31 degrees per 10 um).
+- **The trees' shape, read from the template** (Harvey's go-ahead, 2026-10-25): the organisation
+  records per branch-order label how many of its vessels end the tree (`tree_leaves_by_order`,
+  E14.5: 27 leaves; the 38 above counted the leaves the two outlets share twice) and the median
+  root-to-leaf chord over path (`trunk_straightness`, 0.63), the roots being the run's inlets and
+  outlets (`organisation.tree_shape`). The trees end that many tips at each order -- those
+  already out of the template's tree cells, then the narrowest -- and the trunk (the least
+  deflected child) keeps to its tree's course from the root (`trees.TRUNK_PERSISTENCE` 2). Two
+  rules tried first: ending the narrowest alone left the wider tips branching more and took the
+  trees out of their corridor (share in the template's tree cells 0.68 -> 0.55); ending the tips
+  heading out of the cells ended the trees' frontier and grew bushes (venous root-to-leaf reach
+  77-97 um against the template's 134). Now (E14.5): 27 leaves exactly, share in the tree cells
+  0.77-0.81, venous reach 115-121 um (max 226-274 against 272), arterial 230 against 244, trunk
+  straightness 0.53-0.64 (0.63). Comparison rows: tree leaves (abs 3), straightness (abs 0.08),
+  not calibrated.
+- **Capillary lengths by tortuosity**: with the curvature rows banded, seeds 1, 4 and 5 still fell
+  to 12-17 degrees per 10 um. Lengths drawn from the template's length distribution, rank-matched
+  to the chords and clamped to them, left a vessel straight wherever its draw fell short of its
+  chord; the bed's chords leave the template's capillaries little room (mean 35 against 41 um).
+  For a template that records its layout each capillary is now its chord times a tortuosity drawn
+  from the template's, the excess scaled alike on every vessel to the class total
+  (`generate._capillary_lengths_by_tortuosity`; at most 3 times, `MAX_TORTUOSITY_SCALE`). E14.5,
+  five seeds: every curvature row within (26 +- 6 degrees), 582 of 620 banded rows within.
+  Fixture templates (no layout) draw bit for bit as before.

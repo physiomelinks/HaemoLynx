@@ -104,6 +104,14 @@ class Organisation:
     #: (None for a class with none): on E14.5 its vertical vessels reach past
     #: nearer junctions, 1.4 times the mean.
     chord_by_class_um: Optional[tuple[Optional[float], ...]] = None
+    #: The trees' shape (Harvey, 2026-10-25, grid D1b): per branch-order
+    #: label, how many of its vessels end the tree (a leaf: a short side
+    #: branch off a trunk, handing over to capillaries or ending), as
+    #: ``(label, count)`` pairs; and the median, over the leaves, of the
+    #: straight distance from the root to the leaf over the path along the
+    #: tree -- how well the trunks hold their course.
+    tree_leaves_by_order: Optional[tuple[tuple[str, int], ...]] = None
+    trunk_straightness: Optional[float] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -144,6 +152,10 @@ class Organisation:
             "chord_axis_share": None if self.chord_axis_share is None else list(self.chord_axis_share),
             "long_runs": None if self.long_runs is None else list(self.long_runs),
             "chord_by_class_um": None if self.chord_by_class_um is None else list(self.chord_by_class_um),
+            "tree_leaves_by_order": (
+                None if self.tree_leaves_by_order is None else [list(item) for item in self.tree_leaves_by_order]
+            ),
+            "trunk_straightness": self.trunk_straightness,
         }
 
     @classmethod
@@ -186,6 +198,12 @@ class Organisation:
                 if data.get("chord_by_class_um") is None
                 else tuple(None if v is None else float(v) for v in data["chord_by_class_um"])
             ),
+            tree_leaves_by_order=(
+                None
+                if data.get("tree_leaves_by_order") is None
+                else tuple((str(label), int(count)) for label, count in data["tree_leaves_by_order"])
+            ),
+            trunk_straightness=opt("trunk_straightness"),
         )
 
 
@@ -309,9 +327,50 @@ def long_runs(chords: Sequence[tuple[Any, Any, np.ndarray, np.ndarray]]) -> tupl
     return tuple(counts)
 
 
-def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Organisation]:
+def tree_shape(
+    tree_edges: Sequence[tuple[Any, Any, str, float]],
+    positions: Mapping[Any, np.ndarray],
+    roots: Optional[Sequence[Any]] = None,
+) -> tuple[tuple[tuple[str, int], ...], Optional[float]]:
+    """The trees' leaves by branch-order label and their trunks' straightness
+    (see :class:`Organisation`) from *tree_edges* ``(u, v, label, length)``.
+    The roots are *roots* (the inlets and outlets) where given, else every
+    tree end on a vessel of order 1."""
+    tree = nx.Graph()
+    for u, v, label, length in tree_edges:
+        tree.add_edge(u, v, label=str(label), length=float(length))
+    ends = [n for n in tree if tree.degree(n) == 1]
+    if roots is not None:
+        root_set = {r for r in roots if r in tree}
+    else:
+        root_set = {n for n in ends if _order_number(next(iter(tree[n].values()))["label"]) == 1}
+    leaves: dict[str, int] = {}
+    straightness: list[float] = []
+    for component in nx.connected_components(tree):
+        sub = tree.subgraph(component)
+        component_roots = [r for r in component if r in root_set]
+        distance: dict = {}
+        paths: dict = {}
+        if component_roots:
+            distance, paths = nx.multi_source_dijkstra(sub, component_roots, weight="length")
+        for n in component:
+            if sub.degree(n) != 1 or n in root_set:
+                continue
+            label = next(iter(sub[n].values()))["label"]
+            leaves[label] = leaves.get(label, 0) + 1
+            if n in distance and distance[n] > 0:
+                nearest = paths[n][0]
+                chord = float(np.linalg.norm(np.asarray(positions[n], float) - np.asarray(positions[nearest], float)))
+                straightness.append(chord / float(distance[n]))
+    return tuple(sorted(leaves.items())), (float(np.median(straightness)) if straightness else None)
+
+
+def measure_organisation(
+    G: nx.Graph, extent_um: Sequence[float], roots: Optional[Sequence[Any]] = None
+) -> Optional[Organisation]:
     """The layout of *G* (branch orders labelled) in a box of *extent_um*; None
-    for a network without capillaries."""
+    for a network without capillaries. *roots*: its inlets and outlets, where
+    the trees start (else read off the orders)."""
     from scipy.spatial import cKDTree
 
     extent = np.asarray(extent_um, dtype=float)
@@ -326,6 +385,7 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
     tree_paths: list[np.ndarray] = []
     capillary_nodes: set = set()
     tree_ends: dict[Any, list[tuple[int, np.ndarray, np.ndarray, str]]] = {}
+    tree_edges: list[tuple[Any, Any, str, float]] = []
     axis_lengths = np.zeros(3)
     chord_classes = np.zeros((cells, 4))
     chord_sums, chord_counts = np.zeros(4), np.zeros(4)
@@ -367,6 +427,7 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
         elif category in _ARTERIAL or category in _VENOUS:
             np.add.at(arterial_length if category in _ARTERIAL else venous_length, where, lengths)
             tree_paths.append(path)
+            tree_edges.append((u, v, str(data.get("branch_order")), float(lengths.sum())))
             order = _order_number(data.get("branch_order"))
             # At each end, the direction leaving that node into the vessel.
             start, end = _heading(path, True), _heading(path, False)
@@ -392,6 +453,7 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
             orientation.append(_components(tensors[c] / capillary_length[c]))
         else:
             orientation.append(global_components)
+    trees = tree_shape(tree_edges, {n: G.nodes[n]["pos"] for n in G}, roots) if tree_edges else ((), None)
     whole = chord_classes.sum(axis=0) / max(float(chord_classes.sum()), 1e-12)
     by_cell = []
     for c in range(cells):
@@ -425,6 +487,8 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
         chord_by_class_um=tuple(
             float(chord_sums[k] / chord_counts[k]) if chord_counts[k] else None for k in range(4)
         ),
+        tree_leaves_by_order=trees[0] if tree_edges else None,
+        trunk_straightness=trees[1] if tree_edges else None,
     )
 
 
@@ -486,6 +550,7 @@ __all__ = [
     "grid_shape",
     "long_runs",
     "measure_organisation",
+    "tree_shape",
     "profile",
     "share_inside",
     "tensor_matrix",

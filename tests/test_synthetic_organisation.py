@@ -153,7 +153,7 @@ def test_the_capillary_vertices_and_their_spacing_are_recorded():
     assert org.capillary_node_spacing_um == pytest.approx(10.0)  # the grid the vessels stand on
     old = org.to_dict()
     for name in ("capillary_node_positions_rel", "capillary_node_spacing_um", "chord_axis_share_by_cell",
-                 "chord_axis_share", "long_runs", "chord_by_class_um"):
+                 "chord_axis_share", "long_runs", "chord_by_class_um", "tree_leaves_by_order", "trunk_straightness"):
         old.pop(name)
     loaded = Organisation.from_dict(old)
     assert loaded.capillary_node_positions_rel is None and loaded.capillary_node_spacing_um is None
@@ -188,6 +188,27 @@ def test_chord_directions_runs_and_lengths_are_read_off_the_network():
     assert lattice.chord_by_class_um == tuple(pytest.approx(20.0) for _ in range(3)) + (None,)
     # 400 vessels along z, 450 along y and along x, all 20 um.
     assert lattice.chord_axis_share == pytest.approx((400 / 1300, 450 / 1300, 450 / 1300))
+
+
+def test_the_trees_leaves_and_straightness_are_read_off_the_trees():
+    """A trunk from the root at x 0 running straight along x in three
+    vessels, a 30 um side branch off each of its two junctions: three leaves
+    (the trunk's end and the two branches), the trunk's end straight from
+    the root (1), each branch's chord over its path below 1."""
+    from haemolynx.synthetic.organisation import tree_shape
+
+    positions = {0: (10.0, 100.0, 0.0), 1: (10.0, 100.0, 60.0), 2: (10.0, 100.0, 120.0), 3: (10.0, 100.0, 180.0),
+                 4: (10.0, 130.0, 60.0), 5: (10.0, 130.0, 120.0)}
+    edges = [(0, 1, "Large_Art1", 60.0), (1, 2, "Large_Art2", 60.0), (2, 3, "Large_Art3", 60.0),
+             (1, 4, "Large_Art2", 30.0), (2, 5, "Large_Art3", 30.0)]
+    positions = {k: np.asarray(v) for k, v in positions.items()}
+    leaves, straightness = tree_shape(edges, positions, roots=[0])
+    assert leaves == (("Large_Art2", 1), ("Large_Art3", 2))
+    branch_1 = math.hypot(60.0, 30.0) / 90.0
+    branch_2 = math.hypot(120.0, 30.0) / 150.0
+    assert straightness == pytest.approx(float(np.median([1.0, branch_1, branch_2])))
+    # Without the roots named, the order-1 vessel's free end is the root.
+    assert tree_shape(edges, positions) == (leaves, straightness)
 
 
 def test_chord_class_is_the_cone_round_an_axis_or_none():

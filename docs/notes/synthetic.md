@@ -124,3 +124,10 @@ built in. Its vertical capillaries are long -- they reach past nearer junctions 
 fill wanted one chord length for every direction never drew them; judged against each direction's
 own chord (`bed.class_chord_ratios`) it draws E14.5's columns (10-15 runs spanning 100 um of depth
 against 12), and no columns where a template has none.
+
+Grid D1b (Harvey): only the template keeps its overall network shape and curvature. The curvature I
+had lost myself (a direction weight that bought chords with length); the shape was the trees: the
+template's have side branches ending at each order (27 leaves on E14.5) where the drawn trunks
+handed every side branch to the bed (11 leaves). Both now read from the template, with each
+capillary's length its chord times a tortuosity drawn from the template's, so none is drawn
+straight to fit the length budget.

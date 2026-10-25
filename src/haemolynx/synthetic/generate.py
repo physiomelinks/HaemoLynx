@@ -108,6 +108,9 @@ FALLBACK_CAPILLARY_LENGTH_UM = 40.0
 #: Rank matching's noise: chords are ranked with this much log-normal jitter,
 #: so equal chords do not all get the same length.
 RANK_JITTER_SIGMA = 0.25
+#: How far a capillary's excess over its chord may be stretched past the
+#: tortuosity drawn for it to make up the template's capillary length.
+MAX_TORTUOSITY_SCALE = 3.0
 #: Whether vessels leave the box (the ``synthetic_open_ends`` choices).
 OPEN_ENDS_CLOSED = "closed"
 OPEN_ENDS_TEMPLATE = "template"
@@ -326,6 +329,65 @@ def _capillary_lengths(
     return lengths
 
 
+def _capillary_lengths_by_tortuosity(
+    template: NetworkTemplate,
+    chords: np.ndarray,
+    blind_edge: np.ndarray,
+    blind_lengths: Optional[np.ndarray],
+    rng: np.random.Generator,
+    notes: list,
+) -> np.ndarray:
+    """A length per bed edge, for a template that records its layout: each
+    chord times a tortuosity drawn from the template's capillaries, the
+    excess over the chord scaled alike on every vessel so the class total is
+    the template's; the chains ending blind at the lengths drawn for them.
+
+    Drawn from the length distribution instead (:func:`_capillary_lengths`),
+    a vessel whose drawn length fell short of its chord was clamped to it and
+    came out straight: on E14.5, where the chords leave the template's
+    capillaries little more length than they span, 70-78% of them at worst
+    (grid D1b), 12-17 degrees per 10 um against 26 in some seeds after."""
+    count = len(chords)
+    if count == 0:
+        return np.zeros(0)
+    cls = template.class_target("capillary")
+    samples = cls.samples.tortuosities if cls is not None and cls.samples is not None else ()
+    if samples:
+        tortuosity = np.maximum(rng.choice(np.asarray(samples, float), size=count, replace=True), 1.0)
+    else:
+        excess = max(float((cls.mean_tortuosity if cls else None) or 1.1) - 1.0, 0.0)
+        sigma = TORTUOSITY_LOG_SIGMA
+        tortuosity = 1.0 + excess * rng.lognormal(-(sigma**2) / 2.0, sigma, size=count)
+    chords = np.maximum(chords, 1e-6)
+    lengths = chords * tortuosity
+    fixed = np.zeros(count, dtype=bool)
+    if blind_lengths is not None:
+        fixed = blind_edge & np.isfinite(blind_lengths)
+        lengths[fixed] = np.maximum(blind_lengths[fixed], chords[fixed] * (1.0 + 1e-6))
+    target_total = cls.total_length_um if cls is not None and cls.total_length_um else None
+    free = ~fixed
+    if target_total and free.any():
+        room = target_total - float(lengths[fixed].sum()) - float(chords[free].sum())
+        excess = float((chords[free] * (tortuosity[free] - 1.0)).sum())
+        if room <= 0 or excess <= 0:
+            notes.append(
+                f"capillary length: the chords alone ({chords[free].sum():.0f} um) leave none of the template's "
+                f"{target_total:.0f} um to curve in; drawn straight"
+            )
+            lengths[free] = chords[free] * (1.0 + 1e-6)
+        else:
+            scale = room / excess
+            if scale > MAX_TORTUOSITY_SCALE:
+                notes.append(
+                    f"capillary length: the chords leave {room:.0f} um to curve in, more than "
+                    f"{MAX_TORTUOSITY_SCALE:g} times the template's tortuosity; "
+                    f"{target_total - room + MAX_TORTUOSITY_SCALE * excess:.0f} um drawn against its {target_total:.0f} um"
+                )
+                scale = MAX_TORTUOSITY_SCALE
+            lengths[free] = chords[free] * (1.0 + (tortuosity[free] - 1.0) * scale)
+    return lengths
+
+
 def _capillary_diameters(template: NetworkTemplate, count: int, rng: np.random.Generator) -> np.ndarray:
     cls = template.class_target("capillary")
     samples = cls.samples.diameters_um if cls is not None and cls.samples is not None else ()
@@ -518,7 +580,10 @@ def generate_network(
     blind_edge = np.array([(e.u in blind_nodes) != (e.v in blind_nodes) for e in bed_edges], dtype=bool)
     blind_lengths = _place_blind_ends(draft, T, bed_edges, blind_edge, blind_nodes, extent, rng)
     chords = np.array([_chord(draft, e) for e in bed_edges]) if bed_edges else np.zeros(0)
-    lengths = _capillary_lengths(T, chords, blind_edge, blind_lengths, rng, draft.notes)
+    if T.organisation is not None:
+        lengths = _capillary_lengths_by_tortuosity(T, chords, blind_edge, blind_lengths, rng, draft.notes)
+    else:
+        lengths = _capillary_lengths(T, chords, blind_edge, blind_lengths, rng, draft.notes)
     diameters = _capillary_diameters(T, len(bed_edges), rng)
     for edge, length, diameter in zip(bed_edges, lengths, diameters):
         edge.length_um = float(length)

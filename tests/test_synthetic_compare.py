@@ -233,6 +233,27 @@ def test_runs_along_an_axis_are_scored_per_mm2_where_the_template_has_them():
     assert rows["capillary runs along z spanning 100 um (per mm^2)"].template == 12.0
 
 
+def test_the_trees_leaves_and_straightness_are_scored():
+    from haemolynx.synthetic.compare import organisation_rows
+    from haemolynx.synthetic.organisation import ISOTROPIC, Organisation
+
+    def organisation(leaves, straightness):
+        return Organisation(
+            shape=(1, 1, 1), capillary_nodes=(1.0,), capillary_length_um=(1.0,), arterial_length_um=(0.0,),
+            venous_length_um=(0.0,), orientation=(ISOTROPIC,), global_orientation=ISOTROPIC,
+            axis_share=(1 / 3,) * 3, within_near=0.5, beyond_far=0.1, trunk_turn_deg=None,
+            capillary_curvature_deg=None, tree_curvature_deg=None,
+            tree_leaves_by_order=leaves, trunk_straightness=straightness,
+        )
+
+    template = organisation((("Large_Art5", 1), ("Large_Ven4", 26)), 0.63)
+    rows = {r.characteristic: r for r in organisation_rows(template, organisation((("Large_Ven4", 27),), 0.58))}
+    assert rows["tree leaves"].template == 27 and rows["tree leaves"].within is True
+    assert rows["trunk straightness, root to leaf"].within is True
+    rows = {r.characteristic: r for r in organisation_rows(template, organisation((("Large_Ven4", 11),), 0.44))}
+    assert rows["tree leaves"].within is False and rows["trunk straightness, root to leaf"].within is False
+
+
 def test_a_layout_is_scored_only_where_the_template_has_one():
     from haemolynx.synthetic.compare import STRUCTURE_DISPERSION, dispersion, organisation_rows
     from haemolynx.synthetic.organisation import ISOTROPIC, Organisation

@@ -1090,7 +1090,9 @@ def template_from_report(
         tissue_volume_um3=_number(density.get("Tissue Volume (micron³)")),
         provenance=provenance,
         diameter_basis=basis,
-        organisation=measure_organisation(G, extent),
+        organisation=measure_organisation(
+            G, extent, roots=list(boundaries.get("inlet", ())) + list(boundaries.get("outlet", ()))
+        ),
     )
 
 

@@ -1235,6 +1235,81 @@ def test_a_template_with_columns_gets_columns():
     assert runs["columns"] >= runs["none"] + 4
 
 
+def test_capillaries_keep_the_templates_tortuosity_within_its_length():
+    """Lengths from the length distribution were clamped to their chords
+    where they fell short, and E14.5's capillaries came out straight (grid
+    D1b): each is now its chord times a tortuosity drawn from the template,
+    the excess scaled alike so the class total is the template's."""
+    from haemolynx.synthetic.generate import MAX_TORTUOSITY_SCALE, _capillary_lengths_by_tortuosity
+    from haemolynx.synthetic.template import Samples
+
+    def template(total):
+        T = fixture_template()
+        cls = replace(T.classes["capillary"], total_length_um=total, samples=Samples(tortuosities=(1.2,)))
+        return replace(T, classes={**T.classes, "capillary": cls})
+
+    chords = np.full(4, 30.0)
+    none = np.zeros(4, dtype=bool)
+    for total, expected in ((144.0, 36.0), (130.0, 32.5)):
+        notes: list = []
+        lengths = _capillary_lengths_by_tortuosity(template(total), chords, none, None, np.random.default_rng(0), notes)
+        assert lengths == pytest.approx([expected] * 4) and not notes  # every vessel curves alike
+    notes = []
+    lengths = _capillary_lengths_by_tortuosity(template(110.0), chords, none, None, np.random.default_rng(0), notes)
+    assert lengths == pytest.approx([30.0] * 4) and "drawn straight" in notes[0]
+    notes = []
+    lengths = _capillary_lengths_by_tortuosity(template(400.0), chords, none, None, np.random.default_rng(0), notes)
+    assert lengths == pytest.approx([30.0 * (1 + 0.2 * MAX_TORTUOSITY_SCALE)] * 4) and "times the template's tortuosity" in notes[0]
+    # A blind chain keeps the length drawn for it; the rest share what is left.
+    blind = np.array([True, False, False, False])
+    lengths = _capillary_lengths_by_tortuosity(
+        template(144.0), chords, blind, np.array([40.0, np.nan, np.nan, np.nan]), np.random.default_rng(0), []
+    )
+    assert lengths[0] == 40.0 and lengths[1:] == pytest.approx([(144.0 - 40.0) / 3] * 3)
+
+
+def test_the_trees_end_where_the_templates_do():
+    """Harvey, grid D1b: the template's trees have side branches, ending
+    where they hand over to capillaries; the drawn trunks handed every side
+    branch to the bed. Each order's vessels now end the tree as often as the
+    template's do."""
+    from haemolynx.synthetic.organisation import measure_organisation
+
+    T = _measured_template()
+    assert T.organisation.tree_leaves_by_order
+    for seed in (7, 8):
+        G = generate_network(T, seed=seed, options=FAITHFUL)
+        roles = _labelled(G)
+        S = measure_organisation(G, T.extent_um, roots=roles["inlet"] + roles["outlet"])
+        assert S.tree_leaves_by_order == T.organisation.tree_leaves_by_order
+    # Asked for one more Art2 leaf, one more Art2 tip ends there.
+    asked = dict(T.organisation.tree_leaves_by_order)
+    asked["Art2"] = asked.get("Art2", 0) + 1
+    more = replace(T, organisation=replace(T.organisation, tree_leaves_by_order=tuple(sorted(asked.items()))))
+    G = generate_network(more, seed=7, options=FAITHFUL)
+    roles = _labelled(G)
+    drawn = dict(measure_organisation(G, T.extent_um, roots=roles["inlet"] + roles["outlet"]).tree_leaves_by_order)
+    assert drawn["Art2"] == asked["Art2"]
+
+
+def test_a_trunk_keeps_to_its_trees_course():
+    """At a junction the plane is chosen so the trunk (the least deflected
+    child) turns towards the tree's course from its root."""
+    extent = np.array([200.0, 200.0, 200.0])
+    tip = trees.Tip(node=0, position=np.array([100.0, 100.0, 100.0]), direction=np.array([0.0, 0.0, 1.0]),
+                    diameter_um=8.0, generation=2)
+    occupancy = trees._Occupancy([tip.position])
+    course = np.array([0.0, 1.0, 0.0])
+    deflections = [0.3, 0.9]
+    children = trees._place_children(
+        tip, [20.0, 20.0], deflections, extent, occupancy, 30.0, 5.0, np.random.default_rng(0), None, False,
+        course, 10.0,
+    )
+    trunk_direction = children[0][1]
+    # The best of the eight planes leans the trunk at most sin(0.3) towards the course.
+    assert float(trunk_direction @ course) > 0.9 * math.sin(0.3)
+
+
 def test_curvature_targets_leave_a_template_without_a_layout_alone():
     """No organisation, no target: the polylines are the bows they were."""
     G = generate_network(fixture_template(), seed=SEED, options=FAITHFUL)

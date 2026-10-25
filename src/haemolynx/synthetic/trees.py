@@ -99,6 +99,16 @@ LAYER_WEIGHT = 2.0
 #: What a cell next to the template's tree cells is worth, as a share of
 #: its best neighbour: a slope back towards the layer, not a wall.
 LAYER_NEIGHBOUR_SHARE = 0.3
+#: A tip reading less than this of its side's TreeLayer is out of the
+#: template's tree cells (a neighbour cell reads LAYER_NEIGHBOUR_SHARE).
+LAYER_INSIDE = 0.5
+#: How much keeping a trunk on its tree's course from the root counts in a
+#: junction's score, in spacings (a trunk turning straight back loses twice
+#: this). Only with a template that records its trunks' straightness. On
+#: E14.5 (five seeds) 2 keeps the trees 0.77-0.81 in the template's tree cells
+#: and lets the venous trees reach 115-121 um from their outlets (median;
+#: the template's 134); 4 reached further but strayed from the cells.
+TRUNK_PERSISTENCE = 2.0
 #: How far ahead of a vessel's end, in spacings, the layer and the room to
 #: go on are read: a trunk steered only by where it ends runs on out of the
 #: template's corridor, or into a face, before it can turn.
@@ -566,6 +576,8 @@ def _place_children(
     rng: np.random.Generator,
     layer: Optional[TreeLayer] = None,
     closed: bool = False,
+    course: Optional[np.ndarray] = None,
+    persistence: float = 0.0,
 ) -> list[tuple[np.ndarray, np.ndarray, float, bool]]:
     """Each child's ``(end, direction, chord, cut at a face)``, the plane
     round the parent chosen by score; children that cannot stay inside the
@@ -577,6 +589,7 @@ def _place_children(
     parent = np.asarray(tip.position, float)
     count = len(chords)
     best: Optional[tuple[tuple, list]] = None
+    trunk = int(np.argmin(deflections)) if len(deflections) else -1
     rotation = rng.uniform(0.0, 2.0 * math.pi)
     for k in range(AZIMUTHS):
         phi = rotation + 2.0 * math.pi * k / AZIMUTHS
@@ -612,6 +625,9 @@ def _place_children(
                 else:
                     end = snap_to_face(parent + fraction * chords[i] * direction, extent)
             total += _score(end, extent, occupancy, spacing, tip.node, min_sep, layer, parent, direction)
+            if course is not None and i == trunk:
+                # The trunk going on keeps to its tree's course from the root.
+                total += persistence * spacing * float(np.dot(direction, course))
             children.append((end, direction, float(np.linalg.norm(end - parent)), cut))
         key = (inside, kept, total) if closed else (inside, total)
         if best is None or key > best[0]:
@@ -662,6 +678,11 @@ def grow_side(
     capillaries = template.class_target("capillary")
     side_branch_um = (capillaries.mean_diameter_um if capillaries else None) or FALLBACK_SIDE_BRANCH_UM
     layer = TreeLayer.of(template, side)
+    # The template's side branches: how many of each order's vessels end its
+    # tree (organisation.tree_leaves_by_order; Harvey, grid D1b).
+    organisation = template.organisation
+    leaves_by_order = dict(organisation.tree_leaves_by_order or ()) if organisation is not None else {}
+    persistence = TRUNK_PERSISTENCE if organisation is not None and organisation.trunk_straightness is not None else 0.0
 
     # Generation 1: one vessel from each root, extra ones in pairs so a root
     # is a terminal or a junction, never a degree-2 node.
@@ -724,9 +745,23 @@ def grow_side(
     occupancy = _Occupancy(draft.positions)
 
     previous_large = first_large
+    previous_label = first_order.label
     for order, category, is_large in generations[1:]:
         cls = template.class_target(category)
         growable = [t for t in tips if not t.at_face]
+        stop = min(leaves_by_order.get(previous_label, 0), max(len(growable) - 1, 0))
+        if stop:
+            # As many of the last order's tips end the tree here as the
+            # template's do: those already out of its tree cells, then the
+            # narrowest (a side branch is narrower than the trunk going on).
+            # Ranked by where a tip was heading instead, the ones at the
+            # tree's frontier ended and the trees grew into bushes.
+            def outside(t: Tip) -> bool:
+                return layer is not None and layer.at(t.position) < LAYER_INSIDE
+
+            ranked = sorted(growable, key=lambda t: (not outside(t), t.diameter_um, t.node))
+            ended = {t.node for t in ranked[:stop]}
+            growable = [t for t in growable if t.node not in ended]
         trunk = is_large and previous_large
         if trunk:
             counts = trunk_children_per_tip(len(growable), order.edge_count, draft.notes, order.label)
@@ -779,7 +814,14 @@ def grow_side(
                 result.handoffs.append(tip.node)
             else:
                 deflections = [angle / 2.0] * count
-            children = _place_children(tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng, layer, closed)
+            course = None
+            if persistence and tip.root >= 0:
+                away = np.asarray(tip.position, float) - np.asarray(draft.position(tip.root), float)
+                course = _unit(away) if float(np.linalg.norm(away)) > 0 else None
+            children = _place_children(
+                tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng, layer, closed,
+                course, persistence,
+            )
             for (end, direction, chord, cut), diameter, tort in zip(children, diameters, tortuosities):
                 node = draft.add_node(end)
                 result.nodes.append(node)
@@ -791,6 +833,7 @@ def grow_side(
         occupancy = _Occupancy(draft.positions)
         tips = next_tips
         previous_large = is_large
+        previous_label = order.label
     result.leaves.extend(tips)
     return result
 
