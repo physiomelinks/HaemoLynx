@@ -200,3 +200,9 @@ were refused, since each classifier read one file for every image. Now every cla
 the run's raw image by its own channels (`ilastik_*_channels`; CLAUDE.md, "Segmentation"), so each
 image's masks come from its own raw image and go in its own `segmentations/` folder. An image with
 no raw image fails its checks (`check_ilastik_vessel_mask_channels`).
+
+**A synthetic template per condition** (2026-10-25, Harvey's B5a, `PLAN_batch_templates.md`):
+`run_batch` ends by writing `{condition}.haemobatch` (`batch.haemobatch` without conditions) of the
+images that finished or were skipped as done (`write_batch_templates`); an image in neither
+condition is in none, a run that cannot be a template is left out and named, and writing them never
+fails the batch. What the file is and how it is averaged: `docs/notes/synthetic.md`.

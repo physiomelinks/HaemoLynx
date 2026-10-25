@@ -145,3 +145,30 @@ whose leaves reach nearest the template's, so every seed's venous trees now reac
 Grid D1d (Harvey): two of six Delaunay networks pass (#2, #9), no Voronoi one. Every network now
 reaches, curves and ends its trees as the template does, and no measure separates the two from the
 rest; the Voronoi beds' thinner plexus is the plain difference left between the beds.
+
+## 2026-10-25: a batch condition as the template (`.haemobatch`, `PLAN_batch_templates.md`)
+
+Harvey asked for a condition's average network as a template, a batch run writing one file per
+condition, and chose B1a, B2a, B3a, B4b beside a and B5a. Every batch run now writes
+`{condition}.haemobatch` (`batch.haemobatch` with no conditions) of the images that finished:
+gzip JSON of each run's two templates (by its report and by its graph), its `.haemorun` path and
+SHA-256, and the runs left out with why. `load_template` reads one as its runs averaged
+(`synthetic/average.py`), so the panel, preflight and the stages need nothing else.
+
+- **The box** (B1a) is each axis's mean extent, and every count the runs' mean density times its
+  volume, so runs of different sizes count alike; inlets, outlets and the dead ends leaving the
+  image go with the faces' area. An order a run lacks counts 0 for it, so a condition whose runs
+  reach different depths draws the deepest orders rarely, not always.
+- **The layout** (B2a) is pooled: each run's per-cell fields carried onto the common grid and the
+  capillary vertices pooled as shares of each box. Reading a finer grid only at the coarser cells'
+  centres, as first written, kept or multiplied a sparse field by chance (a test's two vessels
+  counted 4.4 against 2); each cell is now shared out by its overlap, which keeps every total. This
+  assumes the runs were imaged the same way up.
+- **The comparison** (B4b beside a) keeps the bands round the average and adds each row's range
+  over the runs, each scaled to the average's box: `Members low`, `Members high`, `Within
+  members`. A correlation row has no range (each run's field is its own reference), and a value
+  the drawn network lacks gets no verdict.
+
+Checked on `tests/synthetic_fixtures.py`'s drawn runs and on E14.5 averaged with itself (counts,
+orders, classes, dead ends, loops and inlets as the one run's). Not yet run on a real batch of
+several images, nor marked on a grid.
