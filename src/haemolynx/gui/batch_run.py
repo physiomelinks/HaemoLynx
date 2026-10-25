@@ -153,6 +153,8 @@ class BatchSummary:
     statistics: BatchStatisticsFiles | None = None
     #: Whether it stopped after an image because it was asked to.
     stopped: bool = False
+    #: Its ``.haemobatch`` templates, one per condition (or the whole batch).
+    templates: tuple = ()
 
     @property
     def csv_path(self) -> Path:
@@ -176,6 +178,8 @@ class BatchSummary:
             )
         if self.statistics is not None and self.statistics.message:
             message += "\n" + self.statistics.message
+        if self.templates:
+            message += "\nSynthetic templates: " + ", ".join(str(path) for path in self.templates)
         return message
 
     def write(self) -> Path | None:
@@ -562,6 +566,7 @@ def run_batch(
         conditions,
         exclude_sections=exclude_sections,
     )
+    summary.templates = write_batch_templates(output_root, summary.results, conditions)
     logger.info(summary.message())
     return summary
 
@@ -645,6 +650,42 @@ def write_statistics(
     except Exception as error:  # noqa: BLE001 - the images' own outputs stand
         logger.exception("could not write the batch statistics")
         return BatchStatisticsFiles(message=f"Could not write the batch statistics: {error}")
+
+
+def write_batch_templates(
+    output_root: Path | str, results: Sequence[BatchResult], conditions: BatchConditions | None = None
+) -> tuple[Path, ...]:
+    """One ``.haemobatch`` per condition -- or for the whole batch with none
+    -- of the images that finished (``synthetic.batch_template``;
+    ``PLAN_batch_templates.md``, Harvey's B5a: at the end of every batch). An
+    image in both conditions or neither is in none. Never raises: a batch
+    that ran is never reported failed for its templates."""
+    from haemolynx.synthetic import batch_template_filename, write_batch_template
+
+    done = [
+        r for r in results
+        if r.status in (DONE, SKIPPED) and r.haemorun is not None and Path(r.haemorun).is_file()
+    ]
+    if conditions is None or not conditions.conditions:
+        groups: dict[str | None, list[BatchResult]] = {None: done}
+    else:
+        groups = {c.label: [r for r in done if r.condition == c.label] for c in conditions.conditions}
+    written: list[Path] = []
+    for label, members in groups.items():
+        if not members:
+            continue
+        try:
+            path = write_batch_template(
+                Path(output_root) / batch_template_filename(label),
+                [(r.match.stem, Path(r.haemorun)) for r in members],
+                condition=label,
+            )
+        except Exception:  # noqa: BLE001 - the images' own outputs stand
+            logger.exception("could not write the batch template for %s", label or "the batch")
+            continue
+        if path is not None:
+            written.append(path)
+    return tuple(written)
 
 
 #: The rows a batch fills for each image, shown as :data:`BATCH_ROW_TEXT`
@@ -1187,6 +1228,7 @@ __all__ = [
     "stems_done_before",
     "table_rows",
     "tied_cells",
+    "write_batch_templates",
     "write_statistics",
 ]
 

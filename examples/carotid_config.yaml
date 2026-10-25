@@ -8,7 +8,7 @@
 input_and_segmentation:
   # Analyse a segmented image, or generate a synthetic vascular network matched to a previous run's .haemorun file and start at the Boundaries stage; the Skeletonise and Graph tabs' settings are then not read  [one of: segmented_image, synthetic]
   network_source: segmented_image
-  # The .haemorun file of a finished microscopy-image run the synthetic network is matched to: not itself synthetic, saved with Statistics on, with inlets and outlets and arteriole/venule branch orders assigned  [needs network_source = synthetic; must exist]
+  # The .haemorun file of a finished microscopy-image run the synthetic network is matched to: not itself synthetic, saved with Statistics on, with inlets and outlets and arteriole/venule branch orders assigned; or a batch run's .haemobatch, its condition's runs averaged  [needs network_source = synthetic; must exist]
   synthetic_template_path: null
   # Where the template's characteristics come from: statistics reads the run's saved statistics report (each section it needs must have been switched on), graph reads per-vessel distributions off the template graph in the file  [one of: statistics, graph; needs network_source = synthetic]
   synthetic_template_source: statistics

@@ -1055,7 +1055,11 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   the template's dead ends not drawn are joined in pairs, a capillary fewer and a loop more each
   (`generate.dead_end_pairs_joined`; those rows are judged against what the pairs make), and the
   comparison reports what was not drawn (`compare.not_drawn`, `not_held`).
-  `PLAN_synthetic_physiology.md` has what is still open. `validate_synthetic_graph` pins the graph contract
+  `PLAN_synthetic_physiology.md` has what is still open. **A batch's condition as the template**
+  (`PLAN_batch_templates.md`): every batch run writes `{condition}.haemobatch` (`batch.haemobatch`
+  with none; `gui/batch_run.write_batch_templates`), and `load_template` reads one as its runs
+  averaged (`synthetic/average.py`, `batch_template.py`); its comparison reports each row's range
+  over the runs beside the band. `validate_synthetic_graph` pins the graph contract
   (int ids, `pos`/`voxels` in µm, `length` the polyline's, `diameter_source="synthetic"` and, given
   the template, its `diameter_basis`, no degree-2 node, `dead_end_kind` on every dead end,
   connected).

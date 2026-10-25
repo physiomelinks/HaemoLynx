@@ -7,6 +7,16 @@ statistics against the template.
 """
 from __future__ import annotations
 
+from .average import average_templates
+from .batch_template import (
+    BATCH_TEMPLATE_SUFFIX,
+    batch_members_in_common_box,
+    batch_template_filename,
+    is_batch_template,
+    load_batch_template,
+    read_batch_template,
+    write_batch_template,
+)
 from .compare import (
     COMPARISON_SECTION,
     ComparisonRow,
@@ -59,6 +69,14 @@ from .template import (
 )
 
 __all__ = [
+    "BATCH_TEMPLATE_SUFFIX",
+    "average_templates",
+    "batch_members_in_common_box",
+    "batch_template_filename",
+    "is_batch_template",
+    "load_batch_template",
+    "read_batch_template",
+    "write_batch_template",
     "COMPARISON_SECTION",
     "DEFAULT_DAUGHTER_ANGLE_DEG",
     "DEFAULT_MURRAY_EXPONENT",

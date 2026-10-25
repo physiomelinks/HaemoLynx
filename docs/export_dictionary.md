@@ -235,6 +235,9 @@ Written to the run's output folder (vtk_output_prefix's). A synthetic run only: 
 | `Ratio` | `dimensionless` | Synthetic over template. |
 | `Tolerance` | `-` | The band the generator is held to (exact, rel 0.02, ...), or empty. |
 | `Within` | `-` | yes or no; empty where nothing is fitted. |
+| `Members low` | `-` | A batch template only: the lowest of its runs' own values, each at the average's box, in the characteristic's unit. |
+| `Members high` | `-` | The highest of the same. |
+| `Within members` | `-` | yes or no: whether the synthetic value lies between them; empty for a one-run template, a correlation, or where the synthetic network has no value. |
 
 ## `{stem}_run_manifest.json`
 
@@ -598,6 +601,12 @@ Written to the batch's output folder. One row per image of a batch run.
 | `wall_time_s` | `s` | Its wall time. |
 | `peak_rss_bytes` | `bytes` | Its peak memory: the largest of its stages' peaks in its run manifest (not the process's, which in a batch includes every earlier image). |
 | `error` | `-` | The error, if it failed. |
+
+## `{condition}.haemobatch`
+
+Written to the batch's output folder. A synthetic template per condition (batch.haemobatch with none): gzip JSON of each finished image's templates, by its statistics report and by its graph, with the runs left out and why. A synthetic run loads it as its template, the runs averaged (PLAN_batch_templates.md).
+
+NetworkTemplate fields; see synthetic/batch_template.py.
 
 ## `batch_settings.yaml`
 

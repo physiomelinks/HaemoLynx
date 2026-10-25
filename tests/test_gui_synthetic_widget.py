@@ -12,7 +12,7 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import settings_widget  # noqa: E402
 from haemolynx.gui.boundary_picking import ROLES, SYNTHETIC_CHOOSES_NOTE  # noqa: E402
-from haemolynx.gui.run_snapshot import SAVE_FILTER  # noqa: E402
+from haemolynx.gui.form import PATH_FILTERS  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -70,7 +70,8 @@ def test_the_template_row_is_a_haemorun_file_picker(panel):
     rows = widget._haemolynx_rows()
     picker = rows["synthetic_template_path"]
     assert picker.mode.value == "r" if hasattr(picker.mode, "value") else str(picker.mode).endswith("r")
-    assert picker.filter == SAVE_FILTER
+    assert picker.filter == PATH_FILTERS["synthetic_template_path"]
+    assert "*.haemobatch" in picker.filter
 
 
 def test_the_advanced_synthetic_rows_sit_behind_their_own_button(panel):

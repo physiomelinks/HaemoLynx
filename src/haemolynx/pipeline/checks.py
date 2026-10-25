@@ -967,10 +967,11 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     if path in (None, ""):
         return report  # check_settings says it is required
     file = Path(path)
-    if file.suffix.lower() != ".haemorun":
+    if file.suffix.lower() not in (".haemorun", ".haemobatch"):
         report.add_error(
-            f"synthetic_template_path: {file} is not a .haemorun file. Fix: save the "
-            "template run from the panel (Save run) and point synthetic_template_path at it."
+            f"synthetic_template_path: {file} is not a .haemorun or .haemobatch file. Fix: save the "
+            "template run from the panel (Save run), or take a batch run's .haemobatch, and point "
+            "synthetic_template_path at it."
         )
         return report
     if not file.exists():
@@ -989,12 +990,16 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     except TemplateError as error:
         report.add_error(f"synthetic_template_path: {error}")
         return report
+    notes = list(template.provenance.notes)
+    # A batch template says first what it averages: part of its line, not a warning.
+    averaged = f"; {notes.pop(0)}" if file.suffix.lower() == ".haemobatch" and notes else ""
     report.add_pass(
         "synthetic template",
         f"{file}: {template.vessel_count} vessels, {template.inlet_count} inlet(s), "
-        f"{template.outlet_count} outlet(s), box {tuple(round(v, 1) for v in template.extent_um)} um",
+        f"{template.outlet_count} outlet(s), box {tuple(round(v, 1) for v in template.extent_um)} um"
+        + averaged,
     )
-    for note in template.provenance.notes:
+    for note in notes:
         report.add_warning(f"synthetic template: {note}")
     basis = run_diameter_basis(settings)
     if template.diameter_basis is not None and basis != template.diameter_basis:

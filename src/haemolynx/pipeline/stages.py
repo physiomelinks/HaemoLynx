@@ -7189,12 +7189,18 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             # the report.
             from haemolynx import synthetic
 
-            template = synthetic.load_template(
-                settings["synthetic_template_path"], settings.get("synthetic_template_source", "statistics")
+            source = settings.get("synthetic_template_source", "statistics")
+            template = synthetic.load_template(settings["synthetic_template_path"], source)
+            # A batch template's runs, each at the average's box: the range
+            # each characteristic is reported within beside its band (B4b).
+            members = (
+                synthetic.batch_members_in_common_box(settings["synthetic_template_path"], source)
+                if synthetic.is_batch_template(settings["synthetic_template_path"])
+                else ()
             )
             rows = synthetic.compare_run(
                 template, G, roles=synthetic.boundary_nodes(G), sections=report_sections,
-                image_shape=image_shape, voxel_size_zyx=voxel_size_zyx,
+                image_shape=image_shape, voxel_size_zyx=voxel_size_zyx, members=members,
             )
             comparison_path = synthetic.write_template_comparison_csv(
                 rows, output_dir / f"{run_stem(settings)}_template_comparison.csv"
@@ -7208,6 +7214,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 ", ".join(summary["outside"]) if summary["outside"] else "none outside",
                 comparison_path,
             )
+            if summary["ranged"]:
+                logger.info(
+                    "Synthetic network against its batch template's %d runs: %d of %d characteristics "
+                    "within their range.", len(members), summary["within_members"], summary["ranged"],
+                )
     else:
         logger.info("Vessel statistics skipped.")
     if tissue is not None:

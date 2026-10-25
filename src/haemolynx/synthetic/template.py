@@ -1359,6 +1359,14 @@ def diameter_basis_of_run(path: Path | str) -> Optional[str]:
     key = (str(file.resolve()), stat.st_size, stat.st_mtime_ns)
     if key in _BASIS_CACHE:
         return _BASIS_CACHE[key]
+    from .batch_template import batch_member_templates, is_batch_template
+
+    if is_batch_template(file):
+        # The basis most of the batch's runs were read on.
+        bases = [t.diameter_basis for t in batch_member_templates(file, SOURCE_STATISTICS) if t.diameter_basis]
+        basis = max(set(bases), key=bases.count) if bases else None
+        _BASIS_CACHE[key] = basis
+        return basis
     from haemolynx.gui.run_snapshot import read_run_snapshot
 
     snapshot = read_run_snapshot(file)
@@ -1372,8 +1380,10 @@ def diameter_basis_of_run(path: Path | str) -> Optional[str]:
 
 def load_template(path: Path | str, source: str = SOURCE_STATISTICS) -> NetworkTemplate:
     """The template of the ``.haemorun`` at *path*, by *source*
-    (:data:`TEMPLATE_SOURCES`). Remembered per (file identity, source), so
-    preflight and the Input stage read the file once.
+    (:data:`TEMPLATE_SOURCES`), or of a batch condition's ``.haemobatch``
+    (its runs' templates averaged, ``synthetic.batch_template``). Remembered
+    per (file identity, source), so preflight and the Input stage read the
+    file once.
 
     Raises ``gui.run_snapshot.RunSnapshotError`` for a file that is not a run
     snapshot and :class:`TemplateError` for a run that cannot be a template.
@@ -1386,6 +1396,13 @@ def load_template(path: Path | str, source: str = SOURCE_STATISTICS) -> NetworkT
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
+    from .batch_template import is_batch_template, load_batch_template
+
+    if is_batch_template(file):
+        # A batch condition's runs, averaged (synthetic.batch_template).
+        template = load_batch_template(file, source)
+        _CACHE[key] = template
+        return template
     # gui.run_snapshot imports the stages, which import this package lazily.
     from haemolynx.gui.run_snapshot import read_run_snapshot
 

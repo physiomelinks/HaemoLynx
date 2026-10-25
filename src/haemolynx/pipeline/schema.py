@@ -204,7 +204,8 @@ SCHEMA = Schema(
             help=(
                 "The .haemorun file of a finished microscopy-image run the synthetic "
                 "network is matched to: not itself synthetic, saved with Statistics on, "
-                "with inlets and outlets and arteriole/venule branch orders assigned"
+                "with inlets and outlets and arteriole/venule branch orders assigned; or a "
+                "batch run's .haemobatch, its condition's runs averaged"
             ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,

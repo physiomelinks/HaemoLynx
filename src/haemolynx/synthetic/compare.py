@@ -41,7 +41,10 @@ from .template import (
 
 #: The section of the statistics report the rows are added to.
 COMPARISON_SECTION = "synthetic_comparison"
-CSV_COLUMNS = ("Section", "Characteristic", "Template", "Synthetic", "Ratio", "Tolerance", "Within")
+CSV_COLUMNS = (
+    "Section", "Characteristic", "Template", "Synthetic", "Ratio", "Tolerance", "Within",
+    "Members low", "Members high", "Within members",
+)
 
 #: ``(kind, value)``: ``exact``; ``abs`` within value; ``rel`` within value
 #: times the template's.
@@ -137,6 +140,13 @@ class ComparisonRow:
     ratio: Optional[float]
     tolerance: str
     within: Optional[bool]
+    #: A batch template's members' own values, each at the average's box,
+    #: lowest and highest, and whether the synthetic value lies between them
+    #: (Harvey's B4b: is it another member of the condition?). None for a
+    #: one-run template and for a row with nothing to range over.
+    members_low: Optional[float] = None
+    members_high: Optional[float] = None
+    within_members: Optional[bool] = None
 
 
 def _number(value: Any) -> Optional[float]:
@@ -503,6 +513,7 @@ def compare_run(
     sections: Optional[Mapping[str, Any]] = None,
     image_shape: Optional[Sequence[int]] = None,
     voxel_size_zyx: Optional[Sequence[float]] = None,
+    members: Sequence[NetworkTemplate] = (),
 ) -> list[ComparisonRow]:
     """The rows for the synthetic network *G* (its node *roles*): its own
     statistics report's *sections* read as a template by the template's
@@ -523,17 +534,49 @@ def compare_run(
             samples=False,
         )
     record = G.graph.get(GRAPH_TEMPLATE_RECORD) or {}
-    return compare_templates(template, synthetic, options=record.get("options"))
+    rows = compare_templates(template, synthetic, options=record.get("options"))
+    if members:
+        rows = with_members_range(rows, [compare_templates(m, synthetic, options=record.get("options")) for m in members])
+    return rows
+
+
+def with_members_range(rows: Sequence[ComparisonRow], member_rows: Sequence[Sequence[ComparisonRow]]) -> list[ComparisonRow]:
+    """*rows* with each characteristic's range over a batch template's
+    members (their rows against the same synthetic network, B4b): the
+    lowest and highest of their template values, and whether the synthetic
+    value lies between them. A correlation row ranges over nothing: each
+    member's own field is its reference."""
+    values: dict[tuple[str, str], list[float]] = {}
+    for member in member_rows:
+        for r in member:
+            number = _number(r.template)
+            if number is not None:
+                values.setdefault((r.section, r.characteristic), []).append(number)
+    out = []
+    for r in rows:
+        found = values.get((r.section, r.characteristic))
+        synthetic = _number(r.synthetic)
+        if not found or "(correlation)" in r.characteristic:
+            out.append(r)
+            continue
+        low, high = min(found), max(found)
+        within = None if synthetic is None else (low - 1e-9 <= synthetic <= high + 1e-9)
+        out.append(replace(r, members_low=low, members_high=high, within_members=within))
+    return out
 
 
 def comparison_summary(rows: Sequence[ComparisonRow]) -> dict:
-    """``{"fitted", "within", "outside": [characteristics]}``."""
+    """``{"fitted", "within", "outside": [characteristics]}``, and, for a
+    batch template, how many rows lie within its members' range."""
     fitted = [r for r in rows if r.within is not None]
+    ranged = [r for r in rows if r.within_members is not None]
     return {
         "rows": len(rows),
         "fitted": len(fitted),
         "within": sum(1 for r in fitted if r.within),
         "outside": [f"{r.section}: {r.characteristic}" for r in fitted if not r.within],
+        "ranged": len(ranged),
+        "within_members": sum(1 for r in ranged if r.within_members),
     }
 
 
@@ -548,9 +591,16 @@ def comparison_section(rows: Sequence[ComparisonRow]) -> dict:
             text += " within " + r.tolerance if r.within else " OUTSIDE " + r.tolerance
         elif r.tolerance.startswith(("not drawn", "not held")):
             text += " " + r.tolerance
+        if r.within_members is not None:
+            text += (
+                f"; members {_text(r.members_low)} to {_text(r.members_high)}: "
+                + ("within" if r.within_members else "OUTSIDE")
+            )
         out[f"{r.section}: {r.characteristic}"] = text
     summary = comparison_summary(rows)
     out["fitted characteristics within tolerance"] = f"{summary['within']} of {summary['fitted']}"
+    if summary["ranged"]:
+        out["characteristics within the members' range"] = f"{summary['within_members']} of {summary['ranged']}"
     return out
 
 
@@ -574,6 +624,9 @@ def write_template_comparison_csv(rows: Sequence[ComparisonRow], path: Path | st
                 "" if r.ratio is None else _numeric_csv_text(r.ratio),
                 r.tolerance,
                 "" if r.within is None else ("yes" if r.within else "no"),
+                "" if r.members_low is None else _numeric_csv_text(r.members_low),
+                "" if r.members_high is None else _numeric_csv_text(r.members_high),
+                "" if r.within_members is None else ("yes" if r.within_members else "no"),
             ])
     return dest
 
@@ -589,6 +642,7 @@ __all__ = [
     "comparison_section",
     "not_drawn",
     "not_held",
+    "with_members_range",
     "unbanded",
     "organisation_rows",
     "comparison_summary",

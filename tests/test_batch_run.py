@@ -1236,3 +1236,67 @@ def test_a_real_batch_of_raw_images_is_segmented_by_ilastik_and_run(tmp_path, sc
         assert (folder / f"{stem}_statistics.csv").is_file()
         assert result.vessels
     assert summary.statistics is not None and summary.statistics.written
+
+@pytest.fixture(scope="module")
+def generated_run(tmp_path_factory):
+    """One real ``.haemorun`` (a network drawn to the synthetic fixture
+    template), copied in as each image's run."""
+    from synthetic_fixtures import write_generated_run
+
+    return write_generated_run(tmp_path_factory.mktemp("generated"), seed=11, name="generated.haemorun")
+
+
+def _fake_run_copying(source: Path, fail=()):
+    def run_image(values, schema, *, progress=None, check_cancelled=None, haemorun=None):
+        stem = Path(values["input_path"]).stem
+        if stem in fail:
+            raise ValueError(f"{stem} is broken")
+        haemorun.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, haemorun)
+        G = nx.MultiGraph()
+        G.add_edge(0, 1)
+        return G
+
+    return run_image
+
+
+def test_a_batch_writes_a_synthetic_template_per_condition(tmp_path, schema, monkeypatch, generated_run):
+    """B5a: one .haemobatch per condition at the end of every batch, of the
+    images that finished; an image in neither condition is in none."""
+    from haemolynx.statistics.batch_comparison import BatchConditions
+    from haemolynx.synthetic import read_batch_template
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run_copying(generated_run, fail={"KO_2"}))
+    folders, matches = _batch(tmp_path, "WT_1", "WT_2", "KO_1", "KO_2", "HET_1")
+    out = tmp_path / "out"
+    summary = run_batch(
+        _values(schema, tmp_path), schema, matches, out, folders=folders,
+        conditions=BatchConditions.from_text("wt", "ko"),
+    )
+    assert sorted(summary.templates) == [out / "ko.haemobatch", out / "wt.haemobatch"]
+    wt, ko = read_batch_template(out / "wt.haemobatch"), read_batch_template(out / "ko.haemobatch")
+    assert (wt.condition, [m.stem for m in wt.members]) == ("wt", ["WT_1", "WT_2"])
+    assert (ko.condition, [m.stem for m in ko.members]) == ("ko", ["KO_1"])  # KO_2 failed
+    assert all(m.templates["statistics"] and m.templates["graph"] for m in wt.members + ko.members)
+    assert "Synthetic templates:" in summary.message()
+
+
+def test_a_batch_without_conditions_writes_one_template_and_none_without_runs(
+    tmp_path, schema, monkeypatch, generated_run
+):
+    from haemolynx.synthetic import read_batch_template
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run_copying(generated_run))
+    folders, matches = _batch(tmp_path, "A_seg", "B_seg")
+    out = tmp_path / "out"
+    summary = run_batch(_values(schema, tmp_path), schema, matches, out, folders=folders)
+    assert summary.templates == (out / "batch.haemobatch",)
+    file = read_batch_template(out / "batch.haemobatch")
+    assert file.condition is None and [m.stem for m in file.members] == ["A_seg", "B_seg"]
+
+    # Runs that cannot be templates write nothing, and the batch still stands.
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+    again = tmp_path / "again"
+    summary = run_batch(_values(schema, tmp_path), schema, matches, again, folders=folders)
+    assert summary.templates == () and not list(again.glob("*.haemobatch"))
+    assert all(r.status == batch_run.DONE for r in summary.results)

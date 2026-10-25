@@ -343,8 +343,8 @@ def test_preflight_refuses_a_file_that_is_not_a_haemorun(tmp_path):
     bad = tmp_path / "stack.tif"
     bad.write_bytes(b"\x00")
     report = check_synthetic_template(_settings(bad, tmp_path))
-    assert not report.ok and "not a .haemorun file" in report.errors[0]
-    assert "Fix: save the template run from the panel (Save run)" in report.errors[0]
+    assert not report.ok and "not a .haemorun or .haemobatch file" in report.errors[0]
+    assert "Fix: save the template run from the panel (Save run), or take a batch run's .haemobatch" in report.errors[0]
 
 
 def test_preflight_refuses_a_haemorun_that_is_not_a_run_and_says_what_to_choose(tmp_path):
@@ -415,3 +415,60 @@ def test_preflight_still_demands_the_template_itself(tmp_path):
     report = preflight(_settings(tmp_path / "missing.haemorun", tmp_path), SCHEMA)
     assert not report.ok
     assert any("synthetic_template_path" in e for e in report.errors)
+
+
+# -- a batch condition's runs as the template (PLAN_batch_templates.md) ------------
+
+
+@pytest.fixture(scope="module")
+def batch_run_from_haemobatch(template_run, tmp_path_factory):
+    from haemolynx.synthetic import write_batch_template
+
+    folder = tmp_path_factory.mktemp("batch")
+    other = write_generated_run(folder, seed=12, name="WT_2.haemorun")
+    path = write_batch_template(folder / "wt.haemobatch", [("WT_1", template_run), ("WT_2", other)], condition="wt")
+    out = tmp_path_factory.mktemp("batch_run")
+    settings = _settings(path, out)
+    report = preflight(settings, SCHEMA)
+    G = run_pipeline_stages(settings, SCHEMA)
+    return path, settings, report, G, out
+
+
+def test_a_haemobatch_is_a_template_its_runs_averaged(batch_run_from_haemobatch):
+    path, settings, report, G, out = batch_run_from_haemobatch
+    assert report.ok, report.errors
+    # What it averages is part of its line, not a warning.
+    line = next(detail for label, detail in report.passed if label == "synthetic template")
+    assert line.endswith("the average of 2 runs of condition 'wt': WT_1, WT_2")
+    assert not any("the average of" in warning for warning in report.warnings)
+    assert run_stem(settings) == "wt_synthetic"
+    assert (out / "out" / "wt_synthetic_graph.pkl").is_file()
+    assert G.number_of_edges() > 100
+
+
+def test_a_haemobatch_runs_comparison_reports_each_characteristic_within_its_runs_range(batch_run_from_haemobatch):
+    """B4b beside a: the band against the average, and the runs' own spread."""
+    _path, _settings_, _report, G, out = batch_run_from_haemobatch
+    with (out / "out" / "wt_synthetic_template_comparison.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    ranged = [row for row in rows if row["Members low"]]
+    assert len(ranged) >= 30
+    for row in ranged:
+        assert float(row["Members low"]) <= float(row["Members high"])
+        # No verdict where the drawn network has no value (an order not drawn).
+        measured = not row["Synthetic"].startswith("N/A")
+        assert row["Within members"] in (("yes", "no") if measured else ("",))
+    assert all(not row["Members low"] for row in rows if "(correlation)" in row["Characteristic"])
+    inlets = next(row for row in rows if row["Characteristic"] == "inlets")
+    assert inlets["Within members"] == "yes"
+    section = G.graph[STATISTICS_REPORT]["sections"][COMPARISON_SECTION]
+    within, _of, ranged_count = section["characteristics within the members' range"].split()
+    judged = [row for row in ranged if row["Within members"]]
+    assert int(ranged_count) == len(judged) and 0 < int(within) <= int(ranged_count)
+
+
+def test_preflight_refuses_a_haemobatch_that_is_not_one(tmp_path):
+    bad = tmp_path / "wt.haemobatch"
+    bad.write_bytes(b"not a batch template")
+    report = check_synthetic_template(_settings(bad, tmp_path))
+    assert not report.ok and "is not a batch template" in report.errors[0]

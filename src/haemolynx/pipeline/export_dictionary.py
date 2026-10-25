@@ -379,6 +379,17 @@ FILES: tuple[OutputFile, ...] = (
             _c("Ratio", "dimensionless", "Synthetic over template."),
             _c("Tolerance", "-", "The band the generator is held to (exact, rel 0.02, ...), or empty."),
             _c("Within", "-", "yes or no; empty where nothing is fitted."),
+            _c(
+                "Members low", "-",
+                "A batch template only: the lowest of its runs' own values, each at the average's "
+                "box, in the characteristic's unit.",
+            ),
+            _c("Members high", "-", "The highest of the same."),
+            _c(
+                "Within members", "-",
+                "yes or no: whether the synthetic value lies between them; empty for a one-run "
+                "template, a correlation, or where the synthetic network has no value.",
+            ),
         ),
     ),
     # -- the run's record ----------------------------------------------------
@@ -672,6 +683,14 @@ FILES: tuple[OutputFile, ...] = (
             ),
             _c("error", "-", "The error, if it failed."),
         ),
+    ),
+    OutputFile(
+        "{condition}.haemobatch", _BATCH,
+        "A synthetic template per condition (batch.haemobatch with none): gzip JSON of each "
+        "finished image's templates, by its statistics report and by its graph, with the runs "
+        "left out and why. A synthetic run loads it as its template, the runs averaged "
+        "(PLAN_batch_templates.md).",
+        columns_note="NetworkTemplate fields; see synthetic/batch_template.py.",
     ),
     OutputFile(
         "batch_settings.yaml", _BATCH,

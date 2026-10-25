@@ -1481,12 +1481,15 @@ def test_the_diameter_rows_reading_the_raw_image_hide_under_a_synthetic_network(
 
 def test_the_template_row_opens_a_haemorun_file_dialogue():
     from haemolynx.gui.form import CHOICE_VALUE_LABELS, PATH_FILTERS
-    from haemolynx.gui.run_snapshot import SAVE_FILTER
 
-    assert PATH_FILTERS["synthetic_template_path"] == SAVE_FILTER
+    # A run's .haemorun or a batch's .haemobatch, both offered first.
+    template_filter = PATH_FILTERS["synthetic_template_path"]
+    assert template_filter.startswith("HaemoLynx run or batch template (*.haemorun *.haemobatch);;")
+    assert "Batch template (*.haemobatch)" in template_filter
     field = {f.name: f for f in fields_for(SCHEMA)}["synthetic_template_path"]
     assert field.options["mode"] == "r"
-    assert field.options["filter"] == SAVE_FILTER
+    assert field.options["filter"] == template_filter
+    assert label_for("synthetic_template_path", None) == "Template run (.haemorun or .haemobatch)"
     assert field.hide_when_unmet
     assert CHOICE_VALUE_LABELS["network_source"]["synthetic"] == "Synthetic network from a template run"
     assert label_for("network_source", None) == "Input"

@@ -514,7 +514,7 @@ def visible_statistics_settings(
 #: Export-tab IDE plot rows: schema keys stay snake_case for YAML.
 SETTING_ROW_LABELS: dict[str, str] = {
     "network_source": "Input",
-    "synthetic_template_path": "Template run (.haemorun)",
+    "synthetic_template_path": "Template run (.haemorun or .haemobatch)",
     "synthetic_template_source": "Match the template by",
     "synthetic_seed": "Synthetic network seed",
     "synthetic_scale": "Synthetic box scale",
@@ -702,7 +702,10 @@ def _options_for(setting: Setting, widget_type: str, value: Any = None) -> dict[
 #: file; kept equal to ``gui.run_snapshot.SAVE_FILTER`` (not imported: that
 #: module imports the stages).
 PATH_FILTERS: dict[str, str] = {
-    "synthetic_template_path": "HaemoLynx run (*.haemorun);;All files (*)",
+    "synthetic_template_path": (
+        "HaemoLynx run or batch template (*.haemorun *.haemobatch);;HaemoLynx run (*.haemorun);;"
+        "Batch template (*.haemobatch);;All files (*)"
+    ),
 }
 
 CHANNEL_SETTINGS = {
