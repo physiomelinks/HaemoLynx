@@ -18,8 +18,10 @@ from haemolynx.graph.diagnostics import (
     format_vessels_missing_from_graph_report,
 )
 from haemolynx.preprocessing.skeleton_consistency import (
+    diagnose_centreline_dropped_by_thick_gate,
     diagnose_skeleton_mask_consistency,
     diagnose_vessels_missing_from_skeleton,
+    format_centreline_dropped_by_thick_gate_report,
     format_skeleton_mask_consistency_report,
     format_vessels_missing_from_skeleton_report,
 )
@@ -874,3 +876,182 @@ def test_vessels_missing_from_graph_report_their_volume_share_too():
     assert report["missing_volume_fraction"] == pytest.approx(16 / 33)
     assert f"{16 / 33:.2%} of the segmented volume" in text
     assert "the largest is 16 voxels" in text
+
+
+# --- diagnose_centreline_dropped_by_thick_gate --------------------------------
+
+
+def _line_along_x(shape, y: int, x0: int, x1: int, z: int = 5) -> np.ndarray:
+    line = np.zeros(shape, dtype=bool)
+    line[z, y, x0:x1] = True
+    return line
+
+
+def test_dropped_centreline_is_split_by_place_round_the_thick_region():
+    shape = (11, 11, 50)
+    region = np.zeros(shape, dtype=bool)
+    region[:, :, :20] = True
+    plain = _line_along_x(shape, 5, 10, 40)  # x 10-19 inside, 20-22 within 3 um, 23-39 beyond
+    gated = np.zeros(shape, dtype=bool)
+
+    report = diagnose_centreline_dropped_by_thick_gate(
+        gated, plain, region, plain_skeleton=plain, shell_um=3.0,
+    )
+
+    assert report["dropped_pieces"] == 1
+    assert report["dropped_voxels"] == 30
+    assert report["dropped_um"] == pytest.approx(30.0)
+    assert report["by_place"] == {
+        "thick_region": {"voxels": 10, "um": pytest.approx(10.0)},
+        "shell": {"voxels": 3, "um": pytest.approx(3.0)},
+        "beyond": {"voxels": 17, "um": pytest.approx(17.0)},
+    }
+    assert report["inside_large_um"] is None
+    (piece,) = report["pieces"]
+    assert piece["thick_region_um"] == pytest.approx(10.0)
+    assert piece["beyond_um"] == pytest.approx(17.0)
+
+
+def test_plain_lee_within_reach_of_the_skeleton_is_not_dropped():
+    shape = (11, 11, 40)
+    region = np.zeros(shape, dtype=bool)
+    plain = _line_along_x(shape, 2, 5, 35)
+    near = _line_along_x(shape, 5, 5, 35)  # 3 um away: within reach
+    far = _line_along_x(shape, 6, 5, 35)  # 4 um away: dropped
+
+    assert diagnose_centreline_dropped_by_thick_gate(near, plain, region, plain_skeleton=plain)["dropped_voxels"] == 0
+    assert diagnose_centreline_dropped_by_thick_gate(far, plain, region, plain_skeleton=plain)["dropped_voxels"] == 30
+
+
+def test_pieces_under_the_size_floor_are_left_out():
+    shape = (11, 11, 40)
+    region = np.zeros(shape, dtype=bool)
+    gated = np.zeros(shape, dtype=bool)
+    plain = _line_along_x(shape, 5, 2, 11) | _line_along_x(shape, 5, 20, 30)  # 9 and 10 voxels
+
+    report = diagnose_centreline_dropped_by_thick_gate(gated, plain, region, plain_skeleton=plain, min_piece_voxels=10)
+
+    assert report["dropped_pieces"] == 1
+    assert report["dropped_voxels"] == 10
+
+
+def test_dropped_centreline_is_measured_in_microns_on_anisotropic_voxels():
+    shape = (11, 11, 40)
+    region = np.zeros(shape, dtype=bool)
+    gated = _line_along_x(shape, 3, 5, 35)  # 2 voxels away along y: 1.0 um at 0.5 um a voxel
+    plain = _line_along_x(shape, 5, 5, 35)
+    spacing = (1.0, 0.5, 0.25)
+
+    near = diagnose_centreline_dropped_by_thick_gate(gated, plain, region, plain_skeleton=plain, voxel_size_zyx=spacing)
+    alone = diagnose_centreline_dropped_by_thick_gate(
+        np.zeros(shape, dtype=bool), plain, region, plain_skeleton=plain, voxel_size_zyx=spacing,
+    )
+
+    assert near["dropped_voxels"] == 0
+    assert alone["dropped_um"] == pytest.approx(30 * 0.25)
+
+
+def test_dropped_centreline_inside_the_large_masks_is_reported_apart():
+    shape = (11, 11, 40)
+    region = np.zeros(shape, dtype=bool)
+    large = np.zeros(shape, dtype=bool)
+    large[:, :, :15] = True
+    plain = _line_along_x(shape, 5, 5, 35)
+
+    report = diagnose_centreline_dropped_by_thick_gate(
+        np.zeros(shape, dtype=bool), plain, region, plain_skeleton=plain, large_mask=large,
+    )
+
+    assert report["inside_large_um"] == pytest.approx(10.0)
+    assert report["pieces"][0]["inside_large_um"] == pytest.approx(10.0)
+
+
+def test_plain_lee_defaults_to_lee_of_the_hole_filled_mask():
+    from haemolynx.preprocessing.skeleton import fill_binary_holes, skeletonize_volume
+
+    mask = np.zeros((11, 11, 40), dtype=bool)
+    mask[3:8, 3:8, 5:35] = True  # an odd-width rod: Lee leaves a line
+    empty = np.zeros_like(mask)
+
+    report = diagnose_centreline_dropped_by_thick_gate(empty, mask, empty)
+    expected = skeletonize_volume(fill_binary_holes(mask))
+
+    assert expected.sum() > 10
+    assert report["plain_voxels"] == int(expected.sum())
+    assert report["dropped_voxels"] == int(expected.sum())
+
+
+def _thick_vessel_with_capillary(capillary_y: int):
+    """A thick vessel (radius 7 voxels, its own large-vessel mask) along x,
+    and a capillary of radius 1 voxel beside it, its axis at row
+    *capillary_y*, joined to it at both ends."""
+    shape = (32, 48, 90)
+    z, y, x = np.indices(shape)
+    thick = ((z - 16) ** 2 + (y - 16) ** 2 <= 49) & (x >= 5) & (x < 85)
+    capillary = ((z - 16) ** 2 + (y - capillary_y) ** 2 <= 1) & (x >= 15) & (x < 75)
+    mask = thick | capillary
+    for x0 in (15, 72):
+        mask |= (abs(z - 16) <= 1) & (y >= 16) & (y <= capillary_y) & (x >= x0) & (x < x0 + 3)
+    return mask, thick
+
+
+def _gated(mask, large):
+    from haemolynx.preprocessing.thick_vessels import skeletonize_thickness_gated
+
+    # E14.5's settings: the large masks are the thick body, 3 um of wall, 3 um of flake filter.
+    return skeletonize_thickness_gated(
+        mask, min_radius_um=3.0, voxel_size_zyx=(1.0, 1.0, 1.0), restrict_thick_to_mask=large,
+        return_thick_mask=True, wall_absorption_um=3.0, flake_filter_um=3.0,
+    )
+
+
+def test_a_capillary_4_um_beside_a_thick_vessel_is_reported_dropped_by_the_gate():
+    mask, large = _thick_vessel_with_capillary(capillary_y=27)  # its axis 4 um beyond the wall (row 23)
+    skeleton, region = _gated(mask, large)
+    assert not skeleton[:, 26:29, 20:70].any()  # the gate drew no centreline along it
+
+    report = diagnose_centreline_dropped_by_thick_gate(skeleton, mask, region, large_mask=large)
+
+    assert report["dropped_pieces"] == 1
+    assert 60.0 <= report["dropped_um"] <= 75.0
+    places = report["by_place"]
+    assert places["shell"]["um"] > places["thick_region"]["um"] > 0
+    assert places["beyond"]["um"] == 0
+    assert report["inside_large_um"] < 0.2 * report["dropped_um"]
+
+
+def test_a_capillary_beyond_the_shell_keeps_its_centreline_and_nothing_is_reported():
+    mask, large = _thick_vessel_with_capillary(capillary_y=31)
+    skeleton, region = _gated(mask, large)
+    assert skeleton[:, 30:33, 20:70].sum() >= 45
+
+    report = diagnose_centreline_dropped_by_thick_gate(skeleton, mask, region, large_mask=large)
+
+    assert report["dropped_voxels"] == 0
+
+
+def test_the_thick_vessel_alone_drops_no_centreline():
+    _mask, large = _thick_vessel_with_capillary(capillary_y=31)
+    skeleton, region = _gated(large, large)
+
+    report = diagnose_centreline_dropped_by_thick_gate(skeleton, large, region, large_mask=large)
+
+    assert report["dropped_voxels"] == 0
+
+
+def test_the_dropped_centreline_report_formatter_reads_the_real_functions_own_keys():
+    shape = (11, 11, 50)
+    region = np.zeros(shape, dtype=bool)
+    region[:, :, :20] = True
+    plain = _line_along_x(shape, 5, 10, 40)
+    report = diagnose_centreline_dropped_by_thick_gate(
+        np.zeros(shape, dtype=bool), plain, region, plain_skeleton=plain, large_mask=region,
+    )
+
+    text = format_centreline_dropped_by_thick_gate_report(report, shell_um=3.0)
+
+    assert text == (
+        "Centreline the thick gate drops: 30 um of plain-Lee centreline in 1 piece(s) has no skeleton "
+        "near it -- 10 um inside the thick region, 3 um within 3 um of it, 17 um beyond; "
+        "10 um inside the large-vessel masks."
+    )

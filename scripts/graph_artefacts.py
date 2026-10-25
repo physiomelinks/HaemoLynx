@@ -33,6 +33,15 @@ The mask is the config's ``input_path`` unless ``--mask`` names another; an
 ilastik "Simple Segmentation" export is labelled 1 = vessel, so pass
 ``--mask-value 1`` for one rather than relying on the binarisation.
 
+Where each side's graph reaches its skeleton, by place (the surface slab,
+beside the large-vessel masks, the thick-vessel region), why each piece it
+still loses is left by the skeleton re-trace, and the centreline plain Lee
+would draw that the thick gate drops (``PLAN_surface_coverage.md``, Phase 0);
+with ``--without-retrace``, each side's graph without the re-trace beside it::
+
+    python scripts/graph_artefacts.py --config config.yaml \\
+        --skeleton "outputs/<stem>_skeleton.npy" --by-place --without-retrace
+
 What the run's raw image costs a build (``PLAN_raw_confirmation.md``,
 decision D6), each side built again with the config's raw image loaded and
 calibrated after the graph as ``build_network`` does, against the build
@@ -86,6 +95,23 @@ def _side_dir(out: Path, name: str) -> Path:
     return out / ("working_tree" if name == WORKING_TREE else "ref_" + name.replace("/", "_"))
 
 
+def _large_vessel_masks(settings, mask, voxel_size_zyx):
+    """The union of the run's large-vessel masks on the segmentation's grid,
+    read as the thick-vessel restriction reads them; None without them."""
+    if not settings.get("use_large_vessel_masks"):
+        return None
+    import numpy as np
+
+    from haemolynx import io as hio
+    from haemolynx.pipeline.stages import thick_vessel_restriction_mask
+
+    large = thick_vessel_restriction_mask(
+        mask, dict(settings) | {"skeleton_thick_vessel_restrict_to_mask": "large", "use_memmap_loading": False},
+        hio.voxel_size_xyz_from_zyx(voxel_size_zyx),
+    )
+    return None if large is None or not large.any() else np.asarray(large, dtype=bool)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--config", required=True, help="the run's settings file")
@@ -101,6 +127,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--raw-cost", action="store_true",
                         help="also build each side with the config's raw image loaded and calibrated, as "
                              "build_network does, and report what it costs")
+    parser.add_argument("--by-place", action="store_true",
+                        help="also report each side's reach of its skeleton by place, why the pieces it loses "
+                             "are left, and the centreline the thick gate drops")
+    parser.add_argument("--surface-depth-um", type=float, default=40.0,
+                        help="--by-place: how deep the surface slab runs from the first slice (default 40)")
+    parser.add_argument("--near-large-um", type=float, default=10.0,
+                        help="--by-place: within this of the large-vessel masks is beside them (default 10)")
+    parser.add_argument("--without-retrace", action="store_true",
+                        help="also measure each side's graph without the skeleton re-trace, as a side of its own")
     parser.add_argument("--thick-vessel-mask",
                         help="a .npy thick-vessel region to split at (default: found from the mask "
                              "and the config, as a resumed run does)")
@@ -157,6 +192,11 @@ def main(argv: list[str] | None = None) -> int:
             "max_deviation": float(settings["centreline_max_deviation"]),
         }
 
+    # The skeleton re-trace, as build_network runs it: inert while short
+    # loops are kept for no hole.
+    keep_hole = float(graph_build_arguments(settings).get("short_loop_keep_hole_over_um") or 0.0)
+    retrace = {"keep_hole_over_um": keep_hole} if settings.get("retrace_lost_skeleton") and keep_hole > 0 else None
+
     sides, raw_costs = {}, {}
     # Refs first, so a two-side table's change column reads ref -> working tree.
     for name in [*args.ref, WORKING_TREE]:
@@ -173,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             "smoothing": smoothing,
             "thick_vessel_mask": None if thick_path is None else str(thick_path.resolve()),
             "split": thick_junction_bridge_arguments(settings),
+            "retrace": retrace,
         }
         (side / "job.json").write_text(json.dumps(job, indent=1), encoding="utf-8")
         print(f"Building {name} ...", flush=True)
@@ -198,13 +239,25 @@ def main(argv: list[str] | None = None) -> int:
     support = MaskSupport(np.load(mask_path), voxel_size)
     multiple = float(settings.get("min_stub_length_radius_multiple") or 3.0)
     finals, lines = {}, ["# Graph artefacts", "", f"Config `{args.config}`, skeleton `{args.skeleton}`.", ""]
-    for name, info in sides.items():
-        with open(_side_dir(out, name) / "final.pkl", "rb") as f:
-            finals[name] = measure(pickle.load(f), support, stub_radius_multiple=multiple, coverage=True)
+
+    def saved_graphs():
+        """``(column, path)`` of every graph measured: each side's saved
+        graph, after its graph without the re-trace when asked for."""
+        for name in sides:
+            without = _side_dir(out, name) / "without_retrace.pkl"
+            if args.without_retrace and without.exists():
+                yield f"{name} without re-trace", without
+            yield name, _side_dir(out, name) / "final.pkl"
+
+    for column, path in saved_graphs():
+        with open(path, "rb") as f:
+            finals[column] = measure(pickle.load(f), support, stub_radius_multiple=multiple, coverage=True)
     saved_as = "after smoothing and the thick-vessel split" if thick_path else "after smoothing"
     lines += [f"## Final graph ({saved_as})", "", comparison_table(finals), ""]
     for name, info in sides.items():
         lines.append(f"- **{name}**: built in {info['seconds']:.0f} s"
+                     + (f" (the skeleton re-trace {info['retrace_seconds']:.0f} s of it)"
+                        if info.get("retrace_seconds") is not None else "")
                      + (f"; settings it does not take: {', '.join(info['arguments_not_taken'])}"
                         if info["arguments_not_taken"] else ""))
     if raw_costs:
@@ -231,6 +284,33 @@ def main(argv: list[str] | None = None) -> int:
                 writer.writeheader()
                 writer.writerows(rows)
             lines.append(f"Every bridge and its measures: `{out / 'bridges.csv'}`.")
+
+    # Where each graph reaches its skeleton, by place, and what the thick
+    # gate drops (PLAN_surface_coverage.md, Phase 0), by this checkout.
+    if args.by_place:
+        import csv
+
+        from graph_artefacts.by_place import by_place_section
+
+        skeleton = np.load(args.skeleton)
+        large = _large_vessel_masks(settings, support.mask, voxel_size)
+        thick = np.load(thick_path) if thick_path is not None else None
+        graphs = {}
+        for column, path in saved_graphs():
+            with open(path, "rb") as f:
+                graphs[column] = pickle.load(f)
+        section, pieces, dropped = by_place_section(
+            graphs, skeleton, support, large=large, thick=thick, settings=settings,
+            surface_depth_um=args.surface_depth_um, near_large_um=args.near_large_um,
+        )
+        lines += ["", section]
+        for name, rows in (("lost_pieces.csv", pieces), ("dropped_by_thick_gate.csv", dropped)):
+            if rows:
+                with open(out / name, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for row in rows for k in row)))
+                    writer.writeheader()
+                    writer.writerows(rows)
+                lines.append(f"Every row: `{out / name}`.")
 
     # What each dead end is (PLAN_dead_ends.md, Phase 0), every side by this
     # checkout's one definition.

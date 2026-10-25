@@ -324,6 +324,149 @@ def diagnose_skeleton_against_mask(
     )
 
 
+#: Where a stretch of centreline the thick gate drops lies
+#: (:func:`diagnose_centreline_dropped_by_thick_gate`): inside the thick
+#: region, in the shell round it the flake filter never thins, or beyond.
+DROPPED_PLACES = ("thick_region", "shell", "beyond")
+
+
+def _distance_to_region_um(points: np.ndarray, region: np.ndarray, spacing: np.ndarray) -> np.ndarray:
+    """Each voxel of *points* (indices): 0 inside *region*, else the distance
+    (um) to the nearest voxel of its surface -- a tree over the surface, not
+    a volume-sized distance map."""
+    from scipy.ndimage import binary_erosion
+    from scipy.spatial import cKDTree
+
+    region = np.asarray(region, dtype=bool)
+    distance = np.zeros(len(points))
+    outside = ~region[tuple(points.T)] if len(points) else np.zeros(0, dtype=bool)
+    surface = np.argwhere(region & ~binary_erosion(region, border_value=1))
+    if outside.any():
+        if len(surface):
+            distance[outside] = cKDTree(surface * spacing).query(points[outside] * spacing)[0]
+        else:
+            distance[outside] = np.inf
+    return distance
+
+
+def diagnose_centreline_dropped_by_thick_gate(
+    skeleton: np.ndarray,
+    mask: np.ndarray,
+    thick_region: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    large_mask: Optional[np.ndarray] = None,
+    reach_um: float = 3.0,
+    shell_um: float = 3.0,
+    min_piece_voxels: int = 10,
+    plain_skeleton: Optional[np.ndarray] = None,
+) -> dict[str, Any]:
+    """Centreline plain Lee would draw that the thickness-gated *skeleton* has
+    not: what ``use_thick_vessel_skeletonisation`` drops.
+
+    The gated skeleton draws the *thick_region* (the large-vessel masks under
+    ``skeleton_thick_vessel_restrict_to_mask``, plus their wall) as one
+    centreline tree, and never Lee-thins thin voxels within the flake filter
+    of it. Plain Lee of the hole-filled *mask* (*plain_skeleton*, when the
+    caller has it) is compared with it: its voxels further than *reach_um*
+    from every *skeleton* voxel, in 26-connected pieces of at least
+    *min_piece_voxels*, are the centreline dropped, reported by where they
+    lie (:data:`DROPPED_PLACES`: inside the region, within *shell_um* of
+    it, beyond) and, with *large_mask*, how much is inside the large-vessel
+    masks. Lengths count each voxel as the step to its nearest neighbour in
+    its piece.
+
+    Read-only, and a census, not a verdict: on E14.5 Harvey's grid P
+    (2026-10-18, ``PLAN_surface_coverage.md``) called 25 of 30 such pieces
+    the large vessel's own lumen or wall, which is what the gate exists to
+    drop. It costs a whole-volume Lee, so the pipeline does not run it;
+    ``scripts/graph_artefacts.py --by-place`` does.
+    """
+    from scipy.spatial import cKDTree
+
+    from .skeleton import fill_binary_holes, skeletonize_volume
+
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    mask_bool = np.asarray(mask, dtype=bool)
+    if plain_skeleton is None:
+        plain_skeleton = skeletonize_volume(fill_binary_holes(mask_bool)) if mask_bool.any() else mask_bool
+    plain = np.argwhere(np.asarray(plain_skeleton, dtype=bool))
+    gated = np.argwhere(np.asarray(skeleton, dtype=bool))
+    report: dict[str, Any] = {
+        "plain_voxels": len(plain),
+        "dropped_voxels": 0,
+        "dropped_pieces": 0,
+        "dropped_um": 0.0,
+        "by_place": {place: {"voxels": 0, "um": 0.0} for place in DROPPED_PLACES},
+        "inside_large_um": None if large_mask is None else 0.0,
+        "pieces": [],
+    }
+    if not len(plain):
+        return report
+    if len(gated):
+        far = cKDTree(gated * spacing).query(plain * spacing, distance_upper_bound=float(reach_um) + 1e-9)[0]
+        far = ~np.isfinite(far)
+    else:
+        far = np.ones(len(plain), dtype=bool)
+    candidates = plain[far]
+    if not len(candidates):
+        return report
+    shape = mask_bool.shape
+    volume = np.zeros(shape, dtype=bool)
+    volume[tuple(candidates.T)] = True
+    labelled, _count = label(volume, structure=generate_binary_structure(3, 3))
+    ids = labelled[tuple(candidates.T)]
+    sizes = np.bincount(ids)
+    kept = sizes[ids] >= int(min_piece_voxels)
+    voxels, ids = candidates[kept], ids[kept]
+    if not len(voxels):
+        return report
+    points = voxels * spacing
+    # The step to the nearest other dropped voxel is within the same piece:
+    # a nearer voxel of another piece would be 26-adjacent, so the same piece.
+    step = cKDTree(points).query(points, k=2)[0][:, 1]
+    to_region = _distance_to_region_um(voxels, thick_region, spacing)
+    place = np.where(to_region == 0, 0, np.where(to_region <= float(shell_um), 1, 2))
+    inside_large = None if large_mask is None else np.asarray(large_mask, dtype=bool)[tuple(voxels.T)]
+    for i, name in enumerate(DROPPED_PLACES):
+        report["by_place"][name] = {"voxels": int(np.sum(place == i)), "um": float(step[place == i].sum())}
+    if inside_large is not None:
+        report["inside_large_um"] = float(step[inside_large].sum())
+    pieces = []
+    for piece_id in np.unique(ids):
+        mine = ids == piece_id
+        centre = voxels[mine][np.argmin(np.linalg.norm(points[mine] - points[mine].mean(axis=0), axis=1))]
+        pieces.append({
+            "voxels": int(mine.sum()),
+            "um": float(step[mine].sum()),
+            "centre_zyx_vox": tuple(int(c) for c in centre),
+            **{f"{name}_um": float(step[mine & (place == i)].sum()) for i, name in enumerate(DROPPED_PLACES)},
+            "inside_large_um": None if inside_large is None else float(step[mine & inside_large].sum()),
+        })
+    pieces.sort(key=lambda piece: -piece["um"])
+    report.update(
+        dropped_voxels=len(voxels), dropped_pieces=len(pieces), dropped_um=float(step.sum()), pieces=pieces,
+    )
+    return report
+
+
+def format_centreline_dropped_by_thick_gate_report(report: dict[str, Any], *, shell_um: float = 3.0) -> str:
+    """A one-line summary of :func:`diagnose_centreline_dropped_by_thick_gate`."""
+    places = report.get("by_place") or {}
+
+    def um(place: str) -> str:
+        return f"{(places.get(place) or {}).get('um', 0.0):,.0f}"
+
+    large = report.get("inside_large_um")
+    return (
+        "Centreline the thick gate drops: "
+        f"{report.get('dropped_um', 0.0):,.0f} um of plain-Lee centreline in {report.get('dropped_pieces', 0)} "
+        f"piece(s) has no skeleton near it -- {um('thick_region')} um inside the thick region, "
+        f"{um('shell')} um within {shell_um:g} um of it, {um('beyond')} um beyond"
+        + ("." if large is None else f"; {large:,.0f} um inside the large-vessel masks.")
+    )
+
+
 def format_vessels_missing_from_skeleton_report(report: dict[str, Any]) -> str:
     """A one-line summary of :func:`diagnose_vessels_missing_from_skeleton`."""
     return (

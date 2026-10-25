@@ -428,3 +428,146 @@ def test_a_side_given_the_raw_image_reads_it_after_the_graph_and_says_what_it_co
 
     assert info["steps"] == list(STEP_LABELS)
     assert not any((tmp_path / "side" / "steps").iterdir())
+
+
+# --- the skeleton re-trace and reach by place (PLAN_surface_coverage.md, Phase 0) ---
+
+
+def _rod_job(tmp_path, **extra):
+    skeleton = np.zeros((20, 20, 30), dtype=bool)
+    skeleton[10, 10, 3:27] = True
+    from scipy import ndimage
+
+    for name, volume in (("skeleton", skeleton), ("mask", ndimage.binary_dilation(skeleton, iterations=2))):
+        np.save(tmp_path / f"{name}.npy", volume)
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0], "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": {"method": "taubin", "iterations": 10, "max_deviation": 1.0}, "keep_steps": False,
+    } | extra
+    (tmp_path / "job.json").write_text(json.dumps(job))
+    return tmp_path / "job.json"
+
+
+def test_a_side_runs_the_skeleton_retrace_after_the_last_clean_up_and_keeps_the_graph_without_it(
+    tmp_path, monkeypatch,
+):
+    """As build_network does: the re-trace on the cleaned graph, with the
+    run's hole limit and the clean-up's mask; the graph before it kept."""
+    from haemolynx import graph
+    from haemolynx.graph import skeleton_retrace
+
+    seen = {}
+
+    def retrace(G, skeleton, support, *, keep_hole_over_um):
+        seen.update(keep_hole_over_um=keep_hole_over_um, support=support, edges=G.number_of_edges())
+        u, v = list(G.nodes)[:2]
+        G.add_edge(u, v, voxels=[G.nodes[u]["pos"], G.nodes[v]["pos"]], length=1.0, **{skeleton_retrace.RETRACED: True})
+        return G
+
+    monkeypatch.setattr(graph.skeleton_retrace, "retrace_lost_skeleton", retrace)
+
+    build_side.main(str(_rod_job(tmp_path, retrace={"keep_hole_over_um": 7.5})))
+
+    side = tmp_path / "side"
+    assert seen["keep_hole_over_um"] == 7.5
+    assert seen["support"] is not None
+    with open(side / "final.pkl", "rb") as f:
+        final = pickle.load(f)
+    with open(side / "without_retrace.pkl", "rb") as f:
+        without = pickle.load(f)
+    assert without.number_of_edges() == seen["edges"]
+    assert final.number_of_edges() == seen["edges"] + 1
+    assert len(skeleton_retrace.retraced_edges(final)) == 1
+    assert not skeleton_retrace.retraced_edges(without)
+    assert json.loads((side / "side.json").read_text())["retrace_seconds"] >= 0
+
+
+def test_a_side_without_the_retrace_in_its_job_runs_none(tmp_path, monkeypatch):
+    from haemolynx import graph
+
+    def retrace(*_a, **_k):
+        raise AssertionError("not asked for")
+
+    monkeypatch.setattr(graph.skeleton_retrace, "retrace_lost_skeleton", retrace)
+
+    build_side.main(str(_rod_job(tmp_path)))
+
+    assert not (tmp_path / "side" / "without_retrace.pkl").exists()
+    assert json.loads((tmp_path / "side" / "side.json").read_text())["retrace_seconds"] is None
+
+
+def test_places_split_the_surface_slab_in_microns_and_beside_the_large_masks():
+    from graph_artefacts.by_place import places_of, row_order
+
+    large = np.zeros((40, 10, 30), dtype=bool)
+    large[:, :, :5] = True
+    voxels = np.array([[0, 5, 6], [19, 5, 20], [20, 5, 6], [39, 5, 20]])
+
+    places = places_of(voxels, (2.0, 1.0, 1.0), surface_depth_um=40.0, large_mask=large, near_large_um=2.0)
+
+    assert list(places) == ["surface, beside the large vessels", "surface, other",
+                            "deep, beside the large vessels", "deep, other"]
+    assert row_order(True) == list(places)
+    assert list(places_of(voxels, (2.0, 1.0, 1.0), surface_depth_um=40.0)) == ["surface", "surface", "deep", "deep"]
+
+
+def test_reach_by_place_counts_the_lost_side_of_a_ring_and_why_it_is_left():
+    from graph_artefacts.by_place import reach_by_place, reach_comparison, reach_table
+    from test_skeleton_retrace import _ring
+
+    from haemolynx.graph import skeleton_retrace
+
+    scene = _ring()
+    support = scene.support()
+    total = int(scene.skeleton.sum())
+
+    wide = reach_by_place(scene.G, scene.skeleton, support, keep_hole_over_um=10.0)
+    narrow = reach_by_place(scene.G, scene.skeleton, support, keep_hole_over_um=1000.0)
+
+    row = wide["rows"]["surface"]
+    assert row["skeleton_voxels"] == total
+    assert 30 <= row["lost"] < total // 4  # the fourth side, less what lies within 3 um of the corners
+    assert row["reached"] == pytest.approx(1 - row["lost"] / total)
+    assert row["drawn"] == row["lost"]  # round a ~35 um hole: the re-trace would draw it
+    assert narrow["rows"]["surface"]["small_hole"] == row["lost"]
+    assert wide["rows"]["all"]["lost"] == row["lost"] and wide["rows"]["deep"]["skeleton_voxels"] == 0
+    (piece,) = wide["pieces"]
+    assert piece["why"] == "drawn" and piece["hole_um"] > 20.0
+    # Once drawn back, nothing is lost.
+    skeleton_retrace.retrace_lost_skeleton(scene.G, scene.skeleton, support)
+    after = reach_by_place(scene.G, scene.skeleton, support)
+    assert after["rows"]["all"]["lost"] == 0
+
+    table = reach_table(wide).splitlines()
+    assert table[0].startswith("| place | skeleton voxels | reached | lost | pieces under 20 um |")
+    assert table[2].startswith(f"| surface | {total:,} | {100 * row['reached']:.1f}% | {row['lost']:,} |")
+    comparison = reach_comparison({"off": wide, "on": after}).splitlines()
+    assert comparison[0] == "| place | off | on |"
+    assert comparison[-1] == f"| all | {100 * row['reached']:.1f}% | 100.0% |"
+
+
+def test_the_by_place_section_adds_the_thick_gates_drop_with_a_thick_region():
+    from graph_artefacts.by_place import by_place_section
+    from test_skeleton_retrace import _ring
+
+    scene = _ring()
+    support = scene.support()
+    thick = np.zeros_like(scene.skeleton)
+    thick[:, :20, :20] = True
+
+    text, pieces, dropped = by_place_section(
+        {"working tree": scene.G}, scene.skeleton, support, large=None, thick=thick,
+        settings={"short_loop_keep_hole_over_um": 10.0, "skeleton_thick_vessel_flake_filter_um": 3.0},
+    )
+    plain, _, none = by_place_section(
+        {"working tree": scene.G}, scene.skeleton, support, large=None, thick=None, settings={},
+    )
+
+    assert "## Skeleton reached, by place" in text and "### working tree" in text
+    assert "## Centreline the thick gate drops" in text
+    assert [p["why"] for p in pieces] == ["drawn"]
+    assert dropped == []  # the ring's skeleton is its mask's own Lee line
+    assert "Centreline the thick gate drops: 0 um of plain-Lee centreline in 0 piece(s)" in text
+    assert "thick gate" not in plain and none == []

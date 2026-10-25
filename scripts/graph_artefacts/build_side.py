@@ -4,9 +4,11 @@ The job names the ``src`` directory to import ``haemolynx`` from, so an older
 version (a ``git archive`` of a ref) builds with its own code. It writes the
 graph after every topology step (``steps/<label>.pkl``), the graph as
 ``build_network`` saves it (``final.pkl``: after smoothing, the clean-up run
-again on the smoothed curves, and -- when the job names a thick-vessel region
--- the thick-vessel split, with the job's ``split`` arguments), the graph before that split
-(``before_thick_split.pkl``) and ``side.json`` (timings, the process's peak
+again on the smoothed curves, -- when the job names a thick-vessel region
+-- the thick-vessel split, with the job's ``split`` arguments, and -- when
+the job names a ``retrace`` -- the skeleton re-trace), the graph before that split
+(``before_thick_split.pkl``), the graph without the re-trace
+(``without_retrace.pkl``) and ``side.json`` (timings, the process's peak
 resident memory, and the build arguments this version does not take). A job
 naming a ``raw`` image (the run's ``raw_image_*`` settings) also loads and
 calibrates it after the graph, as ``build_network`` does, and ``side.json``
@@ -153,22 +155,50 @@ def main(job_path: str) -> None:
         # A version whose clean-up knows bridges runs it again after the split.
         if cleanup is not None and hasattr(graph.thick_vessel_junctions, "remove_dangling_bridges"):
             G = assemble.consolidate_lumen(G, cleanup)
+    # As build_network does after the last clean-up, in the versions that have
+    # it: the skeleton the clean-up took round a wide hole, drawn back. The
+    # graph without it is kept beside (``without_retrace.pkl``).
+    retrace = job.get("retrace")
+    without_retrace = None
+    retrace_seconds = None
+    if (
+        retrace and hasattr(graph, "skeleton_retrace")
+        and cleanup is not None and getattr(cleanup, "support", None) is not None
+    ):
+        without_retrace = G.copy()
+        retrace_started = time.perf_counter()
+        graph.skeleton_retrace.retrace_lost_skeleton(
+            G, skeleton, cleanup.support, keep_hole_over_um=float(retrace["keep_hole_over_um"]),
+        )
+        retraced = graph.skeleton_retrace.retraced_edges(G)
+        if retraced and smoothing:
+            graph.smooth_graph_centrelines(
+                G, skeleton, voxel_size_zyx=voxel_size, method=smoothing["method"],
+                iterations=smoothing["iterations"], max_deviation=smoothing["max_deviation"],
+                radius_at=radius_at, edges=retraced,
+            )
+        retrace_seconds = time.perf_counter() - retrace_started
     # As build_network does, in the versions that have it: the chords the
     # clean-ups drew after smoothing, smoothed.
-    if smoothing and hasattr(graph, "smooth_straight_steps"):
-        graph.smooth_straight_steps(
-            G, skeleton, voxel_size_zyx=voxel_size, method=smoothing["method"],
-            iterations=smoothing["iterations"], max_deviation=smoothing["max_deviation"],
-            radius_at=radius_at,
-        )
+    for H in (G, without_retrace):
+        if H is not None and smoothing and hasattr(graph, "smooth_straight_steps"):
+            graph.smooth_straight_steps(
+                H, skeleton, voxel_size_zyx=voxel_size, method=smoothing["method"],
+                iterations=smoothing["iterations"], max_deviation=smoothing["max_deviation"],
+                radius_at=radius_at,
+            )
     with open(os.path.join(out, "final.pkl"), "wb") as f:
         pickle.dump(G, f)
+    if without_retrace is not None:
+        with open(os.path.join(out, "without_retrace.pkl"), "wb") as f:
+            pickle.dump(without_retrace, f)
     side = {
         "seconds": time.perf_counter() - started,
         "step_seconds": step_seconds,
         "steps": list(step_seconds),
         "arguments_not_taken": dropped,
         "thick_split": thick_split,
+        "retrace_seconds": retrace_seconds,
     }
     if job.get("raw"):
         # As build_network does: after the graph, with the mask still held.

@@ -42,9 +42,11 @@ from .thick_vessel_braid_guard import (
     format_braided_thick_vessel_report,
 )
 from .skeleton_consistency import (
+    diagnose_centreline_dropped_by_thick_gate,
     diagnose_skeleton_against_mask,
     diagnose_skeleton_mask_consistency,
     diagnose_vessels_missing_from_skeleton,
+    format_centreline_dropped_by_thick_gate_report,
     format_skeleton_mask_consistency_report,
     format_vessels_missing_from_skeleton_report,
 )
@@ -142,6 +144,8 @@ __all__ = [
     "format_skeleton_mask_consistency_report",
     "diagnose_vessels_missing_from_skeleton",
     "format_vessels_missing_from_skeleton_report",
+    "diagnose_centreline_dropped_by_thick_gate",
+    "format_centreline_dropped_by_thick_gate_report",
     "clean_segmented_mask_for_skeletonisation",
     "close_small_gaps",
     "fill_enclosed_cavities",
