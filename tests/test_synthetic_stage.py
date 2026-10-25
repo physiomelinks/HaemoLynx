@@ -241,9 +241,12 @@ def whole_run(template_run, tmp_path_factory):
 
 
 def test_preflight_passes_and_names_the_template(whole_run):
-    _settings_, report, _G, _out = whole_run
+    settings, report, _G, _out = whole_run
     assert report.ok, report.errors
-    assert any(label == "synthetic template" and "178 vessels" in detail for label, detail in report.passed)
+    from haemolynx.synthetic import load_template
+
+    vessels = load_template(settings["synthetic_template_path"], "statistics").vessel_count
+    assert any(label == "synthetic template" and f"{vessels} vessels" in detail for label, detail in report.passed)
 
 
 def test_every_output_is_named_after_the_template(whole_run):

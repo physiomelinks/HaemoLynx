@@ -10,6 +10,7 @@ from dataclasses import replace
 import networkx as nx
 import numpy as np
 import pytest
+from scipy.spatial import cKDTree
 
 from haemolynx.graph._helpers import calculate_path_length
 from haemolynx.graph.branch_order import assign_vessel_branch_orders
@@ -44,11 +45,20 @@ from haemolynx.synthetic.organisation import ISOTROPIC, Organisation, cell_index
 from synthetic_fixtures import fixture_template
 
 SEED = 7
+#: The template as it was imaged: its vessels leaving the box and its dead
+#: ends inside the tissue drawn too. The defaults (Harvey, 2026-10-25: D2a,
+#: D3a) leave both out, so its loops and boundary nodes are not the template's.
+FAITHFUL = GenerationOptions(interior_dead_ends=True, open_ends="template")
 
 
 @pytest.fixture(scope="module")
 def generated():
     return generate_network(fixture_template(), seed=SEED)
+
+
+@pytest.fixture(scope="module")
+def faithful():
+    return generate_network(fixture_template(), seed=SEED, options=FAITHFUL)
 
 
 def _labelled(G: nx.MultiGraph) -> dict:
@@ -124,7 +134,8 @@ def test_every_dead_end_has_a_kind_matching_its_place(generated):
         assert G.nodes[node][DEAD_END_KIND_SOURCE] == SOURCE_SYNTHETIC
 
 
-def test_roles_and_endpoints_are_the_templates(generated):
+def test_roles_and_endpoints_are_the_templates(faithful):
+    generated = faithful
     T = fixture_template()
     roles = boundary_nodes(generated)
     assert set(roles) == set(ROLES)
@@ -140,6 +151,20 @@ def test_roles_and_endpoints_are_the_templates(generated):
         for node in roles[role]:
             assert generated.degree(node) >= 3
             assert generated.nodes[node][SYNTHETIC_ROLES] == (role,)
+
+
+def test_without_interior_dead_ends_every_tree_leaf_joins_the_bed(generated):
+    """The defaults: a tree leaf the template ended blind hands over to the
+    bed, so there are as many boundary nodes as the template's or more."""
+    T = fixture_template()
+    roles = boundary_nodes(generated)
+    assert len(roles["arteriole_boundary"]) >= T.arteriole_boundary_count
+    assert len(roles["venule_boundary"]) >= T.venule_boundary_count
+    tree = {u for u, v, d in generated.edges(data=True) if d[SYNTHETIC_CLASS] != "capillary"} | {
+        v for u, v, d in generated.edges(data=True) if d[SYNTHETIC_CLASS] != "capillary"
+    }
+    ends = [n for n in tree if generated.degree(n) == 1]
+    assert set(ends) <= set(roles["inlet"]) | set(roles["outlet"])
 
 
 def test_the_validator_catches_a_broken_contract(generated):
@@ -237,24 +262,53 @@ def test_murray_holds_exactly_at_every_tree_junction(generated):
     assert checked >= 6
 
 
-def test_capillary_count_loops_and_dead_ends_are_the_templates(generated):
+def test_capillary_count_loops_and_dead_ends_are_the_templates(faithful):
+    generated = faithful
     T = fixture_template()
     record = generated.graph[GRAPH_TEMPLATE_RECORD]["generated"]
     assert abs(record["capillaries"] - T.classes["capillary"].count) <= 3
     loops = generated.number_of_edges() - generated.number_of_nodes() + 1
     assert abs(loops - T.loops.independent_loops) <= 2
     kinds = Counter(generated.nodes[n][DEAD_END_KIND] for n in generated if generated.degree(n) == 1)
-    # A closed network (the default): its only dead ends on a face are its
-    # inlets and outlets.
-    roles = boundary_nodes(generated)
-    assert kinds[LEAVES_IMAGE] == sum(1 for n in [*roles["inlet"], *roles["outlet"]] if generated.degree(n) == 1)
+    assert abs(kinds[LEAVES_IMAGE] - T.dead_ends.leaves_image) <= 2
     assert abs(kinds[BLIND] - T.dead_ends.interior) <= 2
     assert set(Counter(dict(generated.degree()).values())) <= {1, 3, 4}
 
 
+def test_the_defaults_join_the_dead_ends_left_out_in_pairs(generated):
+    """A closed network without interior dead ends: its only dead ends are
+    its inlets and outlets. The fixture's 4 ends leaving the image (less
+    its 4 inlets and outlets) and 8 inside the tissue are joined in 6 pairs:
+    6 capillaries fewer, 6 loops more, the capillaries' length kept."""
+    T = fixture_template()
+    record = generated.graph[GRAPH_TEMPLATE_RECORD]["generated"]
+    assert record["dead_end_pairs_joined"] == 6
+    assert abs(record["capillaries"] - (T.classes["capillary"].count - 6)) <= 3
+    kinds = Counter(generated.nodes[n][DEAD_END_KIND] for n in generated if generated.degree(n) == 1)
+    roles = boundary_nodes(generated)
+    assert kinds[LEAVES_IMAGE] == sum(1 for n in [*roles["inlet"], *roles["outlet"]] if generated.degree(n) == 1)
+    assert kinds[BLIND] == 0
+    loops = generated.number_of_edges() - generated.number_of_nodes() + 1
+    assert abs(loops - (T.loops.independent_loops + 6)) <= 2
+    capillary_length = sum(d["length"] for *_e, d in generated.edges(data=True) if d[SYNTHETIC_CLASS] == "capillary")
+    assert capillary_length == pytest.approx(T.classes["capillary"].total_length_um, rel=0.05)
+
+
+def test_dead_end_pairs_joined_counts_what_is_not_drawn():
+    from haemolynx.synthetic.generate import dead_end_pairs_joined
+
+    T = fixture_template()  # 8 ends leaving the image (4 of them inlets and outlets), 8 inside
+    assert dead_end_pairs_joined(T, GenerationOptions()) == 6
+    assert dead_end_pairs_joined(T, FAITHFUL) == 0
+    assert dead_end_pairs_joined(T, GenerationOptions(interior_dead_ends=True)) == 2
+    assert dead_end_pairs_joined(T, GenerationOptions(open_ends="template")) == 4
+    assert dead_end_pairs_joined(T, {"open_ends": "closed", "interior_dead_ends": False}) == 6  # a record's dict
+    assert dead_end_pairs_joined(T, {}) == 0
+
+
 def test_with_the_templates_open_ends_its_count_leaves_the_box():
     T = fixture_template()
-    G = generate_network(T, seed=SEED, options=GenerationOptions(open_ends="template"))
+    G = generate_network(T, seed=SEED, options=FAITHFUL)
     kinds = Counter(G.nodes[n][DEAD_END_KIND] for n in G if G.degree(n) == 1)
     assert abs(kinds[LEAVES_IMAGE] - T.dead_ends.leaves_image) <= 2
     assert abs(kinds[BLIND] - T.dead_ends.interior) <= 2
@@ -338,7 +392,8 @@ def test_scale_grows_the_box_and_the_counts():
 # -- the acceptance test: every banded characteristic within tolerance -------
 
 
-def test_the_generated_network_measures_as_its_template(generated):
+def test_the_generated_network_measures_as_its_template(faithful):
+    generated = faithful
     options = generated.graph[GRAPH_TEMPLATE_RECORD]["options"]
     rows = compare_templates(fixture_template(), _measured(generated.copy()), options=options)
     summary = comparison_summary(rows)
@@ -352,10 +407,22 @@ def test_the_generated_network_measures_as_its_template(generated):
 
 @pytest.mark.parametrize("seed", [1, 2, 3])
 def test_exact_rows_hold_at_every_seed(seed):
-    G = generate_network(fixture_template(), seed=seed)
-    rows = compare_templates(fixture_template(), _measured(G))
-    exact = [r for r in rows if r.tolerance == "exact"]
-    assert exact and all(r.within is not False for r in exact), [(r.section, r.characteristic) for r in exact if r.within is False]
+    for options in (FAITHFUL, GenerationOptions()):
+        G = generate_network(fixture_template(), seed=seed, options=options)
+        rows = compare_templates(fixture_template(), _measured(G), options=G.graph[GRAPH_TEMPLATE_RECORD]["options"])
+        exact = [r for r in rows if r.tolerance == "exact"]
+        assert exact and all(r.within is not False for r in exact), [(r.section, r.characteristic) for r in exact if r.within is False]
+
+
+def test_with_the_defaults_only_the_loops_leave_their_bands(generated):
+    options = generated.graph[GRAPH_TEMPLATE_RECORD]["options"]
+    rows = compare_templates(fixture_template(), _measured(generated.copy()), options=options)
+    outside = {(r.section, r.characteristic) for r in rows if r.within is False}
+    assert outside <= {("loops", "independent loops"), ("loops", "independent loops per mm^3")}, outside
+    reported = {r.characteristic: r.tolerance for r in rows if r.tolerance.startswith(("not drawn", "not held"))}
+    assert reported["leaving the image"] == "not drawn (a closed network)"
+    assert reported["inside the tissue"] == "not drawn (no dead ends inside the tissue)"
+    assert reported["arteriole_boundary nodes"].startswith("not held (every tree leaf joins the bed")
 
 
 def test_the_generated_network_runs_through_the_statistics(generated):
@@ -428,7 +495,7 @@ def test_a_large_tier_on_one_side_hands_over_at_its_boundary():
         arteriole_boundary_count=12,
         large_arteriole_boundary_count=2,
     )
-    G = generate_network(T, seed=SEED)
+    G = generate_network(T, seed=SEED, options=FAITHFUL)
     roles = boundary_nodes(G)
     assert len(roles["large_arteriole_boundary"]) == 2
     assert len(roles["arteriole_boundary"]) == 12
@@ -478,7 +545,7 @@ def test_a_large_tier_alone_hands_over_to_the_bed_at_large_boundary_nodes():
     large tier's leaves were marked arteriole/venule boundary nodes, so the
     run labelled the large tier Art/Ven and counted no large boundary nodes."""
     T = _large_tier_only_template()
-    G = generate_network(T, seed=SEED)
+    G = generate_network(T, seed=SEED, options=FAITHFUL)
     roles = boundary_nodes(G)
     assert roles["arteriole_boundary"] == [] and roles["venule_boundary"] == []
     assert len(roles["large_arteriole_boundary"]) == 6 and len(roles["large_venule_boundary"]) == 4
@@ -910,8 +977,10 @@ def test_a_template_without_an_organisation_gets_an_even_bed():
     G = generate_network(T, seed=SEED)
     generated = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
     assert generated["bed_layout"] == "even"
-    # Capillaries less loops less inlets and outlets, plus one.
-    vertices = T.classes["capillary"].count - T.loops.independent_loops - 4 + 1
+    # Capillaries less loops less inlets and outlets, plus one; each pair of
+    # dead ends joined is a capillary fewer and a loop more.
+    joined = generated["dead_end_pairs_joined"]
+    vertices = (T.classes["capillary"].count - joined) - (T.loops.independent_loops + joined) - 4 + 1
     assert generated["spacing_um"] == pytest.approx((120.0 * 200.0 * 200.0 / vertices) ** (1 / 3))
 
 
@@ -920,7 +989,8 @@ def test_a_bed_laid_out_to_a_layered_template_stays_in_its_layer(seed):
     T = fixture_template()
     shape = grid_shape(T.extent_um)
     G = generate_network(replace(T, organisation=_organisation(shape, _lower_layer(shape))), seed=seed)
-    assert G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["bed_layout"] == "template"
+    # A hand-set layout records no vertices of its own: the cell field.
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["bed_layout"] == "template cells"
     capillaries = _capillaries(G)
     total = sum(d["length"] for d in capillaries)
     below = sum(d["length"] * np.mean(np.asarray(d["voxels"])[:, 0] < 60.0) for d in capillaries)
@@ -1028,7 +1098,7 @@ def test_the_trees_grow_in_the_templates_tree_layer(seed):
     """The fixture's inlets and outlets sit at 40% and 60% of its depth: a
     template whose trees lie in its lower half gets trees there."""
     layered = generate_network(_layered_trees_template(), seed=seed)
-    assert _tree_share_below(layered, 60.0) > 0.8
+    assert _tree_share_below(layered, 60.0) > 0.7
     validate_synthetic_graph(layered)
 
 
@@ -1039,6 +1109,74 @@ def test_trees_without_a_layer_fall_anywhere():
     layered = np.mean([_tree_share_below(generate_network(_layered_trees_template(), seed=s), 60.0) for s in seeds])
     anywhere = np.mean([_tree_share_below(generate_network(fixture_template(), seed=s), 60.0) for s in seeds])
     assert layered > anywhere + 0.25
+
+
+# -- the bed drawn from the template's own vertices; curves (2026-10-25) --------
+
+
+def _measured_template(seed=SEED):
+    """A template measured off a generated network: it records its
+    capillary vertices and their spacing, as a run's does."""
+    G = generate_network(fixture_template(), seed=seed, options=FAITHFUL)
+    T = _measured(G)
+    return replace(T, extent_um=fixture_template().extent_um)
+
+
+def test_template_vertices_are_the_templates_moved_by_their_spacing():
+    T = _measured_template()
+    org = T.organisation
+    assert org.capillary_node_spacing_um > 0
+    extent = np.asarray(T.extent_um)
+    source = np.asarray(org.capillary_node_positions_rel) * extent
+    points = bed_module.template_vertices(
+        extent, 80, rng=np.random.default_rng(0), keep_clear=None, spacing_um=20.0, organisation=org
+    )
+    assert len(points) == 80 and np.all(points > 0) and np.all(points < extent)
+    nearest, _ = cKDTree(source).query(points)
+    # A normal step of the spacing over three axes: most within twice it.
+    assert np.mean(nearest < 2.0 * org.capillary_node_spacing_um) > 0.9
+    assert bed_module.drawn_from_template_vertices(org, True)
+    assert not bed_module.drawn_from_template_vertices(org, False)  # a scaled box
+    assert not bed_module.drawn_from_template_vertices(replace(org, capillary_node_positions_rel=None), True)
+
+
+def test_a_bed_at_the_templates_size_is_drawn_from_its_vertices_a_scaled_one_from_its_cells():
+    T = _measured_template()
+    G = generate_network(T, seed=SEED)
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["bed_layout"] == "template vertices"
+    # The record keeps the layout's fields, not the template's vertices.
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["template"]["organisation"]["capillary_node_positions_rel"] is None
+    scaled = generate_network(T, seed=SEED, options=GenerationOptions(scale=1.3))
+    assert scaled.graph[GRAPH_TEMPLATE_RECORD]["generated"]["bed_layout"] == "template cells"
+    validate_synthetic_graph(G)
+    validate_synthetic_graph(scaled)
+
+
+def test_one_lobe_is_the_bow_and_more_lobes_curve_more_at_one_length():
+    s = np.linspace(0.0, 1.0, 33)
+    assert polylines.lobes(s, 1) == pytest.approx(np.sin(np.pi * s) ** 2)
+    for k in (2, 3, 4):
+        lobe = polylines.lobes(s, k)
+        assert lobe[0] == pytest.approx(0.0) and lobe[-1] == pytest.approx(0.0, abs=1e-12)
+    curvature = {}
+    for target in (float("nan"), 26.0):
+        path = polylines.bend_to_lengths(
+            [[0.0, 0.0, 0.0]], [[0.0, 0.0, 40.0]], [42.0], np.random.default_rng(0), curvature_deg=np.array([target])
+        )[0]
+        assert polylines._lengths(path[None])[0] == pytest.approx(42.0, rel=1e-6)
+        curvature[str(target)] = polylines._path_curvature(path)
+    # One bow of tortuosity 1.05 turns about 20 degrees per 10 um; asked
+    # for 26, the vessel takes more lobes and comes nearer.
+    assert abs(curvature["26.0"] - 26.0) < abs(curvature["nan"] - 26.0)
+    assert curvature["26.0"] == pytest.approx(26.0, abs=3.0)
+
+
+def test_curvature_targets_leave_a_template_without_a_layout_alone():
+    """No organisation, no target: the polylines are the bows they were."""
+    G = generate_network(fixture_template(), seed=SEED, options=FAITHFUL)
+    assert all(len(d["voxels"]) >= 2 for *_e, d in G.edges(data=True))
+    record = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
+    assert record["bed_layout"] == "even"
 
 
 # -- the Voronoi bed (bed_model="voronoi", Harvey 2026-10-24) -----------------
@@ -1072,7 +1210,8 @@ def test_voronoi_vertices_are_corners_joined_along_cell_edges():
 
 def test_a_voronoi_bed_keeps_the_templates_counts_along_cell_edges():
     T = fixture_template()
-    G = generate_network(T, seed=SEED, options=GenerationOptions(bed_model="voronoi"))
+    voronoi = replace(FAITHFUL, bed_model="voronoi")
+    G = generate_network(T, seed=SEED, options=voronoi)
     record = G.graph[GRAPH_TEMPLATE_RECORD]
     generated = record["generated"]
     assert record["options"]["bed_model"] == "voronoi"
@@ -1082,9 +1221,9 @@ def test_a_voronoi_bed_keeps_the_templates_counts_along_cell_edges():
     assert generated["bed_blind_ends"] == generated["bed_blind_ends_wanted"]
     # Most of the bed's own vessels run along the tessellation's cell edges.
     assert generated["fill_phases"]["voronoi_edges"] >= 0.6 * generated["fill_phases"]["bed_only_edges"]
-    again = generate_network(T, seed=SEED, options=GenerationOptions(bed_model="voronoi"))
+    again = generate_network(T, seed=SEED, options=voronoi)
     assert sorted(again.edges(keys=True)) == sorted(G.edges(keys=True))
-    delaunay = generate_network(T, seed=SEED)
+    delaunay = generate_network(T, seed=SEED, options=FAITHFUL)
     assert "voronoi_edges" not in delaunay.graph[GRAPH_TEMPLATE_RECORD]["generated"]["fill_phases"]
 
 

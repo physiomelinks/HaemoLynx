@@ -78,6 +78,12 @@ class Organisation:
     #: Mean turn (degrees) per :data:`CURVATURE_STEP_UM` of path.
     capillary_curvature_deg: Optional[float]
     tree_curvature_deg: Optional[float]
+    #: Each capillary vertex's position as a share of the box's extent (in
+    #: node order), and their median distance to the nearest other one (um):
+    #: the finer layout a bed drawn at the template's own size is laid by
+    #: (``bed.template_vertices``). None for a template written before them.
+    capillary_node_positions_rel: Optional[tuple[tuple[float, float, float], ...]] = None
+    capillary_node_spacing_um: Optional[float] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -108,6 +114,10 @@ class Organisation:
             "trunk_turn_deg": self.trunk_turn_deg,
             "capillary_curvature_deg": self.capillary_curvature_deg,
             "tree_curvature_deg": self.tree_curvature_deg,
+            "capillary_node_positions_rel": (
+                None if self.capillary_node_positions_rel is None else [list(p) for p in self.capillary_node_positions_rel]
+            ),
+            "capillary_node_spacing_um": self.capillary_node_spacing_um,
         }
 
     @classmethod
@@ -130,6 +140,12 @@ class Organisation:
             trunk_turn_deg=opt("trunk_turn_deg"),
             capillary_curvature_deg=opt("capillary_curvature_deg"),
             tree_curvature_deg=opt("tree_curvature_deg"),
+            capillary_node_positions_rel=(
+                None
+                if data.get("capillary_node_positions_rel") is None
+                else tuple(tuple(float(v) for v in p) for p in data["capillary_node_positions_rel"])
+            ),
+            capillary_node_spacing_um=opt("capillary_node_spacing_um"),
         )
 
 
@@ -284,9 +300,13 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
     if total_capillary <= 0:
         return None
     node_count = np.zeros(cells)
-    positions = [G.nodes[n]["pos"] for n in capillary_nodes if G.nodes[n].get("pos") is not None]
+    positions = [G.nodes[n]["pos"] for n in sorted(capillary_nodes, key=str) if G.nodes[n].get("pos") is not None]
+    spacing = None
     if positions:
         np.add.at(node_count, cell_index(np.asarray(positions, float), extent, shape), 1.0)
+    if len(positions) >= 2:
+        nearest, _ = cKDTree(np.asarray(positions, float)).query(np.asarray(positions, float), k=2)
+        spacing = float(np.median(nearest[:, 1]))
     total_tensor = tensors.sum(axis=0) / total_capillary
     global_components = _components(total_tensor)
     orientation = []
@@ -312,6 +332,10 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
         trunk_turn_deg=_trunk_turn(tree_ends),
         capillary_curvature_deg=_curvature(capillary_paths),
         tree_curvature_deg=_curvature(tree_paths),
+        capillary_node_positions_rel=tuple(
+            tuple(float(v) for v in np.asarray(p, float) / np.maximum(extent, 1e-9)) for p in positions
+        ),
+        capillary_node_spacing_um=spacing,
     )
 
 

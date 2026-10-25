@@ -145,6 +145,19 @@ def test_a_known_zigzag_curves_by_its_angle():
     assert org.capillary_curvature_deg == pytest.approx(20.0, abs=3.0)
 
 
+def test_the_capillary_vertices_and_their_spacing_are_recorded():
+    org = measure_organisation(_slab(), EXTENT)
+    positions = np.asarray(org.capillary_node_positions_rel) * np.asarray(EXTENT)
+    assert len(positions) == 800
+    assert set(np.round(positions[:, 0], 6)) == {0.0, 40.0}
+    assert org.capillary_node_spacing_um == pytest.approx(10.0)  # the grid the vessels stand on
+    old = org.to_dict()
+    old.pop("capillary_node_positions_rel")
+    old.pop("capillary_node_spacing_um")
+    loaded = Organisation.from_dict(old)
+    assert loaded.capillary_node_positions_rel is None and loaded.capillary_node_spacing_um is None
+
+
 def test_no_capillaries_no_organisation_and_json_round_trips():
     G = _graph([((10.0, 100.0, 0.0), (10.0, 100.0, 60.0), "Large_Art1")], EXTENT)
     assert measure_organisation(G, EXTENT) is None

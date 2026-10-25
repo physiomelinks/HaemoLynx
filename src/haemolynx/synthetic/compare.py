@@ -21,11 +21,13 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import networkx as nx
+import numpy as np
 
 from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
 from haemolynx.statistics.csv_export import _numeric_csv_text
 from haemolynx.statistics.vessel_classes import VESSEL_CLASS_TITLES
 
+from .generate import dead_end_pairs_joined
 from .organisation import Organisation, correlation, profile, share_inside
 from .template import (
     FACES,
@@ -183,9 +185,20 @@ def _face_counts(endpoints: Iterable) -> dict:
     return counts
 
 
+def unbanded(row: ComparisonRow, note: str) -> ComparisonRow:
+    """*row* reported, not banded, *note* in its tolerance column saying why."""
+    return replace(row, tolerance=note, within=None)
+
+
 def not_drawn(row: ComparisonRow, why: str) -> ComparisonRow:
     """*row* reported, not banded: the generator was asked not to draw it."""
-    return replace(row, tolerance=f"not drawn ({why})", within=None)
+    return unbanded(row, f"not drawn ({why})")
+
+
+def not_held(row: ComparisonRow, why: str) -> ComparisonRow:
+    """*row* reported, not banded: drawn, but what the generator was asked
+    to leave out changes it by design."""
+    return unbanded(row, f"not held ({why})")
 
 
 def compare_templates(
@@ -199,6 +212,7 @@ def compare_templates(
     T, S = template, synthetic
     options = options or {}
     closed = options.get("open_ends") == "closed"
+    no_interior = options.get("interior_dead_ends") is False
 
     def add(section: str, characteristic: str, t: Any, s: Any, *, kind: Optional[str] = None, key: Optional[str] = None) -> None:
         rows.append(banded(kind or section, section, characteristic, t, s, key))
@@ -218,6 +232,9 @@ def compare_templates(
                 add("endpoints", f"{role} on {face}", t_faces.get(face, 0), s_faces.get(face, 0), key="inlets or outlets on a face")
     for role in ROLES[2:]:
         add("endpoints", f"{role} nodes", getattr(T, f"{role}_count"), getattr(S, f"{role}_count"), key="boundary nodes of a role")
+        if no_interior:
+            # A tree leaf the template ended blind joins the bed instead.
+            rows[-1] = not_held(rows[-1], "every tree leaf joins the bed: no dead ends inside the tissue")
 
     add("network", "diameter basis", T.diameter_basis, S.diameter_basis)
     add("network", "total vessel length (um)", T.total_length_um, S.total_length_um)
@@ -282,11 +299,16 @@ def compare_templates(
     # and ends of pieces without a junction are never drawn, so its total is
     # reported, not banded; the kinds drawn are banded below.
     # A closed network draws none leaving the image either.
-    undrawn = bool(T.dead_ends.artefacts or T.dead_ends.island_ends) or (closed and bool(T.dead_ends.leaves_image))
+    undrawn = (
+        bool(T.dead_ends.artefacts or T.dead_ends.island_ends)
+        or (closed and bool(T.dead_ends.leaves_image))
+        or (no_interior and bool(T.dead_ends.interior))
+    )
     add("dead ends", "dead ends", T.dead_ends.total, S.dead_ends.total, key="dead ends, kinds not drawn" if undrawn else None)
     add("dead ends", "leaving the image", T.dead_ends.leaves_image, S.dead_ends.leaves_image)
     if closed:
         rows[-1] = not_drawn(rows[-1], "a closed network")
+    interior_from = len(rows)
     add("dead ends", "inside the tissue", T.dead_ends.interior, S.dead_ends.interior)
     add("dead ends", "artefacts", T.dead_ends.artefacts, S.dead_ends.artefacts)
     add("dead ends", "ends of pieces without a junction", T.dead_ends.island_ends, S.dead_ends.island_ends)
@@ -294,8 +316,71 @@ def compare_templates(
     add("dead ends", "chain length median (um)", T.dead_ends.chain_length_median_um, S.dead_ends.chain_length_median_um)
     add("dead ends", "chain length P10 (um)", T.dead_ends.chain_length_p10_um, S.dead_ends.chain_length_p10_um)
     add("dead ends", "chain length P90 (um)", T.dead_ends.chain_length_p90_um, S.dead_ends.chain_length_p90_um)
+    joined = dead_end_pairs_joined(T, options) if options else 0
+    if joined:
+        _against_joined_pairs(rows, T, joined)
+    if no_interior:
+        # Drawn without them: the interior rows say so (the artefact and
+        # island rows are the template's kinds never drawn, as before).
+        for i in range(interior_from, len(rows)):
+            if rows[i].characteristic not in ("artefacts", "ends of pieces without a junction"):
+                rows[i] = not_drawn(rows[i], "no dead ends inside the tissue")
     rows.extend(organisation_rows(T.organisation, S.organisation))
     return rows
+
+
+def _against_joined_pairs(rows: list, T: NetworkTemplate, joined: int) -> None:
+    """The rows the dead ends joined in pairs change by design, judged
+    against what *joined* pairs make of the template's values (shown in
+    their tolerance; the template column keeps the template's own)."""
+    cls = T.classes.get("capillary")
+    expected: dict = {
+        ("network", "vessels"): T.vessel_count - joined if T.vessel_count is not None else None,
+        ("network", "edges"): T.edge_count - joined if T.edge_count is not None else None,
+        ("network", "nodes"): T.node_count - 2 * joined if T.node_count is not None else None,
+        ("loops", "independent loops"): (
+            T.loops.independent_loops + joined if T.loops.independent_loops is not None else None
+        ),
+    }
+    if T.edge_count and T.node_count and T.node_count > 2 * joined:
+        expected[("network", "average degree")] = 2.0 * (T.edge_count - joined) / (T.node_count - 2 * joined)
+    if T.loops.independent_loops and T.loops.independent_loops_per_mm3 is not None:
+        expected[("loops", "independent loops per mm^3")] = (
+            T.loops.independent_loops_per_mm3 * (T.loops.independent_loops + joined) / T.loops.independent_loops
+        )
+    if cls is not None and cls.count:
+        title = f"class {VESSEL_CLASS_TITLES['capillary']}"
+        expected[(title, "vessels")] = cls.count - joined
+        if cls.total_length_um and cls.count > joined:
+            expected[(title, "mean length (um)")] = cls.total_length_um / (cls.count - joined)
+    for i, r in enumerate(rows):
+        value = expected.get((r.section, r.characteristic))
+        if value is None:
+            continue
+        kind = "capillary class" if r.section.startswith("class ") else r.section
+        tolerance = TOLERANCES.get((kind, r.characteristic))
+        synthetic = _number(r.synthetic)
+        why = f"{joined} pairs of dead ends joined"
+        rows[i] = replace(
+            r,
+            ratio=None if synthetic is None or value == 0 else synthetic / value,
+            within=_within(float(value), synthetic, tolerance),
+            tolerance=f"{_tolerance_text(tolerance) or 'reported'} of {value:.4g} ({why})",
+        )
+
+
+#: A layout is scored by correlation only where the template's capillary
+#: vertices vary between cells (or planes) more than counting noise would:
+#: variance over mean, 1 for vertices strewn at random. An even template has
+#: no layout to match, and two noise fields' correlation is noise.
+STRUCTURE_DISPERSION = 2.0
+
+
+def dispersion(counts: Any) -> float:
+    """Variance over mean of *counts* (0 for none)."""
+    values = np.asarray(counts, dtype=float).ravel()
+    mean = float(values.mean()) if len(values) else 0.0
+    return float(values.var()) / mean if mean > 0 else 0.0
 
 
 def organisation_rows(T: Optional[Organisation], S: Optional[Organisation]) -> list[ComparisonRow]:
@@ -311,15 +396,21 @@ def organisation_rows(T: Optional[Organisation], S: Optional[Organisation]) -> l
         rows.append(banded("organisation", "organisation", characteristic, t, s, key))
 
     same_grid = T is not None and S is not None and tuple(T.shape) == tuple(S.shape)
+    even = "not held (the template's capillaries are even there: no layout to match)"
+    laid_out = T is not None and dispersion(T.capillary_nodes) >= STRUCTURE_DISPERSION
     for name, field in (("capillary vertices by cell (correlation)", "capillary_nodes"), ("capillary length by cell (correlation)", "capillary_length_um")):
         r = correlation(getattr(T, field), getattr(S, field)) if same_grid else None
         add(name, 1.0 if T is not None else None, r)
+        if T is not None and not laid_out:
+            rows[-1] = unbanded(rows[-1], even)
     for axis, letter in enumerate("zyx"):
         r = None
         if same_grid:
             r = correlation(profile(T.field("capillary_length_um"), axis), profile(S.field("capillary_length_um"), axis))
         add(f"capillary length along {letter} (correlation)", 1.0 if T is not None else None, r,
             key="capillary length along an axis (correlation)")
+        if T is not None and dispersion(profile(T.field("capillary_nodes"), axis)) < STRUCTURE_DISPERSION:
+            rows[-1] = unbanded(rows[-1], even)
     t_trees = s_trees = None
     if same_grid:
         template_trees = T.field("arterial_length_um") + T.field("venous_length_um")
@@ -392,7 +483,7 @@ def comparison_section(rows: Sequence[ComparisonRow]) -> dict:
             text += f" (x{r.ratio:.3g})"
         if r.within is not None:
             text += " within " + r.tolerance if r.within else " OUTSIDE " + r.tolerance
-        elif r.tolerance.startswith("not drawn"):
+        elif r.tolerance.startswith(("not drawn", "not held")):
             text += " " + r.tolerance
         out[f"{r.section}: {r.characteristic}"] = text
     summary = comparison_summary(rows)
@@ -434,6 +525,8 @@ __all__ = [
     "compare_templates",
     "comparison_section",
     "not_drawn",
+    "not_held",
+    "unbanded",
     "organisation_rows",
     "comparison_summary",
     "row",

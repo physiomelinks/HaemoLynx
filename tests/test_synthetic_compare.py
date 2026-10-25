@@ -163,8 +163,9 @@ def test_every_band_in_the_table_is_one_a_row_reads(monkeypatch):
     table = _Recording(TOLERANCES)
     monkeypatch.setattr(compare, "TOLERANCES", table)
     T = fixture_template()
-    # The template's open ends: a closed network reports the leaving-the-image row, unbanded.
-    G = generate_network(T, seed=5, options=GenerationOptions(open_ends="template"))
+    # The template's open ends and interior dead ends: the defaults report
+    # their rows unbanded.
+    G = generate_network(T, seed=5, options=GenerationOptions(open_ends="template", interior_dead_ends=True))
     roles = boundary_nodes(G)
     from haemolynx.graph.branch_order import assign_vessel_branch_orders
 
@@ -174,6 +175,58 @@ def test_every_band_in_the_table_is_one_a_row_reads(monkeypatch):
     # The capillary orders the bed makes are reported, never banded.
     assert all(r.tolerance == "" for r in rows if r.section.startswith("order B"))
     assert any(r.section.startswith("order B") for r in rows)
+
+
+def test_rows_the_joined_pairs_change_are_judged_against_what_they_make():
+    """The defaults join 6 pairs of the fixture's dead ends: 6 capillaries
+    fewer, 6 loops more. A network drawn so is within; the template's own
+    counts are not what it should have."""
+    T = fixture_template()
+    defaults = {"open_ends": "closed", "interior_dead_ends": False}
+    cls = T.classes["capillary"]
+    drawn = replace(
+        T,
+        classes={**T.classes, "capillary": replace(cls, count=cls.count - 6, mean_length_um=cls.total_length_um / (cls.count - 6))},
+        loops=replace(T.loops, independent_loops=T.loops.independent_loops + 6,
+                      independent_loops_per_mm3=T.loops.independent_loops_per_mm3 * (T.loops.independent_loops + 6) / T.loops.independent_loops),
+    )
+    rows = {(r.section, r.characteristic): r for r in compare_templates(T, drawn, options=defaults)}
+    capillaries = rows[("class Capillaries", "vessels")]
+    assert capillaries.within is True and capillaries.template == cls.count
+    assert capillaries.tolerance == f"rel 3% of {cls.count - 6} (6 pairs of dead ends joined)"
+    assert rows[("loops", "independent loops")].within is True
+    assert rows[("loops", "independent loops per mm^3")].within is True
+    assert rows[("class Capillaries", "mean length (um)")].within is True
+    # The template's own counts, drawn with the defaults, are 6 out.
+    rows = {(r.section, r.characteristic): r for r in compare_templates(T, T, options=defaults)}
+    assert rows[("loops", "independent loops")].within is False
+
+
+def test_a_layout_is_scored_only_where_the_template_has_one():
+    from haemolynx.synthetic.compare import STRUCTURE_DISPERSION, dispersion, organisation_rows
+    from haemolynx.synthetic.organisation import ISOTROPIC, Organisation
+
+    assert dispersion([5, 5, 5, 5]) == 0.0 and dispersion([0, 0]) == 0.0
+    assert dispersion([10, 0, 10, 0]) == pytest.approx(5.0)
+
+    def organisation(nodes):
+        n = len(nodes)
+        return Organisation(
+            shape=(2, 1, n // 2), capillary_nodes=tuple(nodes), capillary_length_um=tuple(nodes),
+            arterial_length_um=(0.0,) * n, venous_length_um=(0.0,) * n, orientation=(ISOTROPIC,) * n,
+            global_orientation=ISOTROPIC, axis_share=(1 / 3,) * 3, within_near=0.5, beyond_far=0.1,
+            trunk_turn_deg=None, capillary_curvature_deg=None, tree_curvature_deg=None,
+        )
+
+    even, layered = organisation([5, 6, 5, 4, 4, 5, 4, 5]), organisation([0, 1, 0, 1, 20, 22, 18, 21])
+    assert dispersion(even.capillary_nodes) < STRUCTURE_DISPERSION <= dispersion(layered.capillary_nodes)
+    rows = {r.characteristic: r for r in organisation_rows(even, layered)}
+    assert rows["capillary vertices by cell (correlation)"].within is None
+    assert rows["capillary vertices by cell (correlation)"].tolerance.startswith("not held (the template's capillaries are even")
+    rows = {r.characteristic: r for r in organisation_rows(layered, even)}
+    assert rows["capillary vertices by cell (correlation)"].within is False
+    assert rows["capillary length along z (correlation)"].within is False  # the layers are its z profile, the even one falls
+    assert rows["capillary length along x (correlation)"].within is None  # even along x
 
 
 def test_a_closed_network_reports_the_templates_open_ends_as_not_drawn():

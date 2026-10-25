@@ -255,7 +255,9 @@ SCHEMA = Schema(
         Setting(
             name="synthetic_interior_dead_ends",
             kind="bool",
-            default=True,
+            # Off (Harvey, 2026-10-25: D3a): the image runs' interior dead
+            # ends are mostly broken segmentation, not tissue.
+            default=False,
             help=(
                 "Give the synthetic network the template's number of dead ends inside "
                 "the tissue; off, its only dead ends are on the faces (in a closed "

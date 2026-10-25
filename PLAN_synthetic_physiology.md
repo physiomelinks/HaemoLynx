@@ -237,3 +237,33 @@ Being built in the phase order above.
   points against 702, all out of band. A closed network cannot keep the vessel count, the loops
   and the dead ends at once; joining the cut ends in pairs would instead keep the loops at about
   231 + 45 with about 45 fewer vessels. Which to hold is his call.
+- Phase 5: `synthetic_interior_dead_ends` off by default (`GenerationOptions.interior_dead_ends`
+  likewise): a tree leaf the template ended blind joins the bed, so the boundary-node counts are
+  the template's or more (reported "not held"), and the interior dead-end rows "not drawn".
+  **Dead ends not drawn are joined in pairs** (`generate.dead_end_pairs_joined`): each pair of the
+  template's ends leaving the image (closed) or inside the tissue (no interior dead ends) is taken
+  as one vessel broken in two -- one capillary fewer, one loop more, the capillaries' total length
+  kept -- and the comparison judges the vessel, loop, node and degree rows against what the pairs
+  make (its tolerance column says so; the template column keeps the template's own). Kept at the
+  template's vessel count instead, a bed without dead ends needs every vertex a junction: on
+  E14.5 that drew 422 loops against 231 (+83%); holding the loops instead would drop the
+  capillaries by 42%. The pairs (138 on E14.5) give 375 loops, expected 369. **For Harvey** (with
+  Phase 4's question): the pairs are my choice of the three; say if another should hold.
+- Phase 6: a vessel's curve has 1 to 4 lobes (`polylines.lobes`, `sin(pi s) sin(k pi s)`: one is
+  the old bow), whichever turns nearest the template's curvature per 10 um at the same length
+  (capillaries and trees each their own). That alone did nothing on E14.5: 93% of the bed's
+  capillaries were straight, their chords (mean 38 um) leaving no room for the template's length
+  (36 um, chord 30) -- a lattice puts neighbours a cell spacing apart, while the template's
+  vertices sit 16.8 um from their nearest (half of them in a plexus sheet 12-25 um deep, thinner
+  than a cell). So at the template's own size the bed's vertices are its capillary vertices each
+  moved by a normal step of their median nearest-neighbour spacing (`bed.template_vertices`,
+  `organisation.capillary_node_positions_rel` / `capillary_node_spacing_um`, not kept in the run's
+  record); a scaled box keeps the cell field. E14.5 with the defaults: no straight capillary (was
+  93%), curvature 27 degrees per 10 um against the template's 26 (was 4), the trees 30 against 29.
+  The comparison now scores a layout only where the template has one (`compare.dispersion`: the
+  vertices' variance over mean between cells, or along an axis, at least 2; E14.5: cells 3.6, z 226,
+  y 6.6, x 0.8 -- its x profile, out at every phase, is even). E14.5, three seeds, no flows:
+  322 of 348 banded rows within. Still out: average degree (3.0; every vertex a junction), loops
+  by 5-7 of 369, the coverage (12% of the box beyond 50 um of a capillary against 5%: fewer,
+  longer vessels), the share along z (0.11 against 0.21), the daughter angle (90 against 114,
+  out before this plan), the trees' share in their cells in 2 of 3 seeds.

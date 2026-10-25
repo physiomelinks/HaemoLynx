@@ -1021,14 +1021,19 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic,
   every band from its one `TOLERANCES` table. The large tier is a trunk handing side branches to
   the bed at its orders' own widths (Murray's law in the Art/Ven tier only), grown in the cells
-  the template's trees of that side occupy (`trees.TreeLayer`); the bed is laid out cell by cell
-  to the template's capillary density and runs the way its capillaries run
-  (`synthetic/organisation.py`, measured on the template, scored in the comparison), along
+  the template's trees of that side occupy (`trees.TreeLayer`); the bed's vertices are the
+  template's capillary vertices moved by their spacing (`bed.template_vertices`; a scaled box: laid
+  cell by cell to its density, `bed.density_vertices`), it runs the way its capillaries run and its
+  vessels curve as theirs do (`polylines.lobes`), all read by `synthetic/organisation.py` and
+  scored in the comparison (a layout only where the template has one, `compare.dispersion`), along
   Delaunay edges or, with `synthetic_bed_model=voronoi`, a Voronoi tessellation's cell edges.
   The network is closed by default (`synthetic_open_ends=closed`: no vessel leaves the box, all
   flow in at the inlets and out at the outlets, shown in the viewer; `template` cuts the
-  template's count at the faces), and the comparison reports what was not drawn
-  (`compare.not_drawn`). Still being made physiological: `PLAN_synthetic_physiology.md`. `validate_synthetic_graph` pins the graph contract
+  template's count at the faces) without interior dead ends (`synthetic_interior_dead_ends`, off):
+  the template's dead ends not drawn are joined in pairs, a capillary fewer and a loop more each
+  (`generate.dead_end_pairs_joined`; those rows are judged against what the pairs make), and the
+  comparison reports what was not drawn (`compare.not_drawn`, `not_held`).
+  `PLAN_synthetic_physiology.md` has what is still open. `validate_synthetic_graph` pins the graph contract
   (int ids, `pos`/`voxels` in µm, `length` the polyline's, `diameter_source="synthetic"` and, given
   the template, its `diameter_basis`, no degree-2 node, `dead_end_kind` on every dead end,
   connected).

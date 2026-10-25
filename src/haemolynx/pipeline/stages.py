@@ -696,7 +696,7 @@ def _build_synthetic_network(
         seed = settings.get("synthetic_seed")
         options = synthetic.GenerationOptions(
             scale=float(settings.get("synthetic_scale") or 1.0),
-            interior_dead_ends=bool(settings.get("synthetic_interior_dead_ends", True)),
+            interior_dead_ends=bool(settings.get("synthetic_interior_dead_ends", False)),
             bed_model=str(settings.get("synthetic_bed_model") or "delaunay"),
             open_ends=str(settings.get("synthetic_open_ends") or synthetic.OPEN_ENDS_CLOSED),
         )

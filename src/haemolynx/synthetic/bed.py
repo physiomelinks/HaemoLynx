@@ -20,9 +20,14 @@ vessels the box cuts; the rest end blind inside.
 
 **The bed follows the template's layout** (``PLAN_synthetic_physiology.md``,
 Harvey's D4 and D6) when the template carries one (``synthetic.organisation``):
-its vertices are laid cell by cell in proportion to the template's capillary
-vertices (:func:`density_vertices`), so it is dense where the template's
-capillaries are dense and absent where they are; the fill prefers candidates
+drawn at the template's own size, its vertices are the template's capillary
+vertices each moved at random by about their nearest-neighbour spacing
+(:func:`template_vertices`: a plexus a sheet thinner than a cell stays one,
+and the vertices keep the template's spacing, so its vessels keep their
+length and room to curve); otherwise they are laid cell by cell in
+proportion to the template's capillary vertices (:func:`density_vertices`),
+so the bed is dense where the template's capillaries are dense and absent
+where they are. The fill prefers candidates
 running the way the template's capillaries run in that cell
 (:data:`ORIENTATION_WEIGHT`); and a vessel's wanted chord scales with the
 local spacing. A template without one gets an even lattice over the box.
@@ -315,6 +320,43 @@ def density_vertices(
     if len(points) > count:
         points = points[np.sort(rng.choice(len(points), size=count, replace=False))]
     return points
+
+
+def template_vertices(
+    extent_um: np.ndarray,
+    count: int,
+    *,
+    rng: np.random.Generator,
+    keep_clear: Optional[np.ndarray],
+    spacing_um: float,
+    organisation: Organisation,
+) -> np.ndarray:
+    """About *count* points drawn from the template's capillary vertices
+    (``organisation.capillary_node_positions_rel``), each moved by a normal
+    step of their median nearest-neighbour spacing (its third on each
+    axis): the template's layout smoothed by its own spacing, not its
+    vertices. Kept off the faces and *keep_clear* as :func:`lattice_vertices`
+    is, thinned at random to *count* when there are more."""
+    extent = np.asarray(extent_um, dtype=float)
+    source = np.asarray(organisation.capillary_node_positions_rel, dtype=float) * extent
+    wanted = max(int(math.ceil(count * OVERSAMPLE)), 1)
+    spread = float(organisation.capillary_node_spacing_um or spacing_um) / math.sqrt(3.0)
+    points = source[rng.integers(0, len(source), size=wanted)] + rng.normal(0.0, spread, size=(wanted, 3))
+    margin = np.minimum(FACE_MARGIN_SPACINGS * spacing_um, extent / 4.0)
+    points = np.clip(points, margin, extent - margin)
+    if keep_clear is not None and len(keep_clear) and len(points):
+        near = cKDTree(np.asarray(keep_clear, dtype=float)).query_ball_point(points, r=CLEARANCE_SPACINGS * spacing_um)
+        points = points[np.array([len(n) == 0 for n in near])]
+    if len(points) > count:
+        points = points[np.sort(rng.choice(len(points), size=count, replace=False))]
+    return points
+
+
+def drawn_from_template_vertices(organisation: Optional[Organisation], at_template_size: bool) -> bool:
+    """Whether a bed is drawn from the template's own vertices
+    (:func:`template_vertices`): at the template's own size (a scaled box
+    has more or fewer vertices than the template's), when it recorded them."""
+    return bool(at_template_size and organisation is not None and organisation.capillary_node_positions_rel)
 
 
 def local_spacings(points: np.ndarray, extent_um: np.ndarray, organisation: Organisation, default_um: float) -> np.ndarray:
@@ -785,6 +827,7 @@ def build_bed(
     target_chord_um: Optional[float] = None,
     organisation: Optional[Organisation] = None,
     model: str = BED_MODEL_DELAUNAY,
+    at_template_size: bool = True,
 ) -> BedResult:
     """Add the bed to *draft*. *attached* maps the draft nodes the bed joins
     (tree leaves, or the roots themselves) to the bed edges each takes;
@@ -793,8 +836,9 @@ def build_bed(
     targets' dead ends go on the faces; *target_chord_um* the chord the
     template's capillaries have on average (the fill prefers candidates near
     it; None, the shortest); *organisation*, the template's layout the bed
-    follows (``synthetic.organisation``; None: even over the box); *model*
-    one of :data:`BED_MODELS`. See the module."""
+    follows (``synthetic.organisation``; None: even over the box), from its
+    own vertices *at_template_size*; *model* one of :data:`BED_MODELS`. See
+    the module."""
     if model not in BED_MODELS:
         raise ValueError(f"bed model must be one of {BED_MODELS}, got {model!r}")
     extent = np.asarray(extent_um, dtype=float)
@@ -804,6 +848,10 @@ def build_bed(
     voronoi_pairs: Optional[list] = None
     if model == BED_MODEL_VORONOI:
         bed_points, voronoi_pairs = voronoi_vertices(
+            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
+        )
+    elif drawn_from_template_vertices(organisation, at_template_size):
+        bed_points = template_vertices(
             extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
         )
     elif organisation is not None:
@@ -1122,6 +1170,8 @@ __all__ = [
     "candidate_edges",
     "degree_sequence_targets",
     "density_vertices",
+    "drawn_from_template_vertices",
+    "template_vertices",
     "join_pieces",
     "local_spacings",
     "lattice_vertices",

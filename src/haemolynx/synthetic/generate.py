@@ -22,6 +22,14 @@ inside it and the bed draws no ends at the faces, so blood enters only at the
 inlets and leaves only at the outlets. ``"template"`` cuts as many vessels at
 the faces as the template had leaving its image.
 
+**The template's dead ends not drawn are joined in pairs**: a closed network's
+vessels the template had leaving its image, and, without interior dead ends
+(the default; D3a), its dead ends inside the tissue, are each taken as half a
+vessel broken in two, so every pair is one capillary fewer and one loop more,
+the capillaries' total length kept (:func:`dead_end_pairs_joined`). Kept at
+the template's count instead, a bed without dead ends needs every vertex a
+junction: on E14.5 that drew 422 loops against its 231.
+
 Every draw goes through one ``numpy`` generator, so a seed repeats a network
 exactly. :func:`validate_synthetic_graph` checks the contract.
 """
@@ -45,7 +53,7 @@ from haemolynx.graph.dead_ends import (
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS
 
-from .bed import BED_MODEL_DELAUNAY, build_bed, degree_sequence_targets
+from .bed import BED_MODEL_DELAUNAY, build_bed, degree_sequence_targets, drawn_from_template_vertices
 from .draft import BED, TREE, NetworkDraft
 from .polylines import DEFAULT_POINTS, bend_path, bend_to_lengths, densify_paths
 from .template import (
@@ -109,7 +117,9 @@ OPEN_ENDS = (OPEN_ENDS_CLOSED, OPEN_ENDS_TEMPLATE)
 @dataclass(frozen=True)
 class GenerationOptions:
     scale: float = 1.0
-    interior_dead_ends: bool = True
+    #: The template's dead ends inside the tissue drawn too (the
+    #: ``synthetic_interior_dead_ends`` setting; off by default, D3a).
+    interior_dead_ends: bool = False
     max_bed_degree: int = 4
     daughter_angle_sd_deg: Optional[float] = None
     #: None: half the bed spacing.
@@ -327,6 +337,24 @@ def _capillary_diameters(template: NetworkTemplate, count: int, rng: np.random.G
     return rng.lognormal(mu, sigma, size=count)
 
 
+def dead_end_pairs_joined(template: NetworkTemplate, options: Any) -> int:
+    """How many pairs of *template*'s dead ends a network drawn with
+    *options* (:class:`GenerationOptions`, or its record's dict) joins
+    instead of drawing: its ends leaving the image other than its inlets and
+    outlets when closed, its ends inside the tissue without interior dead
+    ends. Each pair is one capillary fewer and one loop more."""
+    def read(name: str, default: Any) -> Any:
+        return options.get(name, default) if isinstance(options, Mapping) else getattr(options, name, default)
+
+    missing = 0
+    if read("open_ends", OPEN_ENDS_TEMPLATE) == OPEN_ENDS_CLOSED:
+        roots_on_faces = sum(1 for end in (*template.inlets, *template.outlets) if end.face != INTERIOR)
+        missing += max(int(template.dead_ends.leaves_image) - roots_on_faces, 0)
+    if read("interior_dead_ends", True) is False:
+        missing += int(template.dead_ends.interior)
+    return missing // 2
+
+
 def _template_record(template: NetworkTemplate) -> dict:
     """The template as a plain dict without its per-vessel samples."""
     data = template.to_dict()
@@ -336,6 +364,8 @@ def _template_record(template: NetworkTemplate) -> dict:
         item["samples"] = None
     data["loops"]["loop_length_samples_um"] = []
     data["dead_ends"]["chain_length_samples_um"] = []
+    if data.get("organisation"):
+        data["organisation"]["capillary_node_positions_rel"] = None
     return data
 
 
@@ -375,6 +405,14 @@ def generate_network(
     loops = T.loops.independent_loops
     if loops is None:
         loops = int(round(capillary_count / 3.0))
+    joined = dead_end_pairs_joined(T, options)
+    if joined:
+        capillary_count = max(capillary_count - joined, 1)
+        loops += joined
+        draft.note(
+            f"{2 * joined} of the template's dead ends are not drawn: joined in pairs, "
+            f"{joined} capillaries fewer and {joined} loops more"
+        )
     bed_vertices = max(capillary_count - loops - root_count + 1, 1)
     # The mean spacing; a bed laid out to the template's organisation has
     # its own spacing cell by cell (bed.density_vertices).
@@ -461,6 +499,7 @@ def generate_network(
         target_chord_um=_capillary_chord(T),
         organisation=T.organisation,
         model=options.bed_model,
+        at_template_size=options.scale == 1.0,
     )
 
     if bed.edges == 0:
@@ -510,8 +549,13 @@ def generate_network(
             "bed_blind_ends": len(bed.blind_ends),
             "bed_face_ends_wanted": bed_face_ends,
             "bed_blind_ends_wanted": bed_blind_ends,
+            "dead_end_pairs_joined": joined,
             "spacing_um": spacing,
-            "bed_layout": "template" if T.organisation is not None else "even",
+            "bed_layout": (
+                "even" if T.organisation is None
+                else "template vertices" if drawn_from_template_vertices(T.organisation, options.scale == 1.0)
+                else "template cells"
+            ),
             "notes": list(draft.notes),
         },
     }
@@ -626,12 +670,18 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
         starts = np.stack([draft.position(e.u) for e in simple])
         ends = np.stack([draft.position(e.v) for e in simple])
         targets = np.array([float(e.length_um or 0.0) for e in simple])
-        paths = list(bend_to_lengths(starts, ends, targets, rng, points=options.bend_points, extent_um=extent))
+        curvature = None
+        if template.organisation is not None:
+            curvature = np.array([_curvature_target(template, e.category) for e in simple])
+        paths = list(bend_to_lengths(
+            starts, ends, targets, rng, points=options.bend_points, extent_um=extent, curvature_deg=curvature
+        ))
     with_via = [e for e in edges if e.via]
     for edge in with_via:
         paths.append(bend_path(
             [draft.position(edge.u), *edge.via, draft.position(edge.v)], float(edge.length_um or 0.0), rng,
             bend_points=options.bend_points, extent_um=extent,
+            curvature_deg=None if template.organisation is None else _curvature_target(template, edge.category),
         ))
     voxels, lengths = densify_paths(paths, step_um=options.voxel_step_um)
     for edge, edge_voxels, length in zip(simple + with_via, voxels, lengths):
@@ -650,6 +700,14 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
     # dead ends were set on are the extent's.
     G.graph["image_extent_um"] = tuple(float(v) for v in extent)
     return G
+
+
+def _curvature_target(template: NetworkTemplate, category: str) -> float:
+    """The turn per 10 um the template's vessels of *category*'s kind have
+    (``organisation``): its capillaries' or its trees'; NaN for none."""
+    organisation = template.organisation
+    value = organisation.capillary_curvature_deg if category == "capillary" else organisation.tree_curvature_deg
+    return float("nan") if value is None else float(value)
 
 
 def _add_edge(G: nx.MultiGraph, new_id: Mapping[int, int], edge: Any, voxels: list, length: float, basis: Optional[str]) -> None:
@@ -780,6 +838,7 @@ __all__ = [
     "SYNTHETIC_CLASS",
     "SYNTHETIC_ROLES",
     "boundary_nodes",
+    "dead_end_pairs_joined",
     "generate_network",
     "validate_synthetic_graph",
 ]

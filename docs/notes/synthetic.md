@@ -101,3 +101,16 @@ is wrong; they are short because the plexus is dense, not because they gather. 5
 synthetic outflow leaves through open ends, not the outlets. The measures, the decisions for
 Harvey and the phases are in `PLAN_synthetic_physiology.md`.
 
+## 2026-10-25: built to Harvey's D1-D7 (`PLAN_synthetic_physiology.md`, whose status has the numbers)
+
+The template now records where its vessels lie and which way they run (`synthetic/organisation.py`),
+scored in the comparison; the bed's vertices are the template's capillary vertices moved by their
+spacing (a scaled box: its 50 um cell field), the trees grow in the template's tree cells of their
+side, the network is closed with no interior dead ends by default, the dead ends not drawn joined in
+pairs, and vessels curve as the template's do. On E14.5: all inflow through the inlet and outflow
+through the outlets; capillary vertices by cell correlate 0.95 with the template's; capillary
+curvature 27 against 26 degrees per 10 um (4 before); the trees 73% in their cells. Two things the
+plan's measures showed along the way: the lattice bed drew 93% of its capillaries straight (its
+chords had no room for their length), and a correlation of the template's layout means nothing where
+the template has none (its x profile on E14.5), so such rows are reported, not banded. Harvey's grid
+D1a (12 renders, shuffled) is in `outputs/synthetic_review/` of the `plan-synthetic-e08d0c` worktree.
