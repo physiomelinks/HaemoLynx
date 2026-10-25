@@ -188,3 +188,28 @@ the venules. The template's widths follow its flows weakly (D ~ Q^0.11-0.17 by c
 0.21-0.29), and those flows are computed from the widths. So nothing was built: a law that turns
 the template's own large vessels into capillaries would draw widths less like the template's.
 Harvey chose to leave the widths as the template's (D7a only): phase 7 stays unbuilt.
+
+## 2026-10-25: what still separates the template from the drawn networks
+
+About 40 measures on E14.5 and the 44 drawn networks of grids D1a-D1d (the harness is
+`outputs/synthetic_review/realism_measures.py` in the `plan-synthetic-e08d0c` worktree). Where
+E14.5 sits outside every network of D1d:
+
+- **Junction shape**, not yet measured by the comparison: E14.5's capillary junctions are wide,
+  flat Ys (smallest angle between two branches, median 97 degrees, 1% under 45; the three angles
+  sum to 356), the Delaunay bed's often have two branches leaving together (median 51, 41% under
+  45; sum 292-298), the Voronoi bed's less so (63, 30%; 313). The same at 4, 8 and 15 um from the
+  node, and with or without a dead-end stub at the junction.
+- **Holes**: box beyond 50 um of a capillary 4.8% against 10-12%, out of the comparison's band in
+  every network; nothing in the generator acts on it yet.
+- **Columns above the plexus**: near-vertical capillary length above the plexus 0.30 against
+  0.15-0.27, the columns evenly spread in E14.5 and bunched when drawn. The only measure that
+  ranked Harvey's picks above the rest in both of his looks at D1d.
+- **Tortuosity tail**: p90 1.50 against 1.14-1.26 with medians alike, because the generator reads
+  the statistics source's mean tortuosity with a fixed spread and leaves its median unused.
+- **Widths in patches**: neighbouring capillaries' diameters correlate 0.21, drawn ones about 0.
+
+The template's fine wiggle at 2 um steps (twice the drawn networks', equal at 10 um) looks like the
+skeleton's staircase, and is not one to match. Harvey's two looks at D1d agree on one network of
+eleven, so his marks rank the drawn networks too loosely to fit a rule to; the template's own gaps
+are the better guide.
