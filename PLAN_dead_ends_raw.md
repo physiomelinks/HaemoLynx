@@ -8,9 +8,21 @@ blind"), now that there is one image to read.*
 
 It builds on the "raw confirmation" session's `PLAN_raw_confirmation.md`. That plan's
 `preprocessing/raw_evidence.py` (`RawEvidence`: one reader, sampled, windowed, calibrated once
-per run) is the reader every rule here asks, rather than a second one. Its v1 reads only a
-plasma (luminal) stain, so this plan adds the wall-stain primitives dead ends need on E14.5,
-whose raw image is claudin-5.
+per run) is the reader every rule here asks, rather than a second one. It reads both stains
+(`RawEvidencePlasma`, `RawEvidenceEndothelial`: `vesselness`, `signal_along`, `wall_between`,
+`hole_is_lumen`), and this plan adds the wall-stain primitives dead ends need on E14.5, whose raw
+image is claudin-5.
+
+## Status (2026-10-25)
+
+| Phase | State | Where |
+|---|---|---|
+| A. Wall primitives | **Done** | `bafd3aa2`: `ring_along` (E1), `inside_walls` (E2), `walls_ahead` (E3), the ring fields on `RawCalibration`, `ring_calibration`; tests in `tests/test_raw_evidence.py` |
+| Cost on E14.5 | **Measured** | Section 6 (Risks) |
+| B. Measure and record, re-fit G1-G4 (R1) | **Waits** on `graph/dead_ends.py`, `graph/network_review.py` and the census, which the dead-ends and bridging sessions are finishing | Section 4 |
+| C. The grid | **Built and sent** as **DR1** (`9debc4d1`): https://claude.ai/artifact/FUrmkvLXHiSobkY1zAk9Jf. Waits on Harvey's marks | Section 4 |
+| D. Rules | **Waits** on DR1's marks, then a fresh grid DR2 agreeing at least 90% | Section 4 |
+| E. Docs, second dataset | CLAUDE.md, the notes and `RELEASE_REVIEW.md` `graph.6b` updated for A and C; a plasma-only dataset waits on data | Section 4 |
 
 ---
 
@@ -113,14 +125,48 @@ retired names.
 4. **Tests** go in `tests/test_raw_evidence.py`, beside its endothelial tube and walled slab
    fixtures, with one case per primitive: a ring round the chain, a ring round a neighbour,
    walls running on past the tip, and walls stopping at it.
-5. **Sequence.** `claude/raw-evidence` lands first, then Phase A on a branch off it. The
-   raw-confirmation session leaves `raw_evidence.py` alone meanwhile. Landed on 2026-10-13:
-   `Devel_GUI_improvements_HD` at 96b0329 carries `preprocessing/raw_evidence.py`, its
-   `build_network` hook and `tests/test_raw_evidence.py`.
+5. **Sequence.** `claude/raw-evidence` landed on `Devel_GUI_improvements_HD` at 96b0329
+   (2026-10-13) with `preprocessing/raw_evidence.py`, its `build_network` hook and
+   `tests/test_raw_evidence.py`, and `claude/raw-image-input` with the settings,
+   `read_raw_stain`/`resolve_stain` and `enclosed_by_walls`. Phase A is on top of both.
 
-This branch supplies the settings, `read_raw_stain`/`resolve_stain` and `enclosed_by_walls`. A
-`keep_dtype` option on the raw loader is not needed for now: the in-RAM path reads a channel in
+A `keep_dtype` option on the raw loader is not needed for now: the in-RAM path reads a channel in
 its own dtype, and float32 on the memmap path is acceptable until a large stack says otherwise.
+
+**Landed (2026-10-25, `bafd3aa2`).** All three are methods of `RawEvidenceEndothelial`; they
+measure and nothing reads them yet.
+
+- `ring_along(path_um, radius_um, *, others_um=None, fit_rings=True, min_contrast=None,
+  psf_sigma_zyx=None, wall_um=None)` returns `RingSupport`:
+  - `fraction` / `tip_fraction`: the share of the chain's sections, every 2 um (at 1, 3, 5 ...
+    um from the tip), with a wall on both sides across it (`vesselness`), over the chain and its
+    tip's 10 um;
+  - `readings`: a `RingReading` per tip section (five), the ring fitted by
+    `endothelial.fit_ring_section` on a window round the section, exactly what it gives on the
+    whole volume (pinned). Each says `ring` or why not (`no_dark_lumen`, `low_contrast`,
+    `partial_wall`, `ring_not_closed`, `off_volume`), the centre in microns, the diameter, and
+    whose a seen ring is: `own`, `other` or `off_centre`;
+  - **whose** is the nearest centreline to the fitted centre, the chain or one of `others_um`. The
+    fit's own centring limit (1.5 um or 0.3 of the diameter) is generous on a wide ring: a strand
+    2.5 um off a 12 um vessel's axis is "centred" by it, though the ring is the vessel's;
+  - the blur and wall are the arguments, else the calibration's ring fields, else fitted free.
+- `inside_walls(points_um, radius_um, *, others_um=None, reach_um=None)` returns `InsideWalls`,
+  per point: `lumen` (enclosed by walls, off them), `wall` (on one), `shared` (the enclosed region
+  it lies in also holds another centreline). Each point is judged on its own window
+  (`enclosed_by_walls` once per window), so the answer never depends on the points asked with it.
+- `walls_ahead(tip_um, heading, radius_um, *, others_um=None, others_radius_um=0, limit_um=30,
+  step_um=1)` returns `WallsAhead`: from one lumen radius past the tip, a reading every 1 um
+  (`vesselness` across the heading), `run_um` until the first that is not vessel, `stop`
+  (`vessel`: into another vessel's lumen with no gap; `face`; `runs_on`; `ends`), `meets_um`,
+  `face_um`, the gaps before it, and the readings themselves.
+- `RawCalibration` gains `ring_psf_sigma_zyx`, `ring_wall_um` and `ring_wall_level` (None by
+  default; `from_record` reads older graphs), and `ring_calibration(G, evidence, ...)` fills them
+  from `calibrate_from_rings`. `RawEvidence._read(blur=False)` reads a window unblurred for the
+  ring fit.
+- The tests use synthetic walled tubes: a ring round the chain, a ring round a neighbour, walls
+  running on past the tip (to the limit, to the face, into another vessel), walls stopping at
+  it, a gap before a vessel, two lumens kept apart, and a memory map giving the in-RAM answers
+  in windows under a quarter of the volume.
 
 ### Phase B — Measure on E14.5 and record (no behaviour change)
 
@@ -130,7 +176,24 @@ its own dtype, and float32 on the memmap path is acceptable until a large stack 
 - Re-read G1–G4 with them: the 116 marked dead ends' E1–E3 against Harvey's marks, fitted by
   `fit_marks.py`. This costs no marking and says whether a fifth grid is worth asking for.
 
-### Phase C — Grid G5, spread by the new evidence
+**Waits (2026-10-25)** until the dead-ends and bridging sessions hand over `graph/dead_ends.py`,
+`graph/network_review.py` and `scripts/graph_artefacts/dead_end_census.py` (the bridging
+session's `thick_wall` kind lands in them first). What is left, in order:
+
+1. `classify_dead_ends(..., raw=None)` fills E1-E3 on each `DeadEnd` (new fields, None without a
+   raw image or under a plasma stain, whose analogues are `signal_along` along the chain and along
+   the heading), with `others_um` from the classifier's own `_Centrelines`. The kinds do not change.
+2. The census, `dead_ends.csv` and the review list carry them; each new CSV column gets its
+   `pipeline/export_dictionary.py` entry and the page is written again.
+3. R1: G1-G4's 116 marks re-fitted with E1-E3, from the keys in
+   `.claude/worktrees/dead-ends/outputs/dead_end_review/` (`G1_key.csv`-`G4_key.csv`), reported
+   beside `FIT.md` / `FIT_G4.md` against marking everything one way. Those keys come from the
+   1,082-dead-end graph of 2026-10-12, so the measures are read on that graph and mask, not today's.
+
+### Phase C — Grid DR1, spread by the new evidence
+
+Named **DR1** ("dead ends, raw image"), not G5: G5 is the stops_short route grid of 2026-10-21.
+Its fresh check, Phase D's, is **DR2**.
 
 - 30 fresh interior dead ends, none shown before, spread across E1 (ring support) and E3
   (continuation), then shuffled.
@@ -142,7 +205,33 @@ its own dtype, and float32 on the memmap path is acceptable until a large stack 
 - Fit, and report right / wrong / all one way (CLAUDE.md). If the marks again cite shape and
   context only, say so, and keep looking for the shape measure instead of the stain.
 
-### Phase D — Use what G5 confirms (each behind a setting, off until a fresh grid G6 agrees ≥ 90%)
+**Built and sent (2026-10-25, `9debc4d1`, `scripts/dead_end_review/build_dr1.py`):**
+https://claude.ai/artifact/FUrmkvLXHiSobkY1zAk9Jf (marks save to the page's `annotations`
+collection). Page, key, candidate pool and calibration: `outputs/dead_end_review/DR1_*` in worktree
+`plan-dead-ends-raw-04d14a` (git-ignored).
+
+- **Data:** E14.5, the dead-ends session's graph of Harvey's Claudin segmentation
+  (`plan-dead-ends-36f84f/outputs/de_fresh/e14_final.pkl`, 394 dead ends), the composite's dextran
+  (channel 0) and claudin-5 (channel 1). The rings' blur and wall were fitted on this graph
+  (`ring_calibration`, 8 workers): sigma 2.71 um along z and 1.08 um across, wall 1.13 um.
+- **Fresh:** interior, with a heading, no tip within 3 um of one G1-G5, G1'-G3', the short dead
+  ends or the tips-in-lumen grids showed, nor within 8 um of a facing pair M or M2 showed: 108 of
+  394.
+- **Spread:** thirds of E3's run, and within each the three levels of E1's fitted-ring share
+  (no ring at the five tip sections; some; half or more), 4/3/3, evenly across the run. Not E1's
+  vesselness share: on E14.5 it reads "walled" at three in four interior tips. The 30: runs 0-30
+  um, 16 `unknown`, 10 `stops_short`, 4 `artefact`.
+- **Page:** G4's two planes plus "Past the tip (its own plane)", framed from 6 um behind the tip to
+  the end of the line E3 reads, drawn dashed in every channel. Each card names its tip's voxel
+  position. Two questions: V / N / P / ? and Goes on / Ends here / Unsure, with "what decided it".
+- **What will be fitted** once marked: Q1 against E1 (ring share, own-ring share, vesselness
+  share) and E2 (lumen, shared, on-wall shares); Q2 against E3 (run, stop, gap), each reported
+  right / wrong / all one way, with the IDs it gets wrong.
+
+### Phase D — Use what DR1 confirms (each behind a setting, off until a fresh grid DR2 agrees ≥ 90%)
+
+Nothing here is built: each item waits on DR1's marks saying a measure separates them, then on
+DR2. Each would be a schema setting, off by default, behind an Advanced button.
 
 - **Q1 ⇒ prune.** A chain with no ring of its own, or one inside another vessel's walls, joins
   the artefacts the stub prune removes (`prune.prune_vascular_stubs`, agreed with the session
@@ -163,13 +252,18 @@ its own dtype, and float32 on the memmap path is acceptable until a large stack 
 - Repeat Phase B on a second dataset with a plasma raw image only (the Nerve fixture has none),
   to see what E1–E3 are worth without walls.
 
+**State (2026-10-25):** CLAUDE.md's dead-end entry names the primitives and DR1;
+`docs/notes/dead_ends_and_open_ends.md` has the E14.5 measurements; `RELEASE_REVIEW.md` `graph.6b`
+names DR1 (unmarked, still failing; no score change). `graph.8b` waits on DR2. The plasma-only
+repeat waits on a dataset with a plasma raw image and no endothelial one.
+
 ## 5. Decisions for Harvey
 
 | # | Question | Recommendation |
 |---|---|---|
-| R1 | Read G1–G4 again with E1–E3 (Phase B) before asking for G5? | Yes: it costs no marking, and decides whether G5 is needed |
-| R2 | G5's second question ("does it go on?") | Yes: it is what an endothelial stain can answer that the mask cannot |
-| R3 | Should an unfilled sprout (walls, no plasma) become a vessel in the graph, with no flow (`blind_end`), or stay a note in the review? | Review first, since it adds vessels the segmentation never had; decide after G5 |
+| R1 | Read G1–G4 again with E1–E3 (Phase B) before asking for the grid? | Yes: it costs no marking, and decides whether the grid is needed. **2026-10-25:** DR1 was built and sent first, at the coordinating session's request, because Phase B's files were in other sessions' hands. Marking it can wait for R1's re-fit if Harvey prefers |
+| R2 | The grid's second question ("does it go on?") | Yes: it is what an endothelial stain can answer that the mask cannot. **DR1 asks it**; Harvey may leave it blank |
+| R3 | Should an unfilled sprout (walls, no plasma) become a vessel in the graph, with no flow (`blind_end`), or stay a note in the review? | Review first, since it adds vessels the segmentation never had; **open, for Harvey after DR1's marks** |
 | R4 | A dataset with both a plasma and an endothelial channel: one raw channel (today), or a second for evidence? | One. The segmentation already carries the plasma; the raw channel should be the other stain |
 | R5 | Which channel is E14.5's raw image? D5 (2026-10-12) said one channel only, the one the segmentation came from (dextran). On 2026-10-13 Harvey said the endothelial channel (claudin-5) "would be better" for this dataset. | **Decided: claudin-5** (Harvey, 2026-10-13, D5 overturned; relayed by the raw-confirmation session, which records it in `PLAN_raw_confirmation.md`). Dextran read along the chain had done no better than chance on G4 (15/27), and on that session's grids H and H2 (17/30 each, `outputs/doubled_run_review/FIT_raw.md`) |
 
@@ -180,8 +274,33 @@ its own dtype, and float32 on the memmap path is acceptable until a large stack 
   and the grid spread across it.
 - **A neighbour's wall** can sit within a capillary's ring radius. E1's ring centre test (own
   chain or not) is what keeps a spur from borrowing it.
-- **Cost:** the ring fit is ~0.1 s a section in one process. 1,082 dead ends × 5 sections is
-  ~10 min in one process, or ~1.5 min with the 8 workers `sections.run_edge_tasks` already
-  provides. Phase B measures it.
+- **Cost:** the ring fit was guessed at ~0.1 s a section in one process. **Measured on
+  2026-10-25** (`outputs/dead_ends_raw/measure_e14.py` and `timing.json`, worktree
+  `plan-dead-ends-raw-04d14a`): E14.5's 394 dead ends, claudin-5, one process, the rings' blur
+  and wall fixed. It costs:
+  - the ring fit: 0.032 s a section (1,947 sections, 63 s);
+  - so 1,082 dead ends × 5 sections is about 3 min in one process, about 30-45 s on 8 workers
+    (estimated, not run);
+  - `ring_along`: 0.17 s a dead end, the vesselness share 6 ms of it;
+  - `walls_ahead`: 7 ms a dead end;
+  - `inside_walls`: 2 ms a point (5 tip points: 10 ms; whole chains every 2 um: 69 s for all 394);
+  - the block calibration: 0.9 s;
+  - `ring_calibration`: 86 s on 8 workers, sigma 2.71/1.08 um, wall 1.13 um, against 2.94/1.16 and
+    1.19 on the 2026-10-04 graph;
+  - reads: 1.3 G voxels in 36,617 windows, never the whole volume; the channel held in RAM is
+    150 MB (uint16).
+- **What the measures read on E14.5** (the same run, 209 interior dead ends):
+  - The block calibration's wall level (197 counts) lies under the walls' peak (~470): its band
+    straddles the edge of a mask that holds the wall. A reading counts as wall above ~108 counts,
+    still between the lumen (~38) and the wall.
+  - E1's vesselness share reads walled at three in four interior tips (25th percentile 1.0), so
+    it barely spreads.
+  - E1's fitted rings spread more. Of 1,036 interior tip sections, 222 fit a ring, 405 have no
+    dark lumen, and 228 are low contrast. A capillary's lumen fills in under the z blur.
+  - E2 puts a centreline on the wall (median wall share 1.0) and in a lumen shared with another
+    centreline at none. On this stack it is unlikely to separate anything; DR1 will say.
+  - E3 runs a median 6 um (IQR 2-11): `stops_short` 7, `unknown` 5, `artefact` 5. It reaches the
+    face for 53 of 91 `leaves_image` ends and for 25 interior ones. 24 of those 25 tips lie within
+    25 um of the top or bottom z face (`outputs/dead_ends_raw/face_check.py`).
 - **G4's lesson:** the marks follow shape in context. The stain may still not separate them; if
   so, this plan's value is Q2–Q4 (continuation and routes), not Q1.

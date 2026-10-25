@@ -154,3 +154,22 @@ Harvey marked G1'-G3' (90 marks; `outputs/dead_end_review/FIT_G1b_G2b_G3b.md` in
   rest (best 24/30 against 23/30).
 - G2': tips near the deep z face marked as leaving even 12-14 um out; some the definition calls
   leaving (x faces, one at the top face) marked as ending inside.
+
+## The raw image at dead ends: Phases A and C of PLAN_dead_ends_raw.md (2026-10-25)
+
+`preprocessing/raw_evidence.py` gained the three wall readings dead ends need (`bafd3aa2`):
+`ring_along` (E1), `inside_walls` (E2) and `walls_ahead` (E3). They measure only, and nothing reads
+them yet. Grid DR1 (`scripts/dead_end_review/build_dr1.py`, `9debc4d1`) asks of 30 fresh E14.5
+dead ends whether the chain is a vessel and whether the vessel goes on past the tip. It went to
+Harvey on 2026-10-25.
+
+On E14.5 (claudin-5, 394 dead ends, one process) the ring fit costs 0.032 s a section, `walls_ahead`
+7 ms a dead end and `inside_walls` 2 ms a point; `ring_calibration` took 86 s on 8 workers. There:
+
+- the vesselness share reads "walled" at three in four interior tips;
+- the fitted rings find none at half of them, because a capillary's lumen fills in under the
+  2.7 um z blur;
+- E2 puts most centrelines on the wall;
+- E3's run spreads (median 6 um).
+
+The full numbers and why DR1 is spread by the fitted rings are in the plan's Phase C and Risks.

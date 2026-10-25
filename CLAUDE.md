@@ -201,7 +201,8 @@ haemolynx/
 │   │                       #   artefacts and dead ends (graph_artefacts/: report,
 │   │                       #   dead_end_census: by kind, place, depth, step, flow coverage)
 │   ├── dead_end_review/    # The marked grids dead ends are calibrated on: G1-G3 (build_grids.py),
-│   │                       #   G4 (build_g4.py: segmentation, dextran and claudin-5 side by side)
+│   │                       #   G4 (build_g4.py: segmentation, dextran and claudin-5 side by side),
+│   │                       #   DR1 (build_dr1.py: does the vessel go on past the tip?)
 │   ├── open_end_sensitivity.py # One solved network under every open_end_model
 │   ├── stats_cross_check.py # The statistics against skan, maskel and VesselVio on one mask
 │   │                       #   (stats.8a), and a ledger of which HaemoLynx step makes each
@@ -719,6 +720,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   marked by Harvey, confirmed no rule either. `vessels_cut_by_image_faces`: the vessels on a leaving dead end's chain,
   whose lengths are censored (decision D5): flagged in the VTK (`cut_by_image_face`) and the
   connectivity CSV, and given apart in the statistics' Dead Ends section.
+- **The raw image at dead ends** (`PLAN_dead_ends_raw.md`) — `RawEvidenceEndothelial.ring_along`
+  (E1: a wall ring round the chain, and whose), `inside_walls` (E2: walls enclosing a point, a
+  lumen shared with another centreline) and `walls_ahead` (E3: the walls running on past the tip)
+  measure only, a window at a time; no rule reads them. Grid DR1 waits on Harvey's marks.
 - **Flow states** — the solve writes `graph.FLOW_STATE` (`solved`, `blind_end`, `closed_end`,
   `no_boundary`) beside `FLOW_SOLVED`. `blind_end` and `closed_end` flows and drops are exactly 0:
   **call `graph.zero_flows_behind_dead_ends` after any new `set_edge_flows` on a marked graph.**
