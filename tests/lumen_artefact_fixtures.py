@@ -171,3 +171,114 @@ def strand_through_a_trunk():
     ])
     ends = [_node(p) for p in ((7, 37, 10), (7, 37, 50), (7, 20, 0), (7, 20, 69))]
     return mask, G, ends
+
+
+# --- Phase 0's remaining cases (PLAN_one_centreline_per_lumen.md) -------------
+# Each returns (mask, G, ...) with the plan's right answer in its docstring;
+# tests/test_consolidate_lumen.py pins what the clean-up does to each today.
+
+
+def touching_capillaries():
+    """Two capillaries (radius 2.5 um) touching along 20 um with a neck between
+    them: their axes 4.5 um apart there, so their tubes overlap 0.5 um and the
+    lumen is 2.2 um tall at the neck against 5 um in each tube. Both run from
+    the x = 0 face to the x = 59 face, the second bending in to meet the first
+    and out again. Right answer: two strands. Returns ``(mask, G, ends)``,
+    the straight one's two ends, then the bent one's."""
+    mask = np.zeros((9, 30, 60), dtype=bool)
+    straight = [(4, 8, 0), (4, 8, 59)]
+    bent = [(4, 24, 0), (4, 24, 8), (4, 12.5, 20), (4, 12.5, 40), (4, 24, 52), (4, 24, 59)]
+    for path in (straight, bent):
+        for a, b in zip(path[:-1], path[1:]):
+            capsule(mask, a, b, 2.5)
+    G = polyline_graph([straight, bent])
+    return mask, G, [_node(p) for p in (straight[0], straight[-1], bent[0], bent[-1])]
+
+
+def ring_in_a_bending_vessel():
+    """A wide vessel (radius 6 um) turning a right angle, with a Lee ring in its
+    lumen round the bend: two arcs from a node 35 um before the corner on the
+    first leg to one 35 um after it on the second, one each side of the
+    centreline, no gap inside the ring. Most of the ring's antipodal chords
+    join a point on one leg to a point on the other and cut the bend's inside
+    corner, which is background (the plan's loops 18 and 22). Right answer: no
+    ring (one strand round the bend). Returns ``(mask, G, ring_ends)``."""
+    mask = np.zeros((15, 70, 70), dtype=bool)
+    capsule(mask, (7, 55, -10), (7, 55, 50), 6)
+    capsule(mask, (7, 55, 50), (7, -10, 50), 6)
+    first, second = (7, 55, 15), (7, 20, 50)
+    G = polyline_graph([
+        [(7, 55, 0), first], [second, (7, 0, 50)],
+        [first, (7, 52, 20), (7, 52, 47), (7, 20, 47), second],
+        [first, (7, 58, 20), (7, 58, 53), (7, 20, 53), second],
+    ])
+    return mask, G, [_node(first), _node(second)]
+
+
+def loop_round_a_small_gap():
+    """Two capillaries (radius 2.5 um) parting round a hole 1 um wide and
+    3 um long in the segmentation, and meeting again: a loop round a gap
+    smaller than a dropout. Right answer, by the plan's decision D1 (marks of
+    2026-10-08): the loop stays. Returns ``(mask, G, loop_ends)``."""
+    mask = np.zeros((9, 30, 70), dtype=bool)
+    left, right = (4, 15, 25), (4, 15, 45)
+    capsule(mask, (4, 15, -5), left, 2.5)
+    capsule(mask, right, (4, 15, 75), 2.5)
+    for y in (13.0, 17.0):
+        capsule(mask, left, (4, y, 30), 2.5)
+        capsule(mask, (4, y, 30), (4, y, 40), 2.5)
+        capsule(mask, (4, y, 40), right, 2.5)
+    mask[:, 15, 34:37] = False  # the hole: 1 um across, 3 um along
+    G = polyline_graph([
+        [(4, 15, 0), left], [right, (4, 15, 69)],
+        [left, (4, 13, 30), (4, 13, 40), right],
+        [left, (4, 17, 30), (4, 17, 40), right],
+    ])
+    return mask, G, [_node(left), _node(right)]
+
+
+def wall_bump():
+    """A capillary (radius 2.5 um) along x with a bump on its wall: a ball of
+    radius 3 um centred on the wall at x = 30, which Lee thinning draws as a
+    spur 3.5 um long from the vessel's centreline into the bump. Right answer:
+    no stub. Returns ``(mask, G, tip)``."""
+    mask = np.zeros((21, 30, 60), dtype=bool)
+    capsule(mask, (10, 12, -5), (10, 12, 65), 2.5)
+    capsule(mask, (10, 14.5, 30), (10, 14.5, 30), 3)
+    tip = (10, 15.5, 30)
+    G = polyline_graph([[(10, 12, 0), (10, 12, 30)], [(10, 12, 30), (10, 12, 59)], [(10, 12, 30), tip]])
+    return mask, G, _node(tip)
+
+
+def branch_at_15_degrees():
+    """A branch (radius 2 um) leaving a trunk (radius 3 um) at 15 degrees, as
+    cluster collapse leaves it: one node where the two centrelines meet, and
+    the branch's first ~10 um inside the trunk's lumen beside the trunk's own
+    centreline, so the two edges leaving the node run side by side. Right
+    answer: one junction where the branch leaves the lumen, no fork. Returns
+    ``(mask, G, junction, branch_tip)``."""
+    mask = np.zeros((9, 30, 80), dtype=bool)
+    junction = (4, 6, 15)
+    capsule(mask, (4, 6, -5), (4, 6, 85), 3)
+    direction = np.array([0.0, np.sin(np.radians(15.0)), np.cos(np.radians(15.0))])
+    tip = tuple(np.asarray(junction, dtype=float) + 60.0 * direction)
+    capsule(mask, junction, tip, 2)
+    G = polyline_graph([[(4, 6, 0), junction], [junction, (4, 6, 79)], [junction, tip]])
+    return mask, G, _node(junction), _node(tip)
+
+
+def flared_end():
+    """A capillary (radius 2.5 um) whose blind end flares into a bell 6 um in
+    radius, which Lee thinning draws as a fishtail: the vessel's centreline
+    ends at a node inside the flare, and two prongs 6 um long leave it for the
+    bell's rim, all well away from the image's faces. Right answer: no
+    fishtail (one strand to the end). Returns ``(mask, G, fork_node,
+    prong_tips)``."""
+    mask = np.zeros((41, 41, 80), dtype=bool)
+    for x in range(0, 50):
+        r = 2.5 if x < 35 else 2.5 + 3.5 * (x - 35) / 15.0
+        capsule(mask, (20, 20, x), (20, 20, x + 1), r)
+    fork = (20, 20, 42)
+    tips = [(20, 16, 47), (20, 24, 47)]
+    G = polyline_graph([[(20, 20, 0), fork], [fork, tips[0]], [fork, tips[1]]])
+    return mask, G, _node(fork), [_node(t) for t in tips]

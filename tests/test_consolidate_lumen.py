@@ -599,3 +599,163 @@ def test_the_round_limit_setting_reaches_graph_building():
     # Settings that predate it read the old fixed limit.
     del settings["lumen_cleanup_max_rounds"]
     assert graph_build_arguments(settings)["lumen_cleanup_max_rounds"] == CONSOLIDATION_MAX_ROUNDS
+
+
+# --- Phase 0's fixtures (PLAN_one_centreline_per_lumen.md): what the clean-up
+# does to each today, run with the schema's defaults. Where that is not the
+# plan's right answer, the test says so; no rule changes without marks.
+
+
+def _as_built(mask, **overrides):
+    """The clean-up as ``build_network`` makes it, from the schema's defaults."""
+    from haemolynx.pipeline import default_schema
+
+    settings = default_schema().defaults()
+    arguments = dict(
+        min_stub_length=settings["min_stub_length"],
+        min_stub_length_radius_multiple=settings["min_stub_length_radius_multiple"],
+        stub_face_protection=settings["stub_face_protection"],
+        remove_short_loops_under_um=settings["remove_short_loops_under_um"],
+        short_loop_keep_hole_over_um=settings["short_loop_keep_hole_over_um"],
+    )
+    arguments.update(overrides)
+    return lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, **arguments)
+
+
+def _loop_count(G):
+    return len(nx.cycle_basis(nx.Graph(G)))
+
+
+def _artefacts(G, mask):
+    from haemolynx.graph import diagnose_lumen_artefacts
+
+    return diagnose_lumen_artefacts(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=0.0)
+
+
+def test_touching_capillaries_lose_one_of_the_two_whole():
+    """The plan wanted two strands: a neck in the lumen between them (2.2 um
+    tall against 5 um) was to tell two touching capillaries from one drawn
+    twice. No neck test was built: on grid H (2026-10-12) the neck scored
+    21/30, below what a rule needs, so the pair rule judges the lumen alone.
+    Today the bent capillary, beside the straight one along 20 of its 67 um,
+    is read as its second strand and goes whole -- not a cut-off vessel, since
+    it is a piece of its own. This pins that, so a neck test (or a guard
+    against deleting a whole piece) shows up here."""
+    from lumen_artefact_fixtures import touching_capillaries
+
+    mask, G, ends = touching_capillaries()
+    assert _pairs(G, mask) == 1
+
+    H = consolidate_lumen(G.copy(), _as_built(mask))
+
+    assert H.number_of_edges() == 1
+    assert set(H.nodes) == set(ends[:2])
+
+
+def test_a_ring_in_a_bending_vessel_reads_as_round_tissue_and_the_pair_rule_breaks_it():
+    """The plan's right answer, no ring, holds -- by the pair rule, not the
+    loop rule. As the plan found on E14.5's loops 18 and 22, the ring's
+    antipodal chords cut the bend's inside corner, so the in-lumen loop test
+    reads tissue; the two arcs side by side in one lumen are a pair, and one
+    goes."""
+    from lumen_artefact_fixtures import ring_in_a_bending_vessel
+
+    from haemolynx.graph.lumen_loops import iter_short_loops, loop_inside_one_lumen
+
+    mask, G, _ring_ends = ring_in_a_bending_vessel()
+    support = MaskSupport(mask, VOXEL_SIZE)
+    ((_cycle, polyline),) = list(iter_short_loops(G))
+    assert not loop_inside_one_lumen(polyline, support)
+    assert remove_loops_inside_one_lumen(G.copy(), support).number_of_edges() == G.number_of_edges()
+    assert remove_parallel_edges_in_lumen(G.copy(), support).number_of_edges() == G.number_of_edges() - 1
+
+    for cleanup in (_as_built(mask), _as_built(mask, remove_short_loops_under_um=0.0)):
+        H = consolidate_lumen(G.copy(), cleanup)
+        assert _loop_count(H) == 0 and H.number_of_edges() == 1
+        assert nx.is_connected(H)
+
+
+def test_a_loop_round_a_one_micron_gap_is_broken():
+    """The plan wanted this loop kept (decision D1, 2026-10-08: a loop round
+    any real gap is a vessel loop). Later marks overrode that: grids I and I2
+    (2026-10-13) found 55 of 60 short loops closed inside one vessel, so every
+    loop under 200 um round is broken unless its hole is over 10 um (grids Q,
+    Q2). The pair rule alone already breaks this one, the two capillaries
+    round the 1 um hole being one lumen; the in-lumen loop test reads its
+    hole as 2.6 um, more than a dropout, and leaves it."""
+    from lumen_artefact_fixtures import loop_round_a_small_gap
+
+    from haemolynx.graph.lumen_loops import iter_short_loops, loop_inside_one_lumen
+
+    mask, G, _loop_ends = loop_round_a_small_gap()
+    support = MaskSupport(mask, VOXEL_SIZE)
+    ((_cycle, polyline),) = list(iter_short_loops(G))
+    assert not loop_inside_one_lumen(polyline, support)
+
+    for cleanup in (_as_built(mask), _as_built(mask, remove_short_loops_under_um=0.0)):
+        H = consolidate_lumen(G.copy(), cleanup)
+        assert _loop_count(H) == 0 and nx.is_connected(H)
+        assert H.number_of_edges() == 1
+
+
+def test_a_wall_bump_leaves_no_stub_by_length_or_by_the_mask():
+    """The plan's right answer. The 3.5 um spur goes by the length rule, and
+    without one (no minimum length, no radius multiple) by the mask rules:
+    its tip never leaves the vessel's lumen."""
+    from lumen_artefact_fixtures import wall_bump
+
+    mask, G, tip = wall_bump()
+    for cleanup in (_as_built(mask), _as_built(mask, min_stub_length=0.0, min_stub_length_radius_multiple=0.0)):
+        H = consolidate_lumen(G.copy(), cleanup)
+        assert not H.has_node(tip)
+        assert H.number_of_edges() == 1
+
+
+@pytest.mark.parametrize("case, kept", [("short_spur", False), ("blind_sprout", True)])
+def test_a_blind_branch_goes_under_three_radii_and_stays_over(case, kept):
+    """Decision D2 (2026-10-08): short real sprouts are not kept, the
+    3 x radius rule decides. ``tests/dead_end_fixtures.py``'s blind ends on
+    a 2.5 um capillary: 5 um (2 radii) goes, 10 um (4 radii) stays."""
+    import dead_end_fixtures
+
+    fixture = getattr(dead_end_fixtures, case)()
+    H = consolidate_lumen(fixture.graph.copy(), _as_built(fixture.mask))
+    assert H.has_node(fixture.tip) is kept
+    assert H.number_of_edges() == (3 if kept else 1)
+
+
+def test_a_branch_at_15_degrees_is_zipped_to_one_junction_past_where_it_leaves():
+    """The plan's right answer, one junction and no fork, holds: the
+    doubled-stretch step zips the two edges leaving the collapsed node. The
+    junction slides to x = 42.5, 27.5 um along the trunk, where the branch's
+    centreline is 7.4 um off the trunk's: past the point its tube leaves the
+    trunk's (x = 33.7), so its first ~9 um outside the trunk is drawn on the
+    trunk's centreline."""
+    from lumen_artefact_fixtures import branch_at_15_degrees
+
+    mask, G, junction, tip = branch_at_15_degrees()
+    # The branch ends free, so its run beside the trunk counts on a dead-end chain.
+    assert _artefacts(G, mask)["doubled_runs_by_place"]["dead_end_chain"]["um"] > 30.0
+
+    H = consolidate_lumen(G.copy(), _as_built(mask))
+
+    (node,) = [n for n in H if H.degree(n) == 3]
+    assert node != junction and H.has_node(tip)
+    position = np.asarray(H.nodes[node]["pos"], dtype=float)
+    assert position[1] == pytest.approx(6.0) and 40.0 <= position[2] <= 45.0
+    after = _artefacts(H, mask)
+    assert after["fork_pair_count"] == 0
+    assert after["duplicated_centreline_um"] == pytest.approx(0.0, abs=0.5)
+
+
+def test_a_flared_end_loses_its_fishtail_and_the_strand_stops_at_the_fork():
+    """No fishtail, as the plan wanted, but not "one strand to the end": both
+    prongs are under three radii of the flare at the fork and go, so the
+    vessel stops at the fork, 8 um short of where the bell ends."""
+    from lumen_artefact_fixtures import flared_end
+
+    mask, G, fork, tips = flared_end()
+    H = consolidate_lumen(G.copy(), _as_built(mask))
+
+    assert not any(H.has_node(t) for t in tips)
+    assert H.number_of_edges() == 1 and H.has_node(fork) and H.degree(fork) == 1
