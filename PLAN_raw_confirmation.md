@@ -14,32 +14,36 @@ is really two lumens with a dark wall between). So the plan puts one small, samp
 reader of the raw image (`RawEvidence`) under exactly those five decisions, calibrates each with a
 marked grid, and leaves everything else mask-only on purpose.
 
-## Status (2026-10-25)
+## Status (2026-10-25): closed
 
-No raw-image rule ships. Every grid the plan built found no raw measure near 90 %, and most did
-no better than marking all one way, so each decision stays the mask's. The last, grids UR1 and
-UR2 on mask recovery, found none either (2026-10-25). What is left needs data or Harvey: the
-muscle stack's budget, and the two review-page items Phase 3 named.
+**Closed by Harvey on 2026-10-25**, once the raw panel was built ("do this and then close the
+plan"). No raw-image rule ships. Every grid the plan built found no raw measure near 90 %, and
+most did no better than marking all one way, so each decision stays the mask's; the last, grids
+UR1 and UR2 on mask recovery, found none either. What the plan leaves: `RawEvidence` and its
+calibration on every graph built with a raw image, the harness's raw-cost columns, the review
+page's raw panel, and the grids' builders and fits. Not done at closing: the muscle stack's
+budget (no aligned raw image on this machine) and ranking the Short loops list by the raw
+reading (it failed I and I2).
 
 | Item | State | Where |
 |---|---|---|
 | Phase 0: `RawEvidence`, its calibration on the graph, the primitives | **Done** | `87a317e9`, `96b0329a` (2026-10-13); both stains; `stages._record_raw_evidence`; the dead-end wall primitives E1-E3 `bafd3aa2` (`PLAN_dead_ends_raw.md`) |
 | Phase 0: harness columns (D6) | **Done** | `8204478d`: the build log names the raw step's seconds and RAM; `scripts/graph_artefacts.py --raw-cost` builds each side without and with the raw image and reports time, peak memory, the raw step and the windows read |
 | D6 budgets on E14.5 | **Measured, within budget**: +0.6 % build time (the raw step 1.2 s of 210 s), +1 MB of peak (4,912 -> 4,913 MB); the channel, 144 MiB, is held only while it calibrates, under the build's peak; 0 windows read | `docs/notes/graph_building.md`, *The raw image in graph building* |
-| D6 budget on the muscle stack | **Waits on data**: the 16.4 G-voxel segmentation is on this machine, its raw image only as a 1,000 x 1,000 crop at an unknown offset | -- |
+| D6 budget on the muscle stack | **Not measured at closing**: the 16.4 G-voxel segmentation is on this machine, its raw image only as a 1,000 x 1,000 crop at an unknown offset. `graph_artefacts.py --raw-cost` measures it once the raw image is here | -- |
 | H re-score (Phase 2's free step) | **Done, nothing ships** (2026-10-12) | `outputs/doubled_run_review/FIT_raw.md` (main checkout) |
 | Phase 1 (P1, P2): grids M, M2 | **Closed, nothing ships** (2026-10-13). `MaskSupport(raw=)`, `bridge_raw_confirmation`, `bridge_raw_max_gap_um` closed by design. The ahead turn's review ranking: built for the dead-end list `368107db`, taken out `6d335f88` after G3′ | `FIT_M.md`, `FIT_M2.md` |
 | Phase 2 (P3): one lumen or two | **Closed, nothing ships**. The `keep_apart` hook exists (`doubled_stretches`, `lumen_loops`, `assemble.lumen_cleanup`) and nothing fills it; `lumen_cleanup(raw=)` closed by design | Phase 2 |
 | Phase 3 (P4): grids I, I2 | **Done**: the short-loop rule (D8, `5bd4c5b3`, `a3188f12`), then the hole exception from grids Q, Q2 (`7cc17cff`); the raw hole reading ships nothing | `FIT_I.md`, `FIT_I2.md`, `FIT_Q*.md` |
-| Phase 3: the raw reading ranking the Short loops list | **Not built**: it scored no better than all F on I and I2, and a measure that fails its grid stays a measure, not an order (`6d335f88`'s precedent). For Harvey | -- |
-| Phase 3: "the Post processing page shows the raw panel" | **Not built**: the plan never said what the panel shows. For Harvey | -- |
+| Phase 3: the raw reading ranking the Short loops list | **Not built, closed with the plan**: it scored no better than all F on I and I2, and a measure that fails its grid stays a measure, not an order (`6d335f88`'s precedent) | -- |
+| Phase 3: "the Post processing page shows the raw panel" | **Built** at Harvey's request (2026-10-25, `b1a49046`). The plan never said what it shows, so it shows what the marked grids showed: the chosen loop or review item in its own plane and across it, the segmentation beside the run's raw image, the item cyan over both, off until ticked. Nothing reads it | `gui/raw_panel.py`, `docs/notes/gui.md` |
 | Phase 3 (P5): pinhole plugging | **Closed by the marks**: it needed I2's raw hole threshold, and none passed | Phase 3 |
 | Phase 4 (P6): grid UR1 | **Marked and fitted** (Harvey, 2026-10-25): 26 H / 4 V; no measure beats all H over the 30; on the ten recovery draws into (8 H), dextran over its neighbours above 1.05 gets 10/10 | `8204478d`, `c5bc6ad2`, Phase 4 |
 | Phase 4: grid UR2 | **Marked and scored** (Harvey, 2026-10-25): 12 V / 17 H; the two rules fixed first get 16/29 and 17/29, all one way 17/29. https://claude.ai/artifact/NdhbUg7HEzj9eiLKrrg28R | `c5bc6ad2`, Phase 4 |
 | Phase 4: a skip rule in `mask_recovery.py` | **Closed by the marks, nothing ships**: no rule held on UR2, and its best measure (distance to the nearest centreline, 23/29) fails UR1; 79 % over all 39 drawn-into pieces | Phase 4 |
 | Phase 4: the uncovered-mask review list carrying the measure **[later]** | **Closed by UR1's marks**: no measure ranks V above H over the 30 | Phase 4 |
-| Per-depth calibration (Risks) | **Waits**: no rule reads the reader; on UR1 and UR2 neither the global nor the local (depth-free) dextran reading separated the marks | Risks |
-| Phase 5: docs and the review | **Done** | CLAUDE.md (layout, `lumen_loops`), `docs/notes/graph_building.md`, `RELEASE_REVIEW.md` `graph.6b`, `graph.8b`, `memory.6a` |
+| Per-depth calibration (Risks) | **Not built, closed with the plan**: no rule reads the reader; on UR1 and UR2 neither the global nor the local (depth-free) dextran reading separated the marks | Risks |
+| Phase 5: docs and the review | **Done** | CLAUDE.md (layout, `lumen_loops`, Post processing), `docs/notes/graph_building.md`, `docs/notes/gui.md`, `RELEASE_REVIEW.md` `graph.6b`, `graph.8b`, `memory.6a` |
 
 ---
 
@@ -370,9 +374,10 @@ Size S–M. Tests: `test_doubled_stretches.py` (one synthetic D, one T), `test_l
   `lumen_loops.loop_hole_um`) is left to the Short loops review list: 53/60 leave-one-out against
   33 all one way, fitted on Q (9.2 µm); on Q2 alone 23/30, the same as all one way. A mask
   measure, not the raw image's.
-  The raw hole reading ships nothing: on I and I2 it did no better than all F. The fallback this
-  phase named ("below 90 % it ranks the Short loops list and the Post processing page shows the
-  raw panel") is not built; the Status table says why.
+  The raw hole reading ships nothing: on I and I2 it did no better than all F. Of the fallback
+  this phase named ("below 90 % it ranks the Short loops list and the Post processing page shows
+  the raw panel"), the ranking is not built and the raw panel is (2026-10-25, at Harvey's
+  request); the Status table says why.
 - **P5 only after I2 holds**: `segmentation_cleanup_plug_pinholes` (off by default, clean-graph
   D4): the voxels a 1-voxel closing would add, labelled slab by slab (`memmap_support`), each
   component kept only when its raw median brightness ≥ the fitted threshold; mask components may

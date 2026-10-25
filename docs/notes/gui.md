@@ -173,3 +173,18 @@ numbers.
   downsample on import uses block majority (D2: kept, and said). The FWHM report said it had
   searched a downsampled copy (its pool-to-sample ratio sat in `downsample_factor`); it now says
   how many of the vessels it sampled, as the endothelial report does (2026-10-25, `8eddf2ab`).
+
+## The raw image at the chosen review item
+
+`gui/raw_panel.py` and the Post processing page's "Show the raw image at the chosen item" box
+(2026-10-25, Harvey's request closing `PLAN_raw_confirmation.md`, whose Phase 3 named "the raw
+panel" without saying what it shows). It draws the chosen short loop or review item as the marked
+grids drew theirs, since that is what Harvey's marks were made on: the item in its own plane
+(through the middle of its points, along their two longest directions; an item lying in one image
+plane drawn as napari draws it, x right and y down) and in the plane across it (deeper lower),
+each the segmentation (any voxel within 3 um of the plane) beside the run's raw image (the slab's
+mean, blurred 1.5 samples, 2nd-99.8th percentile contrast), the item's vessels cyan, the other
+centrelines grey dots, a 5 um bar. Off until ticked: the raw image is read the first time, through
+the page's own loader (the Diameters stage's copy in the viewer, else the Input tab's file, kept
+for Add vessel too). Each picture reads one window of the volume round its plane, so a
+memory-mapped raw image stays on disk. It shows; it decides nothing, and no list is ordered by it.
