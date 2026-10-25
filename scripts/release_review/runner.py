@@ -389,7 +389,7 @@ def full_tier(tree: Path, out: Path, *, commit: str, date: str, datasets_file: P
     flagged = trends.slower_stages(earlier + rows, commit)
     compared_with = full.compared_commit(earlier, commit)
     collected = full.collect(runs, results, datasets, skipped, flagged=flagged, compared_with=compared_with,
-                             rows=earlier + rows, fixture_results=fixture_results)
+                             rows=earlier + rows, fixture_results=fixture_results, commit=commit)
     return collected, {"runs": runs, "results": results, "skipped": skipped, "slower": flagged,
                        "compared_with": compared_with}
 

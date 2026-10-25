@@ -110,6 +110,15 @@ def test_scaling_needs_three_sizes_and_e14_within_sixteen_gib():
     assert memory.status == PASS and "against 16 GiB" in memory.evidence
     assert full.scaling_check("speed.10a", rows[:4], datasets).status == FAIL  # two sizes
     assert full.scaling_check("speed.10a", [], datasets) is None
+    # A stage reached on the whole stack alone (each crop stopped before it)
+    # is not measured against volume.
+    solve = {"commit": "a", "dataset": "e14p5", "stage": "solve", "status": "finished", "voxels": 8e6,
+             "wall_seconds": 3.0, "peak_rss_mib": 800.0}
+    stopped = full.scaling_check("speed.10a", rows + [solve], datasets)
+    assert stopped.status == FAIL and "fewer than 3 sizes: solve" in stopped.evidence
+    # Rows of another commit are not mixed in.
+    other = [{**row, "commit": "b", "wall_seconds": 99.0} for row in rows]
+    assert full.scaling_check("speed.10a", rows + other, datasets, commit="a").status == PASS
 
 
 DOCUMENT = review_doc.parse("""\

@@ -138,4 +138,9 @@ def scaling(rows: Sequence[Mapping[str, Any]], datasets: Sequence[str], field: s
     faster = sorted(
         stage for stage, exponent in exponents.items() if exponent is not None and exponent > 1.0 + GROWTH_TOLERANCE
     )
-    return {"sizes": len(sizes), "exponents": exponents, "faster_than_volume": faster}
+    return {
+        "sizes": len(sizes),
+        "stage_sizes": {stage: len({volume for volume, _ in values}) for stage, values in points.items()},
+        "exponents": exponents,
+        "faster_than_volume": faster,
+    }

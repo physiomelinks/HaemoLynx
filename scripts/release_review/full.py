@@ -259,7 +259,14 @@ def speed_8b(flagged: Sequence[trends.Slowdown], compared_with: Optional[str]) -
     )
 
 
-def scaling_check(check_id: str, rows: Sequence[Mapping[str, Any]], datasets: Mapping[str, Any]) -> Optional[CheckResult]:
+def scaling_check(
+    check_id: str, rows: Sequence[Mapping[str, Any]], datasets: Mapping[str, Any], commit: Optional[str] = None,
+) -> Optional[CheckResult]:
+    """Every stage's time (or peak memory) against volume, on E14.5 and its
+    crops at one commit: each stage needs the target's number of sizes, and
+    none may grow faster than its volume."""
+    if commit is not None:
+        rows = [row for row in rows if str(row.get("commit")) == commit]
     family = ["e14p5"] + [name for name, entry in datasets.items() if entry.get("of") == "e14p5"]
     field = "wall_seconds" if check_id.startswith("speed") else "peak_rss_mib"
     found = trends.scaling(rows, family, field)
@@ -267,10 +274,18 @@ def scaling_check(check_id: str, rows: Sequence[Mapping[str, Any]], datasets: Ma
         return None
     needed = int(target(check_id, 0))
     exponents = ", ".join(f"{stage} {value:.2f}" for stage, value in sorted(found["exponents"].items()) if value is not None)
+    short = sorted(
+        stage for stage, sizes in found["stage_sizes"].items() if stage != "total" and sizes < needed
+    )
     evidence = f"E14.5 at {found['sizes']} sizes; growth with volume: {exponents or 'none'}"
-    passed = found["sizes"] >= needed and not found["faster_than_volume"]
+    if short:
+        evidence += f"; measured at fewer than {needed} sizes: {', '.join(short)}"
+    passed = found["sizes"] >= needed and not short and not found["faster_than_volume"]
     if check_id == "memory.10a":
-        whole = [row for row in rows if row.get("dataset") == "e14p5" and row.get("stage") == "total"]
+        whole = [
+            row for row in rows
+            if row.get("dataset") == "e14p5" and row.get("stage") == "total" and row.get("status") == "finished"
+        ]
         peak = trends._float(whole[-1].get("peak_rss_mib")) if whole else None
         limit = target("memory.10a", 1) / 2**20
         shown = "-" if peak is None else f"{peak / 1024:.1f} GiB"
@@ -291,6 +306,7 @@ def collect(
     compared_with: Optional[str],
     rows: Sequence[Mapping[str, Any]],
     fixture_results: Optional[Mapping[str, Any]] = None,
+    commit: Optional[str] = None,
 ) -> dict[str, CheckResult]:
     every_result = {**(fixture_results or {}), **results}
     found = [
@@ -301,8 +317,8 @@ def collect(
         per_stage_check("memory.6a", runs, skipped, rows),
         flow_6c(every_result, skipped),
         speed_8b(flagged, compared_with),
-        scaling_check("speed.10a", rows, datasets),
-        scaling_check("memory.10a", rows, datasets),
+        scaling_check("speed.10a", rows, datasets, commit),
+        scaling_check("memory.10a", rows, datasets, commit),
     ]
     return {result.id: result for result in found if result is not None}
 
