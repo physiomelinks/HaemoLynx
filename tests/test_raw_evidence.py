@@ -665,6 +665,108 @@ def test_walls_ahead_into_another_vessel_with_and_without_a_gap():
         broken.walls_ahead([20.0, 20.0, 30.0], [0.0, 0.0, 0.0], 4.0)
 
 
+BENT = (40, 70, 80)
+
+
+def _bent_centreline():
+    """Along x at (z, y) = (20, 12) to x = 30, a quarter turn of radius 25 um
+    to heading +y at x = 55, then on along y to the image's face."""
+    straight = np.column_stack([np.full(301, 20.0), np.full(301, 12.0), np.linspace(0.0, 30.0, 301)])
+    t = np.linspace(0.0, np.pi / 2, 400)
+    arc = np.column_stack([np.full(len(t), 20.0), 37.0 - 25.0 * np.cos(t), 30.0 + 25.0 * np.sin(t)])
+    on = np.column_stack([np.full(151, 20.0), np.linspace(37.0, 69.0, 151), np.full(151, 55.0)])
+    return np.vstack([straight, arc, on])
+
+
+def _walled_along(centreline, lumen=3.0, shape=BENT):
+    """A wall ring round a lumen of radius *lumen* along any centreline."""
+    from scipy.spatial import cKDTree
+
+    distance = cKDTree(centreline).query(np.indices(shape).reshape(3, -1).T)[0].reshape(shape)
+    return (distance > lumen) & (distance <= lumen + WALL), distance <= lumen + WALL
+
+
+def test_the_route_follows_a_vessel_round_its_turn():
+    """E4 follows the walls round a quarter turn, staying within a voxel of
+    the centreline, where E3's straight line leaves them."""
+    from scipy.spatial import cKDTree
+
+    centreline = _bent_centreline()
+    evidence = _endothelial_evidence(*_walled_along(centreline))
+    tip, heading = [20.0, 12.0, 22.0], [0.0, 0.0, 1.0]
+    straight = evidence.walls_ahead(tip, heading, 3.0)
+    route = evidence.route_ahead(tip, heading, 3.0)
+    assert straight.stop == module.AHEAD_ENDS and straight.run_um <= 22.0
+    assert route.stop == module.AHEAD_RUNS_ON and route.run_um == module.AHEAD_LIMIT_UM
+    assert route.gap_stretches == 0 and len(route.profile) == 30
+    assert cKDTree(centreline).query(np.asarray(route.path_um[1:]))[0].max() < 1.5
+    assert route.path_um[0] == tuple(tip)
+    assert 15.0 < route.turn_deg <= route.bend_deg < 40.0
+    assert route.reach_um == pytest.approx(np.linalg.norm(np.subtract(route.path_um[-1], tip)))
+    # The turn limit holds, give or take the re-centring across the route.
+    assert evidence.route_ahead(tip, heading, 3.0, max_turn_deg=20.0).bend_deg <= 20.0 + 5.0
+
+
+def test_the_route_round_a_turn_into_another_vessel_or_out_of_the_image():
+    centreline = _bent_centreline()
+    evidence = _endothelial_evidence(*_walled_along(centreline))
+    tip, heading = [20.0, 12.0, 22.0], [0.0, 0.0, 1.0]
+    beyond = centreline[centreline[:, 1] > 50.0]  # as if another vessel's centreline
+    # A quarter turn is past the default limit (60 deg off the heading): let it turn.
+    joined = evidence.route_ahead(tip, heading, 3.0, others_um=beyond, others_radius_um=3.0, limit_um=80.0,
+                                  max_turn_deg=100.0)
+    assert joined.stop == module.AHEAD_MEETS_VESSEL
+    # From 3 um past the tip: 5 um straight, the quarter turn, 13 um on.
+    assert joined.meets_um == pytest.approx(5.0 + 25.0 * np.pi / 2 + 13.0, abs=3.0)
+    assert joined.run_um == joined.meets_um and joined.gap_um == 0.0
+    to_face = evidence.route_ahead(tip, heading, 3.0, limit_um=80.0, max_turn_deg=100.0)
+    assert to_face.stop == module.AHEAD_FACE
+    assert to_face.path_um[-1][1] > 64.0  # stopped heading out of the y face
+    # At the default limit it cuts the corner, no more than about 60 deg off.
+    assert evidence.route_ahead(tip, heading, 3.0, limit_um=80.0).bend_deg <= module.ROUTE_MAX_TURN_DEG + 5.0
+
+
+def test_the_route_without_turns_or_gaps_is_the_straight_line():
+    """E4 with no cone and no gap allowed reads E3's line: same run, same stop."""
+    centreline = _bent_centreline()
+    bent = _endothelial_evidence(*_walled_along(centreline))
+    whole = _endothelial_evidence(*_walled_tube())
+    stopping = _endothelial_evidence(*_walled_tube(x_range=(0, 40)))
+    asks = [
+        (bent, [20.0, 12.0, 22.0], 3.0),
+        (whole, [20.0, 20.0, 20.0], 4.0),
+        (whole, [20.0, 20.0, 40.0], 4.0),
+        (stopping, [20.0, 20.0, 35.0], 4.0),
+    ]
+    for evidence, tip, radius in asks:
+        line = evidence.walls_ahead(tip, [0.0, 0.0, 1.0], radius)
+        route = evidence.route_ahead(tip, [0.0, 0.0, 1.0], radius, cone_deg=0.0, max_gap_um=0.0)
+        assert (route.stop, route.run_um) == (line.stop, line.run_um)
+
+
+def test_the_route_crosses_a_short_dropout_and_stops_where_the_walls_stop():
+    from scipy.ndimage import gaussian_filter
+
+    line = np.column_stack([np.full(801, 20.0), np.full(801, 35.0), np.linspace(0.0, 79.0, 801)])
+    rings, mask = _walled_along(line)
+    level = np.where(rings, BRIGHT, BACKGROUND)
+    level[:, :, 40:44] = np.where(rings[:, :, 40:44], 0.25 * BRIGHT, BACKGROUND)  # the stain dims for 4 um
+    raw = _noisy(gaussian_filter(level, 1.0)).astype(np.float32)
+    evidence = make_raw_evidence(raw, BENT, VOXEL, calibrate_raw(raw, mask, VOXEL, stain=ENDOTHELIAL))
+    tip, heading = [20.0, 35.0, 25.0], [0.0, 0.0, 1.0]
+    assert evidence.walls_ahead(tip, heading, 3.0).stop == module.AHEAD_ENDS
+    route = evidence.route_ahead(tip, heading, 3.0)
+    assert route.stop == module.AHEAD_RUNS_ON
+    assert route.gap_stretches == 1 and 0.0 < route.gap_um <= module.ROUTE_MAX_GAP_UM
+    assert abs(route.path_um[-1][1] - 35.0) < 1.5  # straight on, not round the dim stretch's edge
+
+    ending = _endothelial_evidence(*_walled_tube(x_range=(0, 40)))
+    stops = ending.route_ahead([20.0, 20.0, 35.0], heading, 4.0)
+    assert stops.stop == module.AHEAD_ENDS and stops.run_um <= 3.0
+    with pytest.raises(ValueError, match="heading"):
+        ending.route_ahead([20.0, 20.0, 35.0], [0.0, 0.0, 0.0], 4.0)
+
+
 def test_wall_primitives_read_a_memory_map_in_windows_as_in_ram(tmp_path):
     """The low-RAM option's memory map gives the same answers, read in
     windows, none of them a quarter of the volume."""
@@ -683,6 +785,7 @@ def test_wall_primitives_read_a_memory_map_in_windows_as_in_ram(tmp_path):
     asks = {
         "ring_along": lambda e: e.ring_along(strand, 3.5, others_um=axis, psf_sigma_zyx=PSF, wall_um=WALL),
         "walls_ahead": lambda e: e.walls_ahead([20.0, 20.0, 100.0], [0.0, 0.0, 1.0], 6.0),
+        "route_ahead": lambda e: e.route_ahead([20.0, 20.0, 100.0], [0.0, 0.0, 1.0], 6.0),
     }
     for name, ask in asks.items():
         assert ask(on_disk) == ask(in_ram), name

@@ -45,9 +45,10 @@ wall ring runs round the chain, and whether it is the chain's own or a
 neighbour's (:meth:`RawEvidenceEndothelial.ring_along`, E1); whether walls
 enclose a point, in a lumen another centreline shares
 (:meth:`RawEvidenceEndothelial.inside_walls`, E2); whether the walls run on
-past the tip, into another vessel or out of the image
-(:meth:`RawEvidenceEndothelial.walls_ahead`, E3). They measure only: no rule
-reads them until a marked grid says what they are worth.
+past the tip, into another vessel or out of the image, along a straight line
+(:meth:`RawEvidenceEndothelial.walls_ahead`, E3) or followed round the
+vessel's turns (:meth:`RawEvidenceEndothelial.route_ahead`, E4). They measure
+only: no rule reads them until a marked grid says what they are worth.
 """
 from __future__ import annotations
 
@@ -378,6 +379,61 @@ class WallsAhead:
     #: (um), and each one's vesselness (0 to 1), for drawing.
     start_um: float
     step_um: float
+    profile: tuple = ()
+
+
+#: E4 follows the walls a step at a time, turning at most this far off its
+#: last direction at a step (candidates at half and all of it, each all
+#: round), and never more than this far off the tip's heading: the dead-end
+#: classifier's own "ahead" (``graph.dead_ends.AHEAD_MAX_TURN_DEG``, the
+#: facing join's turn limit). At 100 deg it turned along the image's face and
+#: into neighbours on E14.5.
+ROUTE_CONE_DEG = 30.0
+ROUTE_MAX_TURN_DEG = 60.0
+#: Each step the route is re-centred between the walls within this, across
+#: its direction (um).
+ROUTE_RECENTRE_UM = 0.5
+#: A stretch that does not read as vessel is crossed, straight on, up to this
+#: long (a speck, a fold of the blur); a longer one ends the route.
+ROUTE_MAX_GAP_UM = 2.0
+#: Each direction is scored over this many steps along it, so the route
+#: carries on through a short gap in the wall rather than turning along the
+#: gap's edge, and turns where the vessel does.
+ROUTE_LOOKAHEAD_STEPS = 3
+
+
+@dataclass(frozen=True)
+class RouteAhead:
+    """E4, :meth:`RawEvidenceEndothelial.route_ahead`'s answer for one tip:
+    where the walls lead past it, turning where the vessel turns."""
+
+    #: The route, physical ``(z, y, x)`` microns: the tip, then each step from
+    #: one lumen radius past it, up to the last that read as vessel.
+    path_um: tuple
+    #: How far the route followed walls, from :attr:`start_um` past the tip to
+    #: its last reading as vessel, gaps it crossed included (um).
+    run_um: float
+    #: :data:`AHEAD_MEETS_VESSEL`, :data:`AHEAD_FACE`, :data:`AHEAD_RUNS_ON`
+    #: or :data:`AHEAD_ENDS`, as for :class:`WallsAhead`.
+    stop: str
+    #: The straight distance from the tip to the route's end, and the angle
+    #: between the tip's heading and that chord; the largest such angle to
+    #: any point the route read as vessel (degrees). Every step's direction
+    #: is within :data:`ROUTE_MAX_TURN_DEG`; re-centring across it can carry
+    #: the chord a little further.
+    reach_um: float
+    turn_deg: float
+    bend_deg: float
+    #: How far along the route it entered another vessel's lumen; None when
+    #: it did not.
+    meets_um: Optional[float]
+    #: The dark stretches it crossed: how many, their length, the longest (um).
+    gap_stretches: int
+    gap_um: float
+    longest_gap_um: float
+    start_um: float
+    step_um: float
+    #: Each step's vesselness (0 to 1), for drawing.
     profile: tuple = ()
 
 
@@ -857,6 +913,14 @@ class RawEvidenceEndothelial(RawEvidence):
         points = np.asarray(points_um, dtype=float).reshape(-1, 3)
         if tangents is None:
             return self._normalise(self._values(points, dilate_vox=self._reach_vox(radius_um)))
+        return self._normalise(self._wall_pairs(points, radius_um, tangents).max(axis=1))
+
+    def _wall_pairs(self, points: np.ndarray, radius_um: float, tangents: np.ndarray) -> np.ndarray:
+        """The raw value of the walls on both sides of each point across its
+        tangent, one per pair of opposite directions round it: their best is
+        :meth:`vesselness` (before it is normalised); their mean says how
+        much of the ring is wall, which only a tangent along the vessel
+        satisfies."""
         # Rings across the vessel round each point, at its own radius and a
         # wall's reach either side. A vessel running through the point has
         # wall on *both* sides of it, so the reading is the best pair of
@@ -876,8 +940,7 @@ class RawEvidenceEndothelial(RawEvidence):
         values = self._values(ring.reshape(-1, 3)).reshape(len(points), len(_RING_RADII_UM), _RING_DIRECTIONS)
         by_direction = values.max(axis=1)
         half = _RING_DIRECTIONS // 2
-        paired = np.minimum(by_direction[:, :half], by_direction[:, half:])
-        return self._normalise(paired.max(axis=1))
+        return np.minimum(by_direction[:, :half], by_direction[:, half:])
 
     def wall_between(self, a_um, b_um) -> float:
         profile = self._chord(a_um, b_um)
@@ -1167,6 +1230,172 @@ class RawEvidenceEndothelial(RawEvidence):
             profile=tuple(float(v) for v in readings),
         )
 
+    def route_ahead(
+        self,
+        tip_um: Sequence[float],
+        heading: Sequence[float],
+        radius_um: float,
+        *,
+        others_um: Optional[np.ndarray] = None,
+        others_radius_um: Any = 0.0,
+        limit_um: float = AHEAD_LIMIT_UM,
+        step_um: float = AHEAD_STEP_UM,
+        cone_deg: float = ROUTE_CONE_DEG,
+        max_turn_deg: float = ROUTE_MAX_TURN_DEG,
+        max_gap_um: float = ROUTE_MAX_GAP_UM,
+    ) -> RouteAhead:
+        """E4: where the walls lead past a tip, followed round the vessel's
+        turns -- :meth:`walls_ahead` along a route instead of a straight line.
+
+        From one lumen radius past the tip, a step of *step_um* at a time up to
+        *limit_um*: of the directions within *cone_deg* of the last (straight
+        on first, so it wins a tie), and within *max_turn_deg* of the tip's
+        *heading*, the route takes the one with the most of the ring round it
+        wall (unclipped, so walls brighter than the run's level still rank:
+        :meth:`vesselness`'s best pair would be met by a direction across the
+        vessel too), and re-centres within :data:`ROUTE_RECENTRE_UM`. A step
+        reads as vessel by :meth:`vesselness`, as :meth:`walls_ahead`'s
+        readings do. Where no direction reads as vessel it
+        carries straight on, and a dark stretch longer than *max_gap_um* ends
+        it. It stops on entering another vessel's lumen (*others_um*,
+        *others_radius_um*, as for :meth:`walls_ahead`) or leaving the image.
+
+        A tracker rather than a least-cost route: with no end point given, a
+        route must choose one, and choosing the nearest centreline is what
+        made grid G5's route through the mask join neighbours (no better than
+        never joining, 23/29). With *cone_deg* 0 (no turn, no re-centring) and
+        *max_gap_um* 0 it reads :meth:`walls_ahead`'s line and stops where it
+        does."""
+        tip = np.asarray(tip_um, dtype=float).reshape(3)
+        first = np.asarray(heading, dtype=float).reshape(3)
+        norm = float(np.linalg.norm(first))
+        if not norm > 0:
+            raise ValueError("route_ahead needs a heading of non-zero length")
+        first = first / norm
+        start = max(float(radius_um), 0.0)
+        step = float(step_um)
+        extent = (np.asarray(self.shape, dtype=float) - 1.0) * self._spacing
+        tree = limits = None
+        if others_um is not None:
+            others = np.asarray(others_um, dtype=float).reshape(-1, 3)
+            if len(others):
+                from scipy.spatial import cKDTree
+
+                tree = cKDTree(others)
+                limits = np.broadcast_to(np.asarray(others_radius_um, dtype=float), (len(others),))
+        least_cos = float(np.cos(np.radians(max_turn_deg)))
+        point, direction = tip + start * first, first
+        path, profile, gaps = [tip.copy()], [], []
+        travelled = run = gap = bend = 0.0
+        last_vessel = 1
+        meets, stop = None, None
+        for _ in range(int(np.ceil(float(limit_um) / step))):
+            candidates = _cone(direction, cone_deg)
+            candidates = candidates[candidates @ first >= least_cos - 1e-9]
+            ahead = point + step * candidates
+            inside = np.all((ahead >= -1e-6) & (ahead <= extent + 1e-6), axis=1)
+            # A route that may turn stops once its own direction leaves the
+            # image within the look-ahead: turning along the face would follow
+            # the reading's own edge (ring samples past it read as background).
+            straight_on = point + ROUTE_LOOKAHEAD_STEPS * step * direction
+            heading_out = cone_deg > 0 and (np.any(straight_on < -1e-6) or np.any(straight_on > extent + 1e-6))
+            if not inside.any() or heading_out:
+                # The image ends ahead: the walls ran on to its face, or not.
+                stop = AHEAD_FACE if gap == 0.0 else AHEAD_ENDS
+                break
+            candidates, ahead = candidates[inside], ahead[inside]
+            # Steered by the wall all round over the steps ahead, judged at
+            # the first as walls_ahead judges.
+            steps = np.arange(1, ROUTE_LOOKAHEAD_STEPS + 1) * step
+            along = (point + steps[:, None, None] * candidates[None]).reshape(-1, 3)
+            pairs = self._lift(self._wall_pairs(along, radius_um, np.tile(candidates, (len(steps), 1))))
+            pairs = pairs.reshape(len(steps), len(candidates), -1)
+            best = int(np.argmax(pairs.mean(axis=(0, 2))))
+            lift = pairs[0].max(axis=1)
+            vessel = lift[best] >= BRIGHT_THRESHOLD
+            if vessel:
+                direction = candidates[best]
+                point = self._recentre(ahead[best], direction, radius_um) if cone_deg > 0 else ahead[best]
+            else:
+                point = point + step * direction
+            travelled += step
+            if not vessel and (np.any(point < -1e-6) or np.any(point > extent + 1e-6)):
+                # Carried straight on, through a gap, out of the image.
+                stop = AHEAD_ENDS
+                break
+            path.append(point.copy())
+            profile.append(float(np.clip(lift[best], 0.0, 1.0)))
+            if vessel:
+                if gap > 0.0:
+                    gaps.append(gap)
+                    gap = 0.0
+                last_vessel, run = len(path), travelled
+                chord = point - tip
+                length = float(np.linalg.norm(chord))
+                if length > 0:
+                    bend = max(bend, float(np.degrees(np.arccos(np.clip(chord @ first / length, -1.0, 1.0)))))
+            else:
+                gap += step
+                if gap > float(max_gap_um) + 1e-9:
+                    stop = AHEAD_ENDS
+                    break
+            if tree is not None:
+                distance, nearest = tree.query(point)
+                if distance <= limits[nearest]:
+                    meets, stop = travelled, AHEAD_MEETS_VESSEL
+                    last_vessel, run = len(path), travelled
+                    break
+        if stop is None:
+            stop = AHEAD_RUNS_ON if gap == 0.0 else AHEAD_ENDS
+        path = path[:last_vessel]
+        chord = path[-1] - tip
+        reach = float(np.linalg.norm(chord))
+        turn = float(np.degrees(np.arccos(np.clip(chord @ first / reach, -1.0, 1.0)))) if reach > 0 else 0.0
+        return RouteAhead(
+            path_um=tuple(tuple(float(v) for v in p) for p in path),
+            run_um=float(run),
+            stop=stop,
+            reach_um=reach,
+            turn_deg=turn,
+            bend_deg=bend,
+            meets_um=meets,
+            gap_stretches=len(gaps),
+            gap_um=float(sum(gaps)),
+            longest_gap_um=float(max(gaps, default=0.0)),
+            start_um=start,
+            step_um=step,
+            profile=tuple(profile),
+        )
+
+    def _lift(self, values: np.ndarray) -> np.ndarray:
+        """Raw values above the background in units of the stain's level,
+        unclipped: walls brighter than the run's level still rank."""
+        return (np.asarray(values, dtype=float) - self.calibration.background) / self._scale
+
+    def _recentre(self, point: np.ndarray, direction: np.ndarray, radius_um: float) -> np.ndarray:
+        """*point* moved across *direction*, within :data:`ROUTE_RECENTRE_UM`,
+        to where the most of the ring round it is wall (staying put on a tie)."""
+        p, q = _across(direction[None])
+        r = ROUTE_RECENTRE_UM
+        offsets = [(0.0, 0.0)] + [(a, b) for a in (-r, 0.0, r) for b in (-r, 0.0, r) if (a, b) != (0.0, 0.0)]
+        candidates = point + np.asarray([a * p[0] + b * q[0] for a, b in offsets])
+        pairs = self._wall_pairs(candidates, radius_um, np.tile(direction, (len(offsets), 1)))
+        return candidates[int(np.argmax(pairs.mean(axis=1)))]
+
+
+def _cone(direction: np.ndarray, cone_deg: float, azimuths: int = 8) -> np.ndarray:
+    """*direction* first, then unit directions at half and all of *cone_deg*
+    off it, *azimuths* round each."""
+    direction = np.asarray(direction, dtype=float).reshape(3)
+    if cone_deg <= 0:
+        return direction[None]
+    p, q = _across(direction[None])
+    out = [direction]
+    for angle in np.radians([0.5 * cone_deg, cone_deg]):
+        for phi in np.linspace(0.0, 2.0 * np.pi, azimuths, endpoint=False):
+            out.append(np.cos(angle) * direction + np.sin(angle) * (np.cos(phi) * p[0] + np.sin(phi) * q[0]))
+    return np.asarray(out)
+
 
 def _distinct(path_um) -> np.ndarray:
     """*path_um* as an ``(n, 3)`` array without repeated consecutive points,
@@ -1432,6 +1661,7 @@ __all__ = [
     "RawSignal",
     "RingReading",
     "RingSupport",
+    "RouteAhead",
     "WallsAhead",
     "calibrate_raw",
     "load_raw_channel",
