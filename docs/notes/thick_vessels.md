@@ -236,7 +236,9 @@ vessel's axis, the share of it on the tree, and where and how wide the vessel be
 at most 3 cases over marking all one way and loses them under leave-one-out, bar one: a bridge's
 lumen radius at its outer end over the thick vessel's radius at most 0.35 calls it thick
 centreline on 13 of 17 bridges, leave-one-out 13, against 10 all one way, on a margin of 0.33
-against 0.36. That waits on sheet 2 (IDs 31-60, not marked) as a fresh check. No rule is built and
+against 0.36. That waits on sheet 2 (IDs 31-60, not marked) as a fresh check, put on an interactive page
+for Harvey's marks (https://claude.ai/artifact/6UKspdmpdnnWcZLLqtXNeB, `page_data.py` and grid P's
+`grid_page.py`; marks in its `marks` collection), its two rules fixed before the marks. No rule is built and
 `thick_bridge_centreline_tolerance_um` stays at 1.5 um. The grid's bridges are those of
 `47edef60`, before the taper rule was dropped, the wall join's reach raised to 15 um and equal
 forks left unbridged (above): its forks, IDs 4 and 28, and any taper among its near-misses are

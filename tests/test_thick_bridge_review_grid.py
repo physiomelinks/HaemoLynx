@@ -105,3 +105,38 @@ def test_the_fit_reports_the_rule_against_marking_all_one_way():
     assert "agrees on **2/4**" in text and "wrong on IDs 2, 4." in text
     assert "no bridges at all (every piece keeps its resistance) 2/4" in text
     assert "## Bridges (2)" in text and "## Near-misses (2)" in text
+
+
+def test_the_page_offers_the_cases_still_to_mark_with_the_grids_four_marks(tmp_path):
+    """``page_data.py``: the interactive page of sheet 2 -- the IDs with no
+    mark yet, each drawn as the sheets draw it, on one sheet asking the
+    grid's question with its marks."""
+    import json
+
+    from thick_bridge_review.page_data import page_case, page_data, unmarked_ids
+
+    shape = (40, 64, 64)
+    region = _tube(shape, (20, 0, 20), (20, 63, 20), 6.0)
+    piece = [[20.0, 30.0, 27.5], [20.0, 30.0, 20.0]]
+    cases = [{"id": i, "vox": [20, 30, 24], "centre_um": [20.0, 30.0, 24.0], "view": "down z", "piece_um": piece}
+             for i in (1, 2, 3)]
+    (tmp_path / "cases.json").write_text(json.dumps(cases), encoding="utf-8")
+    (tmp_path / "marks.csv").write_text("id,mark\n1,C\n2,\n", encoding="utf-8")
+    assert unmarked_ids(tmp_path) == [2, 3]
+    case = page_case(cases[0])
+    assert case["axis"] == 0 and case["rule"] == "bridge" and case["vox"] == (20, 30, 24)
+    G = nx.MultiGraph()
+    _edge(G, "T0", "T1", (20, 2, 20), (20, 61, 20))
+    _edge(G, "B0", "B1", (20, 30, 27.5), (20, 30, 20), is_zero_resistance=True)
+    capture = {"voxel_size_zyx": (1.0, 1.0, 1.0), "binary_mask": region, "thick_vessel_mask": region,
+               "thick_tree": np.array([[20, y, 20] for y in range(64)])}
+
+    data = page_data(cases, [2, 3], capture, G)
+
+    (sheet,) = data["sheets"]
+    assert [c["id"] for c in sheet["cases"]] == [2, 3]
+    assert [m["key"] for m in sheet["marks"]] == ["B", "V", "C", "N", "?"]
+    view = sheet["cases"][0]
+    assert view["piece"][0] == [27.5, 30.0, 20.0], "[across, down, depth]: x, y, z looking down z"
+    assert {line["kind"] for line in view["lines"]} == {"vessel", "bridge"}
+    assert view["route"] is None and view["tick"] is None

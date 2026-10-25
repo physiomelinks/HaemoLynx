@@ -338,7 +338,10 @@ body.only-unmarked .card[data-marked="true"] { display: none; }
   document.getElementById("dataset").textContent =
     `${DATA.dataset}. Each case drawn on the segmentation, a ${DATA.slab_um} µm slab.`;
   const layersRow = document.getElementById("layers");
+  // A grid with no join routes or fork crosses shows neither toggle nor note.
+  const hasRoute = cases.some(c => c.route), hasTick = cases.some(c => c.tick);
   for (const [key, label, color, style] of LAYERS) {
+    if (key === "route" && !hasRoute) continue;
     const b = document.createElement("button");
     b.className = "chip-toggle"; b.setAttribute("aria-pressed", "true"); b.dataset.layer = key;
     b.innerHTML = `<span class="swatch ${style}" style="color:${color}"></span>`;
@@ -350,9 +353,11 @@ body.only-unmarked .card[data-marked="true"] { display: none; }
     });
     layersRow.appendChild(b);
   }
-  const tickNote = document.createElement("span");
-  tickNote.className = "meta"; tickNote.textContent = "White cross: where a fork's branch leaves the trunk's lumen.";
-  layersRow.appendChild(tickNote);
+  if (hasTick) {
+    const tickNote = document.createElement("span");
+    tickNote.className = "meta"; tickNote.textContent = "White cross: where a fork's branch leaves the trunk's lumen.";
+    layersRow.appendChild(tickNote);
+  }
 
   const main = document.getElementById("sheets");
   const cardOf = {};
