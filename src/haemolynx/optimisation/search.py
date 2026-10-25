@@ -398,20 +398,23 @@ _AUTO_RADIUS_CROP_VOXELS = 8_000_000
 
 
 #: How many times a search runs each of its costly steps, counted on the
-#: E14.5 MCA stack (287 x 512 x 512): real searches at 16x and 4x made within
-#: two of the same calls of each, the scorecard's own two runs not counted.
-#: A mask whose thick vessels win (use_thick_vessel_skeletonisation chosen)
-#: runs the thick skeleton about fifteen more times, so its estimate reads low.
+#: E14.5 MCA stack (287 x 512 x 512) as the panel runs it, the scorecard's
+#: own two runs not counted (2026-10-24, at 16x and 4x). Graph building and
+#: the finish, most of a search's time, were the same at 16x, 4x and 2x. The
+#: cleanup and its mask score were 9 and 16 at 16x, 21 and 32 at 4x (more of
+#: its toggles turned on, each sweeping its own knob): the mean of the two.
+#: The skeleton clean-up 20 and 22. A mask whose thick vessels win
+#: (use_thick_vessel_skeletonisation kept on, as at 4x) runs the thick
+#: skeleton 24 times, not once, so its estimate reads low.
 _SEARCH_STEP_CALLS: dict[str, int] = {
     "cleanup": 15,
     "mask score": 24,
-    "plain skeleton": 2,
-    "thick skeleton": 2,
+    "plain skeleton": 1,
+    "thick skeleton": 1,
     "preprocess": 22,
     "graph": 19,
     # Every graph trial is finished as a run's graph is (Phase 4), the
-    # smoothing sweep's forty among them: 57 counted on E14.5 at 2x
-    # (2026-10-24), the probe's and the scorecard's own not counted.
+    # smoothing sweep's forty among them.
     "finish": 57,
 }
 
