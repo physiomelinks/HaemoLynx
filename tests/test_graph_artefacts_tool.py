@@ -243,12 +243,68 @@ def test_the_census_counts_each_fixture_by_kind_place_and_what_lies_ahead():
         assert sum(sum(c.values()) for c in row["by_face_band"].values()) == row["dead_ends"]
     broken = CASES[4]()
     row = census(broken.graph, support=MaskSupport(broken.mask, VOXEL_SIZE), extent_um=extent)
-    assert row["interior_with_a_vessel_ahead"] == {"within 5 um": 0, "within 10 um": 1}
+    assert row["interior_with_a_vessel_ahead"] == {"within 5 um": 0, "within 10 um": 1, "within 15 um": 1}
+    # What lies ahead of the broken tip: the far vessel's side, 9 um out.
+    assert row["interior_first_thing_ahead"]["within 10 um"] == {
+        "a vessel's side": 1, "another dead end's tip": 0, "an image face": 0,
+    }
+    assert row["interior_first_thing_ahead"]["within 5 um"] == {
+        "a vessel's side": 0, "another dead end's tip": 0, "an image face": 0,
+    }
+    # Its chain, 11 um, in radii of the vessel it leaves (read at the junction).
+    end = row["ends"][broken.tip]
+    assert end.chain_length_um == pytest.approx(11.0)
+    assert row["interior_chain_length_radii"]["p50"] == pytest.approx(end.chain_length_um / end.junction_radius_um)
+    assert 3.0 < row["interior_chain_length_radii"]["p50"] < 4.5
     # The stopped-short tip reaches the face through the mask, 5-10 um out.
     face = CASES[1]()
     row = census(face.graph, support=MaskSupport(face.mask, VOXEL_SIZE), extent_um=extent)
     assert row["by_face_band"]["5-10"] == {"reaches face": 1}
     assert "| leaves_image | 3 | 3 |" in census_markdown({"a": row, "b": row})
+
+
+def test_a_facing_tip_and_a_face_are_told_apart_from_a_vessels_side():
+    """PLAN_dead_ends.md Phase 0: what lies straight ahead of each interior
+    tip within 5 / 10 / 15 um -- another dead end's tip for the facing pair
+    (6 um), the image face for a tip heading out 8 um short of it."""
+    from dead_end_fixtures import SHAPE, facing_pair, interior_near_face
+    from graph_artefacts.dead_end_census import census
+    from haemolynx.graph.dead_ends import image_extent_um
+
+    extent = image_extent_um(SHAPE, VOXEL_SIZE)
+    pair = facing_pair()
+    row = census(pair.graph, support=MaskSupport(pair.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["interior_first_thing_ahead"]["within 10 um"]["another dead end's tip"] == 2
+    assert row["interior_first_thing_ahead"]["within 5 um"]["another dead end's tip"] == 0
+    near = interior_near_face()
+    row = census(near.graph, support=MaskSupport(near.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["interior_first_thing_ahead"]["within 10 um"]["an image face"] == 1
+    assert row["interior_first_thing_ahead"]["within 5 um"]["an image face"] == 0
+
+
+def test_collapse_changes_says_which_dead_ends_it_kept_joined_or_removed():
+    """Inconsistency 8: cluster collapse merges every node within 5 um with
+    no mask, face or direction rule. A 4 um stub goes into its own junction
+    (removed); a tip 3 um from another vessel's node is joined to it; a long
+    branch is kept."""
+    import networkx as nx
+    from graph_artefacts.dead_end_census import collapse_changes
+    from haemolynx.graph.collapse import collapse_node_clusters
+
+    G = nx.MultiGraph()
+    pos = {"a": (0.0, 0.0, 0.0), "j": (0.0, 0.0, 30.0), "b": (0.0, 0.0, 60.0), "stub": (0.0, 4.0, 30.0),
+           "long": (0.0, -30.0, 30.0), "far": (0.0, 20.0, 50.0), "other": (0.0, 20.0, 80.0),
+           "near": (0.0, 20.0, 47.0), "k": (0.0, 40.0, 47.0)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p))
+    for u, v in (("a", "j"), ("j", "b"), ("j", "stub"), ("j", "long"), ("far", "other"), ("near", "k")):
+        G.add_edge(u, v, voxels=[list(pos[u]), list(pos[v])], length=float(np.linalg.norm(np.subtract(pos[u], pos[v]))))
+
+    after = collapse_node_clusters(G.copy(), distance_threshold=5.0)
+    changes = collapse_changes(G, after)
+
+    # a, b, long, other and k stay; stub goes into j; far and near merge.
+    assert changes == {"kept": 5, "joined": 2, "removed": 1}
 
 
 def test_each_final_dead_end_is_traced_to_the_step_that_first_left_it():

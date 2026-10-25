@@ -46,7 +46,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from graph_artefacts.dead_end_census import census, census_markdown, made_by_step  # noqa: E402
+from graph_artefacts.dead_end_census import (  # noqa: E402
+    census,
+    census_markdown,
+    collapse_changes,
+    made_by_step,
+)
 from graph_artefacts.report import (  # noqa: E402
     bridge_shapes, bridge_shapes_table, comparison_table, measure, steps_table,
 )
@@ -233,6 +238,20 @@ def main(argv: list[str] | None = None) -> int:
             lines += ["", f"Where the final dead ends of {name} first appear:", "",
                       "| step | dead ends |", "|---|---|"]
             lines += [f"| {label} | {count} |" for label, count in made.items()]
+            # What cluster collapse did to the dead ends it was handed
+            # (PLAN_dead_ends.md, inconsistency 8): it has no mask, face or
+            # direction rule, and runs before the prune.
+            labels = list(info["steps"])
+            if "collapse_node_clusters" in labels and labels.index("collapse_node_clusters") > 0:
+                handed = labels[labels.index("collapse_node_clusters") - 1]
+                graphs = {}
+                for label in (handed, "collapse_node_clusters"):
+                    with open(_side_dir(out, name) / "steps" / f"{label}.pkl", "rb") as f:
+                        graphs[label] = pickle.load(f)
+                changes = collapse_changes(graphs[handed], graphs["collapse_node_clusters"])
+                lines += ["", f"What cluster collapse did to the dead ends of {name} it was handed:", "",
+                          "| kept | joined | removed |", "|---|---|---|",
+                          f"| {changes['kept']} | {changes['joined']} | {changes['removed']} |"]
     report = "\n".join(lines) + "\n"
     (out / "REPORT.md").write_text(report, encoding="utf-8")
     print(report)

@@ -13,7 +13,7 @@ assumption (CLAUDE.md, "Marked example grids").
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Sequence
 
 import networkx as nx
@@ -27,7 +27,10 @@ __all__ = [
     "CLOSE_JUNCTIONS",
     "DEAD_ENDS",
     "DIAMETER_JUMPS",
+    "BROKEN_VESSELS",
     "FACING_ENDS",
+    "JOIN_ENDS",
+    "JOIN_SIDE",
     "FLOW_AGAINST_ORDER",
     "FLOW_OUTLIERS",
     "HAIRPINS",
@@ -42,6 +45,7 @@ __all__ = [
     "find_close_junctions",
     "find_dead_ends",
     "find_diameter_jumps",
+    "find_broken_vessels",
     "find_facing_ends",
     "find_flow_against_branch_order",
     "find_flow_outliers",
@@ -64,6 +68,15 @@ HAIRPINS = "hairpins"
 DEAD_ENDS = "dead_ends"
 TWO_IN_ONE_LUMEN = "two_in_one_lumen"
 FACING_ENDS = "facing_ends"
+#: The "Broken vessels" review list (PLAN_dead_ends.md Phase 6): the facing
+#: dead ends the join left open, and the dead ends the definition calls
+#: ``broken`` with another vessel's side straight ahead. Its key stays
+#: :data:`FACING_ENDS`, what saved decisions and review CSVs name it by.
+BROKEN_VESSELS = FACING_ENDS
+#: How a "Broken vessels" item would be joined (its ``join`` measure): two
+#: dead ends to each other, or a dead end to the side of the vessel ahead.
+JOIN_ENDS = "ends"
+JOIN_SIDE = "side"
 UNCOVERED_MASK = "uncovered_mask"
 UNSOLVED_PIECES = "unsolved_pieces"
 FLOW_AGAINST_ORDER = "flow_against_order"
@@ -886,6 +899,11 @@ _ARTEFACT_WORDS = {
 }
 
 
+#: The dead-end kinds "Join to the vessel ahead" could mend: the dead-end
+#: list ranks these by the turn onto the vessel ahead.
+_JOINABLE_KINDS = ("broken", "stops_short", "unknown")
+
+
 def find_dead_ends(
     G: nx.MultiGraph,
     support,
@@ -896,9 +914,13 @@ def find_dead_ends(
     """Every dead end that does not leave the image, with its kind
     (:mod:`haemolynx.graph.dead_ends`, judged against the mask) and its chain
     back to the junction, grouped by kind in :data:`DEAD_END_WORDS` order --
-    artefacts first -- and longest first within each. A piece with no
-    junction is listed once, not once per end. *image_face_margin_um*, when
-    given, replaces the face test with a fixed distance."""
+    artefacts first. Within the kinds a join could mend (broken, stopped
+    short, unknown) the dead ends with a vessel straight ahead come first,
+    the smallest turn onto it first (``ahead_turn_deg``, the measure that
+    best told a join from no join on Harvey's grid G3, 24/27), then the rest
+    longest first; within every other kind, longest first. A piece with no junction is listed
+    once, not once per end. *image_face_margin_um*, when given, replaces the
+    face test with a fixed distance."""
     from .dead_ends import LEAVES_IMAGE, classify_dead_ends, image_extent_um
 
     ends = classify_dead_ends(
@@ -929,8 +951,8 @@ def find_dead_ends(
             "length_um": end.chain_length_um,
             "vessels": len(chain),
         }
-        for key in ("tip_radius_um", "junction_radius_um", "mask_run_um", "ahead_um", "ahead_junctions_away",
-                    "face_distance_um", "in_mask_fraction"):
+        for key in ("tip_radius_um", "junction_radius_um", "mask_run_um", "ahead_um", "ahead_turn_deg",
+                    "ahead_junctions_away", "face_distance_um", "in_mask_fraction"):
             measures[key] = getattr(end, key)
         # Where "Join to the vessel ahead" joins it: the vessel straight ahead
         # and the point the heading meets it.
@@ -940,7 +962,9 @@ def find_dead_ends(
                 float(c) for c in np.asarray(end.tip_um) + float(end.ahead_um) * np.asarray(end.heading)
             )
         rank = order.index(end.kind) if end.kind in order else len(order)
-        items.append((rank, -end.chain_length_um, ReviewItem(
+        joinable = end.kind in _JOINABLE_KINDS and end.ahead_turn_deg is not None
+        within = (0, end.ahead_turn_deg) if joinable else (1, -end.chain_length_um)
+        items.append((rank, within, ReviewItem(
             kind=DEAD_ENDS,
             nodes=(tip, end.junction),
             edges=chain,
@@ -950,7 +974,7 @@ def find_dead_ends(
             points_um=points,
         )))
     items.sort(key=lambda entry: entry[:2])
-    return [item for _rank, _length, item in items]
+    return [item for _rank, _within, item in items]
 
 
 def find_two_in_one_lumen(G: nx.MultiGraph, support) -> list[ReviewItem]:
@@ -1037,6 +1061,83 @@ def find_facing_ends(
             measures={"gap_um": pair.gap_um, "turn_deg": pair.turn_deg, "refused": pair.refused or ""},
             points_um=points,
         ))
+    return items
+
+
+def find_broken_vessels(
+    G: nx.MultiGraph,
+    support,
+    *,
+    max_gap_um: float | None = None,
+    stub_radius_multiple: float = 3.0,
+) -> list[ReviewItem]:
+    """The "Broken vessels" list: every pair of facing dead ends the join
+    left open (:func:`find_facing_ends`), and every dead end the definition
+    calls ``broken`` with another vessel's side straight ahead, not one of
+    its neighbours (``join_dead_ends_to_vessel_sides``, off by default,
+    decision D3) -- each with how it would be joined (``join``:
+    :data:`JOIN_ENDS` or :data:`JOIN_SIDE`) and the same measures, so their
+    decisions share one CSV. A pair whose ends both leave the image is two
+    vessels running out of it, not one broken vessel, and is left out.
+    Ranked by the turn onto the join, smallest first (G3's measure), then by
+    the gap."""
+    from .dead_ends import BROKEN, LEAVES_IMAGE, classify_dead_ends, image_extent_um, leaves_image
+
+    extent = image_extent_um(support.mask.shape, support.voxel_size_zyx)
+    ends = classify_dead_ends(G, extent_um=extent, support=support, stub_radius_multiple=stub_radius_multiple)
+
+    def runs_out(node: Any) -> bool:
+        # The face test itself: an end of a piece with no junction is an
+        # island end first, whether or not it leaves the image.
+        end = ends.get(node)
+        return end is not None and (end.kind == LEAVES_IMAGE or leaves_image(
+            end.tip_um, extent, heading=end.heading, support=support, tip_radius_um=end.tip_radius_um,
+            voxel_size_zyx=support.voxel_size_zyx,
+        )[0])
+
+    blank = {"ahead_edge": None, "ahead_point_um": None, "ahead_junctions_away": None, "ahead_background_um": None}
+    items = [
+        replace(item, measures={"join": JOIN_ENDS, **item.measures, **blank})
+        for item in find_facing_ends(G, support, max_gap_um=max_gap_um)
+        if not all(runs_out(n) for n in item.nodes)
+    ]
+    paired = {n for item in items for n in item.nodes}
+    pos = _node_pos(G)
+    name = _namer(G)
+    for tip, end in ends.items():
+        if (end.kind != BROKEN or tip in paired or end.ahead_edge is None or end.ahead_um is None
+                or end.heading is None or not G.has_edge(*end.ahead_edge)):
+            continue
+        chain = [name(*e) for e in end.chain]
+        ahead = tuple(name(*end.ahead_edge))
+        target = np.asarray(end.tip_um) + float(end.ahead_um) * np.asarray(end.heading)
+        away = "not reached in the network" if end.ahead_junctions_away is None else (
+            f"{end.ahead_junctions_away} junctions away in the network"
+        )
+        items.append(ReviewItem(
+            kind=FACING_ENDS,
+            nodes=(tip, end.junction),
+            edges=tuple(dict.fromkeys([*chain, ahead])),
+            centre_um=_centre([np.asarray(end.tip_um), target]),
+            why=(
+                f"Dead end {tip} points at the side of a vessel {end.ahead_um:.3g} µm ahead (turning "
+                f"{end.ahead_turn_deg:.0f}°), {away}, across "
+                f"{float(end.ahead_background_um or 0.0):.3g} µm of background: a vessel the segmentation "
+                "broke, or a real end. Not joined: tip-to-side joins are a review decision."
+            ),
+            measures={
+                "join": JOIN_SIDE,
+                "gap_um": float(end.ahead_um),
+                "turn_deg": float(end.ahead_turn_deg),
+                "refused": "",
+                "ahead_edge": ahead,
+                "ahead_point_um": tuple(float(c) for c in target),
+                "ahead_junctions_away": end.ahead_junctions_away,
+                "ahead_background_um": end.ahead_background_um,
+            },
+            points_um=_points(G, chain, pos),
+        ))
+    items.sort(key=lambda item: (item.measures["turn_deg"], item.measures["gap_um"]))
     return items
 
 

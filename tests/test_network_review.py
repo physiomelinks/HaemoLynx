@@ -521,3 +521,90 @@ def test_terminal_nodes_read_the_flow_through_their_vessel_when_solved():
     shares = {item.nodes[0]: item.measures["flow_share"] for item in items}
     assert shares[0] == pytest.approx(1.0)
     assert shares[9] == pytest.approx(0.25)
+
+
+# --- "Broken vessels" and the turn onto the vessel ahead (PLAN_dead_ends.md Phase 6) -------
+
+
+def test_broken_vessels_list_facing_pairs_and_dead_ends_pointing_at_a_side():
+    """The list renamed "Broken vessels" shows the facing pairs the join
+    left open and, beside them, the dead ends the definition calls broken
+    with another vessel's side ahead -- each saying how it would be joined,
+    with the same measures, so one CSV holds both."""
+    from dead_end_fixtures import VOXEL_SIZE as FIXTURE_VOXELS
+    from dead_end_fixtures import broken_towards_side
+
+    G, support = _broken_vessel(15.0)
+    (pair,) = nr.find_broken_vessels(G, support, max_gap_um=10.0)
+    assert pair.kind == nr.BROKEN_VESSELS == nr.FACING_ENDS
+    assert pair.measures["join"] == nr.JOIN_ENDS and pair.measures["refused"] == REFUSED_GAP_TOO_WIDE
+    assert pair.measures["ahead_edge"] is None
+
+    case = broken_towards_side()
+    side_support = MaskSupport(case.mask, FIXTURE_VOXELS)
+    before = _unchanged(case.graph)
+    # The trunk's and the far vessel's ends at the x faces face each other
+    # 20 um apart, but all four leave the image: two vessels, not one broken.
+    (side,) = nr.find_broken_vessels(case.graph, side_support)
+    assert _unchanged(case.graph) == before
+    assert len(nr.find_facing_ends(case.graph, side_support)) == 2
+    assert side.nodes[0] == case.tip and side.measures["join"] == nr.JOIN_SIDE
+    assert side.measures["gap_um"] == pytest.approx(9.0, abs=0.6)
+    assert side.measures["turn_deg"] < 5.0
+    assert case.graph.has_edge(*side.measures["ahead_edge"])
+    assert side.measures["ahead_point_um"][1] == pytest.approx(10.0, abs=0.6)
+    assert all(case.graph.has_edge(*e) for e in side.edges)
+    assert set(pair.measures) == set(side.measures)
+
+
+def test_a_dead_end_in_a_facing_pair_is_not_listed_again_as_a_side_join():
+    from dead_end_fixtures import VOXEL_SIZE as FIXTURE_VOXELS
+    from dead_end_fixtures import facing_pair
+
+    case = facing_pair()
+    items = nr.find_broken_vessels(case.graph, MaskSupport(case.mask, FIXTURE_VOXELS))
+    assert [item.measures["join"] for item in items] == [nr.JOIN_ENDS]
+    assert case.tip in items[0].nodes
+
+
+def test_broken_vessels_are_ranked_by_the_turn_onto_the_join():
+    """G3's best measure (Harvey, 2026-10-12): the smaller the turn onto the
+    vessel ahead, the likelier the join. Ties go to the shorter gap."""
+    G, support = _broken_vessel(15.0)
+    items = nr.find_broken_vessels(G, support, max_gap_um=10.0)
+    fake = [
+        nr.ReviewItem(kind=nr.FACING_ENDS, nodes=(n,), edges=(), centre_um=(0.0, 0.0, 0.0), why="",
+                      measures={**items[0].measures, "turn_deg": turn, "gap_um": gap})
+        for n, (turn, gap) in enumerate([(40.0, 1.0), (5.0, 9.0), (5.0, 2.0)])
+    ]
+    fake.sort(key=lambda item: (item.measures["turn_deg"], item.measures["gap_um"]))
+    assert [item.nodes[0] for item in fake] == [2, 1, 0]
+
+
+def test_dead_ends_with_a_vessel_ahead_come_first_within_their_kind_smallest_turn_first(monkeypatch):
+    """PLAN_dead_ends.md Phase 9: within the kinds a join could mend, the list
+    ranks by ahead_turn_deg (G3's best measure), the dead ends with nothing
+    ahead after them longest first; an artefact keeps longest first."""
+    from haemolynx.graph import dead_ends as de
+
+    junction = (0.0, 0.0, 0.0)
+    tips = {"a": (0.0, 10.0, 0.0), "b": (0.0, 0.0, 10.0), "c": (0.0, -10.0, 0.0), "d": (0.0, 0.0, -10.0),
+            "e": (5.0, 0.0, 0.0)}
+    G = _graph({"j": junction, **tips})
+    for tip in tips:
+        _vessel(G, tip, "j")
+    kinds = {"a": ("broken", 40.0, 10.0), "b": ("broken", 10.0, 10.0), "c": ("broken", None, 50.0),
+             "d": ("artefact", 5.0, 2.0), "e": ("artefact", None, 4.0)}
+
+    def fake(G, **_kw):
+        return {
+            tip: de.DeadEnd(tip=tip, junction="j", kind=kind, chain=((tip, "j", 0),), chain_length_um=length,
+                            tip_um=tips[tip], heading=(0.0, 1.0, 0.0), ahead_turn_deg=turn)
+            for tip, (kind, turn, length) in kinds.items()
+        }
+
+    monkeypatch.setattr(de, "classify_dead_ends", fake)
+    items = nr.find_dead_ends(G, MaskSupport(np.zeros((12, 12, 12), dtype=bool), (1.0, 1.0, 1.0)))
+
+    assert [item.nodes[0] for item in items] == ["e", "d", "b", "a", "c"]
+    assert [item.measures["ahead_turn_deg"] for item in items] == [None, 5.0, 10.0, 40.0, None]

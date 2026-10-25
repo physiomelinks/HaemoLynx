@@ -1247,6 +1247,9 @@ def action_applies(item: Any, action: str) -> bool:
     from haemolynx.graph.dead_ends import BLIND, LEAVES_IMAGE
 
     measures = getattr(item, "measures", None) or {}
+    if action == ACTION_JOIN:
+        # A "Broken vessels" item pointing at a vessel's side has no second end.
+        return measures.get("join") != "side"
     if action == ACTION_JOIN_AHEAD:
         return measures.get("ahead_edge") is not None and measures.get("ahead_point_um") is not None
     if action == ACTION_MARK_BLIND:
@@ -1293,7 +1296,7 @@ def _review_lists() -> tuple[ReviewList, ...]:
                     ACTION_MARK_OPEN, ACTION_KEEP)),
         ReviewList(nr.TWO_IN_ONE_LUMEN, "Two vessels in one lumen", (NEEDS_MASK,),
                    (ACTION_DELETE_SELECTED, ACTION_KEEP)),
-        ReviewList(nr.FACING_ENDS, "Facing dead ends not joined", (NEEDS_MASK,), (ACTION_JOIN, ACTION_KEEP)),
+        ReviewList(nr.BROKEN_VESSELS, "Broken vessels", (NEEDS_MASK,), (ACTION_JOIN, ACTION_JOIN_AHEAD, ACTION_KEEP)),
         ReviewList(nr.UNCOVERED_MASK, "Segmented vessels without a centreline", (NEEDS_MASK,), (ACTION_KEEP,)),
         ReviewList(nr.UNSOLVED_PIECES, "Unsolved pieces", (NEEDS_BOUNDARIES,),
                    (ACTION_DELETE_ITEM, ACTION_KEEP)),
@@ -1344,6 +1347,8 @@ def review_label(item: Any, number: int) -> str:
         text = f"Node {item.nodes[0]}: {kinds}, {_g(m.get('length_um'))} µm"
     elif kind == nr.TWO_IN_ONE_LUMEN:
         text = f"Two vessels side by side, the shorter {_g(m.get('shorter_um'))} µm"
+    elif kind == nr.BROKEN_VESSELS and m.get("join") == nr.JOIN_SIDE:
+        text = f"Node {item.nodes[0]}: {_g(m.get('gap_um'))} µm to a vessel's side, turning {_g(m.get('turn_deg'))}°"
     elif kind == nr.FACING_ENDS:
         text = f"Nodes {nodes}: {_g(m.get('gap_um'))} µm apart, {m.get('refused') or 'joinable'}"
     elif kind == nr.UNCOVERED_MASK:
@@ -1839,7 +1844,7 @@ def find_review_items(
 ) -> list[Any]:
     """Make review list *key* (one of :data:`~haemolynx.graph.network_review.REVIEW_KINDS`)
     on *graph*, with the run's own settings where a list reads one:
-    ``min_stub_length_radius_multiple`` (dead ends), ``facing_dead_end_max_gap_um``
+    ``min_stub_length_radius_multiple`` (dead ends, broken vessels), ``facing_dead_end_max_gap_um``
     and ``recovery_min_region_volume_um3``. *support* is the segmented image
     (:func:`review_mask_support`), *roles* the boundary nodes by role,
     *extent_um* the image's size in microns and *z_range* the slices a mask
@@ -1861,8 +1866,12 @@ def find_review_items(
         return nr.find_dead_ends(graph, support, stub_radius_multiple=multiple or 3.0)
     if key == nr.TWO_IN_ONE_LUMEN:
         return nr.find_two_in_one_lumen(graph, support)
-    if key == nr.FACING_ENDS:
-        return nr.find_facing_ends(graph, support, max_gap_um=_optional_number(values.get("facing_dead_end_max_gap_um")))
+    if key == nr.BROKEN_VESSELS:
+        multiple = _optional_number(values.get("min_stub_length_radius_multiple"))
+        return nr.find_broken_vessels(
+            graph, support, max_gap_um=_optional_number(values.get("facing_dead_end_max_gap_um")),
+            stub_radius_multiple=multiple or 3.0,
+        )
     if key == nr.UNCOVERED_MASK:
         return nr.find_uncovered_mask(
             graph, support,

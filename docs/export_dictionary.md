@@ -551,6 +551,8 @@ Only the measures of the item's own list are filled.
 | `junction_radius_um` | `um` | Dead ends: the lumen radius where its chain meets a junction. |
 | `mask_run_um` | `um` | Dead ends: how far the segmentation runs on past the tip. |
 | `ahead_um` | `um` | Dead ends: the distance to the vessel straight ahead. |
+| `ahead_turn_deg` | `degrees` | Dead ends: the turn from the tip's heading onto the vessel ahead (the list ranks by it). |
+| `ahead_background_um` | `um` | Broken vessels: the background the straight join to the vessel ahead crosses. |
 | `ahead_junctions_away` | `count` | Dead ends: how many junctions away that vessel is in the graph. |
 | `face_distance_um` | `um` | Dead ends: the tip's distance to the nearest image face. |
 | `in_mask_fraction` | `fraction` | Dead ends: the share of the chain inside the segmentation. |
@@ -559,9 +561,10 @@ Only the measures of the item's own list are filled.
 | `shorter_um` | `um` | Two in one lumen: the shorter vessel's length. |
 | `lengths_um` | `um` | Two in one lumen: both lengths (;-separated). |
 | `cuts_off` | `-` | Two in one lumen: for each, whether deleting it cuts vessels off (;-separated). |
-| `gap_um` | `um` | Facing ends: the gap between the two tips. |
-| `turn_deg` | `degrees` | Facing ends: the larger turn from either end's heading onto the join. |
-| `refused` | `-` | Facing ends: why the build did not join them. |
+| `join` | `-` | Broken vessels: how it would be joined: ends (two dead ends to each other) or side (a dead end to the side of the vessel ahead). |
+| `gap_um` | `um` | Broken vessels: the gap between the two tips, or from the tip to the vessel ahead. |
+| `turn_deg` | `degrees` | Broken vessels: the larger turn from either end's heading onto the join (the tip's, for a side join). |
+| `refused` | `-` | Broken vessels: why the build did not join two facing ends. |
 | `volume_um3` | `um^3` | Uncovered mask: the region's volume. |
 | `radius_um` | `um` | Uncovered mask: its widest inscribed radius. |
 | `voxels` | `count` | Uncovered mask: its voxel count. |

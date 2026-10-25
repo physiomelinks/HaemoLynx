@@ -1065,3 +1065,36 @@ def test_the_terminal_node_list_is_made_from_the_roles_and_the_image_size():
     )
 
     assert [(item.nodes[0], item.measures["role"]) for item in items] == [(0, "inlet"), (2, "outlet"), (3, "")]
+
+
+def test_broken_vessels_offer_the_join_each_item_can_make():
+    """PLAN_dead_ends.md Phase 6: the list renamed "Broken vessels" (its key
+    still facing_ends, so saved decisions load) joins two facing ends to
+    each other and a dead end pointing at a vessel's side to that side."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_JOIN,
+        ACTION_JOIN_AHEAD,
+        ACTION_KEEP,
+        REVIEW_LIST_BY_KEY,
+        REVIEW_LIST_BY_LABEL,
+        action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_KEY[nr.BROKEN_VESSELS]
+    assert entry is REVIEW_LIST_BY_LABEL["Broken vessels"] and entry.key == "facing_ends"
+    assert entry.actions == (ACTION_JOIN, ACTION_JOIN_AHEAD, ACTION_KEEP)
+    pair = SimpleNamespace(measures={"join": nr.JOIN_ENDS, "ahead_edge": None, "ahead_point_um": None})
+    side = SimpleNamespace(measures={"join": nr.JOIN_SIDE, "ahead_edge": (4, 5, 0), "ahead_point_um": (1.0, 2.0, 3.0)})
+    assert [a for a in entry.actions if action_applies(pair, a)] == [ACTION_JOIN, ACTION_KEEP]
+    assert [a for a in entry.actions if action_applies(side, a)] == [ACTION_JOIN_AHEAD, ACTION_KEEP]
+
+
+def test_a_broken_vessel_reads_as_a_pair_or_a_side_join():
+    assert review_label(
+        _item(nr.BROKEN_VESSELS, nodes=(3, 4), join=nr.JOIN_ENDS, gap_um=6.0, refused=""), 1
+    ) == "1. Nodes 3, 4: 6 µm apart, joinable"
+    assert review_label(
+        _item(nr.BROKEN_VESSELS, nodes=(3, 9), join=nr.JOIN_SIDE, gap_um=9.0, turn_deg=12.0), 2
+    ) == "2. Node 3: 9 µm to a vessel's side, turning 12°"
