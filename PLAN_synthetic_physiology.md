@@ -279,3 +279,13 @@ Being built in the phase order above.
   spaced near-vertical columns, where the drawn bed is a random mesh; from above its capillaries
   are smooth curves round rounded meshes, where the Delaunay bed is straight-sided polygons. Phase 7
   (flow-adapted widths) is not built: it would not change what the renders show.
+  Harvey, on the columns: "correct but only true for this particular dataset" -- so whatever
+  answers them is read from the template, never built in. Measured on E14.5 (seed 1): capillaries
+  whose chord lies within 30 degrees of z, 182 in the template (135 connected runs, 12 spanning
+  100 um or more of depth, 5 spanning 200) against 103-112 drawn (4-7 and 0-1); a straight
+  continuation through junctions does not separate them (the straightest pair at a junction:
+  median 140 against 129-134 degrees). The per-layer direction tensor is matched once the bed sits
+  on the template's vertices and the direction weight is raised (4-10: zz above the plexus
+  0.37-0.57 against 0.36-0.64), but a tensor is an average: the template's share along z (0.21)
+  needs its vessels split between near-vertical and near-flat, which matching the average does
+  not ask for.
