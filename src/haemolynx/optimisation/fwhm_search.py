@@ -1169,6 +1169,16 @@ def _prepared_search(
     return search, estimated_seconds
 
 
+def _sample_note(search: "_FwhmSearch") -> str:
+    """How many vessels the trials measured: a sample of the vessels, in the
+    image as read -- never a coarser copy of it, which is what the report's
+    downsampling line (``OptimisationResult.downsample_factor``) means."""
+    return (
+        f"Measured a sample of {len(search.sample_edges)} of the {search.pool_size} vessels the run "
+        "measures, each among the whole vessel graph as a run measures it."
+    )
+
+
 def _scoring_note(with_decoys: bool) -> str:
     """What every trial is scored with whatever the run's own switches say
     (decision D3, PLAN_optimisers.md)."""
@@ -1306,7 +1316,7 @@ def optimise_fwhm_settings(
     except Exception:  # noqa: BLE001
         scorecard = ()
 
-    notes = [_scoring_note(search.decoy_probe is not None)]
+    notes = [_sample_note(search), _scoring_note(search.decoy_probe is not None)]
     if bool(search.config.fwhm_setting("use_raw_section_fallback", False)) and after is not None:
         notes.append(
             _fallback_note(
@@ -1323,7 +1333,6 @@ def optimise_fwhm_settings(
     return OptimisationResult(
         settings=settings,
         trials=tuple(search.trials),
-        downsample_factor=max(1, round(search.pool_size / max(len(search.sample_edges), 1))),
         groups_run=tuple(dict.fromkeys(search.groups_run)),
         passes_run=search.passes_run,
         seconds=seconds,

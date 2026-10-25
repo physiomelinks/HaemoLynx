@@ -908,6 +908,32 @@ def test_the_report_says_trials_are_scored_with_the_decoy_check_and_demotion_on(
     assert all(note in text for note in result.notes)
 
 
+def test_the_report_names_the_sample_and_no_downsampled_copy(multi_vessel):
+    """Regression: the result put its pool-to-sample ratio in
+    ``downsample_factor``, which the report reads as a coarser grid, so a
+    search measuring 2 of 4 vessels in the image as read said it "Searched on
+    a 2x downsampled copy" whose voxel settings were "scaled back up". It
+    measures the image as read, and says how many vessels it sampled."""
+    from haemolynx.optimisation.report import build_report_text
+
+    G, raw_path = multi_vessel
+    result = s.optimise_fwhm_settings(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values=_fwhm_starting_values(),
+        sample_edge_count=2,
+        groups=["exclusion_zones"],
+    )
+
+    text = build_report_text(result, group_names=s.FWHM_GROUP_NAMES)
+    assert result.downsample_factor == 1
+    assert "downsampled" not in text and "search grid" not in text
+    sample = f"Measured a sample of 2 of the {G.number_of_edges()} vessels the run measures"
+    assert result.notes[0].startswith(sample)
+    assert sample in text
+
+
 @pytest.mark.parametrize("fallback", [False, True])
 def test_the_share_left_to_the_raw_section_fallback_is_reported_not_scored(multi_vessel, fallback):
     G, raw_path = multi_vessel
