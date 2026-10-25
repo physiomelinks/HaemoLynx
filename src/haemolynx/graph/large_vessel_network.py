@@ -263,7 +263,11 @@ def _own_face_end(
     and the first :data:`STUMP_SNAP_VESSEL_UM` of its vessel runs along the
     component (:data:`STUMP_SNAP_MIN_VESSEL_FRACTION`) -- the large vessel's
     centreline, not a capillary ending beside it. One inside the component
-    comes first, then the one nearest the stump's centroid.
+    comes first, then the one whose vessel runs most along the component,
+    then the one nearest the stump's centroid: on E14.5 a vessel beside the
+    arteriole, running half along its mask and ending nearer the centroid,
+    took the inlet from the arteriole's own end, which runs all along it
+    (Harvey's call, 2026-10-25).
     """
     face_um = stump.face_index * float(scale[stump.axis])
     face_reach = STUMP_SNAP_OFFSET_UM + stump.radius_um
@@ -283,9 +287,10 @@ def _own_face_end(
         )
         if distances[0] > STUMP_SNAP_OFFSET_UM:
             continue
-        if len(vessel) and np.mean(distances[1:] <= STUMP_SNAP_OFFSET_UM) < STUMP_SNAP_MIN_VESSEL_FRACTION:
+        along = float(np.mean(distances[1:] <= STUMP_SNAP_OFFSET_UM)) if len(vessel) else 0.0
+        if len(vessel) and along < STUMP_SNAP_MIN_VESSEL_FRACTION:
             continue
-        rank = (bool(distances[0] > 0.0), float(np.linalg.norm(tip - stump.point)))
+        rank = (bool(distances[0] > 0.0), -along, float(np.linalg.norm(tip - stump.point)))
         if best is None or rank < best[0]:
             best = (rank, node)
     return None if best is None else best[1]

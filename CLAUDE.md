@@ -596,8 +596,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **`graph/large_vessel_network.py`** — the `mask_stump` method: inlets/outlets where a large mask
   is cut by an image face. A component under `large_vessel_stump_min_component_fraction` of the
   largest, or a contact wider than `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (a vessel lying along the
-  face), is no stump. Each stump snaps to the end of its own vessel at its face (`_own_face_end`),
-  else to the nearest terminal in the mask with a `BoundaryCoordinateWarning`. Checked on E14.5
+  face), is no stump. Each stump snaps to the end of its own vessel at its face (`_own_face_end`:
+  the end whose vessel runs most along the stump's mask, then the nearest), else to the nearest
+  terminal in the mask with a `BoundaryCoordinateWarning`. Checked on E14.5
   only, not a marked grid.
 - **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`, read through
   `voxel_size_zyx` (edge voxels are microns, masks voxel-indexed). The large mask of the class

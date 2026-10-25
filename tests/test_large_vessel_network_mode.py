@@ -513,6 +513,23 @@ def test_a_capillary_ending_by_the_face_beside_the_large_vessel_is_not_its_end()
     assert _stump_inlets(G, mask) == [0]
 
 
+def test_a_stump_takes_the_end_whose_vessel_runs_most_along_its_mask():
+    """Regression (E14.5, 2026-10-25): a vessel beside the arteriole ran half
+    along its mask (54% of its first 50 um) and ended nearer the stump's
+    centroid than the arteriole's own end, whose vessel runs all along it;
+    the nearer one took the inlet, the Large_Art tier went empty and the
+    network resistance rose 140-fold. Both qualify; the one running most
+    along the mask is the large vessel's own end."""
+    mask = np.zeros((40, 40, 120), dtype=bool)
+    mask[17:23, 17:23, 0:100] = True  # the large vessel along x from the x = 0 face
+    G = _vessel_graph({
+        (0, 1): [(20, 27, 2), (20, 20, 10), (20, 20, 80)],  # its own end, 7 um from the centroid
+        (2, 3): [(20, 15, 1), (20, 15, 31), (20, 0, 31), (20, 0, 70)],  # beside it, 5 um from the centroid
+    })
+
+    assert _stump_inlets(G, mask) == [0]
+
+
 def test_a_stump_with_no_vessel_end_at_its_face_warns_how_far_its_node_is():
     """The far-snap warning never fired: it measured the network's extent from
     the candidates alone, one node, so every stump lay outside it."""
