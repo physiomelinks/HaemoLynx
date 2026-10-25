@@ -1114,6 +1114,7 @@ loop runs through the mask did.
 
 - Writing help-menu text. See **Help menu** above: stop and send Harvey's message before doing anything else on that request.
 - Committing large generated outputs (`examples/outputs/`, `tutorials/plots/`, `tests/outputs/`) unless the user explicitly asks.
+- Committing plan files (`PLAN_*.md`) or run configs (`*.yaml` at the repository root): they are local only and git-ignored, so never `git add -f` or `update-index --add` them. The examples' generated `examples/*_config.yaml` stay committed.
 - Editing auto-generated `tutorials/pipeline_tutorial.py` instead of the notebook.
 - Adding features without tests (see Testing policy).
 - Force-pushing `main`/`master` or amending pushed commits unless explicitly requested.

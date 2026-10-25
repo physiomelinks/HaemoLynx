@@ -37,3 +37,9 @@ comparison_outputs/
 
 # Local agent worktrees and scratch state
 .claude/
+
+# Plan files and run configs: local only, never on origin. The examples'
+# generated configs (examples/*_config.yaml) and the napari manifest stay.
+/PLAN_*.md
+/*.yaml
+/*.yml
