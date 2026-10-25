@@ -20,8 +20,8 @@ image is claudin-5.
 | A. Wall primitives | **Done** | `bafd3aa2`: `ring_along` (E1), `inside_walls` (E2), `walls_ahead` (E3), the ring fields on `RawCalibration`, `ring_calibration`; tests in `tests/test_raw_evidence.py` |
 | Cost on E14.5 | **Measured** | Section 6 (Risks) |
 | B. Measure and record, re-fit G1-G4 (R1) | **Waits** on `graph/dead_ends.py`, `graph/network_review.py` and the census, which the dead-ends and bridging sessions are finishing | Section 4 |
-| C. The grid | **Built and sent** as **DR1** (`9debc4d1`): https://claude.ai/artifact/FUrmkvLXHiSobkY1zAk9Jf. Waits on Harvey's marks | Section 4 |
-| D. Rules | **Waits** on DR1's marks, then a fresh grid DR2 agreeing at least 90% | Section 4 |
+| C. The grid | **Marked and fitted** (Harvey, 2026-10-25): DR1 (`9debc4d1`), https://claude.ai/artifact/FUrmkvLXHiSobkY1zAk9Jf. No rule reaches 90% on either question | Section 4 |
+| D. Rules | **Nothing to build**: DR1 confirmed no rule, so there is nothing for a fresh grid DR2 to check. Q2's lead (E3, 71%) and E4 are for Harvey | Section 4, decision R6 |
 | E. Docs, second dataset | CLAUDE.md, the notes and `RELEASE_REVIEW.md` `graph.6b` updated for A and C; a plasma-only dataset waits on data | Section 4 |
 
 ---
@@ -228,10 +228,41 @@ collection). Page, key, candidate pool and calibration: `outputs/dead_end_review
   share) and E2 (lumen, shared, on-wall shares); Q2 against E3 (run, stop, gap), each reported
   right / wrong / all one way, with the IDs it gets wrong.
 
+**Marked by Harvey and fitted (2026-10-25).** `scripts/dead_end_review/fit_marks.py --grids DR1`
+now fits a grid's second question too. The report is `outputs/dead_end_review/FIT_DR1.md`
+(worktree `plan-dead-ends-raw-04d14a`, beside the marks in `marks_DR1/`).
+
+- The marks: Q1 21 V / 9 N. Q2 9 goes on / 12 ends here / 7 unsure / 2 blank. "What decided it"
+  is dextran + endothelium + segmentation shape on 29 of 30 (DR1-02 without shape), and there
+  are no notes.
+- **Q1: the raw image does not decide it.**
+  - Every E1 and E2 measure scores 21/30 leave-one-out, the same as marking all V.
+  - By E1 level: a ring at half or more of the tip's sections 8 V / 1 N, at some 7 V / 2 N, at
+    none 6 V / 6 N.
+  - Only shape edges past the baseline: a chain of 9.5 um or less, or a tip in the top 8.5 um,
+    22/30 each (5 of the 9 N lie in the top 30 um).
+  - This is G4's lesson again (section 6): the marks follow shape in context.
+- **Q2: E3 is a lead, under the bar.**
+  - Walls running on more than 11 um past the tip (`e3_run_um > 11`) is Y: 15/21 leave-one-out,
+    16/21 fitted, against 12/21 all E. `parent_to_tip_radius <= 1.1` also gets 15/21.
+  - When the walls ran on to the limit or into another vessel, all 3 were Y.
+  - When they reached the image face, all 3 were E.
+  - The misses are DR1-01, 02, 19, 23 and 27: vessels that go on, by Harvey, whose walls stop
+    within 7 um along the straight line. 01 and 23 fit a wall ring at all five tip sections, so
+    there is a vessel at the tip and the straight line loses it, most likely where it turns.
+- Node ids scored 24/30 on Q1 at first: they follow the skeleton's scan order, so they stand in
+  for depth. `fit_marks.NOT_MEASURES` leaves them out.
+
 ### Phase D — Use what DR1 confirms (each behind a setting, off until a fresh grid DR2 agrees ≥ 90%)
 
 Nothing here is built: each item waits on DR1's marks saying a measure separates them, then on
 DR2. Each would be a schema setting, off by default, behind an Advanced button.
+
+**After DR1 (2026-10-25): none qualifies.** Q1 has no raw measure above all-one-way, so the
+prune item is closed. Q2's best, E3's run, is 71% leave-one-out, so the trace-on and open-end items
+have no rule to check. A DR2 checking it is not worth Harvey's marking: at 71% it would not reach
+90%. What could still lift Q2 is E4, a route through the wall-enclosed lumen that follows a vessel
+round a turn, judged on a new grid; whether to build it is decision R6.
 
 - **Q1 ⇒ prune.** A chain with no ring of its own, or one inside another vessel's walls, joins
   the artefacts the stub prune removes (`prune.prune_vascular_stubs`, agreed with the session
@@ -263,9 +294,10 @@ repeat waits on a dataset with a plasma raw image and no endothelial one.
 |---|---|---|
 | R1 | Read G1–G4 again with E1–E3 (Phase B) before asking for the grid? | Yes: it costs no marking, and decides whether the grid is needed. **2026-10-25:** DR1 was built and sent first, at the coordinating session's request, because Phase B's files were in other sessions' hands. Marking it can wait for R1's re-fit if Harvey prefers |
 | R2 | The grid's second question ("does it go on?") | Yes: it is what an endothelial stain can answer that the mask cannot. **DR1 asks it**; Harvey may leave it blank |
-| R3 | Should an unfilled sprout (walls, no plasma) become a vessel in the graph, with no flow (`blind_end`), or stay a note in the review? | Review first, since it adds vessels the segmentation never had; **open, for Harvey after DR1's marks** |
+| R3 | Should an unfilled sprout (walls, no plasma) become a vessel in the graph, with no flow (`blind_end`), or stay a note in the review? | Review first, since it adds vessels the segmentation never had. **Open, for Harvey.** DR1 found no measure that tells one from the walls alone (Q2 at 71%), so there is nothing yet to draw it by |
 | R4 | A dataset with both a plasma and an endothelial channel: one raw channel (today), or a second for evidence? | One. The segmentation already carries the plasma; the raw channel should be the other stain |
 | R5 | Which channel is E14.5's raw image? D5 (2026-10-12) said one channel only, the one the segmentation came from (dextran). On 2026-10-13 Harvey said the endothelial channel (claudin-5) "would be better" for this dataset. | **Decided: claudin-5** (Harvey, 2026-10-13, D5 overturned; relayed by the raw-confirmation session, which records it in `PLAN_raw_confirmation.md`). Dextran read along the chain had done no better than chance on G4 (15/27), and on that session's grids H and H2 (17/30 each, `outputs/doubled_run_review/FIT_raw.md`) |
+| R6 | After DR1 (2026-10-25): build E4, a route through the wall-enclosed lumen for Q2 (does it go on, and where), and ask for a grid on it? Or close this plan's rules, keeping E1-E3 as measures for the census and the review list (Phase B)? | **Open, for Harvey.** E3's misses were vessels that turn, which is what E4 would follow; but G5's route through the mask did no better than never joining (23/29), and E4 is the same idea on the walls |
 
 ## 6. Risks
 

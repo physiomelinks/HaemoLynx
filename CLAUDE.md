@@ -723,7 +723,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **The raw image at dead ends** (`PLAN_dead_ends_raw.md`) — `RawEvidenceEndothelial.ring_along`
   (E1: a wall ring round the chain, and whose), `inside_walls` (E2: walls enclosing a point, a
   lumen shared with another centreline) and `walls_ahead` (E3: the walls running on past the tip)
-  measure only, a window at a time; no rule reads them. Grid DR1 waits on Harvey's marks.
+  measure only, a window at a time; no rule reads them. Harvey's grid DR1 (2026-10-25) gave no rule at 90%.
 - **Flow states** — the solve writes `graph.FLOW_STATE` (`solved`, `blind_end`, `closed_end`,
   `no_boundary`) beside `FLOW_SOLVED`. `blind_end` and `closed_end` flows and drops are exactly 0:
   **call `graph.zero_flows_behind_dead_ends` after any new `set_edge_flows` on a marked graph.**

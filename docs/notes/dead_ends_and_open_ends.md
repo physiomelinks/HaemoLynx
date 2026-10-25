@@ -173,3 +173,12 @@ On E14.5 (claudin-5, 394 dead ends, one process) the ring fit costs 0.032 s a se
 - E3's run spreads (median 6 um).
 
 The full numbers and why DR1 is spread by the fitted rings are in the plan's Phase C and Risks.
+
+Harvey marked DR1 the same day (`outputs/dead_end_review/FIT_DR1.md` in worktree
+`plan-dead-ends-raw-04d14a`), and no rule reaches 90%:
+
+- Whether the chain is a vessel (21 V / 9 N): every E1 and E2 measure scores 21/30 leave-one-out,
+  the same as all V. Only chain length or a tip in the top planes reach 22/30.
+- Whether it goes on past the tip (9 Y / 12 E, 7 unsure): E3's run over 11 um scores 15/21 against
+  12/21. Its misses are vessels whose walls stop along the straight line ahead, the vessel likely
+  turning.
