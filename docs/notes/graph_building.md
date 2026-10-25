@@ -53,7 +53,7 @@ memory). On E14.5 the build went 339 -> 255 s with the graph unchanged node for 
 recovery is now the slow step (~134 s): routing its joins through the mask and finding the
 uncovered mask, not tracing its pieces (Lee thinning there is ~5 s).
 
-**Where an edge came from, through merges (2026-10-25, `0b8d0d1b`).** A degree-2 merge kept
+**Where an edge came from, through merges (2026-10-25, `76679caf`).** A degree-2 merge kept
 only length, voxels, the taper mark and smoothing, so a recovered strand or a bridge merged into
 its vessel left no trace, and the trivial merge (`create_trivial_merged_edge`, behind
 `edit.delete_edge_and_collapse`) copied its first half's attributes: a vessel merged with a
@@ -73,6 +73,11 @@ On the hair fixture today's test never judges the 25 um hair, while the uncapped
 the hair and the trunk's collinear end at the face beside it (`tests/test_stub_protrusion_review.py`).
 Grid S (30 of them, spread over the uncapped reading, collinearity and the face) is with Harvey;
 the rule waits on his marks (`PLAN_one_centreline_per_lumen.md`).
+
+**Per step, in the build's log (2026-10-25, `a16bdd08`).** With `debug` (`verbose_logging`) and a
+mask, `build_graph_from_skeleton` logs `diagnose_lumen_artefacts`' one-line report after every
+topology step, at DEBUG: the plan's Phase 0 asked for it, and only `scripts/graph_artefacts.py
+--steps` gave it. It wraps the step callback and reads only; the graph is unchanged.
 
 ## Mask-supported bridging
 

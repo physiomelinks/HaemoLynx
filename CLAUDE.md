@@ -642,7 +642,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 ### Graph building (`docs/notes/graph_building.md`, `low_ram.md`)
 
 - **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after
-  each topology step, one per label in `STEP_LABELS` (thirteen of them). The last,
+  each topology step, one per label in `STEP_LABELS` (thirteen of them); with `debug` and a mask,
+  the lumen-artefact report is logged after each step too. The last,
   `consolidate_lumen`, repeats until a round changes nothing (at most `lumen_cleanup_max_rounds`):
   degree-2 merging, the second of two edges through one lumen
   (`lumen_loops.remove_parallel_edges_in_lumen`, never one whose loss cuts vessels off), loops
