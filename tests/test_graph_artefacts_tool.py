@@ -14,7 +14,7 @@ import pytest
 
 from graph_artefacts import build_side
 from graph_artefacts.report import (
-    COLUMNS, bridge_shapes, bridge_shapes_table, comparison_table, measure, steps_table,
+    COLUMNS, bridge_shapes, bridge_shapes_table, comparison_table, measure, raw_cost_table, steps_table,
 )
 from haemolynx.graph import build_graph_from_skeleton
 from haemolynx.pipeline import default_schema
@@ -354,3 +354,77 @@ def test_flow_coverage_says_why_each_unsolved_piece_has_no_flow():
     assert report["through_designated_um"] == pytest.approx(20.0)
     assert report["through_with_open_ends_um"] == pytest.approx(30.0)
     assert report["boundary_face_distance_um"] == {0: 0.0, 2: pytest.approx(5.0)}
+
+
+def _rod(tmp_path):
+    """A 7 x 7 voxel rod along x, lumen-bright (a plasma label), its skeleton
+    and its raw image as a uint16 TIFF: wide enough for the calibration to
+    find a lumen core."""
+    import tifffile
+
+    mask = np.zeros((16, 30, 60), dtype=bool)
+    mask[4:11, 11:18, 5:55] = True
+    skeleton = np.zeros_like(mask)
+    skeleton[7, 14, 7:53] = True
+    raw = np.where(mask, 1000, 50).astype(np.uint16)
+    tifffile.imwrite(tmp_path / "raw.tif", raw)
+    return mask, skeleton, raw
+
+
+def test_the_raw_cost_is_the_channel_loaded_and_calibrated_and_nothing_read(tmp_path):
+    """What build_network pays for the raw image after the graph: the
+    channel held in RAM, calibrated, and -- no rule reading it -- no window."""
+    mask, _skeleton, raw = _rod(tmp_path)
+    cost = build_side.raw_cost({"raw_image_path": str(tmp_path / "raw.tif"), "raw_image_stain": "plasma_column"},
+                               mask, (1.0, 1.0, 1.0))
+    assert cost["stain"] == "plasma_column"
+    assert cost["held_mb"] == pytest.approx(raw.nbytes / 2**20)
+    assert (cost["queries"], cost["voxels_read"], cost["read_seconds"]) == (0, 0, 0.0)
+    assert cost["seconds"] > 0.0
+    # A raw image with nothing to read (no lumen stands above the background)
+    # costs its reading and gives no evidence.
+    import tifffile
+
+    tifffile.imwrite(tmp_path / "flat.tif", np.full(mask.shape, 50, dtype=np.uint16))
+    cost = build_side.raw_cost({"raw_image_path": str(tmp_path / "flat.tif"), "raw_image_stain": "plasma_column"},
+                               mask, (1.0, 1.0, 1.0))
+    assert cost["stain"] is None and "queries" not in cost
+
+
+def test_the_raw_cost_table_has_each_build_and_the_change_the_raw_image_made():
+    without = {"seconds": 200.0, "peak_rss_mb": 4000.0}
+    with_raw = {"seconds": 204.0, "peak_rss_mb": 4030.0,
+                "raw": {"seconds": 1.25, "held_mb": 150.0, "queries": 0, "voxels_read": 0, "read_seconds": 0.0}}
+    lines = raw_cost_table({"working tree": {"without": without, "with": with_raw}}).splitlines()
+    assert lines[0] == "| measure | working tree without | working tree with | change |"
+    assert "| build s | 200.0 | 204.0 | +4.0 (+2.0%) |" in lines
+    assert "| peak resident MB | 4,000 | 4,030 | +30 |" in lines
+    # A build without the raw image has no raw columns, so no change either.
+    assert "| raw image loaded and calibrated, s |  | 1.25 |  |" in lines
+    assert "| raw windows the rules read |  | 0 |  |" in lines
+
+
+@pytest.mark.slow
+def test_a_side_given_the_raw_image_reads_it_after_the_graph_and_says_what_it_cost(tmp_path):
+    mask, skeleton, raw = _rod(tmp_path)
+    np.save(tmp_path / "skeleton.npy", skeleton)
+    np.save(tmp_path / "mask.npy", mask)
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0], "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": None, "keep_steps": False,
+        "raw": {"raw_image_path": str(tmp_path / "raw.tif"), "raw_image_stain": "plasma_column"},
+    }
+    (tmp_path / "job.json").write_text(json.dumps(job))
+    build_side.main(str(tmp_path / "job.json"))
+    info = json.loads((tmp_path / "side" / "side.json").read_text())
+    assert info["raw"]["stain"] == "plasma_column"
+    assert info["raw"]["held_mb"] == pytest.approx(raw.nbytes / 2**20)
+    assert info["peak_rss_mb"] > 0
+    assert info["seconds"] >= info["raw"]["seconds"]
+    # The steps are timed, not saved.
+    from haemolynx.graph import STEP_LABELS
+
+    assert info["steps"] == list(STEP_LABELS)
+    assert not any((tmp_path / "side" / "steps").iterdir())

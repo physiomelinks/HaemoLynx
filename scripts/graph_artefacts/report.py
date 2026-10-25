@@ -178,3 +178,54 @@ def bridge_shapes_table(sides: Mapping[str, Mapping[str, Any]]) -> str:
     rows.append(["length / lumen radius, median (90th pct)"] + ratio_cells)
     rows.append(["drawn along their path"] + [f"{sides[name]['drawn_path_count']:,}" for name in names])
     return _markdown(["bridge shape (count, median length)"] + names, rows)
+
+
+#: The raw image's cost to a build (``build_side.raw_cost``), ``(key, heading,
+#: format)`` in table order: the build without the raw image against the same
+#: build with it (``PLAN_raw_confirmation.md``, decision D6: +5 % build time,
+#: +50 MB resident on E14.5).
+RAW_COST_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("seconds", "build s", "{:,.1f}"),
+    ("peak_rss_mb", "peak resident MB", "{:,.0f}"),
+    ("raw_seconds", "raw image loaded and calibrated, s", "{:,.2f}"),
+    ("raw_held_mb", "raw image held in RAM, MB", "{:,.0f}"),
+    ("raw_queries", "raw windows the rules read", "{:,}"),
+    ("raw_voxels_read", "raw voxels they read", "{:,}"),
+    ("raw_read_seconds", "raw reading s", "{:,.2f}"),
+)
+
+
+def raw_cost_row(side: Mapping[str, Any]) -> dict[str, Any]:
+    """One build's ``side.json`` as a :data:`RAW_COST_COLUMNS` row; a build
+    without the raw image has no raw columns."""
+    row: dict[str, Any] = {"seconds": side.get("seconds"), "peak_rss_mb": side.get("peak_rss_mb")}
+    raw = side.get("raw")
+    if raw:
+        row.update(
+            raw_seconds=raw.get("seconds"), raw_held_mb=raw.get("held_mb"), raw_queries=raw.get("queries"),
+            raw_voxels_read=raw.get("voxels_read"), raw_read_seconds=raw.get("read_seconds"),
+        )
+    return row
+
+
+def raw_cost_table(costs: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> str:
+    """Per side, ``costs[side] = {"without": side.json, "with": side.json}``:
+    one row per :data:`RAW_COST_COLUMNS` measure, a column for each build and
+    the change the raw image made (build time as a percentage too)."""
+    header = ["measure"]
+    for name in costs:
+        header += [f"{name} without", f"{name} with", "change"]
+    rows = []
+    for key, heading, form in RAW_COST_COLUMNS:
+        row = [heading]
+        for pair in costs.values():
+            without, with_raw = raw_cost_row(pair["without"]).get(key), raw_cost_row(pair["with"]).get(key)
+            row += ["" if v is None else form.format(v) for v in (without, with_raw)]
+            if without is None or with_raw is None:
+                row.append("")
+            elif key == "seconds" and without:
+                row.append(f"{with_raw - without:+,.1f} ({100.0 * (with_raw - without) / without:+.1f}%)")
+            else:
+                row.append(form.replace("{:", "{:+").format(with_raw - without))
+        rows.append(row)
+    return _markdown(header, rows)

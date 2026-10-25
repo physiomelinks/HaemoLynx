@@ -6,8 +6,12 @@ graph after every topology step (``steps/<label>.pkl``), the graph as
 ``build_network`` saves it (``final.pkl``: after smoothing, the clean-up run
 again on the smoothed curves, and -- when the job names a thick-vessel region
 -- the thick-vessel split, with the job's ``split`` arguments), the graph before that split
-(``before_thick_split.pkl``) and ``side.json`` (timings, and the build
-arguments this version does not take).
+(``before_thick_split.pkl``) and ``side.json`` (timings, the process's peak
+resident memory, and the build arguments this version does not take). A job
+naming a ``raw`` image (the run's ``raw_image_*`` settings) also loads and
+calibrates it after the graph, as ``build_network`` does, and ``side.json``
+says what that cost (:func:`raw_cost`); ``keep_steps: false`` times the steps
+without saving them.
 """
 from __future__ import annotations
 
@@ -43,6 +47,42 @@ _CLEANUP_ARGUMENTS = (
 )
 
 
+def peak_rss_mb() -> float | None:
+    """This process's peak resident memory so far, in MB, or None where the
+    version's ``pipeline.provenance`` cannot read it."""
+    try:
+        from haemolynx.pipeline.provenance import peak_rss_bytes
+    except ImportError:
+        return None
+    peak = peak_rss_bytes()
+    return None if peak is None else peak / 2**20
+
+
+def raw_cost(raw_settings: dict[str, Any], mask, voxel_size) -> dict[str, Any]:
+    """What the raw image costs a build, paid as ``build_network`` pays it:
+    the channel loaded and calibrated round *mask*
+    (``preprocessing.raw_evidence_from_settings``), the RAM it holds, and the
+    windows the build's rules read of it -- none while no rule reads it.
+    Empty for a version without the raw-image reader."""
+    try:
+        from haemolynx.preprocessing import raw_evidence
+    except ImportError:
+        return {}
+    started = time.perf_counter()
+    evidence = raw_evidence.raw_evidence_from_settings(raw_settings, mask, voxel_size)
+    cost: dict[str, Any] = {"seconds": time.perf_counter() - started, "stain": None}
+    if evidence is not None:
+        held = getattr(raw_evidence, "resident_bytes", None)
+        cost.update(
+            stain=evidence.calibration.stain,
+            held_mb=None if held is None else held(evidence.raw) / 2**20,
+            queries=evidence.stats.queries,
+            voxels_read=evidence.stats.voxels_read,
+            read_seconds=evidence.stats.seconds,
+        )
+    return cost
+
+
 def main(job_path: str) -> None:
     with open(job_path, encoding="utf-8") as f:
         job = json.load(f)
@@ -62,12 +102,15 @@ def main(job_path: str) -> None:
     step_seconds: dict[str, float] = {}
     last = [time.perf_counter()]
 
+    keep_steps = job.get("keep_steps", True)
+
     def snapshot(G, label):
         now = time.perf_counter()
         step_seconds[label] = now - last[0]
         last[0] = now
-        with open(os.path.join(out, "steps", f"{label}.pkl"), "wb") as f:
-            pickle.dump(G, f)
+        if keep_steps:
+            with open(os.path.join(out, "steps", f"{label}.pkl"), "wb") as f:
+                pickle.dump(G, f)
 
     started = time.perf_counter()
     G = assemble.build_graph_from_skeleton(
@@ -120,14 +163,20 @@ def main(job_path: str) -> None:
         )
     with open(os.path.join(out, "final.pkl"), "wb") as f:
         pickle.dump(G, f)
+    side = {
+        "seconds": time.perf_counter() - started,
+        "step_seconds": step_seconds,
+        "steps": list(step_seconds),
+        "arguments_not_taken": dropped,
+        "thick_split": thick_split,
+    }
+    if job.get("raw"):
+        # As build_network does: after the graph, with the mask still held.
+        side["raw"] = raw_cost(job["raw"], mask, voxel_size)
+        side["seconds"] = time.perf_counter() - started
+    side["peak_rss_mb"] = peak_rss_mb()
     with open(os.path.join(out, "side.json"), "w", encoding="utf-8") as f:
-        json.dump({
-            "seconds": time.perf_counter() - started,
-            "step_seconds": step_seconds,
-            "steps": list(step_seconds),
-            "arguments_not_taken": dropped,
-            "thick_split": thick_split,
-        }, f, indent=1)
+        json.dump(side, f, indent=1)
 
 
 if __name__ == "__main__":

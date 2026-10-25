@@ -849,3 +849,35 @@ def test_raw_evidence_from_settings_reads_a_channel_of_a_composite(tmp_path):
     evidence = raw_evidence_from_settings(settings, mask, VOXEL)
     assert isinstance(evidence, RawEvidencePlasma)
     assert raw_evidence_from_settings({**settings, "raw_image_channel": 0}, mask, VOXEL) is None
+
+
+def test_the_build_log_says_what_the_raw_image_cost(tmp_path, caplog):
+    """The seconds the channel took to load and calibrate, and the RAM it
+    holds (``PLAN_raw_confirmation.md``, D6): read in RAM, the whole file's
+    channel; memory-mapped, none."""
+    raw, mask = _plasma_tube()
+    tifffile.imwrite(tmp_path / "raw.tif", raw.astype(np.uint16))
+    settings = {"raw_image_path": str(tmp_path / "raw.tif"), "raw_image_stain": PLASMA_COLUMN}
+    with caplog.at_level("INFO", logger=module.__name__):
+        evidence = raw_evidence_from_settings(settings, mask, VOXEL)
+    assert module.resident_bytes(evidence.raw) == raw.size * 2
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Raw evidence from raw.tif"))
+    assert "loaded and calibrated in " in line and f"{raw.size * 2 / 2**20:.0f} MB of it in RAM" in line
+    caplog.clear()
+    with caplog.at_level("INFO", logger=module.__name__):
+        raw_evidence_from_settings(
+            {**settings, "use_memmap_loading": True, "memmap_directory": str(tmp_path / "memmaps")}, mask, VOXEL
+        )
+    assert any(r.getMessage().endswith("memory-mapped.") for r in caplog.records)
+
+
+def test_resident_bytes_counts_the_array_a_view_keeps(tmp_path):
+    """A crop or a transpose keeps its whole array in RAM; a memory map
+    keeps none of it; anything else holds no volume."""
+    whole = np.zeros((4, 6, 8), dtype=np.uint16)
+    assert module.resident_bytes(whole) == whole.nbytes
+    assert module.resident_bytes(whole.transpose(2, 1, 0)[1:3]) == whole.nbytes
+    mapped = np.lib.format.open_memmap(tmp_path / "v.npy", mode="w+", dtype=np.uint16, shape=(4, 6, 8))
+    assert module.resident_bytes(mapped) == 0
+    assert module.resident_bytes(mapped[1:3, ::2]) == 0
+    assert module.resident_bytes(None) == 0

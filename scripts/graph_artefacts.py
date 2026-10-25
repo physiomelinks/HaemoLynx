@@ -32,6 +32,14 @@ Against a ref, with a table for every topology step::
 The mask is the config's ``input_path`` unless ``--mask`` names another; an
 ilastik "Simple Segmentation" export is labelled 1 = vessel, so pass
 ``--mask-value 1`` for one rather than relying on the binarisation.
+
+What the run's raw image costs a build (``PLAN_raw_confirmation.md``,
+decision D6), each side built again with the config's raw image loaded and
+calibrated after the graph as ``build_network`` does, against the build
+without it -- time, peak resident memory, and the raw image's reads::
+
+    python scripts/graph_artefacts.py --config config.yaml \\
+        --skeleton "outputs/<stem>_skeleton.npy" --raw-cost
 """
 from __future__ import annotations
 
@@ -53,10 +61,17 @@ from graph_artefacts.dead_end_census import (  # noqa: E402
     made_by_step,
 )
 from graph_artefacts.report import (  # noqa: E402
-    bridge_shapes, bridge_shapes_table, comparison_table, measure, steps_table,
+    bridge_shapes, bridge_shapes_table, comparison_table, measure, raw_cost_table, steps_table,
 )
 
 WORKING_TREE = "working tree"
+
+#: The settings ``preprocessing.raw_evidence_from_settings`` reads, handed to
+#: a side built with the raw image.
+RAW_SETTINGS = (
+    "raw_image_path", "raw_image_channel", "raw_image_stain", "raw_image_downsample", "image_axis_order",
+    "input_path", "use_memmap_loading", "memmap_directory",
+)
 
 
 def _export_ref(ref: str, destination: Path) -> Path:
@@ -83,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--steps", action="store_true", help="also measure the graph after every topology step")
     parser.add_argument("--no-thick-split", action="store_true",
                         help="measure the graph before the thick-vessel split build_network ends with")
+    parser.add_argument("--raw-cost", action="store_true",
+                        help="also build each side with the config's raw image loaded and calibrated, as "
+                             "build_network does, and report what it costs")
     parser.add_argument("--thick-vessel-mask",
                         help="a .npy thick-vessel region to split at (default: found from the mask "
                              "and the config, as a resumed run does)")
@@ -101,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     from haemolynx.preprocessing import MaskSupport
 
     settings = resolve_settings(schema=default_schema(), config_path=args.config)
+    if args.raw_cost and not settings.get("raw_image_path"):
+        parser.error("--raw-cost needs a raw image: the config sets no raw_image_path")
     if args.voxel_size_zyx:
         voxel_size = tuple(args.voxel_size_zyx)
     elif settings.get("voxel_size_override_xyz"):
@@ -137,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             "max_deviation": float(settings["centreline_max_deviation"]),
         }
 
-    sides = {}
+    sides, raw_costs = {}, {}
     # Refs first, so a two-side table's change column reads ref -> working tree.
     for name in [*args.ref, WORKING_TREE]:
         side = _side_dir(out, name)
@@ -159,6 +179,19 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.run([sys.executable, str(Path(__file__).parent / "graph_artefacts" / "build_side.py"),
                         str(side / "job.json")], check=True)
         sides[name] = json.loads((side / "side.json").read_text(encoding="utf-8"))
+        if args.raw_cost:
+            # The same build in a fresh process, the raw image read after it.
+            with_raw = side / "with_raw"
+            with_raw.mkdir(parents=True, exist_ok=True)
+            raw_job = job | {"out": str(with_raw), "keep_steps": False,
+                             "raw": {key: str(value) if isinstance(value, Path) else value
+                                     for key, value in settings.items() if key in RAW_SETTINGS}}
+            (with_raw / "job.json").write_text(json.dumps(raw_job, indent=1), encoding="utf-8")
+            print(f"Building {name} with the raw image ...", flush=True)
+            subprocess.run([sys.executable, str(Path(__file__).parent / "graph_artefacts" / "build_side.py"),
+                            str(with_raw / "job.json")], check=True)
+            raw_costs[name] = {"without": sides[name],
+                               "with": json.loads((with_raw / "side.json").read_text(encoding="utf-8"))}
 
     import pickle
 
@@ -174,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
         lines.append(f"- **{name}**: built in {info['seconds']:.0f} s"
                      + (f"; settings it does not take: {', '.join(info['arguments_not_taken'])}"
                         if info["arguments_not_taken"] else ""))
+    if raw_costs:
+        lines += ["", "## The raw image's cost", "",
+                  f"`{settings['raw_image_path']}`, channel {settings.get('raw_image_channel')}, read after the "
+                  "graph as build_network reads it. No rule reads it while the graph is built, so its windows "
+                  "stay 0 until one does (PLAN_raw_confirmation.md).", "", raw_cost_table(raw_costs)]
 
     # What shape each thick-vessel bridge has (PLAN_thick_vessel_bridges.md,
     # Phase 0), every side against the one region, by this checkout.

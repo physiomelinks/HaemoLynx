@@ -36,8 +36,12 @@ wall (endothelial) -- so every threshold is in those units.
 
 ``build_network`` makes the object when the run has a raw image
 (:func:`raw_evidence_from_settings`) and keeps its calibration on the graph
-(:data:`GRAPH_ATTRIBUTE`); the rules that will read it land one at a time
-(``PLAN_raw_confirmation.md``).
+(:data:`GRAPH_ATTRIBUTE`). No rule reads it: on every marked grid it was
+tried on -- one lumen or two (H, H2), a vessel across a gap (M, M2), a loop's
+hole (I, I2) -- no raw measure beat marking everything one way, so each of
+those decisions stays the mask's (``PLAN_raw_confirmation.md``). A rule that
+comes to read it takes the object as an argument and, given None, does what
+it does today.
 
 An endothelial label also answers what a dead end raises
 (``PLAN_dead_ends_raw.md``), across the chain rather than along it: whether a
@@ -1524,6 +1528,18 @@ def raw_image_for_build(settings: Mapping[str, Any]) -> Optional[RawImageSpec]:
     return RawImageSpec(Path(path), None if channel in (None, "") else int(channel), stain, "raw_image_path")
 
 
+def resident_bytes(volume: Any) -> int:
+    """The bytes of RAM *volume* keeps: the whole array a view was cut from
+    (a crop, a transpose, one channel of a composite read whole), and 0 for
+    a memory map, whose pages are the operating system's to drop."""
+    array = volume
+    while isinstance(array, np.ndarray) and not isinstance(array, np.memmap) and isinstance(array.base, np.ndarray):
+        array = array.base
+    if not isinstance(array, np.ndarray) or isinstance(array, np.memmap):
+        return 0
+    return int(array.nbytes)
+
+
 def load_raw_channel(
     path: str | Path,
     channel: Optional[int],
@@ -1626,13 +1642,15 @@ def raw_evidence_from_settings(
     if calibration is None:
         return None
     evidence = make_raw_evidence(raw, mask.shape, voxel_size_zyx, calibration, box=box)
+    held = resident_bytes(evidence.raw)
     logger.info(
-        "Raw evidence from %s%s (%s): %s; calibrated in %.1f s.",
+        "Raw evidence from %s%s (%s): %s; loaded and calibrated in %.1f s, %s.",
         spec.path.name,
         "" if spec.channel is None else f" channel {spec.channel}",
         spec.setting,
         calibration.describe(),
         time.perf_counter() - started,
+        f"{held / 2**20:.0f} MB of it in RAM" if held else "memory-mapped",
     )
     return evidence
 
@@ -1668,5 +1686,6 @@ __all__ = [
     "make_raw_evidence",
     "raw_evidence_from_settings",
     "raw_image_for_build",
+    "resident_bytes",
     "ring_calibration",
 ]
