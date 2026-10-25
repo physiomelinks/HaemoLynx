@@ -651,8 +651,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `MaskBridges`) is drawn across background. A bridge follows a route through the mask
   (`route_through_mask`) crossing at most `bridge_max_background_gap_um` in one run, with
   `bridge_min_mask_fraction` of it in the mask, and never beside a vessel already in the same lumen
-  (`MaskSupport.shadows`). The reconnects judge their turn on the path drawn, not the chord. A mask
-  not the skeleton's shape raises (`check_mask_shape`). Graph bridges record `bridge_kind` and
+  (`MaskSupport.shadows`). The reconnects judge their turn, and the skeleton bridges their facing
+  (`_SkeletonBridgeGate._turns_back`), on the path drawn, not the chord. Background is read in pieces
+  that divide every axis's half spacing where a step within four times the lookups does
+  (`_sample_step`), so a dropout reads exactly. A mask not the skeleton's shape raises (`check_mask_shape`). Graph bridges record `bridge_kind` and
   `bridge_background_um`. Skeleton thinned away entirely by closing is put back. The stub prunes
   judge a dead end as its whole chain to its junction and read the mask
   (`prune.prune_vascular_stubs`, `min_stub_length_radius_multiple`).

@@ -173,3 +173,19 @@ inlet and outlets), `build_network` 218 -> 245 s (the split 0.4 -> 14.3 s); the 
 now mostly vessel carry a median 6.4 times their old flow. The thick vessel's own edges sum to
 about the same resistance both ways, so the network's fall lies elsewhere (not traced). The Nerve
 fixture has no thick vessel (largest inscribed radius 2.8 um).
+
+## The split with a loaded skeleton; grid P; the census again (2026-10-25)
+
+`PLAN_bridging.md`'s last items (`6e09639a`..`f7f1b71f`). With `do_skeletonize` off the region is
+read back beside the skeleton and graph building splits as before, so
+`use_thick_vessel_skeletonisation`, the region's settings and the split's (gap fill, end
+extension, centreline tolerance, large-stack tree) no longer require `do_skeletonize`; the thin-arm
+join, the flake filter and the braiding check, read only while skeletonising, do. **Grid P**
+(`scripts/thick_junction_review/phase1_rules_grid.py`, sent to Harvey for marks) puts the wall
+join, the taper and the fork rule to a grid they were not fitted on: on Harvey's Claudin
+segmentation the join's pool is 92 dead ends within 15 um of a thick lumen (5 joined, 51 refused
+turning away, 7 beside a vessel or closing a loop, 29 past the 10 um reach), the taper's 26 pairs
+(15 tapers), the fork rule's 12 arms (5 bridged). **The census again** (one skeleton and mask,
+`040170b` against today): dead ends near a thick vessel 100 -> 54, of them facing it within 80
+degrees 21 -> 8, connectors left for want of a centreline 21 -> 9. Grid U's three misses are not
+at today's 9 (`outputs/thick_junction_review/REPORT.md`).

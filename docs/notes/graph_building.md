@@ -90,6 +90,20 @@ goes whatever its length, and one whose tip the mask runs on past is held to
 (`min_stub_length_radius_multiple`, 3 radii by default: at 1.5, 3 um on a capillary, Lee's
 blind spurs stayed -- 1,037 of E14.5's 1,234 dead ends).
 
+**Bridging loose ends (2026-10-25, `PLAN_bridging.md`).** The skeleton bridges now judge their
+facing (`skeleton_bridge_min_facing_cosine`) on the route drawn, read at the point the chord's length
+along it, as the reconnects judge their turn (`6e09639a`); on E14.5 (Harvey's Claudin segmentation)
+the step draws 1 bridge from 957 branch ends, none refused for it, and the skeleton and graph are
+the base's bit for bit. The bridge gate's sample step divides every axis's half spacing where a
+step down to a quarter of the finest axis's does (`e87c08e1`): on 0.3 x 0.3 x 1 um voxels a
+one-slice z dropout read 0.86-1.14 um by the path's vertices and now reads 1.0; E14.5's 0.98 x 0.98
+x 1 um keeps 0.49 um (the half spacings' common divisor is 0.01 um). F11 closed by measurement:
+the masks skeleton cleaning and graph building receive are bool already (in RAM, and a bool
+memmap under the low-RAM option, on the Nerve fixture), so `np.asanyarray(mask, dtype=bool)`
+copies nothing, and graph building is handed the run's `MaskSupport`, so `assemble.py`'s two
+conversions never run; the ungated secondary-loop reconnect adds 3 edges on E14.5 (none left
+with its mark in the saved graph) and none on the Nerve fixture.
+
 ## graph/mask_recovery.py
 
 **`graph/mask_recovery.py`** — `recover_uncovered_mask_vessels` (`recover_uncovered_mask_vessels`,

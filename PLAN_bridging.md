@@ -1,8 +1,16 @@
 # Plan: bridging — the one gate, every site that uses it, and the junctions thick vessels miss
 
-Written 2026-10-13 against `Devel_GUI_improvements_HD` at **040170b**. Untracked, like the other
-`PLAN_*.md` files. Section 1 is a code review (every claim has a `file:line`); nothing in it was
-measured on a dataset yet. Section 2 is the measurement that has to come first.
+Written 2026-10-13 against `Devel_GUI_improvements_HD` at **040170b**. Section 1 is a code review
+(every claim has a `file:line`); nothing in it was measured on a dataset yet. Section 2 is the
+measurement that has to come first.
+
+**Where it stands (2026-10-25).** Every item that needs no one but the code is done (section 5's
+last entry): Phases 0-3, Phase 1's last test, F2's skeleton half, F10, F11 (closed by measurement)
+and Phase 4's census. What is left waits on Harvey or on another plan: his marks on grid P (the
+Phase 1 rules' fresh grid, sent 2026-10-25), his decisions listed under "For Harvey" in section 5,
+and the `thick_wall` dead-end kind and its review list, which wait on `PLAN_dead_ends.md`'s session
+landing its changes to `graph/dead_ends.py` and `graph/network_review.py`. Whether this file is
+retired is his call.
 
 **In one paragraph.** Every join the pipeline draws goes through one gate,
 `preprocessing/bridge_mask_support.py`: a path is a vessel when it stays in the segmented mask bar
@@ -418,6 +426,61 @@ Phases 2 and 3 can start today. Phase 1 waits for the grid.
   built. Pushed: `RELEASE_REVIEW.md` evidence rows (e5853c0) and the grid scripts (b842cda). What
   remains open is the graph's own thick centreline not following the tree (81% coverage), behind
   the three misses and five of the long strays, and the 18 in-vessel chords.
+- 2026-10-25, the loose ends (worktree `plan-bridging-ef14af`; measured atop `8dd42663`, rebased onto `1155145c`). E14.5 is
+  Harvey's current Claudin segmentation (`config.yaml`); with all of the below its skeleton and
+  graph are the base's node for node.
+  - **F2, skeleton half** (`6e09639a`): `_SkeletonBridgeGate` re-judges `min_facing_cosine` on a
+    routed path (one off the chord by more than a voxel) at the point the chord's length along it,
+    from the tip and from a tip target; a route turning back is passed over like one crossing
+    background, and the log counts the ends refused for it. Tests: `test_skeleton_bridging.py:723`
+    (a U-shaped mask whose only route leaves a tip backwards, drawn before), `:752` (a route
+    stepping over a dropout still drawn). E14.5: 1 bridge from 957 branch ends, none refused for it.
+  - **F10** (`e87c08e1`): `_sample_step` shrinks up to `EXACT_STEP_MAX_DIVISOR` (4) times to divide
+    every axis's half spacing; a one-slice z dropout on 0.3/0.3/1.0 um read 0.86-1.14 um, now 1.0
+    (`test_bridge_mask_support.py:120`). E14.5 (0.98/0.98/1.0) keeps 0.49 um.
+  - **Phase 1.4's last test** (`07f9648e`, `test_graph_thick_vessel_junctions.py:852`): on the T,
+    the orphan reconnect leaves a tip 1 um inside or outside the region to the split.
+  - **Phase 3 steps 2-3** (`358e4d09`): every stage function's settings, read through the
+    functions of `pipeline.stages` it calls, against its chain (`test_pipeline_schema_api.py:565`);
+    it found F8 again beyond the bridging three. With `do_skeletonize` off graph building still
+    splits the thick vessels and post processing bridges edited vessels into them, so
+    `use_thick_vessel_skeletonisation` and the split's settings no longer require it (the thin-arm
+    join, flake filter and braiding check, read only while skeletonising, now do); with
+    `do_graph_building` off post processing still judges an edited vessel's stubs and short loops,
+    so `min_stub_length`, `min_stub_length_radius_multiple`, `remove_short_loops_under_um` and
+    `short_loop_keep_hole_over_um` no longer require it. `test_gui_layout.py:289`, `:310`.
+  - **Grid U's three** (U02, U05, U12): not reproduced on today's build and segmentation. None is a
+    connector left unbridged: U12's vessel is bridged, U02's is a 23 um blind vessel off the thick
+    centreline, U05's is not in the graph (`outputs/thick_junction_review/REPORT.md`,
+    `grid_U_places_2026-10-25.png`). Both causes are still in the code at other places: 3 of the
+    9 failed exits read their reach at a 0.98-1.4 um tree spur while the tree within reach is
+    2.95-7.96 um wide, and one failing exit still costs a connector every bridge. Reading the reach
+    on the thick vessel bridged to needs no new threshold, but it decides which of these
+    connectors are bridged, and grid U marked 9 of 12 rightly left alone: not changed, for Harvey.
+  - **F11**, closed by measurement: the masks skeleton cleaning and graph building get are bool
+    (in RAM, and a bool memmap under low RAM, on the Nerve fixture), so the conversions copy
+    nothing, and graph building is handed the run's `MaskSupport`, so `assemble.py`'s never run.
+    The ungated secondary-loop reconnect adds 3 edges on E14.5 (none left marked in the saved
+    graph) and none on the Nerve fixture: left ungated.
+  - **Grid P** (`f7f1b71f`, `scripts/thick_junction_review/phase1_rules_grid.py`): the wall join,
+    taper and fork rules on a fresh grid, 30 cases on three sheets (14 J/N, 8 T/S, 8 B/E), every
+    join and fork bridge the rules made drawn, places on the Phase 5 bridge grid left out. Sent to
+    Harvey 2026-10-25; `outputs/thick_junction_review/grid_P/`.
+  - **Phase 4's census** (one skeleton and mask, `040170b` against today, everything since rather
+    than this plan alone): dead ends near a thick vessel 100 -> 54 (inside the region 47 -> 2),
+    interior ones facing it within 80 degrees -- the missed junctions -- 21 -> 8 (6 refused by the
+    wall join beside a vessel or closing a loop, 1 turning 80.2 degrees, 1 made after the split),
+    thick-vessel bridges 51 -> 63, connectors left for want of a centreline 21 -> 9, mask covered
+    78.5 -> 81.1%, build 236 -> 141 s (`outputs/thick_junction_review/census_2026-10-25/`).
+  - **Waiting on `PLAN_dead_ends.md`'s session** (it is editing those files): the `thick_wall`
+    dead-end kind (1.3) and Phase 0.2's finder as a Post processing review list.
+  - **For Harvey:** (1) marks on grid P. (2) F1b's fork of two equal vessels: the plan said both
+    daughters get a bridge of the parent's radius, cut at 0.6 of the fork's radius; the code gives
+    an equal fork no bridge (`test_a_fork_of_equal_thick_vessels_gets_no_bridge`) and bridges an
+    arm at most 0.8 of the trunk. No decision is recorded; grid P's fork sheet asks it of 8 forks.
+    (3) 6a's tree fill (`TREE_FILL_MIN_DETOUR` 2.1) is on by default, checked on no second stack
+    with thick vessels; none is on this machine. (4) The two connector causes above. (5) Whether
+    this file is retired.
 
 ---
 
