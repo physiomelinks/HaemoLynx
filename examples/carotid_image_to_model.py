@@ -1306,6 +1306,30 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
 _RHEOLOGY_CELL_FIELDS = ("hematocrit", "viscosity", "wall_shear_stress_pa", "resistance")
 
 
+def _measure_tuner_diameters(G, binary, voxel_size_zyx, hemo_config):
+    """Measure a skeleton-tuner graph's diameters with the pipeline's EDT estimator.
+
+    Tuner graphs come straight from the graph build, before any diameter is assigned, and
+    redilation raises on an edge without one (it used to give it 5 um, so the tuner's Dice
+    was measured on made-up vessels). EDT whatever radius_assignment_mode says: it is the
+    frozen mode, and the tuner scores the skeleton against the same mask it measures.
+
+    Raises, naming them, on edges the EDT step skipped (no voxels, or no sample inside the mask).
+    """
+    haemodynamics.measure_edge_diameters_edt_from_binary_mask(
+        G,
+        binary_mask=binary,
+        voxel_size_zyx=voxel_size_zyx,
+        junction_proximity_exclusion_um=hemo_config.edt_junction_proximity_exclusion_um,
+    )
+    skipped = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True) if "edt_diameter_um" not in d]
+    if skipped:
+        raise ValueError(
+            f"The EDT diameter step skipped {len(skipped)} tuner-graph edge(s), e.g. {skipped[:5]}: "
+            "no voxels, or no centreline sample inside the mask."
+        )
+
+
 def _rheology_cell_arrays(G, vessels):
     """Per-cell rheology values for the vessel mesh, read from the solved graph.
 
@@ -2032,6 +2056,7 @@ def carotid_image_to_model(image_path: Path | str,
                         if test_G.number_of_nodes() == 0 or test_G.number_of_edges() == 0:
                             return None # Prune
                             
+                        _measure_tuner_diameters(test_G, chunk_binary_mask, voxel_size_xyz, hemo_config)
                         bench_results = benchmarking.run_all_benchmarks(test_G, chunk_binary_mask, voxel_size_xyz, metrics=auto_tuner.SKELETON_LOSS_METRICS)
                         return bench_results
 
@@ -2104,7 +2129,8 @@ def carotid_image_to_model(image_path: Path | str,
                     if test_G.number_of_nodes() == 0 or test_G.number_of_edges() == 0:
                         return None # Prune
                         
-                    # 3. Evaluate Benchmarks
+                    # 3. Measure diameters, then evaluate benchmarks
+                    _measure_tuner_diameters(test_G, binary, voxel_size_xyz, hemo_config)
                     bench_results = benchmarking.run_all_benchmarks(test_G, binary, voxel_size_xyz, metrics=auto_tuner.SKELETON_LOSS_METRICS)
                     return bench_results
     

@@ -87,24 +87,87 @@ def test_objective_penalizes_over_pruning():
     # used to add 475 + 20 + 5 have been removed.
     assert loss == 130.0, f"Expected 130.0 loss, got {loss}"
 
-def test_objective_prunes_on_pipeline_failure():
-    """Phase 2: Ensures pipeline crashes are safely caught and signal a TrialPruned."""
+def test_skeleton_objective_lets_a_pipeline_error_reach_the_caller():
+    """It caught every exception and pruned the trial at debug level, hiding real bugs."""
     def crashing_pipeline(kwargs):
-        raise ValueError("Simulated pipeline crash (e.g. disconnected graph).")
-        
-    def none_pipeline(kwargs):
-        return None # Simulated empty result
-        
-    objective_crash = SkeletonObjective(crashing_pipeline)
-    objective_none = SkeletonObjective(none_pipeline)
-    
-    trial = _get_dummy_fixed_trial()
-    
-    with pytest.raises(optuna.TrialPruned):
-        objective_crash(trial)
-        
-    with pytest.raises(optuna.TrialPruned):
-        objective_none(trial)
+        raise ValueError("Simulated pipeline crash.")
+
+    with pytest.raises(ValueError, match="Simulated pipeline crash"):
+        SkeletonObjective(crashing_pipeline)(_get_dummy_fixed_trial())
+
+
+def test_skeleton_objective_prunes_an_empty_graph_with_a_warning(caplog):
+    """The callback returns None for a graph with no nodes or edges: a real trial outcome."""
+    with caplog.at_level("WARNING", logger="ImageLynx.statistics.auto_tuner"):
+        with pytest.raises(optuna.TrialPruned):
+            SkeletonObjective(lambda kwargs: None)(_get_dummy_fixed_trial())
+
+    assert "min_branch_length" in caplog.text
+
+
+def _preprocessing_fixed_trial():
+    return FixedTrial({
+        "hysteresis_threshold_low": 0.6,
+        "hysteresis_threshold_high": 0.9,
+        "probability_smoothing_sigma": 0.5,
+    })
+
+
+def test_preprocessing_objective_lets_a_pipeline_error_reach_the_caller():
+    def crashing_pipeline(kwargs):
+        raise ValueError("Simulated preprocessing crash.")
+
+    with pytest.raises(ValueError, match="Simulated preprocessing crash"):
+        PreprocessingObjective(crashing_pipeline)(_preprocessing_fixed_trial())
+
+
+def test_preprocessing_objective_prunes_an_empty_mask_with_a_warning(caplog):
+    """A threshold pair can leave no foreground: a real trial outcome, not a bug."""
+    from ImageLynx.statistics.benchmarking import EmptyMaskError
+
+    def empty_mask_pipeline(kwargs):
+        raise EmptyMaskError("The binary mask is empty.")
+
+    with caplog.at_level("WARNING", logger="ImageLynx.statistics.auto_tuner"):
+        with pytest.raises(optuna.TrialPruned):
+            PreprocessingObjective(empty_mask_pipeline)(_preprocessing_fixed_trial())
+
+    assert "hysteresis_threshold_low" in caplog.text
+    assert "empty" in caplog.text
+
+
+def test_preprocessing_objective_prunes_a_none_result_with_a_warning(caplog):
+    with caplog.at_level("WARNING", logger="ImageLynx.statistics.auto_tuner"):
+        with pytest.raises(optuna.TrialPruned):
+            PreprocessingObjective(lambda kwargs: None)(_preprocessing_fixed_trial())
+
+    assert "hysteresis_threshold_low" in caplog.text
+
+
+@pytest.mark.parametrize("drop", [
+    ("volumetric",), ("completeness",),
+    ("volumetric", "dice_coefficient"), ("completeness", "orphaned_volume_fraction"),
+], ids="/".join)
+def test_skeleton_loss_raises_on_a_missing_key(drop):
+    """It read a missing Dice as 0.0 and a missing orphaned fraction as 1.0."""
+    bench = _skeleton_bench(dice=0.6, orphaned=0.1, terminal_ratio=0.0, loops=0)
+    if len(drop) == 1:
+        del bench[drop[0]]
+    else:
+        del bench[drop[0]][drop[1]]
+
+    with pytest.raises(KeyError, match=drop[-1]):
+        SkeletonObjective(lambda kwargs: None)._calculate_loss(bench)
+
+
+@pytest.mark.parametrize("key", ["confidence", "probability_yield"])
+def test_preprocessing_loss_raises_on_a_missing_key(key):
+    """Both read 0.0 when missing."""
+    bench = _preproc_bench()
+    del bench[key]
+
+    with pytest.raises(KeyError, match=key):
+        PreprocessingObjective(lambda kwargs: None)._calculate_loss(bench)
 
 def test_run_optuna_skeleton_optimization_finds_minimum(tmp_path: Path):
     """
@@ -680,8 +743,8 @@ def test_the_saved_yaml_holds_no_entropy_values_when_entropy_is_off(tmp_path: Pa
     assert not SHANNON_KEYS & set(saved["PreprocessingConfig"])
 
 
-def test_skeleton_loss_metrics_run_on_a_graph_with_no_diameters():
-    """Tuner graphs come straight from the graph build, before any diameter is measured.
+def test_skeleton_loss_metrics_run_on_a_graph_with_only_an_edt_diameter():
+    """Tuner graphs carry the EDT diameter the callbacks measure, never assigned_diameter_um.
 
     Centricity raises on such a graph, so the tuner asks run_all_benchmarks for the metrics
     its loss reads, and only those.
@@ -691,7 +754,7 @@ def test_skeleton_loss_metrics_run_on_a_graph_with_no_diameters():
     import ImageLynx.statistics.benchmarking as bench
 
     G = nx.MultiGraph()
-    G.add_edge(0, 1, key=0, pts=[(z, 10, 10) for z in range(20)])
+    G.add_edge(0, 1, key=0, pts=[(z, 10, 10) for z in range(20)], edt_diameter_um=4.0)
     mask = np.zeros((20, 20, 20), dtype=bool)
     mask[:, 8:13, 8:13] = True
 
@@ -713,3 +776,55 @@ def test_skeleton_loss_reads_nothing_outside_its_named_metrics():
     assert objective._calculate_loss(full) == objective._calculate_loss(named_only)
     # 0.4 Dice and 0.3 orphaned: (1 - 0.4) * 100 + 0.3 * 100.
     assert objective._calculate_loss(named_only) == pytest.approx(90.0)
+
+
+# --- The skeleton tuner measures its diameters (package AJ) --------------------------------
+
+def test_tuner_diameters_come_from_the_pipelines_edt_estimator():
+    """Redilation raises without a diameter; the tuner measures one as the pipeline would."""
+    import networkx as nx
+    import numpy as np
+    C = pytest.importorskip("carotid_image_to_model")
+    import ImageLynx.statistics.benchmarking as bench
+
+    spacing = (1.0, 1.0, 1.0)
+    mask = np.zeros((20, 21, 21), dtype=bool)
+    yy, xx = np.mgrid[:21, :21]
+    mask[:, (yy - 10) ** 2 + (xx - 10) ** 2 <= 9] = True  # a 3 um radius tube along z
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, voxels=[(float(z), 10.0, 10.0) for z in range(20)])
+
+    C._measure_tuner_diameters(G, mask, spacing, C.HaemodynamicsConfig())
+
+    diameter = G.edges[0, 1, 0]["edt_diameter_um"]
+    assert 5.0 < diameter < 8.0, diameter
+    assert "assigned_diameter_um" not in G.edges[0, 1, 0]
+    bench.redilate_skeleton_to_volume(G, mask.shape, spacing)  # no longer raises
+
+
+def test_both_skeleton_tuner_callbacks_measure_diameters_before_benchmarking():
+    import inspect
+    C = pytest.importorskip("carotid_image_to_model")
+
+    source = inspect.getsource(C.carotid_image_to_model)
+    measures = [i for i in range(len(source)) if source.startswith("_measure_tuner_diameters(", i)]
+    benches = [i for i in range(len(source)) if source.startswith("benchmarking.run_all_benchmarks(", i)]
+    assert len(measures) == len(benches) == 2
+    # Each callback measures before it benchmarks, and before the other callback begins.
+    assert measures[0] < benches[0] < measures[1] < benches[1]
+
+
+def test_tuner_diameters_name_an_edge_the_edt_step_skipped():
+    """An edge with no centreline sample inside the mask gets no EDT diameter."""
+    import networkx as nx
+    import numpy as np
+    C = pytest.importorskip("carotid_image_to_model")
+
+    mask = np.zeros((20, 21, 21), dtype=bool)
+    mask[:, 8:13, 8:13] = True
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, voxels=[(float(z), 10.0, 10.0) for z in range(20)])
+    G.add_edge(2, 3, key=0, voxels=[(float(z), 1.0, 1.0) for z in range(20)])  # outside the mask
+
+    with pytest.raises(ValueError, match=r"EDT.*\(2, 3, 0\)"):
+        C._measure_tuner_diameters(G, mask, (1.0, 1.0, 1.0), C.HaemodynamicsConfig())

@@ -4,6 +4,8 @@ import copy
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
 
+from ImageLynx.statistics.benchmarking import EmptyMaskError
+
 try:
     import optuna
 except ImportError:
@@ -61,14 +63,13 @@ class SkeletonObjective:
             # parameter importances divide attention across it.
         }
         
-        # 2. Evaluate pipeline (builds graph and runs benchmarks)
-        try:
-            bench_results = self.pipeline_eval_fn(skel_kwargs)
-        except Exception as e:
-            logger.debug(f"Trial pruned due to pipeline failure (likely disconnected graph): {e}")
-            raise optuna.TrialPruned()
-            
+        # 2. Evaluate pipeline (builds graph and runs benchmarks). An error is not caught: a
+        # catch-all prune at debug level hid real failures. The callback returns None for a
+        # graph with no nodes or edges, which is a real trial outcome.
+        bench_results = self.pipeline_eval_fn(skel_kwargs)
+
         if bench_results is None:
+            logger.warning(f"Trial pruned: the graph has no nodes or edges at {skel_kwargs}.")
             raise optuna.TrialPruned()
             
         # 3. Calculate Loss Function (Minimize towards 0.0)
@@ -97,11 +98,9 @@ class SkeletonObjective:
         and they are the wrong two numbers until the hysteresis thresholds are fixed. No H1
         figure should be read off this objective before then.
         """
-        vol = bench_results.get("volumetric", {})
-        comp = bench_results.get("completeness", {})
-
-        dsc = vol.get("dice_coefficient", 0.0)
-        orphaned = comp.get("orphaned_volume_fraction", 1.0)
+        # Read strictly: a missing Dice read as 0.0 and a missing orphaned fraction as 1.0.
+        dsc = bench_results["volumetric"]["dice_coefficient"]
+        orphaned = bench_results["completeness"]["orphaned_volume_fraction"]
 
         # Base penalty: Missing volume (DSC difference from 1.0, heavily weighted)
         loss = (1.0 - dsc) * 100.0
@@ -339,14 +338,17 @@ class PreprocessingObjective:
         if self.search_entropy and pre_kwargs["shannon_entropy_core"] >= pre_kwargs["shannon_entropy_threshold"]:
             raise optuna.TrialPruned()
         
-        # 2. Evaluate pipeline (applies filters and runs benchmarks)
+        # 2. Evaluate pipeline (applies filters and runs benchmarks). Only an empty mask is
+        # pruned: a threshold pair can leave no foreground, and the benchmarks are undefined
+        # there. Any other error is not caught; a catch-all prune at debug level hid it.
         try:
             bench_results = self.pipeline_eval_fn(pre_kwargs)
-        except Exception as e:
-            logger.debug(f"Trial pruned due to preprocessing failure: {e}")
+        except EmptyMaskError as e:
+            logger.warning(f"Trial pruned: {e} Parameters: {pre_kwargs}.")
             raise optuna.TrialPruned()
-            
+
         if bench_results is None:
+            logger.warning(f"Trial pruned: the evaluation returned no result at {pre_kwargs}.")
             raise optuna.TrialPruned()
             
         # 3. Calculate Loss Function (Minimize towards 0.0)
@@ -380,8 +382,9 @@ class PreprocessingObjective:
         precision/recall term (e.g. soft Dice between mask and probability field), which
         replaces the objective rather than re-weighting it.
         """
-        confidence = bench_results.get("confidence", 0.0)
-        prob_yield = bench_results.get("probability_yield", 0.0)
+        # Read strictly: a missing key read as 0.0.
+        confidence = bench_results["confidence"]
+        prob_yield = bench_results["probability_yield"]
 
         # Base penalty: Missing Confidence. The dominant term, and the only real gradient.
         loss = (1.0 - confidence) * 100.0

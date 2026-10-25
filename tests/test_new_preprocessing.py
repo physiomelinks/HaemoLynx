@@ -267,10 +267,9 @@ def test_evaluate_preprocessing_uncertainty():
     ent = np.zeros((10, 10, 10), dtype=np.float32)
     binary = np.zeros((10, 10, 10), dtype=bool)
     
-    # Empty mask should return 0
-    res = evaluate_preprocessing_uncertainty(ent, binary)
-    assert res["mean_uncertainty"] == 0.0
-    assert res["high_uncertainty_fraction"] == 0.0
+    # An empty mask raises: zero uncertainty would read as a perfectly certain mask.
+    with pytest.raises(ValueError, match="empty"):
+        evaluate_preprocessing_uncertainty(ent, binary)
     
     # 10 voxels kept
     binary[0:10, 0, 0] = True

@@ -7,25 +7,43 @@ import math
 
 logger = logging.getLogger(__name__)
 
+class EmptyMaskError(ValueError):
+    """The binary mask has no foreground, so a mask-quality score is undefined."""
+
+# The diameters redilation reads, in order of preference. A solved graph carries
+# assigned_diameter_um; a skeleton-tuner graph carries only the EDT measurement its callback
+# makes, since no diameter is assigned before the haemodynamics phase.
+REDILATION_DIAMETER_KEYS = ("assigned_diameter_um", "edt_diameter_um", "fwhm_diameter_um")
+
+def _redilation_diameter_um(u: Any, v: Any, key: Any, data: Dict[str, Any]) -> float:
+    for name in REDILATION_DIAMETER_KEYS:
+        diameter_um = data.get(name)
+        if diameter_um is not None:
+            if not diameter_um > 0:
+                raise ValueError(f"Edge {(u, v, key)} has a non-positive {name} ({diameter_um!r}).")
+            return float(diameter_um)
+    # It used to get 5 um, so the tuner's Dice was measured on made-up vessels.
+    raise ValueError(
+        f"Edge {(u, v, key)} has no measured diameter (none of {REDILATION_DIAMETER_KEYS}); "
+        "redilation cannot reconstruct its vessel."
+    )
+
 def redilate_skeleton_to_volume(G: nx.MultiGraph, shape: Tuple[int, int, int], voxel_size_xyz: Tuple[float, float, float]) -> np.ndarray:
     """
-    Reconstructs a 3D binary volume from the mathematical graph by dilating each centerline
-    point by its assigned physical radius.
+    Reconstructs a 3D binary volume from the mathematical graph by dilating each centreline
+    point by its measured physical radius (see REDILATION_DIAMETER_KEYS).
+
+    Raises on an edge with no diameter, no points, or a point outside the volume. A present but
+    non-positive diameter raises too, rather than falling through to the next key: it is a
+    bad measurement, and a later key would hide it.
     """
     reconstructed = np.zeros(shape, dtype=bool)
     vz, vy, vx = voxel_size_xyz
-    
+
     # Extract points and radii
     for u, v, key, data in G.edges(keys=True, data=True):
-        pts = data.get("pts")
-        if pts is None or len(pts) == 0:
-            pts = data.get("voxels")
-        if pts is None or len(pts) == 0:
-            continue
-            
-        # Prioritize assigned_diameter_um, fallback to fwhm
-        diameter_um = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
-        radius_um = diameter_um / 2.0
+        indices = _edge_voxel_indices(u, v, key, data, shape, voxel_size_xyz)
+        radius_um = _redilation_diameter_um(u, v, key, data) / 2.0
         
         # Convert radius to voxels (assuming isotropic-ish for dilation simplicity, or using min spacing)
         # For rigorous 3D, we'll use a bounding box approach per point
@@ -35,11 +53,7 @@ def redilate_skeleton_to_volume(G: nx.MultiGraph, shape: Tuple[int, int, int], v
         
         max_rad = math.ceil(max(radius_vox_x, radius_vox_y, radius_vox_z))
         
-        for pt in pts:
-            # 'voxels'/'pts' are stored in PHYSICAL units by build_graph_segment_skan_stitched_loops,
-            # so they must be divided by the spacing before being used as array subscripts.
-            z, y, x = (int(round(pt[0] / vz)), int(round(pt[1] / vy)), int(round(pt[2] / vx)))
-
+        for z, y, x in indices:
             # Simple bounding box voxelization
             z_min, z_max = max(0, z - max_rad), min(shape[0], z + max_rad + 1)
             y_min, y_max = max(0, y - max_rad), min(shape[1], y + max_rad + 1)
@@ -91,7 +105,8 @@ def _edge_voxel_indices(u: Any, v: Any, key: Any, data: Dict[str, Any], shape: T
     vz, vy, vx = voxel_size_xyz
     indices = []
     for pt in pts:
-        # Physical -> voxel index; see redilate_skeleton_to_volume for the same conversion.
+        # 'voxels'/'pts' are stored in PHYSICAL units by build_graph_segment_skan_stitched_loops,
+        # so they must be divided by the spacing before being used as array subscripts.
         z, y, x = (int(round(pt[0] / vz)), int(round(pt[1] / vy)), int(round(pt[2] / vx)))
         if not (0 <= z < shape[0] and 0 <= y < shape[1] and 0 <= x < shape[2]):
             raise ValueError(
@@ -291,7 +306,8 @@ def evaluate_preprocessing_confidence(prob_map: np.ndarray, binary_mask: np.ndar
 def evaluate_preprocessing_uncertainty(entropy_map: np.ndarray, binary_mask: np.ndarray) -> Dict[str, float]:
     """Calculates the mean uncertainty and the fraction of preserved voxels with dangerous uncertainty."""
     if not binary_mask.any():
-        return {"mean_uncertainty": 0.0, "high_uncertainty_fraction": 0.0}
+        # Zero uncertainty would read as a perfectly certain mask.
+        raise EmptyMaskError("Uncertainty is undefined: the binary mask is empty.")
     
     preserved_entropy = entropy_map[binary_mask]
     mean_unc = float(np.mean(preserved_entropy))
@@ -335,7 +351,8 @@ def evaluate_preprocessing_compactness(binary_mask: np.ndarray) -> float:
     High values indicate heavily jagged, non-cylindrical, or noisy boundaries.
     """
     if not binary_mask.any():
-        return 0.0
+        # 0/0, and a ratio of 0.0 would read as the smoothest possible boundary.
+        raise EmptyMaskError("Surface-to-volume ratio is undefined: the binary mask is empty.")
     eroded = ndimage.binary_erosion(binary_mask)
     surface_mask = binary_mask ^ eroded
     return float(np.sum(surface_mask) / np.sum(binary_mask))
@@ -346,13 +363,10 @@ def evaluate_preprocessing_euler_characteristic(binary_mask: np.ndarray) -> int:
     If a threshold creates "Swiss cheese" holes inside vessels, this drops sharply.
     """
     if not binary_mask.any():
-        return 0
-    from skimage.measure import euler_number
+        return 0  # The Euler characteristic of the empty set.
+    import skimage.measure
     # 3D connectivity: 3 for faces+edges+corners (26-connected)
-    try:
-        return int(euler_number(binary_mask, connectivity=3))
-    except Exception:
-        return 0
+    return int(skimage.measure.euler_number(binary_mask, connectivity=3))
 
 def evaluate_mask_calibre(
     binary_mask: np.ndarray,
@@ -411,47 +425,31 @@ def run_all_preprocessing_benchmarks(
     entropy_map: np.ndarray = None,
     voxel_size_xyz: Tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> Dict[str, Any]:
-    """Executes the reference-free benchmarking suite for voxel preprocessing."""
+    """Executes the reference-free benchmarking suite for voxel preprocessing.
+
+    Raises EmptyMaskError on a mask with no foreground, before any metric runs: several
+    scores are undefined there. A metric that raises is not caught. Catching it dropped that
+    metric's key and logged the error, and the tuner's loss read the missing key as a default.
+    """
+    if not binary_mask.any():
+        raise EmptyMaskError("The binary mask is empty: the preprocessing benchmarks are undefined.")
+
     results = {}
-    try:
-        conf_results = evaluate_preprocessing_confidence(prob_map, binary_mask)
-        results["confidence"] = conf_results["confidence"]
-        results["probability_yield"] = conf_results["probability_yield"]
-    except Exception as e:
-        logger.error(f"Failed Confidence Benchmark: {e}")
-        
+    conf_results = evaluate_preprocessing_confidence(prob_map, binary_mask)
+    results["confidence"] = conf_results["confidence"]
+    results["probability_yield"] = conf_results["probability_yield"]
+
     if entropy_map is not None:
-        try:
-            unc_results = evaluate_preprocessing_uncertainty(entropy_map, binary_mask)
-            results["mean_uncertainty"] = unc_results["mean_uncertainty"]
-            results["high_uncertainty_fraction"] = unc_results["high_uncertainty_fraction"]
-        except Exception as e:
-            logger.error(f"Failed Uncertainty Benchmark: {e}")
-        
-    try:
-        results["crispness"] = evaluate_preprocessing_crispness(prob_map, binary_mask)
-    except Exception as e:
-        logger.error(f"Failed Crispness Benchmark: {e}")
-        
-    try:
-        results["fragmentation"] = evaluate_preprocessing_fragmentation(binary_mask)
-    except Exception as e:
-        logger.error(f"Failed Fragmentation Benchmark: {e}")
-        
-    try:
-        results["surface_area_ratio"] = evaluate_preprocessing_compactness(binary_mask)
-    except Exception as e:
-        logger.error(f"Failed Compactness Benchmark: {e}")
-        
-    try:
-        results["euler_characteristic"] = evaluate_preprocessing_euler_characteristic(binary_mask)
-    except Exception as e:
-        logger.error(f"Failed Euler Benchmark: {e}")
+        unc_results = evaluate_preprocessing_uncertainty(entropy_map, binary_mask)
+        results["mean_uncertainty"] = unc_results["mean_uncertainty"]
+        results["high_uncertainty_fraction"] = unc_results["high_uncertainty_fraction"]
+
+    results["crispness"] = evaluate_preprocessing_crispness(prob_map, binary_mask)
+    results["fragmentation"] = evaluate_preprocessing_fragmentation(binary_mask)
+    results["surface_area_ratio"] = evaluate_preprocessing_compactness(binary_mask)
+    results["euler_characteristic"] = evaluate_preprocessing_euler_characteristic(binary_mask)
 
     # Reported, never optimised against - see evaluate_mask_calibre's docstring.
-    try:
-        results.update(evaluate_mask_calibre(binary_mask, voxel_size_xyz))
-    except Exception as e:
-        logger.error(f"Failed Mask Calibre Benchmark: {e}")
+    results.update(evaluate_mask_calibre(binary_mask, voxel_size_xyz))
 
     return results
