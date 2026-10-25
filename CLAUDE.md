@@ -213,8 +213,10 @@ haemolynx/
 │   ├── stats_cross_check.py # The statistics against skan, maskel and VesselVio on one mask
 │   │                       #   (stats.8a), and a ledger of which HaemoLynx step makes each
 │   │                       #   difference (stats_cross_check/; VesselVio, GPL, run as a program)
-│   └── secomb_comparison.py # The flow solve against Secomb's NetFlow and FlowEstimate
-│                           #   (flow.8a): builds them from clones kept outside the repo
+│   ├── secomb_comparison.py # The flow solve against Secomb's NetFlow and FlowEstimate
+│   │                       #   (flow.8a): builds them from clones kept outside the repo
+│   └── install_git_hooks.py # git_hooks/ into this clone: post-checkout/post-merge bring
+│                           #   back the local-only files a pull, rebase or checkout deleted
 ├── tests/                  # Unit + integration tests (see Testing below)
 │   ├── conftest.py         # Shared fixtures; matplotlib Agg backend
 │   └── integration/        # Full-pipeline and tutorial tests (@pytest.mark.integration)
@@ -342,6 +344,7 @@ The production-style entry point is `examples/resistance_network_pipeline.py` (`
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+python scripts/install_git_hooks.py   # bring back local-only files a pull deletes
 ```
 
 On Windows the venv's interpreter is `.venv\Scripts\python.exe`; run tests as
@@ -1118,7 +1121,7 @@ loop runs through the mask did.
 
 - Writing help-menu text. See **Help menu** above: stop and send Harvey's message before doing anything else on that request.
 - Committing large generated outputs (`examples/outputs/`, `tutorials/plots/`, `tests/outputs/`) unless the user explicitly asks.
-- Committing plan files (`PLAN_*.md`) or run configs (`*.yaml` at the repository root): they are local only and git-ignored, so never `git add -f` or `update-index --add` them. The examples' generated `examples/*_config.yaml` stay committed.
+- Committing plan files (`PLAN_*.md`) or run configs (`*.yaml` at the repository root): they are local only and git-ignored, so never `git add -f` or `update-index --add` them. The examples' generated `examples/*_config.yaml` stay committed. A clone whose commits still track them loses them on a pull unless `scripts/install_git_hooks.py`'s hooks are installed (`tests/test_git_hooks.py`).
 - Editing auto-generated `tutorials/pipeline_tutorial.py` instead of the notebook.
 - Adding features without tests (see Testing policy).
 - Force-pushing `main`/`master` or amending pushed commits unless explicitly requested.
