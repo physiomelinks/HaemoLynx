@@ -437,3 +437,12 @@ edge, so the defaults change no graph. At `94320b75` the harness's E14.5 graph (
 in one lumen, 696 um of doubled centreline (333 um seen only from the wider side), 78 short loops, 0 inside one
 lumen, 201 interior dead ends (15 `artefact`, 94 `stops_short`, 88 `unknown`, 4 `broken`), 3 tips in another
 lumen and 81.0 % of the mask covered, built in 153 s; the plan's section 6 holds the targets.
+
+A second dataset, the skeletal-muscle stack (`BigSMconfig.yaml`; a 503 x 512 x 512 sub-crop of
+`outputs/t6/smcrops/crop0`, 0.913 x 0.913 x 4.94 um voxels, 5.5 % vessel, through `build_network` with that
+config), with 1d on (`c393ab58`: the rewire and the guard, before the round-limit fix) against off (the
+defaults): pairs in one lumen 16 against 44, doubled centreline 6,308 against 7,316 um, mask covered 57.6
+against 55.4 %, tips in another lumen 21 against 30, centreline +5.6 mm -- and short loops 119 against 86,
+interior dead ends 1,962 against 1,836. The same trade as on E14.5, larger: the kill criteria fail here too.
+At the defaults the crop meets none of the plan's dataset-wide targets: 44 pairs, 1 loop inside one lumen,
+30 tips in another lumen, 102 `artefact` dead ends (its z voxels are five times its in-plane ones).
