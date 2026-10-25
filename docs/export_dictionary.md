@@ -19,6 +19,7 @@ Units are spelled one way everywhere. A column name in code style (lower case, u
 | `1/um` | per micrometre |
 | `1/mm` | per millimetre of vessel |
 | `1/mm^3` | per cubic millimetre |
+| `1/mm^2` | per square millimetre |
 | `mm/s` | millimetres per second |
 | `nL/min` | nanolitres per minute |
 | `m^3/s` | cubic metres per second |

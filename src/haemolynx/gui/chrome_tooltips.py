@@ -211,6 +211,23 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "over the vessels carrying flow alone, and the ratio of the two "
         "medians: how the spacing opens up where vessels carry no flow"
     ),
+    "junction_shape": (
+        "The angles between the three vessels of each junction, read along "
+        "their centrelines: the smallest and largest, the share of junctions "
+        "with two vessels within 45 degrees of each other, and the three "
+        "angles summed (360 when the junction lies in one plane)"
+    ),
+    "tissue_coverage": (
+        "How far the tissue lies from a vessel, read at points through the "
+        "image box: the share within 20 microns of a vessel, the share beyond "
+        "50 microns (the holes), and the median and 90th percentile distance"
+    ),
+    "vessel_columns": (
+        "Vessels running along the stack axis (within 30 degrees of z): their "
+        "share of the network's length, how many per square millimetre of the "
+        "image plane, and how evenly they are spread across it (the "
+        "Clark-Evans ratio: 1 at random, above 1 even, below 1 bunched)"
+    ),
     "dead_ends": (
         "Vessels that end without joining another, by kind: leaving the "
         "image, at a thick vessel's wall but not joined to it, stopped short of "

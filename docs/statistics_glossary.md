@@ -22,6 +22,7 @@ names it lists.
 | `1/um` | per micrometre |
 | `1/mm` | per millimetre of vessel |
 | `1/mm^3` | per cubic millimetre |
+| `1/mm^2` | per square millimetre |
 | `mm/s` | millimetres per second |
 | `nL/min` | nanolitres per minute |
 | `m^3/s` | cubic metres per second |
@@ -123,6 +124,7 @@ names it lists.
 | Surface Density in Tissue (micron²/micron³) | um^2/um^3 | Vessel Surface Area over Vessel Class Density Volume. |
 | Mean Tortuosity Index | dimensionless | Mean centreline length over straight end-to-end distance of the class's vessels. |
 | Median Tortuosity Index | dimensionless | Median centreline length over straight end-to-end distance of the class's vessels. |
+| 90th Percentile Tortuosity Index | dimensionless | The 90th percentile of the same: how far the class's most winding tenth of vessels wander. |
 | Vessels Carrying Flow | vessels | Vessels with a solved flow (in the flux section, above the carrying floor too). Vessels behind dead ends carry exactly none and are left out of every flow row of the class. |
 | Mean Flow (nL/min) | nL/min | Mean |flow| of the class's vessels carrying flow. |
 | Median Flow (nL/min) | nL/min | Median |flow| of the class's vessels carrying flow. |
@@ -157,6 +159,40 @@ names it lists.
 | Median Intercapillary Distance Between Flowing Vessels (microns) | um | The median of that spacing. |
 | Intercapillary Distance Between Flowing Vessels Sample Count | vessels | Flowing vessels with a spacing. |
 | Flowing Over All Median Intercapillary Distance | dimensionless | The flowing vessels' median spacing over every vessel's: above 1 when the vessels not carrying flow sat between them. |
+
+## Junction shape
+
+| Statistic | Unit | Definition |
+|---|---|---|
+| Three-Vessel Junctions Measured | count | Junctions where exactly three vessel ends meet, each vessel's direction read 8 um along its centreline from the node. |
+| Junctions of Four or More Vessels | count | Junctions of four or more vessel ends, not measured. |
+| Junction Smallest Angle Median (degrees) | degrees | The median over three-vessel junctions of the smallest of the three angles between its vessels: 120 for a symmetric Y, near 0 where two vessels leave together. |
+| Junction Smallest Angle 25th Percentile (degrees) | degrees | The 25th percentile of the same smallest angle. |
+| Junction Largest Angle Median (degrees) | degrees | The median of each junction's largest angle: near 180 where one vessel runs straight on through the junction. |
+| Acute Junction Share (fraction) | fraction | The share of three-vessel junctions with two vessels within 45 degrees of each other. |
+| Junction Angle Sum Median (degrees) | degrees | The median of each junction's three angles summed: 360 when its vessels lie in one plane, less the further they leave it. |
+
+## Tissue coverage
+
+| Statistic | Unit | Definition |
+|---|---|---|
+| Box Within 20 um of a Vessel (fraction) | fraction | The share of the image box within 20 um of a vessel centreline, read on a 10 um grid of points (200,000 points at random, seeded, in a larger box). |
+| Box Beyond 50 um of a Vessel (fraction) | fraction | The share of the same points further than 50 um from every vessel centreline: the holes in the network. |
+| Median Distance to Nearest Vessel (microns) | um | The median over the same points of the distance to the nearest vessel centreline. |
+| 90th Percentile Distance to Nearest Vessel (microns) | um | The 90th percentile of that distance: how far the network's larger holes reach. |
+| Coverage Box | (text) | The box the points fill: the image the run read, or the box the vessels span when the graph does not say. |
+| Coverage Probe Points | count | Points the coverage was read at. |
+
+## Vessel columns
+
+| Statistic | Unit | Definition |
+|---|---|---|
+| Column Vessels (within 30 degrees of z) | vessels | Vessels whose straight end-to-end line is at least 10 um long and within 30 degrees of the stack (z) axis. |
+| Column Share of Vessel Length (fraction) | fraction | The columns' centreline length over every vessel's. |
+| Columns per mm² of Image Plane | 1/mm^2 | Columns per square millimetre of the image's y-x plane. |
+| Column Spacing Median (microns) | um | The median distance in the y-x plane from each column's midpoint to the nearest other column's. |
+| Column Spacing Clark-Evans Ratio | dimensionless | The columns' mean nearest-neighbour distance in the y-x plane over a random pattern's at the same density: 1 at random, above 1 evenly spaced, below 1 bunched. No edge correction. |
+| Median Column Tortuosity Index | dimensionless | The median of the columns' centreline length over their straight end-to-end distance. |
 
 ## Dead ends
 

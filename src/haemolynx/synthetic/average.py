@@ -37,9 +37,11 @@ import numpy as np
 from .organisation import Organisation, grid_shape
 from .template import (
     FACES,
+    LAYOUT_ROWS,
     ClassTarget,
     DeadEndTarget,
     Endpoint,
+    LayoutTarget,
     LoopTarget,
     NetworkTemplate,
     OrderTarget,
@@ -171,8 +173,18 @@ def _classes(members: Sequence[NetworkTemplate], factors: Sequence[float]) -> di
             mean_tortuosity=_weighted([t.mean_tortuosity for t, _c in present], weights),
             median_tortuosity=_mean([t.median_tortuosity for t, _c in present]),
             samples=_pooled([t.samples for t, _c in present]),
+            p90_tortuosity=_mean([t.p90_tortuosity for t, _c in present]),
         )
     return out
+
+
+def _layout(members: Sequence[NetworkTemplate]) -> Optional[LayoutTarget]:
+    """Each layout row the members' mean (angles, shares, distances and
+    spacings are per-junction, per-box or per-area figures already)."""
+    layouts = [m.layout for m in members if m.layout is not None]
+    if not layouts:
+        return None
+    return LayoutTarget(**{name: _mean([getattr(t, name) for t in layouts]) for name in LAYOUT_ROWS})
 
 
 def _orders(members: Sequence[NetworkTemplate], factors: Sequence[float]) -> tuple:
@@ -417,6 +429,7 @@ def average_templates(
         ),
         diameter_basis=_majority([m.diameter_basis for m in members]),
         organisation=average_organisations([m.organisation for m in members], extent, factors),
+        layout=_layout(members),
     )
 
 

@@ -268,12 +268,19 @@ def test_the_run_solves_and_reports_its_comparison(whole_run):
     report = G.graph[STATISTICS_REPORT]
     assert COMPARISON_SECTION in report["sections"]
     section = report["sections"][COMPARISON_SECTION]
-    within, _of, fitted = section["fitted characteristics within tolerance"].split()
-    assert int(fitted) >= 50 and int(within) >= int(fitted) - 3
+    _within, _of, fitted = section["fitted characteristics within tolerance"].split()
     with (out / "out" / "e14_5_synthetic_template_comparison.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.reader(handle))
     assert tuple(rows[0]) == CSV_COLUMNS
     assert any(row[1] == "inlets" and row[6] == "yes" for row in rows[1:])
+    # The layout rows (2026-10-25) are banded but not calibrated, and the
+    # generator draws only partly to them: reported, every one, and the
+    # rows before them held to their old allowance.
+    from haemolynx.synthetic.compare import LAYOUT_CHARACTERISTICS
+
+    assert [row[1] for row in rows[1:] if row[0] == "layout"] == [c for c, _f in LAYOUT_CHARACTERISTICS]
+    outside = [f"{row[0]}: {row[1]}" for row in rows[1:] if row[0] != "layout" and row[6] == "no"]
+    assert int(fitted) >= 50 and len(outside) <= 3, outside
 
 
 def test_a_closed_network_takes_its_flow_in_at_the_inlets_and_out_at_the_outlets(whole_run):

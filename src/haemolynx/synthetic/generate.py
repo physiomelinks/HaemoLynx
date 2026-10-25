@@ -116,6 +116,8 @@ TREE_CANDIDATES = 6
 #: How far a capillary's excess over its chord may be stretched past the
 #: tortuosity drawn for it to make up the template's capillary length.
 MAX_TORTUOSITY_SCALE = 3.0
+#: The standard normal's 90th percentile.
+_Z90 = 1.2815515655446004
 #: Whether vessels leave the box (the ``synthetic_open_ends`` choices).
 OPEN_ENDS_CLOSED = "closed"
 OPEN_ENDS_TEMPLATE = "template"
@@ -357,8 +359,17 @@ def _capillary_lengths_by_tortuosity(
         return np.zeros(0)
     cls = template.class_target("capillary")
     samples = cls.samples.tortuosities if cls is not None and cls.samples is not None else ()
+    median = cls.median_tortuosity if cls is not None else None
+    p90 = cls.p90_tortuosity if cls is not None else None
     if samples:
         tortuosity = np.maximum(rng.choice(np.asarray(samples, float), size=count, replace=True), 1.0)
+    elif median is not None and p90 is not None and p90 > median > 1.0:
+        # The excess over straight a lognormal through the template's median
+        # and 90th percentile: its winding tail, which the mean with a fixed
+        # spread drew short of (E14.5, grid D1d: P90 1.14-1.26 against 1.48).
+        mu = math.log(median - 1.0)
+        sigma = (math.log(p90 - 1.0) - mu) / _Z90
+        tortuosity = 1.0 + rng.lognormal(mu, sigma, size=count)
     else:
         excess = max(float((cls.mean_tortuosity if cls else None) or 1.1) - 1.0, 0.0)
         sigma = TORTUOSITY_LOG_SIGMA
@@ -606,6 +617,8 @@ def generate_network(
         organisation=T.organisation,
         model=options.bed_model,
         at_template_size=options.scale == 1.0,
+        junction_angle_deg=_junction_angle(T),
+        acute_share=None if T.layout is None else T.layout.acute_junction_share,
     )
 
     if bed.edges == 0:
@@ -671,6 +684,16 @@ def generate_network(
     if validate:
         validate_synthetic_graph(G, T)
     return G
+
+
+def _junction_angle(template: NetworkTemplate) -> Optional[float]:
+    """The template's own junction angle -- its junctions' three angles
+    summed, over three (``statistics.layout``) -- for the bed to aim each
+    pair of vessels at a vertex at; None for a template without a layout."""
+    layout = template.layout
+    if layout is None or layout.junction_angle_sum_median_deg is None:
+        return None
+    return float(layout.junction_angle_sum_median_deg) / 3.0
 
 
 def _capillary_chord(template: NetworkTemplate) -> Optional[float]:

@@ -41,6 +41,7 @@ from .network_measures import (
     compute_weighted_betweenness_summary,
     compute_weighted_communities_summary,
 )
+from .layout import compute_junction_shape, compute_tissue_coverage, compute_vessel_columns
 from .shape import (
     compute_fractal_dimension,
     compute_intercapillary_distance,
@@ -89,6 +90,9 @@ __all__ = [
     "compute_daughter_daughter_angles",
     "compute_emergence_angles_by_branch_order",
     "compute_intercapillary_distance",
+    "compute_junction_shape",
+    "compute_tissue_coverage",
+    "compute_vessel_columns",
     "compute_murray_law_compliance",
     "compute_network_robustness",
     "compute_cyclomatic_number",

@@ -45,6 +45,7 @@ UNITS: dict[str, str] = {
     "1/um": "per micrometre",
     "1/mm": "per millimetre of vessel",
     "1/mm^3": "per cubic millimetre",
+    "1/mm^2": "per square millimetre",
     "mm/s": "millimetres per second",
     "nL/min": "nanolitres per minute",
     "m^3/s": "cubic metres per second",
@@ -244,6 +245,7 @@ _add(T, "Vessel Surface Area (micron²)", "um^2", "The class's wall area, a cyli
 _add(T, "Surface Density in Tissue (micron²/micron³)", "um^2/um^3", "Vessel Surface Area over Vessel Class Density Volume.")
 _add(T, "Mean Tortuosity Index", "dimensionless", "Mean centreline length over straight end-to-end distance of the class's vessels.")
 _add(T, "Median Tortuosity Index", "dimensionless", "Median centreline length over straight end-to-end distance of the class's vessels.")
+_add(T, "90th Percentile Tortuosity Index", "dimensionless", "The 90th percentile of the same: how far the class's most winding tenth of vessels wander.")
 _add(T, "Vessels Carrying Flow", "vessels", "Vessels with a solved flow (in the flux section, above the carrying floor too). Vessels behind dead ends carry exactly none and are left out of every flow row of the class.")
 _add(T, "Mean Flow (nL/min)", "nL/min", "Mean |flow| of the class's vessels carrying flow.")
 _add(T, "Median Flow (nL/min)", "nL/min", "Median |flow| of the class's vessels carrying flow.")
@@ -274,6 +276,34 @@ _add(T, "Mean Intercapillary Distance Between Flowing Vessels (microns)", "um", 
 _add(T, "Median Intercapillary Distance Between Flowing Vessels (microns)", "um", "The median of that spacing.")
 _add(T, "Intercapillary Distance Between Flowing Vessels Sample Count", "vessels", "Flowing vessels with a spacing.")
 _add(T, "Flowing Over All Median Intercapillary Distance", "dimensionless", "The flowing vessels' median spacing over every vessel's: above 1 when the vessels not carrying flow sat between them.")
+
+# -- Junction shape -----------------------------------------------------------
+T = "Junction shape"
+_add(T, "Three-Vessel Junctions Measured", "count", "Junctions where exactly three vessel ends meet, each vessel's direction read 8 um along its centreline from the node.")
+_add(T, "Junctions of Four or More Vessels", "count", "Junctions of four or more vessel ends, not measured.")
+_add(T, "Junction Smallest Angle Median (degrees)", "degrees", "The median over three-vessel junctions of the smallest of the three angles between its vessels: 120 for a symmetric Y, near 0 where two vessels leave together.")
+_add(T, "Junction Smallest Angle 25th Percentile (degrees)", "degrees", "The 25th percentile of the same smallest angle.")
+_add(T, "Junction Largest Angle Median (degrees)", "degrees", "The median of each junction's largest angle: near 180 where one vessel runs straight on through the junction.")
+_add(T, "Acute Junction Share (fraction)", "fraction", "The share of three-vessel junctions with two vessels within 45 degrees of each other.")
+_add(T, "Junction Angle Sum Median (degrees)", "degrees", "The median of each junction's three angles summed: 360 when its vessels lie in one plane, less the further they leave it.")
+
+# -- Tissue coverage ----------------------------------------------------------
+T = "Tissue coverage"
+_add(T, "Box Within 20 um of a Vessel (fraction)", "fraction", "The share of the image box within 20 um of a vessel centreline, read on a 10 um grid of points (200,000 points at random, seeded, in a larger box).")
+_add(T, "Box Beyond 50 um of a Vessel (fraction)", "fraction", "The share of the same points further than 50 um from every vessel centreline: the holes in the network.")
+_add(T, "Median Distance to Nearest Vessel (microns)", "um", "The median over the same points of the distance to the nearest vessel centreline.")
+_add(T, "90th Percentile Distance to Nearest Vessel (microns)", "um", "The 90th percentile of that distance: how far the network's larger holes reach.")
+_add(T, "Coverage Box", TEXT, "The box the points fill: the image the run read, or the box the vessels span when the graph does not say.")
+_add(T, "Coverage Probe Points", "count", "Points the coverage was read at.")
+
+# -- Vessel columns -----------------------------------------------------------
+T = "Vessel columns"
+_add(T, "Column Vessels (within 30 degrees of z)", "vessels", "Vessels whose straight end-to-end line is at least 10 um long and within 30 degrees of the stack (z) axis.")
+_add(T, "Column Share of Vessel Length (fraction)", "fraction", "The columns' centreline length over every vessel's.")
+_add(T, "Columns per mm² of Image Plane", "1/mm^2", "Columns per square millimetre of the image's y-x plane.")
+_add(T, "Column Spacing Median (microns)", "um", "The median distance in the y-x plane from each column's midpoint to the nearest other column's.")
+_add(T, "Column Spacing Clark-Evans Ratio", "dimensionless", "The columns' mean nearest-neighbour distance in the y-x plane over a random pattern's at the same density: 1 at random, above 1 evenly spaced, below 1 bunched. No edge correction.")
+_add(T, "Median Column Tortuosity Index", "dimensionless", "The median of the columns' centreline length over their straight end-to-end distance.")
 
 # -- Dead ends ----------------------------------------------------------------
 T = "Dead ends"

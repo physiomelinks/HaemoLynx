@@ -125,3 +125,17 @@ segmentation) so the perturbations' statistics divide by the same tissue as the 
 it to the viewer on `Solution.tissue` (`gui/results.py`'s `TISSUE_SURFACE` Surface layer).
 Smoothing rounds convex tissue edges by about `tissue_smoothing_sigma_um`; a stack with no
 empty space at all logs a warning, since an automatic split then cuts the tissue itself.
+
+## statistics/layout.py (2026-10-25)
+
+Three measures asked for after grid D1d, when E14.5 sat outside every drawn network on them
+(`docs/notes/synthetic.md`): **junction shape** (the three angles at each junction of three
+vessels, each read 8 um along its centreline: E14.5's are the same read at 4, 8 or 15 um and with
+or without a dead-end stub at the junction), **tissue coverage** (a 10 um probe grid through the
+image box, at most 200,000 seeded random probes in a larger one, to the nearest centreline sampled
+every 2 um) and **vessel columns** (chords of at least 10 um within 30 degrees of z; their spread
+by the Clark-Evans ratio of their midpoints in the image plane, with no edge correction). On
+E14.5's MCA run: junction smallest angle median 97 degrees, 1.2% acute, angles summing to 356;
+0.5% of the box beyond 50 um of a vessel, 90th percentile 34.7 um; columns 21% of the length,
+Clark-Evans 0.90. The three cost 0.6 s together on it. The vessel classes gained their 90th
+percentile tortuosity beside the mean and median.

@@ -4475,6 +4475,45 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="statistics_junction_shape",
+            kind="bool",
+            default=True,
+            help=(
+                "The angles between the three vessels of each junction: the "
+                "smallest, the largest, the share with two vessels within 45 "
+                "degrees of each other, and how flat the junctions are"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_tissue_coverage",
+            kind="bool",
+            default=True,
+            help=(
+                "How far the tissue lies from a vessel: the share of the image "
+                "box within 20 um of a vessel and beyond 50 um, and the median "
+                "and 90th percentile distance"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_vessel_columns",
+            kind="bool",
+            default=True,
+            help=(
+                "Vessels running along the stack (z) axis: their share of the "
+                "network's length, how many per mm^2, and how evenly they are "
+                "spread across the image plane"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
             name="statistics_dead_ends",
             kind="bool",
             default=True,

@@ -15,6 +15,7 @@ from .current_flow import compute_current_flow
 from haemolynx.haemodynamics.red_cells import DEFAULT_RED_CELL_VOLUME_FL
 
 from .flux_heterogeneity import compute_flux_heterogeneity
+from .layout import compute_junction_shape, compute_tissue_coverage, compute_vessel_columns
 from .inlet_outlet_routes import (
     compute_inlet_outlet_bottlenecks,
     compute_inlet_outlet_shunts,
@@ -66,6 +67,9 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "murray_law",
     "daughter_angles",
     "intercapillary_distance",
+    "junction_shape",
+    "tissue_coverage",
+    "vessel_columns",
     "dead_ends",
     "network_robustness",
     "bottlenecks",
@@ -97,7 +101,8 @@ STATISTIC_MEASURES: tuple[str, ...] = (
 #: ``statistics_network_analysis`` toggle. Everything in STATISTIC_MEASURES
 #: but not here (basic, tortuosity, branching, tree_asymmetry,
 #: fractal_dimension, vessel_density, vessel_classes, murray_law,
-#: daughter_angles, intercapillary_distance, dead_ends) is
+#: daughter_angles, intercapillary_distance, junction_shape, tissue_coverage,
+#: vessel_columns, dead_ends) is
 #: geometric/morphometric rather than
 #: connectivity, and stays directly under "statistics".
 NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
@@ -145,6 +150,9 @@ CONNECTED_NETWORK_MEASURES: frozenset[str] = frozenset(
         "murray_law",
         "daughter_angles",
         "intercapillary_distance",
+        "junction_shape",
+        "tissue_coverage",
+        "vessel_columns",
         "dead_ends",
         "loop_hierarchy",
         "cyclomatic_number",
@@ -489,6 +497,14 @@ def compute_vessel_statistics_by_measure(
         # The original G, not G_simple: each parallel edge is its own
         # vessel with its own spacing to its neighbours.
         sections["intercapillary_distance"] = compute_intercapillary_distance(G)
+    # The original G for the three layout measures: each parallel edge is a
+    # vessel leaving its junction, lying in the tissue, of its own.
+    if "junction_shape" in enabled:
+        sections["junction_shape"] = compute_junction_shape(G)
+    if "tissue_coverage" in enabled:
+        sections["tissue_coverage"] = compute_tissue_coverage(G)
+    if "vessel_columns" in enabled:
+        sections["vessel_columns"] = compute_vessel_columns(G)
     if "dead_ends" in enabled:
         from .dead_ends import compute_dead_end_statistics
 

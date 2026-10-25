@@ -50,6 +50,8 @@ from typing import Mapping, Optional, Sequence
 import numpy as np
 from scipy.spatial import Delaunay, cKDTree
 
+from haemolynx.statistics.layout import ACUTE_JUNCTION_DEG
+
 from .draft import BED, NetworkDraft
 from .organisation import Organisation, cell_index, chord_class, tensor_matrix
 
@@ -114,6 +116,43 @@ VORONOI_TEMPLATE_OVERSAMPLE = 1.5
 VORONOI_MIN_CELL_VERTICES = 0.25
 #: Tessellations drawn, each with more seeds, before a short one is kept.
 VORONOI_ATTEMPTS = 6
+#: With a template that records its layout (``statistics.layout``; Harvey,
+#: 2026-10-25, after grid D1d): a candidate leaving either of its vertices
+#: within ``statistics.layout.ACUTE_JUNCTION_DEG`` of a vessel already there
+#: (a tree leaf's tree vessel included) costs up to this many local spacings
+#: (all of it at 0 degrees), and the fill aims each pair of vessels at a
+#: vertex at the template's own junction angle (its junctions' three angles
+#: summed, over three) at both ends of the candidate rather than at the trees'
+#: daughter angle at one. On E14.5 (Delaunay, seeds 1-2) 40% of the junctions
+#: had an acute pair, 16% with this and :meth:`_Fill.relax_junctions` (the
+#: template 1%), the smallest angle's median 53 -> 69 degrees (97). Heavier, or
+#: aiming harder at the template's angle (:data:`JUNCTION_ANGLE_WEIGHT` 5:
+#: 82 degrees, 5% acute), buys wide junctions with long chords: their sum
+#: passed the template's capillary length and every capillary was drawn
+#: straight (tortuosity P90 1.0, curvature 0.1 degrees per 10 um).
+ACUTE_WEIGHT = 3.0
+#: The share of junctions with an acute pair the fill draws unaided on
+#: E14.5 (Delaunay 0.39-0.41, Voronoi 0.27-0.29): the acute weight is
+#: :data:`ACUTE_WEIGHT` scaled by how far below this the template's own share
+#: lies (none for a template at or above it), so a template whose junctions
+#: are acute is drawn so, not widened past itself.
+UNAIDED_ACUTE_SHARE = 0.38
+#: ... and each pair's departure from that angle costs this many spacings per
+#: 90 degrees (as :data:`ANGLE_WEIGHT` without a layout).
+JUNCTION_ANGLE_WEIGHT = 0.5
+#: The greedy fill alone leaves one E14.5 junction in eight or more acute
+#: whatever the weights: by a vertex's turn the edges that would have given it
+#: a wide Y are taken. So the fill is relaxed after (:meth:`_Fill.relax_junctions`):
+#: two edges trade ends (every vertex keeps its degree, so the counts and the
+#: loops stay the template's) wherever that lowers the junctions' cost and the
+#: chords' departure from their wanted length together, for up to this many
+#: rounds.
+RELAX_ROUNDS = 6
+#: A vertex is relaxed when two of its vessels are closer than this: the
+#: acute pairs (relaxing every pair under 90 degrees widened the junctions as
+#: far as the heavier weights did, and straightened the capillaries as far).
+RELAX_BELOW_DEG = 45.0
+_ACUTE = math.radians(ACUTE_JUNCTION_DEG)
 
 
 @dataclass(frozen=True)
@@ -366,6 +405,14 @@ def template_vertices(
     if len(points) > count:
         points = points[np.sort(rng.choice(len(points), size=count, replace=False))]
     return points
+
+
+def acute_weight_for(acute_share: Optional[float]) -> float:
+    """What an acute pair costs the fill, in spacings, for a template whose
+    share of junctions with one is *acute_share* (None: the full weight)."""
+    if acute_share is None:
+        return ACUTE_WEIGHT
+    return ACUTE_WEIGHT * max(0.0, 1.0 - float(acute_share) / UNAIDED_ACUTE_SHARE)
 
 
 def drawn_from_template_vertices(organisation: Optional[Organisation], at_template_size: bool) -> bool:
@@ -623,6 +670,9 @@ class _Fill:
         local_spacing: Optional[np.ndarray] = None,
         tensors: Optional[np.ndarray] = None,
         class_chords: Optional[np.ndarray] = None,
+        junction_angle_deg: Optional[float] = None,
+        acute_share: Optional[float] = None,
+        fixed_directions: Optional[Mapping[int, Sequence[np.ndarray]]] = None,
     ):
         self.points = points
         self._tuples = [tuple(float(c) for c in p) for p in points]
@@ -644,6 +694,15 @@ class _Fill:
         #: judged against its own direction's length (E14.5's vertical vessels
         #: reach past nearer junctions); None: one length for all.
         self.class_chords = class_chords
+        #: The template's own junction angle (``statistics.layout``): with it
+        #: the fill judges a candidate's angles at both its ends, and acute
+        #: pairs cost :data:`ACUTE_WEIGHT`; None: the daughter angle at one.
+        self.junction_angle = None if junction_angle_deg is None else math.radians(junction_angle_deg)
+        #: What an acute pair costs, in spacings (:data:`UNAIDED_ACUTE_SHARE`).
+        self.acute_weight = acute_weight_for(acute_share) if self.junction_angle is not None else 0.0
+        #: Unit directions of vessels already at a vertex outside the fill
+        #: (a tree leaf's own tree vessel), judged like its bed vessels.
+        self.fixed = {int(k): [tuple(float(c) for c in d) for d in v] for k, v in (fixed_directions or {}).items()}
         self.degree = np.zeros(len(points), dtype=int)
         self.neighbours: dict[int, list[int]] = {i: [] for i in range(len(points))}
         self.edges: list[tuple[int, int]] = []
@@ -655,35 +714,183 @@ class _Fill:
             return True
         return bool(self.caps[i] == 1 and self.caps[j] == 1)
 
-    def score(self, v: int, u: int, length: float) -> float:
+    def _spacing(self, v: int) -> float:
+        return self.spacing if self.local is None else float(self.local[v])
+
+    def _base(self, v: int, u: int, length: float, jitter: float = 1.0) -> float:
+        """The candidate's departure from its wanted chord, and from the way
+        the template's capillaries run at *v*."""
         wanted = self.target_chord if self.target_chord else 0.0
-        spacing = self.spacing
-        if self.local is not None:
-            spacing = float(self.local[v])
-            wanted *= spacing / self.spacing
+        spacing = self._spacing(v)
+        wanted *= spacing / self.spacing
         if self.class_chords is not None and length > 0:
             wanted *= float(self.class_chords[chord_class(self.points[u] - self.points[v])])
-        score = abs(length - wanted) * self.rng.uniform(0.8, 1.2)
+        score = abs(length - wanted) * jitter
         if self.tensors is not None and length > 0:
             unit = (self.points[u] - self.points[v]) / length
             along = float(unit @ self.tensors[v] @ unit)
             score += ORIENTATION_WEIGHT * spacing * (1.0 / 3.0 - along) * 1.5
-        existing = self.neighbours[v]
-        if existing and length > 0:
-            pv, pu = self._tuples[v], self._tuples[u]
-            dz, dy, dx = pu[0] - pv[0], pu[1] - pv[1], pu[2] - pv[2]
-            penalty, n = 0.0, 0
-            for w in existing:
-                pw = self._tuples[w]
-                oz, oy, ox = pw[0] - pv[0], pw[1] - pv[1], pw[2] - pv[2]
-                other = math.sqrt(oz * oz + oy * oy + ox * ox)
-                if other > 0:
-                    cos = (dz * oz + dy * oy + dx * ox) / (length * other)
-                    penalty += abs(math.acos(max(-1.0, min(1.0, cos))) - self.angle)
-                    n += 1
-            if n:
-                score += ANGLE_WEIGHT * spacing * (penalty / n) / (math.pi / 2.0)
         return score
+
+    def score(self, v: int, u: int, length: float) -> float:
+        score = self._base(v, u, length, self.rng.uniform(0.8, 1.2))
+        spacing = self._spacing(v)
+        if self.junction_angle is None:
+            score += self._angle_cost(v, u, length, self.angle, spacing, acute=False)
+        elif length > 0:
+            score += self._angle_cost(v, u, length, self.junction_angle, spacing, acute=True)
+            score += self._angle_cost(u, v, length, self.junction_angle, self._spacing(u), acute=True)
+        return score
+
+    def _directions(self, v: int) -> list:
+        out = list(self.fixed.get(v, ()))
+        pv = self._tuples[v]
+        for w in self.neighbours[v]:
+            pw = self._tuples[w]
+            oz, oy, ox = pw[0] - pv[0], pw[1] - pv[1], pw[2] - pv[2]
+            norm = math.sqrt(oz * oz + oy * oy + ox * ox)
+            if norm > 0:
+                out.append((oz / norm, oy / norm, ox / norm))
+        return out
+
+    def junction_cost(self, v: int) -> tuple[float, bool]:
+        """What *v*'s vessels cost for their angles to one another (as
+        :meth:`_angle_cost` judges each pair), and whether a pair is closer
+        than :data:`RELAX_BELOW_DEG`."""
+        dirs = self._directions(v)
+        if len(dirs) < 2 or self.junction_angle is None:
+            return 0.0, False
+        spacing = self._spacing(v)
+        cost, sharp = 0.0, False
+        for i in range(len(dirs)):
+            a = dirs[i]
+            for j in range(i + 1, len(dirs)):
+                b = dirs[j]
+                angle = math.acos(max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])))
+                cost += JUNCTION_ANGLE_WEIGHT * spacing * abs(angle - self.junction_angle) / (math.pi / 2.0)
+                if angle < _ACUTE:
+                    cost += self.acute_weight * spacing * (1.0 - angle / _ACUTE)
+                if angle < math.radians(RELAX_BELOW_DEG):
+                    sharp = True
+        return cost, sharp
+
+    def edge_cost(self, v: int, u: int) -> float:
+        length = float(np.linalg.norm(self.points[u] - self.points[v]))
+        return 0.5 * (self._base(v, u, length) + self._base(u, v, length))
+
+    def _joined(self, start: int, goal: int) -> bool:
+        """Whether a path of the fill's edges runs from *start* to *goal*."""
+        seen, frontier = {start}, [start]
+        while frontier:
+            here = frontier.pop()
+            if here == goal:
+                return True
+            for there in self.neighbours[here]:
+                if there not in seen:
+                    seen.add(there)
+                    frontier.append(there)
+        return False
+
+    def _rewire(self, v: int, a: int, c: int, d: int) -> None:
+        """*v*-*a* and *c*-*d* become *v*-*c* and *a*-*d* in the neighbour
+        lists alone (undone by calling it with *c* and *a* swapped)."""
+        n = self.neighbours
+        n[v].remove(a)
+        n[a].remove(v)
+        n[c].remove(d)
+        n[d].remove(c)
+        n[v].append(c)
+        n[c].append(v)
+        n[a].append(d)
+        n[d].append(a)
+
+    def relax_junctions(self, candidates: Mapping[int, Sequence[tuple[int, float]]], rounds: int = RELAX_ROUNDS) -> int:
+        """Two edges trade ends -- *v*-*a* and *c*-*d* become *v*-*c* and
+        *a*-*d*, both candidates -- wherever a vertex has an acute pair and
+        the trade lowers its four vertices' junction cost and the two chords'
+        departure from their wanted length together, and *v* and *a* stay
+        joined. Every vertex keeps its degree, and the bed its pieces (so the
+        loops the pieces are joined with stay the template's). Returns how
+        many trades were made."""
+        if self.junction_angle is None or self.acute_weight <= 0:
+            return 0
+        allowed = {v: {u for u, _l in items} for v, items in candidates.items()}
+        trades = 0
+        for _ in range(rounds):
+            made = 0
+            for v in range(len(self.points)):
+                if not self.junction_cost(v)[1]:
+                    continue
+                options = []
+                own = self.junction_cost(v)[0]
+                for a in list(self.neighbours[v]):
+                    for c in allowed.get(v, ()):
+                        if c == a or self.forbidden(v, c):
+                            continue
+                        # Only a trade that widens *v* itself is worth pricing.
+                        n_v = self.neighbours[v]
+                        n_v[n_v.index(a)] = c
+                        widened = self.junction_cost(v)[0] < own
+                        n_v[n_v.index(c)] = a
+                        if not widened:
+                            continue
+                        for d in list(self.neighbours[c]):
+                            if d in (v, a) or d not in allowed.get(a, ()) or self.forbidden(a, d):
+                                continue
+                            nodes = {v, a, c, d}
+                            before = sum(self.junction_cost(x)[0] for x in nodes) + self.edge_cost(v, a) + self.edge_cost(c, d)
+                            self._rewire(v, a, c, d)
+                            after = sum(self.junction_cost(x)[0] for x in nodes) + self.edge_cost(v, c) + self.edge_cost(a, d)
+                            self._rewire(v, c, a, d)
+                            delta = after - before
+                            if delta < -1e-9:
+                                options.append((delta, a, c, d))
+                # The best trade that keeps *v* and *a* joined: one that cut
+                # the bed in two would cost a loop when the pieces are joined.
+                for _delta, a, c, d in sorted(options):
+                    self.disconnect(v, a)
+                    self.disconnect(c, d)
+                    self.connect(v, c)
+                    self.connect(a, d)
+                    if self._joined(v, a):
+                        made += 1
+                        break
+                    self.disconnect(v, c)
+                    self.disconnect(a, d)
+                    self.connect(v, a)
+                    self.connect(c, d)
+            trades += made
+            if not made:
+                break
+        return trades
+
+    def _angle_cost(self, v: int, u: int, length: float, target: float, spacing: float, *, acute: bool) -> float:
+        """What the candidate *v*-*u* costs for its angles to the vessels
+        already at *v*: their mean departure from *target*, and with *acute*,
+        :data:`ACUTE_WEIGHT` for each it leaves within the acute angle of."""
+        existing = self.neighbours[v]
+        fixed = self.fixed.get(v, ()) if acute else ()
+        if (not existing and not fixed) or length <= 0:
+            return 0.0
+        pv, pu = self._tuples[v], self._tuples[u]
+        dz, dy, dx = (pu[0] - pv[0]) / length, (pu[1] - pv[1]) / length, (pu[2] - pv[2]) / length
+        others = list(fixed)
+        for w in existing:
+            pw = self._tuples[w]
+            oz, oy, ox = pw[0] - pv[0], pw[1] - pv[1], pw[2] - pv[2]
+            norm = math.sqrt(oz * oz + oy * oy + ox * ox)
+            if norm > 0:
+                others.append((oz / norm, oy / norm, ox / norm))
+        penalty, sharp = 0.0, 0.0
+        for oz, oy, ox in others:
+            angle = math.acos(max(-1.0, min(1.0, dz * oz + dy * oy + dx * ox)))
+            penalty += abs(angle - target)
+            if acute and angle < _ACUTE:
+                sharp += 1.0 - angle / _ACUTE
+        if not others:
+            return 0.0
+        weight = JUNCTION_ANGLE_WEIGHT if acute else ANGLE_WEIGHT
+        return weight * spacing * (penalty / len(others)) / (math.pi / 2.0) + self.acute_weight * spacing * sharp
 
     def connect(self, i: int, j: int) -> None:
         self.neighbours[i].append(j)
@@ -891,6 +1098,8 @@ def build_bed(
     organisation: Optional[Organisation] = None,
     model: str = BED_MODEL_DELAUNAY,
     at_template_size: bool = True,
+    junction_angle_deg: Optional[float] = None,
+    acute_share: Optional[float] = None,
 ) -> BedResult:
     """Add the bed to *draft*. *attached* maps the draft nodes the bed joins
     (tree leaves, or the roots themselves) to the bed edges each takes;
@@ -900,8 +1109,12 @@ def build_bed(
     template's capillaries have on average (the fill prefers candidates near
     it; None, the shortest); *organisation*, the template's layout the bed
     follows (``synthetic.organisation``; None: even over the box), from its
-    own vertices *at_template_size*; *model* one of :data:`BED_MODELS`. See
-    the module."""
+    own vertices *at_template_size*; *model* one of :data:`BED_MODELS`;
+    *junction_angle_deg* the template's own junction angle (its layout's
+    angles summed over three; None without one: the fill judges the
+    daughter angle at one end and nothing spreads it); *acute_share* the
+    template's share of junctions with an acute pair (the acute weight's
+    scale, :data:`UNAIDED_ACUTE_SHARE`). See the module."""
     if model not in BED_MODELS:
         raise ValueError(f"bed model must be one of {BED_MODELS}, got {model!r}")
     extent = np.asarray(extent_um, dtype=float)
@@ -983,8 +1196,19 @@ def build_bed(
         by_cell = np.stack([tensor_matrix(t) for t in organisation.orientation])
         tensors = by_cell[cells]
     class_chords = None if organisation is None else class_chord_ratios(organisation)
+    fixed: dict[int, list] = {}
+    if junction_angle_deg is not None:
+        # A tree leaf's bed vessels are judged against its tree vessel too.
+        for edge in draft.edges:
+            for here, there in ((edge.u, edge.v), (edge.v, edge.u)):
+                if here in attached:
+                    step = draft.position(there) - draft.position(here)
+                    norm = float(np.linalg.norm(step))
+                    if norm > 0:
+                        fixed.setdefault(attached_nodes.index(here), []).append(step / norm)
     fill = _Fill(
-        points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um, local, tensors, class_chords
+        points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um, local, tensors, class_chords,
+        junction_angle_deg=junction_angle_deg, acute_share=acute_share, fixed_directions=fixed,
     )
 
     candidates: dict[int, list[tuple[int, float]]] = {i: [] for i in range(len(all_nodes))}
@@ -1158,6 +1382,8 @@ def build_bed(
         result.phases["voronoi_edges"] = int(sum(1 for e in bed_only if e in cells))
         result.phases["bed_only_edges"] = len(bed_only)
 
+    # The junctions widened: edges trade ends where a vertex has an acute pair.
+    result.phases["relaxed"] = fill.relax_junctions(merged_candidates)
     # Connectivity: every piece joined to the largest along the shortest pair.
     index_of = {node: i for i, node in enumerate(all_nodes)}
     linked: list[tuple[int, int]] = []

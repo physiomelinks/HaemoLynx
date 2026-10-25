@@ -222,6 +222,9 @@ def _class_rows(
     missing = _NONE_IN_CLASS if not vessels else _NO_POSITIONS
     rows["Mean Tortuosity Index"] = _mean(tortuosities, missing)
     rows["Median Tortuosity Index"] = _median(tortuosities, missing)
+    rows["90th Percentile Tortuosity Index"] = (
+        float(np.percentile(tortuosities, 90)) if tortuosities else missing
+    )
 
     if flow_solved:
         flowing = [v for v in vessels if v["flow_abs"] is not None]

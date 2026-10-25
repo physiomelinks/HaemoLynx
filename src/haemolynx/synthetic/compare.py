@@ -128,7 +128,43 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     # How far each side's trees reach (Harvey's grid D1c). Not calibrated.
     ("organisation", "tree reach (um)"): ("rel", 0.15),
     ("organisation", "capillary runs along an axis spanning 100 um (per mm^2)"): ("rel", 0.35),
+    # How the vessels lie (statistics.layout; Harvey, 2026-10-25, after grid
+    # D1d: every drawn network sat outside E14.5 on these). Not calibrated.
+    ("layout", "junction smallest angle median (degrees)"): ("abs", 10.0),
+    ("layout", "junction smallest angle P25 (degrees)"): ("abs", 12.0),
+    ("layout", "junction largest angle median (degrees)"): ("abs", 10.0),
+    ("layout", "junctions with two vessels within 45 degrees (share)"): ("abs", 0.05),
+    ("layout", "junction angle sum median (degrees)"): ("abs", 10.0),
+    ("layout", "box within 20 um of a vessel (share)"): ("abs", 0.07),
+    ("layout", "box beyond 50 um of a vessel (share)"): ("abs", 0.05),
+    ("layout", "distance to the nearest vessel, median (um)"): ("rel", 0.15),
+    ("layout", "distance to the nearest vessel, P90 (um)"): ("rel", 0.15),
+    ("layout", "column share of vessel length"): ("abs", 0.05),
+    ("layout", "columns per mm^2"): ("rel", 0.25),
+    ("layout", "column spacing median (um)"): ("rel", 0.25),
+    ("layout", "column spacing Clark-Evans ratio"): ("abs", 0.12),
+    ("layout", "column tortuosity median"): ("abs", 0.05),
+    ("class", "tortuosity P90"): ("abs", 0.15),
+    ("capillary class", "tortuosity P90"): ("abs", 0.10),
 }
+
+#: Each layout row's characteristic and :class:`~.template.LayoutTarget` field.
+LAYOUT_CHARACTERISTICS: tuple[tuple[str, str], ...] = (
+    ("junction smallest angle median (degrees)", "junction_smallest_angle_median_deg"),
+    ("junction smallest angle P25 (degrees)", "junction_smallest_angle_p25_deg"),
+    ("junction largest angle median (degrees)", "junction_largest_angle_median_deg"),
+    ("junctions with two vessels within 45 degrees (share)", "acute_junction_share"),
+    ("junction angle sum median (degrees)", "junction_angle_sum_median_deg"),
+    ("box within 20 um of a vessel (share)", "box_within_20_share"),
+    ("box beyond 50 um of a vessel (share)", "box_beyond_50_share"),
+    ("distance to the nearest vessel, median (um)", "distance_median_um"),
+    ("distance to the nearest vessel, P90 (um)", "distance_p90_um"),
+    ("column share of vessel length", "column_length_share"),
+    ("columns per mm^2", "columns_per_mm2"),
+    ("column spacing median (um)", "column_spacing_median_um"),
+    ("column spacing Clark-Evans ratio", "column_clark_evans"),
+    ("column tortuosity median", "column_tortuosity_median"),
+)
 
 
 @dataclass(frozen=True)
@@ -295,6 +331,7 @@ def compare_templates(
             ("median diameter (um)", "median_diameter_um"),
             ("mean tortuosity", "mean_tortuosity"),
             ("median tortuosity", "median_tortuosity"),
+            ("tortuosity P90", "p90_tortuosity"),
         ):
             add(section, name, get(t_cls, attribute), get(s_cls, attribute), kind=kind)
 
@@ -352,6 +389,9 @@ def compare_templates(
             if rows[i].characteristic not in ("artefacts", "ends of pieces without a junction"):
                 rows[i] = not_drawn(rows[i], "no dead ends inside the tissue")
     rows.extend(organisation_rows(T.organisation, S.organisation, T.extent_um, S.extent_um))
+    if T.layout is not None or S.layout is not None:
+        for characteristic, field in LAYOUT_CHARACTERISTICS:
+            add("layout", characteristic, get(T.layout, field), get(S.layout, field))
     return rows
 
 

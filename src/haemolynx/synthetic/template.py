@@ -112,8 +112,12 @@ REQUIRED_SECTIONS: tuple[str, ...] = (
     "dead_ends",
     "loop_hierarchy",
 )
+#: The layout sections (``statistics.layout``): read from the report when it
+#: has them, else measured off the run's graph (a report saved before
+#: 2026-10-25 has none), so never required.
+LAYOUT_SECTIONS: tuple[str, ...] = ("junction_shape", "tissue_coverage", "vessel_columns")
 #: Sections read when present, never required.
-OPTIONAL_SECTIONS: tuple[str, ...] = ("branching", "cyclomatic_number")
+OPTIONAL_SECTIONS: tuple[str, ...] = ("branching", "cyclomatic_number") + LAYOUT_SECTIONS
 SECTION_TOGGLES: dict[str, tuple[str, ...]] = {
     "basic": ("statistics",),
     BRANCH_ORDERS_SECTION: ("statistics",),
@@ -125,6 +129,9 @@ SECTION_TOGGLES: dict[str, tuple[str, ...]] = {
     "daughter_angles": ("statistics_daughter_angles",),
     "intercapillary_distance": ("statistics_intercapillary_distance",),
     "dead_ends": ("statistics_dead_ends",),
+    "junction_shape": ("statistics_junction_shape",),
+    "tissue_coverage": ("statistics_tissue_coverage",),
+    "vessel_columns": ("statistics_vessel_columns",),
     "loop_hierarchy": ("statistics_network_analysis", "statistics_loop_hierarchy"),
     "cyclomatic_number": ("statistics_network_analysis", "statistics_cyclomatic_number"),
 }
@@ -196,6 +203,9 @@ class ClassTarget:
     mean_tortuosity: Optional[float]
     median_tortuosity: Optional[float]
     samples: Optional[Samples] = None
+    #: The class's 90th percentile tortuosity: how far its most winding
+    #: tenth wander (the report's row, else read off the graph).
+    p90_tortuosity: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +249,47 @@ class DeadEndTarget:
     chain_length_p10_um: Optional[float]
     chain_length_p90_um: Optional[float]
     chain_length_samples_um: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class LayoutTarget:
+    """How the template's vessels lie (``statistics.layout``; Harvey,
+    2026-10-25): its junctions' shape, how far its tissue is from a vessel,
+    and its columns along z. Each the report's row of that name."""
+
+    junction_smallest_angle_median_deg: Optional[float] = None
+    junction_smallest_angle_p25_deg: Optional[float] = None
+    junction_largest_angle_median_deg: Optional[float] = None
+    acute_junction_share: Optional[float] = None
+    junction_angle_sum_median_deg: Optional[float] = None
+    box_within_20_share: Optional[float] = None
+    box_beyond_50_share: Optional[float] = None
+    distance_median_um: Optional[float] = None
+    distance_p90_um: Optional[float] = None
+    column_length_share: Optional[float] = None
+    columns_per_mm2: Optional[float] = None
+    column_spacing_median_um: Optional[float] = None
+    column_clark_evans: Optional[float] = None
+    column_tortuosity_median: Optional[float] = None
+
+
+#: Each :class:`LayoutTarget` field's section and row of the report.
+LAYOUT_ROWS: dict[str, tuple[str, str]] = {
+    "junction_smallest_angle_median_deg": ("junction_shape", "Junction Smallest Angle Median (degrees)"),
+    "junction_smallest_angle_p25_deg": ("junction_shape", "Junction Smallest Angle 25th Percentile (degrees)"),
+    "junction_largest_angle_median_deg": ("junction_shape", "Junction Largest Angle Median (degrees)"),
+    "acute_junction_share": ("junction_shape", "Acute Junction Share (fraction)"),
+    "junction_angle_sum_median_deg": ("junction_shape", "Junction Angle Sum Median (degrees)"),
+    "box_within_20_share": ("tissue_coverage", "Box Within 20 um of a Vessel (fraction)"),
+    "box_beyond_50_share": ("tissue_coverage", "Box Beyond 50 um of a Vessel (fraction)"),
+    "distance_median_um": ("tissue_coverage", "Median Distance to Nearest Vessel (microns)"),
+    "distance_p90_um": ("tissue_coverage", "90th Percentile Distance to Nearest Vessel (microns)"),
+    "column_length_share": ("vessel_columns", "Column Share of Vessel Length (fraction)"),
+    "columns_per_mm2": ("vessel_columns", "Columns per mm² of Image Plane"),
+    "column_spacing_median_um": ("vessel_columns", "Column Spacing Median (microns)"),
+    "column_clark_evans": ("vessel_columns", "Column Spacing Clark-Evans Ratio"),
+    "column_tortuosity_median": ("vessel_columns", "Median Column Tortuosity Index"),
+}
 
 
 @dataclass(frozen=True)
@@ -296,6 +347,9 @@ class NetworkTemplate:
     #: (``synthetic.organisation``), read off the graph; None for a template
     #: written before 2026-10-25 or one with no capillaries.
     organisation: Optional[Organisation] = None
+    #: Its junctions' shape, coverage and columns (:class:`LayoutTarget`);
+    #: None for a template written before 2026-10-25.
+    layout: Optional[LayoutTarget] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -499,6 +553,7 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
             mean_tortuosity=_opt_float(item.get("mean_tortuosity")),
             median_tortuosity=_opt_float(item.get("median_tortuosity")),
             samples=_samples_from_dict(item.get("samples")),
+            p90_tortuosity=_opt_float(item.get("p90_tortuosity")),
         )
         for key, item in data["classes"].items()
     }
@@ -553,6 +608,7 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
     # fields replaced it. It is read past, like any other key.
     basis = normalise_diameter_basis(data.get("diameter_basis"))
     organisation = data.get("organisation")
+    layout = data.get("layout")
     return NetworkTemplate(
         extent_um=tuple(float(v) for v in data["extent_um"]),
         voxel_size_zyx=tuple(float(v) for v in data["voxel_size_zyx"]),
@@ -584,6 +640,7 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
         provenance=provenance,
         diameter_basis=basis if basis in DIAMETER_BASES else None,
         organisation=None if organisation is None else Organisation.from_dict(organisation),
+        layout=None if layout is None else LayoutTarget(**{k: _opt_float(layout.get(k)) for k in LAYOUT_ROWS}),
     )
 
 
@@ -849,10 +906,48 @@ def _read_classes(section: Optional[Mapping[str, Any]], notes: list[str]) -> dic
             median_diameter_um=_number(item.get("Median Diameter (microns)")),
             mean_tortuosity=_number(item.get("Mean Tortuosity Index")),
             median_tortuosity=_number(item.get("Median Tortuosity Index")),
+            p90_tortuosity=_number(item.get("90th Percentile Tortuosity Index")),
         )
         if count and out[category].mean_diameter_um is None:
             notes.append(f"{VESSEL_CLASS_TITLES[category]}: no diameter in the template")
     return out
+
+
+def read_layout(sections: Mapping[str, Any], G: Optional[nx.Graph] = None) -> Optional[LayoutTarget]:
+    """The :class:`LayoutTarget` of report *sections*; a layout section the
+    report lacks (one saved before 2026-10-25) measured off *G* by the same
+    statistics. None when neither has any of it."""
+    have = {name: sections.get(name) for name in LAYOUT_SECTIONS if isinstance(sections.get(name), Mapping)}
+    missing = [name for name in LAYOUT_SECTIONS if name not in have]
+    if missing and G is not None and G.number_of_edges():
+        from haemolynx.statistics import compute_vessel_statistics_by_measure
+
+        computed = compute_vessel_statistics_by_measure(G, enabled_measures=frozenset(missing))
+        have.update({name: computed.get(name) or {} for name in missing})
+    values = {field: _number((have.get(section) or {}).get(name)) for field, (section, name) in LAYOUT_ROWS.items()}
+    if all(value is None for value in values.values()):
+        return None
+    return LayoutTarget(**values)
+
+
+def _class_p90_from_graph(classes: dict, G: nx.Graph) -> dict:
+    """*classes* with each 90th percentile tortuosity a report saved before
+    2026-10-25 lacks measured off *G* by the same statistics."""
+    if all(t.p90_tortuosity is not None or not t.count for t in classes.values()):
+        return classes
+    from haemolynx.statistics import compute_vessel_statistics_by_measure
+
+    positions = {n: np.asarray(G.nodes[n]["pos"], float) for n in G.nodes if G.nodes[n].get("pos") is not None}
+    section = compute_vessel_statistics_by_measure(
+        G, node_positions=positions, enabled_measures=frozenset({"vessel_classes"})
+    ).get("vessel_classes")
+    measured = _read_classes(section, [])
+    return {
+        key: target
+        if target.p90_tortuosity is not None or measured.get(key) is None
+        else replace(target, p90_tortuosity=measured[key].p90_tortuosity)
+        for key, target in classes.items()
+    }
 
 
 def _order_index(label: str) -> int:
@@ -1020,7 +1115,7 @@ def template_from_report(
 
     labels = [d.get("branch_order") for *_e, d in G.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)]
     scheme = vessel_class_scheme(labels)
-    classes = _read_classes(sections.get("vessel_classes"), notes_out)
+    classes = _class_p90_from_graph(_read_classes(sections.get("vessel_classes"), notes_out), G)
     orders = _read_orders(sections.get(BRANCH_ORDERS_SECTION))
 
     murray = sections.get("murray_law") or {}
@@ -1093,6 +1188,7 @@ def template_from_report(
         organisation=measure_organisation(
             G, extent, roots=list(boundaries.get("inlet", ())) + list(boundaries.get("outlet", ()))
         ),
+        layout=read_layout(sections, G),
     )
 
 
@@ -1437,6 +1533,9 @@ __all__ = [
     "GRAPH_NETWORK_SOURCE",
     "GRAPH_TEMPLATE_RECORD",
     "INTERIOR",
+    "LAYOUT_ROWS",
+    "LAYOUT_SECTIONS",
+    "LayoutTarget",
     "LoopTarget",
     "NetworkTemplate",
     "OPTIONAL_SECTIONS",
@@ -1462,6 +1561,7 @@ __all__ = [
     "lognormal_from_median_p10_p90",
     "measure_template",
     "missing_sections",
+    "read_layout",
     "required_statistics_for",
     "run_diameter_basis_of",
     "template_diameter_basis",

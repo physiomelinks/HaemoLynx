@@ -632,6 +632,12 @@ statistics_and_measurements:
   statistics_daughter_angles: true
   # Typical spacing between neighbouring vessels, over every vessel and, with haemodynamics, over the vessels carrying flow alone  [needs statistics]
   statistics_intercapillary_distance: true
+  # The angles between the three vessels of each junction: the smallest, the largest, the share with two vessels within 45 degrees of each other, and how flat the junctions are  [needs statistics]
+  statistics_junction_shape: true
+  # How far the tissue lies from a vessel: the share of the image box within 20 um of a vessel and beyond 50 um, and the median and 90th percentile distance  [needs statistics]
+  statistics_tissue_coverage: true
+  # Vessels running along the stack (z) axis: their share of the network's length, how many per mm^2, and how evenly they are spread across the image plane  [needs statistics]
+  statistics_vessel_columns: true
   # Dead ends by kind (leaving the image, stopped short, broken, artefact, blind, unknown, island), the interior ones per mm of vessel and per mm^3 of tissue, their length, the share of the network the image faces cut, and why vessels carry no flow  [needs statistics]
   statistics_dead_ends: true
   # Leave every vessel within this distance of an image face out of the per-vessel flow statistics -- the vessel classes' flow rows, flux heterogeneity and its red cells, and flow hierarchy -- as though it carried no flow: every boundary condition put on the vessels leaving the image (open_end_model) is least certain next to the faces. 0 keeps every vessel  [um; range 0.0..; needs statistics]

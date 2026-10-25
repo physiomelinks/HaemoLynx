@@ -213,3 +213,38 @@ The template's fine wiggle at 2 um steps (twice the drawn networks', equal at 10
 skeleton's staircase, and is not one to match. Harvey's two looks at D1d agree on one network of
 eleven, so his marks rank the drawn networks too loosely to fit a rule to; the template's own gaps
 are the better guide.
+
+## 2026-10-25: drawn to the junction shape, coverage, columns and tortuosity tail (grid D1e)
+
+Harvey: read them from the template, draw to them, compare them, and produce them as statistics of
+every run (`statistics/layout.py`). The template reads them from its report, or measures them off
+its graph when the report predates them; the comparison bands them (not calibrated); a
+`.haemobatch` averages them. What the generator does with them, on E14.5 (`outputs/synthetic_review/`,
+`layout_tune.py`, `acute_source.py`, means of three seeds):
+
+- **Junctions.** The bed's fill penalises a vessel leaving a vertex within 45 degrees of another
+  (a tree leaf's tree vessel included), at both ends of the candidate, and aims each pair at the
+  template's own junction angle; a template whose junctions are as acute as the fill draws
+  unaided (0.38) gets no push. The greedy fill alone left one junction in eight acute whatever the
+  weight (by a vertex's turn its wide neighbours are taken), so after it two edges trade ends
+  where that widens a junction (`_Fill.relax_junctions`; degrees kept, never cutting the bed in
+  two, which would cost a loop when the pieces are joined). Delaunay: acute 40% -> 15%, smallest
+  angle median 53 -> 68 degrees (E14.5 97, 1.2%); Voronoi 28% -> 13%. Heavier weights reach 82
+  degrees and 5%, but only with chords so long their sum passes the template's capillary length
+  and every capillary is drawn straight, the failure grid D1b caught; so not taken.
+- **Tortuosity tail.** The statistics source's median and 90th percentile now set the lognormal
+  the capillaries' tortuosity is drawn from (the mean with a fixed spread before). The class's
+  total length still sets the scale, so the tail's shape moved more than its value: P90 1.25
+  (1.21 in D1d; E14.5 1.48).
+- **Columns.** Their spread came closer without a term of its own: Clark-Evans 0.80 -> 0.86
+  (0.90).
+- **Holes, not drawn to.** 11% of the box beyond 50 um of a vessel, as before (0.5%). E14.5's
+  dead-end chains carry 31% of its length and fill its tissue: without them its holes are 19%. Tried
+  and not kept: a crowding term in the fill (holes unchanged, capillaries straightened), each
+  template vertex taken at most once (holes 9%, curvature 24 -> 20 degrees per 10 um, tortuosity
+  P90 1.14), the farthest vertex first (holes 6.6%, every capillary straight), the template's own
+  dead ends and face cuts drawn (holes 10%), vessels' ends tapered to their chords (no change).
+  Every lever that spread the bed lengthened its chords past the template's capillary length.
+
+Grid D1e (template at #5; six Delaunay seeds 51-56, five Voronoi 51-55; key
+`outputs/synthetic_review/grid_d1e_key.csv`) sent to Harvey.
