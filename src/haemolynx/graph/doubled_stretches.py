@@ -26,16 +26,18 @@ thick-vessel bridge is never a stretch, nor a partner: it runs inside the
 thick lumen by construction. The parked first attempt (branch
 ``claude/phase2-doubled-stretches``) combined these operations with a pair
 rule that kept pairs the whole-edge rule had deleted. Here the pair rule
-still decides which edge of a pair goes, and :func:`rewire_pair` takes it
-out the same way -- its stretch beside the other cut out, what is left
-joined where it parts (PLAN_clean_graph.md 1d) -- rather than deleting it
-whole; this step runs after it on what it leaves.
+still decides which edge of a pair goes; with ``lumen_loops.REWIRE_PAIRS``
+:func:`rewire_pair` takes it out the same way -- its stretch beside the
+other cut out, what is left joined where it parts (PLAN_clean_graph.md 1d)
+-- rather than deleting it whole; this step runs after it on what it leaves.
 
-A join is refused when the loop it closes lies inside one lumen
+A join can be refused when the loop it closes lies inside one lumen
 (``lumen_loops.loop_inside_one_lumen``): the shortest loop through it, round
-the rest of the network, the edge rewired left out. The failed attempts
-(the parked branch, the missed-branches session's trim-and-rejoin) raised
-the short loops because a rejoin could close one.
+the rest of the network, the edge rewired left out -- always for the pair
+rewire, and for this step's rejoin with :data:`GUARD_REJOINS`. The failed
+attempts (the parked branch, the missed-branches session's trim-and-rejoin)
+raised the short loops because a rejoin could close one. Both switches are
+off: on E14.5 each failed the plan's kill criteria (see their notes).
 """
 from __future__ import annotations
 
@@ -75,6 +77,24 @@ logger = logging.getLogger(__name__)
 #: of E14.5's doubling in place.
 MIN_DOUBLED_RUN_UM = 0.0
 MIN_DOUBLED_RUN_RADII = 0.0
+
+#: Whether the stretch step's rejoin, by default, makes no join that would
+#: close a loop inside one lumen (:func:`_join_closes_loop_in_one_lumen`; the
+#: pair rewire always tests its joins). Off: on E14.5 (2026-10-25, the graph
+#: as ``scripts/graph_artefacts.py`` saves it, against 7f7e699c) it took 73 um
+#: of doubled centreline out and covered 0.9 points more of the mask, but left
+#: 7 more short loops -- loops round holes of 10 um or more, which grids Q/Q2
+#: found mostly real -- 3 more interior dead ends (a remainder not joined can
+#: leave its junction a stub) and 1 more tip in another lumen.
+#: PLAN_clean_graph.md's kill criteria allow none of those, so it waits on
+#: Harvey, as the pair rewire does (``lumen_loops.REWIRE_PAIRS``).
+GUARD_REJOINS = False
+
+#: Edge mark: what :func:`rewire_pair` left of an edge it took out. Such an
+#: edge, found in a pair again, is deleted rather than rewired once more: on
+#: E14.5 a rewire made the next round's pair one round after another, and the
+#: clean-up ran to its round limit (2026-10-25).
+REWIRED = "rewired"
 
 #: Centreline a doubled stretch may skip -- samples beside nothing, or beside
 #: another vessel -- and still be one stretch.
@@ -293,6 +313,8 @@ class _Editor:
         self.zipped_at: set = set()
         #: Joins not made, each closing a loop inside one lumen.
         self.refused = 0
+        #: Attributes every edge added gets.
+        self.marks: dict = {}
 
     @staticmethod
     def place(point) -> tuple:
@@ -310,6 +332,7 @@ class _Editor:
 
     def _add(self, a, b, points, template: dict) -> None:
         attrs = {k: val for k, val in template.items() if k not in ("voxels", "length")}
+        attrs.update(self.marks)
         points = [tuple(float(c) for c in p) for p in points]
         attrs["voxels"] = points
         attrs["length"] = float(calculate_path_length(points))
@@ -653,6 +676,7 @@ def rewire_pair(G: nx.MultiGraph, support: MaskSupport, edge, partner) -> bool:
         return False
     inner = sorted({at for _node, at, attach, _join in joins if attach is None})
     split_at = dict(zip(inner, editor.split(partner, a, inner))) if inner else {}
+    editor.marks = {REWIRED: True}
     editor.replace(edge, [
         (node, attach if attach is not None else split_at[at], join) for node, at, attach, join in joins
     ])
@@ -689,9 +713,14 @@ def resolve_doubled_stretches(
     keep_apart: Callable[[DoubledStretch], bool] | None = None,
     memo: dict | None = None,
     along_centreline: Callable[[np.ndarray], float] | None = None,
+    guard_joins: bool | None = None,
 ) -> nx.MultiGraph:
     """Resolve, in place, every stretch of centreline :func:`doubled_stretches`
     finds running beside another in one lumen (see the module docstring).
+
+    *guard_joins* (default :data:`GUARD_REJOINS`, off) has a rejoin make no
+    join that would close a loop inside one lumen
+    (:func:`_join_closes_loop_in_one_lumen`).
 
     Each edge is changed at most once a call; a stretch whose edge or partner
     has already changed waits for the next call (``assemble.consolidate_lumen``
@@ -709,6 +738,8 @@ def resolve_doubled_stretches(
     cut back or rejoined beside one that is not, and the other is resolved
     onto it, whichever lies nearer the wall.
     """
+    if guard_joins is None:
+        guard_joins = GUARD_REJOINS
     runs = doubled_stretches(G, support, min_run_um=min_run_um, min_run_radii=min_run_radii, memo=memo)
     if not runs:
         return G
@@ -766,7 +797,7 @@ def resolve_doubled_stretches(
         elif run.at_stop and v in (a, b) and G.degree[v] >= 3:
             done = "zipped" if _zip(editor, run, v, at_start=False, min_shared_um=2 * too_short) else None
         elif run.radius_um < run.partner_radius_um:
-            done = "rejoined" if _rejoin(editor, run, support) else None
+            done = "rejoined" if _rejoin(editor, run, support if guard_joins else None) else None
         if done:
             counts[done] += 1
     if any(counts.values()) or editor.refused:
@@ -782,7 +813,9 @@ def resolve_doubled_stretches(
 
 __all__ = [
     "MIN_DOUBLED_RUN_RADII",
+    "GUARD_REJOINS",
     "MIN_DOUBLED_RUN_UM",
+    "REWIRED",
     "DoubledStretch",
     "doubled_stretches",
     "resolve_doubled_stretches",

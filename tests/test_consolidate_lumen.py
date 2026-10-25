@@ -143,7 +143,7 @@ def test_the_wall_side_duplicate_stays_when_it_alone_carries_a_branch():
     mask, G = _fork_with_a_branch(branch_on_both=False)
     support = MaskSupport(mask, VOXEL_SIZE)
     assert _pairs(G, mask) == 1
-    G = remove_parallel_edges_in_lumen(G, support)
+    G = remove_parallel_edges_in_lumen(G, support, rewire=True)
     assert nx.number_connected_components(G) == 1
     assert G.has_edge((7.0, 9.0, 57.0), (7.0, 40.0, 57.0))
     assert not G.has_edge((7.0, 7.0, 2.0), (7.0, 9.0, 57.0))
@@ -154,8 +154,13 @@ def test_the_wall_side_duplicate_stays_when_it_alone_carries_a_branch():
 
 
 def test_the_wall_side_duplicate_is_deleted_as_before_when_not_rewired():
+    """Not rewiring is the default (``lumen_loops.REWIRE_PAIRS``): the
+    rewire failed PLAN_clean_graph.md's kill criteria on E14.5."""
+    from haemolynx.graph.lumen_loops import REWIRE_PAIRS
+
+    assert REWIRE_PAIRS is False
     mask, G = _fork_with_a_branch(branch_on_both=False)
-    G = remove_parallel_edges_in_lumen(G, MaskSupport(mask, VOXEL_SIZE), rewire=False)
+    G = remove_parallel_edges_in_lumen(G, MaskSupport(mask, VOXEL_SIZE))
     assert nx.number_connected_components(G) == 1
     assert G.has_edge((7.0, 9.0, 57.0), (7.0, 40.0, 57.0))
     assert not G.has_node((7.0, 6.0, 57.0))  # the medial one went, its dead end with it
@@ -169,7 +174,7 @@ def test_a_pair_both_of_whose_edges_carry_vessels_is_left_whole_unless_rewired()
     assert kept.number_of_edges() == edges
     assert nx.number_connected_components(kept) == 1
     # Rewired, the pair is gone and neither branch is cut off.
-    G = remove_parallel_edges_in_lumen(G, support)
+    G = remove_parallel_edges_in_lumen(G, support, rewire=True)
     assert nx.number_connected_components(G) == 1
     assert G.has_node((7.0, 40.0, 57.0)) and G.has_node((7.0, 6.0, 68.0))
     assert _pairs(G, mask) == 0
@@ -632,18 +637,37 @@ def _artefacts(G, mask):
     return diagnose_lumen_artefacts(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=0.0)
 
 
-def test_touching_capillaries_are_zipped_into_one_shared_stretch():
+def test_touching_capillaries_lose_one_of_the_two_whole():
     """The plan wanted two strands: a neck in the lumen between them (2.2 um
     tall against 5 um) was to tell two touching capillaries from one drawn
     twice. No neck test was built: on grid H (2026-10-12) the neck scored
-    21/30, below what a rule needs, so the rules judge the lumen alone. Since
-    the pair rule rewires rather than deletes (``PLAN_clean_graph.md`` 1d), all
-    four ends stay, but where the capillaries touch they are drawn as one: two
-    junctions joined by a single 21 um edge, an X where there were two
-    vessels. (Before 1d the bent capillary went whole.) This pins that, so a
-    neck test shows up here."""
+    21/30, below what a rule needs, so the pair rule judges the lumen alone.
+    The bent capillary, beside the straight one along 20 of its 67 um, is
+    read as its second strand and goes whole -- not a cut-off vessel, since
+    it is a piece of its own. With the pair rewire off (``REWIRE_PAIRS``,
+    the default since it failed PLAN_clean_graph.md's kill criteria) that is
+    still so; this pins it, so a neck test (or a guard against deleting a
+    whole piece) shows up here."""
     from lumen_artefact_fixtures import touching_capillaries
 
+    mask, G, ends = touching_capillaries()
+    assert _pairs(G, mask) == 1
+
+    H = consolidate_lumen(G.copy(), _as_built(mask))
+
+    assert H.number_of_edges() == 1
+    assert set(H.nodes) == set(ends[:2])
+
+
+def test_touching_capillaries_are_zipped_into_one_shared_stretch_when_rewired(monkeypatch):
+    """With the pair rewire on (``PLAN_clean_graph.md`` 1d), all four ends
+    stay, but where the capillaries touch they are drawn as one: two
+    junctions joined by a single 21 um edge, an X where there were two
+    vessels."""
+    import haemolynx.graph.lumen_loops as lumen_loops
+    from lumen_artefact_fixtures import touching_capillaries
+
+    monkeypatch.setattr(lumen_loops, "REWIRE_PAIRS", True)
     mask, G, ends = touching_capillaries()
     assert _pairs(G, mask) == 1
 

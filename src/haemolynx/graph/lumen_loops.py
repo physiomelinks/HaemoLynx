@@ -701,22 +701,35 @@ def cuts_off_vessels(G: nx.MultiGraph, edge) -> bool:
     return not _joined_without(G, u, v)
 
 
+#: Whether :func:`remove_parallel_edges_in_lumen` rewires the edge of a pair
+#: that goes (``doubled_stretches.rewire_pair``) rather than deleting it
+#: whole, when a caller does not say. Off: on E14.5 (2026-10-25, the clean-up
+#: on one graph either way) rewiring kept 0.9 mm more centreline and 0.7
+#: points more of the mask covered, but 9 more short loops -- all round holes
+#: of 10 um or more, which grids Q/Q2 found mostly real -- and 5 more interior
+#: dead ends, the kept remainders' own tips. PLAN_clean_graph.md's kill
+#: criteria allow neither, so it stays off until Harvey decides.
+REWIRE_PAIRS = False
+
+
 def remove_parallel_edges_in_lumen(
     G: nx.MultiGraph, support: MaskSupport, *, memo: dict | None = None,
     keep_apart: Callable[[tuple], bool] | None = None,
     along_centreline: Callable[[np.ndarray], float] | None = None,
-    rewire: bool = True,
+    rewire: bool | None = None,
 ) -> nx.MultiGraph:
     """Take out, in place, one edge of each pair
     :func:`graph.diagnostics.diagnose_parallel_duplicates_in_lumen` reports.
 
     The edge nearer the wall goes (``_wall_hugging``), so the centreline
-    that stays is the one nearer the lumen's middle. With *rewire* (the
-    default) it goes the way ``doubled_stretches.rewire_pair`` takes it --
-    the stretch beside the other cut out, what is left joined to the other
-    where it parts -- and is deleted whole only when nothing is left to
-    join, or every join would close a loop inside one lumen
-    (PLAN_clean_graph.md 1d). Deleting it is refused where that would cut
+    that stays is the one nearer the lumen's middle. With *rewire* (default
+    :data:`REWIRE_PAIRS`, off) it goes the way
+    ``doubled_stretches.rewire_pair`` takes it -- the stretch beside the
+    other cut out, what is left joined to the other where it parts -- and is
+    deleted whole only when nothing is left to join, or every join would
+    close a loop inside one lumen (PLAN_clean_graph.md 1d); what a rewire
+    left (``doubled_stretches.REWIRED``) is deleted, not rewired again, or
+    the clean-up never settled. Deleting it is refused where that would cut
     vessels off from the rest of the network (:func:`cuts_off_vessels`): the
     other goes instead, the same two ways, or, when neither can, both stay.
     A branch meeting its parent, and two vessels with background between
@@ -730,7 +743,7 @@ def remove_parallel_edges_in_lumen(
     other is a vessel of its own beside it.
     """
     from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
-    from haemolynx.graph.doubled_stretches import rewire_pair
+    from haemolynx.graph.doubled_stretches import REWIRED, rewire_pair
 
     report = diagnose_parallel_duplicates_in_lumen(
         G,
@@ -739,6 +752,8 @@ def remove_parallel_edges_in_lumen(
         mask_support=support,
         memo=memo,
     )
+    if rewire is None:
+        rewire = REWIRE_PAIRS
     removed = rewired = kept_connected = kept_beside = 0
     for left, right in report["duplicate_pairs"]:
         present = [edge for edge in (left, right) if G.has_edge(*edge)]
@@ -758,7 +773,9 @@ def remove_parallel_edges_in_lumen(
             kept_beside += 1
             continue
         for drop in candidates:
-            if rewire and rewire_pair(G, support, drop, next(e for e in present if e != drop)):
+            if rewire and not G.edges[drop].get(REWIRED) and rewire_pair(
+                G, support, drop, next(e for e in present if e != drop)
+            ):
                 rewired += 1
                 break
             if not cuts_off_vessels(G, drop):
