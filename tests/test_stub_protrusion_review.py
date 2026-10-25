@@ -128,3 +128,50 @@ def test_the_cases_are_spread_round_robin_over_the_cells():
     # before any gives a third.
     assert len(set(cells)) == 8 and max(cells.count(c) for c in set(cells)) == 2
     assert [s["tip"] for s in build_grid_s.spread(stubs, 12, random.Random(1))] == [s["tip"] for s in picked]
+
+
+# --- fit_marks_s.py: the marks against the key -----------------------------------
+
+
+def _key_row(i, **overrides):
+    row = dict(id=f"S{i:02d}", ratio_capped="inf", ratio_others="2.0", deviation_deg="60", face_um="30",
+               at_face="False", length_um="20", tip_radius_um="2", parent_radius_um="3", threshold_um="9",
+               junction_degree="3", chain_edges="1", removed_by_call="False")
+    row.update({k: str(v) for k, v in overrides.items()})
+    return row
+
+
+def test_a_stub_today_never_judges_is_one_it_keeps_and_each_rule_is_scored_against_the_marks():
+    from stub_protrusion_review import fit_marks_s
+
+    rows = [
+        _key_row(1, ratio_capped=0.5, ratio_others=0.5),                    # both readings remove it
+        _key_row(2, ratio_capped="inf", ratio_others=0.4),                  # only the uncapped one does
+        _key_row(3, ratio_capped="inf", ratio_others=0.4, deviation_deg=5),  # ... unless it runs straight on
+        _key_row(4, ratio_capped="inf", ratio_others=0.4, at_face=True),     # ... or ends at a face
+    ]
+    marks = {"S01": "R", "S02": "R", "S03": "K", "S04": "?"}
+
+    assert fit_marks_s.measures(rows[1])["ratio_capped"] == fit_marks_s.NEVER_JUDGED
+    today = fit_marks_s.FIXED_RULES["today"][1]
+    assert fit_marks_s.score(rows, marks, today) == (2, ["S02"])
+    uncapped = fit_marks_s.FIXED_RULES["uncapped"][1]
+    assert fit_marks_s.score(rows, marks, uncapped) == (2, ["S03"])
+    exempt = fit_marks_s.FIXED_RULES["uncapped_but_collinear"][1]
+    assert fit_marks_s.score(rows, marks, exempt) == (3, [])
+    assert not fit_marks_s.FIXED_RULES["uncapped_but_face"][1](rows[3])
+
+
+def test_the_report_names_the_baseline_and_finds_a_measure_that_separates_the_marks():
+    from stub_protrusion_review import fit_marks_s
+
+    rows = [_key_row(i, length_um=5 + i) for i in range(1, 13)]
+    marks = {row["id"]: ("K" if float(row["length_um"]) > 11 else "R") for row in rows}
+
+    text = fit_marks_s.report(rows, marks)
+
+    assert "6 K (keep, a vessel), 6 R (remove). Marking all one way: 6/12." in text
+    (line,) = [line for line in text.splitlines() if line.startswith("| length_um |")]
+    # Fitted on all twelve the cut is exact; left out, a case at the cut can fall either side.
+    assert line.endswith("| K when > 11.5 | 12/12 |")
+    assert int(line.split("|")[2].split("/")[0]) >= 10

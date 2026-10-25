@@ -71,8 +71,12 @@ E14.5 (23 calls, 8,041 readings) 119 dead ends are left to the test by the prune
 with either reading under 2 radii; today's reading is infinite (never judged) for 58 of them.
 On the hair fixture today's test never judges the 25 um hair, while the uncapped reading takes
 the hair and the trunk's collinear end at the face beside it (`tests/test_stub_protrusion_review.py`).
-Grid S (30 of them, spread over the uncapped reading, collinearity and the face) is with Harvey;
-the rule waits on his marks (`PLAN_one_centreline_per_lumen.md`).
+Grid S (30 of them, spread over the uncapped reading, collinearity and the face), marked by
+Harvey the same day (15 K, 15 R; `scripts/stub_protrusion_review/fit_marks_s.py`): today's test
+19/30, the uncapped reading 17/30, either exemption the 2026-10-11 decision named 18-19/30,
+against 15 all one way. The best measure is size, not protrusion: the chain's length (keep over
+14.3 um, 23/30 leave-one-out), then the tip's radius (22/30). Nothing reaches 90%, so the test
+stays as it is (`PLAN_one_centreline_per_lumen.md`).
 
 **Per step, in the build's log (2026-10-25, `a16bdd08`).** With `debug` (`verbose_logging`) and a
 mask, `build_graph_from_skeleton` logs `diagnose_lumen_artefacts`' one-line report after every
