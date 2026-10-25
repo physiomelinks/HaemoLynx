@@ -38,10 +38,10 @@ wall (endothelial) -- so every threshold is in those units.
 (:func:`raw_evidence_from_settings`) and keeps its calibration on the graph
 (:data:`GRAPH_ATTRIBUTE`). No rule reads it: on every marked grid it was
 tried on -- one lumen or two (H, H2), a vessel across a gap (M, M2), a loop's
-hole (I, I2) -- no raw measure beat marking everything one way, so each of
-those decisions stays the mask's (``PLAN_raw_confirmation.md``). A rule that
-comes to read it takes the object as an argument and, given None, does what
-it does today.
+hole (I, I2) -- no raw measure came near the 90 % a rule needs, and most did
+no better than marking everything one way, so each of those decisions stays
+the mask's (``PLAN_raw_confirmation.md``). A rule that comes to read it takes
+the object as an argument and, given None, does what it does today.
 
 An endothelial label also answers what a dead end raises
 (``PLAN_dead_ends_raw.md``), across the chain rather than along it: whether a

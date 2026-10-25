@@ -14,9 +14,39 @@ is really two lumens with a dark wall between). So the plan puts one small, samp
 reader of the raw image (`RawEvidence`) under exactly those five decisions, calibrates each with a
 marked grid, and leaves everything else mask-only on purpose.
 
+## Status (2026-10-25)
+
+No raw-image rule ships. Every grid the plan built found no raw measure near 90 %, and most did
+no better than marking all one way, so each decision stays the mask's. What is left is one grid
+with Harvey and what follows from it.
+
+| Item | State | Where |
+|---|---|---|
+| Phase 0: `RawEvidence`, its calibration on the graph, the primitives | **Done** | `87a317e9`, `96b0329a` (2026-10-13); both stains; `stages._record_raw_evidence`; the dead-end wall primitives E1-E3 `bafd3aa2` (`PLAN_dead_ends_raw.md`) |
+| Phase 0: harness columns (D6) | **Done** | `8204478d`: the build log names the raw step's seconds and RAM; `scripts/graph_artefacts.py --raw-cost` builds each side without and with the raw image and reports time, peak memory, the raw step and the windows read |
+| D6 budgets on E14.5 | **Measured, within budget**: +0.6 % build time (the raw step 1.2 s of 210 s), +1 MB of peak (4,912 -> 4,913 MB); the channel, 144 MiB, is held only while it calibrates, under the build's peak; 0 windows read | `docs/notes/graph_building.md`, *The raw image in graph building* |
+| D6 budget on the muscle stack | **Waits on data**: the 16.4 G-voxel segmentation is on this machine, its raw image only as a 1,000 x 1,000 crop at an unknown offset | -- |
+| H re-score (Phase 2's free step) | **Done, nothing ships** (2026-10-12) | `outputs/doubled_run_review/FIT_raw.md` (main checkout) |
+| Phase 1 (P1, P2): grids M, M2 | **Closed, nothing ships** (2026-10-13). `MaskSupport(raw=)`, `bridge_raw_confirmation`, `bridge_raw_max_gap_um` closed by design. The ahead turn's review ranking: built for the dead-end list `368107db`, taken out `6d335f88` after G3′ | `FIT_M.md`, `FIT_M2.md` |
+| Phase 2 (P3): one lumen or two | **Closed, nothing ships**. The `keep_apart` hook exists (`doubled_stretches`, `lumen_loops`, `assemble.lumen_cleanup`) and nothing fills it; `lumen_cleanup(raw=)` closed by design | Phase 2 |
+| Phase 3 (P4): grids I, I2 | **Done**: the short-loop rule (D8, `5bd4c5b3`, `a3188f12`), then the hole exception from grids Q, Q2 (`7cc17cff`); the raw hole reading ships nothing | `FIT_I.md`, `FIT_I2.md`, `FIT_Q*.md` |
+| Phase 3: the raw reading ranking the Short loops list | **Not built**: it scored no better than all F on I and I2, and a measure that fails its grid stays a measure, not an order (`6d335f88`'s precedent). For Harvey | -- |
+| Phase 3: "the Post processing page shows the raw panel" | **Not built**: the plan never said what the panel shows. For Harvey | -- |
+| Phase 3 (P5): pinhole plugging | **Closed by the marks**: it needed I2's raw hole threshold, and none passed | Phase 3 |
+| Phase 4 (P6): grid UR1 | **Built and sent** (2026-10-25): https://claude.ai/artifact/JTxvz6NZFub5UNCtUspLta | `8204478d`, Phase 4 |
+| Phase 4: a skip rule in `mask_recovery.py`, or the uncovered-mask review list carrying the measure **[later]** | **Waits on UR1's marks**, then a rule at ≥ 90 % on UR2 | Phase 4 |
+| Per-depth calibration (Risks) | **Waits**: no rule reads the reader; UR1's key carries the global and the local readings and the depth | Risks |
+| Phase 5: docs and the review | **Done** | CLAUDE.md (layout, `lumen_loops`), `docs/notes/graph_building.md`, `RELEASE_REVIEW.md` `graph.6b`, `graph.8b`, `memory.6a` |
+
 ---
 
 ## 1. What the two sessions are doing (their words, 2026-10-12)
+
+*History: both branches have landed on `Devel_GUI_improvements_HD` -- the raw-image input as
+`8dea0eb7` (`raw_image_path`, `raw_image_channel`, `raw_image_stain`, `preprocessing/raw_stain.py`,
+the retired settings migrating through `Schema.upgrade`), the clean-graph work as `0300a8a1`
+(`graph/doubled_stretches.py`, with the `keep_apart` hook). What follows is what the two sessions
+said on 2026-10-12.*
 
 **Deadends handling plan** (branch `claude/raw-image-input`, off `claude/dead-ends`, worktree
 `.claude/worktrees/dead-ends`, nothing committed yet):
@@ -113,7 +143,9 @@ mask is, the raw is bright by construction. It is informative in two places only
 - **Whole-volume raw operations in the build** (Otsu foreground + labels as Check segmented
   image does: 5 bytes a voxel, 80 GB on the 16.4 G-voxel muscle stack; a whole-volume blur): none.
   Every read below is a window round a question.
-- **A second channel** (claudin-5 scored best on G4): D5, one channel only.
+- **A second channel** (claudin-5 scored best on G4): D5, one channel only. *Superseded by D0
+  (2026-10-13): there is still one channel, and on E14.5 it is claudin-5, read by
+  `RawEvidenceEndothelial`.*
 - **ilastik probability maps** as a soft mask: a different input, not the raw channel; out of
   scope unless Harvey asks.
 
@@ -123,6 +155,14 @@ mask is, the raw is bright by construction. It is informative in two places only
 
 New module `preprocessing/raw_evidence.py`, the raw-image sibling of `MaskSupport`, pure and
 napari-free, so every rule asks the same object and nothing reads the raw volume by itself.
+
+*As built (`87a317e9`, `96b0329a`; the wall primitives `bafd3aa2`), three things below changed.
+The settings adapter is gone: `raw_image_for_build` reads `raw_image_path` / `raw_image_channel` /
+`raw_image_stain` only, since the retired names migrate through `Schema.upgrade`. Both stains are
+read (`RawEvidencePlasma`, `RawEvidenceEndothelial`, D0 and D2 below), not plasma alone. And the
+primitives are `signal_along`, `wall_between` (was `dip_between`) and `hole_is_lumen` (was
+`hole_brightness`), each answered in its stain's own terms. No `keep_dtype` loader was needed: the
+in-RAM path keeps the file's dtype, the memory-mapped one is float32.*
 
 - **Holds** the one raw channel (`raw_image_path` / `raw_image_channel` once the raw-input branch
   lands; until then an adapter `raw_image_for_build(settings)` that also reads
@@ -153,6 +193,8 @@ napari-free, so every rule asks the same object and nothing reads the raw volume
     lumen radius round each side.
 - **Stain**: v1 supports `plasma_column`. With `raw_image_stain == endothelial` (lumen dark,
   wall bright) `RawEvidence` is off with one log line and every rule runs mask-only; decision D2.
+  *Superseded: D0 made E14.5's raw image claudin-5, and `RawEvidenceEndothelial` reads a wall
+  stain (a vessel is a ring round its centreline, a wall between two lumens a bright line).*
 - **Off entirely** when the run has no raw image (the Nerve fixture) or the raw does not align:
   every caller takes `raw: RawEvidence | None` and behaves exactly as today on `None`.
 
@@ -182,6 +224,13 @@ regression is a number, not an impression.
   in-RAM, no whole-volume read: asserted by wrapping the memmap's `__getitem__`); the crop box
   applied; shape mismatch refused; `None` passthrough on every caller.
 - Harness columns: raw queries, raw seconds, peak RSS with and without the raw image.
+  *Done (2026-10-25, `8204478d`)*: `raw_evidence_from_settings` logs the seconds to load and
+  calibrate and the RAM the channel holds (`resident_bytes`); `scripts/graph_artefacts.py
+  --raw-cost` builds each side twice, without and with the raw image, and its report tabulates
+  build seconds, peak resident memory, the raw step's seconds and RAM, and the windows the
+  build's rules read (`report.raw_cost_table`). The evidence is made after the graph and asked
+  nothing during the build, so the windows read are 0 until a rule reads it. Measured on E14.5
+  with `build_network` itself: see the Status table.
 
 Size S. Files: new module and test only; `stages.build_network` makes the object (one call), and
 `lumen_cleanup` carries it (one optional argument).
@@ -215,7 +264,12 @@ Size S. Files: new module and test only; `stages.build_network` makes the object
   **M2 marked the same day (24 N, 5 V, `FIT_M2.md`): the same result on 30 fresh candidates.**
   No measure beats all-N; the ahead turn scores 10/12 (M's rule unchanged, 10/12 there too;
   pooled 19/24, 79 %), under the bar. **Phase 1 closed, nothing shipped**: the mask rules'
-  refusals stand, and the ahead turn ranks the review list only.
+  refusals stand, and the ahead turn ranks the review list only. *That ranking was built for the
+  dead-end list by the dead-ends session (`368107db`, 2026-10-25) and taken out again
+  (`6d335f88`) once the fresh grid G3′ scored the turn 21/30 against 29/30 for never joining
+  (Harvey's marks, 2026-10-25): it stays a measure on each item, not an order.* So
+  `MaskSupport(raw=)`, `BridgeMaskSupport`'s raw fields and the settings
+  `bridge_raw_confirmation` and `bridge_raw_max_gap_um` were never built: closed by design.
 - Default when the raw image is present: `confirm` ships on at ≥ 90 % on M2, else off and the
   verdict only ranks the review lists; `extend` only after its own fresh grid (decision D1).
 - Kill criteria on the harness: components and interior dead ends may not rise; build time
@@ -227,11 +281,15 @@ Size M. Tests: `test_bridge_mask_support.py`, `test_facing_ends.py`, `test_skele
 
 **Outcome (2026-10-12, `scripts/doubled_run_review/rescore_raw.py`, branch `claude/raw-evidence`
 at 48ccd51; reading in `outputs/doubled_run_review/FIT_raw.md`): the raw dip does not separate
-the marks.** Grid H: best wall measure 17/30 leave-one-out against 19 all-D (mask's best 21/30);
+the marks.** Grid H: best wall measure 17/30 leave-one-out against 19 all-D (mask's best 21/30;
+the run's own brightness, not a wall measure, also 21/30);
 most T runs show no dip at all, at a one-voxel blur, half a voxel or none. Grid H2: 17/30
 against 16 all-V. The wall between two touching capillaries is under a voxel wide and the
 image's own blur has removed it. So P3 ships nothing, the `keep_apart` hook stays unfilled, and
 the doubled-run question stays with the mask rules. What follows is kept for the record.
+*The hook exists (`doubled_stretches.resolve_doubled_stretches(keep_apart=)`,
+`lumen_loops.remove_parallel_edges_in_lumen(keep_apart=)`, `assemble.lumen_cleanup(keep_apart=)`)
+and nothing fills it; `lumen_cleanup(raw=)` was never added. Closed by design.*
 
 **Phase 0 also found what E14.5's dextran channel is like** (median 3 counts inside the mask,
 0 outside): levels are read under a one-voxel blur, the lumen core is capped at 3 µm deep, and
@@ -299,30 +357,96 @@ Size S–M. Tests: `test_doubled_stretches.py` (one synthetic D, one T), `test_l
   components 156 → 157, build time no slower, **mask covered 75.4 → 72.5 % (−2.9 points,
   past the half-point criterion written for the stretch step)**. The bridges go before the
   split: a loop inside a fat vessel's lumen loses the strand the split would have bridged.
-  Harvey saw the coverage cost and said "commit and push" (2026-10-13): landed on at 200 µm. Ship as the loop rule at ≥ 90 % on I2 (remove the
-  side nearest the wall, as the in-lumen rule does); below that it ranks the Short loops list and
-  the Post processing page shows the raw panel.
+  Harvey saw the coverage cost and said "commit and push" (2026-10-13): landed on at 200 µm
+  (`5bd4c5b3`; the thick-bridge guard `a3188f12`).
+  **Grids Q and Q2 (Harvey, 2026-10-15, `7cc17cff`; `outputs/loop_break_review/FIT_Q*.md`)**: 60
+  of the rule's breaks on E14.5, each drawn with the side it took. Where a side should go it took
+  the right one every time, but loops round a hole over 10 µm were real 29 of 32, and breaking one
+  merged it with its neighbour into a longer loop broken in turn. So a loop round a hole wider than
+  `short_loop_keep_hole_over_um` (10 µm, the median background its antipodal chords cross,
+  `lumen_loops.loop_hole_um`) is left to the Short loops review list: 53/60 leave-one-out against
+  33 all one way, fitted on Q (9.2 µm); on Q2 alone 23/30, the same as all one way. A mask
+  measure, not the raw image's.
+  The raw hole reading ships nothing: on I and I2 it did no better than all F. The fallback this
+  phase named ("below 90 % it ranks the Short loops list and the Post processing page shows the
+  raw panel") is not built; the Status table says why.
 - **P5 only after I2 holds**: `segmentation_cleanup_plug_pinholes` (off by default, clean-graph
   D4): the voxels a 1-voxel closing would add, labelled slab by slab (`memmap_support`), each
   component kept only when its raw median brightness ≥ the fitted threshold; mask components may
   not merge (asserted), measured by the raw skeleton graph's in-lumen loops (1,277) and short
-  loops (2,438).
+  loops (2,438). **Closed by the marks**: it needed a raw hole threshold fitted on I and held on
+  I2, and no raw measure beat all F on either (`FIT_I.md`, `FIT_I2.md`), so there is no threshold
+  to plug by. Nothing was built.
 
 Size M. Tests: `test_lumen_loops.py`, `test_segmentation_cleanup.py`.
 
-### Phase 4 — Uncovered regions (P6) — after grid N
+### Phase 4 — Uncovered regions (P6) — grid UR1
 
 - Grid N: 30 uncovered regions spread by region brightness; marks **V** lumen the graph missed /
   **H** halo, speck or wall. Ships as a skip rule at ≥ 90 % on N2; else the "segmented vessels
   without a centreline" review list carries the brightness and is sorted by it.
+  *Renamed **UR1** ("uncovered regions"), its fresh check **UR2**: grids N and N2 are the
+  surface-coverage plan's (2026-10-18, lost skeleton), a different question.*
 
 Size S. Tests: `test_mask_recovery.py`.
+
+**UR1 built and sent (2026-10-25, `8204478d`, `scripts/uncovered_review/build_ur1.py`):**
+https://claude.ai/artifact/JTxvz6NZFub5UNCtUspLta (marks save to the page's `annotations`
+collection: `verdict` V / H / ?, `evidence`, `note`). Key, candidates and calibrations:
+`outputs/uncovered_review/UR1_*` in worktree `plan-raw-confirmation-0887be` (git-ignored); the
+E14.5 graphs it was built from, and the scripts that made them, in `outputs/raw_confirmation/`
+beside them.
+
+- **Data**: E14.5, Harvey's Claudin segmentation (the thick-bridges session's capture of
+  2026-10-24, `plan-thick-bridges-e32666/outputs/tb/base/finish_input.pkl`), its graph built with
+  this code (1,241 nodes, 1,417 edges), the composite's dextran (channel 0) and claudin-5
+  (channel 1). The segmentation came from claudin-5, so dextran is not the mask's own channel here.
+- **Pool**: every piece mask recovery is handed -- the graph after
+  `reconnect_orphan_and_dangling_nodes`, `uncovered_mask_voxels` in 26-connected pieces of at least
+  30 µm³ and wider than a voxel and a half: **1,749**. Recovery draws a centreline into only
+  **39** of them (113 edges, and 60 joins to the network). Those 39 are all a skip rule could change; 30 of them
+  would have left no fresh grid, and the other 1,710 ask the review list's question. In the
+  finished graph a median 78 % of a piece's voxels are still uncovered.
+- **Spread**: 10 of the 39 and 20 of the rest, each group split at its median depth and each half
+  spread evenly across the dextran brightness over the centrelines' within 25 µm (the plan's
+  measure read locally), then shuffled. The 30 run 2-285 µm deep and 31-198,000 µm³.
+- **Measures in the key** (none on the page): dextran median, deepest-points median and over the
+  neighbours'; claudin-5 median; E2 (`inside_walls`) at the five deepest points, lumen / wall /
+  shared; the wall either side of the drawn centreline (`vesselness`); volume, widest radius,
+  depth, elongation, distance to the nearest centreline, what recovery drew, the share the
+  finished graph leaves uncovered.
+- **What the pool already shows**: dextran brightness is mostly depth. The top 30 µm (509 pieces)
+  reads a median 1.27 of the run's level (10th-90th percentile 0.59-2.38); every 30-300 µm band
+  reads a median 0.31-0.41 (90th percentile ≤ 0.65). A global threshold would be a depth cut (the
+  depth risk below); read over the neighbouring centrelines, the medians run 0.42-0.61 in every
+  band, hence the local reading. E2 reads "on a wall" at the deepest points of almost every piece
+  (median wall share 1.0; no lumen at 1,724 of 1,749), as it did at dead ends, so it is unlikely
+  to separate them on this stack.
+- **Page**: the piece outlined in yellow in its own plane and across it, in the segmentation,
+  dextran and claudin-5; the centreline recovery draws, if any, in cyan; the graph's centrelines
+  as grey dots; each card names the piece's centre voxel. One question: V (a vessel of its own the
+  graph missed) / H (not a vessel of its own: a halo, a speck, a wall, or the side of a vessel
+  already drawn) / ?.
+- **After the marks**: fit every key measure against V/H, right / wrong / all one way, with the IDs
+  missed, overall and on the ten recovery draws into. A measure at ≥ 90 % is fixed as a rule and
+  checked on UR2 (fresh pieces, same recipe) before any skip rule goes into
+  `mask_recovery.py`. Failing that, the review list carries the best measure on each item
+  **[later]**, sorted by it only if the marks show it ranks V above H (a measure that fails stays
+  a measure, not an order, as the dead-end turn did).
 
 ### Phase 5 — Docs and the review
 
 CLAUDE.md (one bullet for `RawEvidence`, one line each under the rules it feeds), the harness
 columns, `RELEASE_REVIEW.md` rows for graph accuracy and memory with the evidence, and the
 `.haemorun` carrying the calibration.
+
+**Done (2026-10-25)**: `raw_evidence.py` is in CLAUDE.md's Repository layout, and the
+`lumen_loops` entry names the grids it failed; it feeds no rule, so there are no per-rule lines.
+The module's docstring no longer says rules "will land one at a time": it says none reads it and
+why. The harness columns are Phase 0's (`8204478d`). `RELEASE_REVIEW.md` `graph.6b` cites the
+fits of H/H2, M, M2, I and I2 and grid UR1, `graph.8b` M's ahead turn on M2 and the short-loop
+rule on I2, and `memory.6a` the raw image's cost on E14.5; no score moves. The `.haemorun`
+carries the calibration already, as `G.graph["raw_evidence"]` on the saved graph.
 
 Order: 0 → (both completion reports) → H re-score (free) → 1 and grid M → 2 → 3 → 4 → 5.
 
@@ -348,11 +472,11 @@ Order: 0 → (both completion reports) → H re-score (free) → 1 and grid M �
 |---|---|---|
 | D0 | **Which channel is E14.5's raw image** (decided 2026-10-13, Harvey: "land the branch and use the endothelial channel"). D5 of `PLAN_clean_graph.md` (one channel, the one the segmentation came from) is overturned for E14.5: the run's raw image is the composite's claudin-5 channel (`raw_image_channel` 1, stain `endothelial`), since the dextran channel cannot resolve a wall between touching capillaries (Phase 2's result) and claudin-5 was the only measure above chance on G4. Phase 0 landed on `Devel_GUI_improvements_HD` at 96b0329 the same day; grid M is built on that channel. | Decided. |
 | D1 | What the raw does to bridges by default when the image is present: `confirm` (refuse dark crossings, nothing else changes) or `extend` (allow longer bright gaps). | `confirm` first; `extend` only after its own fresh grid, since it adds vessels. |
-| D2 | Runs whose raw channel is an endothelial stain. | `RawEvidence` off in v1 (mask rules as today), logged; a wall-aware reading is a later phase if such runs matter. |
+| D2 | Runs whose raw channel is an endothelial stain. | `RawEvidence` off in v1 (mask rules as today), logged; a wall-aware reading is a later phase if such runs matter. *Superseded by D0: `RawEvidenceEndothelial` reads a wall stain, and E14.5's grids M, I, I2, DR1 and UR1 were built on it.* |
 | D3 | Pinhole plugging changes the segmentation before thinning. | Off by default, only after grid I2 holds (as the clean-graph plan's D4 already says). |
-| D4 | Grid order, ~150 marks in all. | H re-score (no marks) → M → I → N; H3, M2, I2, N2 as each passes. |
+| D4 | Grid order, ~150 marks in all. | H re-score (no marks) → M → I → N; H3, M2, I2, N2 as each passes. *Done in that order; N became UR1 (sent 2026-10-25), and H3 was never needed (H's re-score found nothing to check).* |
 | D5 | Who owns P3's code. | The clean-graph session adds the hook in `doubled_stretches`; this plan fills it. |
-| D6 | Budgets: +5 % build time, +50 MB resident on E14.5, zero whole-volume raw passes. | Yes; measured by the harness columns of Phase 0 at every phase. |
+| D6 | Budgets: +5 % build time, +50 MB resident on E14.5, zero whole-volume raw passes. | Yes; measured by the harness columns of Phase 0 at every phase. *Measured 2026-10-25 at `8204478d`: +0.6 % time, +1 MB of peak, no window read (the Status table); the muscle stack waits on its raw image.* |
 | D7 | Start Phase 0 now, before the two completion reports. | Yes: it touches no file either session has open. |
 
 ---
@@ -366,6 +490,13 @@ Order: 0 → (both completion reports) → H re-score (free) → 1 and grid M �
   global threshold may be wrong deep in the stack. The calibration keeps vessel and background
   levels per z-slab (16 slabs, as `read_raw_stain` samples) and normalises locally; the grids are
   stratified by depth.
+  *Not built (2026-10-25): `RawCalibration` keeps one level per run. A per-slab calibration only
+  matters to a rule that reads brightness against a threshold, and no rule reads the reader; the
+  measures already fitted (M, M2, I, I2, DR1) judge against their own neighbourhood, a chord's
+  ends or a loop's vessels. UR1 shows the risk is real on E14.5's dextran (the top 30 µm reads
+  about three times the depths), so its key carries both the global and the local reading and
+  its depth, and the grid is split by depth. Build the per-slab levels when a measure that needs
+  them passes UR1, or another grid.*
 - **Memmap page-ins on a disk-backed stack** make windows slow when the box spans many z slices.
   Windows are capped at the question's reach (a chord, a gap, a loop span); the muscle-crop budget
   is measured before any rule ships there.

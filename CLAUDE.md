@@ -34,6 +34,9 @@ haemolynx/
 │   │                       #   segmentation_raw_comparison.py ("Check segmented image");
 │   │                       #   raw_stain.py (whether the raw image stains the lumen or
 │   │                       #   the wall round it: raw_image_stain's auto);
+│   │                       #   raw_evidence.py (RawEvidence: the raw image read in windows
+│   │                       #   where the mask is silent, calibrated once a build and kept
+│   │                       #   on the graph; measures only, no rule reads it);
 │   │                       #   skeleton_consistency.py (skeleton vs mask), memmap_support.py
 │   │                       #   (disk-backed volumes, the low-RAM option), pointwise_distance.py,
 │   │                       #   blockwise_edt.py (a distance transform's exact answers, a padded
@@ -680,8 +683,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`remove_short_loops`, `remove_short_loops_under_um`, 200 µm, on): every loop that short loses
   its arc nearest the wall whatever the mask says, except round a hole wider than
   `short_loop_keep_hole_over_um` (10 µm; `loop_hole_um`). 0 leaves every short loop to the review
-  list. `preprocessing/raw_evidence.py` (`RawEvidence`) ships no rule: no raw measure beat marking
-  all one way.
+  list. `preprocessing/raw_evidence.py` (`RawEvidence`) ships no rule: no raw measure came near
+  90 %, and most did no better than marking all one way (grids H, H2, M, M2, I, I2); grid UR1
+  (uncovered mask, Phase 4 of `PLAN_raw_confirmation.md`) waits on Harvey's marks.
 - **`graph/skeleton_retrace.py`** — `retrace_lost_skeleton` (on; inert while
   `short_loop_keep_hole_over_um` is 0): after the last clean-up, skeleton the graph lost that would
   close a loop round a hole wider than `short_loop_keep_hole_over_um` is drawn back along its own

@@ -199,8 +199,10 @@ real. E14.5 skeleton reach 68.5 -> 70.5%, 40 short loops left for the review lis
 length leaves every short loop to it. `preprocessing/raw_evidence.py` (`RawEvidence`: the
 raw channel read in windows where the mask is silent, calibrated once per build and kept on
 `G.graph["raw_evidence"]`) shipped no rule: on grids H, H2 (one lumen or two), M, M2 (a
-vessel across a gap) and I (loop holes) no raw measure beat marking everything one way
-(`PLAN_raw_confirmation.md`).
+vessel across a gap) and I, I2 (loop holes) no raw measure came near 90 %, and most did no
+better than marking everything one way (`PLAN_raw_confirmation.md`; on H the run's own
+dextran brightness reached 21/30, the mask's best, against 19). See *The raw image in graph
+building* below.
 
 ## graph/skeleton_retrace.py
 
@@ -262,3 +264,34 @@ the path it came from; each edge records which of `smoothed` / `relaxed` / `kept
 bridge the graph build added across a gap, or the first step off a node cluster collapse moved --
 the distance is measured from that path instead; judged against the skeleton alone, every edge
 with a bridge was kept raw.
+
+## The raw image in graph building
+
+`PLAN_raw_confirmation.md`. `preprocessing/raw_evidence.py` reads the run's raw image in windows
+where the mask is silent, calibrated once a build (`stages._record_raw_evidence`, after the graph
+and the dead-end kinds) and kept on `G.graph["raw_evidence"]`. No rule reads it.
+
+**What a build pays for it (2026-10-25, E14.5, at `8204478d`).** `build_network` from the
+thick-bridges session's capture of Harvey's Claudin segmentation, twice, each in a fresh process
+(`outputs/raw_confirmation/budget.py`, git-ignored, in worktree `plan-raw-confirmation-0887be`):
+without the raw image 211.9 s and a peak of 4,912 MB; with it (claudin-5, the composite's channel
+1) 209.8 s and 4,913 MB. The raw step, loading the channel and calibrating it, took 1.2 s. It holds
+the channel (uint16, 144 MiB) while it calibrates and then lets it go. The process peak was 2.2 GB
+when the step started and did not rise during it; the build's peak comes later. The plan's
+budgets (decision D6: +5 % build time, +50 MB on E14.5) hold: +0.6 % and +1 MB of peak. The
+"+50 MB resident" was written for windows and samples; read in RAM the channel itself is three
+times that, for the second it takes, and under the build's peak. No window is read, since no rule
+asks. The budget for the 16.4 G-voxel skeletal-muscle stack (≤ 200 MB, ≤ 10 s of calibration)
+is not measured: its segmentation is on this machine, but its raw image only as a 1,000 x 1,000
+crop at an unknown offset. `scripts/graph_artefacts.py --raw-cost` makes the same comparison for
+any config with a raw image, in its report.
+
+**Uncovered mask, grid UR1 (2026-10-25).** Mask recovery is handed 1,749 pieces of uncovered
+mask on E14.5 (the graph after the orphan reconnect, its own two filters) and draws a
+centreline into 39 of them; in the finished graph a median 78 % of a piece is still uncovered.
+The dextran channel (not the segmentation's own here: it was made from claudin-5) reads mostly
+depth: the top 30 um a median 1.27 of the run's lumen level, every band below 0.31-0.41, while
+read over the centrelines within 25 um it reads a median 0.42-0.61 in every band. E2
+(`inside_walls`) finds no lumen at the deepest points of 1,724 of the 1,749. Grid UR1 (30: ten
+recovery draws into, twenty it does not, each half by depth, spread across the local reading) is
+with Harvey; `scripts/uncovered_review/build_ur1.py`.
