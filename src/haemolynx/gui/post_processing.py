@@ -1112,6 +1112,7 @@ def loop_review_row(
     """One ``{stem}_loop_review.csv`` row for *review* of *loop*, measured on
     *graph* as it was when the decision was made (before a deletion): the
     measures need the side that is about to go."""
+    from haemolynx.graph.degree2 import BRIDGED_FRACTION, RECOVERED_FRACTION, drawn_um
     from haemolynx.graph.lumen_loops import loop_measures
     from haemolynx.graph.post_processing import vessel_path
     from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
@@ -1128,13 +1129,7 @@ def loop_review_row(
     rows = loop_side_rows(graph, loop)
     edges = [graph.edges[tuple(e)] for e in loop.edges if graph.has_edge(*e)]
 
-    def length(data) -> float:
-        try:
-            return float(data.get("length") or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-
-    voxel = np.asarray(voxel_size_zyx, dtype=float)
+    voxel =np.asarray(voxel_size_zyx, dtype=float)
     centre_vox = np.rint(np.asarray(loop.centre_um, dtype=float) / voxel).astype(int)
     wall = measures.get("wall_side")
     row: dict[str, Any] = {
@@ -1149,8 +1144,8 @@ def loop_review_row(
         "side_lengths_um": [r[2] for r in rows],
         "side_diameters_um": [r[3] for r in rows],
         "zero_resistance_bridges": sum(bool(d.get(IS_ZERO_RESISTANCE)) for d in edges),
-        "recovered_um": sum(length(d) for d in edges if d.get("recovered")),
-        "bridged_um": sum(length(d) for d in edges if d.get("bridge_kind")),
+        "recovered_um": sum(drawn_um(d, RECOVERED_FRACTION) for d in edges),
+        "bridged_um": sum(drawn_um(d, BRIDGED_FRACTION) for d in edges),
     }
     for name in LOOP_REVIEW_COLUMNS:
         if name not in row:

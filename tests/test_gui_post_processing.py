@@ -533,6 +533,28 @@ def test_a_review_row_has_every_column_with_the_loop_its_sides_and_the_decision(
     assert float(row["out_of_plane"]) == pytest.approx(0.0, abs=1e-6)
 
 
+def test_a_review_row_counts_the_recovered_and_bridged_share_of_a_merged_side():
+    """A loop's side merged from a recovered or bridged stretch and a vessel
+    counts that stretch only: once merged, the whole-edge marks are gone and
+    the edge carries the share (``graph.degree2.carry_merged_provenance``)."""
+    from haemolynx.graph.degree2 import BRIDGED_FRACTION, RECOVERED_FRACTION
+
+    G = _loop_network()
+    loop = _the_loop(G)
+    (first, second) = [G.edges[tuple(e)] for e in loop.edges][:2]
+    first[RECOVERED_FRACTION] = 0.25
+    second["recovered"] = True
+    second["bridge_kind"] = "gap"
+    first[BRIDGED_FRACTION] = 0.5
+
+    row = loop_review_row(G, loop, LoopReview.of(loop, KEPT))
+
+    expected_recovered = 0.25 * first["length"] + second["length"]
+    expected_bridged = 0.5 * first["length"] + second["length"]
+    assert float(row["recovered_um"]) == pytest.approx(expected_recovered, rel=1e-3)
+    assert float(row["bridged_um"]) == pytest.approx(expected_bridged, rel=1e-3)
+
+
 def _shifted(G, offset):
     """*G* moved by *offset* microns, so all of it sits inside a mask."""
     H = G.copy()

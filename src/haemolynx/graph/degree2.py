@@ -35,6 +35,78 @@ from ._helpers import (
 
 logger = logging.getLogger(__name__)
 
+#: The share of a vessel's length that mask recovery drew (``recovered``
+#: edges) and that bridges drew (edges with a ``bridge_kind``), and the kinds
+#: of those bridges joined by "+": what a merged vessel keeps of where its
+#: halves came from. A share, not microns, since a split copies its edge's
+#: attributes onto both pieces.
+RECOVERED_FRACTION = "recovered_fraction"
+BRIDGED_FRACTION = "bridged_fraction"
+BRIDGE_KINDS = "bridge_kinds"
+
+
+def _drawn_fraction(data: dict, fraction: str, whole: bool) -> float:
+    if fraction in data:
+        return float(data[fraction] or 0.0)
+    return 1.0 if whole else 0.0
+
+
+def _bridge_kinds(data: dict) -> set:
+    kinds = data.get(BRIDGE_KINDS) or data.get("bridge_kind") or ""
+    return {kind for kind in str(kinds).split("+") if kind}
+
+
+def carry_merged_provenance(merged: dict, d1: dict, d2: dict) -> dict:
+    """Set, in place on *merged* (the attributes of the vessel merged from
+    *d1* and *d2*), what it keeps of where its halves came from, and return
+    it. Merges dropped it, so a report could not tell a recovered or bridged
+    stretch once the clean-up had merged it into its vessel.
+
+    ``recovered`` and ``bridge_kind`` (with ``bridge_background_um``) describe
+    the whole edge, so they stay only where both halves had them, one kind of
+    bridge: recovery's own trims (``mask_recovery.keep_two_ended_recovery``,
+    ``_trim_recovered_spur``) take out a ``recovered`` edge whole, and must
+    not take a vessel with it. :data:`RECOVERED_FRACTION`,
+    :data:`BRIDGED_FRACTION` and :data:`BRIDGE_KINDS` say how much of it
+    either drew, however it was merged, weighted by each half's ``length``."""
+    for key in ("recovered", "bridge_kind", "bridge_background_um", RECOVERED_FRACTION, BRIDGED_FRACTION, BRIDGE_KINDS):
+        merged.pop(key, None)
+    halves = (d1, d2)
+    if all(d.get("recovered") for d in halves):
+        merged["recovered"] = True
+    kinds = [d.get("bridge_kind") for d in halves]
+    if kinds[0] and kinds[0] == kinds[1]:
+        merged["bridge_kind"] = kinds[0]
+        backgrounds = [d["bridge_background_um"] for d in halves if d.get("bridge_background_um") is not None]
+        if backgrounds:
+            merged["bridge_background_um"] = float(max(backgrounds))
+    lengths = np.array([float(d.get("length") or 0.0) for d in halves])
+    total = float(lengths.sum())
+    weights = lengths / total if total > 0 else np.full(2, 0.5)
+    for fraction, whole in (
+        (RECOVERED_FRACTION, lambda d: bool(d.get("recovered"))),
+        (BRIDGED_FRACTION, lambda d: bool(d.get("bridge_kind"))),
+    ):
+        share = float(sum(w * _drawn_fraction(d, fraction, whole(d)) for w, d in zip(weights, halves)))
+        if share > 0.0:
+            merged[fraction] = min(share, 1.0)
+    every_kind = _bridge_kinds(d1) | _bridge_kinds(d2)
+    if every_kind:
+        merged[BRIDGE_KINDS] = "+".join(sorted(every_kind))
+    return merged
+
+
+def drawn_um(data: dict, fraction: str) -> float:
+    """How many um of an edge mask recovery (:data:`RECOVERED_FRACTION`) or
+    bridges (:data:`BRIDGED_FRACTION`) drew: all of it for an edge that is
+    one, the carried share of a vessel merged from one."""
+    whole = bool(data.get("recovered") if fraction == RECOVERED_FRACTION else data.get("bridge_kind"))
+    try:
+        length = float(data.get("length") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return length * _drawn_fraction(data, fraction, whole)
+
 
 def _compute_skeleton_overlap(
     voxels: List, skeleton_data: np.ndarray
@@ -126,15 +198,19 @@ def safer_simple_remove_all_degree2_nodes(
             if is_multigraph:
                 for edge1_data in edge1_data_list:
                     for edge2_data in edge2_data_list:
-                        merged_attrs = create_merged_edge_attributes(
-                            edge1_data, edge2_data, node_pos
+                        merged_attrs = carry_merged_provenance(
+                            create_merged_edge_attributes(edge1_data, edge2_data, node_pos),
+                            edge1_data,
+                            edge2_data,
                         )
                         add_edge_safe(G, n1, n2, **merged_attrs)
             else:
                 edge1_data = edge1_data_list[0]
                 edge2_data = edge2_data_list[0]
-                merged_attrs = create_merged_edge_attributes(
-                    edge1_data, edge2_data, node_pos
+                merged_attrs = carry_merged_provenance(
+                    create_merged_edge_attributes(edge1_data, edge2_data, node_pos),
+                    edge1_data,
+                    edge2_data,
                 )
                 if has_edge_safe(G, n1, n2):
                     if _should_replace_existing_simple_edge(
@@ -265,7 +341,7 @@ def create_trivial_merged_edge(
     smoothing = _merged_smoothing(edge1_data, edge2_data)
     if smoothing is not None:
         merged_attributes["centreline_smoothing"] = smoothing
-    return merged_attributes
+    return carry_merged_provenance(merged_attributes, edge1_data, edge2_data)
 
 
 def duplicate_parallel_edges(
@@ -450,6 +526,7 @@ def smart_multigraph_degree2_removal(
             smoothing = _merged_smoothing(d1, d2)
             if smoothing is not None:
                 merged_attrs["centreline_smoothing"] = smoothing
+            carry_merged_provenance(merged_attrs, d1, d2)
 
             should_add, replace_key = should_add_merged_edge(
                 G, n1, n2, merged_voxels, merged_attrs, debug, inside_lumen=inside_lumen

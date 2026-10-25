@@ -65,6 +65,100 @@ def test_create_trivial_merged_edge():
     assert len(merged["voxels"]) >= 3
 
 
+def _chain_with_a_recovered_stretch():
+    """J1 -10 um vessel- N -4 um recovery join- M -6 um recovered strand- J2,
+    each end a junction with two stubs, so only N and M are degree-2."""
+    G = nx.MultiGraph()
+    xs = {"J1": 0.0, "N": 10.0, "M": 14.0, "J2": 20.0}
+    for name, x in xs.items():
+        G.add_node(name, pos=np.array([0.0, 0.0, x]))
+    for junction, sign in (("J1", -1.0), ("J2", 1.0)):
+        for i, y in enumerate((-5.0, 5.0)):
+            stub = f"{junction}_stub{i}"
+            end = np.array([0.0, y, xs[junction] + sign * 5.0])
+            G.add_node(stub, pos=end)
+            G.add_edge(junction, stub, voxels=_line(G.nodes[junction]["pos"], end, 8),
+                       length=float(np.linalg.norm(end - G.nodes[junction]["pos"])))
+    G.add_edge("J1", "N", voxels=_line((0, 0, 0), (0, 0, 10), 21), length=10.0)
+    G.add_edge("N", "M", voxels=_line((0, 0, 10), (0, 0, 14), 9), length=4.0,
+               recovered=True, reconnected=True, bridge_kind="recovered", bridge_background_um=0.5)
+    G.add_edge("M", "J2", voxels=_line((0, 0, 14), (0, 0, 20), 13), length=6.0, recovered=True)
+    return G
+
+
+def test_a_degree2_merge_keeps_where_its_halves_came_from():
+    """Phase 2 of PLAN_one_centreline_per_lumen.md: merges dropped
+    ``recovered`` and ``bridge_kind``, so once the clean-up had merged a
+    recovered strand or a bridge into its vessel no report could tell. The
+    whole-edge marks stay only where the whole edge is one; the shares carry
+    how much of it each drew."""
+    from haemolynx.graph.degree2 import BRIDGE_KINDS, BRIDGED_FRACTION, RECOVERED_FRACTION, drawn_um
+
+    merged = smart_multigraph_degree2_removal(_chain_with_a_recovered_stretch(), debug=False)
+
+    assert not merged.has_node("N") and not merged.has_node("M")
+    (vessel,) = [d for u, v, d in merged.edges(data=True) if {u, v} == {"J1", "J2"}]
+    assert vessel["length"] == pytest.approx(20.0)
+    assert vessel[RECOVERED_FRACTION] == pytest.approx(0.5)
+    assert vessel[BRIDGED_FRACTION] == pytest.approx(0.2)
+    assert vessel[BRIDGE_KINDS] == "recovered"
+    assert drawn_um(vessel, RECOVERED_FRACTION) == pytest.approx(10.0)
+    assert drawn_um(vessel, BRIDGED_FRACTION) == pytest.approx(4.0)
+    # Part vessel: neither whole-edge mark, so recovery's trims leave it.
+    assert "recovered" not in vessel and "bridge_kind" not in vessel
+    assert "bridge_background_um" not in vessel
+
+
+def test_a_merge_of_two_recovered_halves_is_recovered_and_of_one_kind_of_bridge_a_bridge():
+    from haemolynx.graph.degree2 import BRIDGE_KINDS, BRIDGED_FRACTION, RECOVERED_FRACTION
+
+    a = {"voxels": [(0, 0, 0), (0, 0, 3)], "length": 3.0, "recovered": True,
+         "bridge_kind": "gap", "bridge_background_um": 0.4}
+    b = {"voxels": [(0, 0, 3), (0, 0, 4)], "length": 1.0, "recovered": True,
+         "bridge_kind": "gap", "bridge_background_um": 1.2}
+    merged = create_trivial_merged_edge(a, b, np.array([0.0, 0.0, 3.0]))
+    assert merged["recovered"] is True and merged[RECOVERED_FRACTION] == pytest.approx(1.0)
+    assert merged["bridge_kind"] == "gap" and merged[BRIDGED_FRACTION] == pytest.approx(1.0)
+    assert merged["bridge_background_um"] == pytest.approx(1.2)
+    assert merged[BRIDGE_KINDS] == "gap"
+
+    b["bridge_kind"] = "orphan"
+    mixed = create_trivial_merged_edge(a, b, np.array([0.0, 0.0, 3.0]))
+    assert "bridge_kind" not in mixed and mixed[BRIDGED_FRACTION] == pytest.approx(1.0)
+    assert mixed[BRIDGE_KINDS] == "gap+orphan"
+    # Carried again through a further merge, weighted by length.
+    plain = {"voxels": [(0, 0, 4), (0, 0, 8)], "length": 4.0}
+    again = create_trivial_merged_edge(mixed, plain, np.array([0.0, 0.0, 4.0]))
+    assert again[BRIDGED_FRACTION] == pytest.approx(0.5) and again[RECOVERED_FRACTION] == pytest.approx(0.5)
+    assert again[BRIDGE_KINDS] == "gap+orphan" and "recovered" not in again
+
+
+def test_a_vessel_merged_with_a_recovered_edge_is_not_trimmed_as_recovery():
+    """Regression: the trivial merge copied its first half's attributes, so a
+    vessel merged with a recovered stretch listed first came out
+    ``recovered=True`` whole, and recovery's two-ended trim took the vessel
+    out with it."""
+    from haemolynx.graph.edit import delete_edge_and_collapse
+    from haemolynx.graph.mask_recovery import keep_two_ended_recovery
+
+    G = nx.MultiGraph()
+    for name, x in (("J", 0.0), ("N", 6.0), ("T", 20.0), ("X", 6.0)):
+        G.add_node(name, pos=np.array([0.0, 5.0 if name == "X" else 0.0, x]))
+    for i in range(2):  # J a junction
+        G.add_node(f"s{i}", pos=np.array([0.0, 3.0 * (2 * i - 1), -3.0]))
+        G.add_edge("J", f"s{i}", voxels=_line(G.nodes["J"]["pos"], G.nodes[f"s{i}"]["pos"], 6), length=4.2)
+    G.add_edge("N", "J", voxels=_line((0, 0, 6), (0, 0, 0), 13), length=6.0, recovered=True)
+    G.add_edge("N", "T", voxels=_line((0, 0, 6), (0, 0, 20), 29), length=14.0)
+    G.add_edge("N", "X", voxels=_line((0, 0, 6), (0, 5, 6), 11), length=5.0, recovered=True)
+
+    delete_edge_and_collapse(G, "N", "X", 0)
+    (vessel,) = [d for u, v, d in G.edges(data=True) if {u, v} == {"J", "T"}]
+    assert "recovered" not in vessel
+
+    removed, _length = keep_two_ended_recovery(G)
+    assert removed == 0 and G.has_edge("J", "T")
+
+
 def _degree2_count(G):
     return sum(1 for n in G.nodes() if G.degree[n] == 2)
 
