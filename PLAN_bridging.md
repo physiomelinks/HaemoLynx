@@ -8,9 +8,11 @@ measurement that has to come first.
 last entry): Phases 0-3, Phase 1's last test, F2's skeleton half, F10, F11 (closed by measurement)
 and Phase 4's census; Harvey marked grid P, the Phase 1 rules' fresh grid, on 2026-10-25 (the wall
 join and fork rules beat marking all one way, the taper rule did not, and he dropped it); the
-`thick_wall` dead-end kind (1.3) and its review list (0.2) landed at `401f77f4`. What is left waits on
-Harvey: his decisions listed under "For Harvey" in section 5. Whether this file is retired is
-his call.
+`thick_wall` dead-end kind (1.3) and its review list (0.2) landed at `401f77f4`. Harvey took the
+"For Harvey" list in section 5 one item at a time the same day: equal forks keep no bridge; the
+wall join's reach and loop guard (grid P2), the connectors left unbridged (grid K) and the tree
+fill (a grid on E15, waiting on its pixel size) wait on his marks; the file is retired once
+those three are marked and acted on.
 
 **In one paragraph.** Every join the pipeline draws goes through one gate,
 `preprocessing/bridge_mask_support.py`: a path is a vessel when it stays in the segmented mask bar
@@ -500,14 +502,29 @@ Phases 2 and 3 can start today. Phase 1 waits for the grid.
     is bridged like any other. E14.5 to solve, with the rule and without: tapers 15 -> 0, bridges
     63 -> 75, vessel 47,139 -> 47,012 um, dead ends 394 -> 393, network resistance 2.96e15 -> 2.65e15
     Pa.s/m^3, build 196 -> 194 s; grid P's four tapers now each have a bridge (the taper sheet 7/8).
-  - **For Harvey:** (1) the wall join's reach (2 J beyond 10 um) and its in-lumen loop guard (right on
-    1 of 3) on grid P: more marks before either moves. (2) F1b's fork of two equal vessels: the plan said both
-    daughters get a bridge of the parent's radius, cut at 0.6 of the fork's radius; the code gives
-    an equal fork no bridge (`test_a_fork_of_equal_thick_vessels_gets_no_bridge`) and bridges an
-    arm at most 0.8 of the trunk. No decision is recorded; on grid P he marked 4 near-equal forks E and 2 B.
-    (3) 6a's tree fill (`TREE_FILL_MIN_DETOUR` 2.1) is on by default, checked on no second stack
-    with thick vessels; none is on this machine. (4) The two connector causes above. (5) Whether
-    this file is retired.
+  - **For Harvey**, taken one at a time with him on 2026-10-25:
+    1. *The wall join's reach (2 J beyond 10 um) and its in-lumen loop guard (right on 1 of 3).* His
+       call: a grid of the rest. **Grid P2** (`scripts/thick_junction_review/wall_rest_grid.py`, the
+       same capture and question as grid P; key in `outputs/thick_junction_review/grid_P2/`,
+       https://claude.ai/artifact/DfTHrEZAbMjUuNgEjSDh3q): every unmarked case of each on E14.5, 5
+       dead ends 10-15 um past the lumen heading for it and 4 refused by the guard, P31-P39 shuffled.
+       Waiting on his marks; the reach and the guard move only by all 7 marks of each.
+    2. *F1b's fork of two equal vessels.* The plan said both daughters get a bridge of the parent's
+       radius; the code gives an equal fork no bridge (`test_a_fork_of_equal_thick_vessels_gets_no_bridge`)
+       and bridges an arm at most 0.8 of the trunk. **Decided (Harvey, 2026-10-25): no bridge, as
+       now**, on his grid P marks (4 near-equal forks E, 2 B; no radius measure separates the two B).
+    3. *6a's tree fill* (`TREE_FILL_MIN_DETOUR` 2.1, on by default, fitted on grid V only). His call:
+       a fresh grid on E15 (`Composite_150826_E15_cldn5_..._spot1`, his Simple Segmentation, the
+       second stack with thick vessels here). **Waiting on E15's x/y pixel size** (the files carry
+       none; z is 1.4 um by the name); the default stays on until the marks say otherwise.
+    4. *The two connector causes* (the reach read at a thin tree spur; one exit sinking the
+       connector). His call: a grid of the connectors left unbridged. **Grid K**
+       (`scripts/thick_junction_review/connector_grid.py`; key in `outputs/thick_junction_review/grid_K/`,
+       https://claude.ai/artifact/Myc12NuKSLu2LVXiCS2NF2): all 9 on E14.5, B = bridge it, N = leave
+       it; 2 read their reach at a spur, 1 was sunk by one exit. Neither cause changes until the
+       marks say so.
+    5. *Whether this file is retired.* **Decided: once grids P2, K and the E15 grid are marked and
+       acted on.**
 
 ---
 

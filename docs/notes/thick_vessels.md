@@ -200,4 +200,10 @@ radius-shaped, 13 longer than the radius, 4 at forks, 1 along the centreline: no
 `THICK_TAPER` alone, for graphs saved before. **A dead end the wall join leaves** (within its
 reach of the lumen, off the tree) is a `thick_wall` dead end since 2026-10-25, judged on the tree
 the build records on the graph and listed in Post processing's "Dead ends at thick vessels"
-(`dead_ends_and_open_ends.md`): 36 of E14.5's 393.
+(`dead_ends_and_open_ends.md`): 36 of E14.5's 393. **Harvey's calls on what grid P left** (2026-10-25):
+a fork of two vessels of a size keeps no bridge (his marks: 4 near-equal forks E, 2 B); the wall
+join's reach and in-lumen loop guard go to grid P2 (`scripts/thick_junction_review/wall_rest_grid.py`:
+every unmarked case of each on E14.5, 5 and 4), the 9 connectors the split leaves unbridged to
+grid K (`connector_grid.py`: 2 read their reach at a thin tree spur, 1 sunk by one exit), and the
+tree fill to a fresh grid on E15, which waits on that stack's pixel size. Nothing changes until
+the marks are in.

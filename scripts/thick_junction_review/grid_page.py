@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 TEMPLATE = Path(__file__).resolve().parent / "grid_page_template.html"
@@ -25,12 +26,18 @@ PLACEHOLDER = "/*GRID_DATA*/"
 
 def build_page(data: dict) -> str:
     """The template with *data* in its JSON script block (``</`` escaped,
-    so nothing in the data can close the block)."""
+    so nothing in the data can close the block), named for its grid
+    (``data["grid"]``, ``P`` when unset): in its title, and in the key its
+    marks are kept under in the browser, so two grids' marks never mix."""
+    name = str(data.get("grid", "P"))
+    if not re.fullmatch(r"[A-Za-z0-9]{1,12}", name):
+        raise ValueError(f"a grid's name is letters and digits, not {name!r}")
     text = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     template = TEMPLATE.read_text(encoding="utf-8")
     if template.count(PLACEHOLDER) != 1:
         raise ValueError(f"{TEMPLATE} must hold {PLACEHOLDER} exactly once")
-    return template.replace(PLACEHOLDER, text)
+    page = template.replace("__GRID_LOWER__", name.lower()).replace("__GRID__", name)
+    return page.replace(PLACEHOLDER, text)
 
 
 def main(argv=None) -> int:
