@@ -632,15 +632,16 @@ def _artefacts(G, mask):
     return diagnose_lumen_artefacts(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=0.0)
 
 
-def test_touching_capillaries_lose_one_of_the_two_whole():
+def test_touching_capillaries_are_zipped_into_one_shared_stretch():
     """The plan wanted two strands: a neck in the lumen between them (2.2 um
     tall against 5 um) was to tell two touching capillaries from one drawn
     twice. No neck test was built: on grid H (2026-10-12) the neck scored
-    21/30, below what a rule needs, so the pair rule judges the lumen alone.
-    Today the bent capillary, beside the straight one along 20 of its 67 um,
-    is read as its second strand and goes whole -- not a cut-off vessel, since
-    it is a piece of its own. This pins that, so a neck test (or a guard
-    against deleting a whole piece) shows up here."""
+    21/30, below what a rule needs, so the rules judge the lumen alone. Since
+    the pair rule rewires rather than deletes (``PLAN_clean_graph.md`` 1d), all
+    four ends stay, but where the capillaries touch they are drawn as one: two
+    junctions joined by a single 21 um edge, an X where there were two
+    vessels. (Before 1d the bent capillary went whole.) This pins that, so a
+    neck test shows up here."""
     from lumen_artefact_fixtures import touching_capillaries
 
     mask, G, ends = touching_capillaries()
@@ -648,8 +649,12 @@ def test_touching_capillaries_lose_one_of_the_two_whole():
 
     H = consolidate_lumen(G.copy(), _as_built(mask))
 
-    assert H.number_of_edges() == 1
-    assert set(H.nodes) == set(ends[:2])
+    assert all(H.has_node(end) and H.degree(end) == 1 for end in ends)
+    junctions = [n for n in H if H.degree(n) == 3]
+    assert len(junctions) == 2 and H.number_of_edges() == 5
+    (shared,) = [d for u, v, d in H.edges(data=True) if {u, v} == set(junctions)]
+    assert 15.0 < shared["length"] < 25.0
+    assert nx.is_connected(H) and _pairs(H, mask) == 0
 
 
 def test_a_ring_in_a_bending_vessel_reads_as_round_tissue_and_the_pair_rule_breaks_it():
