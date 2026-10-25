@@ -110,13 +110,15 @@ def test_resolving_shortens_the_centreline_and_repeating_settles():
 
 def test_the_pair_rule_still_decides_whole_pairs_and_the_stretch_step_what_it_leaves():
     """The strand through the trunk is a pair with it (half of it beside the
-    trunk) and the whole-edge rule takes the strand whole, as before; what
-    the rule leaves -- a stretch shorter than half an edge -- is the stretch
-    step's. Both end with the trunk drawn once and nothing cut off."""
+    trunk): the pair rule decides that the strand goes, and takes it out by
+    rewiring -- its branches stay, joined to the trunk (1d); what the rule
+    leaves -- a stretch shorter than half an edge -- is the stretch step's.
+    Both end with the trunk drawn once and nothing cut off."""
     mask, G, (tip_a, tip_b, end_a, end_b) = strand_through_a_trunk()
     assert _pairs(G, mask) == 1
     G = consolidate_lumen(G, _cleanup(mask, min_stub_length=0.0, multiple=0.0))
     assert nx.has_path(G, end_a, end_b)
+    assert nx.has_path(G, tip_a, end_a) and nx.has_path(G, tip_b, end_a)
     assert _pairs(G, mask) == 0
     assert _doubled_um(G, mask) < 5.0
 
@@ -358,3 +360,134 @@ def test_a_stretch_with_no_length_on_the_tree_is_never_on_it():
     assert not _mostly_on(nowhere, line)
     assert _mostly_on(everywhere, line)
     assert not _mostly_on(lambda points: 4.0, line) and _mostly_on(lambda points: 5.0, line)
+
+
+# --- 1d: a pair taken out by rewiring; joins closing a loop in one lumen ------
+
+
+def _strand_from_a_junction(*, pair: bool):
+    """A trunk 12 um wide along x and a capillary leaving it. The capillary
+    starts at a junction inside the trunk's lumen -- joined to the trunk's
+    end by a short edge, with a branch of its own leaving there -- runs
+    beside the trunk's centreline and leaves by a side branch to a tip. With
+    *pair* it runs beside the trunk for most of its length (the pair rule's
+    case), without for under half (the stretch step's). Joined to the trunk
+    at the junction, it would close a loop inside the trunk's lumen. Returns
+    ``(mask, G, ends)``: the capillary's tip, the junction, the trunk's ends."""
+    leaves = 46 if pair else 30
+    mask = capsule(np.zeros((15, 45, 80), dtype=bool), (7, 20, -10), (7, 20, 90), 6)
+    capsule(mask, (7, 23, 4), (7, 38, 4), 2)
+    capsule(mask, (7, 23, leaves), (7, 38, leaves + 4), 2)
+    capillary = [(7, 23, 4), (7, 23, leaves), (7, 37, leaves + 4)]
+    if not pair:
+        capsule(mask, (7, 37, leaves + 4), (7, 37, 78), 2)
+        capillary.append((7, 37, 78))
+    G = polyline_graph([
+        [(7, 20, 0), (7, 20, 79)],
+        capillary,
+        [(7, 23, 4), (7, 20, 0)],
+        [(7, 23, 4), (7, 37, 4)],
+    ])
+    ends = [tuple(float(c) for c in p) for p in (capillary[-1], (7, 23, 4), (7, 20, 0), (7, 20, 79))]
+    return mask, G, ends
+
+
+def _no_lumen_test(monkeypatch):
+    """The join guard switched off: every loop reads as round tissue."""
+    import haemolynx.graph.doubled_stretches as module
+
+    monkeypatch.setattr(module, "loop_inside_one_lumen", lambda loop, support: False)
+
+
+def test_a_pair_with_a_remainder_is_rewired_at_the_parting_points_not_deleted():
+    """Regression for PLAN_clean_graph.md 1d: the pair rule deleted the edge
+    nearer the wall whole, and with it whatever lay beyond the stretch it
+    doubled -- here both branches of the capillary, vessel by grids D-F more
+    often than not. Rewired, only the stretch goes: each branch is joined to
+    the trunk where it leaves it."""
+    from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
+
+    mask, G, (tip_a, tip_b, end_a, end_b) = strand_through_a_trunk()
+    support = _support(mask)
+    deleted = remove_parallel_edges_in_lumen(G.copy(), support, rewire=False)
+    assert not deleted.has_node(tip_a) and not deleted.has_node(tip_b)
+
+    G = remove_parallel_edges_in_lumen(G, support)
+    assert G.graph["parallel_lumen_edges_rewired"] == 1
+    assert G.graph["parallel_lumen_edges_removed"] == 0
+    assert nx.is_connected(G) and nx.cycle_basis(nx.Graph(G)) == []
+    assert nx.has_path(G, end_a, end_b)
+    for tip, leaves_at in ((tip_a, 14.0), (tip_b, 46.0)):
+        (joined,) = G.neighbors(tip)
+        where = np.asarray(G.nodes[joined]["pos"], dtype=float)
+        assert where[1] == pytest.approx(20.0) and abs(where[2] - leaves_at) < 4.0
+    # Only the stretch went: the trunk and both branches (14.6 um each, plus
+    # the chord across to the trunk's centreline) are all there.
+    assert 69.0 + 2 * 14.5 < _length(G) < 69.0 + 2 * (14.5 + 4.0)
+    assert _pairs(G, mask) == 0
+
+
+def test_a_pair_with_nothing_beyond_its_stretch_is_deleted_as_before():
+    from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
+
+    mask, G = two_strands_in_one_lumen()
+    G = remove_parallel_edges_in_lumen(G, _support(mask))
+    assert G.number_of_edges() == 1
+    assert G.graph["parallel_lumen_edges_removed"] == 1
+    assert G.graph["parallel_lumen_edges_rewired"] == 0
+
+
+def test_a_join_closing_a_loop_inside_one_lumen_is_not_made_when_a_pair_is_rewired(monkeypatch):
+    """The capillary's junction lies in the trunk's lumen, joined to the
+    trunk's end already: joined to the trunk again where the capillary
+    leaves it, it closes a ring inside the lumen, the kind the earlier
+    rewiring attempts made. That join is not made; the branch is."""
+    from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
+
+    mask, G, (tip, junction, end_a, end_b) = _strand_from_a_junction(pair=True)
+    support = _support(mask)
+    assert _pairs(G, mask) == 1
+    with monkeypatch.context() as patch:
+        _no_lumen_test(patch)
+        unguarded = remove_parallel_edges_in_lumen(G.copy(), support)
+    assert len(nx.cycle_basis(nx.Graph(unguarded))) == 1
+
+    G = remove_parallel_edges_in_lumen(G, support)
+    assert G.graph["parallel_lumen_edges_rewired"] == 1
+    assert nx.cycle_basis(nx.Graph(G)) == []
+    assert nx.is_connected(G)
+    assert G.has_edge(junction, end_a)
+    route = nx.shortest_path(G, tip, end_b)
+    assert all(abs(float(np.asarray(G.nodes[n]["pos"])[1]) - 20.0) < 0.5 for n in route[1:])
+    assert _pairs(G, mask) == 0
+
+
+def test_a_rejoin_closing_a_loop_inside_one_lumen_is_refused(monkeypatch):
+    """The stretch step's rejoin the same way: the capillary runs beside the
+    trunk for under half its length, so it is no pair, and the stretch is
+    cut out of it. Its far part is joined to the trunk where it leaves; the
+    part at the junction is not, since that would close a ring inside the
+    trunk's lumen -- the junction is joined to the trunk already."""
+    import haemolynx.graph.doubled_stretches as module
+
+    mask, G, (tip, junction, end_a, end_b) = _strand_from_a_junction(pair=False)
+    support = _support(mask)
+    assert _pairs(G, mask) == 0
+    before = _doubled_um(G, mask)
+    with monkeypatch.context() as patch:
+        _no_lumen_test(patch)
+        unguarded = resolve_doubled_stretches(G.copy(), support)
+    assert len(nx.cycle_basis(nx.Graph(unguarded))) == 1
+
+    G = resolve_doubled_stretches(G, support)
+    assert nx.cycle_basis(nx.Graph(G)) == []
+    assert nx.is_connected(G) and nx.has_path(G, tip, end_b)
+    assert G.has_edge(junction, end_a)
+    assert _doubled_um(G, mask) < 0.3 * before
+
+    # Where neither part could be joined, the stretch is left as it was.
+    G = _strand_from_a_junction(pair=False)[1]
+    edges = sorted(map(str, G.edges(keys=True)))
+    monkeypatch.setattr(module, "_join_closes_loop_in_one_lumen", lambda *args: True)
+    resolve_doubled_stretches(G, support)
+    assert sorted(map(str, G.edges(keys=True))) == edges

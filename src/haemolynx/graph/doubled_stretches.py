@@ -25,8 +25,17 @@ every change shortens the network's centreline, so repeating it settles. A
 thick-vessel bridge is never a stretch, nor a partner: it runs inside the
 thick lumen by construction. The parked first attempt (branch
 ``claude/phase2-doubled-stretches``) combined these operations with a pair
-rule that kept pairs the whole-edge rule had deleted; here the pair rule is
-as it was, and this runs after it on what it leaves.
+rule that kept pairs the whole-edge rule had deleted. Here the pair rule
+still decides which edge of a pair goes, and :func:`rewire_pair` takes it
+out the same way -- its stretch beside the other cut out, what is left
+joined where it parts (PLAN_clean_graph.md 1d) -- rather than deleting it
+whole; this step runs after it on what it leaves.
+
+A join is refused when the loop it closes lies inside one lumen
+(``lumen_loops.loop_inside_one_lumen``): the shortest loop through it, round
+the rest of the network, the edge rewired left out. The failed attempts
+(the parked branch, the missed-branches session's trim-and-rejoin) raised
+the short loops because a rejoin could close one.
 """
 from __future__ import annotations
 
@@ -51,6 +60,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
 from ._helpers import (
     EdgeSampleIndex, calculate_path_length, edge_id, edge_sample_points, next_node_id, points_within,
 )
+from .lumen_loops import LOOP_SEARCH_UM, loop_inside_one_lumen
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 
 logger = logging.getLogger(__name__)
@@ -186,6 +196,28 @@ def doubled_stretches(
     return runs
 
 
+def _runs_of(partner: np.ndarray, gap_samples: int):
+    """``(which, start, stop)`` for each run of samples beside one partner
+    (*partner*: per sample, its partner's number or -1), skipping up to
+    *gap_samples* samples beside nothing or beside another."""
+    i = 0
+    while i < len(partner):
+        if partner[i] < 0:
+            i += 1
+            continue
+        which, start, stop, gap, j = partner[i], i, i, 0, i + 1
+        while j < len(partner):
+            if partner[j] == which:
+                stop, gap = j, 0
+            elif gap < gap_samples:
+                gap += 1
+            else:
+                break
+            j += 1
+        i = stop + 1
+        yield which, start, stop
+
+
 def _judge_edge(u, v, key, path, dense, reach, own, index, owners, edge_of, bridge_ids, support, *,
                 step, gap_samples, min_run_um, min_run_radii) -> list[DoubledStretch]:
     """The doubled stretches of one edge: its judged samples against every
@@ -219,21 +251,7 @@ def _judge_edge(u, v, key, path, dense, reach, own, index, owners, edge_of, brid
     judged_at = np.flatnonzero(judged)
     first, last = int(judged_at[0]), int(judged_at[-1])
     runs: list[DoubledStretch] = []
-    i = 0
-    while i < len(samples):
-        if partner[i] < 0:
-            i += 1
-            continue
-        which, start, stop, gap, j = partner[i], i, i, 0, i + 1
-        while j < len(samples):
-            if partner[j] == which:
-                stop, gap = j, 0
-            elif gap < gap_samples:
-                gap += 1
-            else:
-                break
-            j += 1
-        i = stop + 1
+    for which, start, stop in _runs_of(partner, gap_samples):
         stretch = samples[start:stop + 1]
         length = _length(stretch)
         radius = float(np.mean(support.radius(stretch)))
@@ -273,6 +291,8 @@ class _Editor:
         #: the clean-up's rounds: a zip that would put its new junction back
         #: on one is the previous round's zip undone, and is refused.
         self.zipped_at: set = set()
+        #: Joins not made, each closing a loop inside one lumen.
+        self.refused = 0
 
     @staticmethod
     def place(point) -> tuple:
@@ -415,40 +435,227 @@ def _zip(editor: _Editor, run: DoubledStretch, shared, at_start: bool, min_share
     return True
 
 
-def _rejoin(editor: _Editor, run: DoubledStretch) -> bool:
+def _hiding(hidden: set):
+    """A Dijkstra weight over a MultiGraph: the shortest of the edges joining
+    two nodes, the edges *hidden* (``edge_id``s) left out."""
+
+    def weight(p, q, keyed: dict):
+        lengths = [float(d.get("length") or 0.0) for k, d in keyed.items() if edge_id(p, q, k) not in hidden]
+        return min(lengths) if lengths else None
+
+    return weight
+
+
+def _loop_through_join(
+    G: nx.MultiGraph, node, partner, partner_path: np.ndarray, at: int, join_points: np.ndarray, hidden: set,
+) -> np.ndarray | None:
+    """The loop joining *node* to *partner* at vertex *at* of its path from
+    its first node (along *join_points*, from *node*) would close: the
+    shortest, within :data:`lumen_loops.LOOP_SEARCH_UM`, through the join, the
+    partner from there to one of its ends, and the rest of the network back
+    to *node*, the edges *hidden* left out. Its points in microns, or None
+    when there is none that short."""
+    a, b, _key = partner
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(partner_path, axis=0), axis=1))])
+    legs = (
+        (a, float(arc[at]), partner_path[: at + 1][::-1]),
+        (b, float(arc[-1] - arc[at]), partner_path[at:]),
+    )
+    join_um = _length(join_points)
+    limit = LOOP_SEARCH_UM - join_um - min(leg_um for _end, leg_um, _points in legs)
+    if limit < 0:
+        return None
+    weight = _hiding(hidden)
+    previous, distance = nx.dijkstra_predecessor_and_distance(G, node, cutoff=limit, weight=weight)
+    best = None
+    for end, leg_um, leg_points in legs:
+        if end in distance:
+            total = join_um + leg_um + distance[end]
+            if total <= LOOP_SEARCH_UM and (best is None or total < best[0]):
+                best = (total, end, leg_points)
+    if best is None:
+        return None
+    _total, end, leg_points = best
+    route = [end]
+    while route[-1] != node:
+        route.append(previous[route[-1]][0])
+    pieces = [np.asarray(join_points, dtype=float), np.asarray(leg_points, dtype=float)]
+    for p, q in zip(route[:-1], route[1:]):
+        key = min(
+            (k for k in G[p][q] if edge_id(p, q, k) not in hidden),
+            key=lambda k: float(G.edges[p, q, k].get("length") or 0.0),
+        )
+        positions = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (p, q)}
+        pieces.append(edge_sample_points(p, q, G.edges[p, q, key], positions))
+    return np.vstack(pieces)
+
+
+def _join_closes_loop_in_one_lumen(
+    G: nx.MultiGraph, support: MaskSupport, node, partner, partner_path: np.ndarray, at: int,
+    join_points: np.ndarray, hidden: set,
+) -> bool:
+    """Whether the join :func:`_loop_through_join` describes closes a loop
+    lying inside one lumen (``lumen_loops.loop_inside_one_lumen``): that join
+    is then not made. Lee thinning's rings and a strand rejoined to the
+    vessel it doubled both close one; the in-lumen loop rule would break it
+    again, taking its arc nearest the wall, whichever that was."""
+    loop = _loop_through_join(G, node, partner, partner_path, at, join_points, hidden)
+    return loop is not None and loop_inside_one_lumen(loop, support)
+
+
+def _rejoin(editor: _Editor, run: DoubledStretch, support: MaskSupport | None = None) -> bool:
     """Cut the stretch out of the edge nearer the wall and join its two
-    remaining parts to the partner where they leave it."""
+    remaining parts to the partner where they leave it. With *support*, a
+    part whose join would close a loop inside one lumen
+    (:func:`_join_closes_loop_in_one_lumen`) is not joined -- it is joined to
+    the network already, round that loop -- and goes with the stretch; when
+    neither part can be joined the stretch is left as it is."""
     u, v, _key = run.edge
     a, b, _pkey = run.partner
     partner_path = editor.path(run.partner, a)
-    ends = {0: a, len(partner_path) - 1: b}
+    last = len(partner_path) - 1
+    ends = {0: a, last: b}
 
     def at_partner(point):
         """The partner's vertex nearest *point*: its index, or the end node
         it is when that vertex is one of the partner's two ends."""
         index = int(np.argmin(np.linalg.norm(partner_path - point, axis=1)))
-        return (index, None) if 0 < index < len(partner_path) - 1 else (None, ends[index])
+        return (index, None) if 0 < index < last else (None, ends[index])
 
     first, first_node = at_partner(run.samples[run.start])
     second, second_node = at_partner(run.samples[run.stop])
     if first_node is not None and second_node is not None and first_node == second_node:
         return False
-    # Split the partner where the two remainders join it -- once where both
-    # join at the same vertex, not at all where they join at its own ends.
-    # The chords are not held to the run's length (see _zip).
-    indices = sorted({i for i in (first, second) if i is not None})
-    nodes = editor.split(run.partner, a, indices) if indices else []
-    at = dict(zip(indices, nodes))
-    to_start = first_node if first is None else at[first]
-    to_stop = second_node if second is None else at[second]
-    # A remainder joining the partner at the node it already starts from
-    # (the edge leaves a node the partner ends on) would be a self-loop: it
-    # has nothing left, and goes.
-    pieces = [
-        (u, to_start, np.vstack([run.samples[: run.start + 1], editor.pos(to_start)])),
-        (to_stop, v, np.vstack([editor.pos(to_stop), run.samples[run.stop:]])),
+    # (the remainder's node, where it joins the partner, and its points from
+    # the node). A remainder joining the partner at the node it already
+    # starts from (the edge leaves a node the partner ends on) would be a
+    # self-loop: it has nothing left, and goes.
+    joins = [
+        (node, index, end_node, remainder)
+        for node, index, end_node, remainder in (
+            (u, first, first_node, run.samples[: run.start + 1]),
+            (v, second, second_node, run.samples[run.stop:][::-1]),
+        )
+        if node != end_node
     ]
-    editor.replace(run.edge, [(x, y, points) for x, y, points in pieces if x != y])
+    if support is not None and joins:
+        hidden = {edge_id(*run.edge), edge_id(*run.partner)}
+
+        def closes_loop(node, index, end_node, remainder) -> bool:
+            vertex = index if index is not None else (0 if end_node == a else last)
+            join = np.vstack([remainder, partner_path[vertex]])
+            return _join_closes_loop_in_one_lumen(editor.G, support, node, run.partner, partner_path, vertex, join, hidden)
+
+        kept = [join for join in joins if not closes_loop(*join)]
+        editor.refused += len(joins) - len(kept)
+        if not kept:
+            return False
+        joins = kept
+    # Split the partner where the remainders join it -- once where both join
+    # at the same vertex, not at all where they join at its own ends. The
+    # chords are not held to the run's length (see _zip).
+    indices = sorted({index for _node, index, _end, _points in joins if index is not None})
+    at = dict(zip(indices, editor.split(run.partner, a, indices) if indices else []))
+    pieces = []
+    for node, index, end_node, _remainder in joins:
+        target = end_node if index is None else at[index]
+        if node == u:
+            pieces.append((u, target, np.vstack([run.samples[: run.start + 1], editor.pos(target)])))
+        else:
+            pieces.append((target, v, np.vstack([editor.pos(target), run.samples[run.stop:]])))
+    editor.replace(run.edge, pieces)
+    return True
+
+
+def _stretch_beside(G: nx.MultiGraph, support: MaskSupport, edge, partner) -> DoubledStretch | None:
+    """The longest stretch of *edge* running beside *partner* in one lumen,
+    judged sample by sample as :func:`doubled_stretches` judges it but
+    against *partner* alone, or None when no sample is beside it."""
+    u, v, _key = edge
+    a, b, _pkey = partner
+    node_pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v, a, b)}
+    step = _sample_step(support.voxel_size_zyx)
+    path = edge_sample_points(u, v, G.edges[edge], node_pos)
+    beside_points = _densify(edge_sample_points(a, b, G.edges[partner], node_pos), step)
+    samples, tangents, judged = _judged_samples(path, support.radius, step_um=step, margin_um=SAME_LUMEN_MARGIN_UM)
+    if not judged.any() or len(beside_points) == 0:
+        return None
+    neighbour = np.full(len(samples), -1, dtype=np.intp)
+    neighbour[np.flatnonzero(judged)] = _same_lumen_neighbours(
+        samples[judged], tangents[judged], cKDTree(beside_points), beside_points, support.inside, support.radius,
+        step_um=step, margin_um=SAME_LUMEN_MARGIN_UM, max_cosine=MAX_SHADOW_COSINE,
+    )
+    gap_samples = max(1, int(np.ceil(RUN_GAP_UM / step)))
+    runs = [(start, stop) for _which, start, stop in _runs_of(np.where(neighbour >= 0, 0, -1), gap_samples)]
+    if not runs:
+        return None
+    start, stop = max(runs, key=lambda run: _length(samples[run[0]:run[1] + 1]))
+    judged_at = np.flatnonzero(judged)
+    beside = neighbour[start:stop + 1]
+    beside = beside[beside >= 0]
+    return DoubledStretch(
+        edge=tuple(edge),
+        partner=tuple(partner),
+        samples=samples,
+        start=start,
+        stop=stop,
+        partner_start=beside_points[neighbour[start]],
+        partner_stop=beside_points[neighbour[stop]],
+        length_um=_length(samples[start:stop + 1]),
+        radius_um=float(np.mean(support.radius(samples[start:stop + 1]))),
+        partner_radius_um=float(np.mean(support.radius(beside_points[beside]))),
+        at_start=start <= int(judged_at[0]) + gap_samples,
+        at_stop=stop >= int(judged_at[-1]) - gap_samples,
+    )
+
+
+def rewire_pair(G: nx.MultiGraph, support: MaskSupport, edge, partner) -> bool:
+    """Take *edge* out of a pair in one lumen without deleting it whole
+    (PLAN_clean_graph.md 1d): its stretch beside *partner* is cut out, and
+    what is left at each end is joined to *partner* where it leaves it.
+
+    A remainder that is nothing but the stretch's own end -- at a node the
+    two share, or at a dead end's tip -- has nothing to join. A join that
+    would close a loop inside one lumen (:func:`_join_closes_loop_in_one_lumen`)
+    is not made; what it would have joined is joined to the network already,
+    round that loop. Returns whether anything was joined. When nothing is,
+    *G* is as it was, and the caller deletes *edge* as the pair rule always
+    did: grids D-F found the undoubled remainder vessel 56 % of the time and
+    no measure that says when, so it is kept wherever it can be (decision D2).
+    """
+    u, v, _key = edge
+    a, b, _pkey = partner
+    if u == v or a == b or {u, v} == {a, b}:
+        return False
+    run = _stretch_beside(G, support, edge, partner)
+    if run is None:
+        return False
+    editor = _Editor(G)
+    partner_path = editor.path(partner, a)
+    last = len(partner_path) - 1
+    hidden = {edge_id(*edge), edge_id(*partner)}
+    joins = []
+    for node, reaches_end, remainder in (
+        (u, run.at_start, run.samples[: run.start + 1]),
+        (v, run.at_stop, run.samples[run.stop:][::-1]),
+    ):
+        if reaches_end and (node in (a, b) or G.degree[node] == 1):
+            continue
+        at = int(np.argmin(np.linalg.norm(partner_path - remainder[-1], axis=1)))
+        attach = a if at == 0 else b if at == last else None
+        if attach == node:
+            continue
+        join = np.vstack([remainder, partner_path[at]])
+        if _join_closes_loop_in_one_lumen(G, support, node, partner, partner_path, at, join, hidden):
+            continue
+        joins.append((node, at, attach, join))
+    if not joins:
+        return False
+    inner = sorted({at for _node, at, attach, _join in joins if attach is None})
+    split_at = dict(zip(inner, editor.split(partner, a, inner))) if inner else {}
+    editor.replace(edge, [
+        (node, attach if attach is not None else split_at[at], join) for node, at, attach, join in joins
+    ])
     return True
 
 
@@ -559,14 +766,15 @@ def resolve_doubled_stretches(
         elif run.at_stop and v in (a, b) and G.degree[v] >= 3:
             done = "zipped" if _zip(editor, run, v, at_start=False, min_shared_um=2 * too_short) else None
         elif run.radius_um < run.partner_radius_um:
-            done = "rejoined" if _rejoin(editor, run) else None
+            done = "rejoined" if _rejoin(editor, run, support) else None
         if done:
             counts[done] += 1
-    if any(counts.values()):
+    if any(counts.values()) or editor.refused:
         logger.info(
             "Doubled stretches in one lumen: %d dead end(s) cut back, %d fork(s) zipped, "
-            "%d stretch(es) cut out and rejoined; %.0f um of centreline taken out",
-            counts["trimmed"], counts["zipped"], counts["rejoined"], editor.removed_um,
+            "%d stretch(es) cut out and rejoined; %.0f um of centreline taken out; %d join(s) not "
+            "made, each closing a loop inside one lumen",
+            counts["trimmed"], counts["zipped"], counts["rejoined"], editor.removed_um, editor.refused,
         )
     G.graph["doubled_stretches_resolved"] = int(G.graph.get("doubled_stretches_resolved", 0)) + sum(counts.values())
     return G
@@ -578,4 +786,5 @@ __all__ = [
     "DoubledStretch",
     "doubled_stretches",
     "resolve_doubled_stretches",
+    "rewire_pair",
 ]

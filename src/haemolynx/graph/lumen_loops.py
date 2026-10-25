@@ -705,25 +705,32 @@ def remove_parallel_edges_in_lumen(
     G: nx.MultiGraph, support: MaskSupport, *, memo: dict | None = None,
     keep_apart: Callable[[tuple], bool] | None = None,
     along_centreline: Callable[[np.ndarray], float] | None = None,
+    rewire: bool = True,
 ) -> nx.MultiGraph:
-    """Drop, in place, one edge of each pair
+    """Take out, in place, one edge of each pair
     :func:`graph.diagnostics.diagnose_parallel_duplicates_in_lumen` reports.
 
     The edge nearer the wall goes (``_wall_hugging``), so the centreline
-    that stays is the one nearer the lumen's middle -- unless taking it out
-    would cut vessels off from the rest of the network
-    (:func:`cuts_off_vessels`), when the other goes instead, or, when that
-    would too, both stay. A branch meeting its parent, and two vessels with
-    background between them, are not pairs in that report and are left
-    alone. *memo* is the report's own, for a caller asking again and again
-    of one graph (``assemble.consolidate_lumen``). *keep_apart*, called with
-    the pair ``(left, right)`` of edge keys, is evidence beyond the mask
-    that they are two vessels: a pair it returns True for is left alone.
-    With *along_centreline*, an edge on a thick vessel's centreline tree is
-    kept over one that is not (:func:`_removal_order`), and both stay when
-    the other is a vessel of its own beside it.
+    that stays is the one nearer the lumen's middle. With *rewire* (the
+    default) it goes the way ``doubled_stretches.rewire_pair`` takes it --
+    the stretch beside the other cut out, what is left joined to the other
+    where it parts -- and is deleted whole only when nothing is left to
+    join, or every join would close a loop inside one lumen
+    (PLAN_clean_graph.md 1d). Deleting it is refused where that would cut
+    vessels off from the rest of the network (:func:`cuts_off_vessels`): the
+    other goes instead, the same two ways, or, when neither can, both stay.
+    A branch meeting its parent, and two vessels with background between
+    them, are not pairs in that report and are left alone. *memo* is the
+    report's own, for a caller asking again and again of one graph
+    (``assemble.consolidate_lumen``). *keep_apart*, called with the pair
+    ``(left, right)`` of edge keys, is evidence beyond the mask that they
+    are two vessels: a pair it returns True for is left alone. With
+    *along_centreline*, an edge on a thick vessel's centreline tree is kept
+    over one that is not (:func:`_removal_order`), and both stay when the
+    other is a vessel of its own beside it.
     """
     from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
+    from haemolynx.graph.doubled_stretches import rewire_pair
 
     report = diagnose_parallel_duplicates_in_lumen(
         G,
@@ -732,7 +739,7 @@ def remove_parallel_edges_in_lumen(
         mask_support=support,
         memo=memo,
     )
-    removed = kept_connected = kept_beside = 0
+    removed = rewired = kept_connected = kept_beside = 0
     for left, right in report["duplicate_pairs"]:
         present = [edge for edge in (left, right) if G.has_edge(*edge)]
         if len(present) < 2:
@@ -750,22 +757,29 @@ def remove_parallel_edges_in_lumen(
         if not candidates:
             kept_beside += 1
             continue
-        drop = next((edge for edge in candidates if not cuts_off_vessels(G, edge)), None)
-        if drop is None:
+        for drop in candidates:
+            if rewire and rewire_pair(G, support, drop, next(e for e in present if e != drop)):
+                rewired += 1
+                break
+            if not cuts_off_vessels(G, drop):
+                u, v, key = drop
+                G.remove_edge(u, v, key)
+                removed += 1
+                for node in (u, v):
+                    if G.has_node(node) and G.degree(node) == 0:
+                        G.remove_node(node)
+                break
+        else:
             kept_connected += 1
-            continue
-        u, v, key = drop
-        G.remove_edge(u, v, key)
-        removed += 1
-        for node in (u, v):
-            if G.has_node(node) and G.degree(node) == 0:
-                G.remove_node(node)
     G.graph["parallel_lumen_edges_removed"] = int(G.graph.get("parallel_lumen_edges_removed", 0)) + removed
-    if removed or kept_connected or kept_beside:
+    G.graph["parallel_lumen_edges_rewired"] = int(G.graph.get("parallel_lumen_edges_rewired", 0)) + rewired
+    if removed or rewired or kept_connected or kept_beside:
         logger.info(
-            "Removed %d parallel edge(s) lying beside another in one lumen; kept %d pair(s) "
-            "where either edge was the only link to vessels beyond it, and %d where one was a "
-            "vessel beside a thick one",
+            "Parallel edges lying beside another in one lumen: rewired %d, their stretch cut out and "
+            "what was left joined where it parts; removed %d whole; kept %d pair(s) where either "
+            "edge was the only link to vessels beyond it, and %d where one was a vessel beside a "
+            "thick one",
+            rewired,
             removed,
             kept_connected,
             kept_beside,

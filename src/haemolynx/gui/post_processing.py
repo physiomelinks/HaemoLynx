@@ -1298,6 +1298,8 @@ def _review_lists() -> tuple[ReviewList, ...]:
                    (ACTION_TRACE_ON, ACTION_JOIN_AHEAD, ACTION_DELETE_ITEM, ACTION_MARK_BLIND, ACTION_KEEP)),
         ReviewList(nr.TWO_IN_ONE_LUMEN, "Two vessels in one lumen", (NEEDS_MASK,),
                    (ACTION_DELETE_SELECTED, ACTION_KEEP)),
+        ReviewList(nr.DOUBLED_STRETCHES, "Stretches doubled in one lumen", (NEEDS_MASK,),
+                   (ACTION_DELETE_SELECTED, ACTION_KEEP)),
         ReviewList(nr.BROKEN_VESSELS, "Broken vessels", (NEEDS_MASK,), (ACTION_JOIN, ACTION_JOIN_AHEAD, ACTION_KEEP)),
         ReviewList(nr.UNCOVERED_MASK, "Segmented vessels without a centreline", (NEEDS_MASK,), (ACTION_KEEP,)),
         ReviewList(nr.UNSOLVED_PIECES, "Unsolved pieces", (NEEDS_BOUNDARIES,),
@@ -1354,6 +1356,9 @@ def review_label(item: Any, number: int) -> str:
         text = f"Node {item.nodes[0]}: {where}, {_g(m.get('length_um'))} µm"
     elif kind == nr.TWO_IN_ONE_LUMEN:
         text = f"Two vessels side by side, the shorter {_g(m.get('shorter_um'))} µm"
+    elif kind == nr.DOUBLED_STRETCHES:
+        seen = {nr.SEEN_FROM_WIDER: ", seen from the wider", nr.SEEN_FROM_NARROWER: ", seen from the narrower"}
+        text = f"{_g(m.get('run_um'))} µm beside another vessel{seen.get(m.get('seen_from'), '')}"
     elif kind == nr.BROKEN_VESSELS and m.get("join") == nr.JOIN_SIDE:
         text = f"Node {item.nodes[0]}: {_g(m.get('gap_um'))} µm to a vessel's side, turning {_g(m.get('turn_deg'))}°"
     elif kind == nr.FACING_ENDS:
@@ -1878,6 +1883,8 @@ def find_review_items(
         return nr.find_dead_ends_at_thick_walls(graph, support, stub_radius_multiple=multiple or 3.0)
     if key == nr.TWO_IN_ONE_LUMEN:
         return nr.find_two_in_one_lumen(graph, support)
+    if key == nr.DOUBLED_STRETCHES:
+        return nr.find_doubled_stretches(graph, support)
     if key == nr.BROKEN_VESSELS:
         multiple = _optional_number(values.get("min_stub_length_radius_multiple"))
         return nr.find_broken_vessels(

@@ -565,8 +565,13 @@ Only the measures of the item's own list are filled.
 | `thick_centreline_um` | `um` | Dead ends at thick vessels: the tip's distance to the thick vessel's centreline tree. |
 | `thick_turn_deg` | `degrees` | Dead ends at thick vessels: the turn from the tip's heading onto that centreline. |
 | `shorter_um` | `um` | Two in one lumen: the shorter vessel's length. |
-| `lengths_um` | `um` | Two in one lumen: both lengths (;-separated). |
+| `lengths_um` | `um` | Two in one lumen, doubled stretches: both vessels' lengths (;-separated). |
 | `cuts_off` | `-` | Two in one lumen: for each, whether deleting it cuts vessels off (;-separated). |
+| `run_um` | `um` | Doubled stretches: how long the stretch beside the other vessel is. |
+| `vessel_radius_um` | `um` | Doubled stretches: the mean lumen radius along the stretch. |
+| `other_radius_um` | `um` | Doubled stretches: the mean lumen radius along the other vessel beside it. |
+| `seen_from` | `-` | Doubled stretches: which vessel sees the other beside it, each judged by its own lumen radius: both, wider_only or narrower_only. |
+| `dead_end` | `flag` | Doubled stretches: either vessel ends in a dead end. |
 | `join` | `-` | Broken vessels: how it would be joined: ends (two dead ends to each other) or side (a dead end to the side of the vessel ahead). |
 | `gap_um` | `um` | Broken vessels: the gap between the two tips, or from the tip to the vessel ahead. |
 | `turn_deg` | `degrees` | Broken vessels: the larger turn from either end's heading onto the join (the tip's, for a side join). |

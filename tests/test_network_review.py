@@ -397,6 +397,63 @@ def test_two_strands_in_one_lumen_are_one_item_saying_whether_deleting_cuts_anyt
     assert item.measures["shorter_um"] == pytest.approx(55.0)
 
 
+def _narrow_strand_along_a_trunk():
+    """A capillary fused to a 14 um trunk's wall: its centreline runs 5.5 um
+    from the trunk's, inside the trunk's lumen, and leaves by a side branch.
+    The trunk is long enough that the two are no whole-edge pair."""
+    from lumen_artefact_fixtures import capsule, polyline_graph
+
+    mask = capsule(np.zeros((21, 50, 120), dtype=bool), (10, 20, -10), (10, 20, 130), 7)
+    capsule(mask, (10, 25.5, 40), (10, 44, 44), 2)
+    G = polyline_graph([[(10, 20, 0), (10, 20, 119)], [(10, 25.5, 10), (10, 25.5, 40), (10, 43, 44)]])
+    return mask, G
+
+
+def test_doubling_seen_only_from_the_wider_vessel_is_listed_and_left_by_the_clean_up():
+    """PLAN_clean_graph.md section 6: a sample is judged with its own vessel's
+    radius, so the capillary is beside the trunk from the trunk's side only.
+    The stretch step leaves that (grid H2 found half such chains vessels of
+    their own and no rule), and this list shows it for a person to decide."""
+    from haemolynx.graph.doubled_stretches import resolve_doubled_stretches
+
+    mask, G = _narrow_strand_along_a_trunk()
+    support = MaskSupport(mask, VOXEL_SIZE)
+    assert nr.find_two_in_one_lumen(G, support) == []
+    before = _unchanged(G)
+    resolve_doubled_stretches(G, support)
+    assert _unchanged(G) == before
+
+    (item,) = nr.find_doubled_stretches(G, support)
+    assert item.kind == nr.DOUBLED_STRETCHES
+    assert item.measures["seen_from"] == nr.SEEN_FROM_WIDER
+    assert item.measures["dead_end"] is True
+    assert item.measures["vessel_radius_um"] > 2 * item.measures["other_radius_um"]
+    assert 25.0 < item.measures["run_um"] < 40.0
+    assert len(item.edges) == 2 and all(G.has_edge(*e) for e in item.edges)
+    assert 10.0 < item.centre_um[2] < 40.0
+    assert "seen only from the wider one" in item.why
+    assert _unchanged(G) == before
+
+    # The Post processing tab's "Stretches doubled in one lumen" makes it.
+    from haemolynx.gui.post_processing import REVIEW_LIST_BY_KEY, find_review_items
+
+    assert REVIEW_LIST_BY_KEY[nr.DOUBLED_STRETCHES].uses_mask
+    assert find_review_items(nr.DOUBLED_STRETCHES, G, support=support) == [item]
+
+
+def test_a_whole_edge_pair_is_left_to_the_two_vessels_list():
+    mask, G = two_strands_in_one_lumen()
+    support = MaskSupport(mask, VOXEL_SIZE)
+    assert len(nr.find_two_in_one_lumen(G, support)) == 1
+    assert nr.find_doubled_stretches(G, support) == []
+
+
+def test_runs_shorter_than_the_listing_minimum_are_not_listed():
+    mask, G = _narrow_strand_along_a_trunk()
+    support = MaskSupport(mask, VOXEL_SIZE)
+    assert nr.find_doubled_stretches(G, support, min_run_um=100.0) == []
+
+
 def _broken_vessel(gap_um: float):
     """A vessel along x broken by a gap in its mask, drawn as two pieces."""
     mask = np.zeros((15, 20, 80), dtype=bool)

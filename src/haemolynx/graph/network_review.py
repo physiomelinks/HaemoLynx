@@ -27,6 +27,7 @@ __all__ = [
     "CLOSE_JUNCTIONS",
     "DEAD_ENDS",
     "DIAMETER_JUMPS",
+    "DOUBLED_STRETCHES",
     "BROKEN_VESSELS",
     "FACING_ENDS",
     "JOIN_ENDS",
@@ -47,6 +48,7 @@ __all__ = [
     "find_dead_ends",
     "find_dead_ends_at_thick_walls",
     "find_diameter_jumps",
+    "find_doubled_stretches",
     "find_broken_vessels",
     "find_facing_ends",
     "find_flow_against_branch_order",
@@ -72,6 +74,7 @@ DEAD_ENDS = "dead_ends"
 #: dead end the definition calls ``thick_wall``.
 THICK_WALL_ENDS = "thick_wall_ends"
 TWO_IN_ONE_LUMEN = "two_in_one_lumen"
+DOUBLED_STRETCHES = "doubled_stretches"
 FACING_ENDS = "facing_ends"
 #: The "Broken vessels" review list (PLAN_dead_ends.md Phase 6): the facing
 #: dead ends the join left open, and the dead ends the definition calls
@@ -97,6 +100,7 @@ REVIEW_KINDS = (
     DEAD_ENDS,
     THICK_WALL_ENDS,
     TWO_IN_ONE_LUMEN,
+    DOUBLED_STRETCHES,
     FACING_ENDS,
     UNCOVERED_MASK,
     UNSOLVED_PIECES,
@@ -1081,6 +1085,91 @@ def find_two_in_one_lumen(G: nx.MultiGraph, support) -> list[ReviewItem]:
             points_um=points,
         ))
     items.sort(key=lambda item: -item.measures["shorter_um"])
+    return items
+
+
+#: Doubled stretches: the shortest run listed, microns -- the census's
+#: "doubled side" of a loop (``diagnostics.diagnose_lumen_artefacts``); a
+#: run shorter is the flare where two vessels meet.
+DOUBLED_STRETCH_MIN_UM = 2.0
+
+#: Which side of a doubled stretch sees it (``seen_from``).
+SEEN_FROM_BOTH = "both"
+SEEN_FROM_WIDER = "wider_only"
+SEEN_FROM_NARROWER = "narrower_only"
+
+
+def find_doubled_stretches(
+    G: nx.MultiGraph, support, *, min_run_um: float = DOUBLED_STRETCH_MIN_UM,
+) -> list[ReviewItem]:
+    """Stretches of a vessel running beside another through one segmented
+    vessel that the clean-up left (:func:`~haemolynx.graph.doubled_stretches.doubled_stretches`),
+    one item per two vessels, longest first; whole-edge pairs are
+    :func:`find_two_in_one_lumen`'s.
+
+    Each sample is judged with its own vessel's lumen radius, so a narrow
+    vessel 4.5 um from a wide one's centreline is beside it from the wide
+    one's side and not from its own. The clean-up resolves what the narrow
+    side sees and leaves the rest (``seen_from``: ``wider_only``): grid H2
+    (Harvey, 2026-10-12) marked half of those dead-end chains along a wider
+    vessel vessels of their own, and no measure told which, so a person
+    decides (PLAN_clean_graph.md, section 6)."""
+    from .diagnostics import diagnose_parallel_duplicates_in_lumen
+    from .doubled_stretches import doubled_stretches
+    from ._helpers import edge_id
+
+    pos = _node_pos(G)
+    name = _namer(G)
+    runs = [run for run in doubled_stretches(G, support) if run.length_um >= min_run_um]
+    if not runs:
+        return []
+    report = diagnose_parallel_duplicates_in_lumen(
+        G, support.mask, voxel_size_zyx=support.voxel_size_zyx, mask_support=support
+    )
+    pairs = {frozenset(edge_id(*e) for e in pair) for pair in report["duplicate_pairs"]}
+    sides = {(edge_id(*run.edge), edge_id(*run.partner)) for run in runs}
+    longest: dict[frozenset, Any] = {}
+    for run in runs:
+        both = frozenset((edge_id(*run.edge), edge_id(*run.partner)))
+        if both in pairs or len(both) < 2:
+            continue
+        if both not in longest or run.length_um > longest[both].length_um:
+            longest[both] = run
+    items = []
+    for both, run in longest.items():
+        edges = (name(*run.edge), name(*run.partner))
+        if not all(G.has_edge(*e) for e in edges):
+            continue
+        back = (edge_id(*run.partner), edge_id(*run.edge)) in sides
+        wider = run.radius_um >= run.partner_radius_um
+        seen = SEEN_FROM_BOTH if back else SEEN_FROM_WIDER if wider else SEEN_FROM_NARROWER
+        stretch = np.asarray(run.samples[run.start:run.stop + 1], dtype=float)
+        points = np.vstack([stretch, _points(G, edges, pos)])
+        dead_end = any(min(G.degree[e[0]], G.degree[e[1]]) == 1 for e in edges)
+        items.append(ReviewItem(
+            kind=DOUBLED_STRETCHES,
+            nodes=tuple(dict.fromkeys(n for e in edges for n in e[:2])),
+            edges=edges,
+            centre_um=_centre(stretch),
+            why=(
+                f"{run.length_um:.3g} µm of one vessel runs beside another in one segmented vessel"
+                + {
+                    SEEN_FROM_BOTH: ".",
+                    SEEN_FROM_WIDER: ", seen only from the wider one: two vessels touching, or one drawn twice.",
+                    SEEN_FROM_NARROWER: ", seen only from the narrower one.",
+                }[seen]
+            ),
+            measures={
+                "run_um": run.length_um,
+                "vessel_radius_um": run.radius_um,
+                "other_radius_um": run.partner_radius_um,
+                "seen_from": seen,
+                "dead_end": dead_end,
+                "lengths_um": ";".join(f"{_length(G, e, pos):.3g}" for e in edges),
+            },
+            points_um=points,
+        ))
+    items.sort(key=lambda item: -item.measures["run_um"])
     return items
 
 

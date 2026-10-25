@@ -646,8 +646,20 @@ def test_the_dropdown_lists_none_first_then_junctions_loops_and_every_check_once
     for action in ACTION_LABELS:
         assert POST_PROCESSING_TOOLTIPS[f"review_{action}"].strip()
     mask_lists = {entry.key for entry in REVIEW_LISTS if entry.uses_mask}
-    assert mask_lists == {nr.DEAD_ENDS, nr.THICK_WALL_ENDS, nr.TWO_IN_ONE_LUMEN, nr.FACING_ENDS, nr.UNCOVERED_MASK}
+    assert mask_lists == {
+        nr.DEAD_ENDS, nr.THICK_WALL_ENDS, nr.TWO_IN_ONE_LUMEN, nr.DOUBLED_STRETCHES, nr.FACING_ENDS,
+        nr.UNCOVERED_MASK,
+    }
     assert REVIEW_MARKERS in POST_PROCESSING_LAYERS and REVIEW_REGION in POST_PROCESSING_LAYERS
+
+
+def test_a_doubled_stretch_reads_as_its_length_and_the_side_that_sees_it():
+    assert review_label(
+        _item(nr.DOUBLED_STRETCHES, run_um=12.0, seen_from=nr.SEEN_FROM_WIDER), 2
+    ) == "2. 12 µm beside another vessel, seen from the wider"
+    assert review_label(
+        _item(nr.DOUBLED_STRETCHES, run_um=3.5, seen_from=nr.SEEN_FROM_BOTH), 1
+    ) == "1. 3.5 µm beside another vessel"
 
 
 def test_each_kind_of_item_reads_as_one_short_line():

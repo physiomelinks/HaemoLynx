@@ -136,22 +136,43 @@ def _edge(G, a, b):
 
 
 def test_the_wall_side_duplicate_stays_when_it_alone_carries_a_branch():
+    """Deleted whole, the wall-side edge would cut its branch off, so before
+    rewiring (PLAN_clean_graph.md 1d) the medial one went instead. Rewired,
+    the wall-side one goes and its branch is joined to the medial one where
+    the two part: the centreline runs down the lumen's middle, branch kept."""
     mask, G = _fork_with_a_branch(branch_on_both=False)
     support = MaskSupport(mask, VOXEL_SIZE)
     assert _pairs(G, mask) == 1
     G = remove_parallel_edges_in_lumen(G, support)
     assert nx.number_connected_components(G) == 1
     assert G.has_edge((7.0, 9.0, 57.0), (7.0, 40.0, 57.0))
+    assert not G.has_edge((7.0, 7.0, 2.0), (7.0, 9.0, 57.0))
+    route = nx.shortest_path(G, (7.0, 7.0, 2.0), (7.0, 40.0, 57.0))
+    assert all(abs(float(np.asarray(G.nodes[n]["pos"])[1]) - 6.0) < 1.5 for n in route[1:-2])
+    assert G.graph["parallel_lumen_edges_rewired"] == 1
+    assert _pairs(G, mask) == 0
+
+
+def test_the_wall_side_duplicate_is_deleted_as_before_when_not_rewired():
+    mask, G = _fork_with_a_branch(branch_on_both=False)
+    G = remove_parallel_edges_in_lumen(G, MaskSupport(mask, VOXEL_SIZE), rewire=False)
+    assert nx.number_connected_components(G) == 1
+    assert G.has_edge((7.0, 9.0, 57.0), (7.0, 40.0, 57.0))
     assert not G.has_node((7.0, 6.0, 57.0))  # the medial one went, its dead end with it
 
 
-def test_a_pair_both_of_whose_edges_carry_vessels_is_left_whole():
+def test_a_pair_both_of_whose_edges_carry_vessels_is_left_whole_unless_rewired():
     mask, G = _fork_with_a_branch(branch_on_both=True)
     support = MaskSupport(mask, VOXEL_SIZE)
     edges = G.number_of_edges()
+    kept = remove_parallel_edges_in_lumen(G.copy(), support, rewire=False)
+    assert kept.number_of_edges() == edges
+    assert nx.number_connected_components(kept) == 1
+    # Rewired, the pair is gone and neither branch is cut off.
     G = remove_parallel_edges_in_lumen(G, support)
-    assert G.number_of_edges() == edges
     assert nx.number_connected_components(G) == 1
+    assert G.has_node((7.0, 40.0, 57.0)) and G.has_node((7.0, 6.0, 68.0))
+    assert _pairs(G, mask) == 0
 
 
 def test_cutting_off_is_judged_on_what_lies_beyond_the_edge():
