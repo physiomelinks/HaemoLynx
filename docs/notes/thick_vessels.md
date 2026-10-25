@@ -110,7 +110,7 @@ ends, `diameter_source="bridge"`), get no branch order and are no step in one
 the thick centreline directly, sharing the graph's attribute dicts so per-vessel results land on
 it) and report them on their own rows. See `PLAN_thick_vessel_bridges.md`. Three cases since,
 from Harvey's examples (2026-10-13, `PLAN_bridging.md` F1-F1c): a dead end stopping within
-`WALL_JOIN_REACH_UM` (10 um) of the thick lumen and heading for it (the gap bridges' 80-degree,
+`WALL_JOIN_REACH_UM` (15 um since grid P2, 10 um before) of the thick lumen and heading for it (the gap bridges' 80-degree,
 3 um rule, judged on the path drawn as for the reconnects, `reconnect.path_continues_ends`)
 is first drawn on through the mask to the thick centreline, under the bridge gate and
 the same-lumen guard (a short join judged at its middle) and the loop guards, never closing a loop shorter than the run's
@@ -205,5 +205,22 @@ a fork of two vessels of a size keeps no bridge (his marks: 4 near-equal forks E
 join's reach and in-lumen loop guard go to grid P2 (`scripts/thick_junction_review/wall_rest_grid.py`:
 every unmarked case of each on E14.5, 5 and 4), the 9 connectors the split leaves unbridged to
 grid K (`connector_grid.py`: 2 read their reach at a thin tree spur, 1 sunk by one exit), and the
-tree fill to a fresh grid on E15, which waits on that stack's pixel size. Nothing changes until
-the marks are in.
+tree fill to a fresh grid on E15, which waits on that stack's pixel size. **P2 and K marked** (the
+same day; `outputs/thick_junction_review/grid_P2/FIT_P2.md`, `grid_K/FIT_K.md`): every version of
+the join replayed on E14.5 and scored on all 22 marked wall cases (15 J, 7 N): as it is 12/22, the
+reach at 15 um 14/22 (two more joins, both J, none N), the in-lumen loop guard or the beside check
+dropped 12/22 (the short-loop guard then refuses the same joins). Harvey: the reach 15 um, the
+guard kept. Grid K: 4 B, 5 N; today's split 5/9, the reach read at the widest tree radius 4/9 (the
+marks contradict the spur cause), each exit bridged on its own 6/9; nothing changes until the E15
+grid checks that and the length inside the region (8/9 here, 6/9 leave-one-out).
+**A thick vessel's end at the image face is never dropped** (found raising the reach): on
+E14.5 at 15 um a wall join put a node on the arteriole's centreline 17 um from the image face,
+past the tree's end (skeletonisation stops the tree short of the face). The stretch from there to
+the face became an edge of its own, inside the region and off the tree; met at that node by the
+joined vessel's stretch, the split took both for one connector, replaced it by the joined
+vessel's bridge, and the arteriole's inlet at the face went with it: the inlet snapped to another
+vessel, the Large_Art tier fell from 35 vessels to 8 and the network resistance rose fourfold. An
+inside run ending at a dead end on an image face is now the thick vessel's own path, kept like its
+path through a connector (`_at_image_face`;
+`test_a_thick_vessels_end_at_the_image_face_stays_when_a_vessel_joins_beside_it`).
+

@@ -205,7 +205,7 @@ review lists) reads them.
 ## Dead ends at a thick vessel's wall (2026-10-25, PLAN_bridging.md 1.3 and 0.2)
 
 `thick_wall`: a dead end whose tip lies within the lumen's radius plus `WALL_JOIN_REACH_UM`
-(10 um) of the thick vessels' centreline tree, and further than the split's tolerance of it
+(15 um since grid P2, 10 um before) of the thick vessels' centreline tree, and further than the split's tolerance of it
 (`thick_bridge_centreline_tolerance_um`, or 30% of the radius) -- the dead ends the split's wall
 join looks at -- which the join left. It takes the place of `stops_short`, `broken` and
 `unknown`; an `artefact` stays one (it is no vessel's end), as do `leaves_image` and

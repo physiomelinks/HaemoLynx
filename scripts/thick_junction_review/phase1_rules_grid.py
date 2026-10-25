@@ -5,7 +5,7 @@ Phase 1 rules, which were fitted on Harvey's own examples (7 missing bridges,
 never marked).
 
 - **Wall join** (``_join_dead_ends_at_walls``): a dead end within
-  ``WALL_JOIN_REACH_UM`` (10 um) of a thick vessel's lumen, heading for it
+  ``WALL_JOIN_REACH_UM`` (10 um when this grid was drawn, 15 um since grid P2) of a thick vessel's lumen, heading for it
   (at most 80 degrees off, its vessel at least 3 um), is drawn on through the
   mask to the thick centreline and bridged.
 - **Taper** (``_taper_bridges``, dropped on 2026-10-25 after this grid's
@@ -49,8 +49,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "thick_bridge_review"))
 
 SEED = 20261025
-#: Dead ends this far past a thick lumen are candidates: the rule's 10 um and
-#: 5 um beyond it, so the grid shows where the reach cuts off.
+#: Dead ends this far past a thick lumen are candidates: the rule's 10 um (as
+#: grid P was drawn; 15 um since grid P2) and 5 um beyond it.
 WALL_POOL_PAST_LUMEN_UM = 15.0
 #: Leave out a case this near (um) one of the Phase 5 grid's.
 EXCLUDE_NEAR_UM = 6.0

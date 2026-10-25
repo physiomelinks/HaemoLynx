@@ -774,6 +774,51 @@ def test_a_vessel_stopping_at_the_wall_is_drawn_on_and_bridged():
     assert thin[JOINED_AT_WALL_UM] == pytest.approx(13.0, abs=0.6)
 
 
+def test_a_thick_vessels_end_at_the_image_face_stays_when_a_vessel_joins_beside_it():
+    """Regression (E14.5, the wall join at 15 um): skeletonisation stops the
+    tree short of the image face, and a vessel joins the thick centreline
+    13 um in, so the thick vessel's stretch to the face is an edge of its own
+    inside the region, off the tree. Met at that node by the joining
+    vessel's stretch, it was dropped with it as one connector, and the
+    arteriole's inlet at the face went with it. It is the thick vessel's own
+    end: kept, and the joining vessel still gets its one bridge."""
+    body = _tube((20.0, -5.0, 20.0), (20.0, 63.0, 20.0), RADIUS)
+    lumen = body.copy()
+    tree = _tube((20.0, 12.0, 20.0), (20.0, 63.0, 20.0), 0.5)
+    _thin_vessel(lumen, (20, 13, 20), (20, 13, 63))
+    G = _graph(("F", "N", (20, 0, 20), (20, 13, 20)), ("N", "T1", (20, 13, 20), T1),
+               ("X", "N", (20, 13, 63), (20, 13, 20)))
+
+    result = _split(G, lumen, body, tree)
+
+    assert "F" in result and result.degree("F") == 1, "the thick vessel's end at the face stays"
+    (face_edge,) = [d for a, b, d in result.edges(data=True) if "F" in (a, b)]
+    assert not face_edge.get(IS_ZERO_RESISTANCE)
+    assert face_edge["length"] == pytest.approx(13.0, abs=0.6)
+    ((_u, _v, bridge),) = _bridges(result)
+    assert bridge["length"] == pytest.approx(REACH, abs=1.0), "the joining vessel's one bridge, wall to centreline"
+
+
+@pytest.mark.parametrize(("past_lumen_um", "joined"), [(13.0, True), (17.0, False)])
+def test_the_wall_join_reaches_15_um_past_the_lumen(past_lumen_um, joined):
+    """Harvey's grids P and P2 (2026-10-25): every dead end 10-14 um past the
+    lumen heading for it was marked "join". One stopping 13 um past the wall
+    (the reach was 10 um) is drawn on through the mask; one 17 um past is not."""
+    from haemolynx.graph.thick_vessel_junctions import JOINED_AT_WALL_UM, WALL_JOIN_REACH_UM
+
+    assert WALL_JOIN_REACH_UM == 15.0
+    stop_x = 20.0 + RADIUS + past_lumen_um
+    G, lumen, body, tree = _wall_case(stop_x)
+
+    result = _split(G, lumen, body, tree)
+
+    assert bool(_bridges(result)) is joined
+    assert ("S" not in result) is joined
+    if joined:
+        (thin,) = [d for a, b, d in result.edges(data=True) if "X" in (a, b)]
+        assert thin[JOINED_AT_WALL_UM] == pytest.approx(stop_x - 20.0, abs=0.6)
+
+
 def test_a_vessel_stopping_at_the_wall_is_left_when_the_join_is_switched_off():
     G, lumen, body, tree = _wall_case(33.0)
 

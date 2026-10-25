@@ -85,6 +85,16 @@ _SNAP_UM = 1.0
 #: the lumen.
 _SAMPLE_STEP_UM = 0.5
 
+#: A node this near an image face (µm) is on it: a vessel the image cut.
+_FACE_MARGIN_UM = 2.0
+
+
+def _at_image_face(pos, extent_um) -> bool:
+    """Whether *pos* (physical ``(z, y, x)`` µm) lies within
+    :data:`_FACE_MARGIN_UM` of a face of an image *extent_um* across."""
+    p = np.asarray(pos, dtype=float)
+    return bool(np.any(p <= _FACE_MARGIN_UM) or np.any(p >= np.asarray(extent_um, dtype=float) - _FACE_MARGIN_UM))
+
 #: A stretch shorter than this (2 um) between others is the region's edge or the
 #: tree's tolerance flickering along a centreline, not a vessel leaving or
 #: entering: it takes its neighbour's label.
@@ -103,8 +113,11 @@ _MIN_CENTRELINE_WITHIN_UM = 4.0 * CENTRELINE_TOLERANCE_UM
 #: the nearest point of its centreline tree) a vessel's centreline may stop
 #: and still be drawn on to the thick centreline through the mask (µm):
 #: skeletonisation often ends a thin vessel's arm short of the thick region,
-#: at its wall, and then nothing reaches the thick centreline.
-WALL_JOIN_REACH_UM = 10.0
+#: at its wall, and then nothing reaches the thick centreline. 15 um since
+#: Harvey's grids P and P2 (2026-10-25): every dead end 10-14 um past the lumen
+#: heading for it was marked "join"; at 15 um E14.5 gains two joins, both so
+#: marked, and none marked "leave".
+WALL_JOIN_REACH_UM = 15.0
 
 #: Edge attribute on a vessel drawn on from a thick vessel's wall to its
 #: centreline: how much was added, in µm (the part inside the lumen becomes
@@ -964,6 +977,20 @@ def insert_thick_vessel_junction_nodes(
     through = _thick_paths_through_connectors(
         sampled, inside_runs, find, touches_centreline, contacts
     )
+    # The thick vessel's own end running out of the image: an inside run
+    # ending at a dead end on an image face is its way to the face, kept as
+    # the thick vessel's path, never a connector's stretch to replace with a
+    # bridge. Joined at a node a wall join put on the centreline (E14.5, the
+    # reach at 15 um), it fell in with that vessel's connector and the
+    # arteriole's inlet at the face went with it.
+    extent_um = (np.asarray(thick.shape) - 1) * vs
+    through = set(through) | {
+        r
+        for r, (i, s, t) in enumerate(inside_runs)
+        for end, node in ((0, sampled[i].u), (len(sampled[i].points) - 1, sampled[i].v))
+        if (s == end or t == end) and result.degree(node) == 1
+        and _at_image_face(result.nodes[node]["pos"], extent_um)
+    }
     for r in through:
         i, s, t = inside_runs[r]
         contacts.setdefault(find(("run", r)), []).extend((i, k) for k in range(s, t + 1))
@@ -2080,8 +2107,7 @@ def _remove_blind_vessels_beyond_bridges(
     extent_um = np.asarray(extent_um, dtype=float)
 
     def at_image_edge(node):
-        p = np.asarray(built.nodes[node]["pos"], dtype=float)
-        return bool(np.any(p <= 2.0) or np.any(p >= extent_um - 2.0))
+        return _at_image_face(built.nodes[node]["pos"], extent_um)
 
     removed, removed_um, kept = 0, 0.0, 0
     for u, v, key in [

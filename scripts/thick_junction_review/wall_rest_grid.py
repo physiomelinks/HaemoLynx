@@ -3,7 +3,7 @@
 questions on E14.5 that grid P did not mark, for Harvey to mark (his call,
 2026-10-25: "grid of the rest").
 
-- **The reach** (``WALL_JOIN_REACH_UM``, 10 um): dead ends past it, up to the
+- **The reach** (``WALL_JOIN_REACH_UM``, 10 um then; 15 um since these marks): dead ends past it, up to the
   pool's 15 um, heading for the thick vessel (the chord within the join's
   80 degrees). Grid P marked two, P02 and P12, both J.
 - **The in-lumen loop guard**: dead ends the join refused as beside a vessel

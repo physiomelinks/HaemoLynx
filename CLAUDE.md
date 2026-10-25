@@ -777,7 +777,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **`graph/thick_vessel_junctions.py`** (`build_network`'s last step; `post_process` for edited
   vessels) — Harvey's rules: a thick vessel is its centreline alone, and every vessel opening into
   it is joined by one `IS_ZERO_RESISTANCE` bridge, straight from where it leaves the thick region
-  to the centreline. A bridge is never a dead end nor attached to one, and nothing is ever cut off.
+  to the centreline. A bridge is never a dead end nor attached to one, nothing is ever cut off,
+  and a thick vessel's own end at an image face is never dropped (`_at_image_face`).
   The centreline is the tree found again from the region; a graph centreline is on it within
   `thick_bridge_centreline_tolerance_um` (1.5 um, unfitted) or 30% of the lumen radius, for the
   split and for every clean-up keeping the strand on it (`stages.thick_bridge_centreline_tolerance_um`).

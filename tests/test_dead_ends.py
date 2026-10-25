@@ -5,11 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dead_end_fixtures import CASES, SHAPE, VOXEL_SIZE
+from dead_end_fixtures import CASES, SHAPE, THICK_RADIUS, VOXEL_SIZE
 from haemolynx.graph import dead_ends as de
 from haemolynx.graph import network_review as nr
 from haemolynx.graph.diagnostics import classify_dead_ends as diagnostics_classify
 from haemolynx.graph.diagnostics import diagnose_lumen_artefacts
+from haemolynx.graph.thick_vessel_junctions import WALL_JOIN_REACH_UM
 from haemolynx.preprocessing import MaskSupport
 
 EXTENT = de.image_extent_um(SHAPE, VOXEL_SIZE)
@@ -465,8 +466,8 @@ def test_a_dead_end_at_a_thick_wall_is_told_from_the_recorded_centreline():
         (-0.5, False),   # the tree 0.5 um from the tip: on it
         (-1.7, False),   # 1.7 um: past the 1.5 um floor, within 30% of the 6 um radius
         (2.5, True),     # 2.5 um: off the tree, inside the lumen
-        (15.5, True),    # 15.5 um: 9.5 um past the lumen, within the 10 um reach
-        (16.5, None),    # 16.5 um: beyond the reach, not judged at all
+        (THICK_RADIUS + WALL_JOIN_REACH_UM - 0.5, True),  # just within the reach past the lumen
+        (THICK_RADIUS + WALL_JOIN_REACH_UM + 0.5, None),  # just beyond it: not judged at all
     ],
 )
 def test_the_wall_is_the_wall_joins_own_candidates(offset_um, at_wall):
@@ -505,13 +506,14 @@ def test_an_artefact_at_a_thick_wall_stays_an_artefact():
 def test_a_recorded_radius_unknown_reads_as_none():
     """The split reads a tree point whose lumen radius it could not measure
     as radius 0, and so does the definition."""
-    from dead_end_fixtures import at_a_thick_wall
+    from dead_end_fixtures import THICK_WALL_TIP, at_a_thick_wall
 
     case = at_a_thick_wall(recorded=False)
-    points = np.array([[10.0, 7.0, x] for x in range(80)])
+    far = WALL_JOIN_REACH_UM + 2.0
+    points = np.array([[10.0, THICK_WALL_TIP[1] - far, x] for x in range(80)])
     de.record_thick_centreline(case.graph, points, np.full(len(points), np.inf), tolerance_um=1.5)
     end = _judge(case)[0][case.tip]
-    # 12 um from the tree, radius 0: 12 um past the "lumen", beyond the reach.
+    # 2 um beyond the reach from the tree: with radius 0, beyond the reach past the "lumen".
     assert end.thick_centreline_um is None and end.kind == de.UNKNOWN
     de.record_thick_centreline(case.graph, points, None, tolerance_um=1.5)
     assert _judge(case)[0][case.tip].kind == de.UNKNOWN

@@ -164,7 +164,7 @@ names it lists.
 |---|---|---|
 | Dead Ends | count | Dead ends: nodes only one vessel reaches. |
 | Dead Ends Leaving the Image | count | Dead ends whose tip touches an image face, or whose segmented vessel runs on to one: open in the tissue, never in a dead-end density. |
-| Dead Ends at a Thick Vessel's Wall (not joined) | count | Dead ends stopping within 10 um of a thick vessel's lumen, off its centreline, that the thick-vessel split did not join to it. |
+| Dead Ends at a Thick Vessel's Wall (not joined) | count | Dead ends stopping within the thick-vessel split's wall-join reach (15 um) of a thick vessel's lumen, off its centreline, that the split did not join to it. |
 | Dead Ends the Graph Stopped Short of (mask runs on) | count | Dead ends where the segmented vessel runs on past the tip. |
 | Dead Ends of Vessels Broken by the Segmentation | count | Dead ends with another vessel straight ahead across one stretch of background. |
 | Dead Ends That Are Artefacts | count | Dead ends off the mask, inside a neighbouring lumen or along a vessel's wall. |
