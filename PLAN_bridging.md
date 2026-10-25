@@ -486,8 +486,12 @@ Phases 2 and 3 can start today. Phase 1 waits for the grid.
     78.5 -> 81.1%, build 236 -> 141 s (`outputs/thick_junction_review/census_2026-10-25/`).
   - **Waiting on `PLAN_dead_ends.md`'s session** (it is editing those files): the `thick_wall`
     dead-end kind (1.3) and Phase 0.2's finder as a Post processing review list.
-  - **For Harvey:** (1) the taper rule: grid P marks it worse than bridging every case (5/8 against
-    7/8); drop it, or keep it until more marks? (2) F1b's fork of two equal vessels: the plan said both
+  - **The taper rule dropped** (Harvey, 2026-10-25): a vessel carrying on from a thick centreline's end
+    is bridged like any other. E14.5 to solve, with the rule and without: tapers 15 -> 0, bridges
+    63 -> 75, vessel 47,139 -> 47,012 um, dead ends 394 -> 393, network resistance 2.96e15 -> 2.65e15
+    Pa.s/m^3, build 196 -> 194 s; grid P's four tapers now each have a bridge (the taper sheet 7/8).
+  - **For Harvey:** (1) the wall join's reach (2 J beyond 10 um) and its in-lumen loop guard (right on
+    1 of 3) on grid P: more marks before either moves. (2) F1b's fork of two equal vessels: the plan said both
     daughters get a bridge of the parent's radius, cut at 0.6 of the fork's radius; the code gives
     an equal fork no bridge (`test_a_fork_of_equal_thick_vessels_gets_no_bridge`) and bridges an
     arm at most 0.8 of the trunk. No decision is recorded; on grid P he marked 4 near-equal forks E and 2 B.

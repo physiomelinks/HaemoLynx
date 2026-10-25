@@ -193,4 +193,11 @@ its interactive page, `scripts/thick_junction_review/grid_page.py`): the wall jo
 for all J (its joins and its turn refusals all right; misses 2 beyond the reach, 2 by the in-lumen
 loop guard, right on 1 of 3), the fork rule 6/8 against 4/8 (misses at ratios 0.92 and 0.94 among E
 at 0.90-0.98), the taper rule 5/8 against 7/8 for all S: 3 of its 4 tapers marked as side entries to
-bridge, at cosines 0.80-0.97. Nothing changed; whether to drop the taper rule is Harvey's call.
+bridge, at cosines 0.80-0.97. **The taper rule dropped** (Harvey's call, 2026-10-25): a vessel carrying
+on from a thick centreline's end is bridged like any other (grid P's taper sheet: 7/8, wrong on P15,
+the one T). E14.5, one run each to solve on Harvey's Claudin segmentation, with the rule and
+without: tapers left as vessel 15 -> 0, bridges in the built graph 63 (505 um) -> 75 (582 um; 57
+radius-shaped, 13 longer than the radius, 4 at forks, 1 along the centreline: no new shape), vessel
+47,139 -> 47,012 um, dead ends 394 -> 393, vessels solved 1,101 -> 1,119, network resistance
+2.96e15 -> 2.65e15 Pa.s/m^3 (-10%), build 196 -> 194 s. The clean-up still leaves an edge marked
+`THICK_TAPER` alone, for graphs saved before.

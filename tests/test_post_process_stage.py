@@ -438,17 +438,23 @@ def test_a_gap_in_the_thick_centreline_beside_an_edit_is_drawn_and_measured(tmp_
     assert out.results["post_process"]["edited_vessels"] == 2 + len(drawn)
 
 
-def test_a_vessel_drawn_on_along_a_thick_vessels_line_from_its_end_gets_no_bridge(tmp_path):
-    """The thick vessel narrowing into the drawn one (Harvey, 2026-10-13:
-    bridges along a vessel's own line should not be there): the drawn vessel
-    stays vessel all the way, where it used to get a bridge from the thick
-    region's end to the tree."""
+def test_a_vessel_drawn_on_along_a_thick_vessels_line_from_its_end_is_bridged(tmp_path):
+    """Bridged like any vessel opening into the thick one, from where it
+    leaves the thick region to where it meets the thick vessel's tree. From
+    2026-10-13 such a vessel was the thick vessel tapering and stayed vessel
+    all the way; Harvey's grid P (2026-10-25) marked 3 of 4 tapers as vessels
+    to bridge, and the rule went."""
     run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, along_axis=True)
 
     out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
 
     pieces = _pieces_between(out.graph, 1, 2)
-    assert not any(d.get(IS_ZERO_RESISTANCE) for *_e, d in pieces)
+    (bridge,) = [(a, b, d) for a, b, d in pieces if d.get(IS_ZERO_RESISTANCE)]
+    a, b, d = bridge
+    xs = sorted(float(out.graph.nodes[n]["pos"][2]) for n in (a, b))
+    assert xs[0] <= THICK_FROM_UM, "it starts at the thick region's edge, outside the vessel"
+    assert THICK_FROM_UM < xs[1] <= THICK_FROM_UM + THICK_RADIUS_UM, "and ends on its tree, inside it"
+    assert d["length"] <= THICK_RADIUS_UM + 1.0
     assert sum(d["length"] for *_e, d in pieces) == pytest.approx(20.0)
 
 

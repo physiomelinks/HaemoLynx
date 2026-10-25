@@ -769,12 +769,14 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   logged by `build_network`, a warning for a shape the split never means to make, and in
   `scripts/graph_artefacts.py`) names each bridge's shape. Around that: gaps in the graph's thick
   centreline are drawn from the tree (`thick_vessel_fill_centreline_gaps`, on), dead ends at the
-  wall are drawn on to it (`join_dead_ends_at_walls`), a bridge carrying a centreline's end on is a
-  taper and stays vessel (`THICK_TAPER`), forks are bridged (`bridge_forks`), centreline ends are
+  wall are drawn on to it (`join_dead_ends_at_walls`), forks are bridged (`bridge_forks`), centreline ends are
   extended through the segmentation (`thick_vessel_extend_centreline_ends`, on, not yet checked on
-  a fresh grid), and blind vessels beyond a bridge the stub prune would take go with it. On their
-  fresh grid P (Harvey, 2026-10-25) the wall join and the fork rule beat marking all one way and
-  the taper rule did not (`docs/notes/thick_vessels.md`). Bridges
+  a fresh grid), and blind vessels beyond a bridge the stub prune would take go with it. A vessel
+  carrying on from a thick centreline's end is bridged like any other: the taper rule that left it
+  as vessel failed its fresh grid P (Harvey, 2026-10-25) and was dropped (E14.5: 12 more bridges,
+  network resistance -10%); the wall join and the fork
+  rule beat marking all one way there (`docs/notes/thick_vessels.md`). The clean-up still leaves an
+  edge marked `THICK_TAPER` (a graph saved before) alone as it does a bridge. Bridges
   are not measured (the widest diameter at their ends, `diameter_source="bridge"`), get no branch
   order, and statistics contract them (`contract_bridges`).
 

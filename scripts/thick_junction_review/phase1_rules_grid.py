@@ -8,9 +8,10 @@ never marked).
   ``WALL_JOIN_REACH_UM`` (10 um) of a thick vessel's lumen, heading for it
   (at most 80 degrees off, its vessel at least 3 um), is drawn on through the
   mask to the thick centreline and bridged.
-- **Taper** (``_taper_bridges``): at a thick centreline's end, the bridge
-  leaving most nearly along it, within ``TAPER_MIN_COSINE`` (0.7), is the
-  thick vessel narrowing and stays vessel.
+- **Taper** (``_taper_bridges``, dropped on 2026-10-25 after this grid's
+  marks): at a thick centreline's end, the bridge leaving most nearly along
+  it, within a cosine of 0.7, was the thick vessel narrowing and stayed
+  vessel. On code without it every such pair is bridged.
 - **Fork** (``_bridge_thick_forks``): at a fork of the thick centreline, an
   arm at most ``FORK_BRANCH_MAX_RADIUS_FRACTION`` (0.8) of the trunk's radius
   is bridged from the fork to where it leaves the trunk's lumen.
@@ -172,14 +173,29 @@ def replay(capture: Path) -> dict:
             return made
         return real_join(G, near_tree, tree, tree_radius, lumen, thick, vs, chosen, **k)
 
-    real_taper = tvj._taper_bridges
+    # The taper rule (dropped 2026-10-25) chose from the bridges at a thick
+    # centreline's end; without it every one of those pairs is bridged, and
+    # the pairs are read off each rebuild instead.
+    if hasattr(tvj, "_taper_bridges"):
+        taper_name = "_taper_bridges"
+        real_taper = tvj._taper_bridges
 
-    @functools.wraps(real_taper)
-    def taper(G, bridge_ends):
-        chosen = real_taper(G, bridge_ends)
-        if seen["in_build_split"]:
-            seen["taper_calls"].append(_taper_pairs(G, bridge_ends, chosen))
-        return chosen
+        @functools.wraps(real_taper)
+        def taper(G, bridge_ends):
+            chosen = real_taper(G, bridge_ends)
+            if seen["in_build_split"]:
+                seen["taper_calls"].append(_taper_pairs(G, bridge_ends, chosen))
+            return chosen
+    else:
+        taper_name = "_rebuild"
+        real_taper = tvj._rebuild
+
+        @functools.wraps(real_taper)
+        def taper(*a, **k):
+            out = real_taper(*a, **k)
+            if seen["in_build_split"]:
+                seen["taper_calls"].append(_taper_pairs(out[0], out[3], set()))
+            return out
 
     real_forks = tvj._bridge_thick_forks
 
@@ -194,14 +210,14 @@ def replay(capture: Path) -> dict:
 
     graph.insert_thick_vessel_junction_nodes = split
     tvj._join_dead_ends_at_walls = join
-    tvj._taper_bridges = taper
+    setattr(tvj, taper_name, taper)
     tvj._bridge_thick_forks = forks
     try:
         final = stages.finish_network_graph(cap["G"].copy(), cap["skeleton"], settings, context)
     finally:
         graph.insert_thick_vessel_junction_nodes = real_split
         tvj._join_dead_ends_at_walls = real_join
-        tvj._taper_bridges = real_taper
+        setattr(tvj, taper_name, real_taper)
         tvj._bridge_thick_forks = real_forks
     seen["final"] = final
     seen["cap"] = cap

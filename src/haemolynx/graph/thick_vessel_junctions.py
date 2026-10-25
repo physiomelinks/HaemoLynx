@@ -111,13 +111,12 @@ WALL_JOIN_REACH_UM = 10.0
 #: the bridge).
 JOINED_AT_WALL_UM = "joined_at_thick_wall_um"
 
-#: A bridge continuing a thick centreline's end, its only other edge, within
-#: this cosine of the centreline's own direction there is the thick vessel
-#: narrowing into a thin one -- one vessel, a taper -- not a vessel opening
-#: into the thick one: no bridge (45 degrees).
-TAPER_MIN_COSINE = 0.7
-
-#: How far along a thick centreline's end its direction is read (µm).
+#: How far along a thick centreline's end its direction is read (µm), for
+#: drawing the end on (``extend_thick_ends``). A vessel carrying on from the
+#: end along that direction is bridged like any other: the rule that left it
+#: as vessel, the thick vessel tapering (a cosine of 0.7, from Harvey's
+#: examples of 2026-10-13), was dropped on 2026-10-25 after his grid P marked
+#: 3 of its 4 tapers as vessels to bridge (5/8 against 7/8 for bridging all).
 TAPER_DIRECTION_UM = 5.0
 
 #: A stretch of the thick centreline tree no graph centreline follows, shorter
@@ -167,14 +166,14 @@ EXTEND_CENTRE_WEIGHT_UM = 4.0
 #: (``extend_thick_ends``): how much was added, in µm.
 EXTENDED_UM = "thick_centreline_extended_um"
 
-#: Edge attribute on the vessel a thick vessel narrows into, where it runs on
-#: inside the thick lumen from the thick centreline's end (a taper, left as
-#: vessel): the lumen clean-up that follows the split leaves it alone as it
-#: does a bridge -- never one of a pair in one lumen, a doubled stretch or
-#: the side of a short loop it breaks. Without the mark it took the taper
-#: for a second strand and rewired the vessels round it (E14.5, 2026-10-13).
-#: A taper is never merged with a vessel at a degree-2 node
-#: (:func:`taper_meets_vessel`), so the mark stays on the taper.
+#: Edge attribute the split put, from 2026-10-13 to 2026-10-25, on the vessel a
+#: thick vessel narrowed into (a taper, left as vessel; the rule is dropped,
+#: see :data:`TAPER_DIRECTION_UM`). The split makes none now. A graph saved
+#: before still carries it, and the lumen clean-up still leaves such an edge
+#: alone as it does a bridge -- never one of a pair in one lumen, a doubled
+#: stretch or the side of a short loop it breaks -- and never merges it with
+#: a vessel at a degree-2 node (:func:`taper_meets_vessel`), so a resumed run
+#: cleans it up as the run that saved it did.
 THICK_TAPER = "thick_taper"
 
 #: At a fork of the thick centreline, an arm this much narrower than the
@@ -664,7 +663,10 @@ def insert_thick_vessel_junction_nodes(
     without one the region stands in. *centreline_tolerance_um* is the
     tolerance's floor (``thick_bridge_centreline_tolerance_um``).
 
-    Three more cases, by Harvey's examples (2026-10-13, PLAN_bridging.md):
+    Two more cases, by Harvey's examples (2026-10-13, PLAN_bridging.md); a
+    vessel carrying on from a thick centreline's end is bridged like any
+    other (the taper rule that left it as vessel was dropped on 2026-10-25,
+    see :data:`TAPER_DIRECTION_UM`):
 
     - *join_dead_ends_at_walls* (with a *segmentation*): a dead end stopping
       within :data:`WALL_JOIN_REACH_UM` of a thick vessel's lumen, heading
@@ -681,9 +683,6 @@ def insert_thick_vessel_junction_nodes(
       when None) -- and then bridged like any vessel reaching it. The
       clean-up breaks every short loop but one through a bridge or round a
       wide hole, so a join would make the loops it exists to break.
-    - A connector whose bridge would continue a thick centreline's end along
-      its own direction (:data:`TAPER_MIN_COSINE`), that end having no other
-      edge, is the thick vessel narrowing into a thin one: left as vessel.
     - *bridge_forks*: where the thick centreline forks and one arm is
       narrower than the other two (:data:`FORK_BRANCH_MAX_RADIUS_FRACTION`),
       the stretch of that branch inside the trunk's lumen becomes a bridge.
@@ -972,20 +971,17 @@ def insert_thick_vessel_junction_nodes(
         cKDTree(np.asarray([sampled[i].points[k] for i, k in candidates])) if candidates else None
     )
     restored: set = set()
-    # Inside stretches the thick vessel narrows into: kept as vessel, though
-    # the connector they belong to may still bridge its other stretches.
-    tapers: set[int] = set()
     no_centreline_near = 0
     shared = 0
 
     def share_reach_um(point) -> float:
         # One lumen radius of the thick vessel there (design C.4).
         return max(_SNAP_UM, float(finite[tree.query(np.asarray(point, dtype=float))[1]]))
-    for _attempt in range(len(touches_centreline) + len(inside_runs) + 2):
-        bridges, failed, runs = _choose_bridges(
+    for _attempt in range(len(touches_centreline) + 2):
+        bridges, failed = _choose_bridges(
             sampled, inside_runs, find, touches_centreline - restored, tree, tree_radius,
             edges_at, node_on_centreline, node_pos, result,
-            cand_tree, cand_index, contacts, through | tapers,
+            cand_tree, cand_index, contacts, through,
         )
         if failed - restored:
             no_centreline_near += len(failed - restored)
@@ -993,20 +989,13 @@ def insert_thick_vessel_junction_nodes(
             continue
         met_at = [target for _origin, target, _data in bridges]
         bridges, shared = _share_centreline_nodes(bridges, sampled, result, share_reach_um)
-        built, new_node_at, stats, bridge_ends = _rebuild(
-            G, result, sampled, bridges, node_pos,
-            tapered=[inside_runs[r] for r in tapers],
-        )
+        built, new_node_at, stats, bridge_ends = _rebuild(G, result, sampled, bridges, node_pos)
         cut_off = _cut_off_edges(G, built, edges_at, new_node_at)
         blamed = set().union(*(connectors_of_edge.get(i, set()) for i in cut_off)) & (
             touches_centreline - restored
         )
-        # A bridge carrying a thick centreline's end on along its own line is
-        # the thick vessel narrowing: the stretch it replaced stays vessel.
-        continuing = set().union(*(runs[b] for b in _taper_bridges(built, bridge_ends))) - tapers
-        if not blamed and not continuing:
+        if not blamed:
             break
-        tapers |= continuing
         restored |= blamed
     drawn, left_straight = _draw_bridges_leaving_the_lumen(
         built, sampled, bridge_ends, met_at, new_node_at, lumen, vs
@@ -1033,12 +1022,6 @@ def insert_thick_vessel_junction_nodes(
             "Thick-vessel bridges: %d vessel(s) beyond a bridge ending blind inside the image "
             "removed with their bridge (%.0f um), as short as a stub; %d longer kept.",
             blind, blind_um, blind_kept,
-        )
-    if tapers:
-        logger.info(
-            "Thick-vessel bridges: %d vessel(s) carrying on from a thick centreline's end along "
-            "its line left as vessel: the thick vessel narrowing, not a vessel opening into it.",
-            len(tapers),
         )
     if shared:
         logger.info(
@@ -1091,15 +1074,13 @@ def _choose_bridges(
     node_pos, graph, cand_tree, cand_index, contacts, through,
 ):
     """Decide what stays (``keep``) and each bridge ``(origin, (edge, sample),
-    attributes)``; the connectors that cannot have one; and, per bridge, the
-    inside runs (indices into *inside_runs*) it replaces beside its origin.
+    attributes)``; and the connectors that cannot have one.
 
     A bridge goes to where its connector met the thick centreline, so the
     vessel joins the thick one where skeletonisation joined it; failing that
     (out of reach), to the nearest point of the centreline."""
     dropped_from = _decide_what_stays(sampled, inside_runs, find, bridged, through)
-    bridges, failed, runs = [], set(), []
-    run_of = {(i, k): r for r, (i, s, t) in enumerate(inside_runs) for k in range(s, t + 1)}
+    bridges, failed = [], set()
     for origin, beside in _bridge_origins(sampled, edges_at, node_on_centreline, graph):
         if origin[0] == "node":
             where = node_pos[origin[1]]
@@ -1126,8 +1107,7 @@ def _choose_bridges(
             failed |= {dropped_from[c] for c in beside if c in dropped_from}
             continue
         bridges.append((origin, target, dict(source.data) if source is not None else {}))
-        runs.append({run_of[c] for c in beside if c in run_of})
-    return bridges, failed, runs
+    return bridges, failed
 
 
 def _share_centreline_nodes(bridges, sampled, graph, reach_um):
@@ -1280,19 +1260,11 @@ def _removed_stretch_graph(sampled) -> nx.Graph:
     return H
 
 
-def _rebuild(G, base, sampled, bridges, node_pos, tapered=()):
+def _rebuild(G, base, sampled, bridges, node_pos):
     """A copy of *base* with each sampled edge rebuilt as the runs it keeps,
     and the bridges added; with, per bridge, its ``(vessel end, centreline
-    end)`` nodes (None for one not drawn). Every edge holding a stretch of
-    *tapered* (``(edge, start, end)`` inside runs kept as vessel) is marked
-    :data:`THICK_TAPER`."""
+    end)`` nodes (None for one not drawn)."""
     result = base.copy()
-    tapered_of: dict[int, list[tuple[int, int]]] = {}
-    for i, s, t in tapered:
-        tapered_of.setdefault(i, []).append((s, t))
-
-    def holds_taper(i: int, a: int, b: int) -> bool:
-        return any(s <= b and a <= t for s, t in tapered_of.get(i, ()))
     node_pos = dict(node_pos)
     for e in sampled:
         e.anchors = set()
@@ -1334,8 +1306,6 @@ def _rebuild(G, base, sampled, bridges, node_pos, tapered=()):
     for i, e in enumerate(sampled):
         cuts = {snapped[(i, k)] for k in e.anchors} - {0, len(e.points) - 1}
         if e.keep.all() and not cuts:
-            if holds_taper(i, 0, len(e.points) - 1):
-                result.edges[e.u, e.v, e.key][THICK_TAPER] = True
             continue
         result.remove_edge(e.u, e.v, e.key)
         stats["removed"] += 1
@@ -1353,8 +1323,6 @@ def _rebuild(G, base, sampled, bridges, node_pos, tapered=()):
                 points = [tuple(float(c) for c in row) for row in e.points[a : b + 1]]
                 attrs["voxels"] = points
                 attrs["length"] = float(calculate_path_length(points))
-                if holds_taper(i, a, b):
-                    attrs[THICK_TAPER] = True
                 result.add_edge(node_for(i, a), node_for(i, b), **attrs)
                 stats["rebuilt"] += 1
 
@@ -1408,43 +1376,6 @@ def _polyline_from(G, node, other, data) -> np.ndarray:
     return np.asarray(edge_sample_points(node, other, data, pos), dtype=float)
 
 
-def _taper_bridges(G, bridge_ends) -> set[int]:
-    """The bridges (indices into *bridge_ends*, each ``(vessel end,
-    centreline end)`` or None) that carry a thick centreline's end on along
-    its own line: at a centreline end with one vessel edge, the bridge
-    leaving most nearly along that edge's direction there, if within
-    :data:`TAPER_MIN_COSINE` of it. At most one per end -- the thick vessel
-    narrows into one vessel; any other leaving the same end opens into it."""
-    from .cartwheel_guard import _point_along_polyline
-
-    at_end: dict[Any, list[tuple[int, Any]]] = {}
-    for b, ends in enumerate(bridge_ends):
-        if ends is not None and G.has_node(ends[0]) and G.has_node(ends[1]):
-            at_end.setdefault(ends[1], []).append((b, ends[0]))
-    tapers: set[int] = set()
-    for end, leaving in at_end.items():
-        vessels = [
-            (a, b, d) for a, b, d in G.edges(end, data=True) if not d.get(IS_ZERO_RESISTANCE)
-        ]
-        if len(vessels) != 1:
-            continue
-        a, b, data = vessels[0]
-        other = b if a == end else a
-        if other == end:
-            continue
-        end_pos = np.asarray(G.nodes[end]["pos"], dtype=float)
-        outward = end_pos - _point_along_polyline(_polyline_from(G, end, other, data), TAPER_DIRECTION_UM)
-        best, best_cos = None, TAPER_MIN_COSINE
-        for index, start in leaving:
-            onward = np.asarray(G.nodes[start]["pos"], dtype=float) - end_pos
-            norms = float(np.linalg.norm(outward) * np.linalg.norm(onward))
-            if norms > 0.0 and float(outward @ onward) / norms >= best_cos:
-                best, best_cos = index, float(outward @ onward) / norms
-        if best is not None:
-            tapers.add(best)
-    return tapers
-
-
 def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius, *, near=None, attributes=None):
     """Draw the thick centreline tree into *G*, in place, wherever no graph
     centreline follows it. Returns how many stretches were added. With
@@ -1463,7 +1394,7 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
     (``edit.insert_node_on_edge``); two sides are joined by the tree's path
     between them, more by the tree's paths to the gap's widest voxel. A gap
     at a tree end, followed on one side only, is left: the graph's thick
-    vessel ends there, and the taper and wall rules decide what carries on.
+    vessel ends there, and the bridges and the wall join decide what carries on.
 
     Nothing of the graph's own is taken out: where a strand of it crosses
     the gap about as directly as the tree, the gap is not filled (on grid V,

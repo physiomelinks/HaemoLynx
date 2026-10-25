@@ -23,6 +23,7 @@ from haemolynx.graph.thick_vessel_bridge_shapes import (
 from haemolynx.graph.thick_vessel_junctions import (
     IS_ZERO_RESISTANCE,
     THICK_FORK_BRIDGE,
+    THICK_TAPER,
     insert_thick_vessel_junction_nodes,
 )
 
@@ -547,8 +548,8 @@ def test_the_run_reads_the_centreline_tolerance_from_its_setting():
     the thick vessel's axis. At the default (1.5 um, or 30% of the 6 um
     radius) its stretch inside the lumen goes and it is bridged to the thick
     centreline. At 4.5 um its last 3.5 um are within the tolerance of the
-    tree, the thick vessel's own centreline ending there, and the vessel
-    carrying it on is a taper: no bridge, and nothing removed."""
+    tree, so the split takes them for the thick vessel's own centreline and
+    the bridge stops there, 5 um long, instead of reaching the thick one."""
     from haemolynx.pipeline import default_schema
     from haemolynx.pipeline.stages import thick_junction_bridge_arguments
 
@@ -565,8 +566,9 @@ def test_the_run_reads_the_centreline_tolerance_from_its_setting():
 
     (_u, _v, bridge), = _bridges(default)
     assert "S" not in default and REACH - 0.5 <= bridge["length"] <= REACH + 1.0
-    assert not _bridges(wide)
-    assert "S" in wide and wide.number_of_edges() == 2
+    (_u, _v, short), = _bridges(wide)
+    assert short["length"] == pytest.approx(5.0, abs=0.6)
+    assert "S" in wide
 
 
 # --- the network with its bridges contracted (what statistics measure) --------------
@@ -900,10 +902,14 @@ def _taper():
 
 
 @pytest.mark.parametrize("split_at_the_end", [True, False])
-def test_a_thin_vessel_carrying_on_from_a_thick_vessels_end_gets_no_bridge(split_at_the_end):
-    """One vessel narrowing (Harvey: these should not have a bridge), not a
-    vessel opening into another: the thin vessel stays vessel to the thick
-    centreline's end, whether the graph has a node there or one edge through."""
+def test_a_thin_vessel_carrying_on_from_a_thick_vessels_end_is_bridged(split_at_the_end):
+    """Harvey's grid P (2026-10-25): of the vessels carrying on from a thick
+    centreline's end along its line, which the split used to leave as vessel
+    (the thick vessel tapering), he marked 3 of 4 as vessels opening into it,
+    to bridge. Now bridged like any other: from where it leaves the thick
+    region (the 6 um cap and the 3 um margin past y = 30) to the thick
+    centreline's end, whether the graph has a node there or one edge
+    through, and the thin vessel is vessel from there on."""
     lumen, body, tree = _taper()
     if split_at_the_end:
         G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "T1", (20, 30, 20), T1))
@@ -912,11 +918,13 @@ def test_a_thin_vessel_carrying_on_from_a_thick_vessels_end_gets_no_bridge(split
 
     result = _split(G, lumen, body, tree)
 
-    assert not _bridges(result)
-    assert sorted(len(d["voxels"]) for *_e, d in result.edges(data=True)) == sorted(
-        len(d["voxels"]) for *_e, d in G.edges(data=True)
-    )
-    assert sum(d["length"] for *_e, d in result.edges(data=True)) == pytest.approx(59.0, abs=0.6)
+    (u, v, bridge), = _bridges(result)
+    outer, inner = sorted((u, v), key=lambda n: -result.nodes[n]["pos"][1])
+    assert result.nodes[outer]["pos"] == pytest.approx((20.0, 39.5, 20.0), abs=0.6)
+    assert result.nodes[inner]["pos"][1] == pytest.approx(30.0, abs=1.6), "on the thick centreline's end"
+    (thin,) = [d for a, b, d in result.edges(data=True) if "T1" in (a, b)]
+    assert thin["length"] == pytest.approx(T1[1] - 39.5, abs=0.6)
+    assert not any(d.get(THICK_TAPER) for *_e, d in result.edges(data=True))
 
 
 def _fork(branch_radius: float):
@@ -995,11 +1003,11 @@ def test_a_wall_join_targets_only_what_the_split_calls_thick_centreline():
     assert owners and {frozenset(o[:2]) for o in owners} == {frozenset(("T0", "T1"))}
 
 
-def test_a_thick_vessel_ending_in_two_thin_ones_bridges_only_the_one_turning_off():
+def test_a_thick_vessel_ending_in_two_thin_ones_bridges_both():
     """Where the thick vessel ends, one thin vessel carries on along its line
-    (the thick vessel narrowing: no bridge) and another turns off (opening
-    into it: a bridge). Two bridges met at that end on E14.5 more often than
-    one, and the taper rule skipped them all."""
+    and another turns off: each opens into the thick vessel and gets its
+    bridge to the centreline's end (the one along the line was left as
+    vessel until grid P, 2026-10-25)."""
     lumen, body, tree = _taper()
     _thin_vessel(lumen, (20, 30, 20), (20, 30, 63))
     G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "T1", (20, 30, 20), T1),
@@ -1007,11 +1015,11 @@ def test_a_thick_vessel_ending_in_two_thin_ones_bridges_only_the_one_turning_off
 
     result = _split(G, lumen, body, tree)
 
-    (u, v, bridge), = _bridges(result)
-    outer = u if result.nodes[u]["pos"][2] > result.nodes[v]["pos"][2] else v
-    assert result.nodes[outer]["pos"][2] > 25.0, "the bridge is the one turning off along x"
-    along = [d for a, b, d in result.edges(data=True) if "T1" in (a, b)]
-    assert len(along) == 1 and along[0]["voxels"] == G.edges["J", "T1", 0]["voxels"]
+    bridges = _bridges(result)
+    assert len(bridges) == 2 and all("J" in (u, v) for u, v, _d in bridges)
+    outer = sorted(tuple(result.nodes[v if u == "J" else u]["pos"]) for u, v, _d in bridges)
+    assert outer[0] == pytest.approx((20.0, 30.0, 29.5), abs=0.6), "the one turning off along x"
+    assert outer[1] == pytest.approx((20.0, 39.5, 20.0), abs=0.6), "the one carrying on along y"
 
 
 @pytest.mark.parametrize("mask_support", [True, False])
@@ -1031,16 +1039,19 @@ def test_a_run_draws_vessels_on_from_walls_only_with_mask_supported_bridging(mas
     assert ("S" not in result) is mask_support
 
 
-def test_a_taper_is_marked_for_the_clean_up_that_follows():
-    from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
-
+def test_a_taper_mark_on_a_saved_graph_is_kept_for_the_clean_up():
+    """The split makes no taper now, but a graph saved before 2026-10-25 may
+    carry the mark (a resumed run): an edge holding it keeps it through the
+    split, so the clean-up after it leaves that edge alone as it did."""
     lumen, body, tree = _taper()
     G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "T1", (20, 30, 20), T1))
+    G.edges["J", "T1", 0][THICK_TAPER] = True
 
     result = _split(G, lumen, body, tree)
 
-    assert result.edges["J", "T1", 0].get(THICK_TAPER) is True
-    assert not result.edges["T0", "J", 0].get(THICK_TAPER)
+    (thin,) = [d for a, b, d in result.edges(data=True) if "T1" in (a, b)]
+    assert thin.get(THICK_TAPER) is True
+    assert not any(d.get(THICK_TAPER) for a, b, d in result.edges(data=True) if "T0" in (a, b))
 
 
 def _hook(far: int = 26):
