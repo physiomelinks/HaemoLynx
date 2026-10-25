@@ -303,6 +303,14 @@ reason, hole, far and mask shares. Draw along the skeleton adds the route the re
 draw, split into the vessels at both ends; a piece meeting the network once is traced with Add
 vessel. On the E14.5 graph above the list holds about 155 pieces, 9.8 mm of skeleton.
 
+Grid N3 (sent 2026-10-25, unmarked): N2 checked only what the rule draws, so N3 is 30 fresh pool
+pieces (none within 15 um of a grid N or N2 case) on both sides of the rule, 13 the run draws
+back and 17 it refuses (13 round a hole of 10 um or less, 3 meeting the graph once, 1 a join
+across background), each spread over the hole; the rule's call is fixed in the
+key before any mark (`outputs/sc/build_grid_n3.py`, `N3_key.csv`, scorer `fit_n3.py`, in worktree
+`quirky-goodall-bbcb6f`; page https://claude.ai/artifact/MaxexHVe2rHdxHjK5rb9eC, marks in its
+`annotations` collection).
+
 ## graph/smoothing.py
 
 **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each
