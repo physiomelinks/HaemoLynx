@@ -198,8 +198,9 @@ Harvey marked DR2 the same day (`outputs/dead_end_review/FIT_DR2.md`), and the f
 - **The route** was right 18 times in 26, and nothing E4 measures says when.
 
 Across G4, DR1 and DR2 the marks follow shape in context, not the endothelial stain. Phase D
-builds nothing, and whether to carry the measures into the census and review list at all
-(Phase B) is decision R7.
+builds nothing. Harvey closed the plan the same day without Phase B: E1-E4 stay in
+`raw_evidence.py` as tested measures, and nothing (the classifier, the census, `dead_ends.csv`, the
+review lists) reads them.
 
 ## Dead ends at a thick vessel's wall (2026-10-25, PLAN_bridging.md 1.3 and 0.2)
 

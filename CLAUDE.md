@@ -733,8 +733,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (E1: a wall ring round the chain, and whose), `inside_walls` (E2: walls enclosing a point, a
   lumen shared with another centreline), `walls_ahead` (E3: the walls running on past the tip)
   and `route_ahead` (E4: the walls followed round the vessel's turns, a tracker) measure only, a
-  window at a time; no rule reads them. Harvey's grids DR1 and DR2 (2026-10-25) gave none at
-  90%: the marks follow shape, not the stain.
+  window at a time. Nothing reads them, not even the census or the review lists: Harvey's grids
+  DR1 and DR2 gave none at 90% (the marks follow shape, not the stain), and he closed the plan
+  without carrying them further (2026-10-25).
 - **Flow states** — the solve writes `graph.FLOW_STATE` (`solved`, `blind_end`, `closed_end`,
   `no_boundary`) beside `FLOW_SOLVED`. `blind_end` and `closed_end` flows and drops are exactly 0:
   **call `graph.zero_flows_behind_dead_ends` after any new `set_edge_flows` on a marked graph.**

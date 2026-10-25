@@ -13,16 +13,23 @@ per run) is the reader every rule here asks, rather than a second one. It reads 
 `hole_is_lumen`), and this plan adds the wall-stain primitives dead ends need on E14.5, whose raw
 image is claudin-5.
 
-## Status (2026-10-25)
+## Status (2026-10-25): closed
+
+**Closed by Harvey on 2026-10-25 (decision R7), without Phase B.** E1-E4 stay in
+`preprocessing/raw_evidence.py` as tested measures (`ring_along`, `inside_walls`, `walls_ahead`,
+`route_ahead`). Nothing reads them: not the classifier, not the census, not `dead_ends.csv`, not
+the review lists. On G4, DR1 and DR2 no raw measure beat marking every dead end one way; on E14.5
+the marks follow the segmentation's shape in context, not the endothelial stain. The plasma-only
+repeat (Phase E) is for whenever such a dataset comes.
 
 | Phase | State | Where |
 |---|---|---|
 | A. Wall primitives | **Done** | `bafd3aa2`: `ring_along` (E1), `inside_walls` (E2), `walls_ahead` (E3), the ring fields on `RawCalibration`, `ring_calibration`; tests in `tests/test_raw_evidence.py` |
 | Cost on E14.5 | **Measured** | Section 6 (Risks) |
-| B. Measure and record, re-fit G1-G4 (R1) | **Waits** on `graph/dead_ends.py`, `graph/network_review.py` and the census (other sessions' files), and on decision R7: after DR1 and DR2 the recommendation is not to do it | Section 4, decision R7 |
+| B. Measure and record, re-fit G1-G4 (R1) | **Dropped** (Harvey, R7): after DR1 and DR2 the measures would add columns that predict nothing | Section 4, decision R7 |
 | C. The grid | **Marked and fitted** (Harvey, 2026-10-25): DR1 (`9debc4d1`), https://claude.ai/artifact/FUrmkvLXHiSobkY1zAk9Jf. No rule reaches 90% on either question | Section 4 |
 | D. Rules | **Closed: no rule.** E4 built (`8f2a0a3f`) at Harvey's call (R6) and judged on grid DR2 (`9a906d10`, https://claude.ai/artifact/TxStjPa2g9wP4StiokPwtH), marked 2026-10-25: all three rules fixed beforehand score 16/26 against 18/26 all one way | Section 4, decision R7 |
-| E. Docs, second dataset | CLAUDE.md, the notes and `RELEASE_REVIEW.md` `graph.6b` updated for A and C; a plasma-only dataset waits on data | Section 4 |
+| E. Docs, second dataset | **Done** for A-D: CLAUDE.md, the notes and `RELEASE_REVIEW.md` `graph.6b` and `graph.8b`. A plasma-only dataset waits on data | Section 4 |
 
 ---
 
@@ -186,9 +193,8 @@ measure and nothing reads them yet.
 - Re-read G1–G4 with them: the 116 marked dead ends' E1–E3 against Harvey's marks, fitted by
   `fit_marks.py`. This costs no marking and says whether a fifth grid is worth asking for.
 
-**Waits (2026-10-25)** until the dead-ends and bridging sessions hand over `graph/dead_ends.py`,
-`graph/network_review.py` and `scripts/graph_artefacts/dead_end_census.py` (the bridging
-session's `thick_wall` kind lands in them first). What is left, in order:
+**Dropped (Harvey, 2026-10-25, decision R7).** DR1 and DR2 found no raw measure that beats
+marking all one way, so none of this was done. It would have been, in order:
 
 1. `classify_dead_ends(..., raw=None)` fills E1-E3 on each `DeadEnd` (new fields, None without a
    raw image or under a plasma stain, whose analogues are `signal_along` along the chain and along
@@ -355,10 +361,11 @@ https://claude.ai/artifact/TxStjPa2g9wP4StiokPwtH. Key, candidates and calibrati
 - Repeat Phase B on a second dataset with a plasma raw image only (the Nerve fixture has none),
   to see what E1–E3 are worth without walls.
 
-**State (2026-10-25):** CLAUDE.md's dead-end entry names the primitives and DR1;
-`docs/notes/dead_ends_and_open_ends.md` has the E14.5 measurements; `RELEASE_REVIEW.md` `graph.6b`
-names DR1 (unmarked, still failing; no score change). `graph.8b` waits on DR2. The plasma-only
-repeat waits on a dataset with a plasma raw image and no endothelial one.
+**State (closed 2026-10-25):** CLAUDE.md's dead-end entry names E1-E4 and says nothing reads
+them. `docs/notes/dead_ends_and_open_ends.md` has the E14.5 measurements and both grids' results.
+`RELEASE_REVIEW.md` `graph.6b` holds DR1's and DR2's fits, and `graph.8b` DR2's check of DR1's
+rule; both still fail, with no score change. The plasma-only repeat waits on a dataset with a
+plasma raw image and no endothelial one.
 
 ## 5. Decisions for Harvey
 
@@ -370,7 +377,7 @@ repeat waits on a dataset with a plasma raw image and no endothelial one.
 | R4 | A dataset with both a plasma and an endothelial channel: one raw channel (today), or a second for evidence? | One. The segmentation already carries the plasma; the raw channel should be the other stain |
 | R5 | Which channel is E14.5's raw image? D5 (2026-10-12) said one channel only, the one the segmentation came from (dextran). On 2026-10-13 Harvey said the endothelial channel (claudin-5) "would be better" for this dataset. | **Decided: claudin-5** (Harvey, 2026-10-13, D5 overturned; relayed by the raw-confirmation session, which records it in `PLAN_raw_confirmation.md`). Dextran read along the chain had done no better than chance on G4 (15/27), and on that session's grids H and H2 (17/30 each, `outputs/doubled_run_review/FIT_raw.md`) |
 | R6 | After DR1 (2026-10-25): build E4, a route through the wall-enclosed lumen for Q2 (does it go on, and where), and ask for a grid on it? Or close this plan's rules, keeping E1-E3 as measures for the census and the review list (Phase B)? | **Decided: build E4 and a fresh grid** (Harvey, 2026-10-25). E4 built (`8f2a0a3f`), DR2 sent (`9a906d10`) and marked: no rule |
-| R7 | After DR2 (2026-10-25): close this plan? Phase B would carry E1-E4 into `classify_dead_ends`, the census, `dead_ends.csv` and the review list, and re-fit G1-G4 with them (R1). | **Open, for Harvey.** Recommendation: close it without Phase B. No raw measure has beaten marking all one way on G4, DR1 or DR2; each would add columns to the export and the review list that predict nothing. Keep the primitives in `raw_evidence.py` (tested, cost nothing until called) for another stack or stain, and repeat on a plasma-only dataset if one comes |
+| R7 | After DR2 (2026-10-25): close this plan? Phase B would carry E1-E4 into `classify_dead_ends`, the census, `dead_ends.csv` and the review list, and re-fit G1-G4 with them (R1). | **Decided: closed without Phase B** (Harvey, 2026-10-25). No raw measure has beaten marking all one way on G4, DR1 or DR2; each would add columns to the export and the review list that predict nothing. Keep the primitives in `raw_evidence.py` (tested, cost nothing until called) for another stack or stain, and repeat on a plasma-only dataset if one comes |
 
 ## 6. Risks
 
