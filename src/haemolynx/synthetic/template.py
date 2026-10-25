@@ -65,6 +65,8 @@ from haemolynx.statistics.vessel_classes import (
     vessel_class_scheme,
 )
 
+from .organisation import Organisation, measure_organisation
+
 logger = logging.getLogger(__name__)
 
 #: The two ``synthetic_template_source`` choices.
@@ -290,6 +292,10 @@ class NetworkTemplate:
     #: viscosity takes the template's form of the law; None when the template
     #: run records none (a template saved before this was read).
     diameter_basis: Optional[str] = None
+    #: Where the vessels lie and which way the capillaries run
+    #: (``synthetic.organisation``), read off the graph; None for a template
+    #: written before 2026-10-25 or one with no capillaries.
+    organisation: Optional[Organisation] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -546,6 +552,7 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
     # box its nodes spanned), dropped since: the bed's own volume replaced
     # it (``generate.bed_volume_um3``). It is read past, like any other key.
     basis = normalise_diameter_basis(data.get("diameter_basis"))
+    organisation = data.get("organisation")
     return NetworkTemplate(
         extent_um=tuple(float(v) for v in data["extent_um"]),
         voxel_size_zyx=tuple(float(v) for v in data["voxel_size_zyx"]),
@@ -576,6 +583,7 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
         tissue_volume_um3=_opt_float(data.get("tissue_volume_um3")),
         provenance=provenance,
         diameter_basis=basis if basis in DIAMETER_BASES else None,
+        organisation=None if organisation is None else Organisation.from_dict(organisation),
     )
 
 
@@ -1082,6 +1090,7 @@ def template_from_report(
         tissue_volume_um3=_number(density.get("Tissue Volume (micron³)")),
         provenance=provenance,
         diameter_basis=basis,
+        organisation=measure_organisation(G, extent),
     )
 
 

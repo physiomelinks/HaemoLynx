@@ -26,6 +26,7 @@ from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
 from haemolynx.statistics.csv_export import _numeric_csv_text
 from haemolynx.statistics.vessel_classes import VESSEL_CLASS_TITLES
 
+from .organisation import Organisation, correlation, profile, share_inside
 from .template import (
     FACES,
     ROLES,
@@ -95,6 +96,16 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     ("dead ends", "inside the tissue"): ("abs", 2.0),
     ("dead ends", "interior per mm of vessel"): ("rel", 0.25),
     ("dead ends", "chain length median (um)"): ("rel", 0.25),
+    # Where the vessels lie (Harvey, 2026-10-25: D1b). A correlation's
+    # template value is 1 (the template's field against itself).
+    ("organisation", "capillary vertices by cell (correlation)"): ("abs", 0.3),
+    ("organisation", "capillary length by cell (correlation)"): ("abs", 0.3),
+    ("organisation", "capillary length along an axis (correlation)"): ("abs", 0.3),
+    ("organisation", "tree length in the template's tree cells (share)"): ("abs", 0.25),
+    ("organisation", "capillary length along an axis (share)"): ("abs", 0.05),
+    ("organisation", "box within 20 um of a capillary"): ("abs", 0.07),
+    ("organisation", "box beyond 50 um of a capillary"): ("abs", 0.05),
+    ("organisation", "trunk turn (degrees)"): ("abs", 15.0),
 }
 
 
@@ -267,6 +278,50 @@ def compare_templates(template: NetworkTemplate, synthetic: NetworkTemplate) -> 
     add("dead ends", "chain length median (um)", T.dead_ends.chain_length_median_um, S.dead_ends.chain_length_median_um)
     add("dead ends", "chain length P10 (um)", T.dead_ends.chain_length_p10_um, S.dead_ends.chain_length_p10_um)
     add("dead ends", "chain length P90 (um)", T.dead_ends.chain_length_p90_um, S.dead_ends.chain_length_p90_um)
+    rows.extend(organisation_rows(T.organisation, S.organisation))
+    return rows
+
+
+def organisation_rows(T: Optional[Organisation], S: Optional[Organisation]) -> list[ComparisonRow]:
+    """Where the vessels lie and which way the capillaries run, template
+    against synthetic: per-cell fields as correlations (on one grid: a box
+    drawn at another scale has none), shares, coverage, the trunks' turn and
+    the vessels' curvature (reported only)."""
+    rows: list[ComparisonRow] = []
+    if T is None and S is None:
+        return rows
+
+    def add(characteristic: str, t: Any, s: Any, key: Optional[str] = None) -> None:
+        rows.append(banded("organisation", "organisation", characteristic, t, s, key))
+
+    same_grid = T is not None and S is not None and tuple(T.shape) == tuple(S.shape)
+    for name, field in (("capillary vertices by cell (correlation)", "capillary_nodes"), ("capillary length by cell (correlation)", "capillary_length_um")):
+        r = correlation(getattr(T, field), getattr(S, field)) if same_grid else None
+        add(name, 1.0 if T is not None else None, r)
+    for axis, letter in enumerate("zyx"):
+        r = None
+        if same_grid:
+            r = correlation(profile(T.field("capillary_length_um"), axis), profile(S.field("capillary_length_um"), axis))
+        add(f"capillary length along {letter} (correlation)", 1.0 if T is not None else None, r,
+            key="capillary length along an axis (correlation)")
+    t_trees = s_trees = None
+    if same_grid:
+        template_trees = T.field("arterial_length_um") + T.field("venous_length_um")
+        synthetic_trees = S.field("arterial_length_um") + S.field("venous_length_um")
+        mask = template_trees > 0
+        t_trees, s_trees = share_inside(template_trees, mask), share_inside(synthetic_trees, mask)
+    add("tree length in the template's tree cells (share)", t_trees, s_trees)
+    get = lambda target, name: None if target is None else getattr(target, name)  # noqa: E731
+    for axis, letter in enumerate("zyx"):
+        t_share = None if T is None else T.axis_share[axis]
+        s_share = None if S is None else S.axis_share[axis]
+        add(f"capillary length within 30 degrees of {letter} (share)", t_share, s_share,
+            key="capillary length along an axis (share)")
+    add("box within 20 um of a capillary", get(T, "within_near"), get(S, "within_near"))
+    add("box beyond 50 um of a capillary", get(T, "beyond_far"), get(S, "beyond_far"))
+    add("trunk turn (degrees)", get(T, "trunk_turn_deg"), get(S, "trunk_turn_deg"))
+    add("capillary curvature (degrees per 10 um)", get(T, "capillary_curvature_deg"), get(S, "capillary_curvature_deg"))
+    add("tree curvature (degrees per 10 um)", get(T, "tree_curvature_deg"), get(S, "tree_curvature_deg"))
     return rows
 
 
@@ -359,6 +414,7 @@ __all__ = [
     "compare_run",
     "compare_templates",
     "comparison_section",
+    "organisation_rows",
     "comparison_summary",
     "row",
     "write_template_comparison_csv",
