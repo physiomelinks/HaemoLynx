@@ -300,14 +300,15 @@ def test_names_with_prerequisite_closure_pulls_in_the_whole_requires_chain():
 
     schema = default_schema()
     names = widget_mod._names_with_prerequisite_closure(
-        schema, ("use_thick_vessel_skeletonisation", "input_path")
+        schema, ("thick_vessel_braid_factor_limit", "input_path")
     )
 
-    assert "use_thick_vessel_skeletonisation" in names
+    assert "thick_vessel_braid_factor_limit" in names
     assert "input_path" in names
-    # use_thick_vessel_skeletonisation requires do_skeletonize;
-    # input_path requires use_ilastik_segmentation -- both one-hop
-    # prerequisites, and the closure must include every hop, not just one.
+    # thick_vessel_braid_factor_limit requires detect_thick_vessel_braiding,
+    # which requires do_skeletonize (two hops); input_path requires
+    # use_ilastik_segmentation (one) -- the closure must include every hop.
+    assert "detect_thick_vessel_braiding" in names
     assert "do_skeletonize" in names
     assert "use_ilastik_segmentation" in names
     # The whole point: a Schema built from just this closure must not raise
