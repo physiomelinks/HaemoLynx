@@ -226,13 +226,40 @@ def trace_on_dead_ends(
     return counts
 
 
+#: A tip-to-side join must meet the vessel it joins at least this far off
+#: that vessel's own direction, in degrees: a join running along the vessel
+#: is a strand beside it, not a branch into it (PLAN_dead_ends.md Phase 6,
+#: "a plausible angle at the target"). A first proposal, not fitted to marks:
+#: the join it guards is off until a grid confirms it (decision D3).
+SIDE_JOIN_MIN_ANGLE_DEG = 30.0
+
+
+def angle_at_target_deg(join_path: np.ndarray, target_path: np.ndarray, target_index: int) -> float:
+    """The angle, 0 to 90 degrees, between a join arriving at
+    ``target_path[target_index]`` and the target vessel's own direction
+    there (read over its neighbouring samples): 90 is square on, 0 along it."""
+    join = np.asarray(join_path, dtype=float)
+    along = np.asarray(target_path, dtype=float)
+    arriving = join[-1] - join[0]
+    lo, hi = max(target_index - 2, 0), min(target_index + 2, len(along) - 1)
+    tangent = along[hi] - along[lo]
+    norms = float(np.linalg.norm(arriving)) * float(np.linalg.norm(tangent))
+    if norms <= 0.0:
+        return 90.0
+    cosine = abs(float(arriving @ tangent)) / norms
+    return float(np.degrees(np.arccos(np.clip(cosine, 0.0, 1.0))))
+
+
 def join_dead_ends_to_vessel_sides(
     G: nx.MultiGraph, support, *, extent_um: Sequence[float], max_gap_um: Optional[float] = None,
+    min_angle_at_target_deg: float = SIDE_JOIN_MIN_ANGLE_DEG,
 ) -> int:
     """Join each dead end pointing at another vessel's side across one stretch
     of background (a ``broken`` dead end with a vessel ahead), that vessel not
     one of its neighbours in the network, to that vessel, straight, where the
-    heading meets it. Closest first; each end joins once. Returns how many."""
+    heading meets it -- unless the join would meet it less than
+    *min_angle_at_target_deg* off its own direction. Closest first; each end
+    joins once. Returns how many."""
     from .dead_ends import AHEAD_REACH_UM, BROKEN, classify_dead_ends
 
     reach = AHEAD_REACH_UM if max_gap_um is None else float(max_gap_um)
@@ -252,8 +279,11 @@ def join_dead_ends_to_vessel_sides(
         target = start + float(end.ahead_um) * np.asarray(end.heading, dtype=float)
         u, v, key = edge
         along = edge_sample_points(u, v, G.edges[u, v, key], {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v)})
-        target = along[int(np.argmin(np.linalg.norm(along - target, axis=1)))]
+        at = int(np.argmin(np.linalg.norm(along - target, axis=1)))
+        target = along[at]
         path = densify_polyline(np.vstack([start, target]), max_step_um=1.0)
+        if angle_at_target_deg(path, along, at) < min_angle_at_target_deg:
+            continue
         if index is None:
             index = EdgeSampleIndex(G)
         if duplicates_existing_vessel(path, G, support.inside, support.radius, index=index):
@@ -270,6 +300,8 @@ def join_dead_ends_to_vessel_sides(
 
 __all__ = [
     "EXTENDED_TO_FACE",
+    "SIDE_JOIN_MIN_ANGLE_DEG",
+    "angle_at_target_deg",
     "JOINED_TO_SIDE",
     "TRACED_ON",
     "TRACE_ON_MAX_UM",

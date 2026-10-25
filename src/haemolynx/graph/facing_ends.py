@@ -20,7 +20,7 @@ from scipy.spatial import cKDTree
 
 from haemolynx.preprocessing.bridge_mask_support import MaskSupport, _pieces, _sample_step
 
-from ._helpers import EdgeSampleIndex, densify_polyline, duplicates_existing_vessel, edge_sample_points
+from ._helpers import EdgeSampleIndex, densify_polyline, duplicates_existing_vessel
 from .build import GAP_BRIDGE_TANGENT_LENGTH_UM, MIN_GAP_BRIDGE_END_LENGTH_UM
 from .cartwheel_guard import _point_along_polyline
 
@@ -39,23 +39,17 @@ FACING_MAX_TURN_DEG = 60.0
 def _heading(G: nx.MultiGraph, tip: Any) -> tuple[Optional[np.ndarray], float]:
     """``(direction, length)``: the unit vector out of a dead end, read over
     the last ``GAP_BRIDGE_TANGENT_LENGTH_UM`` of its vessel, and the vessel's
-    length back to the first junction -- through any degree-2 nodes, since
-    before the last merge a vessel is often a chain of short edges."""
-    pieces, previous, current = [], None, tip
-    while True:
-        onward = [n for n in G.neighbors(current) if n != previous]
-        if not onward:
-            break
-        following = onward[0]
-        data = min(G[current][following].values(), key=lambda d: d.get("length", 0.0) or 0.0)
-        positions = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (current, following)}
-        pieces.append(edge_sample_points(current, following, data, positions))
-        previous, current = current, following
-        if G.degree(current) != 2 or current == tip:
-            break
-    if not pieces:
+    length back to the first junction -- the dead-end definition's chain
+    (``graph.dead_ends.chain_to_junction``, through any degree-2 nodes, since
+    before the last merge a vessel is often a chain of short edges)."""
+    from .dead_ends import chain_path, chain_to_junction
+
+    _nodes, edges = chain_to_junction(G, tip)
+    if not edges:
         return None, 0.0
-    path = np.vstack(pieces)
+    # The chain's own samples, not resampled, so the heading and the length
+    # are the polyline's to the last float.
+    path = chain_path(G, edges, step_um=np.inf)
     length = float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1)))
     inward = _point_along_polyline(path, GAP_BRIDGE_TANGENT_LENGTH_UM) - path[0]
     norm = float(np.linalg.norm(inward))

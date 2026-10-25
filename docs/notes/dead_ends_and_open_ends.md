@@ -104,3 +104,31 @@ pressure -- so the baseline reproduces the estimate and perturbations and sweeps
 solve scales with the drop) keep it. The baseline keeps its conditions on the graph; every
 solver path (the solve stage, the haematocrit loop, `_solve_network`, `solve_sweep_point`)
 augments with them. `scripts/open_end_sensitivity.py` re-solves one network under each model.
+
+## Finishing PLAN_dead_ends.md (2026-10-24)
+
+What landed on `claude/plan-dead-ends-36f84f`, and why each choice:
+
+- **Fresh grids G1', G2', G3'** (`scripts/dead_end_review/build_grids.py --fresh`; pages and keys
+  `outputs/dead_end_review/G1b`-`G3b`, git-ignored; `FRESH.md` beside them). Built from E14.5
+  (Harvey's Claudin segmentation, config.yaml) at fc1d8607, replayed from the thick-bridges
+  session's capture of `finish_network_graph`'s input: 394 dead ends (91 leaves_image, 95
+  stops_short, 93 unknown, 17 artefact, 4 broken, 94 island ends) against 1,082 on the graph
+  G1-G3 came from. No tip within 3 um of one shown on G1-G5 or the stub and tips-in-lumen keys;
+  no dead end on two grids. The rules each checks were fixed first (`fit_marks.FRESH_RULES`):
+  G1' `beside_share > 0.0104` is X; G2' the classifier's `leaves_image` (and distance <= 11.3 um,
+  depth <= 10.4 um) is F; G3' `ahead_turn_deg <= 30.5` is J. G3' looks 15 um ahead, not 10: at
+  10 um the graph has 14 interior tips with a vessel ahead, 4 of them under 30.5 deg.
+- **Node pressures stay 0 on the graph.** Transit time refuses a network with any non-finite node
+  pressure, and a resumed run reads node pressures back as its solution, so NaN on the node would
+  have switched transit time off on every network with a piece no inlet and outlet reach. The VTK
+  already blanks them; the viewer's nodes layer now does (`gui/results.unsolved_node_pressures`:
+  a node whose every vessel is unsolved, the viewer's own rule for vessels).
+- **Open ends in the network analyses.** `_resolve_terminals` adds every open end the solve gave a
+  condition, as an inlet where blood enters through it and an outlet where it leaves
+  (`open_end_directions`, above the carrying floor). Pinned as an equivalence: each analysis gives
+  exactly what it gives with those ends designated.
+- **Branch-order pressure drop** left vessels behind dead ends and in pieces with no inlet and
+  outlet in, each with a drop of exactly 0: the order's mean read low. They are out now.
+- **"Dead end" counts in network handling** counted loops off one node, parallel pairs and
+  self-loops; those are `removed_loop_*` now.

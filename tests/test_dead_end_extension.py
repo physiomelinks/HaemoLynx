@@ -77,6 +77,32 @@ def test_a_dead_end_is_joined_to_the_side_of_the_vessel_ahead():
     assert nx.number_connected_components(G) == 1
 
 
+def test_the_angle_at_the_target_is_read_against_the_vessel_joined():
+    """PLAN_dead_ends.md Phase 6: a join square on to the vessel it joins meets
+    it at 90 degrees, one running along it at 0, whichever way along."""
+    along = np.column_stack([np.zeros(11), np.zeros(11), np.arange(11.0)])
+    square = np.asarray([[0.0, 5.0, 5.0], [0.0, 0.0, 5.0]])
+    slanted = np.asarray([[0.0, 5.0, 0.0], [0.0, 0.0, 5.0]])
+    alongside = np.asarray([[0.0, 0.0, 9.0], [0.0, 0.0, 5.0]])
+    assert dx.angle_at_target_deg(square, along, 5) == pytest.approx(90.0)
+    assert dx.angle_at_target_deg(slanted, along, 5) == pytest.approx(45.0)
+    assert dx.angle_at_target_deg(alongside, along, 5) == pytest.approx(0.0)
+    assert dx.angle_at_target_deg(square, along, 0) == pytest.approx(90.0)
+
+
+def test_a_side_join_meeting_its_vessel_too_shallowly_is_refused():
+    """The guard reads the join the rule would draw: broken_towards_side's
+    branch meets the vessel ahead square on, so it is joined at the default
+    30 degrees and refused by a guard asking for more than a right angle."""
+    case = by_name["broken_towards_side"]()
+    assert dx.SIDE_JOIN_MIN_ANGLE_DEG == 30.0
+    G = case.graph.copy()
+    assert dx.join_dead_ends_to_vessel_sides(
+        G, _support(case.mask), extent_um=EXTENT, min_angle_at_target_deg=91.0
+    ) == 0
+    assert G.degree(case.tip) == 1
+
+
 def test_a_neighbour_ahead_is_not_joined():
     case = by_name["broken_towards_side"]()
     G = case.graph

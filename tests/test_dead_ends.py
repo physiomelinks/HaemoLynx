@@ -142,6 +142,33 @@ def test_every_caller_gives_the_same_verdict():
             if item.measures["issue"] == "open end at a face"
         }
         assert open_at_face == {t for t in leaving if case.graph.degree(next(iter(case.graph.neighbors(t)))) > 1}, case.name
+        # Mask recovery's face test, on each tip with the heading out of it
+        # (an island's end is an island end before it is anything else).
+        for tip, end in ends.items():
+            if end.heading is not None and end.kind != de.ISLAND_END:
+                assert _recovery_leaves_image(end, support) == (tip in leaving), (case.name, tip)
+
+
+def _recovery_leaves_image(end, support) -> bool:
+    from haemolynx.graph.mask_recovery import _leaves_image_at
+
+    return _leaves_image_at(np.asarray(end.tip_um), support, np.asarray(end.heading))
+
+
+def test_the_facing_join_reads_the_chain_the_definition_walks():
+    """PLAN_dead_ends.md 3.2, item 6: the facing join's heading and length
+    come from the definition's chain (chain_to_junction), not a walk of its
+    own."""
+    from haemolynx.graph.facing_ends import _heading
+
+    for make in CASES:
+        case = make()
+        for tip in [n for n in case.graph if case.graph.degree(n) == 1]:
+            _nodes, edges = de.chain_to_junction(case.graph, tip)
+            path = de.chain_path(case.graph, edges)
+            direction, length = _heading(case.graph, tip)
+            assert length == pytest.approx(float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1)))), case.name
+            assert direction is not None and float(direction @ de.tip_heading(path)) > 0.99, (case.name, tip)
 
 
 def test_marking_writes_the_kind_and_a_persons_verdict_stays():

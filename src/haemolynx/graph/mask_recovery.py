@@ -626,42 +626,24 @@ def _path_length(path: np.ndarray) -> float:
     return float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1))) if len(path) > 1 else 0.0
 
 
-def _on_image_face(point_um: np.ndarray, support: MaskSupport, outward: np.ndarray | None = None) -> bool:
-    """Whether *point_um* is a vessel the image cut through.
+def _leaves_image_at(point_um: np.ndarray, support: MaskSupport, outward: np.ndarray | None = None) -> bool:
+    """Whether a recovered strand's free end at *point_um*, heading
+    *outward*, is a vessel the image cut through: the dead-end definition's
+    ``leaves_image`` (``graph.dead_ends``), with the tip's lumen radius read
+    from the mask -- it touches a face, or the mask runs on from it to a face
+    within a few of its radii. A centreline often stops a few voxels short of
+    a face the tube itself runs into; such a spur is a vessel, and stays."""
+    from .dead_ends import image_extent_um, leaves_image
 
-    A tip within one voxel of the finest axis of the volume boundary is.
-    So is one whose mask, walked along *outward*, reaches that boundary
-    within four voxels of the coarsest axis before it reaches background.
-    A centreline often stops a few voxels short of a face the tube itself
-    runs into; a tip in the middle of the volume, however continuous the
-    mask beyond it, does not.
-    """
-    spacing = np.asarray(support.voxel_size_zyx, dtype=float)
-    extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * spacing
-    point = np.asarray(point_um, dtype=float)
-    if float(np.min(np.minimum(point, extent - point))) <= float(spacing.min()) + 1e-6:
-        return True
-    if outward is None:
-        return False
-    direction = np.asarray(outward, dtype=float)
-    limits = []
-    for axis in range(3):
-        if direction[axis] > 1e-8:
-            limits.append((extent[axis] - point[axis]) / direction[axis])
-        elif direction[axis] < -1e-8:
-            limits.append(point[axis] / -direction[axis])
-    if not limits:
-        return False
-    reach = float(min(limits))
-    if reach > 4.0 * float(spacing.max()) + 1e-6:
-        return False
-    if reach <= float(spacing.min()) + 1e-6:
-        return True
-    step = float(spacing.min())
-    samples = point + (np.arange(1, int(np.ceil(reach / step)) + 1) * step)[:, None] * direction
-    # The last step can land just past the boundary; that voxel is not the face.
-    samples = samples[np.all((samples >= -1e-6) & (samples <= extent + 1e-6), axis=1)]
-    return len(samples) > 0 and bool(np.all(support.inside(samples)))
+    tip = np.asarray(point_um, dtype=float)
+    return leaves_image(
+        tip,
+        image_extent_um(support.mask.shape, support.voxel_size_zyx),
+        heading=outward,
+        support=support,
+        tip_radius_um=float(support.radius(tip.reshape(1, 3))[0]),
+        voxel_size_zyx=support.voxel_size_zyx,
+    )[0]
 
 
 def _outward_at(strand, end, spacing) -> tuple[np.ndarray, np.ndarray | None]:
@@ -1259,7 +1241,7 @@ def recover_uncovered_mask_vessels(
                 if not G.has_node(node_of[end]) or G.degree(node_of[end]) != 1:
                     continue
                 tip, outward = _outward_at(strand, end, spacing)
-                if _on_image_face(tip, support, outward):
+                if _leaves_image_at(tip, support, outward):
                     continue
                 if _trim_recovered_spur(G, node_of[end]) > 0:
                     dead_ends += 1

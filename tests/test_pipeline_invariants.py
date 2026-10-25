@@ -573,3 +573,71 @@ def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
         assert report["dead_end_counts"][kind] == 0, kind
     for left, right in report["duplicate_pairs"]:
         assert cuts_off_vessels(G, left) and cuts_off_vessels(G, right), (left, right)
+
+
+# --- dead ends on the Nerve bed (PLAN_dead_ends.md Phase 10) ---------------------------
+
+
+@pytest.fixture(scope="module")
+def nerve_boundaries(tmp_path_factory):
+    """The Nerve fixture at the defaults, built and its boundaries chosen:
+    ``(graph, inlet nodes, outlet nodes)``."""
+    tmp_path = tmp_path_factory.mktemp("nerve_dead_ends")
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update({
+        "input_path": NERVE_FIXTURE, "vtk_output_prefix": tmp_path / "run", "plot_dir": tmp_path / "plots",
+        "statistics": False, "show_plots_in_ide": False, "interactive_plots": False,
+    })
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    built = {}
+
+    def keep(stage: str, output) -> None:
+        if stage == "build_network":
+            built["graph"] = output.graph
+
+    run_pipeline_stages(settings, schema, on_stage_output=keep, stop_after="assign_boundaries")
+    return built["graph"], list(settings["inlet_nodes"]), list(settings["outlet_nodes"])
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_every_dead_end_of_the_nerve_bed_has_one_kind(nerve_boundaries):
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, DEAD_END_KINDS
+
+    G, _inlets, _outlets = nerve_boundaries
+    tips = [n for n in G if G.degree(n) == 1]
+    assert len(tips) > 30, "the fixture's bed did not build; the test proves nothing"
+    assert {G.nodes[n].get(DEAD_END_KIND) for n in tips} <= set(DEAD_END_KINDS)
+    assert all(G.nodes[n].get(DEAD_END_KIND) for n in tips)
+    assert not any(DEAD_END_KIND in G.nodes[n] for n in G if G.degree(n) != 1)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason=(
+    "PLAN_dead_ends.md Phase 10 target, not yet met: 3 of the Nerve bed's 64 dead ends are "
+    "stops_short at fc1d8607. Phase 5 (tracing them on) waits on a measure that separates "
+    "'would join' from 'stops here' (G5: the route join scored 23/29, the same as never joining)."
+))
+def test_no_dead_end_of_the_nerve_bed_is_one_the_graph_stopped_short_of(nerve_boundaries):
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, STOPS_SHORT
+
+    G, _inlets, _outlets = nerve_boundaries
+    assert [n for n in G if G.degree(n) == 1 and G.nodes[n].get(DEAD_END_KIND) == STOPS_SHORT] == []
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason=(
+    "PLAN_dead_ends.md Phase 10 target, not yet met: the default boundary selection "
+    "(edge_percent, boundary_open_end_test=distance) picks 12 nodes on the Nerve bed at "
+    "fc1d8607, 2 of them dead ends the definition calls interior. Taking only leaves_image "
+    "terminals (Phase 3) waits on the fresh grid G2'."
+))
+def test_every_boundary_node_the_nerve_run_chooses_leaves_the_image(nerve_boundaries):
+    from haemolynx.graph.dead_ends import node_leaves_image
+
+    G, inlets, outlets = nerve_boundaries
+    assert inlets and outlets
+    assert [n for n in inlets + outlets if not node_leaves_image(G, n)] == []

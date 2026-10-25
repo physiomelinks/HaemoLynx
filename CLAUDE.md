@@ -708,7 +708,11 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`node_leaves_image`, `open_end_nodes`); `post_process` reclassifies only the touched nodes
   (`reclassify_dead_ends`). No rule reached 90% on Harvey's grids, so the kinds only label and
   list, and every repair in `graph/dead_end_extension.py` stays off. `remove_pieces_without_junction`
-  and `remove_interior_dead_ends` (Graph tab) are off by default.
+  and `remove_interior_dead_ends` (Graph tab) are off by default. The fresh grids G1'-G3'
+  (`scripts/dead_end_review/build_grids.py --fresh`, rules fixed in `fit_marks.FRESH_RULES`) wait
+  on Harvey's marks. `vessels_cut_by_image_faces`: the vessels on a leaving dead end's chain,
+  whose lengths are censored (decision D5): flagged in the VTK (`cut_by_image_face`) and the
+  connectivity CSV, and given apart in the statistics' Dead Ends section.
 - **Flow states** — the solve writes `graph.FLOW_STATE` (`solved`, `blind_end`, `closed_end`,
   `no_boundary`) beside `FLOW_SOLVED`. `blind_end` and `closed_end` flows and drops are exactly 0:
   **call `graph.zero_flows_behind_dead_ends` after any new `set_edge_flows` on a marked graph.**
@@ -723,6 +727,11 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   graph; `estimated` reproduces its estimate exactly. The baseline keeps its conditions on the
   graph, and **every solver path augments with them** (the solve stage, the haematocrit loop,
   `_solve_network`, `solve_sweep_point`). `scripts/open_end_sensitivity.py` compares the models.
+  `open_end_directions(G)`: which open ends feed the network and which drain it, by their solved
+  flow. The network analyses take them as inlets and outlets beside the designated ones
+  (`statistics._route_graph._resolve_terminals`, the one place they ask), and the VTK names
+  them (`boundary_role`). Flow statistics read `flow_state`, never `== 0`; with
+  `statistics_flow_face_margin_um` the per-vessel flow rows leave the vessels by the faces out.
 
 ### Thick vessels (`docs/notes/thick_vessels.md`, `PLAN_thick_vessel_bridges.md`, `PLAN_bridging.md`)
 
