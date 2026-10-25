@@ -7,11 +7,10 @@ measurement that has to come first.
 **Where it stands (2026-10-25).** Every item that needs no one but the code is done (section 5's
 last entry): Phases 0-3, Phase 1's last test, F2's skeleton half, F10, F11 (closed by measurement)
 and Phase 4's census; Harvey marked grid P, the Phase 1 rules' fresh grid, on 2026-10-25 (the wall
-join and fork rules beat marking all one way, the taper rule did not). What is left waits on Harvey or
-on another plan: his decisions listed under "For Harvey" in section 5,
-and the `thick_wall` dead-end kind and its review list, which wait on `PLAN_dead_ends.md`'s session
-landing its changes to `graph/dead_ends.py` and `graph/network_review.py`. Whether this file is
-retired is his call.
+join and fork rules beat marking all one way, the taper rule did not, and he dropped it); the
+`thick_wall` dead-end kind (1.3) and its review list (0.2) landed at `401f77f4`. What is left waits on
+Harvey: his decisions listed under "For Harvey" in section 5. Whether this file is retired is
+his call.
 
 **In one paragraph.** Every join the pipeline draws goes through one gate,
 `preprocessing/bridge_mask_support.py`: a path is a vessel when it stays in the segmented mask bar
@@ -484,8 +483,19 @@ Phases 2 and 3 can start today. Phase 1 waits for the grid.
     wall join beside a vessel or closing a loop, 1 turning 80.2 degrees, 1 made after the split),
     thick-vessel bridges 51 -> 63, connectors left for want of a centreline 21 -> 9, mask covered
     78.5 -> 81.1%, build 236 -> 141 s (`outputs/thick_junction_review/census_2026-10-25/`).
-  - **Waiting on `PLAN_dead_ends.md`'s session** (it is editing those files): the `thick_wall`
-    dead-end kind (1.3) and Phase 0.2's finder as a Post processing review list.
+  - **`thick_wall` and its review list** (`401f77f4`, once `PLAN_dead_ends.md`'s session handed over
+    `graph/dead_ends.py` and `graph/network_review.py`): a dead end within the lumen's radius plus
+    `WALL_JOIN_REACH_UM` of the thick tree and off it -- the wall join's candidates -- that the join
+    left is `thick_wall`, in place of stops short, broken or unknown (an artefact stays one), judged
+    on the tree `stages.mark_dead_end_kinds` records on the graph (`record_thick_centreline`) so every
+    later reader agrees. Post processing lists them in "Dead ends at thick vessels"
+    (`network_review.find_dead_ends_at_thick_walls`), each with where "Join to the vessel ahead"
+    lands on the thick centreline; the statistics give them a row and count them in the interior
+    density. Phase 1.4's case (iii) now ends as a `thick_wall` dead end
+    (`test_a_vessel_the_wall_join_leaves_is_a_thick_wall_dead_end`). E14.5 at `155699f4`: 36 of 393
+    dead ends (20 were stops short, 16 unknown), 30 of them turning more than 80 degrees from the
+    thick centreline (`outputs/thick_junction_review/thick_wall_2026-10-25/`). F11 found no copy of
+    the mask in `assemble.py`, so its [later] fix was not needed.
   - **The taper rule dropped** (Harvey, 2026-10-25): a vessel carrying on from a thick centreline's end
     is bridged like any other. E14.5 to solve, with the rule and without: tapers 15 -> 0, bridges
     63 -> 75, vessel 47,139 -> 47,012 um, dead ends 394 -> 393, network resistance 2.96e15 -> 2.65e15
