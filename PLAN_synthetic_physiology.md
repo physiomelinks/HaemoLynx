@@ -177,4 +177,19 @@ changed only where the phase says.
 
 ## Status
 
-2026-10-25: planned; waiting on D1-D7.
+**Decided by Harvey, 2026-10-25:**
+
+- D1: **a + b** -- his marks on a shuffled grid of renders, and numeric bands on the organisation
+  measures in the template comparison.
+- D2: **a** -- a closed network by default (flow enters only at the inlets, leaves only at the
+  outlets, no open ends); the template's face cuts kept as an option; the viewer shows a synthetic
+  run's inlets and outlets.
+- D3: **a** -- no interior dead ends by default.
+- D4: **a** -- the organisation read from the template.
+- D5: **a** -- trunks with side branches in the template's large-vessel layer.
+- D6: **a** -- the bed fills the template's capillary density instead of being grown from the trees.
+- D7: **a and b** -- the template's widths, and adaptation to the flow (Pries, Secomb & Gaehtgens
+  1998) built now; read as an option, off by default, so the comparison's diameter rows keep
+  their meaning (to confirm with Harvey).
+
+Being built in the phase order above.
