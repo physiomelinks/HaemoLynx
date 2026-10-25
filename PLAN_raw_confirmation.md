@@ -17,7 +17,7 @@ marked grid, and leaves everything else mask-only on purpose.
 ## Status (2026-10-25)
 
 No raw-image rule ships. Every grid the plan built found no raw measure near 90 %, and most did
-no better than marking all one way, so each decision stays the mask's. What is left is one grid
+no better than marking all one way, so each decision stays the mask's. What is left is grid UR2
 with Harvey and what follows from it.
 
 | Item | State | Where |
@@ -33,8 +33,10 @@ with Harvey and what follows from it.
 | Phase 3: the raw reading ranking the Short loops list | **Not built**: it scored no better than all F on I and I2, and a measure that fails its grid stays a measure, not an order (`6d335f88`'s precedent). For Harvey | -- |
 | Phase 3: "the Post processing page shows the raw panel" | **Not built**: the plan never said what the panel shows. For Harvey | -- |
 | Phase 3 (P5): pinhole plugging | **Closed by the marks**: it needed I2's raw hole threshold, and none passed | Phase 3 |
-| Phase 4 (P6): grid UR1 | **Built and sent** (2026-10-25): https://claude.ai/artifact/JTxvz6NZFub5UNCtUspLta | `8204478d`, Phase 4 |
-| Phase 4: a skip rule in `mask_recovery.py`, or the uncovered-mask review list carrying the measure **[later]** | **Waits on UR1's marks**, then a rule at ≥ 90 % on UR2 | Phase 4 |
+| Phase 4 (P6): grid UR1 | **Marked and fitted** (Harvey, 2026-10-25): 26 H / 4 V; no measure beats all H over the 30; on the ten recovery draws into (8 H), dextran over its neighbours above 1.05 gets 10/10 | `8204478d`, `c5bc6ad2`, Phase 4 |
+| Phase 4: grid UR2 | **Built and sent** (2026-10-25), two rules fixed first: the local dextran above 1.05, and every piece H (recovery drawing nothing). https://claude.ai/artifact/NdhbUg7HEzj9eiLKrrg28R | `c5bc6ad2`, Phase 4 |
+| Phase 4: a skip rule in `mask_recovery.py` | **Waits on UR2's marks**; the lead reads dextran, which E14.5's run (claudin-5, D0) does not, so it is Harvey's call even at 90 % | Phase 4 |
+| Phase 4: the uncovered-mask review list carrying the measure **[later]** | **Closed by UR1's marks**: no measure ranks V above H over the 30 | Phase 4 |
 | Per-depth calibration (Risks) | **Waits**: no rule reads the reader; UR1's key carries the global and the local readings and the depth | Risks |
 | Phase 5: docs and the review | **Done** | CLAUDE.md (layout, `lumen_loops`), `docs/notes/graph_building.md`, `RELEASE_REVIEW.md` `graph.6b`, `graph.8b`, `memory.6a` |
 
@@ -433,6 +435,34 @@ beside them.
   `mask_recovery.py`. Failing that, the review list carries the best measure on each item
   **[later]**, sorted by it only if the marks show it ranks V above H (a measure that fails stays
   a measure, not an order, as the dead-end turn did).
+
+**UR1 marked by Harvey and fitted (2026-10-25, `c5bc6ad2`, `scripts/uncovered_review/fit_ur1.py`;
+report `outputs/uncovered_review/FIT_UR1.md`, marks in `marks_UR1/`, worktree
+`plan-raw-confirmation-0887be`):**
+
+- **The marks**: 26 H, 4 V (UR1-12, 13, 24, 26). "What decided it" is dextran and claudin-5 on
+  all 28 with a tick, segmentation shape on 26; no notes. Nine in ten uncovered pieces are not a
+  vessel of their own.
+- **Every piece (30)**: no measure beats marking all H leave-one-out (26/30). Claudin-5's median
+  above 6.7 and dextran's above 2.63 fit 27/30 but fall to 26 and 25 left out.
+- **The ten recovery draws into**: 2 V, 8 H, so recovery's centrelines are mostly drawn where
+  Harvey sees no vessel of its own. The dextran over the neighbouring centrelines' above 1.05
+  separates them 10/10 leave-one-out (all H 8/10); depth ≤ 13 µm 9/10. Two V is too few to trust.
+- **The review list (the [later] item) is closed by the marks**: on the population it lists, no
+  measure ranks V above H, and 26 of 30 are H, so there is nothing to carry or sort by.
+- **The skip rule's lead needs a channel the run does not read.** It is a dextran reading; under
+  D0 E14.5's raw image is claudin-5, so `RawEvidence` would hold the wall stain, not the plasma
+  one. If UR2 confirms it, a skip rule runs only where the run's raw image is a plasma label, or
+  the run reads a second channel (D5 said one). For Harvey.
+
+**UR2 built and sent (2026-10-25, `c5bc6ad2`)**: https://claude.ai/artifact/NdhbUg7HEzj9eiLKrrg28R
+(marks in `annotations`), key `outputs/uncovered_review/UR2_key.csv`. Every piece recovery draws
+into that UR1 did not show: 29, the same graph and page, a new shuffle. Two rules fixed before the
+marks (`fit_ur1.FRESH_RULES["UR2"]`, committed before the page went out): **V when the dextran
+over its neighbours is above 1.05** (it calls 3 of the 29 V: UR2-01, 03, 25), and **every piece H**,
+which is mask recovery drawing nothing. Either at ≥ 90 % on UR2 goes to Harvey: the first as a skip
+rule (with the channel question above), the second as `recover_uncovered_mask_vessels` off by
+default, which needs no raw image.
 
 ### Phase 5 — Docs and the review
 

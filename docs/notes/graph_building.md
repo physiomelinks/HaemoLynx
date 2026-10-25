@@ -293,5 +293,9 @@ The dextran channel (not the segmentation's own here: it was made from claudin-5
 depth: the top 30 um a median 1.27 of the run's lumen level, every band below 0.31-0.41, while
 read over the centrelines within 25 um it reads a median 0.42-0.61 in every band. E2
 (`inside_walls`) finds no lumen at the deepest points of 1,724 of the 1,749. Grid UR1 (30: ten
-recovery draws into, twenty it does not, each half by depth, spread across the local reading) is
-with Harvey; `scripts/uncovered_review/build_ur1.py`.
+recovery draws into, twenty it does not, each half by depth, spread across the local reading;
+`scripts/uncovered_review/build_ur1.py`), marked by Harvey the same day: 26 H (not a vessel of
+its own), 4 V. No measure beats all H over the 30 (`fit_ur1.py`, `FIT_UR1.md`). Of the ten recovery
+draws into, 8 are H, and the dextran over the neighbouring centrelines' above 1.05 separates them
+10/10 leave-one-out on 2 V. Grid UR2 (the other 29 pieces recovery draws into) checks that and
+"every piece H" (recovery drawing nothing), both fixed before its marks.
