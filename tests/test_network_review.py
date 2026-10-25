@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from haemolynx.graph import network_review as nr
+from haemolynx.graph import skeleton_retrace as R
 from haemolynx.graph.facing_ends import REFUSED_GAP_TOO_WIDE
 from haemolynx.graph.prune import FLOW_SOLVED
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
@@ -491,6 +492,63 @@ def test_a_segmented_vessel_without_a_centreline_is_an_item_to_trace():
     assert items[0].centre_um[2] == pytest.approx(50.0, abs=1.0)
     assert items[0].centre_um[1] > tips["mask_continues"][1]
     assert len(items[0].points_um) > 0
+
+
+# --- skeleton the graph does not follow (PLAN_surface_coverage.md) ----------------
+
+
+def test_skeleton_the_graph_does_not_follow_is_listed_with_the_route_the_retrace_would_draw():
+    from test_skeleton_retrace import _ring
+
+    scene = _ring()
+    support = scene.support()
+
+    (item,) = nr.find_lost_skeleton(scene.G, scene.skeleton, support)
+
+    assert item.kind == nr.LOST_SKELETON and item.nodes == () and item.edges == ()
+    assert item.measures["reason"] == nr.LOST_SKELETON_WHY[None]
+    assert 30.0 <= item.measures["length_um"] <= 40.0
+    assert item.measures["hole_um"] > 20.0
+    assert item.measures["mask_fraction"] == pytest.approx(1.0)
+    assert len(item.points_um) == item.measures["voxels"]
+    # The route runs from the vessel at one end (A) to the one at the other (D).
+    ends = sorted(tuple(np.round(p, 6)) for p in (item.path_um[0], item.path_um[-1]))
+    assert ends == sorted(tuple(np.round(scene.G.nodes[n]["pos"], 6)) for n in ("A", "D"))
+    assert "skeleton no centreline follows" in item.why
+    # A wider limit: still listed, now refused for its hole.
+    (refused,) = nr.find_lost_skeleton(scene.G, scene.skeleton, support, keep_hole_over_um=1000.0)
+    assert refused.measures["reason"] == nr.LOST_SKELETON_WHY[R.REFUSED_SMALL_HOLE]
+    assert refused.path_um is not None
+
+
+def test_a_lost_branch_is_listed_with_no_route_and_short_pieces_are_not():
+    from test_skeleton_retrace import Scene
+
+    scene = Scene((13, 60, 70))
+    scene.line((6.0, 15.0, 10.0), (6.0, 15.0, 60.0), node_names=("a", "b"))
+    scene.line((6.0, 15.0, 35.0), (6.0, 50.0, 35.0), in_graph=False)  # 35 um branch
+    scene.line((6.0, 15.0, 20.0), (6.0, 26.0, 20.0), in_graph=False)  # 11 um stub
+
+    (item,) = nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support())
+
+    assert item.measures["reason"] == nr.LOST_SKELETON_WHY[R.REFUSED_ONE_END]
+    assert item.path_um is None
+    assert item.centre_um[1] > 25.0  # the branch, not the stub
+
+
+def test_lost_skeleton_is_judged_only_where_the_scan_reads_and_listed_longest_first():
+    from test_skeleton_retrace import Scene
+
+    scene = Scene((40, 60, 70))
+    scene.line((6.0, 15.0, 10.0), (6.0, 15.0, 60.0), node_names=("a", "b"))
+    scene.line((6.0, 15.0, 30.0), (6.0, 50.0, 30.0), in_graph=False)  # 35 um, at z 6
+    scene.line((6.0, 15.0, 50.0), (30.0, 15.0, 50.0), in_graph=False)  # 24 um, up through z 7-30
+
+    lengths = [item.measures["length_um"] for item in nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support())]
+    deep = nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support(), z_range=(20, 40))
+
+    assert len(lengths) == 2 and lengths == sorted(lengths, reverse=True)
+    assert len(deep) == 1 and deep[0].measures["length_um"] == pytest.approx(min(lengths))
 
 
 # --- the region a scan is limited to ------------------------------------------------

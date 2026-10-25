@@ -896,17 +896,20 @@ def judge_lost_skeleton(
     *,
     keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
     reach_um: float = REACH_UM,
+    only=None,
 ) -> list[Retrace]:
     """What :func:`retrace_lost_skeleton` would say of each lost piece of
     *skeleton*, judged against *G* as it stands -- read-only, largest piece
     first. Pieces drawn back one by one change what the next is judged
-    against, so the run itself may draw a different set."""
+    against, so the run itself may draw a different set. *only*
+    (``LostSkeletonPiece -> bool``), when given, picks the pieces judged."""
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     centrelines, index = _Centrelines(G), _LiveIndex(G)
     edits = _Edits(G)
     return [
         _judge(G, piece, support, centrelines, index, spacing, keep_hole_over_um, edits)[0]
         for piece in lost_skeleton_pieces(G, skeleton, spacing, reach_um=reach_um, centrelines=centrelines)
+        if only is None or only(piece)
     ]
 
 

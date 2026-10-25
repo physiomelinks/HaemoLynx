@@ -120,6 +120,21 @@ def test_the_hole_limit_decides_and_the_judge_says_why():
     assert verdict.loop_length_um == pytest.approx(160.0, abs=6.0)
 
 
+def test_the_judge_reads_only_the_pieces_it_is_asked_about_and_says_the_same_of_them():
+    scene = Scene((13, 60, 70))
+    scene.line((6.0, 15.0, 10.0), (6.0, 15.0, 60.0), node_names=("a", "b"))
+    scene.line((6.0, 15.0, 25.0), (6.0, 50.0, 25.0), in_graph=False)
+    scene.line((6.0, 15.0, 45.0), (6.0, 40.0, 45.0), in_graph=False)
+    support = scene.support()
+
+    every = R.judge_lost_skeleton(scene.G, scene.skeleton, support)
+    near = R.judge_lost_skeleton(scene.G, scene.skeleton, support, only=lambda piece: piece.voxels[:, 2].max() > 35)
+
+    assert len(every) == 2 and len(near) == 1
+    (same,) = [v for v in every if v.piece.voxels[:, 2].max() > 35]
+    assert np.array_equal(near[0].piece.voxels, same.piece.voxels) and near[0].reason == same.reason
+
+
 def test_the_default_limit_is_the_short_loop_rules():
     assert R.retrace_lost_skeleton.__kwdefaults__["keep_hole_over_um"] == DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
 

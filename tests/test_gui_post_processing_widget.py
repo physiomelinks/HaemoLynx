@@ -1426,6 +1426,58 @@ def test_a_dead_end_at_a_thick_wall_is_joined_to_the_thick_centreline(make_napar
     assert [r["decision"] for r in rows] == ["joined to the vessel ahead"]
 
 
+def test_skeleton_the_graph_does_not_follow_is_listed_and_drawn_along(make_napari_viewer, qtbot, tmp_path):
+    """PLAN_surface_coverage.md: a ring the clean-up opened, its lost side
+    listed from the run's skeleton layer, and Draw along the skeleton closing
+    it again, recorded like any decision."""
+    from test_skeleton_retrace import _ring
+
+    from haemolynx.gui.post_processing import ACTION_DRAW_ALONG
+
+    scene = _ring()
+    G = nx.convert_node_labels_to_integers(scene.G, ordering="sorted")
+    for _u, _v, d in G.edges(data=True):
+        d.setdefault("branch_order", "B01")
+        d.setdefault("diameter_um", 4.0)
+    viewer = make_napari_viewer()
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(image=scene.mask().astype(np.uint8), skeleton=scene.skeleton,
+                        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0)),
+    ))
+    built = network(G)
+    built.volume.skeleton = scene.skeleton  # build_network shows its own skeleton again
+    _apply_layers(viewer, results.stage_finished("build_network", built))
+    c = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: results,
+        boundary_roles=lambda: {"inlet": (), "outlet": ()},
+        regenerate=lambda graph, stop_after=None: True, running=lambda: False,
+        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+    )
+    c.refresh()
+    c.review_choice.setCurrentText("Skeleton the graph does not follow")
+    assert not nx.cycle_basis(nx.Graph(c.state.graph))
+
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+
+    assert c.review_items.count() == 1
+    assert c.review_items.item(0).text().endswith("µm of skeleton: the re-trace would draw it")
+    c.review_items.setCurrentRow(0)
+    assert _shown_buttons(c) == {ACTION_DRAW_ALONG, ACTION_KEEP}
+    assert c.review_buttons[ACTION_DRAW_ALONG].isEnabled()
+    edges = c.state.graph.number_of_edges()
+
+    c.review_buttons[ACTION_DRAW_ALONG].click()
+
+    assert c.state.graph.number_of_edges() == edges + 1
+    assert nx.cycle_basis(nx.Graph(c.state.graph)), "the ring is closed again"
+    rows = _csv_rows(tmp_path / "run_lost_skeleton_review.csv")
+    assert [r["decision"] for r in rows] == ["drawn along the skeleton"]
+    assert float(rows[0]["length_um"]) > 30.0
+
+
 def test_the_scan_after_a_regenerate_says_what_it_changed(page):
     c, viewer = page.controls, page.viewer
     c.scan_button.click()

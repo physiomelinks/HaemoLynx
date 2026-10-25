@@ -670,7 +670,7 @@ def test_the_dropdown_lists_none_first_then_junctions_loops_and_every_check_once
     mask_lists = {entry.key for entry in REVIEW_LISTS if entry.uses_mask}
     assert mask_lists == {
         nr.DEAD_ENDS, nr.THICK_WALL_ENDS, nr.TWO_IN_ONE_LUMEN, nr.DOUBLED_STRETCHES, nr.FACING_ENDS,
-        nr.UNCOVERED_MASK,
+        nr.UNCOVERED_MASK, nr.LOST_SKELETON,
     }
     assert REVIEW_MARKERS in POST_PROCESSING_LAYERS and REVIEW_REGION in POST_PROCESSING_LAYERS
 
@@ -1162,3 +1162,80 @@ def test_dead_ends_at_thick_vessels_have_their_list_label_and_join():
     assert review_label(inside, 2) == "2. Node 5: 2.5 µm inside the lumen, 11 µm"
     assert action_applies(outside, ACTION_JOIN_AHEAD) and not action_applies(inside, ACTION_JOIN_AHEAD)
     assert all(action_applies(outside, a) for a in (ACTION_TRACE_ON, ACTION_DELETE_ITEM, ACTION_MARK_BLIND))
+
+
+# --- Skeleton the graph does not follow (PLAN_surface_coverage.md) -------------------
+
+
+def test_skeleton_the_graph_does_not_follow_needs_the_mask_and_the_skeleton_and_reads_as_its_length():
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_DRAW_ALONG, ACTION_KEEP, NEEDS_SKELETON, REVIEW_LIST_BY_LABEL, action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_LABEL["Skeleton the graph does not follow"]
+    assert entry.key == nr.LOST_SKELETON
+    assert entry.needs == (NEEDS_MASK, NEEDS_SKELETON) and entry.uses_mask
+    assert entry.actions == (ACTION_DRAW_ALONG, ACTION_KEEP)
+    G = _network()
+    assert review_needs_missing(entry, G, has_mask=True, inlets=(), outlets=()) == NEEDS_SKELETON
+    assert review_needs_missing(entry, G, has_mask=False, inlets=(), outlets=(), has_skeleton=True) == NEEDS_MASK
+    assert review_needs_missing(entry, G, has_mask=True, inlets=(), outlets=(), has_skeleton=True) is None
+    item = _item(nr.LOST_SKELETON, nodes=(), edges=(), length_um=32.4, reason=nr.LOST_SKELETON_WHY[None])
+    assert review_label(item, 4) == "4. 32.4 µm of skeleton: the re-trace would draw it"
+    route = SimpleNamespace(measures={}, path_um=np.zeros((3, 3)))
+    branch = SimpleNamespace(measures={}, path_um=None)
+    assert action_applies(route, ACTION_DRAW_ALONG) and not action_applies(branch, ACTION_DRAW_ALONG)
+    assert action_applies(branch, ACTION_KEEP)
+    assert review_region_layer(item).data.shape == (2, 3)  # its voxels, as uncovered mask's
+
+
+def test_the_lost_skeleton_list_is_made_with_the_runs_hole_limit_or_the_rules_own():
+    from test_skeleton_retrace import _ring
+
+    scene = _ring()
+    support = scene.support()
+
+    def reasons(settings):
+        items = find_review_items(nr.LOST_SKELETON, scene.G, support=support, settings=settings,
+                                  skeleton=scene.skeleton)
+        return [item.measures["reason"] for item in items]
+
+    from haemolynx.graph.skeleton_retrace import REFUSED_SMALL_HOLE
+
+    assert reasons({"short_loop_keep_hole_over_um": 1000.0}) == [nr.LOST_SKELETON_WHY[REFUSED_SMALL_HOLE]]
+    # 0 keeps no loop for its hole and the re-trace draws nothing: judged at the rule's own 10 um.
+    assert reasons({"short_loop_keep_hole_over_um": 0.0}) == reasons({}) == [nr.LOST_SKELETON_WHY[None]]
+
+
+def test_the_vessel_end_nearest_a_point_skips_bridges_and_far_vessels():
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.gui.post_processing import vessel_end_nearest
+
+    G = _network()
+    end = vessel_end_nearest(G, (0.0, 1.0, 5.0))  # beside vessel 0-1, half way
+    assert end.edge == (0, 1, 0) and end.point_um == pytest.approx((0.0, 1.0, 5.0))
+    assert vessel_end_nearest(G, (0.0, 1.0, 5.0), max_distance=0.5) is None
+    G.edges[0, 1, 0][IS_ZERO_RESISTANCE] = True
+    assert vessel_end_nearest(G, (0.0, 1.0, 5.0)) is None  # the bridge is never joined
+
+
+def test_drawing_along_the_skeleton_closes_the_ring_the_clean_up_opened():
+    """What Draw along the skeleton does with a listed piece: the route the
+    re-trace would draw, its ends split into the vessels they meet."""
+    from test_skeleton_retrace import _ring
+
+    from haemolynx.graph.post_processing import add_traced_vessel
+    from haemolynx.gui.post_processing import vessel_end_nearest
+
+    scene = _ring()
+    (item,) = nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support())
+    ends = [vessel_end_nearest(scene.G, p) for p in (item.path_um[0], item.path_um[-1])]
+
+    added = add_traced_vessel(scene.G, ends[0], ends[1], item.path_um)
+
+    assert {added.edge[0], added.edge[1]} == {"A", "D"}
+    assert scene.G.edges[added.edge]["length"] == pytest.approx(40.0, abs=2.0)
+    assert nx.cycle_basis(nx.Graph(scene.G))
+    assert nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support()) == []

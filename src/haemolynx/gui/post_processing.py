@@ -62,6 +62,7 @@ from haemolynx.gui.results import PREFIX, LayerSpec, node_points, polylines_to_v
 __all__ = [
     "ACTION_DELETE_ITEM",
     "ACTION_DELETE_SELECTED",
+    "ACTION_DRAW_ALONG",
     "ACTION_JOIN",
     "ACTION_KEEP",
     "ACTION_LABELS",
@@ -84,6 +85,9 @@ __all__ = [
     "NEEDS_BOUNDARIES",
     "NEEDS_FLOW",
     "NEEDS_MASK",
+    "NEEDS_SKELETON",
+    "DRAW_ALONG_REACH_UM",
+    "vessel_end_nearest",
     "NetworkSummary",
     "REVIEW_CSV_COLUMNS",
     "REVIEW_JUNCTIONS",
@@ -475,6 +479,31 @@ def nearest_node(
     points, ids = node_points(graph)
     best = _nearest_under_click(points, position, view_direction, dims, max_distance)
     return None if best is None else ids[best]
+
+
+#: How far, in microns, an end of a vessel Draw along the skeleton adds may
+#: lie from the network and still be joined to it: the re-trace's reach.
+DRAW_ALONG_REACH_UM = 3.0
+
+
+def vessel_end_nearest(graph: Any, point_um: Sequence[float], *, max_distance: float = DRAW_ALONG_REACH_UM):
+    """A ``VesselEnd`` on the vessel of *graph* nearest *point_um* (physical
+    ``(z, y, x)``), a thick-vessel bridge never; None when none is within
+    *max_distance* -- the network was edited since the item was listed."""
+    from haemolynx.graph._helpers import densify_polyline, edge_sample_points
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    point = np.asarray(point_um, dtype=float)[:3]
+    pos = {n: np.asarray(d["pos"], dtype=float)[:3] for n, d in graph.nodes(data=True) if d.get("pos") is not None}
+    best, best_edge = float(max_distance), None
+    for u, v, key, data in graph.edges(keys=True, data=True):
+        if data.get(IS_ZERO_RESISTANCE) or u not in pos or v not in pos:
+            continue
+        samples = densify_polyline(edge_sample_points(u, v, data, pos), max_step_um=0.5)
+        distance = float(np.min(np.linalg.norm(samples - point, axis=1)))
+        if distance <= best:
+            best, best_edge = distance, (u, v, key)
+    return None if best_edge is None else VesselEnd.on_vessel(best_edge, tuple(float(c) for c in point))
 
 
 def _nearest_under_click(
@@ -1199,6 +1228,7 @@ REVIEW_LOOPS = "short_loops"
 NEEDS_MASK = "the segmented image in the viewer"
 NEEDS_BOUNDARIES = "inlet and outlet nodes"
 NEEDS_FLOW = "a solved network"
+NEEDS_SKELETON = "the run's skeleton in the viewer"
 
 #: The buttons a review list offers for its chosen item.
 ACTION_DELETE_SELECTED = "delete_selected"
@@ -1216,6 +1246,8 @@ ACTION_MARK_OPEN = "mark_open"
 ACTION_MAKE_INLET = "make_inlet"
 ACTION_MAKE_OUTLET = "make_outlet"
 ACTION_REMOVE_TERMINAL = "remove_terminal"
+#: The lost-skeleton list's own button: the vessel the skeleton re-trace would draw.
+ACTION_DRAW_ALONG = "draw_along"
 ACTION_LABELS = {
     ACTION_DELETE_SELECTED: "Delete selected vessels",
     ACTION_DELETE_ITEM: "Delete all its vessels",
@@ -1230,6 +1262,7 @@ ACTION_LABELS = {
     ACTION_MAKE_INLET: "Make inlet",
     ACTION_MAKE_OUTLET: "Make outlet",
     ACTION_REMOVE_TERMINAL: "Remove inlet/outlet",
+    ACTION_DRAW_ALONG: "Draw along the skeleton",
 }
 
 
@@ -1257,6 +1290,9 @@ def action_applies(item: Any, action: str) -> bool:
         return measures.get("role") != "outlet"
     if action == ACTION_REMOVE_TERMINAL:
         return measures.get("role") in ("inlet", "outlet")
+    if action == ACTION_DRAW_ALONG:
+        # The re-trace got as far as a route only where the piece meets the network twice.
+        return getattr(item, "path_um", None) is not None
     return True
 
 
@@ -1297,6 +1333,8 @@ def _review_lists() -> tuple[ReviewList, ...]:
                    (ACTION_DELETE_SELECTED, ACTION_KEEP)),
         ReviewList(nr.BROKEN_VESSELS, "Broken vessels", (NEEDS_MASK,), (ACTION_JOIN, ACTION_JOIN_AHEAD, ACTION_KEEP)),
         ReviewList(nr.UNCOVERED_MASK, "Segmented vessels without a centreline", (NEEDS_MASK,), (ACTION_KEEP,)),
+        ReviewList(nr.LOST_SKELETON, "Skeleton the graph does not follow", (NEEDS_MASK, NEEDS_SKELETON),
+                   (ACTION_DRAW_ALONG, ACTION_KEEP)),
         ReviewList(nr.UNSOLVED_PIECES, "Unsolved pieces", (NEEDS_BOUNDARIES,),
                    (ACTION_DELETE_ITEM, ACTION_KEEP)),
         ReviewList(nr.FLOW_AGAINST_ORDER, "Flow against branch order", (NEEDS_FLOW,),
@@ -1360,6 +1398,8 @@ def review_label(item: Any, number: int) -> str:
         text = f"Nodes {nodes}: {_g(m.get('gap_um'))} µm apart, {m.get('refused') or 'joinable'}"
     elif kind == nr.UNCOVERED_MASK:
         text = f"{_g(m.get('volume_um3'))} µm³ of mask, up to {_g(2 * float(m.get('radius_um') or 0))} µm across"
+    elif kind == nr.LOST_SKELETON:
+        text = f"{_g(m.get('length_um'))} µm of skeleton: {m.get('reason')}"
     elif kind == nr.UNSOLVED_PIECES:
         where = f"off node {m.get('attached_at')}" if m.get("attached_at") else "on its own"
         text = f"{m.get('vessels')} vessel(s), {_g(m.get('length_um'))} µm, {where}"
@@ -1456,14 +1496,16 @@ def review_marker_layer(items: Sequence[Any], chosen: Any = None) -> LayerSpec:
 
 
 def review_region_layer(item: Any) -> LayerSpec:
-    """The voxels of the chosen piece of uncovered mask, in orange."""
+    """The voxels of the chosen piece of uncovered mask, or of skeleton the
+    graph does not follow, in orange."""
     points = np.asarray(getattr(item, "points_um", ()), dtype=float).reshape(-1, 3)
     return LayerSpec(
         kind="points",
         name=REVIEW_REGION,
         data=points,
         features={},
-        options={"size": 1.0, "face_color": TRACE_COLOUR, "border_width": 0.0, "out_of_slice_display": True},
+        # A list, not a tuple: napari 0.9 refuses a tuple as a colour.
+        options={"size": 1.0, "face_color": list(TRACE_COLOUR), "border_width": 0.0, "out_of_slice_display": True},
     )
 
 
@@ -1802,11 +1844,14 @@ def summary_change(before: NetworkSummary, after: NetworkSummary) -> str:
 
 
 def review_needs_missing(
-    entry: ReviewList, graph: Any, *, has_mask: bool, inlets: Sequence[Any], outlets: Sequence[Any]
+    entry: ReviewList, graph: Any, *, has_mask: bool, inlets: Sequence[Any], outlets: Sequence[Any],
+    has_skeleton: bool = False,
 ) -> str | None:
     """What *entry* needs that this run cannot give it (a ``NEEDS_*``), or None."""
     if NEEDS_MASK in entry.needs and not has_mask:
         return NEEDS_MASK
+    if NEEDS_SKELETON in entry.needs and not has_skeleton:
+        return NEEDS_SKELETON
     if NEEDS_BOUNDARIES in entry.needs and not (
         any(n in graph for n in inlets) and any(n in graph for n in outlets)
     ):
@@ -1849,15 +1894,16 @@ def find_review_items(
     settings: Any = None,
     extent_um: Sequence[float] | None = None,
     z_range: tuple[int, int] | None = None,
+    skeleton: Any = None,
 ) -> list[Any]:
     """Make review list *key* (one of :data:`~haemolynx.graph.network_review.REVIEW_KINDS`)
     on *graph*, with the run's own settings where a list reads one:
     ``min_stub_length_radius_multiple`` (dead ends, dead ends at thick vessels, broken vessels),
-    ``facing_dead_end_max_gap_um``
-    and ``recovery_min_region_volume_um3``. *support* is the segmented image
+    ``facing_dead_end_max_gap_um``, ``recovery_min_region_volume_um3``
+    and ``short_loop_keep_hole_over_um`` (skeleton the graph does not follow). *support* is the segmented image
     (:func:`review_mask_support`), *roles* the boundary nodes by role,
-    *extent_um* the image's size in microns and *z_range* the slices a mask
-    scan reads."""
+    *extent_um* the image's size in microns, *z_range* the slices a mask
+    scan reads and *skeleton* the run's skeleton."""
     from haemolynx.graph import network_review as nr
 
     values = settings or {}
@@ -1890,6 +1936,14 @@ def find_review_items(
         return nr.find_uncovered_mask(
             graph, support,
             min_region_volume_um3=_optional_number(values.get("recovery_min_region_volume_um3")),
+            z_range=z_range,
+        )
+    if key == nr.LOST_SKELETON:
+        # Unset or 0 (every short loop broken) -- the re-trace draws nothing
+        # then -- is judged at the rule's own 10 um.
+        return nr.find_lost_skeleton(
+            graph, skeleton, support,
+            keep_hole_over_um=_optional_number(values.get("short_loop_keep_hole_over_um")) or None,
             z_range=z_range,
         )
     if key == nr.UNSOLVED_PIECES:

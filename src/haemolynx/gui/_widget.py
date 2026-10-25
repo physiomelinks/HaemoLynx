@@ -11501,6 +11501,7 @@ def _post_processing_controls(
     from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
     from haemolynx.graph.network_review import (
         DEAD_ENDS,
+        LOST_SKELETON,
         REVIEW_KINDS,
         UNCOVERED_MASK,
         flow_reference,
@@ -11511,6 +11512,7 @@ def _post_processing_controls(
     from haemolynx.gui.post_processing import (
         ACTION_DELETE_ITEM,
         ACTION_DELETE_SELECTED,
+        ACTION_DRAW_ALONG,
         ACTION_JOIN,
         ACTION_JOIN_AHEAD,
         ACTION_KEEP,
@@ -11556,8 +11558,10 @@ def _post_processing_controls(
         review_region_layer,
         review_table_rows,
         summary_change,
+        vessel_end_nearest,
         view_centre_zyx,
         ADDED_NODES,
+        NEEDS_SKELETON,
         HIGH_DEGREE_JUNCTIONS,
         JUNCTION_TABLE_COLUMNS,
         KEPT,
@@ -11957,7 +11961,7 @@ def _post_processing_controls(
         row.addWidget(review_buttons[action])
     review_layout.addLayout(row)
     row = QHBoxLayout()
-    for action in (ACTION_JOIN_AHEAD, ACTION_MARK_BLIND, ACTION_MARK_OPEN):
+    for action in (ACTION_JOIN_AHEAD, ACTION_MARK_BLIND, ACTION_MARK_OPEN, ACTION_DRAW_ALONG):
         row.addWidget(review_buttons[action])
     review_layout.addLayout(row)
     row = QHBoxLayout()
@@ -12777,6 +12781,19 @@ def _post_processing_controls(
         image = layer(IMAGE)
         return None if image is None else image.data
 
+    def run_skeleton():
+        """The run's skeleton, whole: the skeleton layer's own boolean
+        volume, not one a Z-depth window has clipped."""
+        skeleton_layer = layer(SKELETON)
+        if skeleton_layer is None:
+            return None
+        data, _thick = _thick_thin_skeleton_state(skeleton_layer)
+        if data is None:
+            data = _z_window_cache(skeleton_layer)
+        if data is None:
+            data = skeleton_layer.data
+        return np.asarray(data, dtype=bool)
+
     def image_extent(image, voxel):
         if image is None:
             return None
@@ -12851,7 +12868,9 @@ def _post_processing_controls(
             if suggested:
                 review_diameter.setValue(float(suggested))
         review_table.blockSignals(False)
-        region_layer = [review_region_layer(item)] if item is not None and item.kind == UNCOVERED_MASK else []
+        region_layer = (
+            [review_region_layer(item)] if item is not None and item.kind in (UNCOVERED_MASK, LOST_SKELETON) else []
+        )
         put_layers(region_layer, (REVIEW_REGION,))
         refresh_review_buttons()
         refresh_raw_panel()
@@ -12898,7 +12917,7 @@ def _post_processing_controls(
         if zoom:
             _zoom_viewer_to(viewer, item.centre_um, box_um=review_box_um(item))
 
-    def make_review(key, graph, *, image, roles, values, scope, voxel, support):
+    def make_review(key, graph, *, image, roles, values, scope, voxel, support, skeleton=None):
         """The items of list *key* on *graph*, and the MaskSupport used (made
         here when *support* is None and the list reads the mask). Touches no
         widget, so a mask list can run off the GUI thread."""
@@ -12911,7 +12930,7 @@ def _post_processing_controls(
             z_range = z_range_around(centre, radius, voxel, int(np.shape(image)[-3]))
         items = find_review_items(
             key, graph, support=support if uses_mask else None, roles=roles, settings=values,
-            extent_um=image_extent(image, voxel), z_range=z_range,
+            extent_um=image_extent(image, voxel), z_range=z_range, skeleton=skeleton,
         )
         return within(items, centre, radius), support
 
@@ -12944,10 +12963,12 @@ def _post_processing_controls(
         if entry.key not in REVIEW_KINDS or state.graph is None:
             return
         image = segmented_image()
+        skeleton = run_skeleton() if NEEDS_SKELETON in entry.needs else None
         roles = review_roles()
         missing = review_needs_missing(
             entry, state.graph, has_mask=image is not None,
             inlets=roles.get("inlet", ()), outlets=roles.get("outlet", ()),
+            has_skeleton=skeleton is not None,
         )
         if missing:
             text = f"{entry.label} needs {missing}, which this run does not have."
@@ -12958,7 +12979,8 @@ def _post_processing_controls(
         voxel = voxel_size()
         state.review_scope = region_scope()
         cached = state.support[1] if state.support is not None and state.support[0] is image else None
-        options = dict(image=image, roles=roles, values=values, scope=state.review_scope, voxel=voxel, support=cached)
+        options = dict(image=image, roles=roles, values=values, scope=state.review_scope, voxel=voxel, support=cached,
+                       skeleton=skeleton)
         if not entry.uses_mask:
             items, _support = make_review(entry.key, state.graph, **options)
             finish_review(entry.key, items)
@@ -13287,6 +13309,42 @@ def _post_processing_controls(
             + segmentation_note(added.edge)
         )
         after_review_edit(f"joined dead end {tip} to the vessel ahead", written)
+
+    def on_review_draw_along() -> None:
+        """Add the vessel the skeleton re-trace would draw for the chosen
+        piece of skeleton the graph does not follow: along its own skeleton,
+        from the vessel it meets at one end to the one at the other."""
+        item = chosen_item()
+        if item is None:
+            return
+        path = getattr(item, "path_um", None)
+        if path is None:
+            review_summary.setText("This piece meets the network in one place only: trace it with Add vessel.")
+            return
+        path = np.asarray(path, dtype=float)
+        ends = [vessel_end_nearest(state.graph, point) for point in (path[0], path[-1])]
+        if any(end is None for end in ends):
+            review_summary.setText("No vessel lies at an end of this piece any more: scan the network again.")
+            return
+        review, row = record_for(item, "drawn along the skeleton")
+        try:
+            added = add_traced_vessel(
+                state.graph, ends[0], ends[1], path,
+                reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
+                smoothing=smoothing_settings(),
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Drawing along the skeleton refused, {error}")
+            return
+        written = keep_record(review, row)
+        state.added_nodes.extend(added.new_nodes)
+        log_edit(
+            f"Drew {describe_vessels(state.graph, [added.edge])} along "
+            f"{float(item.measures.get('length_um') or 0.0):.3g} µm of skeleton the graph did not follow"
+            + segmentation_note(added.edge)
+        )
+        after_review_edit("drew a vessel along the skeleton", written)
 
     def on_review_set_diameter() -> None:
         item = chosen_item()
@@ -13964,6 +14022,7 @@ def _post_processing_controls(
     review_buttons[ACTION_MERGE].clicked.connect(on_review_merge)
     review_buttons[ACTION_TRACE_ON].clicked.connect(on_review_trace_on)
     review_buttons[ACTION_JOIN].clicked.connect(on_review_join)
+    review_buttons[ACTION_DRAW_ALONG].clicked.connect(on_review_draw_along)
     review_buttons[ACTION_JOIN_AHEAD].clicked.connect(on_review_join_ahead)
     review_buttons[ACTION_MARK_BLIND].clicked.connect(
         lambda: on_review_mark_dead_end("blind", "a real blind end")

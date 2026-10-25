@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import networkx as nx
 import numpy as np
 
+from . import skeleton_retrace as _retrace
 from ._helpers import calculate_path_length, edge_sample_points
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
@@ -33,6 +34,8 @@ __all__ = [
     "JOIN_ENDS",
     "JOIN_SIDE",
     "FLOW_AGAINST_ORDER",
+    "LOST_SKELETON",
+    "LOST_SKELETON_WHY",
     "FLOW_OUTLIERS",
     "HAIRPINS",
     "REVIEW_KINDS",
@@ -54,6 +57,7 @@ __all__ = [
     "find_flow_against_branch_order",
     "find_flow_outliers",
     "find_hairpins",
+    "find_lost_skeleton",
     "find_terminal_nodes",
     "find_two_in_one_lumen",
     "find_uncovered_mask",
@@ -86,6 +90,9 @@ BROKEN_VESSELS = FACING_ENDS
 JOIN_ENDS = "ends"
 JOIN_SIDE = "side"
 UNCOVERED_MASK = "uncovered_mask"
+#: The "Skeleton the graph does not follow" list (PLAN_surface_coverage.md):
+#: the run's skeleton no centreline follows, as the skeleton re-trace sees it.
+LOST_SKELETON = "lost_skeleton"
 UNSOLVED_PIECES = "unsolved_pieces"
 FLOW_AGAINST_ORDER = "flow_against_order"
 FLOW_OUTLIERS = "flow_outliers"
@@ -103,6 +110,7 @@ REVIEW_KINDS = (
     DOUBLED_STRETCHES,
     FACING_ENDS,
     UNCOVERED_MASK,
+    LOST_SKELETON,
     UNSOLVED_PIECES,
     FLOW_AGAINST_ORDER,
     FLOW_OUTLIERS,
@@ -159,6 +167,9 @@ class ReviewItem:
     measures: Mapping[str, Any] = field(default_factory=dict, compare=False)
     #: Points to fit the view to, physical microns.
     points_um: np.ndarray = field(default_factory=lambda: np.empty((0, 3)), compare=False, repr=False)
+    #: A vessel an action would draw, physical microns from one end to the
+    #: other (each end on a vessel of the network), or None.
+    path_um: np.ndarray | None = field(default=None, compare=False, repr=False)
 
 
 # --- shared helpers ------------------------------------------------------------
@@ -1323,4 +1334,78 @@ def find_uncovered_mask(
             measures={"volume_um3": region.volume_um3, "radius_um": region.radius_um, "voxels": region.voxel_count},
             points_um=region.sample_um,
         ))
+    return items
+
+
+#: The "Skeleton the graph does not follow" list's words for why the skeleton
+#: re-trace leaves a piece (its ``reason`` measure).
+LOST_SKELETON_WHY = {
+    None: "the re-trace would draw it",
+    _retrace.REFUSED_OFF_MASK: "under half of it in the segmentation",
+    _retrace.REFUSED_BESIDE: "it runs beside a vessel the graph has",
+    _retrace.REFUSED_ONE_END: "it meets the network in one place only",
+    _retrace.REFUSED_BACKGROUND: "a join to the network crosses background",
+    _retrace.REFUSED_SAME_LUMEN: "it runs beside a vessel in the same lumen",
+    _retrace.REFUSED_NO_LOOP: "it closes no loop with the network",
+    _retrace.REFUSED_SMALL_HOLE: "its loop runs round a small hole",
+}
+
+
+def find_lost_skeleton(
+    G: nx.MultiGraph,
+    skeleton: np.ndarray,
+    support,
+    *,
+    keep_hole_over_um: float | None = None,
+    z_range: tuple[int, int] | None = None,
+) -> list[ReviewItem]:
+    """The run's skeleton the graph does not follow (``PLAN_surface_coverage.md``):
+    each piece :func:`~haemolynx.graph.skeleton_retrace.judge_lost_skeleton`
+    finds no centreline near, at least ``MIN_PIECE_UM`` of skeleton and at
+    least half in the mask, longest first, with what the re-trace said of it.
+    Harvey's drawing of every vessel E14.5's surface still lacked
+    (2026-10-18) ranked a piece's length above every other measure. Where the
+    re-trace got as far as a route, the item's ``path_um`` is it, from the
+    vessel point one end joins to the other's, for Draw along the skeleton;
+    else Add vessel traces it. *z_range* (slices ``[lo, hi)``) judges only the
+    pieces with skeleton there."""
+    from .lumen_loops import DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
+
+    hole = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM if keep_hole_over_um is None else float(keep_hole_over_um)
+    spacing = np.asarray(support.voxel_size_zyx, dtype=float)
+
+    def wanted(piece) -> bool:
+        if len(piece.voxels) < 2:
+            return False
+        if z_range is not None and not np.any((piece.voxels[:, 0] >= z_range[0]) & (piece.voxels[:, 0] < z_range[1])):
+            return False
+        return _retrace.piece_length_um(piece, spacing) >= _retrace.MIN_PIECE_UM
+
+    items = []
+    for verdict in _retrace.judge_lost_skeleton(G, skeleton, support, keep_hole_over_um=hole, only=wanted):
+        if verdict.reason == _retrace.REFUSED_SMALL or (
+            verdict.reason == _retrace.REFUSED_OFF_MASK and verdict.path_um is None
+        ):
+            continue
+        points = verdict.piece.voxels * spacing
+        length = _retrace.piece_length_um(verdict.piece, spacing)
+        why = LOST_SKELETON_WHY.get(verdict.reason, verdict.reason)
+        items.append(ReviewItem(
+            kind=LOST_SKELETON,
+            nodes=(),
+            edges=(),
+            centre_um=_centre(points[np.argsort(np.linalg.norm(points - points.mean(axis=0), axis=1))[:1]]),
+            why=f"{length:.3g} µm of skeleton no centreline follows: {why}.",
+            measures={
+                "length_um": length,
+                "voxels": len(verdict.piece.voxels),
+                "reason": why,
+                "hole_um": verdict.hole_um,
+                "far_fraction": verdict.far_fraction,
+                "mask_fraction": verdict.mask_fraction,
+            },
+            points_um=points,
+            path_um=None if verdict.path_um is None else np.asarray(verdict.path_um, dtype=float),
+        ))
+    items.sort(key=lambda item: -item.measures["length_um"])
     return items

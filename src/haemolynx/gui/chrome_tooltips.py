@@ -873,6 +873,12 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "them through the image Add vessel uses, as wide as the vessels "
         "at its ends"
     ),
+    "review_draw_along": (
+        "Add a vessel along the chosen piece of skeleton, from the vessel it "
+        "meets at one end to the one it meets at the other, each split there, "
+        "as the skeleton re-trace would draw it; for a piece meeting the "
+        "network once, trace it with Add vessel"
+    ),
     "review_set_diameter": (
         "Give the vessels selected in the table -- or the chosen item's one "
         "vessel -- the diameter beside this button; Regenerate graph keeps "

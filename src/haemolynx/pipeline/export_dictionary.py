@@ -170,7 +170,11 @@ _REVIEW_MEASURES = (
     _c("refused", "-", "Broken vessels: why the build did not join two facing ends."),
     _c("volume_um3", "um^3", "Uncovered mask: the region's volume."),
     _c("radius_um", "um", "Uncovered mask: its widest inscribed radius."),
-    _c("voxels", "count", "Uncovered mask: its voxel count."),
+    _c("voxels", "count", "Uncovered mask, skeleton the graph does not follow: its voxel count."),
+    _c("reason", "-", "Skeleton the graph does not follow: why the skeleton re-trace leaves the piece."),
+    _c("hole_um", "um", "Skeleton the graph does not follow: the tissue hole the loop the piece would close runs round."),
+    _c("far_fraction", "fraction", "Skeleton the graph does not follow: the share of the piece a separate tube from every centreline."),
+    _c("mask_fraction", "fraction", "Skeleton the graph does not follow: the share of the piece in the segmentation."),
 )
 
 

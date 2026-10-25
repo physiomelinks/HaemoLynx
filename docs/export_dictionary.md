@@ -639,7 +639,11 @@ Only the measures of the item's own list are filled.
 | `refused` | `-` | Broken vessels: why the build did not join two facing ends. |
 | `volume_um3` | `um^3` | Uncovered mask: the region's volume. |
 | `radius_um` | `um` | Uncovered mask: its widest inscribed radius. |
-| `voxels` | `count` | Uncovered mask: its voxel count. |
+| `voxels` | `count` | Uncovered mask, skeleton the graph does not follow: its voxel count. |
+| `reason` | `-` | Skeleton the graph does not follow: why the skeleton re-trace leaves the piece. |
+| `hole_um` | `um` | Skeleton the graph does not follow: the tissue hole the loop the piece would close runs round. |
+| `far_fraction` | `fraction` | Skeleton the graph does not follow: the share of the piece a separate tube from every centreline. |
+| `mask_fraction` | `fraction` | Skeleton the graph does not follow: the share of the piece in the segmentation. |
 
 ## `batch_summary.csv`
 
