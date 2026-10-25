@@ -1,6 +1,8 @@
 """Large vessels kept in the network as Large_Art/Large_Ven branch orders."""
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 import networkx as nx
@@ -528,6 +530,105 @@ def test_a_stump_takes_the_end_whose_vessel_runs_most_along_its_mask():
     })
 
     assert _stump_inlets(G, mask) == [0]
+
+
+# --- one component leaving one face at several places -----------------------------
+
+
+def _joined_legs(leg_ys, shape=(20, 50, 80)):
+    """Legs 6 x 6 um in y x z along x from the x = 0 face, at (z, y) = (10, y)
+    for each *y*, joined inside the stack at x 40-44: one component."""
+    mask = np.zeros(shape, dtype=bool)
+    for y in leg_ys:
+        mask[7:13, y - 3:y + 3, 0:45] = True
+    mask[7:13, min(leg_ys) - 3:max(leg_ys) + 3, 40:45] = True
+    return mask
+
+
+def test_two_joined_legs_leaving_one_face_give_two_stumps_each_its_own_end():
+    """Harvey (2026-10-25): branches of one arteriole tree that join inside
+    the stack and leave the same face are two inlets. The contacts were
+    pooled into one stump at their joint centroid, between the legs, and
+    snapped to one node."""
+    mask = _joined_legs((8, 32))
+    G = _vessel_graph({
+        (0, 2): [(10, 8, 1), (10, 8, 42), (10, 20, 42)],
+        (1, 2): [(10, 32, 1), (10, 32, 42), (10, 20, 42)],
+        (2, 3): [(10, 20, 42), (10, 20, 79)],
+    })
+
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert sorted(float(p[1]) for p in points) == [7.5, 31.5]
+    assert _stump_inlets(G, mask) == [0, 1]
+
+
+def test_four_joined_legs_leaving_one_face_give_four_stumps_each_its_own_end():
+    """Pooled, four legs' footprint spanned more than four of their own
+    cross-sections and the whole contact was skipped as a vessel lying along
+    the face: no inlet at all."""
+    ys = (5, 15, 25, 35)
+    mask = _joined_legs(ys)
+    G = _vessel_graph({
+        **{(n, 4): [(10, y, 1), (10, y, 42), (10, 20, 42)] for n, y in enumerate(ys)},
+        (4, 5): [(10, 20, 42), (10, 20, 79)],
+    })
+
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert sorted(float(p[1]) for p in points) == [4.5, 14.5, 24.5, 34.5]
+    assert _stump_inlets(G, mask) == [0, 1, 2, 3]
+
+
+def test_each_contact_keeps_its_own_end_though_another_runs_more_along_the_mask():
+    """Both legs' ends qualify for either contact of their one component;
+    ranked by the run along the mask (a4c421b0), both contacts would take
+    leg 0's end (all along it) over leg 1's own (70%), and the two inlets
+    would be one node again. Each contact takes an end nearest it."""
+    mask = _joined_legs((8, 32))
+    G = _vessel_graph({
+        (0, 2): [(10, 8, 1), (10, 8, 42), (10, 20, 42)],
+        (1, 3): [(10, 32, 1), (10, 32, 30), (10, 48, 30)],  # leaves the mask 30 um in
+        (2, 3): [(10, 20, 42), (10, 48, 30)],
+        (3, 4): [(10, 48, 30), (10, 48, 79)],
+    })
+
+    assert _stump_inlets(G, mask) == [0, 1]
+
+
+def test_a_graze_under_the_share_of_its_components_largest_contact_is_no_stump():
+    """Harvey (2026-10-25): as a speck component is no stump, a contact under
+    the same share of its component's largest on the face is a graze (E14.5's
+    arteriole touched its x face again in 5 um2, 2% of its stump, 84 um from
+    any vessel end there). Here a one-voxel strand leaves the face beside a
+    6 x 6 um leg and joins it 20 um in."""
+    mask = _joined_legs((8,))
+    mask[10, 30, 0:21] = True
+    mask[10, 8:31, 20] = True
+
+    every = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+    shared = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_component_fraction=0.05)
+
+    assert sorted(float(p[1]) for p in every) == [7.5, 30.0]
+    assert [float(p[1]) for p in shared] == [7.5]
+
+
+def test_a_further_contact_with_no_end_of_its_own_takes_no_node():
+    """One leg's contact has its vessel's end; the other leg's vessel ends
+    nowhere near the face. That contact takes no node -- not the nearest
+    terminal in the mask, which can lie anywhere -- and warns nothing."""
+    from haemolynx.graph.boundaries import BoundaryCoordinateWarning
+
+    mask = _joined_legs((8, 32))
+    G = _vessel_graph({
+        (0, 2): [(10, 8, 1), (10, 8, 42), (10, 20, 42)],
+        (1, 2): [(10, 32, 30), (10, 32, 42), (10, 20, 42)],  # leg 1's centreline stops 30 um in
+        (2, 3): [(10, 20, 42), (10, 20, 79)],
+    })
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", BoundaryCoordinateWarning)
+        assert _stump_inlets(G, mask) == [0]
 
 
 def test_a_stump_with_no_vessel_end_at_its_face_warns_how_far_its_node_is():

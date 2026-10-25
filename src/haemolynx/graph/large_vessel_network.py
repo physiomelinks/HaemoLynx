@@ -42,6 +42,14 @@ _STRUCTURE = np.ones((3, 3, 3), dtype=np.uint8)
 #: snapped 11-36 um to some capillary tip.
 STUMP_MAX_FOOTPRINT_CROSS_SECTIONS = 4.0
 
+#: How deep into the stack (um) one component's footprints on a face are
+#: told apart: those it joins within this depth of the face are one contact
+#: (a vessel lying along the face touches it in patches its own body joins
+#: there -- on E14.5 the pial vessels against z = 0), those it joins only
+#: deeper in a contact each (branches of one tree leaving the face apart;
+#: Harvey, 2026-10-25). About a large vessel's diameter; not fitted to marks.
+STUMP_CONTACT_DEPTH_UM = 12.0
+
 #: How far outside its stump's mask component a vessel's own centreline may
 #: run and still be that vessel. The large masks and the network can come
 #: from two segmentations: on E14.5 MCA the large masks are the Composite
@@ -63,15 +71,17 @@ STUMP_SNAP_VESSEL_UM = 50.0
 STUMP_SNAP_MIN_VESSEL_FRACTION = 0.5
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class _Stump:
-    """Where one mask component is cut off by one face of the volume."""
+    """Where one mask component is cut off by one face of the volume: one
+    connected piece of its footprint on that face."""
 
-    point: np.ndarray  # the face footprint's centroid, (z, y, x) um
+    point: np.ndarray  # the footprint piece's centroid, (z, y, x) um
     axis: int
     face_index: int  # the face plane's voxel index along *axis*
     component: int  # its number in the mask's ForegroundLabels
-    radius_um: float  # the footprint's inscribed radius
+    radius_um: float  # the footprint piece's inscribed radius
+    footprint_um: np.ndarray  # the piece's voxels, (n, 3) (z, y, x) um
 
 
 def _footprint_shape(
@@ -92,6 +102,44 @@ def _footprint_shape(
     return (area / (np.pi * radius * radius) if radius > 0 else float("inf")), radius
 
 
+def _face_contacts(
+    labeled: Any, component: int, on_face: np.ndarray, axis: int, face_index: int, scale: np.ndarray
+) -> list[np.ndarray]:
+    """*component*'s contacts with one face: its footprint *on_face* split
+    where the component does not join within :data:`STUMP_CONTACT_DEPTH_UM`
+    of the face, each a footprint of the face's shape. Branches of one tree
+    that join deeper in leave the face apart, a contact each; a vessel lying
+    along the face touches it in patches its own body joins right there,
+    one contact, which the footprint test then reads as one."""
+    from scipy.ndimage import label
+
+    coords = np.argwhere(on_face)
+    if not len(coords):
+        return []
+    in_plane = [a for a in range(len(labeled.shape)) if a != axis]
+    pad = np.ceil(STUMP_CONTACT_DEPTH_UM / scale[in_plane]).astype(int)
+    lo = np.maximum(coords.min(axis=0) - pad, 0)
+    hi = np.minimum(coords.max(axis=0) + pad + 1, [labeled.shape[a] for a in in_plane])
+    depth = max(1, int(np.ceil(STUMP_CONTACT_DEPTH_UM / scale[axis])))
+    box = [slice(0, 0)] * len(labeled.shape)
+    for a, l, h in zip(in_plane, lo, hi):
+        box[a] = slice(int(l), int(h))
+    near = (slice(face_index, min(face_index + depth, labeled.shape[axis])) if face_index == 0
+            else slice(max(face_index - depth + 1, 0), face_index + 1))
+    box[axis] = near
+    groups, _count = label(labeled.read(tuple(box)) == component, structure=_STRUCTURE)
+    face_plane = np.take(groups, 0 if face_index == 0 else groups.shape[axis] - 1, axis=axis)
+    in_box = on_face[tuple(slice(int(l), int(h)) for l, h in zip(lo, hi))]
+    contacts = []
+    for group in np.unique(face_plane[in_box]):
+        if group == 0:
+            continue
+        footprint = np.zeros_like(on_face)
+        footprint[tuple(slice(int(l), int(h)) for l, h in zip(lo, hi))] = in_box & (face_plane == group)
+        contacts.append(footprint)
+    return contacts
+
+
 def find_large_vessel_mask_stump_points(
     mask: np.ndarray,
     *,
@@ -101,8 +149,11 @@ def find_large_vessel_mask_stump_points(
 ) -> list[np.ndarray]:
     """Physical-coordinate points where *mask* is cut off by the volume's edge.
 
-    One point per (face, connected component) touch, at the centroid of
-    *that face's own touching voxels only* -- not the whole component, whose
+    One point per place a connected component touches a face -- each
+    in-plane connected piece of its footprint on that face, so branches of
+    one tree that join inside the stack and leave the same face are a stump
+    each -- at the centroid of *that piece's own voxels only* -- not the
+    whole component, whose
     bulk centroid can sit far from the true stump cross-section for a long
     trunk and would then snap to the wrong graph terminal. Kept per-face
     rather than merged across every face one component touches: a vessel
@@ -113,10 +164,12 @@ def find_large_vessel_mask_stump_points(
     inside the tissue, not truncated by the field of view) contributes no
     point.
 
-    Two contacts are not stumps. A component smaller than
+    Three contacts are not stumps. A component smaller than
     *min_component_fraction* of the mask's largest one is a speck the
     classifier left at the face, not a large vessel (E14.5's arteriole mask
-    had 468 components; the vessel was one, the next 0.5% of it). A contact
+    had 468 components; the vessel was one, the next 0.5% of it), and a
+    contact under that share of its component's largest on the same face is
+    a graze. A contact
     whose footprint spans more than *max_footprint_cross_sections* of its own
     cross-section is a vessel lying along the face, not cut by it (see
     :data:`STUMP_MAX_FOOTPRINT_CROSS_SECTIONS`).
@@ -157,6 +210,7 @@ def _mask_stumps(
     stumps: list[_Stump] = []
     skipped_small = 0
     skipped_flank = 0
+    skipped_graze = 0
     for axis in range(mask_bool.ndim):
         in_plane = tuple(float(scale[a]) for a in range(mask_bool.ndim) if a != axis)
         for face in (0, -1):
@@ -172,35 +226,54 @@ def _mask_stumps(
                 if sizes[component_id] < min_size:
                     skipped_small += 1
                     continue
-                footprint = face_labels == component_id
-                cross_sections, radius = _footprint_shape(footprint, in_plane)
-                if cross_sections > float(max_footprint_cross_sections):
-                    skipped_flank += 1
-                    continue
-                face_coords = np.argwhere(footprint)
-                # Restore the dropped axis so every point is a full (z, y, x)
-                # voxel index, not the 2D coordinate within the face slice.
-                full_coords = np.insert(face_coords, axis, face_axis_value, axis=1)
-                centroid_voxels = full_coords.mean(axis=0)
-                stumps.append(
-                    _Stump(
-                        point=centroid_voxels * scale,
-                        axis=axis,
-                        face_index=int(face_axis_value),
-                        component=int(component_id),
-                        radius_um=radius,
+                # Each place the component leaves this face is a stump of its
+                # own (Harvey, 2026-10-25): pooled, two branches of one tree
+                # leaving the face became one stump between them, and four
+                # failed the footprint test as a vessel lying along the face.
+                # A contact under *min_component_fraction* of the component's
+                # largest on that face is a graze, as a speck is to components
+                # (E14.5's arteriole touched its x face again in 5 um2, 2% of
+                # its 230 um2 stump, 84 um from any vessel end there).
+                contacts = []
+                for footprint in _face_contacts(
+                    labeled, component_id, face_labels == component_id, axis, face_axis_value, scale
+                ):
+                    cross_sections, radius = _footprint_shape(footprint, in_plane)
+                    if cross_sections > float(max_footprint_cross_sections):
+                        skipped_flank += 1
+                        continue
+                    contacts.append((footprint, radius, int(np.count_nonzero(footprint))))
+                largest = max((size for *_f, size in contacts), default=0)
+                for footprint, radius, size in contacts:
+                    if size < float(min_component_fraction) * largest:
+                        skipped_graze += 1
+                        continue
+                    face_coords = np.argwhere(footprint)
+                    # Restore the dropped axis so every point is a full (z, y, x)
+                    # voxel index, not the 2D coordinate within the face slice.
+                    full_coords = np.insert(face_coords, axis, face_axis_value, axis=1)
+                    stumps.append(
+                        _Stump(
+                            point=full_coords.mean(axis=0) * scale,
+                            axis=axis,
+                            face_index=int(face_axis_value),
+                            component=int(component_id),
+                            radius_um=radius,
+                            footprint_um=full_coords * scale,
+                        )
                     )
-                )
-    if skipped_small or skipped_flank:
+    if skipped_small or skipped_flank or skipped_graze:
         logger.info(
             "Large-vessel mask stumps: %d kept; %d face contact(s) of components "
             "below %.0f%% of the largest skipped, %d skipped as a vessel lying "
-            "along the face (footprint over %.1f cross-sections).",
+            "along the face (footprint over %.1f cross-sections), %d as a graze "
+            "under that share of its component's largest contact on the face.",
             len(stumps),
             skipped_small,
             100.0 * float(min_component_fraction),
             skipped_flank,
             float(max_footprint_cross_sections),
+            skipped_graze,
         )
     return labeled, stumps
 
@@ -296,6 +369,35 @@ def _own_face_end(
     return None if best is None else best[1]
 
 
+def _in_plane_distance_um(tip: np.ndarray, stump: _Stump) -> float:
+    """How far *tip* lies from *stump*'s footprint across its face (um), the
+    distance along the face's normal left out."""
+    offsets = np.delete(stump.footprint_um - tip, stump.axis, axis=1)
+    return float(np.sqrt((offsets * offsets).sum(axis=1)).min())
+
+
+def _own_candidates(stumps: list[_Stump], pos: dict[Any, np.ndarray], candidates: list[Any]) -> list[list[Any]]:
+    """Each stump's candidates: those nearer its footprint, across the face,
+    than any other footprint its component leaves the same face by. One
+    component's contacts on one face share no end, so each keeps its own
+    rather than all taking the end whose vessel runs most along the component
+    (:func:`_own_face_end`'s ranking)."""
+    siblings: dict[tuple[int, int, int], list[int]] = {}
+    for i, stump in enumerate(stumps):
+        siblings.setdefault((stump.component, stump.axis, stump.face_index), []).append(i)
+    own: list[list[Any]] = []
+    for i, stump in enumerate(stumps):
+        group = siblings[(stump.component, stump.axis, stump.face_index)]
+        if len(group) == 1:
+            own.append(list(candidates))
+            continue
+        own.append([
+            node for node in candidates
+            if min(group, key=lambda j: (_in_plane_distance_um(pos[node], stumps[j]), j)) == i
+        ])
+    return own
+
+
 def _snap_stumps_to_terminals(
     G: nx.Graph,
     stumps: list[_Stump],
@@ -309,7 +411,10 @@ def _snap_stumps_to_terminals(
     """One terminal per stump: the end of the stump's own large vessel at
     its face (:func:`_own_face_end`), so two stumps give two nodes.
 
-    A stump whose vessel has no such end takes the nearest terminal inside
+    Of one component's contacts on one face each looks only at the ends
+    nearer it than the others (:func:`_own_candidates`), and one with no end
+    of its own takes no node when another contact of its component has one. A
+    stump whose vessel has no such end otherwise takes the nearest terminal inside
     *mask* (every terminal, when none is), with a
     :class:`~haemolynx.graph.boundaries.BoundaryCoordinateWarning` naming the
     stump and how far the node is from it: an inlet chosen there may be
@@ -323,10 +428,22 @@ def _snap_stumps_to_terminals(
     scale = np.asarray(voxel_size_zyx, dtype=float)
     fallback: list[Any] | None = None
     selected: list[Any] = []
-    for stump in stumps:
-        node = _own_face_end(G, stump, labeled, candidates, pos, scale)
+    own = _own_candidates(stumps, pos, candidates)
+    ends = [_own_face_end(G, stump, labeled, mine, pos, scale) for stump, mine in zip(stumps, own)]
+    # A further contact of a component another contact already ends is a
+    # branch with no vessel end of its own there: no node, rather than the
+    # nearest terminal in the mask, which can lie anywhere (Harvey, 2026-10-25).
+    ended = {stump.component for stump, node in zip(stumps, ends) if node is not None}
+    for stump, node in zip(stumps, ends):
         if node is not None:
             selected.append(node)
+            continue
+        if stump.component in ended:
+            logger.info(
+                "%s: the contact at %s um has no vessel end of its own; its component "
+                "already has one at another contact, so it takes no node.",
+                coordinates_setting_name, tuple(round(float(v), 1) for v in stump.point),
+            )
             continue
         if fallback is None:
             inside = points_inside_mask(

@@ -600,12 +600,16 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   it as inside that mask. The progressive dilation (`small_vessel_mask_dilation_microns`) labels each edge at
   the first step that reaches it and re-judges unlabelled ones at every step.
 - **`graph/large_vessel_network.py`** — the `mask_stump` method: inlets/outlets where a large mask
-  is cut by an image face. A component under `large_vessel_stump_min_component_fraction` of the
-  largest, or a contact wider than `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (a vessel lying along the
-  face), is no stump. Each stump snaps to the end of its own vessel at its face (`_own_face_end`:
-  the end whose vessel runs most along the stump's mask, then the nearest), else to the nearest
-  terminal in the mask with a `BoundaryCoordinateWarning`. Checked on E14.5
-  only, not a marked grid.
+  is cut by an image face, one per place a component leaves a face: its footprints the component
+  joins only deeper than `STUMP_CONTACT_DEPTH_UM` are a contact each (`_face_contacts`). A component
+  under `large_vessel_stump_min_component_fraction` of the largest, a contact under that share of
+  its component's largest on the face (a graze), or a contact wider than
+  `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (a vessel lying along the face) is no stump. Each stump snaps
+  to the end of its own vessel at its face (`_own_face_end`: the end whose vessel runs most along
+  the stump's mask, then the nearest), each contact only to ends nearer it than its component's
+  other contacts there (`_own_candidates`); a further contact with no end of its own takes no node,
+  else a stump falls back to the nearest terminal in the mask with a `BoundaryCoordinateWarning`.
+  Checked on E14.5 only, not a marked grid.
 - **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`, read through
   `voxel_size_zyx` (edge voxels are microns, masks voxel-indexed). The large mask of the class
   counts as coverage when large vessels stay in the network, and
