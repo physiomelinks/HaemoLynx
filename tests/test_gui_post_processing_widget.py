@@ -1685,3 +1685,79 @@ def test_a_dead_end_made_an_outlet_is_kept_on_the_graph_for_regenerate(make_napa
     c.regenerate_graph_button.click()
 
     assert page.regenerated[-1].graph[BOUNDARY_ROLES] == {"inlet": [0], "outlet": [5]}
+
+
+def _raw_panel_page(viewer, *, raw: bool):
+    """The four-way network over a segmentation round its loop, Short loops
+    chosen and scanned; with *raw*, the run's raw image in the viewer (the
+    Diameters stage's copy), bright where the segmentation is."""
+    image = np.zeros((36, 26, 6), dtype=np.uint8)
+    image[6:34, 0:14, 0:3] = 1
+    if raw:
+        bright = np.random.default_rng(0).uniform(0.0, 20.0, size=image.shape).astype(np.float32)
+        bright[image.astype(bool)] = 400.0
+        viewer.add_image(bright, name=FWHM_RAW)
+    page = _four_way_page(viewer, junction_correction=False, image=image,
+                          settings=lambda: {"image_axis_order": "zyx"})
+    c = page.controls
+    c.review_choice.setCurrentText(LOOPS)
+    c.scan_button.click()
+    return c
+
+
+def _grey_at_middle(label) -> int:
+    from qtpy.QtGui import QColor
+
+    image = label.pixmap().toImage()
+    return QColor(image.pixel(image.width() // 2, image.height() // 2)).value()
+
+
+def test_the_raw_panel_draws_the_chosen_loop_in_the_segmentation_and_the_raw_image(make_napari_viewer):
+    c = _raw_panel_page(make_napari_viewer(), raw=True)
+    assert c.state.loop is not None
+    assert not c.raw_box.isHidden() and c.raw_check.toolTip()
+    assert not c.raw_check.isChecked() and c.raw_grid.isHidden(), "off until ticked"
+
+    c.raw_check.setChecked(True)
+    assert not c.raw_grid.isHidden()
+    assert len(c.raw_pictures) == 4
+    for (plane, name), label in c.raw_pictures.items():
+        assert not label.pixmap().isNull(), (plane, name)
+        assert label.toolTip()
+    # The loop lies in x = 0 round (20, 0, 0), inside the segmented block:
+    # its own plane is white there in the segmentation, bright in the raw image.
+    assert _grey_at_middle(c.raw_pictures[("Its own plane", "Segmentation")]) > 200
+    assert _grey_at_middle(c.raw_pictures[("Its own plane", "Raw image")]) > 150
+    assert "the chosen item cyan" in c.raw_status.text()
+
+    c.raw_check.setChecked(False)
+    assert c.raw_grid.isHidden() and c.raw_status.text() == ""
+    assert all(label.pixmap() is None or label.pixmap().isNull() for label in c.raw_pictures.values())
+
+    # Only beside a list that has items to draw.
+    c.raw_check.setChecked(True)
+    c.review_choice.setCurrentText(JUNCTIONS)
+    assert c.raw_box.isHidden()
+    c.review_choice.setCurrentText(NO_LIST)
+    assert c.raw_box.isHidden()
+
+
+def test_the_raw_panel_without_a_raw_image_draws_the_segmentation_and_says_why(make_napari_viewer):
+    c = _raw_panel_page(make_napari_viewer(), raw=False)
+    c.raw_check.setChecked(True)
+    assert not c.raw_pictures[("Its own plane", "Segmentation")].pixmap().isNull()
+    assert c.raw_pictures[("Its own plane", "Raw image")].text() == "None"
+    assert "No raw image: no raw image is set on the Input tab." in c.raw_status.text()
+
+
+def test_the_raw_panel_draws_the_chosen_item_of_any_other_list(make_napari_viewer):
+    """The same pictures for a review list's item: here a terminal node's."""
+    c = _raw_panel_page(make_napari_viewer(), raw=True)
+    c.raw_check.setChecked(True)
+    c.review_choice.setCurrentText("Terminal nodes (add or remove inlets and outlets)")
+    assert not c.raw_box.isHidden()
+    assert c.raw_status.text() == "Choose an item in the list to see it here."
+    c.scan_button.click()
+    assert c.state.review_item is not None
+    assert all(not label.pixmap().isNull() for label in c.raw_pictures.values())
+    assert "the chosen item cyan" in c.raw_status.text()

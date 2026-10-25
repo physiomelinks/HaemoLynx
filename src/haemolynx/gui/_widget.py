@@ -11360,6 +11360,52 @@ def _camera_vector_to_zyx(viewer, vector) -> np.ndarray | None:
     return zyx
 
 
+#: The raw panel's two pictures of each plane, left to right, and their size.
+_RAW_PANEL_PICTURES = ("Segmentation", "Raw image")
+_RAW_PANEL_PIXELS = 170
+#: What the raw panel draws over its pictures: the chosen item as the viewer
+#: draws it (cyan), the other centrelines, the 5 um bar.
+_RAW_PANEL_ITEM_COLOUR = "#00e5ff"
+_RAW_PANEL_OTHER_COLOUR = "#9a9a9a"
+_RAW_PANEL_BAR_COLOUR = "#ff9f0a"
+
+
+def _raw_panel_pixmap(picture, view, pixels: int = _RAW_PANEL_PIXELS):
+    """One of the raw panel's pictures (``gui.raw_panel.PanelView``) as a
+    *pixels*-square QPixmap, with the chosen item, the other centrelines and
+    the 5 um bar drawn over it."""
+    from qtpy.QtCore import QPointF, Qt
+    from qtpy.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+
+    grey = np.ascontiguousarray(np.clip(np.asarray(picture, dtype=float) * 255.0, 0, 255).astype(np.uint8))
+    rows, columns = grey.shape
+    image = QImage(grey.data, columns, rows, columns, QImage.Format_Grayscale8).copy()
+    pixmap = QPixmap.fromImage(image).scaled(pixels, pixels, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    def at(fraction) -> QPointF:
+        return QPointF(float(fraction[0]) * pixels, float(fraction[1]) * pixels)
+
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(_RAW_PANEL_OTHER_COLOUR))
+    for fraction in view.other_dots:
+        painter.drawEllipse(at(fraction), 1.2, 1.2)
+    painter.setBrush(QColor(_RAW_PANEL_ITEM_COLOUR))
+    for fraction in view.item_dots:
+        painter.drawEllipse(at(fraction), 1.4, 1.4)
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(QColor(_RAW_PANEL_ITEM_COLOUR), 1.8))
+    for line in view.item_lines:
+        for a, b in zip(line[:-1], line[1:]):
+            painter.drawLine(at(a), at(b))
+    x0, x1, y = view.scale_bar
+    painter.setPen(QPen(QColor(_RAW_PANEL_BAR_COLOUR), 3.0))
+    painter.drawLine(at((x0, y)), at((x1, y)))
+    painter.end()
+    return pixmap
+
+
 def _post_processing_controls(
     viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
     paused=None,
@@ -11411,8 +11457,10 @@ def _post_processing_controls(
     """
     from qtpy.QtWidgets import (
         QAbstractItemView,
+        QCheckBox,
         QComboBox,
         QDoubleSpinBox,
+        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QHeaderView,
@@ -11554,6 +11602,14 @@ def _post_processing_controls(
         trace_layers,
         vessel_status,
     )
+    from haemolynx.gui.raw_panel import (
+        ACROSS_IT,
+        HALF_THICKNESS_UM,
+        OWN_PLANE,
+        centreline_points,
+        edge_lines,
+        panel_views,
+    )
     from haemolynx.gui.results import FWHM_RAW
 
     state = SimpleNamespace(
@@ -11577,6 +11633,9 @@ def _post_processing_controls(
         #: The same for the raw data, and why it could not be had, if not.
         raw=None,
         raw_problem=None,
+        #: The raw panel's other centrelines: ``(graph, its edge count,
+        #: their points)``, read again when the network changes.
+        raw_panel_centrelines=None,
         #: The connectivity CSV exported last, for Open 2D connectivity map.
         connectivity_csv=None,
         #: Manual loop review: the short loops still to review (ShortLoops,
@@ -11912,6 +11971,42 @@ def _post_processing_controls(
     review_layout.addLayout(row)
     review_box.setVisible(False)
 
+    # The raw image at the chosen loop or review item (gui/raw_panel.py): the
+    # item in its own plane and across it, the segmentation beside the run's
+    # raw image, as the marked grids draw them. Off until ticked, since the
+    # raw image is read the first time it is shown.
+    raw_check = QCheckBox("Show the raw image at the chosen item")
+    raw_check.setObjectName("haemolynx_post_processing_raw_check")
+    raw_check.setToolTip(tips["raw_panel"])
+    raw_status = QLabel("")
+    raw_status.setObjectName("haemolynx_post_processing_raw_status")
+    raw_status.setWordWrap(True)
+    raw_grid = QWidget()
+    raw_grid.setObjectName("haemolynx_post_processing_raw_grid")
+    raw_grid_layout = QGridLayout(raw_grid)
+    raw_grid_layout.setContentsMargins(0, 0, 0, 0)
+    raw_pictures = {}
+    for column, name in enumerate(_RAW_PANEL_PICTURES):
+        raw_grid_layout.addWidget(QLabel(name), 0, column)
+    for plane_row, plane in enumerate((OWN_PLANE, ACROSS_IT)):
+        raw_grid_layout.addWidget(QLabel(f"{plane}:"), 1 + 2 * plane_row, 0, 1, len(_RAW_PANEL_PICTURES))
+        for column, name in enumerate(_RAW_PANEL_PICTURES):
+            picture = QLabel()
+            picture.setObjectName(f"haemolynx_post_processing_raw_picture_{plane_row}_{column}")
+            picture.setFixedSize(_RAW_PANEL_PIXELS, _RAW_PANEL_PIXELS)
+            picture.setToolTip(tips["raw_picture"])
+            raw_grid_layout.addWidget(picture, 2 + 2 * plane_row, column)
+            raw_pictures[(plane, name)] = picture
+    raw_grid.setVisible(False)
+    raw_box = QWidget()
+    raw_box.setObjectName("haemolynx_post_processing_raw_box")
+    raw_layout = QVBoxLayout(raw_box)
+    raw_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    raw_layout.addWidget(raw_check)
+    raw_layout.addWidget(raw_status)
+    raw_layout.addWidget(raw_grid)
+    raw_box.setVisible(False)
+
     layout.addWidget(intro)
     row = QHBoxLayout()
     row.addWidget(QLabel("Review:"))
@@ -11927,6 +12022,7 @@ def _post_processing_controls(
     layout.addWidget(junction_box)
     layout.addWidget(loop_box)
     layout.addWidget(review_box)
+    layout.addWidget(raw_box)
     layout.addWidget(edit_box)
     layout.addWidget(prune_button)
     layout.addWidget(QLabel("What was changed:"))
@@ -12193,6 +12289,7 @@ def _post_processing_controls(
         junction_box.setVisible(key == REVIEW_JUNCTIONS)
         loop_box.setVisible(key == REVIEW_LOOPS)
         review_box.setVisible(key in REVIEW_KINDS)
+        refresh_raw_panel()
         if state.scan is None:
             return
         drop_layer(HIGH_DEGREE_JUNCTIONS)
@@ -12517,6 +12614,7 @@ def _post_processing_controls(
                 for c, text in enumerate(cells):
                     loop_table.setItem(r, c, QTableWidgetItem(text))
         loop_table.blockSignals(False)
+        refresh_raw_panel()
 
     def loop_counts() -> str:
         kept = sum(review.decision == KEPT for review in state.loop_reviews)
@@ -12756,6 +12854,7 @@ def _post_processing_controls(
         region_layer = [review_region_layer(item)] if item is not None and item.kind == UNCOVERED_MASK else []
         put_layers(region_layer, (REVIEW_REGION,))
         refresh_review_buttons()
+        refresh_raw_panel()
 
     def fill_review(prefer_row=None) -> None:
         """List the review items and pick the one at *prefer_row* -- where the
@@ -13347,8 +13446,9 @@ def _post_processing_controls(
             return ""
         return f"; {record.describe()}"
 
-    def load_raw():
-        """The run's raw image: ``(volume, None)``, or ``(None, why not)``."""
+    def load_raw(say=None):
+        """The run's raw image: ``(volume, None)``, or ``(None, why not)``.
+        *say* puts up the line saying it is being read (the edit box's)."""
         from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
         from haemolynx.io import axis_order_for_run, resolve_image_path_with_optional_zip
 
@@ -13356,7 +13456,10 @@ def _post_processing_controls(
         path = local.get("raw_image_path")
         if not path:
             return None, "no raw image is set on the Input tab"
-        set_edit_status("Reading the raw data file to trace new vessels through...")
+        if say is None:
+            set_edit_status("Reading the raw data file to trace new vessels through...")
+        else:
+            say("Reading the raw image...")
         _process_pending_qt_events()
         channel = local.get("raw_image_channel")
         try:
@@ -13384,7 +13487,7 @@ def _post_processing_controls(
             )
         return raw, None
 
-    def raw_routing():
+    def raw_routing(say=None):
         """The raw data and its cost field -- FWHM's own copy when it is in the
         viewer, else the run's raw image, read once -- and why not, if not."""
         fwhm = layer(FWHM_RAW)
@@ -13394,10 +13497,78 @@ def _post_processing_controls(
                 state.raw = (data, IntensityCostField(data))
             return state.raw, None
         if state.raw is None and state.raw_problem is None:
-            data, state.raw_problem = load_raw()
+            data, state.raw_problem = load_raw(say)
             if data is not None:
                 state.raw = (data, IntensityCostField(data))
         return state.raw, state.raw_problem
+
+    # --- The raw image at the chosen item -----------------------------------------
+
+    def raw_panel_shown() -> bool:
+        return loops_on() or review_entry().key in REVIEW_KINDS
+
+    def raw_panel_item():
+        """The loop or review item the raw panel draws, or None."""
+        if loops_on():
+            return state.loop
+        return state.review_item if review_entry().key in REVIEW_KINDS else None
+
+    def other_centrelines() -> np.ndarray:
+        """The network's centrelines as points, read again when it changes."""
+        graph = state.graph
+        cached = state.raw_panel_centrelines
+        if cached is None or cached[0] is not graph or cached[1] != graph.number_of_edges():
+            cached = (graph, graph.number_of_edges(), centreline_points(graph))
+            state.raw_panel_centrelines = cached
+        return cached[2]
+
+    def refresh_raw_panel() -> None:
+        """Draw the chosen item in the segmentation and the raw image, when
+        the box is ticked; the raw image is read the first time."""
+        raw_box.setVisible(raw_panel_shown())
+        on = raw_check.isChecked() and raw_panel_shown()
+        raw_grid.setVisible(on)
+        for picture in raw_pictures.values():
+            picture.clear()
+        if not on:
+            raw_status.setText("")
+            return
+        item = raw_panel_item()
+        if item is None or state.graph is None:
+            raw_status.setText("Choose an item in the list to see it here.")
+            return
+        support = mask_support()
+        mask = None if support is None else support.mask
+        routing, problem = raw_routing(say=raw_status.setText)
+        raw = None if routing is None else routing[0]
+        if raw is not None and mask is not None and tuple(np.shape(raw)) != tuple(np.shape(mask)):
+            raw, problem = None, (
+                f"the raw image is {tuple(np.shape(raw))} voxels but the segmented image {tuple(np.shape(mask))}"
+            )
+        if mask is None and raw is None:
+            raw_status.setText(f"Nothing to draw: there is no segmented image in the viewer, and {problem}.")
+            return
+        try:
+            views = panel_views(
+                item.points_um, centre_um=item.centre_um, voxel_size_zyx=voxel_size(), mask=mask, raw=raw,
+                item_lines_um=edge_lines(state.graph, item.edges), other_points_um=other_centrelines(),
+            )
+        except Exception:  # noqa: BLE001 - a picture is a convenience, never fatal
+            logger.exception("Post processing: could not draw the raw image at the chosen item")
+            raw_status.setText("Could not draw the chosen item; the log says why.")
+            return
+        for view in views:
+            for name, picture in zip(_RAW_PANEL_PICTURES, (view.segmentation, view.raw)):
+                label = raw_pictures[(view.plane.label, name)]
+                if picture is None:
+                    label.setText("None")
+                else:
+                    label.setPixmap(_raw_panel_pixmap(picture, view))
+        text = (
+            f"Each plane {2.0 * views[0].plane.radius_um:.0f} µm across, read {HALF_THICKNESS_UM:g} µm "
+            "either side; the chosen item cyan, the other centrelines grey, the bar 5 µm."
+        )
+        raw_status.setText(text if raw is not None else f"{text} No raw image: {problem}.")
 
     def trace_route():
         """How the next leg of a trace is found, as the dropdown asks.
@@ -13808,6 +13979,7 @@ def _post_processing_controls(
     remove_pieces_button.clicked.connect(on_remove_listed_pieces)
     refresh_review_buttons()
     loop_list.currentRowChanged.connect(on_loop_changed)
+    raw_check.toggled.connect(lambda _on: refresh_raw_panel())
     loop_table.itemSelectionChanged.connect(recolour)
     loop_delete_button.clicked.connect(on_loop_delete)
     loop_keep_button.clicked.connect(on_loop_keep)
@@ -13840,6 +14012,7 @@ def _post_processing_controls(
         state.added_nodes = []
         state.decisions = {}
         state.raw = state.raw_problem = None
+        state.raw_panel_centrelines = None
         state.loops, state.loop, state.loop_row = [], None, None
         state.loop_reviews = []
         state.loop_csv = None
@@ -13853,6 +14026,7 @@ def _post_processing_controls(
         loop_table.setRowCount(0)
         loop_summary.setText("")
         status.setText("Not scanned yet.")
+        refresh_raw_panel()
         refresh_buttons()
 
     return SimpleNamespace(
@@ -13887,6 +14061,11 @@ def _post_processing_controls(
         review_diameter=review_diameter,
         review_why=review_why,
         review_summary=review_summary,
+        raw_box=raw_box,
+        raw_check=raw_check,
+        raw_status=raw_status,
+        raw_grid=raw_grid,
+        raw_pictures=raw_pictures,
         dead_end_show=dead_end_show,
         remove_pieces_button=remove_pieces_button,
         click_delete_button=click_delete_button,

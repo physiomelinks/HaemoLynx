@@ -922,6 +922,16 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "outlets and boundary nodes are never removed"
     ),
     "loop_keep": "Keep the chosen loop as it is, take it off the list and move on to the next one",
+    "raw_panel": (
+        "Draw the chosen loop or item in its own plane and in the plane across "
+        "it, the segmentation beside the raw image on the Input tab, as the "
+        "marked grids draw them. The raw image is read the first time"
+    ),
+    "raw_picture": (
+        "A slab 3 µm either side of the plane: the segmentation's voxels "
+        "anywhere in it, or the raw image's mean through it. The chosen item "
+        "is cyan, the other centrelines grey, and the orange bar 5 µm"
+    ),
     "click_delete": (
         "Then click vessels in the viewer to remove them, one per click; "
         "inlets, outlets and boundary nodes are never cut off. Press it again "
