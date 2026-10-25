@@ -497,6 +497,125 @@ def test_a_setting_graph_building_reads_is_not_hidden_behind_skeletonising():
     assert not hidden
 
 
+#: The toggles that skip a stage, reusing what it saved: a setting another
+#: stage reads must not hide behind one of them.
+_STAGE_TOGGLES = {"do_skeletonize": "skeletonise", "do_graph_building": "build_network"}
+
+#: Reads that only report a setting, deciding nothing: the empty-skeleton
+#: error names the skeleton clean-up that may have emptied it.
+_READ_ONLY_TO_REPORT = {
+    "build_network": {"skeleton_min_branch_length", "skeleton_min_component_percent"},
+}
+
+
+def _settings_each_stage_reads() -> dict[str, set[str]]:
+    """The settings each stage function of ``pipeline.stages`` reads, by
+    name: ``settings["x"]`` and ``settings.get("x")`` in its body and in
+    every function of the module it calls, and each
+    ``prefixed_arguments(settings, prefix, parameters_of(f))``'s names.
+    Names built at run time (``f"{role}_..."``) are not seen."""
+    import ast
+    import inspect
+
+    from haemolynx.parsers import parameters_of
+    from haemolynx.pipeline import stages
+
+    functions = {
+        node.name: node for node in ast.parse(inspect.getsource(stages)).body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    def direct(function):
+        reads, calls = set(), set()
+        for node in ast.walk(function):
+            if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                    and node.value.id == "settings" and isinstance(node.slice, ast.Constant)
+                    and isinstance(node.slice.value, str)):
+                reads.add(node.slice.value)
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            if (isinstance(called, ast.Attribute) and called.attr == "get"
+                    and isinstance(called.value, ast.Name) and called.value.id == "settings"
+                    and node.args and isinstance(node.args[0], ast.Constant)):
+                reads.add(node.args[0].value)
+            if isinstance(called, ast.Name):
+                calls.add(called.id)
+                if called.id == "prefixed_arguments" and len(node.args) == 3:
+                    prefix = node.args[1].value
+                    target = eval(ast.unparse(node.args[2].args[0]), vars(stages))
+                    reads.update(prefix + name for name in parameters_of(target))
+        return reads, calls
+
+    found = {name: direct(function) for name, function in functions.items()}
+
+    def closure(name, seen):
+        if name in seen or name not in found:
+            return set()
+        seen.add(name)
+        reads, calls = found[name]
+        return reads.union(*(closure(callee, seen) for callee in calls))
+
+    return {stage: closure(stage, set()) for stage in (
+        "segment", "skeletonise", "build_network", "assign_boundaries", "assign_diameters",
+        "build_haemodynamic_model", "solve", "post_process", "run_perturbations", "export_results",
+    )}
+
+
+def test_no_setting_a_stage_reads_hides_behind_another_stages_toggle():
+    """PLAN_bridging.md Phase 3: a setting a stage reads must be shown while
+    that stage runs. With do_skeletonize off the skeleton is loaded, but
+    graph building still splits the thick vessels (the region read back
+    beside the skeleton) and post processing bridges edited vessels into
+    them; with do_graph_building off the graph is loaded, but post
+    processing still judges an edited vessel's stubs and loops. The panel
+    reads every setting's whole chain of prerequisites (`form.
+    prerequisite_chain`), so a row needing either toggle hid while a stage
+    went on reading it."""
+    from haemolynx.gui.form import prerequisite_chain
+    from haemolynx.parsers import prerequisite_name
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    reads = _settings_each_stage_reads()
+    assert {"bridge_require_mask_support", "thick_vessel_fill_centreline_gaps"} <= reads["build_network"]
+    assert "skeleton_closing_radius" in reads["skeletonise"], "the prefixed reads are seen"
+
+    hidden = {
+        (stage, name, toggle)
+        for stage, names in reads.items()
+        for name in names - _READ_ONLY_TO_REPORT.get(stage, set())
+        if name in schema
+        for toggle in {prerequisite_name(rule) for rule in prerequisite_chain(schema, name)}
+        if _STAGE_TOGGLES.get(toggle, stage) != stage
+    }
+    assert not hidden
+
+
+def test_with_a_saved_skeleton_and_graph_the_thick_vessel_split_stays_in_effect():
+    """The rows the stages go on reading are in effect with both stages
+    skipped; the thin-arm join and the braiding check, read only while
+    skeletonising, are not."""
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    values = schema.defaults()
+    values.update(do_skeletonize=False, do_graph_building=False, use_thick_vessel_skeletonisation=True)
+
+    ineffective = " ".join(schema.ineffective_settings(values))
+    for name in ("use_thick_vessel_skeletonisation", "skeleton_thick_vessel_min_radius_um",
+                 "thick_vessel_fill_centreline_gaps", "thick_bridge_centreline_tolerance_um",
+                 "min_stub_length", "remove_short_loops_under_um"):
+        assert name not in ineffective
+    values.update(
+        skeleton_thick_vessel_max_bridge_radius_multiple=1.0,
+        detect_thick_vessel_braiding=not schema["detect_thick_vessel_braiding"].default,
+    )
+    ineffective = " ".join(schema.ineffective_settings(values))
+    assert "skeleton_thick_vessel_max_bridge_radius_multiple" in ineffective
+    assert "detect_thick_vessel_braiding" in ineffective
+
+
 def test_bridging_settings_are_in_effect_with_a_saved_skeleton():
     from haemolynx.pipeline import default_schema
 

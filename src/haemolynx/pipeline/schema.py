@@ -3356,7 +3356,6 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("do_graph_building",),
         ),
         Setting(
             name="min_stub_length_radius_multiple",
@@ -3372,7 +3371,6 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
-            requires=("do_graph_building",),
         ),
         Setting(
             name="remove_pieces_without_junction",
@@ -3508,7 +3506,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("do_graph_building", "bridge_require_mask_support"),
+            requires=("bridge_require_mask_support",),
             advanced=True,
         ),
         Setting(
@@ -3546,7 +3544,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("do_graph_building", "bridge_require_mask_support"),
+            requires=("bridge_require_mask_support",),
             advanced=True,
         ),
         Setting(
@@ -3880,7 +3878,6 @@ SCHEMA = Schema(
                 "the plain-Lee path would otherwise handle it fine"
             ),
             section=_PIPELINE_STAGES,
-            requires=("do_skeletonize",),
         ),
         Setting(
             name="skeleton_thick_vessel_min_radius_um",
@@ -3937,7 +3934,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
             advanced=True,
             placeholder="auto",
         ),
@@ -3957,7 +3954,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
             advanced=True,
         ),
         Setting(
@@ -3979,7 +3976,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
             advanced=True,
             placeholder="auto",
         ),
@@ -4002,7 +3999,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
             advanced=True,
         ),
         Setting(
@@ -4098,7 +4095,7 @@ SCHEMA = Schema(
                 "never changes the skeleton"
             ),
             section=_PIPELINE_STAGES,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
             advanced=True,
         ),
         Setting(

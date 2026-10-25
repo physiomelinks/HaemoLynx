@@ -254,6 +254,71 @@ def test_tiling_goes_behind_the_skeletonise_button_although_it_needs_low_ram():
     assert {"skeletonize_tile_max_voxels", "skeletonize_tile_halo_um"} <= set(tiling.names)
 
 
+def _row_shows(name: str, values) -> bool:
+    """Whether the panel shows *name*'s row for *values*, hidden or greyed
+    as it decides it (``row_shows``)."""
+    from haemolynx.gui.form import field_for, gate_defaults_for, path_gates_for, unmet_chain
+
+    field = field_for(
+        SCHEMA[name], values.get(name),
+        path_gates=path_gates_for(SCHEMA, name), gate_defaults=gate_defaults_for(SCHEMA, name),
+    )
+    return field.is_visible(values, unmet_chain(SCHEMA, name, values))
+
+
+def _row_usable(name: str, values) -> bool:
+    """Shown and not greyed: every gate above it holds (``chain_met``)."""
+    from haemolynx.gui.form import chain_met
+
+    return _row_shows(name, values) and chain_met(SCHEMA, name, values)
+
+
+#: Rows a stage after skeletonising reads (PLAN_bridging.md F8): the bridge
+#: gate's three, the graph-building rules that need it, and the thick-vessel
+#: split's, with the region read back beside a loaded skeleton.
+_READ_WITH_A_LOADED_SKELETON = (
+    "bridge_require_mask_support", "bridge_max_background_gap_um", "bridge_min_mask_fraction",
+    "facing_dead_end_max_gap_um", "remove_short_loops_under_um", "extend_dead_ends_to_faces",
+    "trace_on_dead_ends", "join_dead_ends_to_vessel_sides",
+    "use_thick_vessel_skeletonisation", "skeleton_thick_vessel_min_radius_um",
+    "thick_vessel_fill_centreline_gaps", "thick_vessel_extend_centreline_ends",
+    "thick_bridge_centreline_tolerance_um",
+)
+
+
+def test_with_do_skeletonize_off_the_rows_later_stages_read_are_laid_out_and_shown():
+    """PLAN_bridging.md Phase 3: a run loading its saved skeleton hid every
+    bridging row (and the thick-vessel split's) while graph building went on
+    reading them. Each is still laid out and usable (shown, not greyed) with
+    do_skeletonize off, and the button it sits behind shows; the thin-arm
+    join, read only while skeletonising, is not."""
+    values = SCHEMA.defaults()
+    values.update(do_skeletonize=False, use_thick_vessel_skeletonisation=True)
+    placed = {name for _tab, layout in LAYOUTS.values() for name in layout.names}
+
+    for name in _READ_WITH_A_LOADED_SKELETON:
+        assert name in placed, name
+        assert _row_usable(name, values), name
+        for _tab, layout in LAYOUTS.values():
+            disclosure = layout.disclosure_of(name) if name in layout.names else None
+            if disclosure is not None:
+                assert any(_row_shows(n, values) for n in disclosure.names), (name, disclosure.title)
+    assert not _row_usable("skeleton_thick_vessel_max_bridge_radius_multiple", values)
+    assert _row_usable("skeleton_thick_vessel_max_bridge_radius_multiple", {**values, "do_skeletonize": True})
+
+
+def test_the_short_loop_rows_stay_behind_the_graph_building_button():
+    """Read by post processing too, they no longer need do_graph_building,
+    and would have dropped under the tab's Checks button."""
+    _tab, layout = LAYOUTS["build_network"]
+    for name in ("remove_short_loops_under_um", "short_loop_keep_hole_over_um"):
+        assert layout.disclosure_of(name).anchor == "do_graph_building"
+    values = {**SCHEMA.defaults(), "do_graph_building": False}
+    assert _row_usable("remove_short_loops_under_um", values)
+    assert _row_usable("min_stub_length", values)
+    assert not _row_usable("cluster_collapse_distance", values)
+
+
 def test_thick_vessel_mask_restriction_moved_to_skeletonise():
     _tab, skeletonise = LAYOUTS["skeletonise"]
     _tab, boundaries = LAYOUTS["assign_boundaries"]

@@ -291,6 +291,10 @@ MOVE_BEFORE: Mapping[str, str] = {"do_fwhm_measurement": "use_raw_section_fallba
 ANCHOR_OVERRIDES: Mapping[str, str] = {
     "skeletonize_tile_large_components": "do_skeletonize",
     "bridge_require_mask_support": "do_skeletonize",
+    # Graph building's clean-up, read by post processing too (an edited
+    # vessel's loops), so not under do_graph_building: kept beside the rest.
+    "remove_short_loops_under_um": "do_graph_building",
+    "short_loop_keep_hole_over_um": "do_graph_building",
 }
 
 #: What each button says, keyed by its anchor, or ``box:<key>`` for a box's

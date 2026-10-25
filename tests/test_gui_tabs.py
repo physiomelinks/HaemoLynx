@@ -747,7 +747,9 @@ def test_thick_vessel_fields_on_skeletonise_declare_hide_when_unmet():
     assert "use_thick_vessel_skeletonisation" in fields
     assert not fields["use_thick_vessel_skeletonisation"].hide_when_unmet
     assert SCHEMA["use_thick_vessel_skeletonisation"].default is False
-    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ("do_skeletonize",)
+    # Graph building splits a loaded skeleton's thick vessels too
+    # (PLAN_bridging.md Phase 3), so the toggle needs no do_skeletonize.
+    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ()
 
     off = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": False}
     on = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": True}

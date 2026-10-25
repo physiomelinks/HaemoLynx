@@ -441,7 +441,11 @@ RAM, each worker holds its own volumes.
   into another, keeps old configs and saved runs loading through the setting's `value_aliases` /
   `replaces` (read by `Schema.upgrade`) rather than breaking them. Mark a setting `advanced=True` unless most runs
   change it: the panel then shows it behind an Advanced button under the row it depends on (see
-  `gui/layout.py`), and `tests/test_gui_layout.py` fails if it lands nowhere.
+  `gui/layout.py`), and `tests/test_gui_layout.py` fails if it lands nowhere. A setting a stage
+  reads must not require another stage's skip toggle (`do_skeletonize`, `do_graph_building`):
+  with the skeleton or graph loaded, later stages still read it (the thick-vessel split, post
+  processing's edited vessels), and the panel would hide it.
+  `tests/test_pipeline_schema_api.py` reads every stage function's settings to check it.
 - **Generated configs** — `examples/*_config.yaml` are written by `examples/regenerate_configs.py`
   from the schemas, never hand-edited: they carry each setting's help text, units and prerequisites
   as comments. Path values are serialised with `PurePath(...).as_posix()`, so regenerating on

@@ -544,7 +544,9 @@ def test_thick_vessel_children_hide_when_the_toggle_is_off():
 
     parent = fields["use_thick_vessel_skeletonisation"]
     assert not parent.hide_when_unmet
-    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ("do_skeletonize",)
+    # Not under do_skeletonize: graph building splits the thick vessels of a
+    # loaded skeleton too (PLAN_bridging.md Phase 3).
+    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ()
     assert parent.widget_type == "CheckBox"
     assert parent.value is False
 
