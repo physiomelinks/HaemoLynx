@@ -75,12 +75,15 @@ FALLBACK_NEIGHBOURS = 16
 #: nothing in an isotropic cell, a spacing's bonus along a cell's only
 #: direction, half a spacing's penalty across it. On E14.5 (2026-10-25, the
 #: bed on the template's own vertices, each candidate judged against its
-#: direction's own chord) 4 gave its capillaries' verticality layer by layer
-#: and its columns: 10-15 runs along z spanning 100 um against the template's
-#: 12 (1: 5-9). On a lattice bed (before) heavier weights only lengthened the
-#: capillaries. A term pushing each cell's drawn share of each direction to the
-#: template's was tried as well and did worse the heavier it was.
-ORIENTATION_WEIGHT = 4.0
+#: direction's own chord) 2 gives its columns -- 9-13 runs along z spanning
+#: 100 um against the template's 12 (1: 5-9) -- and keeps its curvature (22-25
+#: degrees per 10 um against 26). Heavier, the bonus outweighs a candidate's
+#: length: at 4 the chords grew to 38-40 um, left the vessels no length to
+#: curve in, and 70-78% of capillaries came out straight (grid D1b, which
+#: Harvey marked for it); 2.5 tips one seed in three. A term pushing each
+#: cell's drawn share of each direction to the template's was tried as well
+#: and did worse the heavier it was.
+ORIENTATION_WEIGHT = 2.0
 #: Junctions of the largest piece tried, nearest first, for a piece every one
 #: of whose junctions has a dead end nearest (:func:`join_pieces`' last resort).
 JOIN_NEIGHBOURS = 8

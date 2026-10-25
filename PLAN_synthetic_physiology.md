@@ -307,3 +307,15 @@ Being built in the phase order above.
   verticality above the plexus 0.33-0.62 (0.36-0.64). 562 of 600 banded rows within (5 seeds). The
   comparison adds the chord shares (abs 0.05) and the runs per mm^2 of the face across their axis
   (rel 0.35). A new grid for Harvey with these networks.
+- **Grid D1b, marked by Harvey 2026-10-25: not met.** Twelve renders, reshuffled (the template at
+  #11), the other eleven drawn at `596a8296` (Delaunay seeds 21-26, Voronoi 21-25; key
+  `outputs/synthetic_review/grid_d1b_key.csv`). Harvey: #11 "is the only one that looks like the
+  original data, keeps its overall network shape and maintains the curvature of the original
+  data". The curvature was mine to have caught: at `ORIENTATION_WEIGHT` 4 the direction bonus
+  outweighed a candidate's length, the chords grew to 38-40 um and left the vessels no length to
+  curve in -- 60-78% of the capillaries' 10 um turns under 5 degrees (template 7%), curvature 6-11
+  against 26 degrees; only the tortuosity row (1.04-1.07 against 1.20) said so, and the curvature
+  rows were reported, not banded. Fixed: the weight is 2 (E14.5, three seeds: runs along z 9-13
+  against 12, chords along z 0.18-0.21 against 0.22, curvature 22-25 degrees, no capillary
+  straight), and the curvature rows are banded (abs 6 degrees, not calibrated). The overall
+  network shape is open.

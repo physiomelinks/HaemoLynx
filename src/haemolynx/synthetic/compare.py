@@ -112,6 +112,11 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     # Harvey, 2026-10-25: E14.5's capillary columns, read off any template
     # (a run's count is a few dozen at most: a third either way).
     ("organisation", "capillary chords along an axis (share)"): ("abs", 0.05),
+    # Banded since grid D1b (Harvey, 2026-10-25): its capillaries had lost
+    # their curvature (7-11 against 26 degrees) and only their tortuosity
+    # row said so. Not calibrated: E14.5 draws 22-25.
+    ("organisation", "capillary curvature (degrees per 10 um)"): ("abs", 6.0),
+    ("organisation", "tree curvature (degrees per 10 um)"): ("abs", 6.0),
     ("organisation", "capillary runs along an axis spanning 100 um (per mm^2)"): ("rel", 0.35),
 }
 
@@ -413,7 +418,7 @@ def organisation_rows(
     against synthetic: per-cell fields as correlations (on one grid: a box
     drawn at another scale has none), shares, runs along each axis (per mm^2
     of the face across it, given the boxes; else counts), coverage, the
-    trunks' turn and the vessels' curvature (reported only)."""
+    trunks' turn and the vessels' curvature."""
     rows: list[ComparisonRow] = []
     if T is None and S is None:
         return rows
