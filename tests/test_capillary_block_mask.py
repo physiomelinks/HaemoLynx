@@ -484,7 +484,21 @@ def test_the_perturbation_writes_how_densely_and_how_deep_the_masks_blobs_lie(tm
     (result,) = run.results
     assert result.error is None, result.error
     written = {path.name for path in result.outputs}
-    assert {"stall_mask_distribution.csv", "stall_mask_density_by_branch_order.csv"} <= written
+    assert {
+        "stall_mask_distribution.csv", "stall_mask_density_by_branch_order.csv", "stall_mask_objects.csv"
+    } <= written
+    # The blob on top: a 30 um vessel 4 um wide, carrying straight on from the
+    # arteriole at n1 (0 degrees); the two in the tissue sit on no vessel.
+    objects = _read(result.output_dir / "stall_mask_objects.csv")
+    assert [row["on_vessel"] for row in objects].count("True") == 1
+    (on_top,) = [row for row in objects if row["on_vessel"] == "True"]
+    assert int(on_top["branch_id"]) == _ids(_graph())["top"]
+    assert on_top["branch_order"] == "BO2" and on_top["capillary"] == "True"
+    assert float(on_top["vessel_length_um"]) == pytest.approx(30.0)
+    assert float(on_top["vessel_diameter_um"]) == 4.0
+    assert float(on_top["vessel_branch_angle_deg"]) == pytest.approx(0.0)
+    assert float(on_top["volume_um3"]) == 27.0 and float(on_top["centroid_z_um"]) == 4.0
+    assert sorted(float(row["centroid_z_um"]) for row in objects) == [4.0, 4.0, 7.0]
     rows = {row["metric"]: row["value"] for row in _read(result.output_dir / "stall_mask_distribution.csv")}
     assert undocumented("{name}_mask_distribution.csv", list(rows)) == []
     assert rows["mask"] == "capillary_block_mask"
@@ -500,6 +514,11 @@ def test_the_perturbation_writes_how_densely_and_how_deep_the_masks_blobs_lie(tm
         4.0, 4.0, 0.0, 4.0, 4.0
     ]
     assert float(rows["depth_mode_bandwidth_um_on_vessels"]) == 0.0
+    assert rows["vessel_length_n"] == "1"
+    assert float(rows["vessel_length_mean_um"]) == pytest.approx(30.0)
+    assert float(rows["vessel_diameter_median_um"]) == 4.0
+    assert float(rows["vessel_branch_angle_max_deg"]) == pytest.approx(0.0)
+    assert math.isnan(float(rows["vessel_length_sd_um"]))
     orders = _read(result.output_dir / "stall_mask_density_by_branch_order.csv")
     assert [
         (row["branch_order"], int(row["vessels"]), float(row["length_um"]), int(row["objects"]),

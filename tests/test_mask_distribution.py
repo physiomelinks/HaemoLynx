@@ -14,6 +14,11 @@ B01 and B02 are 60 um each, 120 um of capillary. The pericyte mask holds
 seven pericytes: four placed (one on top, one on left, two on bottom) and
 three that are not (one too far from any capillary, one too small, one beside
 the arteriole alone).
+
+Branch angles (each daughter's emergence from its unique lower-order parent):
+at n1 the arteriole is the parent, so top carries straight on (0 degrees) and
+left turns off it (90); at n4 right (B01) is the parent of bottom (B02) and
+the venule, both at 90. Right and the arteriole are no junction's daughter.
 """
 from __future__ import annotations
 
@@ -33,7 +38,7 @@ from haemolynx.haemodynamics import (
     mask_distribution,
     pericyte_mask_distribution,
 )
-from haemolynx.haemodynamics.mask_distribution import DEPTH_STATISTICS
+from haemolynx.haemodynamics.mask_distribution import DEPTH_STATISTICS, VESSEL_MEASURES, VESSEL_STATISTICS
 from haemolynx.haemodynamics.pericyte_mask import (
     load_pericyte_mask,
     place_pericytes,
@@ -41,6 +46,11 @@ from haemolynx.haemodynamics.pericyte_mask import (
 )
 from haemolynx.pipeline import BoundaryNodes, HaemodynamicModel, default_schema, run_perturbations
 from haemolynx.pipeline.export_dictionary import undocumented
+from haemolynx.statistics.bifurcation import (
+    branch_order_label,
+    compute_emergence_angles_by_branch_order,
+    emergence_angle_by_edge,
+)
 
 SCHEMA = default_schema()
 
@@ -62,6 +72,9 @@ VESSELS = {
     "ven": (4, 5, "Ven1"),
 }
 DIAMETERS = {"Art1": 10.0, "B01": 5.0, "B02": 5.0, "Ven1": 10.0}
+#: Each vessel's own measured diameter, so the widths the pericytes sit on differ.
+VESSEL_DIAMETERS = {"art": 10.0, "top": 4.0, "right": 5.0, "left": 6.0, "bottom": 7.0, "ven": 10.0}
+BRANCH_ANGLES = {"top": 0.0, "left": 90.0, "bottom": 90.0, "ven": 90.0}
 
 #: Each pericyte as (centre, half width): a cube of 2 * half + 1 voxels a side.
 #: A 5-voxel cube is 6.2 um across as a sphere of its volume, a pericyte's size.
@@ -87,12 +100,20 @@ def _graph() -> nx.MultiGraph:
     G = nx.MultiGraph()
     for node, pos in NODES.items():
         G.add_node(node, pos=np.asarray(pos, dtype=float))
-    for u, v, order in VESSELS.values():
+    for name, (u, v, order) in VESSELS.items():
         a, b = np.asarray(NODES[u], dtype=float), np.asarray(NODES[v], dtype=float)
         length = float(np.linalg.norm(b - a))
         steps = np.linspace(0.0, 1.0, int(length) + 1)[:, None]
-        G.add_edge(u, v, branch_order=order, length=length, voxels=(a + steps * (b - a)).tolist())
+        G.add_edge(
+            u, v, branch_order=order, length=length, diameter_um=VESSEL_DIAMETERS[name],
+            voxels=(a + steps * (b - a)).tolist(),
+        )
     return G
+
+
+def _at(*depths: float) -> list[tuple[float, float, float]]:
+    """Centroids at these depths (z), all at y = x = 0."""
+    return [(depth, 0.0, 0.0) for depth in depths]
 
 
 def _pericyte_mask() -> np.ndarray:
@@ -183,7 +204,7 @@ def test_objects_are_counted_once_per_vessel_order_and_per_mm():
     distribution = mask_distribution(
         G,
         [top, left, bottom, bottom, art, None],
-        [10.0, 20.0, 30.0, 30.0, 10.0, 25.0],
+        _at(10.0, 20.0, 30.0, 30.0, 10.0, 25.0),
         image_depth_um=39.0,
         mask="test",
     )
@@ -247,14 +268,101 @@ def test_an_empty_mask_has_no_depth_and_no_objects_per_mm():
 def test_a_network_without_capillaries_has_no_capillary_density():
     G = nx.MultiGraph()
     G.add_edge(0, 1, branch_order="Art1", length=20.0)
-    summary = mask_distribution(G, [(0, 1, 0)], [5.0], image_depth_um=10.0).summary
+    summary = mask_distribution(G, [(0, 1, 0)], _at(5.0), image_depth_um=10.0).summary
     assert summary["capillary_length_um"] == 0.0
     assert math.isnan(summary["objects_per_mm_capillary"])
 
 
-def test_a_placement_per_depth_is_required():
+def test_a_placement_and_a_volume_per_centroid_are_required():
     with pytest.raises(ValueError, match="one each per object"):
         mask_distribution(_graph(), [None], [], image_depth_um=1.0)
+    with pytest.raises(ValueError, match="one each per object"):
+        mask_distribution(_graph(), [None], _at(1.0), image_depth_um=1.0, volumes_um3=[])
+
+
+# --- the vessel each object sits on ---------------------------------------------------
+
+
+def test_the_branch_angle_is_each_vessels_emergence_angle_as_the_branch_statistics_average_it():
+    G = _graph()
+
+    angles = emergence_angle_by_edge(G)
+    by_order = compute_emergence_angles_by_branch_order(G)
+
+    expected = {(frozenset(_edge(G, name)[:2]), 0): angle for name, angle in BRANCH_ANGLES.items()}
+    assert angles == pytest.approx(expected)
+    for tag, record in by_order.items():
+        mine = [angle for name, angle in BRANCH_ANGLES.items()
+                if branch_order_label(VESSELS[name][2]) == tag]
+        assert record["Emergence Angle Sample Count"] == len(mine)
+        assert record["Mean Emergence Angle (degrees)"] == pytest.approx(sum(mine) / len(mine))
+
+
+def test_each_object_is_listed_with_its_vessels_length_width_and_angle():
+    G = _graph()
+    top, left, bottom = (_edge(G, name) for name in ("top", "left", "bottom"))
+
+    distribution = mask_distribution(
+        G, [top, left, bottom, bottom, None], _at(10.0, 20.0, 30.0, 30.0, 25.0),
+        image_depth_um=39.0, volumes_um3=[125.0, 125.0, 125.0, 125.0, 8.0],
+    )
+
+    rows = distribution.objects
+    assert [row["object"] for row in rows] == [1, 2, 3, 4, 5]
+    edges = list(G.edges(keys=True))
+    assert [
+        (row["branch_id"], row["branch_order"], row["capillary"], row["vessel_length_um"],
+         row["vessel_diameter_um"], row["vessel_branch_angle_deg"])
+        for row in rows[:4]
+    ] == [
+        (edges.index(top), "BO1", True, 40.0, 4.0, pytest.approx(0.0)),
+        (edges.index(left), "BO2", True, 20.0, 6.0, pytest.approx(90.0)),
+        (edges.index(bottom), "BO2", True, 40.0, 7.0, pytest.approx(90.0)),
+        (edges.index(bottom), "BO2", True, 40.0, 7.0, pytest.approx(90.0)),
+    ]
+    assert rows[0]["centroid_z_um"] == 10.0 and rows[4]["volume_um3"] == 8.0
+    assert rows[4]["on_vessel"] is False and "branch_id" not in rows[4]
+    summary = distribution.summary
+    # Lengths 40, 20, 40, 40; diameters 4, 6, 7, 7; angles 0, 90, 90, 90.
+    assert summary["vessel_length_n"] == 4
+    assert summary["vessel_length_mean_um"] == 35.0
+    assert summary["vessel_length_sd_um"] == pytest.approx(10.0)
+    assert summary["vessel_length_median_um"] == 40.0
+    assert (summary["vessel_length_min_um"], summary["vessel_length_max_um"]) == (20.0, 40.0)
+    assert summary["vessel_diameter_mean_um"] == 6.0
+    assert summary["vessel_diameter_sd_um"] == pytest.approx(math.sqrt(2.0))
+    assert summary["vessel_diameter_median_um"] == 6.5
+    assert summary["vessel_branch_angle_n"] == 4
+    assert summary["vessel_branch_angle_mean_deg"] == pytest.approx(67.5)
+    assert summary["vessel_branch_angle_sd_deg"] == pytest.approx(45.0)
+    assert summary["vessel_branch_angle_median_deg"] == pytest.approx(90.0)
+
+
+def test_a_vessel_with_no_angle_or_width_leaves_it_blank_and_out_of_the_summary():
+    """Right is no junction's daughter; a vessel with no diameter has no width."""
+    G = _graph()
+    right, top = _edge(G, "right"), _edge(G, "top")
+    del G.edges[top]["diameter_um"]
+
+    distribution = mask_distribution(G, [right, top], _at(10.0, 20.0), image_depth_um=39.0)
+
+    first, second = distribution.objects
+    assert first["vessel_branch_angle_deg"] is None and first["vessel_diameter_um"] == 5.0
+    assert second["vessel_diameter_um"] is None
+    summary = distribution.summary
+    assert summary["vessel_branch_angle_n"] == 1 and summary["vessel_diameter_n"] == 1
+    assert summary["vessel_diameter_mean_um"] == 5.0
+    # One value has no SD.
+    assert math.isnan(summary["vessel_diameter_sd_um"])
+    assert summary["vessel_length_n"] == 2
+
+
+def test_no_object_on_a_vessel_has_no_vessel_statistics():
+    summary = mask_distribution(_graph(), [None], _at(5.0), image_depth_um=39.0).summary
+    for measure, unit in VESSEL_MEASURES:
+        assert summary[f"vessel_{measure}_n"] == 0
+        for name in VESSEL_STATISTICS:
+            assert math.isnan(summary[f"vessel_{measure}_{name}_{unit}"])
 
 
 # --- a pericyte mask ----------------------------------------------------------------
@@ -293,6 +401,24 @@ def test_a_pericyte_masks_density_counts_the_pericytes_placed_on_capillaries():
         assert summary[f"depth_mode_um_{group}"] == pytest.approx(mode, abs=0.1 * bandwidth)
     # Two of the four placed lie at 30 um: the peak is there.
     assert summary["depth_mode_um_on_vessels"] > 25.0
+    # Each pericyte with its vessel: top, left and bottom twice.
+    assert len(distribution.objects) == 7
+    placed = sorted(
+        (row["centroid_z_um"], row["branch_order"], row["vessel_length_um"], row["vessel_diameter_um"],
+         row["vessel_branch_angle_deg"])
+        for row in distribution.objects if row["on_vessel"]
+    )
+    assert placed == [
+        (10.0, "BO1", 40.0, 4.0, pytest.approx(0.0)),
+        (20.0, "BO2", 20.0, 6.0, pytest.approx(90.0)),
+        (30.0, "BO2", 40.0, 7.0, pytest.approx(90.0)),
+        (30.0, "BO2", 40.0, 7.0, pytest.approx(90.0)),
+    ]
+    cubes = [row["volume_um3"] for row in distribution.objects if row["on_vessel"]]
+    assert cubes == pytest.approx([125.0] * 4)
+    assert summary["vessel_length_mean_um"] == 35.0
+    assert summary["vessel_diameter_mean_um"] == 6.0
+    assert summary["vessel_branch_angle_mean_deg"] == pytest.approx(67.5)
 
 
 def test_the_strategy_places_the_pericytes_the_density_counts(tmp_path):
@@ -404,11 +530,32 @@ def _mask_path(tmp_path: Path) -> Path:
 
 def test_a_pericyte_perturbation_with_a_mask_writes_where_its_pericytes_lie(tmp_path):
     mask_path = _mask_path(tmp_path)
+    model = _model()
 
-    result = _run(tmp_path, _entry("pericyte_diameter_change", mask_path))
+    run = run_perturbations(
+        _settings(tmp_path, [_entry("pericyte_diameter_change", mask_path)]), model, _boundaries(), SCHEMA
+    )
 
+    (result,) = run.results
+    assert result.error is None, result.error
     written = {path.name for path in result.outputs}
-    assert {"tone_mask_distribution.csv", "tone_mask_density_by_branch_order.csv"} <= written
+    assert {
+        "tone_mask_distribution.csv", "tone_mask_density_by_branch_order.csv", "tone_mask_objects.csv"
+    } <= written
+    objects = _read(result.output_dir / "tone_mask_objects.csv")
+    assert len(objects) == 7
+    placed = [row for row in objects if row["on_vessel"] == "True"]
+    assert len(placed) == 4
+    off = next(row for row in objects if row["on_vessel"] == "False")
+    assert off["branch_id"] == "" and off["vessel_length_um"] == ""
+    edges = list(model.graph.edges(keys=True, data=True))
+    for row in placed:
+        u, v, key, data = edges[int(row["branch_id"])]
+        # The baseline's vessel: perturbing the pericytes' tone moves no vessel.
+        assert (row["u"], row["v"], row["key"]) == (str(u), str(v), str(key))
+        assert float(row["vessel_length_um"]) == data["length"]
+        assert float(row["vessel_diameter_um"]) == data["diameter_um"]
+    assert sorted(float(row["vessel_branch_angle_deg"]) for row in placed) == pytest.approx([0.0, 90.0, 90.0, 90.0])
     rows = {row["metric"]: row["value"] for row in _read(result.output_dir / "tone_mask_distribution.csv")}
     assert undocumented("{name}_mask_distribution.csv", list(rows)) == []
     assert rows["mask"] == "pericyte_mask"
@@ -433,7 +580,9 @@ def test_a_pericyte_sweep_with_a_mask_writes_them_after_its_grid(tmp_path):
 
     names = [path.name for path in result.outputs]
     assert names[0].endswith("sweep.csv")
-    assert "tone_mask_distribution.csv" in names and "tone_mask_density_by_branch_order.csv" in names
+    assert {
+        "tone_mask_distribution.csv", "tone_mask_density_by_branch_order.csv", "tone_mask_objects.csv"
+    } <= set(names)
     assert result.summary["mask_distribution"]["objects_on_vessels"] == 4
 
 

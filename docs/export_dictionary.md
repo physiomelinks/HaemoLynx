@@ -434,6 +434,9 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 | `capillary_vessels` | `vessels` | The network's capillaries (B orders, Unknown_Cap). |
 | `capillary_length_um` | `um` | Their length. |
 | `objects_per_mm_capillary` | `1/mm` | objects_on_capillaries per mm of capillary_length_um. |
+| `vessel_{length\|diameter\|branch_angle}_n` | `count` | Objects on vessels whose vessel has that measure: a branch angle only where the vessel leaves a unique lower-order parent. |
+| `vessel_{length\|diameter}_{mean\|sd\|median\|min\|max}_um` | `um` | The length or diameter (width) of the vessel each object sits on, over the objects on vessels (a vessel holding two counts twice): mean, sample SD, median, least, greatest. |
+| `vessel_branch_angle_{mean\|sd\|median\|min\|max}_deg` | `degrees` | The same for the vessel's branch angle (its emergence angle, as {stem}_branch_statistics.csv averages it per order). |
 | `image_depth_um` | `um` | The image's z extent, its first plane to its last (the crop box's, when cut). |
 | `depth_{min\|max\|range\|mean\|mode}_um_{all\|on_vessels}` | `um` | The objects' centroid z from the image's first plane, over every object or over those on vessels: least, greatest, greatest minus least, mean, and the peak of a Gaussian kernel density of them. |
 | `depth_mode_bandwidth_um_{all\|on_vessels}` | `um` | That kernel density's bandwidth (Silverman's rule); 0 when the depths are all alike. |
@@ -449,6 +452,28 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 | `length_um` | `um` | Their length. |
 | `objects` | `count` | Objects placed on them, each once: a blob on the vessel holding most of its voxels. |
 | `objects_per_mm` | `1/mm` | objects per mm of length_um. |
+
+## `{name}_mask_objects.csv`
+
+Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A perturbation reading a mask of objects: one row per object of the mask, and the vessel the perturbation placed it on (blank when on none).
+
+| Column | Unit | Meaning |
+|---|---|---|
+| `object` | `-` | The object's number: its connected component's, as {name}_mask_blocks.csv numbers a blob. |
+| `centroid_z_um` | `um` | Its centroid, z: its depth from the image's first plane. |
+| `centroid_y_um` | `um` | Its centroid, y. |
+| `centroid_x_um` | `um` | Its centroid, x. |
+| `volume_um3` | `um^3` | Its volume. |
+| `on_vessel` | `flag` | True when it was placed on a vessel: a pericyte near enough to a capillary and of a pericyte's size, a blob that blocks. |
+| `branch_id` | `-` | The vessel's branch ID (its place in the graph's edge order, as the panel shows it). |
+| `u` | `-` | Node ID at one end of the vessel (graph node, as in the nodes file's node_id). |
+| `v` | `-` | Node ID at the other end. |
+| `key` | `-` | Which of the vessels between u and v (0 for the first). |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
+| `capillary` | `flag` | True when the vessel is a capillary (B orders, Unknown_Cap). |
+| `vessel_length_um` | `um` | The vessel's length. |
+| `vessel_diameter_um` | `um` | Its diameter (width); blank where it has none. |
+| `vessel_branch_angle_deg` | `degrees` | Its branch angle: how far it turns from its parent where it leaves it (the emergence angle {stem}_branch_statistics.csv averages); blank where its junctions have no unique lower-order parent. |
 
 ## `{arteriole\|capillary\|pericyte}_dilation_sweep.csv, ..._dilation_pressure_sweep.csv, inlet_pressure_sweep.csv`
 

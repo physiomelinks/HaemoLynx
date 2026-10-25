@@ -6045,11 +6045,30 @@ CAPILLARY_BLOCK_MASK_COLUMNS = (
 
 #: Metric/value rows of a perturbation mask's `<name>_mask_distribution.csv`:
 #: a pericyte or block mask's objects, how densely they sit on the
-#: capillaries, and where they lie in the image's depth
-#: (haemodynamics.mask_distribution).
+#: capillaries, the vessels they sit on, and where they lie in the image's
+#: depth (haemodynamics.mask_distribution).
 MASK_DISTRIBUTION_COLUMNS = ("metric", "value")
 #: Columns of a perturbation mask's `<name>_mask_density_by_branch_order.csv`.
 MASK_DENSITY_ORDER_COLUMNS = ("branch_order", "vessels", "length_um", "objects", "objects_per_mm")
+#: Columns of a perturbation mask's `<name>_mask_objects.csv`: one row per
+#: object, and the vessel it sits on.
+MASK_OBJECT_COLUMNS = (
+    "object",
+    "centroid_z_um",
+    "centroid_y_um",
+    "centroid_x_um",
+    "volume_um3",
+    "on_vessel",
+    "branch_id",
+    "u",
+    "v",
+    "key",
+    "branch_order",
+    "capillary",
+    "vessel_length_um",
+    "vessel_diameter_um",
+    "vessel_branch_angle_deg",
+)
 
 
 def _write_mask_distribution(
@@ -6059,8 +6078,9 @@ def _write_mask_distribution(
     name: str,
     mask_path: Any,
 ) -> list[Path]:
-    """A perturbation mask's distribution as its two CSVs in *output_dir*:
-    the metric/value summary and the density per branch order."""
+    """A perturbation mask's distribution as its three CSVs in *output_dir*:
+    the metric/value summary, the density per branch order, and each
+    object with its vessel."""
     summary_path = output_dir / f"{name}_mask_distribution.csv"
     with summary_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -6073,15 +6093,22 @@ def _write_mask_distribution(
         writer = csv.DictWriter(handle, fieldnames=list(MASK_DENSITY_ORDER_COLUMNS))
         writer.writeheader()
         writer.writerows(distribution.by_branch_order)
+    objects_path = output_dir / f"{name}_mask_objects.csv"
+    with objects_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(MASK_OBJECT_COLUMNS))
+        writer.writeheader()
+        writer.writerows(distribution.objects)
     rows = distribution.summary
     logger.info(
         f"Perturbation '{name}': {rows['objects_on_vessels']} of the mask's {rows['objects']} "
-        f"object(s) lie on vessels, {rows['objects_per_mm_capillary']:.4g} per mm of capillary; "
-        f"depth {rows['depth_min_um_all']:.4g}-{rows['depth_max_um_all']:.4g} um (mean "
+        f"object(s) lie on vessels, {rows['objects_per_mm_capillary']:.4g} per mm of capillary, "
+        f"on vessels {rows['vessel_length_mean_um']:.4g} um long and "
+        f"{rows['vessel_diameter_mean_um']:.4g} um wide on average; depth "
+        f"{rows['depth_min_um_all']:.4g}-{rows['depth_max_um_all']:.4g} um (mean "
         f"{rows['depth_mean_um_all']:.4g}, mode {rows['depth_mode_um_all']:.4g}) of an image "
         f"{rows['image_depth_um']:.4g} um deep."
     )
-    return [summary_path, orders_path]
+    return [summary_path, orders_path, objects_path]
 
 
 def _pericyte_mask_distribution(

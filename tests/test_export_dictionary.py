@@ -118,6 +118,7 @@ def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
         ("{name}_mask_distribution.csv", "haemolynx.pipeline.stages:MASK_DISTRIBUTION_COLUMNS", False),
         ("{name}_mask_density_by_branch_order.csv",
          "haemolynx.pipeline.stages:MASK_DENSITY_ORDER_COLUMNS", True),
+        ("{name}_mask_objects.csv", "haemolynx.pipeline.stages:MASK_OBJECT_COLUMNS", True),
         ("{name}_block_replicates.csv", "haemolynx.pipeline.stages:CAPILLARY_BLOCK_REPLICATE_COLUMNS", False),
         ("{stem}_connectivity.csv", "haemolynx.graph.connectivity:CONNECTIVITY_COLUMNS", True),
         ("{stem}_loop_review.csv", "haemolynx.gui.post_processing:LOOP_REVIEW_COLUMNS", True),

@@ -4,7 +4,8 @@ A pericyte mask (the pericyte perturbations' sites, with
 ``use_pericyte_mask_constriction``) and a block mask (``capillary_block_mask``)
 are both masks of objects -- one connected component each -- that the
 perturbation places on vessels. This says, for either, how densely its
-objects sit on the network and where they lie in the image's depth:
+objects sit on the network, on what vessels, and where they lie in the
+image's depth:
 
 - **density by branch order**: the objects placed on each order's vessels per
   mm of that order's vessel length. Each object counts once, on the vessel the
@@ -16,6 +17,13 @@ objects sit on the network and where they lie in the image's depth:
 - **density by capillary length**: the objects placed on capillaries per mm
   of the network's capillary length (``constriction.is_capillary_branch_order``:
   the B orders and ``Unknown_Cap``).
+- **each object's vessel**: its length, its diameter (width) and its branch
+  angle -- the emergence angle the branch statistics average per order
+  (:func:`haemolynx.statistics.bifurcation.emergence_angle_by_edge`: how far
+  the vessel turns from its parent where it leaves it; none where its
+  junctions have no unique lower-order parent) -- one row per object, and
+  their n, mean, SD, median, least and greatest over the objects on vessels
+  (a vessel holding two objects counts twice).
 - **depth**: each object's centroid z, in microns from the image's first plane
   (the crop box's, when the image was cut on import), over every object of the
   mask and over those placed on vessels: least, greatest, range, mean and
@@ -43,6 +51,8 @@ from .pericyte_mask import PericytePlacement
 
 __all__ = [
     "DEPTH_STATISTICS",
+    "VESSEL_MEASURES",
+    "VESSEL_STATISTICS",
     "MaskDistribution",
     "block_mask_distribution",
     "kernel_density_mode",
@@ -52,6 +62,21 @@ __all__ = [
 
 #: The depth statistics, each a ``depth_<statistic>_um_{all|on_vessels}`` row.
 DEPTH_STATISTICS: tuple[str, ...] = ("min", "max", "range", "mean", "mode", "mode_bandwidth")
+
+#: What is read off each object's vessel: ``(measure, unit suffix)``. Each is a
+#: ``vessel_<measure>_<unit>`` column of the per-object rows, and the summary
+#: has ``vessel_<measure>_n`` and ``vessel_<measure>_<statistic>_<unit>`` rows.
+VESSEL_MEASURES: tuple[tuple[str, str], ...] = (
+    ("length", "um"),
+    ("diameter", "um"),
+    ("branch_angle", "deg"),
+)
+
+#: The summary statistics of each vessel measure.
+VESSEL_STATISTICS: tuple[str, ...] = ("mean", "sd", "median", "min", "max")
+
+#: The emergence angle's tangent, as the branch statistics measure it.
+BRANCH_ANGLE_TANGENT_LENGTH_UM = 10.0
 
 #: Micrometres per millimetre: densities are objects per mm of vessel.
 _UM_PER_MM = 1000.0
@@ -66,11 +91,13 @@ _MODE_CHUNK = 10_000
 @dataclass
 class MaskDistribution:
     """One mask's objects on one network: ``summary`` the metric/value rows
-    (counts, the capillary density, the image's depth and the objects' depth
-    statistics), ``by_branch_order`` one row per branch order."""
+    (counts, the capillary density, the objects' vessels' summary statistics,
+    the image's depth and the objects' depth statistics), ``by_branch_order``
+    one row per branch order, ``objects`` one row per object of the mask."""
 
     summary: dict[str, Any] = field(default_factory=dict)
     by_branch_order: list[dict[str, Any]] = field(default_factory=list)
+    objects: list[dict[str, Any]] = field(default_factory=list)
 
 
 def kernel_density_mode(values: Sequence[float]) -> tuple[float, float]:
@@ -118,33 +145,72 @@ def _depth_rows(depths_um: np.ndarray, group: str) -> dict[str, float]:
     return {f"depth_{name}_um_{group}": value for name, value in zip(DEPTH_STATISTICS, values)}
 
 
+def _vessel_rows(values: Sequence[Optional[float]], measure: str, unit: str) -> dict[str, Any]:
+    """*values*' n, mean, sample SD, median, least and greatest, keyed
+    ``vessel_<measure>_n`` and ``vessel_<measure>_<statistic>_<unit>``;
+    those missing (None) left out, NaN where there is nothing (an SD needs
+    two)."""
+    data = np.asarray([value for value in values if value is not None], dtype=float)
+    rows: dict[str, Any] = {f"vessel_{measure}_n": int(data.size)}
+    statistics = {
+        "mean": float(data.mean()) if data.size else math.nan,
+        "sd": float(data.std(ddof=1)) if data.size > 1 else math.nan,
+        "median": float(np.median(data)) if data.size else math.nan,
+        "min": float(data.min()) if data.size else math.nan,
+        "max": float(data.max()) if data.size else math.nan,
+    }
+    for name in VESSEL_STATISTICS:
+        rows[f"vessel_{measure}_{name}_{unit}"] = statistics[name]
+    return rows
+
+
 def _per_mm(objects: int, length_um: float) -> float:
     return objects / length_um * _UM_PER_MM if length_um > 0.0 else math.nan
+
+
+def _positive(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0.0 else None
 
 
 def mask_distribution(
     G: nx.MultiGraph,
     placed_on: Sequence[Optional[tuple[Any, Any, Any]]],
-    depths_um: Sequence[float],
+    centroids_um,
     *,
     image_depth_um: float,
+    volumes_um3: Optional[Sequence[float]] = None,
     capillaries_only: bool = False,
     mask: str = "",
 ) -> MaskDistribution:
-    """How densely a mask's objects sit on *G* and where they lie in depth.
+    """How densely a mask's objects sit on *G*, on what vessels, and where
+    they lie in depth.
 
-    *placed_on* and *depths_um* hold one entry per object of the mask: the
-    vessel ``(u, v, key)`` it counts on (None: on no vessel) and its centroid
-    z in microns. *image_depth_um* is the image's z extent (the first plane's
-    centre to the last's). *capillaries_only* lists only the capillary orders
-    by branch order, for objects that can only be placed on capillaries.
-    *mask* names the mask in the summary.
+    *placed_on* and *centroids_um* hold one entry per object of the mask, in
+    its component order: the vessel ``(u, v, key)`` it counts on (None: on no
+    vessel) and its centroid ``(z, y, x)`` in microns; *volumes_um3* its
+    volume, when known. *image_depth_um* is the image's z extent (the first
+    plane's centre to the last's). *capillaries_only* lists only the
+    capillary orders by branch order, for objects that can only be placed on
+    capillaries. *mask* names the mask in the summary.
     """
-    from haemolynx.statistics.bifurcation import _branch_order_sort_key, branch_order_label
+    from haemolynx.statistics.bifurcation import (
+        _branch_order_sort_key,
+        branch_order_label,
+        emergence_angle_by_edge,
+    )
 
-    if len(placed_on) != len(depths_um):
+    centroids = np.asarray(centroids_um, dtype=float).reshape(-1, 3)
+    if len(placed_on) != len(centroids):
         raise ValueError(
-            f"{len(placed_on)} placements for {len(depths_um)} depths: one each per object"
+            f"{len(placed_on)} placements for {len(centroids)} centroids: one each per object"
+        )
+    if volumes_um3 is not None and len(volumes_um3) != len(centroids):
+        raise ValueError(
+            f"{len(volumes_um3)} volumes for {len(centroids)} centroids: one each per object"
         )
     rows: dict[str, dict[str, Any]] = {}
     label_of: dict[tuple[Any, Any, Any], str] = {}
@@ -172,8 +238,41 @@ def mask_distribution(
             rows[label_of[edge]]["objects"] += 1
     on_capillaries = sum(1 for edge in on_vessels if edge in capillary)
 
-    depths = np.asarray(depths_um, dtype=float).reshape(-1)
+    branch_ids = {edge: index for index, edge in enumerate(G.edges(keys=True))}
+    angles = (
+        emergence_angle_by_edge(G, tangent_length_um=BRANCH_ANGLE_TANGENT_LENGTH_UM)
+        if on_vessels
+        else {}
+    )
+    objects: list[dict[str, Any]] = []
+    for index, (edge, centroid) in enumerate(zip(placed_on, centroids)):
+        item: dict[str, Any] = {
+            "object": index + 1,
+            "centroid_z_um": float(centroid[0]),
+            "centroid_y_um": float(centroid[1]),
+            "centroid_x_um": float(centroid[2]),
+            "volume_um3": None if volumes_um3 is None else float(volumes_um3[index]),
+            "on_vessel": edge is not None,
+        }
+        if edge is not None:
+            u, v, key = edge
+            data = G.edges[u, v, key]
+            item.update(
+                branch_id=branch_ids.get((u, v, key), branch_ids.get((v, u, key))),
+                u=u,
+                v=v,
+                key=key,
+                branch_order=branch_order_label(data.get("branch_order")),
+                capillary=edge in capillary,
+                vessel_length_um=float(data.get("length", 0.0) or 0.0),
+                vessel_diameter_um=_positive(data.get("diameter_um")),
+                vessel_branch_angle_deg=angles.get((frozenset((u, v)), key)),
+            )
+        objects.append(item)
+
+    depths = centroids[:, 0]
     placed = np.array([edge is not None for edge in placed_on], dtype=bool)
+    placed_rows = [row for row in objects if row["on_vessel"]]
     summary: dict[str, Any] = {
         "mask": mask,
         "objects": len(placed_on),
@@ -182,10 +281,18 @@ def mask_distribution(
         "capillary_vessels": len(capillary),
         "capillary_length_um": capillary_length,
         "objects_per_mm_capillary": _per_mm(on_capillaries, capillary_length),
-        "image_depth_um": float(image_depth_um),
-        **_depth_rows(depths, "all"),
-        **_depth_rows(depths[placed], "on_vessels"),
     }
+    for measure, unit in VESSEL_MEASURES:
+        summary.update(
+            _vessel_rows([row[f"vessel_{measure}_{unit}"] for row in placed_rows], measure, unit)
+        )
+    summary.update(
+        {
+            "image_depth_um": float(image_depth_um),
+            **_depth_rows(depths, "all"),
+            **_depth_rows(depths[placed], "on_vessels"),
+        }
+    )
     by_order = [
         {
             "branch_order": label,
@@ -196,7 +303,7 @@ def mask_distribution(
         }
         for label in sorted(rows, key=_branch_order_sort_key)
     ]
-    return MaskDistribution(summary=summary, by_branch_order=by_order)
+    return MaskDistribution(summary=summary, by_branch_order=by_order, objects=objects)
 
 
 def pericyte_mask_distribution(
@@ -215,12 +322,13 @@ def pericyte_mask_distribution(
     placed_on = [
         placement.projections[index][0] if index in eligible else None for index in range(count)
     ]
-    depths = placement.centroids_um[:, 0] if count else np.empty(0)
+    diameters = np.asarray(placement.equivalent_diameters_um, dtype=float).reshape(-1)
     return mask_distribution(
         G,
         placed_on,
-        depths,
+        placement.centroids_um,
         image_depth_um=float(image_extent_um(image_shape, voxel_size_zyx)[0]),
+        volumes_um3=list(np.pi / 6.0 * diameters**3),
         capillaries_only=True,
         mask="pericyte_mask",
     )
@@ -243,7 +351,8 @@ def block_mask_distribution(
     return mask_distribution(
         G,
         placed_on,
-        [block.centroid_um[0] for block in blocks],
+        [block.centroid_um for block in blocks],
         image_depth_um=float(image_extent_um(image_shape, voxel_size_zyx)[0]),
+        volumes_um3=[block.volume_um3 for block in blocks],
         mask="capillary_block_mask",
     )

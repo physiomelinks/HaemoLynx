@@ -286,6 +286,39 @@ def compute_emergence_angles_by_branch_order(
     """
     sums: Dict[str, float] = {}
     counts: Dict[str, int] = {}
+    for _edge_id, tag, angle in _emergence_angles(G, tangent_length_um):
+        sums[tag] = sums.get(tag, 0.0) + angle
+        counts[tag] = counts.get(tag, 0) + 1
+
+    ordered: Dict[str, Dict[str, Any]] = {}
+    for tag in sorted(counts, key=_branch_order_sort_key):
+        n = counts[tag]
+        ordered[tag] = {
+            "Branch Order": tag,
+            "Mean Emergence Angle (degrees)": sums[tag] / n,
+            "Emergence Angle Sample Count": n,
+        }
+    return ordered
+
+
+def emergence_angle_by_edge(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    tangent_length_um: float = 10.0,
+) -> Dict[tuple[frozenset, Any], float]:
+    """Each daughter edge's emergence angle in degrees, keyed
+    ``(frozenset({u, v}), key)`` (``key`` None on a plain graph): the angles
+    :func:`compute_emergence_angles_by_branch_order` averages per order, one
+    per edge. An edge that is no junction's daughter has none."""
+    return {
+        edge_id: angle for edge_id, _tag, angle in _emergence_angles(G, tangent_length_um)
+    }
+
+
+def _emergence_angles(G: Union[nx.Graph, nx.MultiGraph], tangent_length_um: float):
+    """``(edge id, daughter's order, angle)`` for each daughter edge, once, in
+    the order the junctions reach them (see
+    :func:`compute_emergence_angles_by_branch_order`)."""
     # An edge with neither endpoint the local minimum rank (a capillary
     # bridging two comparable-order neighbourhoods, not a strict parent ->
     # child step) is a "daughter" at both of its junctions. Each junction is
@@ -333,20 +366,8 @@ def compute_emergence_angles_by_branch_order(
             )
             if daughter_out is None:
                 continue
-            angle = _angle_between_unit_vectors(parent_in, daughter_out)
-            sums[tag] = sums.get(tag, 0.0) + angle
-            counts[tag] = counts.get(tag, 0) + 1
             seen_daughters.add(edge_id)
-
-    ordered: Dict[str, Dict[str, Any]] = {}
-    for tag in sorted(counts, key=_branch_order_sort_key):
-        n = counts[tag]
-        ordered[tag] = {
-            "Branch Order": tag,
-            "Mean Emergence Angle (degrees)": sums[tag] / n,
-            "Emergence Angle Sample Count": n,
-        }
-    return ordered
+            yield edge_id, tag, _angle_between_unit_vectors(parent_in, daughter_out)
 
 
 def _positive_diameter_or_none(value: Any) -> Optional[float]:
