@@ -273,6 +273,31 @@ def test_the_run_solves_and_reports_its_comparison(whole_run):
     assert any(row[1] == "inlets" and row[6] == "yes" for row in rows[1:])
 
 
+def test_a_closed_network_takes_its_flow_in_at_the_inlets_and_out_at_the_outlets(whole_run):
+    """Harvey, 2026-10-25 (D2a): no vessel leaves the box, so no open end
+    takes flow; every other node conserves it."""
+    from haemolynx.haemodynamics.resistance import flow_conservation_residuals
+
+    settings, _report, G, _out = whole_run
+    assert settings["synthetic_open_ends"] == "closed"
+    roles = boundary_nodes(G)
+    inlets, outlets = roles["inlet"], roles["outlet"]
+
+    def net_out(node):
+        return sum(
+            d["conductance"] * (G.nodes[node]["pressure"] - G.nodes[other]["pressure"])
+            for _n, other, d in G.edges(node, data=True)
+        )
+
+    inflow = sum(net_out(n) for n in inlets)
+    outflow = -sum(net_out(n) for n in outlets)
+    assert inflow > 0 and outflow == pytest.approx(inflow, rel=1e-6)
+    largest = max(d["flow_abs"] for *_e, d in G.edges(data=True))
+    residuals = flow_conservation_residuals(G, boundary_nodes=[*inlets, *outlets])
+    assert residuals and max(abs(r) for r in residuals.values()) < 1e-6 * largest
+    assert all(G.nodes[n].get("dead_end_kind") != "leaves_image" for n in G if n not in {*inlets, *outlets})
+
+
 def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     settings, _report, _G, out = whole_run
     manifest = json.loads((out / "out" / "e14_5_synthetic_run_manifest.json").read_text(encoding="utf-8"))
@@ -284,6 +309,7 @@ def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     assert manifest["network_source"] == "synthetic"
     assert manifest["synthetic"]["seed"] == 3
     assert manifest["synthetic"]["bed_model"] == "delaunay"
+    assert manifest["synthetic"]["open_ends"] == "closed"
     assert manifest["synthetic"]["source"] == "statistics"
     assert manifest["synthetic"]["template"].endswith("e14_5.haemorun")
     citations = (out / "out" / "e14_5_synthetic_citations.txt").read_text(encoding="utf-8")

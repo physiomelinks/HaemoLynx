@@ -42,6 +42,10 @@ from haemolynx.graph.branch_order import (
 )
 from haemolynx.graph.prune import SOLVE_DERIVED_EDGE_ATTRIBUTES
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.synthetic.template import GRAPH_NETWORK_SOURCE
+
+#: ``G.graph[GRAPH_NETWORK_SOURCE]`` on a network drawn by ``haemolynx.synthetic``.
+NETWORK_SOURCE_SYNTHETIC = "synthetic"
 from haemolynx.visualization._helpers import create_color_mapping
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
 from haemolynx.visualization.geometry import edge_polyline
@@ -2058,8 +2062,11 @@ class ResultLayers:
                 )
             # Start hidden -- only Post processing draws this layer again,
             # and its spec is visible=True so it keeps a user's toggle (see
-            # the matching NODES comment above).
-            layers.extend(self._boundary_nodes_layer(roles, visible=False))
+            # the matching NODES comment above). A synthetic network's are
+            # shown: its inlets and outlets are where all its flow goes in
+            # and out (Harvey, 2026-10-25), and nothing else marks them.
+            synthetic = self._graph.graph.get(GRAPH_NETWORK_SOURCE) == NETWORK_SOURCE_SYNTHETIC
+            layers.extend(self._boundary_nodes_layer(roles, visible=synthetic))
 
         # The large masks as cleaned and the small masks as boundary labelling
         # read them; each replaces the as-loaded layer of the same name.

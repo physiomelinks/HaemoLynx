@@ -18,6 +18,9 @@ from .compare import (
 )
 from .generate import (
     DEFAULT_SEED,
+    OPEN_ENDS,
+    OPEN_ENDS_CLOSED,
+    OPEN_ENDS_TEMPLATE,
     SYNTHETIC_CLASS,
     SYNTHETIC_ROLES,
     GenerationOptions,
@@ -77,6 +80,9 @@ __all__ = [
     "GenerationOptions",
     "LoopTarget",
     "NetworkTemplate",
+    "OPEN_ENDS",
+    "OPEN_ENDS_CLOSED",
+    "OPEN_ENDS_TEMPLATE",
     "OrderTarget",
     "Provenance",
     "Samples",

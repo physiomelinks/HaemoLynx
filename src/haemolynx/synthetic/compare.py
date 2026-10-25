@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import csv
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -29,6 +29,7 @@ from haemolynx.statistics.vessel_classes import VESSEL_CLASS_TITLES
 from .organisation import Organisation, correlation, profile, share_inside
 from .template import (
     FACES,
+    GRAPH_TEMPLATE_RECORD,
     ROLES,
     SOURCE_GRAPH,
     NetworkTemplate,
@@ -182,10 +183,22 @@ def _face_counts(endpoints: Iterable) -> dict:
     return counts
 
 
-def compare_templates(template: NetworkTemplate, synthetic: NetworkTemplate) -> list[ComparisonRow]:
-    """One row per characteristic, banded by :data:`TOLERANCES`: see the module."""
+def not_drawn(row: ComparisonRow, why: str) -> ComparisonRow:
+    """*row* reported, not banded: the generator was asked not to draw it."""
+    return replace(row, tolerance=f"not drawn ({why})", within=None)
+
+
+def compare_templates(
+    template: NetworkTemplate, synthetic: NetworkTemplate, *, options: Optional[Mapping[str, Any]] = None
+) -> list[ComparisonRow]:
+    """One row per characteristic, banded by :data:`TOLERANCES`: see the
+    module. *options* are the generation options the synthetic network was
+    drawn with (its record's ``options``): what they left out is reported,
+    not banded."""
     rows: list[ComparisonRow] = []
     T, S = template, synthetic
+    options = options or {}
+    closed = options.get("open_ends") == "closed"
 
     def add(section: str, characteristic: str, t: Any, s: Any, *, kind: Optional[str] = None, key: Optional[str] = None) -> None:
         rows.append(banded(kind or section, section, characteristic, t, s, key))
@@ -268,9 +281,12 @@ def compare_templates(template: NetworkTemplate, synthetic: NetworkTemplate) -> 
     # The generator draws one connected network: a template's artefact ends
     # and ends of pieces without a junction are never drawn, so its total is
     # reported, not banded; the kinds drawn are banded below.
-    undrawn = bool(T.dead_ends.artefacts or T.dead_ends.island_ends)
+    # A closed network draws none leaving the image either.
+    undrawn = bool(T.dead_ends.artefacts or T.dead_ends.island_ends) or (closed and bool(T.dead_ends.leaves_image))
     add("dead ends", "dead ends", T.dead_ends.total, S.dead_ends.total, key="dead ends, kinds not drawn" if undrawn else None)
     add("dead ends", "leaving the image", T.dead_ends.leaves_image, S.dead_ends.leaves_image)
+    if closed:
+        rows[-1] = not_drawn(rows[-1], "a closed network")
     add("dead ends", "inside the tissue", T.dead_ends.interior, S.dead_ends.interior)
     add("dead ends", "artefacts", T.dead_ends.artefacts, S.dead_ends.artefacts)
     add("dead ends", "ends of pieces without a junction", T.dead_ends.island_ends, S.dead_ends.island_ends)
@@ -352,7 +368,8 @@ def compare_run(
             voxel_size_zyx=voxel_size_zyx,
             samples=False,
         )
-    return compare_templates(template, synthetic)
+    record = G.graph.get(GRAPH_TEMPLATE_RECORD) or {}
+    return compare_templates(template, synthetic, options=record.get("options"))
 
 
 def comparison_summary(rows: Sequence[ComparisonRow]) -> dict:
@@ -375,6 +392,8 @@ def comparison_section(rows: Sequence[ComparisonRow]) -> dict:
             text += f" (x{r.ratio:.3g})"
         if r.within is not None:
             text += " within " + r.tolerance if r.within else " OUTSIDE " + r.tolerance
+        elif r.tolerance.startswith("not drawn"):
+            text += " " + r.tolerance
         out[f"{r.section}: {r.characteristic}"] = text
     summary = comparison_summary(rows)
     out["fitted characteristics within tolerance"] = f"{summary['within']} of {summary['fitted']}"
@@ -414,6 +433,7 @@ __all__ = [
     "compare_run",
     "compare_templates",
     "comparison_section",
+    "not_drawn",
     "organisation_rows",
     "comparison_summary",
     "row",

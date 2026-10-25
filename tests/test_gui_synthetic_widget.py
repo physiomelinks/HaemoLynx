@@ -82,7 +82,7 @@ def test_the_advanced_synthetic_rows_sit_behind_their_own_button(panel):
     assert not rows["synthetic_seed"].visible
     widget._haemolynx_expand_advanced()
     _process()
-    for name in ("synthetic_seed", "synthetic_scale", "synthetic_interior_dead_ends", "synthetic_bed_model"):
+    for name in ("synthetic_seed", "synthetic_scale", "synthetic_interior_dead_ends", "synthetic_open_ends", "synthetic_bed_model"):
         assert rows[name].visible, name
     assert rows["synthetic_seed"].value == 20240917
 

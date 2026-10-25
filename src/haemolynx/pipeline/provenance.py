@@ -810,6 +810,7 @@ class RunRecorder:
                 "seed": recorded.get("synthetic_seed"),
                 "scale": recorded.get("synthetic_scale"),
                 "interior_dead_ends": recorded.get("synthetic_interior_dead_ends"),
+                "open_ends": recorded.get("synthetic_open_ends"),
                 "bed_model": recorded.get("synthetic_bed_model"),
             }
         return {

@@ -244,16 +244,86 @@ def test_capillary_count_loops_and_dead_ends_are_the_templates(generated):
     loops = generated.number_of_edges() - generated.number_of_nodes() + 1
     assert abs(loops - T.loops.independent_loops) <= 2
     kinds = Counter(generated.nodes[n][DEAD_END_KIND] for n in generated if generated.degree(n) == 1)
-    assert abs(kinds[LEAVES_IMAGE] - T.dead_ends.leaves_image) <= 2
+    # A closed network (the default): its only dead ends on a face are its
+    # inlets and outlets.
+    roles = boundary_nodes(generated)
+    assert kinds[LEAVES_IMAGE] == sum(1 for n in [*roles["inlet"], *roles["outlet"]] if generated.degree(n) == 1)
     assert abs(kinds[BLIND] - T.dead_ends.interior) <= 2
     assert set(Counter(dict(generated.degree()).values())) <= {1, 3, 4}
 
 
+def test_with_the_templates_open_ends_its_count_leaves_the_box():
+    T = fixture_template()
+    G = generate_network(T, seed=SEED, options=GenerationOptions(open_ends="template"))
+    kinds = Counter(G.nodes[n][DEAD_END_KIND] for n in G if G.degree(n) == 1)
+    assert abs(kinds[LEAVES_IMAGE] - T.dead_ends.leaves_image) <= 2
+    assert abs(kinds[BLIND] - T.dead_ends.interior) <= 2
+
+
 def test_without_interior_dead_ends_every_dead_end_is_on_a_face():
-    G = generate_network(fixture_template(), seed=SEED, options=GenerationOptions(interior_dead_ends=False))
+    G = generate_network(fixture_template(), seed=SEED, options=GenerationOptions(interior_dead_ends=False, open_ends="template"))
     kinds = Counter(G.nodes[n][DEAD_END_KIND] for n in G if G.degree(n) == 1)
     assert kinds[BLIND] == 0
     assert kinds[LEAVES_IMAGE] >= 4
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+def test_a_closed_network_without_interior_dead_ends_ends_only_at_its_inlets_and_outlets(seed):
+    """Harvey, 2026-10-25 (D2a, D3a). A bed vertex meant to be a junction
+    used to be left now and then with one vessel, a dead end nobody asked for."""
+    G = generate_network(fixture_template(), seed=seed, options=GenerationOptions(interior_dead_ends=False))
+    roles = boundary_nodes(G)
+    ends = {n for n in G if G.degree(n) == 1}
+    assert ends <= set(roles["inlet"]) | set(roles["outlet"])
+
+
+@pytest.mark.parametrize("seed", [7, 8, 9])
+def test_a_closed_network_keeps_every_vessel_in_its_box(seed):
+    T = fixture_template()
+    G = generate_network(T, seed=seed)
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["options"]["open_ends"] == "closed"
+    extent = np.asarray(T.extent_um)
+    roots = set(boundary_nodes(G)["inlet"]) | set(boundary_nodes(G)["outlet"])
+    for n, data in G.nodes(data=True):
+        if n not in roots:
+            assert np.all(data["pos"] > 0.0) and np.all(data["pos"] < extent), (n, data["pos"])
+    for *_e, d in G.edges(data=True):
+        path = np.asarray(d["voxels"])
+        assert np.all(path >= -1e-9) and np.all(path <= extent + 1e-9)
+    G_open = generate_network(T, seed=seed, options=GenerationOptions(open_ends="template"))
+    on_face = [n for n in G_open if n not in set(boundary_nodes(G_open)["inlet"]) | set(boundary_nodes(G_open)["outlet"])
+               and np.min(np.concatenate([G_open.nodes[n]["pos"], extent - G_open.nodes[n]["pos"]])) < 1e-6]
+    assert on_face  # the template's open ends are on its faces
+
+
+def test_a_closed_trees_child_heading_out_is_turned_back_at_its_length():
+    """A tip 5 um from the x face heading straight at it: every plane's
+    children leave the box. Open, they are cut at the face; closed, they are
+    turned back off it at their full chord."""
+    extent = np.array([100.0, 100.0, 100.0])
+    tip = trees.Tip(node=0, position=np.array([50.0, 50.0, 95.0]), direction=np.array([0.0, 0.0, 1.0]), diameter_um=5.0, generation=1)
+    occupancy = trees._Occupancy([tip.position])
+    chords, deflections = [20.0, 20.0], [math.radians(30.0), math.radians(30.0)]
+    for closed in (False, True):
+        children = trees._place_children(
+            tip, chords, deflections, extent, occupancy, 20.0, 5.0, np.random.default_rng(0), None, closed
+        )
+        for end, direction, chord, cut in children:
+            assert np.all(end >= 0.0) and np.all(end <= extent)
+            if closed:
+                assert not cut and chord == pytest.approx(20.0) and direction[2] < 0.0
+            else:
+                assert cut and end[2] == pytest.approx(100.0) and chord < 20.0
+
+
+def test_open_ends_must_be_one_of_the_choices():
+    from haemolynx.pipeline import default_schema
+    from haemolynx.synthetic import OPEN_ENDS
+
+    with pytest.raises(ValueError, match="open_ends"):
+        generate_network(fixture_template(), seed=SEED, options=GenerationOptions(open_ends="sometimes"))
+    assert default_schema()["synthetic_open_ends"].choices == OPEN_ENDS
+    assert default_schema()["synthetic_open_ends"].default == "closed"
 
 
 def test_scale_grows_the_box_and_the_counts():
@@ -269,7 +339,8 @@ def test_scale_grows_the_box_and_the_counts():
 
 
 def test_the_generated_network_measures_as_its_template(generated):
-    rows = compare_templates(fixture_template(), _measured(generated.copy()))
+    options = generated.graph[GRAPH_TEMPLATE_RECORD]["options"]
+    rows = compare_templates(fixture_template(), _measured(generated.copy()), options=options)
     summary = comparison_summary(rows)
     assert summary["fitted"] >= 50
     outside = [r for r in rows if r.within is False]
@@ -835,10 +906,13 @@ def test_local_spacing_is_the_cells_own():
 def test_a_template_without_an_organisation_gets_an_even_bed():
     """The hand-set fixtures carry no organisation: the bed is a lattice over
     the whole box, its spacing the box over the bed's vertices."""
-    G = generate_network(fixture_template(), seed=SEED)
+    T = fixture_template()
+    G = generate_network(T, seed=SEED)
     generated = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
     assert generated["bed_layout"] == "even"
-    assert generated["spacing_um"] == pytest.approx((120.0 * 200.0 * 200.0 / generated["bed_vertices"]) ** (1 / 3))
+    # Capillaries less loops less inlets and outlets, plus one.
+    vertices = T.classes["capillary"].count - T.loops.independent_loops - 4 + 1
+    assert generated["spacing_um"] == pytest.approx((120.0 * 200.0 * 200.0 / vertices) ** (1 / 3))
 
 
 @pytest.mark.parametrize("seed", [7, 8, 9])

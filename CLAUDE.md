@@ -1023,8 +1023,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   to the template's capillary density and runs the way its capillaries run
   (`synthetic/organisation.py`, measured on the template, scored in the comparison), along
   Delaunay edges or, with `synthetic_bed_model=voronoi`, a Voronoi tessellation's cell edges.
-  Still being made physiological (a closed network, no interior dead ends):
-  `PLAN_synthetic_physiology.md`. `validate_synthetic_graph` pins the graph contract
+  The network is closed by default (`synthetic_open_ends=closed`: no vessel leaves the box, all
+  flow in at the inlets and out at the outlets, shown in the viewer; `template` cuts the
+  template's count at the faces), and the comparison reports what was not drawn
+  (`compare.not_drawn`). Still being made physiological: `PLAN_synthetic_physiology.md`. `validate_synthetic_graph` pins the graph contract
   (int ids, `pos`/`voxels` in µm, `length` the polyline's, `diameter_source="synthetic"` and, given
   the template, its `diameter_basis`, no degree-2 node, `dead_end_kind` on every dead end,
   connected).

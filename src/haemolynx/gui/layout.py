@@ -160,6 +160,7 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
                 "synthetic_seed",
                 "synthetic_scale",
                 "synthetic_interior_dead_ends",
+                "synthetic_open_ends",
                 "synthetic_bed_model",
                 "input_path",
                 "segmentation_source",

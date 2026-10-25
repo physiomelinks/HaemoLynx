@@ -16,6 +16,12 @@ and the image extent and voxel size on the graph. Nothing here is a branch
 order: ``graph.assign_vessel_branch_orders`` labels the network from the
 roles, as it does an image run's.
 
+**A closed network** (``open_ends="closed"``, the default; Harvey,
+2026-10-25: D2a) has no vessel leaving its box: the trees' children are kept
+inside it and the bed draws no ends at the faces, so blood enters only at the
+inlets and leaves only at the outlets. ``"template"`` cuts as many vessels at
+the faces as the template had leaving its image.
+
 Every draw goes through one ``numpy`` generator, so a seed repeats a network
 exactly. :func:`validate_synthetic_graph` checks the contract.
 """
@@ -94,6 +100,10 @@ FALLBACK_CAPILLARY_LENGTH_UM = 40.0
 #: Rank matching's noise: chords are ranked with this much log-normal jitter,
 #: so equal chords do not all get the same length.
 RANK_JITTER_SIGMA = 0.25
+#: Whether vessels leave the box (the ``synthetic_open_ends`` choices).
+OPEN_ENDS_CLOSED = "closed"
+OPEN_ENDS_TEMPLATE = "template"
+OPEN_ENDS = (OPEN_ENDS_CLOSED, OPEN_ENDS_TEMPLATE)
 
 
 @dataclass(frozen=True)
@@ -109,6 +119,9 @@ class GenerationOptions:
     #: ``bed.BED_MODELS``: the Delaunay fill of a jittered lattice, or the
     #: edges of a Voronoi tessellation (the ``synthetic_bed_model`` setting).
     bed_model: str = BED_MODEL_DELAUNAY
+    #: :data:`OPEN_ENDS`: a closed network, or the template's vessels
+    #: leaving the image (the ``synthetic_open_ends`` setting).
+    open_ends: str = OPEN_ENDS_CLOSED
 
 
 @dataclass
@@ -341,6 +354,9 @@ def generate_network(
     with *validate*, for a network that breaks the contract.
     """
     options = options or GenerationOptions()
+    if options.open_ends not in OPEN_ENDS:
+        raise ValueError(f"open_ends must be one of {', '.join(OPEN_ENDS)}, not {options.open_ends!r}")
+    closed = options.open_ends == OPEN_ENDS_CLOSED
     rng = rng if rng is not None else np.random.default_rng(seed)
     T = template.scaled(options.scale)
     extent = np.asarray(T.extent_um, dtype=float)
@@ -388,6 +404,7 @@ def generate_network(
             draft, T, side.name, side.roots,
             rng=rng, spacing_um=spacing, extent_um=extent, min_separation_um=min_separation,
             daughter_angle_sd_deg=options.daughter_angle_sd_deg,
+            closed=closed,
         )
         tree_nodes.extend(side.result.nodes)
         for node in side.result.large_boundary:
@@ -412,7 +429,7 @@ def generate_network(
     face_ends_on_trees = sum(len(side.face) for side in sides)
     blind_on_trees = sum(len(side.blind) for side in sides)
     roots_on_faces = sum(1 for side in sides for _node, face in side.roots if face != INTERIOR)
-    bed_face_ends = max(T.dead_ends.leaves_image - roots_on_faces - face_ends_on_trees, 0)
+    bed_face_ends = 0 if closed else max(T.dead_ends.leaves_image - roots_on_faces - face_ends_on_trees, 0)
     interior_target = T.dead_ends.interior if options.interior_dead_ends else 0
     bed_blind_ends = max(interior_target - blind_on_trees, 0)
     targets = degree_sequence_targets(
@@ -609,10 +626,13 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
         starts = np.stack([draft.position(e.u) for e in simple])
         ends = np.stack([draft.position(e.v) for e in simple])
         targets = np.array([float(e.length_um or 0.0) for e in simple])
-        paths = list(bend_to_lengths(starts, ends, targets, rng, points=options.bend_points))
+        paths = list(bend_to_lengths(starts, ends, targets, rng, points=options.bend_points, extent_um=extent))
     with_via = [e for e in edges if e.via]
     for edge in with_via:
-        paths.append(bend_path([draft.position(edge.u), *edge.via, draft.position(edge.v)], float(edge.length_um or 0.0), rng, bend_points=options.bend_points))
+        paths.append(bend_path(
+            [draft.position(edge.u), *edge.via, draft.position(edge.v)], float(edge.length_um or 0.0), rng,
+            bend_points=options.bend_points, extent_um=extent,
+        ))
     voxels, lengths = densify_paths(paths, step_um=options.voxel_step_um)
     for edge, edge_voxels, length in zip(simple + with_via, voxels, lengths):
         _add_edge(G, new_id, edge, edge_voxels, float(length), template.diameter_basis)
@@ -753,6 +773,9 @@ __all__ = [
     "GENERATOR_VERSION",
     "GenerationOptions",
     "LARGE_MASK_VESSEL_TYPE",
+    "OPEN_ENDS",
+    "OPEN_ENDS_CLOSED",
+    "OPEN_ENDS_TEMPLATE",
     "SYNTHETIC",
     "SYNTHETIC_CLASS",
     "SYNTHETIC_ROLES",

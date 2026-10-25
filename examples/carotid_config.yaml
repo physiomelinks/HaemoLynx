@@ -16,8 +16,10 @@ input_and_segmentation:
   synthetic_seed: 20240917
   # Size of the synthetic box relative to the template's image, 1 for the same extent; vessel counts scale with the volume, inlets and outlets with the faces  [range 0.1..10.0; needs network_source = synthetic]
   synthetic_scale: 1.0
-  # Give the synthetic network the template's number of dead ends inside the tissue as well as the vessels cut by the box; off, every dead end lies on a face  [needs network_source = synthetic]
+  # Give the synthetic network the template's number of dead ends inside the tissue; off, its only dead ends are on the faces (in a closed network, its inlets and outlets)  [needs network_source = synthetic]
   synthetic_interior_dead_ends: true
+  # Whether vessels of the synthetic network leave its box: closed keeps every vessel inside, so blood enters only at the inlets and leaves only at the outlets; template cuts as many vessels at the faces as the template run had leaving its image, open ends the haemodynamics then treat by open_end_model  [one of: closed, template; needs network_source = synthetic]
+  synthetic_open_ends: closed
   # How the synthetic capillary bed is drawn: delaunay joins jittered lattice points along Delaunay edges, voronoi runs the capillaries along the edges of a Voronoi tessellation of random points; both are pruned to the template's capillary count, loops and dead ends  [one of: delaunay, voronoi; needs network_source = synthetic]
   synthetic_bed_model: delaunay
   # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off and network_source = segmented_image; must exist]

@@ -221,3 +221,19 @@ Being built in the phase order above.
   The trunks' turn was already within band (37 against 40 degrees). Interdigitation is not built
   separately: with each side's trees where the template's are, the feeds and drains alternate
   where the template's do.
+- Phase 4: `synthetic_open_ends` (`closed`, the default, or `template`; `GenerationOptions.open_ends`).
+  Closed, a tree child that would leave the box is turned back off the face at its full length
+  (its direction mirrored in it), else shortened to end inside; the bed draws no face ends; a bow
+  that would leave the box is turned about its chord (`polylines.BOW_TURNS`; in both modes); a
+  bed vertex meant to be a junction but left with one vessel takes one more (in both modes: it
+  was a dead end nobody asked for). The comparison reports the leaving-the-image row as
+  "not drawn (a closed network)" and leaves the dead-end total unbanded
+  (`compare.not_drawn`, read from the run's generation options). The viewer shows a synthetic
+  run's boundary nodes (`gui/results.py`). E14.5 (the whole pipeline, statistics source, seed
+  20240917): 100% of the inflow through the inlet and of the outflow through the outlets (the
+  template's image run: 46% and 79%, the rest through 85 of its open ends). **For Harvey:** with
+  the template's 91 vessels leaving the image closed off and its vessel count kept, the bed has
+  about 64 more loops (295 against 231), average degree 2.60 against 2.31 and 777 branching
+  points against 702, all out of band. A closed network cannot keep the vessel count, the loops
+  and the dead ends at once; joining the cut ends in pairs would instead keep the loops at about
+  231 + 45 with about 45 fewer vessels. Which to hold is his call.

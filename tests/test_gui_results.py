@@ -269,6 +269,27 @@ def test_boundary_nodes_start_hidden():
     assert spec_named(group, BOUNDARY_NODES).visible is False
 
 
+def test_a_synthetic_networks_inlets_and_outlets_are_shown():
+    """Harvey, 2026-10-25 (D2a): a synthetic run's flow goes in at its
+    inlets and out at its outlets, so the viewer shows them."""
+    from haemolynx.gui.results import NETWORK_SOURCE_SYNTHETIC
+    from haemolynx.synthetic.generate import SYNTHETIC
+    from haemolynx.synthetic.template import GRAPH_NETWORK_SOURCE
+
+    assert NETWORK_SOURCE_SYNTHETIC == SYNTHETIC
+    graph = a_graph()
+    graph.graph[GRAPH_NETWORK_SOURCE] = SYNTHETIC
+    results = ResultLayers()
+    results.stage_finished("build_network", network(graph))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[], venule_boundary_nodes=[], graph=graph),
+    )
+    layer = spec_named(group, BOUNDARY_NODES)
+    assert layer.visible is True
+    assert list(layer.features["role"]) == ["inlet", "outlet"]
+
+
 # --- geometry ----------------------------------------------------------------
 
 

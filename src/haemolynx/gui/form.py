@@ -520,6 +520,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "synthetic_scale": "Synthetic box scale",
     "synthetic_interior_dead_ends": "Reproduce dead ends inside the tissue",
     "synthetic_bed_model": "Capillary bed model",
+    "synthetic_open_ends": "Vessels leaving the box",
     "visualize_results": "Produce IDE plots",
     "show_plots_in_ide": "Show plots in IDE",
     "ide_plot_mode": "IDE plot mode",
@@ -565,6 +566,10 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
     "synthetic_bed_model": {
         "delaunay": "Delaunay fill of a jittered lattice",
         "voronoi": "Edges of a Voronoi tessellation",
+    },
+    "synthetic_open_ends": {
+        "closed": "None (inlets and outlets only)",
+        "template": "As many as the template's",
     },
     "segmentation_source": {
         "plasma_column": "Plasma column (luminal stain)",

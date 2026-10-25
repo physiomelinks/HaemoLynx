@@ -1016,6 +1016,25 @@ def build_bed(
                 result.phases["overfull_hubs"] = result.phases.get("overfull_hubs", 0) + 1
                 if fill.degree[v] >= caps[v]:
                     break
+    # A bed vertex meant to be a junction but left with one vessel would be
+    # a dead end nobody asked for (in a closed network without interior dead
+    # ends, the only one): it takes one more, to the nearest vertex with room.
+    lone = [v for v in range(len(attached_nodes), len(all_nodes)) if fill.degree[v] == 1 and caps[v] >= 2]
+    if lone:
+        everything = cKDTree(points)
+        for v in lone:
+            if fill.degree[v] != 1:
+                continue
+            _d, idx = everything.query(points[v], k=min(len(points), 32))
+            for i in np.atleast_1d(idx):
+                u = int(i)
+                if u == v or u in fill.neighbours[v] or is_attached[u] or caps[u] < 2:
+                    continue
+                if fill.degree[u] == 0 or fill.degree[u] >= max_degree:
+                    continue
+                fill.connect(v, u)
+                result.phases["lone_ends"] = result.phases.get("lone_ends", 0) + 1
+                break
     result.short_of_degree = int(sum(caps[v] - fill.degree[v] for v in range(len(all_nodes)) if fill.degree[v] < caps[v]))
     if voronoi_pairs is not None:
         offset = len(attached_nodes)

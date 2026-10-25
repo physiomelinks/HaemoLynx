@@ -258,8 +258,25 @@ SCHEMA = Schema(
             default=True,
             help=(
                 "Give the synthetic network the template's number of dead ends inside "
-                "the tissue as well as the vessels cut by the box; off, every dead end "
-                "lies on a face"
+                "the tissue; off, its only dead ends are on the faces (in a closed "
+                "network, its inlets and outlets)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_open_ends",
+            kind="choice",
+            # Kept equal to haemolynx.synthetic.generate's OPEN_ENDS.
+            default="closed",
+            choices=("closed", "template"),
+            help=(
+                "Whether vessels of the synthetic network leave its box: closed keeps "
+                "every vessel inside, so blood enters only at the inlets and leaves only "
+                "at the outlets; template cuts as many vessels at the faces as the "
+                "template run had leaving its image, open ends the haemodynamics then "
+                "treat by open_end_model"
             ),
             section=_INPUT_AND_SEGMENTATION,
             requires=("network_source=synthetic",),

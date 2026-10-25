@@ -30,7 +30,10 @@ diameter from one order to the next (:func:`fit_asymmetry`). The two
 daughters open at the template's daughter-daughter angle, the narrower
 deflected more, in the plane round the parent that keeps them inside the box
 and away from other vessels. A child that would leave the box is cut at the
-face and marked as leaving the image.
+face and marked as leaving the image -- in a closed network (*closed*) it is
+turned back off the face at its full length (its direction mirrored in it),
+or, where that leaves the box too, shortened to end inside it, the plane
+chosen that keeps most of it.
 
 **The trees grow where the template's do** (``PLAN_synthetic_physiology.md``,
 Harvey's D5a) when the template carries its layout (``synthetic.organisation``):
@@ -562,21 +565,25 @@ def _place_children(
     min_sep: float,
     rng: np.random.Generator,
     layer: Optional[TreeLayer] = None,
+    closed: bool = False,
 ) -> list[tuple[np.ndarray, np.ndarray, float, bool]]:
     """Each child's ``(end, direction, chord, cut at a face)``, the plane
     round the parent chosen by score; children that cannot stay inside the
-    box are cut at the face they leave by."""
+    box are cut at the face they leave by, or, *closed*, turned back off
+    the face or else shortened to end inside it (a plane needing neither
+    chosen first, then the one that keeps the most of them)."""
     start = tip.direction
     n1, n2 = _frame(start)
     parent = np.asarray(tip.position, float)
     count = len(chords)
-    best: Optional[tuple[float, bool, list]] = None
+    best: Optional[tuple[tuple, list]] = None
     rotation = rng.uniform(0.0, 2.0 * math.pi)
     for k in range(AZIMUTHS):
         phi = rotation + 2.0 * math.pi * k / AZIMUTHS
         normal = math.cos(phi) * n1 + math.sin(phi) * n2
         children = []
         inside = True
+        kept = 1.0
         total = 0.0
         for i in range(count):
             theta = deflections[i]
@@ -592,14 +599,25 @@ def _place_children(
             cut = fraction < 1.0
             if cut:
                 inside = False
-                end = snap_to_face(parent + fraction * chords[i] * direction, extent)
+                if closed:
+                    mirrored = direction.copy()
+                    outside = (end < 0.0) | (end > extent)
+                    mirrored[outside] *= -1.0
+                    if exit_fraction(parent, parent + chords[i] * mirrored, extent) >= 1.0:
+                        direction, end = mirrored, parent + chords[i] * mirrored
+                    else:
+                        kept = min(kept, fraction)
+                        end = parent + fraction * (1.0 - FIRST_VESSEL_MARGIN) * chords[i] * direction
+                    cut = False
+                else:
+                    end = snap_to_face(parent + fraction * chords[i] * direction, extent)
             total += _score(end, extent, occupancy, spacing, tip.node, min_sep, layer, parent, direction)
             children.append((end, direction, float(np.linalg.norm(end - parent)), cut))
-        key = (inside, total)
-        if best is None or key > (best[1], best[0]):
-            best = (total, inside, children)
+        key = (inside, kept, total) if closed else (inside, total)
+        if best is None or key > best[0]:
+            best = (key, children)
     assert best is not None
-    return best[2]
+    return best[1]
 
 
 def grow_side(
@@ -613,9 +631,11 @@ def grow_side(
     extent_um: Sequence[float],
     min_separation_um: float,
     daughter_angle_sd_deg: Optional[float] = None,
+    closed: bool = False,
 ) -> SideResult:
     """Grow the ``"arterial"`` or ``"venous"`` trees from *roots*
-    (``(node, face)`` pairs already in *draft*). See the module."""
+    (``(node, face)`` pairs already in *draft*); *closed*, none of them
+    leaving the box. See the module."""
     extent = np.asarray(extent_um, dtype=float)
     result = SideResult(side=side)
     large_tier, small_tier = template.orders_on(side)
@@ -759,7 +779,7 @@ def grow_side(
                 result.handoffs.append(tip.node)
             else:
                 deflections = [angle / 2.0] * count
-            children = _place_children(tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng, layer)
+            children = _place_children(tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng, layer, closed)
             for (end, direction, chord, cut), diameter, tort in zip(children, diameters, tortuosities):
                 node = draft.add_node(end)
                 result.nodes.append(node)

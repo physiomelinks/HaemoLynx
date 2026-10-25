@@ -9,7 +9,9 @@ generator chose, not the bend's. The offset from the chord is
 ``A/2 * sin(2 pi s + psi) * sin^2(pi s)`` in the other, random phases, the
 amplitude ``A`` found by bisection; ``sin^2`` has zero slope at both ends.
 :func:`bend_to_lengths` does every edge at once (the batch form of
-``visualization/secomb_io._fit_length``).
+``visualization/secomb_io._fit_length``). Given the box, a bow that would
+leave it is turned about its chord until it stays inside (or leaves it
+least): the turn keeps its length exactly.
 """
 from __future__ import annotations
 
@@ -22,6 +24,8 @@ from haemolynx.graph._helpers import calculate_path_length, densify_polyline
 #: Vertices per bent edge before densifying: the arc length is the polyline's
 #: own, so densifying (linear between them) keeps it exactly.
 DEFAULT_POINTS = 17
+#: Turns about the chord tried for a bow that leaves the box.
+BOW_TURNS = 12
 
 
 def perpendicular_frame(tangents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -47,10 +51,13 @@ def bend_to_lengths(
     *,
     points: int = DEFAULT_POINTS,
     iterations: int = 60,
+    extent_um: Optional[np.ndarray] = None,
 ) -> list[np.ndarray]:
     """One polyline per edge from ``starts[i]`` to ``ends[i]`` whose length is
     ``targets[i]``; a target no longer than the chord gives the straight
-    line (two points). Every random phase is drawn from *rng*."""
+    line (two points). Every random phase is drawn from *rng*. With
+    *extent_um*, a bow leaving the box is turned about its chord to stay in
+    it (no draw: the turns are fixed)."""
     starts = np.asarray(starts, dtype=float).reshape(-1, 3)
     ends = np.asarray(ends, dtype=float).reshape(-1, 3)
     targets = np.asarray(targets, dtype=float).reshape(-1)
@@ -95,22 +102,54 @@ def bend_to_lengths(
         below = _lengths(paths(mid)) < b_targets
         low = np.where(below, mid, low)
         high = np.where(below, high, mid)
-    final = paths(0.5 * (low + high))
+    amplitude = 0.5 * (low + high)
+    final = paths(amplitude)
+    if extent_um is not None:
+        extent = np.asarray(extent_um, dtype=float)
+        excursion = _excursion(final, extent)
+        for turn in range(1, BOW_TURNS):
+            outside = np.flatnonzero(excursion > 1e-9)
+            if not len(outside):
+                break
+            theta = 2.0 * np.pi * turn / BOW_TURNS
+            r1 = np.cos(theta) * d1[outside] + np.sin(theta) * d2[outside]
+            r2 = -np.sin(theta) * d1[outside] + np.cos(theta) * d2[outside]
+            turned = base[outside] + amplitude[outside, None, None] * (
+                envelope[None, :, None] * r1[:, None, :] + wobble[outside][:, :, None] * r2[:, None, :]
+            )
+            better = _excursion(turned, extent) < excursion[outside]
+            final[outside[better]] = turned[better]
+            excursion[outside[better]] = _excursion(turned[better], extent)
     for j, i in enumerate(bent):
         out[i] = final[j]
     return out  # type: ignore[return-value]
 
 
-def bend_path(points: Sequence[np.ndarray], target: float, rng: np.random.Generator, *, bend_points: int = DEFAULT_POINTS) -> np.ndarray:
+def _excursion(paths: np.ndarray, extent: np.ndarray) -> np.ndarray:
+    """How far each path (E, P, 3) goes outside the box, 0 when it stays in."""
+    below = np.max(-paths, axis=(1, 2))
+    above = np.max(paths - extent[None, None, :], axis=(1, 2))
+    return np.maximum(np.maximum(below, above), 0.0)
+
+
+def bend_path(
+    points: Sequence[np.ndarray],
+    target: float,
+    rng: np.random.Generator,
+    *,
+    bend_points: int = DEFAULT_POINTS,
+    extent_um: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """A polyline through *points* (two or more; the interior ones are kept)
-    of length *target*: each leg bent to its share of the target by chord."""
+    of length *target*: each leg bent to its share of the target by chord
+    (inside the box *extent_um*, as :func:`bend_to_lengths` keeps it)."""
     pts = [np.asarray(p, dtype=float) for p in points]
     if len(pts) < 2:
         raise ValueError("a path needs at least two points")
     chords = np.array([np.linalg.norm(b - a) for a, b in zip(pts[:-1], pts[1:])])
     total = float(chords.sum())
     shares = chords / total * float(target) if total > 0 else np.full(len(chords), float(target) / len(chords))
-    legs = bend_to_lengths(np.stack(pts[:-1]), np.stack(pts[1:]), shares, rng, points=bend_points)
+    legs = bend_to_lengths(np.stack(pts[:-1]), np.stack(pts[1:]), shares, rng, points=bend_points, extent_um=extent_um)
     path = [legs[0]]
     for leg in legs[1:]:
         path.append(leg[1:])

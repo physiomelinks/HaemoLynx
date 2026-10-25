@@ -18,7 +18,7 @@ from haemolynx.synthetic.compare import (
     row,
     write_template_comparison_csv,
 )
-from haemolynx.synthetic.generate import boundary_nodes, generate_network
+from haemolynx.synthetic.generate import GenerationOptions, boundary_nodes, generate_network
 from haemolynx.synthetic.template import measure_template
 from synthetic_fixtures import fixture_template, tiny_hierarchical_graph, tiny_sections, TINY_ROLES
 
@@ -163,7 +163,8 @@ def test_every_band_in_the_table_is_one_a_row_reads(monkeypatch):
     table = _Recording(TOLERANCES)
     monkeypatch.setattr(compare, "TOLERANCES", table)
     T = fixture_template()
-    G = generate_network(T, seed=5)
+    # The template's open ends: a closed network reports the leaving-the-image row, unbanded.
+    G = generate_network(T, seed=5, options=GenerationOptions(open_ends="template"))
     roles = boundary_nodes(G)
     from haemolynx.graph.branch_order import assign_vessel_branch_orders
 
@@ -173,6 +174,20 @@ def test_every_band_in_the_table_is_one_a_row_reads(monkeypatch):
     # The capillary orders the bed makes are reported, never banded.
     assert all(r.tolerance == "" for r in rows if r.section.startswith("order B"))
     assert any(r.section.startswith("order B") for r in rows)
+
+
+def test_a_closed_network_reports_the_templates_open_ends_as_not_drawn():
+    T = fixture_template()
+    closed = {"open_ends": "closed"}
+    rows = {r.characteristic: r for r in compare_templates(T, T, options=closed) if r.section == "dead ends"}
+    assert rows["leaving the image"].within is None
+    assert rows["leaving the image"].tolerance == "not drawn (a closed network)"
+    assert rows["dead ends"].within is None  # its total holds the kind not drawn
+    assert rows["inside the tissue"].within is True
+    rows = {r.characteristic: r for r in compare_templates(T, T, options={"open_ends": "template"}) if r.section == "dead ends"}
+    assert rows["leaving the image"].within is True and rows["dead ends"].within is True
+    section = comparison_section(compare_templates(T, T, options=closed))
+    assert section["dead ends: leaving the image"].endswith("not drawn (a closed network)")
 
 
 def test_the_dead_end_total_is_unbanded_when_the_template_has_kinds_a_network_cannot_draw():
