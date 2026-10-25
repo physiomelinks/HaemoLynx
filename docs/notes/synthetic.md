@@ -114,3 +114,7 @@ plan's measures showed along the way: the lattice bed drew 93% of its capillarie
 chords had no room for their length), and a correlation of the template's layout means nothing where
 the template has none (its x profile on E14.5), so such rows are reported, not banded. Harvey's grid
 D1a (12 renders, shuffled) is in `outputs/synthetic_review/` of the `plan-synthetic-e08d0c` worktree.
+Harvey marked it the same day: only the template (#7) could be the imaged tissue; all seven networks
+drawn after the plan, like the four from before it, look generated. The measures moved, the look
+did not: straight trunks with short side branches, capillaries rising in columns from the plexus and
+curved meshes are what the template has and the drawn networks lack.

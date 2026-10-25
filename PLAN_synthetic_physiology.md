@@ -267,3 +267,15 @@ Being built in the phase order above.
   by 5-7 of 369, the coverage (12% of the box beyond 50 um of a capillary against 5%: fewer,
   longer vessels), the share along z (0.11 against 0.21), the daughter angle (90 against 114,
   out before this plan), the trees' share in their cells in 2 of 3 seeds.
+- **Grid D1a, marked by Harvey 2026-10-25: not met.** Twelve renders of E14.5 (from above and from
+  the side, one scale), shuffled: the template, four networks drawn before this plan (Delaunay and
+  Voronoi, two seeds each) and seven after (Delaunay seeds 11-14, Voronoi 11-13), at `79aa50a3`
+  (`outputs/synthetic_review/grid_d1a.png` and `grid_d1a_key.csv` in the `plan-synthetic-e08d0c`
+  worktree). Harvey marked only #7 T (could be the imaged tissue): #7 is the template. Every
+  synthetic network, before and after, was marked S: 0 of 7 taken for the tissue against the
+  template's 1 of 1. What still sets the template apart, as I read the renders (not Harvey's
+  reasons, which are not recorded): its trunks run straight with short side branches at right
+  angles, where the drawn ones wander; from the side its capillaries rise from the plexus as evenly
+  spaced near-vertical columns, where the drawn bed is a random mesh; from above its capillaries
+  are smooth curves round rounded meshes, where the Delaunay bed is straight-sided polygons. Phase 7
+  (flow-adapted widths) is not built: it would not change what the renders show.
