@@ -52,6 +52,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .id { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 600; }
 .saved { font-size: 0.8rem; color: var(--muted); }
+.where { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); margin-right: auto; }
 .saved.warn { color: var(--bad); }
 .plane { display: grid; gap: 4px; }
 .plane-label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -59,6 +60,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 figure { margin: 0; display: grid; gap: 2px; min-width: 0; }
 figcaption { font-size: 0.78rem; color: var(--muted); }
 canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-radius: 4px; background: #000; }
+.question { font-size: 0.85rem; font-weight: 500; color: var(--muted); margin-top: 2px; }
 .verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px; }
 .verdict button { font-size: 0.88rem; line-height: 1.2; }
 .verdict button[aria-pressed="true"].good { background: var(--good); border-color: var(--good); color: #fff; }
@@ -96,6 +98,8 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
 (function () {
   const DATA = JSON.parse(document.getElementById("examples").textContent);
   const BATCH = DATA.batch, EX = DATA.examples, VERDICTS = DATA.verdicts, EVIDENCE = DATA.evidence || [];
+  // An optional second question per example: { question, verdicts }.
+  const SECOND = DATA.second || null;
   document.getElementById("title").textContent = DATA.title;
   document.getElementById("lede").textContent = DATA.lede;
   DATA.steps.forEach(text => {
@@ -114,7 +118,8 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
   const state = {}, cards = {};
   let db = null;
   const view = { graph: true, context: true, onImages: false };
-  EX.forEach(ex => { state[ex.id] = { verdict: null, evidence: [], note: "" }; });
+  EX.forEach(ex => { state[ex.id] = { verdict: null, second: null, evidence: [], note: "" }; });
+  function answered(id) { return !!state[id].verdict && (!SECOND || !!state[id].second); }
 
   function setStatus(text, warn) {
     const el = document.getElementById("status");
@@ -122,7 +127,7 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
     el.classList.toggle("warn", !!warn);
   }
   function progress() {
-    const n = EX.filter(ex => state[ex.id].verdict).length;
+    const n = EX.filter(ex => answered(ex.id)).length;
     document.getElementById("progress").textContent = n + " / " + EX.length + " marked";
   }
   function toPx(R, W, u, v) { return [(u + R) / (2 * R) * W, (R - v) / (2 * R) * W]; }
@@ -167,8 +172,9 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
   function drawCard(id) {
     const c = cards[id];
     c.panels.forEach(drawPanel);
-    c.card.classList.toggle("done", !!state[id].verdict);
+    c.card.classList.toggle("done", answered(id));
     c.buttons.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === state[id].verdict)));
+    c.second.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === state[id].second)));
     c.checks.forEach(box => { box.checked = state[id].evidence.includes(box.value); });
   }
 
@@ -176,7 +182,9 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
   const pending = new Map(), inflight = new Set();
   function payload(id) {
     const s = state[id];
-    return { id, batch: BATCH, verdict: s.verdict, evidence: s.evidence.slice(), note: s.note, updated: new Date().toISOString() };
+    const body = { id, batch: BATCH, verdict: s.verdict, evidence: s.evidence.slice(), note: s.note, updated: new Date().toISOString() };
+    if (SECOND) body.second = s.second;
+    return body;
   }
   async function save(id) {
     const c = cards[id];
@@ -205,10 +213,12 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
     card.className = "card";
     const head = document.createElement("div");
     head.className = "card-head";
-    head.innerHTML = '<span class="id"></span><span class="saved"></span>';
+    head.innerHTML = '<span class="id"></span><span class="where"></span><span class="saved"></span>';
     head.querySelector(".id").textContent = ex.id;
+    // Where to find it in napari, when the grid gives it.
+    head.querySelector(".where").textContent = ex.where || "";
     card.appendChild(head);
-    const c = { card, saved: head.querySelector(".saved"), panels: [], buttons: [], checks: [] };
+    const c = { card, saved: head.querySelector(".saved"), panels: [], buttons: [], second: [], checks: [] };
     cards[ex.id] = c;
     ex.views.forEach(plane => {
       const section = document.createElement("div");
@@ -236,20 +246,29 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
       section.appendChild(row);
       card.appendChild(section);
     });
-    const group = document.createElement("div");
-    group.className = "verdict";
-    group.setAttribute("role", "group");
-    group.setAttribute("aria-label", DATA.question + " (" + ex.id + ")");
-    VERDICTS.forEach(v => {
-      const b = document.createElement("button");
-      b.type = "button"; b.dataset.v = v.value; b.className = v.tone; b.textContent = v.label;
-      b.addEventListener("click", () => {
-        state[ex.id].verdict = state[ex.id].verdict === v.value ? null : v.value;
-        drawCard(ex.id); progress(); save(ex.id);
+    function askGroup(question, verdicts, key, into) {
+      if (SECOND) {
+        const q = document.createElement("div");
+        q.className = "question"; q.textContent = question;
+        card.appendChild(q);
+      }
+      const group = document.createElement("div");
+      group.className = "verdict";
+      group.setAttribute("role", "group");
+      group.setAttribute("aria-label", question + " (" + ex.id + ")");
+      verdicts.forEach(v => {
+        const b = document.createElement("button");
+        b.type = "button"; b.dataset.v = v.value; b.className = v.tone; b.textContent = v.label;
+        b.addEventListener("click", () => {
+          state[ex.id][key] = state[ex.id][key] === v.value ? null : v.value;
+          drawCard(ex.id); progress(); save(ex.id);
+        });
+        group.appendChild(b); into.push(b);
       });
-      group.appendChild(b); c.buttons.push(b);
-    });
-    card.appendChild(group);
+      card.appendChild(group);
+    }
+    askGroup(DATA.question, VERDICTS, "verdict", c.buttons);
+    if (SECOND) askGroup(SECOND.question, SECOND.verdicts, "second", c.second);
     if (EVIDENCE.length) {
       const ev = document.createElement("div");
       ev.className = "evidence";
@@ -291,9 +310,11 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
   });
   document.getElementById("copy").addEventListener("click", async () => {
     const short = Object.fromEntries(VERDICTS.map(v => [v.value, v.short]));
+    const shortSecond = SECOND ? Object.fromEntries(SECOND.verdicts.map(v => [v.value, v.short])) : {};
     const text = EX.map(ex => {
       const s = state[ex.id];
-      return ex.id + " " + (short[s.verdict] || "-") + (s.evidence.length ? " {" + s.evidence.join("; ") + "}" : "") + (s.note ? " [" + s.note + "]" : "");
+      return ex.id + " " + (short[s.verdict] || "-") + (SECOND ? "/" + (shortSecond[s.second] || "-") : "")
+        + (s.evidence.length ? " {" + s.evidence.join("; ") + "}" : "") + (s.note ? " [" + s.note + "]" : "");
     }).join(", ");
     try { await navigator.clipboard.writeText(text); setStatus("Copied your marks; paste them into the chat."); }
     catch (e) { setStatus("Copy was blocked here. Your marks still save to this page."); }
@@ -308,6 +329,7 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
         const body = d.data();
         if (!body || !state[d.id]) return;
         state[d.id].verdict = body.verdict || null;
+        state[d.id].second = body.second || null;
         state[d.id].evidence = Array.isArray(body.evidence) ? body.evidence.filter(n => EVIDENCE.includes(n)) : [];
         state[d.id].note = body.note || "";
         cards[d.id].note.value = state[d.id].note;

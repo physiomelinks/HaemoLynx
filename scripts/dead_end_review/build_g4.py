@@ -170,46 +170,65 @@ class PanelDrawer(Drawer):
         self.channels = channels
 
     def views(self, focus, heading, lines, half_thickness, marker=None) -> list[dict]:
-        from scipy import ndimage
-
         c, e1, e2, n = self.plane(focus, heading)
         views = []
         for label, (a, b, normal) in (("Its own plane", (e1, e2, n)), ("Across it", (e1, n, e2))):
-            uv = lambda p: np.column_stack([(p - c) @ a, (p - c) @ b])  # noqa: E731
-            R = float(np.clip(np.abs(uv(focus)).max() + 10.0, 20.0, 45.0))
-            g = np.arange(-R, R + 1e-9, 0.3)
-            U, V = np.meshgrid(g, g, indexing="ij")
-            depths = np.arange(-half_thickness, half_thickness + 1e-9, 0.5)
-            seg = np.zeros(U.shape, dtype=bool)
-            sums = {name: np.zeros(U.shape) for name in self.channels}
-            for w in depths:
-                coords = ((c + U[..., None] * a + V[..., None] * b + w * normal) / self.vs).reshape(-1, 3).T
-                seg |= ndimage.map_coordinates(self.mask, coords, order=0, mode="constant").reshape(U.shape).astype(bool)
-                for name, volume in self.channels.items():
-                    sums[name] += ndimage.map_coordinates(volume, coords, order=1, mode="constant").reshape(U.shape)
-            images = [dict(label="Segmentation", png=_png(seg.astype(float)))]
-            for name, total in sums.items():
-                # The mean through the slab, lightly smoothed: both stains are
-                # speckled, and a maximum shows the speckle, not the vessel.
-                img = ndimage.gaussian_filter(total / len(depths), sigma=1.5)
-                lo, hi = np.percentile(img, [2.0, 99.8])
-                img = (img - lo) / (hi - lo) if hi > lo else img * 0.0
-                images.append(dict(label=name, png=_png(img)))
-            rel = self.centrelines - c
-            near = (np.abs(rel @ normal) <= half_thickness + 2) & (np.abs(rel @ a) <= R) & (np.abs(rel @ b) <= R)
-            overlays = [dict(kind="dots", group="context", color="#9a9a9a",
-                             points=np.round(uv(self.centrelines[near]), 1).tolist())]
-            for line in lines:
-                overlays.append(dict(kind="line", group="graph", color=line["color"], width=line.get("width", 2.4),
-                                     points=np.round(uv(np.asarray(line["points"], dtype=float)), 2).tolist()))
-            if marker is not None:
-                (mu, mv), = uv(np.asarray(marker, dtype=float)[None])
-                angles = np.linspace(0, 2 * np.pi, 17)
-                ring = np.column_stack([mu + 1.5 * np.cos(angles), mv + 1.5 * np.sin(angles)])
-                overlays.append(dict(kind="line", group="graph", color="#ff3b30", width=1.6, marker=True,
-                                     points=np.round(ring, 2).tolist()))
-            views.append(dict(label=label, R=round(R, 3), images=images, overlays=overlays))
+            R = float(np.clip(np.abs(np.column_stack([(focus - c) @ a, (focus - c) @ b])).max() + 10.0, 20.0, 45.0))
+            views.append(self.draw_plane(label, c, a, b, normal, R, lines, half_thickness, marker))
         return views
+
+    def draw_plane(self, label, c, a, b, normal, R, lines, half_thickness, marker=None) -> dict:
+        """One plane through *c* spanned by *a* and *b*, *R* microns each way,
+        every channel as the mean through a slab *half_thickness* either side
+        along *normal*, with the graph's *lines* and the tip *marker* over it.
+        A line marked ``marker`` is drawn on the stains too."""
+        from scipy import ndimage
+
+        uv = lambda p: np.column_stack([(p - c) @ a, (p - c) @ b])  # noqa: E731
+        g = np.arange(-R, R + 1e-9, 0.3)
+        U, V = np.meshgrid(g, g, indexing="ij")
+        depths = np.arange(-half_thickness, half_thickness + 1e-9, 0.5)
+        seg = np.zeros(U.shape, dtype=bool)
+        sums = {name: np.zeros(U.shape) for name in self.channels}
+        for w in depths:
+            coords = ((c + U[..., None] * a + V[..., None] * b + w * normal) / self.vs).reshape(-1, 3).T
+            seg |= ndimage.map_coordinates(self.mask, coords, order=0, mode="constant").reshape(U.shape).astype(bool)
+            for name, volume in self.channels.items():
+                sums[name] += ndimage.map_coordinates(volume, coords, order=1, mode="constant").reshape(U.shape)
+        images = [dict(label="Segmentation", png=_png(seg.astype(float)))]
+        for name, total in sums.items():
+            # The mean through the slab, lightly smoothed: both stains are
+            # speckled, and a maximum shows the speckle, not the vessel.
+            img = ndimage.gaussian_filter(total / len(depths), sigma=1.5)
+            lo, hi = np.percentile(img, [2.0, 99.8])
+            img = (img - lo) / (hi - lo) if hi > lo else img * 0.0
+            images.append(dict(label=name, png=_png(img)))
+        rel = self.centrelines - c
+        near = (np.abs(rel @ normal) <= half_thickness + 2) & (np.abs(rel @ a) <= R) & (np.abs(rel @ b) <= R)
+        overlays = [dict(kind="dots", group="context", color="#9a9a9a",
+                         points=np.round(uv(self.centrelines[near]), 1).tolist())]
+        for line in lines:
+            # A None in a line's points lifts the pen (a dashed line).
+            runs, run = [], []
+            for p in list(line["points"]) + [None]:
+                if p is None:
+                    if run:
+                        runs.append(np.round(uv(np.asarray(run, dtype=float)), 2).tolist())
+                    run = []
+                else:
+                    run.append(p)
+            points = [q for k, r in enumerate(runs) for q in ([None] if k else []) + r]
+            layer = dict(kind="line", group="graph", color=line["color"], width=line.get("width", 2.4), points=points)
+            if line.get("marker"):
+                layer["marker"] = True
+            overlays.append(layer)
+        if marker is not None:
+            (mu, mv), = uv(np.asarray(marker, dtype=float)[None])
+            angles = np.linspace(0, 2 * np.pi, 17)
+            ring = np.column_stack([mu + 1.5 * np.cos(angles), mv + 1.5 * np.sin(angles)])
+            overlays.append(dict(kind="line", group="graph", color="#ff3b30", width=1.6, marker=True,
+                                 points=np.round(ring, 2).tolist()))
+        return dict(label=label, R=round(R, 3), images=images, overlays=overlays)
 
 
 def _views(drawer: PanelDrawer, G, end) -> list[dict]:

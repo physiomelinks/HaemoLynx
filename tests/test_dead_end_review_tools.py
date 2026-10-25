@@ -194,3 +194,121 @@ def test_g3_prime_is_chosen_from_the_longer_look_ahead_when_given():
     assert {e.tip for e, _x in pages["G3b"]} == set(range(10))
     assert all(e.ahead_um == 12.0 for e, _x in pages["G3b"])
     assert pages["G1b"] == []  # every interior end went to G3'
+
+
+# --- grid DR1: does the vessel go on past the tip? (build_dr1.py, PLAN_dead_ends_raw.md) ---
+
+
+def _dr1_measures(count=300, seed=2):
+    rng = np.random.default_rng(seed)
+    ends = [_end(i, chain_length_um=float(rng.uniform(5, 50))) for i in range(count)]
+    measures = {
+        e.tip: {"e3_run_um": float(rng.integers(0, 31)), "e1_rings_tried": 5,
+                "e1_rings_seen": int(rng.choice([0, 0, 0, 1, 2, 3, 4, 5])), "e1_tip_fraction": float(rng.uniform())}
+        for e in ends
+    }
+    return ends, measures
+
+
+def test_dr1_is_spread_across_the_run_ahead_and_the_ring_levels():
+    """Ten from each third of E3's run; within each, the three levels of E1
+    (no ring, some, half or more) in shares of 4, 3 and 3."""
+    from dead_end_review import build_dr1
+
+    ends, measures = _dr1_measures()
+    chosen = build_dr1.choose(ends, measures, count=30)
+    assert len({e.tip for e in chosen}) == 30
+    runs = np.sort([measures[e.tip]["e3_run_um"] for e in ends])
+    cuts = [runs[len(runs) // 3 - 1], runs[2 * len(runs) // 3 - 1]]
+    thirds = [chosen[:10], chosen[10:20], chosen[20:]]
+    for k, third in enumerate(thirds):
+        assert sorted(build_dr1.ring_level(measures[e.tip]) for e in third) == [0] * 4 + [1] * 3 + [2] * 3
+        third_runs = [measures[e.tip]["e3_run_um"] for e in third]
+        assert (k == 0 or min(third_runs) >= cuts[k - 1]) and (k == 2 or max(third_runs) <= cuts[k])
+
+
+def test_a_dr1_ring_level_short_of_its_share_is_made_up_from_its_third():
+    from dead_end_review import build_dr1
+
+    ends, measures = _dr1_measures()
+    shortest = sorted(ends, key=lambda e: measures[e.tip]["e3_run_um"])[:100]
+    for end in shortest:
+        measures[end.tip]["e3_run_um"] -= 100.0  # the shortest third, apart from the rest
+        measures[end.tip]["e1_rings_seen"] = 0  # and fitting no ring at all
+    chosen = build_dr1.choose(ends, measures, count=30)
+    assert len(chosen) == 30
+    assert all(build_dr1.ring_level(measures[e.tip]) == 0 for e in chosen[:10])
+    assert build_dr1.ring_share({"e1_rings_tried": 0, "e1_rings_seen": 0}) == 0.0
+
+
+def test_dr1_takes_fresh_interior_dead_ends_with_a_heading(tmp_path):
+    """Not a tip an earlier grid showed (3 um), nor one of grid M's facing
+    pairs (8 um from its midpoint; its bridges do not count), nor an end
+    leaving the image, an island's, or one with no heading."""
+    from dead_end_review import build_dr1
+
+    key = tmp_path / "M_key.csv"
+    key.write_text('id,mid_zyx_vox,kind\nM-01,"(0, 0, 100)",facing\nM-02,"(0, 0, 200)",bridge\n', encoding="utf-8")
+    mids = build_dr1.shown_mids_um([key], (1.0, 0.5, 0.5))
+    assert mids.tolist() == [[0.0, 0.0, 50.0]]
+    heading = (0.0, 0.0, 1.0)
+    ends = [
+        _end(0, tip_um=(0.0, 0.0, 0.0), heading=heading),   # shown on an earlier grid
+        _end(1, tip_um=(0.0, 0.0, 20.0), heading=heading),  # fresh
+        _end(2, tip_um=(0.0, 0.0, 55.0), heading=heading),  # by a facing pair M showed
+        _end(3, tip_um=(0.0, 0.0, 100.0), heading=heading),  # by one of M's bridges: fresh
+        _end(4, tip_um=(0.0, 0.0, 140.0), heading=None),
+        _end(5, tip_um=(0.0, 0.0, 160.0), heading=heading, kind="leaves_image"),
+        _end(6, tip_um=(0.0, 0.0, 180.0), heading=heading, kind="island_end"),
+    ]
+    kept = build_dr1.fresh(ends, np.asarray([[0.0, 0.0, 2.0]]), mids)
+    assert [e.tip for e in kept] == [1, 3]
+
+
+def test_the_line_ahead_is_drawn_dashed_from_its_first_reading_to_its_last():
+    from dead_end_review import build_dr1
+
+    end = _end(0, tip_um=(5.0, 5.0, 5.0), heading=(0.0, 0.0, 1.0))
+    points = build_dr1.ahead_line(end, {"e3_start_um": 3.0, "e3_end_um": 33.0})
+    dashes = [points[i:i + 2] for i in range(0, len(points), 3)]
+    assert all(p is None for p in points[2::3])
+    assert len(dashes) == 15
+    assert np.allclose(dashes[0], [[5, 5, 8.0], [5, 5, 9.2]]) and np.allclose(dashes[-1], [[5, 5, 36.0], [5, 5, 37.2]])
+
+
+def test_a_dashed_line_lifts_the_pen_and_a_marked_line_shows_on_the_stains():
+    """``draw_plane`` keeps a dashed line's breaks, carries ``marker`` (drawn
+    on the stains as well as the segmentation), and draws a plain line as
+    G4 always did."""
+    import networkx as nx
+
+    from dead_end_review import build_g4
+
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(10.0, 10.0, 5.0))
+    G.add_node(1, pos=(10.0, 10.0, 30.0))
+    G.add_edge(0, 1, voxels=[(10.0, 10.0, float(x)) for x in range(5, 31)])
+    mask = np.zeros((20, 20, 40), dtype=bool)
+    mask[8:13, 8:13, 5:31] = True
+    drawer = build_g4.PanelDrawer(G, mask, {"Claudin-5": mask.astype(float)}, VS)
+    c, a, b, n = np.array([10.0, 10.0, 20.0]), np.array([0, 0, 1.0]), np.array([0, 1.0, 0]), np.array([1.0, 0, 0])
+    plain = [[10.0, 10.0, 5.0], [10.0, 10.0, 30.0]]
+    dashed = [[10.0, 10.0, 31.0], [10.0, 10.0, 32.0], None, [10.0, 10.0, 34.0], [10.0, 10.0, 35.0]]
+    view = drawer.draw_plane("Past the tip", c, a, b, n, 18.0, [
+        dict(points=plain, color="#ff3b30"), dict(points=dashed, color="#2ad4ff", marker=True),
+    ], 2.0)
+    assert [image["label"] for image in view["images"]] == ["Segmentation", "Claudin-5"]
+    _dots, red, cyan = view["overlays"]
+    assert red["points"] == np.round(np.array([[-15.0, 0.0], [10.0, 0.0]]), 2).tolist() and "marker" not in red
+    assert cyan["marker"] is True
+    assert cyan["points"] == [[11.0, 0.0], [12.0, 0.0], None, [14.0, 0.0], [15.0, 0.0]]
+
+
+def test_the_dr1_page_asks_both_questions():
+    from dead_end_review import build_dr1
+
+    data = build_dr1.page_data([])
+    assert data["batch"] == "DR1" and data["question"] == "Is the red chain a real vessel?"
+    assert [v["value"] for v in data["verdicts"]] == ["V", "N", "P", "?"]
+    assert data["second"]["question"] == "Does the vessel go on past the tip?"
+    assert [v["value"] for v in data["second"]["verdicts"]] == ["Y", "E", "?"]
