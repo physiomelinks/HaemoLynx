@@ -318,4 +318,9 @@ Being built in the phase order above.
   rows were reported, not banded. Fixed: the weight is 2 (E14.5, three seeds: runs along z 9-13
   against 12, chords along z 0.18-0.21 against 0.22, curvature 22-25 degrees, no capillary
   straight), and the curvature rows are banded (abs 6 degrees, not calibrated). The overall
-  network shape is open.
+  network shape is open. Measured on E14.5's trees (large tier with arterioles and venules, from
+  each inlet and outlet): the template's have 38 leaves -- short side branches off the trunks,
+  ending where the large tier hands over to capillaries -- against 11 drawn (the drawn trunk hands
+  its side branches straight to the bed as one capillary each, `generate.HANDOFF_BED_EDGES`); and
+  the template's trunks hold their course better, root-to-leaf chord over path 0.65-0.68 against
+  0.44-0.62 drawn, though each vessel curves alike (29 against 31 degrees per 10 um).
