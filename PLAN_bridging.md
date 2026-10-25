@@ -6,8 +6,9 @@ measurement that has to come first.
 
 **Where it stands (2026-10-25).** Every item that needs no one but the code is done (section 5's
 last entry): Phases 0-3, Phase 1's last test, F2's skeleton half, F10, F11 (closed by measurement)
-and Phase 4's census. What is left waits on Harvey or on another plan: his marks on grid P (the
-Phase 1 rules' fresh grid, sent 2026-10-25), his decisions listed under "For Harvey" in section 5,
+and Phase 4's census; Harvey marked grid P, the Phase 1 rules' fresh grid, on 2026-10-25 (the wall
+join and fork rules beat marking all one way, the taper rule did not). What is left waits on Harvey or
+on another plan: his decisions listed under "For Harvey" in section 5,
 and the `thick_wall` dead-end kind and its review list, which wait on `PLAN_dead_ends.md`'s session
 landing its changes to `graph/dead_ends.py` and `graph/network_review.py`. Whether this file is
 retired is his call.
@@ -470,6 +471,13 @@ Phases 2 and 3 can start today. Phase 1 waits for the grid.
     segmentation, layers toggled, the slab or one plane at a time, zoom, keys): its marks are kept
     with the page (`marks/<ID>`: `mark`, `note`), read back with `ArtifactData` `list marks`.
     `phase1_rules_grid.py --page-data` and `grid_page.py` build it.
+  - **Grid P marked** (Harvey, 2026-10-25, `grid_P/marks.csv`; fit in `REPORT.md`): wall join 10/14
+    against 9/14 for all J -- its 5 joins all J, its 4 turn refusals all N; the misses are 2 beyond the
+    10 um reach (13.5, 13.8 um) and 2 refused for closing a loop inside one lumen, a guard right on 1
+    of 3. Taper 5/8 against 7/8 for all S: 3 of its 4 tapers marked S (cosines 0.80-0.97), the one T at
+    0.74, so the cosine does not separate the marks. Fork 6/8 against 4/8: the 2 misses (ratios 0.92,
+    0.94) lie among 4 E at 0.90-0.98. No rule changed: two cases do not set a reach or a guard, and the
+    taper rule came from Harvey's own examples.
   - **Phase 4's census** (one skeleton and mask, `040170b` against today, everything since rather
     than this plan alone): dead ends near a thick vessel 100 -> 54 (inside the region 47 -> 2),
     interior ones facing it within 80 degrees -- the missed junctions -- 21 -> 8 (6 refused by the
@@ -478,10 +486,11 @@ Phases 2 and 3 can start today. Phase 1 waits for the grid.
     78.5 -> 81.1%, build 236 -> 141 s (`outputs/thick_junction_review/census_2026-10-25/`).
   - **Waiting on `PLAN_dead_ends.md`'s session** (it is editing those files): the `thick_wall`
     dead-end kind (1.3) and Phase 0.2's finder as a Post processing review list.
-  - **For Harvey:** (1) marks on grid P. (2) F1b's fork of two equal vessels: the plan said both
+  - **For Harvey:** (1) the taper rule: grid P marks it worse than bridging every case (5/8 against
+    7/8); drop it, or keep it until more marks? (2) F1b's fork of two equal vessels: the plan said both
     daughters get a bridge of the parent's radius, cut at 0.6 of the fork's radius; the code gives
     an equal fork no bridge (`test_a_fork_of_equal_thick_vessels_gets_no_bridge`) and bridges an
-    arm at most 0.8 of the trunk. No decision is recorded; grid P's fork sheet asks it of 8 forks.
+    arm at most 0.8 of the trunk. No decision is recorded; on grid P he marked 4 near-equal forks E and 2 B.
     (3) 6a's tree fill (`TREE_FILL_MIN_DETOUR` 2.1) is on by default, checked on no second stack
     with thick vessels; none is on this machine. (4) The two connector causes above. (5) Whether
     this file is retired.

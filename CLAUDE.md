@@ -767,7 +767,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   wall are drawn on to it (`join_dead_ends_at_walls`), a bridge carrying a centreline's end on is a
   taper and stays vessel (`THICK_TAPER`), forks are bridged (`bridge_forks`), centreline ends are
   extended through the segmentation (`thick_vessel_extend_centreline_ends`, on, not yet checked on
-  a fresh grid), and blind vessels beyond a bridge the stub prune would take go with it. Bridges
+  a fresh grid), and blind vessels beyond a bridge the stub prune would take go with it. On their
+  fresh grid P (Harvey, 2026-10-25) the wall join and the fork rule beat marking all one way and
+  the taper rule did not (`docs/notes/thick_vessels.md`). Bridges
   are not measured (the widest diameter at their ends, `diameter_source="bridge"`), get no branch
   order, and statistics contract them (`contract_bridges`).
 

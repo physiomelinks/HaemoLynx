@@ -188,4 +188,9 @@ turning away, 7 beside a vessel or closing a loop, 29 past the 10 um reach), the
 (15 tapers), the fork rule's 12 arms (5 bridged). **The census again** (one skeleton and mask,
 `040170b` against today): dead ends near a thick vessel 100 -> 54, of them facing it within 80
 degrees 21 -> 8, connectors left for want of a centreline 21 -> 9. Grid U's three misses are not
-at today's 9 (`outputs/thick_junction_review/REPORT.md`).
+at today's 9 (`outputs/thick_junction_review/REPORT.md`). **Grid P marked** (Harvey, 2026-10-25, on
+its interactive page, `scripts/thick_junction_review/grid_page.py`): the wall join 10/14 against 9/14
+for all J (its joins and its turn refusals all right; misses 2 beyond the reach, 2 by the in-lumen
+loop guard, right on 1 of 3), the fork rule 6/8 against 4/8 (misses at ratios 0.92 and 0.94 among E
+at 0.90-0.98), the taper rule 5/8 against 7/8 for all S: 3 of its 4 tapers marked as side entries to
+bridge, at cosines 0.80-0.97. Nothing changed; whether to drop the taper rule is Harvey's call.
