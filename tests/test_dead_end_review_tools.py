@@ -304,6 +304,30 @@ def test_a_dashed_line_lifts_the_pen_and_a_marked_line_shows_on_the_stains():
     assert cyan["points"] == [[11.0, 0.0], [12.0, 0.0], None, [14.0, 0.0], [15.0, 0.0]]
 
 
+def test_a_grids_second_question_is_fitted_from_its_own_field_without_its_labels():
+    """DR1's "does it go on?" is read from the marks' ``second`` field, an
+    unsure or missing mark left out, and node ids are not fitted as measures
+    (they follow the skeleton's scan order, so they stand in for depth)."""
+    from fit_marks import SECOND_QUESTIONS, _question_report, judged
+
+    assert SECOND_QUESTIONS["DR1"] == ("Y", "E")
+    table = [
+        {"id": f"DR1-{i:02d}", "kind": "unknown", "tip": str(i), "e3_run_um": str(run), "mark": "V", "second": second}
+        for i, (run, second) in enumerate([(30, "Y"), (25, "Y"), (14, "Y"), (2, "E"), (0, "E"), (5, "E"),
+                                           (1, "?"), (3, None)])
+    ]
+    rows, labels = judged(table, "second", "Y", "E")
+    assert [r["id"] for r in rows] == [f"DR1-{i:02d}" for i in range(6)]
+    assert labels.tolist() == [True, True, True, False, False, False]
+
+    report = "\n".join(_question_report("DR1", "Y against E", "second", "Y", "E", table,
+                                        ["tip", "e3_run_um"], []))
+    assert "Marks: {'?': 1, 'E': 3, 'Y': 3}; judged 6; all one way gets 3/6." in report
+    # Left out, the 14 um Y falls under the cut the other five give (15 um).
+    assert "| e3_run_um | 5/6 | Y when e3_run_um > 9.5 | 6/6 |" in report
+    assert "| tip |" not in report
+
+
 def test_the_dr1_page_asks_both_questions():
     from dead_end_review import build_dr1
 

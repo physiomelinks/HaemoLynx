@@ -25,7 +25,11 @@ import numpy as np
 QUESTIONS = {
     "G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N"), "G4": ("N", "V"),
     "G1b": ("X", "S"), "G2b": ("F", "I"), "G3b": ("J", "N"),
+    "DR1": ("N", "V"),
 }
+#: A grid's second question, read from the marks' ``second`` field (DR1,
+#: ``PLAN_dead_ends_raw.md``: does the vessel go on past the tip?).
+SECOND_QUESTIONS = {"DR1": ("Y", "E")}
 MEANING = {
     "G1": "X = not a vessel end (remove) against S = a real blind end",
     "G2": "F = leaves the image against I = ends inside it",
@@ -33,6 +37,15 @@ MEANING = {
     "G4": "N = not a vessel (remove) against V = a vessel (P, partly, reported apart)",
 }
 MEANING.update({f"{grid}b": MEANING[grid] for grid in ("G1", "G2", "G3")})
+MEANING["DR1"] = MEANING["G4"]
+MEANING["DR1 second"] = "Y = the vessel goes on past the tip against E = it ends there (? unsure, reported apart)"
+
+
+def judged(table: list[dict], field: str, positive: str, negative: str) -> tuple[list[dict], np.ndarray]:
+    """The rows of *table* whose *field* holds *positive* or *negative*, and
+    whether each is *positive*: an unsure mark, or none, is not judged."""
+    rows = [r for r in table if r.get(field) in (positive, negative)]
+    return rows, np.asarray([r[field] == positive for r in rows], dtype=bool)
 
 
 @dataclass(frozen=True)
@@ -172,6 +185,53 @@ def loo_threshold(values: np.ndarray, labels: np.ndarray):
     return {"n": len(v), "loo": loo, "fit_hits": hits, "threshold": float(t), "above": above}
 
 
+#: Key columns that are labels, not measures: node ids (numbered in the
+#: skeleton's scan order, so they stand in for depth -- on DR1 "N when tip <=
+#: 964" was the top few planes), and a face's axis index.
+NOT_MEASURES = frozenset({"tip", "junction", "face_axis"})
+
+
+def _question_report(grid, meaning, field, positive, negative, table, keys, checked) -> list[str]:
+    """One question's section of the report: its marks, the classifier's
+    kinds against them, the rules fixed beforehand, and every one-measure
+    rule by leave-one-out (a measure unset on an example leaves it out)."""
+    rows, labels = judged(table, field, positive, negative)
+    counts = {m: sum(1 for r in table if r.get(field) == m) for m in sorted({r[field] for r in table if r.get(field)})}
+    baseline = max(labels.sum(), (~labels).sum())
+    report = [f"## {grid}: {meaning}", "",
+              f"Marks: {counts}; judged {len(rows)}; all one way gets {baseline}/{len(rows)}.", ""]
+    # The classifier's own kinds, as they stand.
+    kinds = {}
+    for r in rows:
+        kinds.setdefault(r["kind"], []).append(r[field])
+    report += ["| kind (classifier) | marks |", "|---|---|"]
+    report += [f"| {k} | {', '.join(f'{m}:{v.count(m)}' for m in sorted(set(v)))} |" for k, v in sorted(kinds.items())]
+    if checked:
+        report += ["", "Rules fixed before this grid was built, checked (bar: 90%):", "",
+                   "| rule | right | all one way | wrong IDs |", "|---|---|---|---|"]
+        report += [f"| {c['rule']} | {c['right']}/{c['judged']} | {c['baseline']}/{c['judged']} | "
+                   f"{', '.join(c['wrong']) or '-'} |" for c in checked]
+    report += ["", "| measure | LOO right | fitted rule | fitted right |", "|---|---|---|---|"]
+    results = []
+    for key in keys:
+        if key in NOT_MEASURES:
+            continue
+        try:
+            values = np.asarray([float(r[key]) if r.get(key) not in (None, "", "None") else np.nan for r in rows])
+        except (TypeError, ValueError):
+            continue
+        if np.all(~np.isfinite(values)):
+            continue
+        fitted = loo_threshold(values, labels)
+        if fitted:
+            results.append((fitted["loo"], key, fitted))
+    for loo, key, fitted in sorted(results, key=lambda x: -x[0])[:12]:
+        rule = f"{positive} when {key} {'>' if fitted['above'] else '<='} {fitted['threshold']:.3g}"
+        report.append(f"| {key} | {loo}/{fitted['n']} | {rule} | {fitted['fit_hits']}/{fitted['n']} |")
+    report.append("")
+    return report
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--review", required=True)
@@ -209,48 +269,23 @@ def main(argv=None) -> int:
         table = []
         for row in rows:
             mark = marks.get(row["id"], {})
-            verdict = mark.get("verdict")
-            table.append({**row, **extras.get(row["id"], {}), "mark": verdict, "note": mark.get("note", ""),
+            derived = {}
+            if row.get("e3_stop"):
+                # E3 as a yes/no: did the walls run on (to the limit, the face, another vessel)?
+                derived["e3_goes_on"] = float(row["e3_stop"] != "ends")
+            table.append({**row, **extras.get(row["id"], {}), **derived, "mark": mark.get("verdict"),
+                          "second": mark.get("second"), "note": mark.get("note", ""),
                           "evidence": ";".join(mark.get("evidence") or [])})
         keys = list(dict.fromkeys(k for r in table for k in r))
         with open(review / f"{grid}_marked.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
             writer.writerows(table)
-        judged = [r for r in table if r["mark"] in (positive, negative)]
-        labels = np.asarray([r["mark"] == positive for r in judged])
-        counts = {m: sum(1 for r in table if r["mark"] == m) for m in sorted({r["mark"] for r in table if r["mark"]})}
-        baseline = max(labels.sum(), (~labels).sum())
-        report += [f"## {grid}: {MEANING[grid]}", "",
-                   f"Marks: {counts}; judged {len(judged)}; all one way gets {baseline}/{len(judged)}.", ""]
-        # The classifier's own kinds, as they stand.
-        kinds = {}
-        for r in judged:
-            kinds.setdefault(r["kind"], []).append(r["mark"])
-        report += ["| kind (classifier) | marks |", "|---|---|"]
-        report += [f"| {k} | {', '.join(f'{m}:{v.count(m)}' for m in sorted(set(v)))} |" for k, v in sorted(kinds.items())]
-        checked = check_rules(grid, rows, marks)
-        if checked:
-            report += ["", "Rules fixed before this grid was built, checked (bar: 90%):", "",
-                       "| rule | right | all one way | wrong IDs |", "|---|---|---|---|"]
-            report += [f"| {c['rule']} | {c['right']}/{c['judged']} | {c['baseline']}/{c['judged']} | "
-                       f"{', '.join(c['wrong']) or '-'} |" for c in checked]
-        report += ["", "| measure | LOO right | fitted rule | fitted right |", "|---|---|---|---|"]
-        results = []
-        for key in keys:
-            try:
-                values = np.asarray([float(r[key]) if r.get(key) not in (None, "", "None") else np.nan for r in judged])
-            except (TypeError, ValueError):
-                continue
-            if np.all(~np.isfinite(values)):
-                continue
-            fitted = loo_threshold(values, labels)
-            if fitted:
-                results.append((fitted["loo"], key, fitted))
-        for loo, key, fitted in sorted(results, key=lambda x: -x[0])[:12]:
-            rule = f"{positive} when {key} {'>' if fitted['above'] else '<='} {fitted['threshold']:.3g}"
-            report.append(f"| {key} | {loo}/{fitted['n']} | {rule} | {fitted['fit_hits']}/{fitted['n']} |")
-        report.append("")
+        report += _question_report(grid, MEANING[grid], "mark", positive, negative, table, keys,
+                                   check_rules(grid, rows, marks))
+        if grid in SECOND_QUESTIONS:
+            report += _question_report(grid, MEANING[f"{grid} second"], "second", *SECOND_QUESTIONS[grid],
+                                       table, keys, [])
     text = "\n".join(report)
     name = "FIT.md" if not args.grids else f"FIT_{'_'.join(args.grids)}.md"
     (review / name).write_text(text + "\n", encoding="utf-8")
