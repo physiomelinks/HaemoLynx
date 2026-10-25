@@ -41,7 +41,10 @@ in the segmentation, the dextran and the claudin-5 channels, with the
 centreline recovery draws through it.
 
 Named UR1 ("uncovered regions"): grid N is the surface-coverage plan's lost
-skeleton (2026-10-18). Its fresh check is UR2.
+skeleton (2026-10-18). Its fresh check is UR2, built by the same script from
+the pieces UR1 did not show (``--grid UR2 --exclude-keys UR1_key.csv``); with
+``--drawn-only`` only those recovery draws into, all of them when there are no
+more than 30.
 
 Usage::
 
@@ -49,6 +52,8 @@ Usage::
         --after after_recovery.pkl --final final.pkl --mask mask.npy \\
         --composite composite.tif --dextran-channel 0 --endothelial-channel 1 \\
         --voxel-size-zyx 1.0 0.98 0.98 --out outputs/uncovered_review
+
+    ... --grid UR2 --exclude-keys outputs/uncovered_review/UR1_key.csv --drawn-only
 """
 from __future__ import annotations
 
@@ -325,7 +330,7 @@ def views(drawer: RegionDrawer, k: int, regions: Regions, drawn: dict, voxel_siz
 
 
 PAGE = dict(
-    title="Uncovered Region Review UR1: is the outlined piece a vessel the graph missed?",
+    title="Uncovered Region Review {grid}: is the outlined piece a vessel the graph missed?",
     question="Is the outlined piece a vessel of its own?",
     lede=("One piece of the E14.5 segmentation per card, outlined in yellow: segmented vessel that no centreline "
           "of the graph covered before mask recovery ran. Where mask recovery draws a centreline through it and "
@@ -342,9 +347,9 @@ PAGE = dict(
 )
 
 
-def page_data(examples: list) -> dict:
+def page_data(examples: list, grid: str = GRID) -> dict:
     return {
-        "batch": GRID, "title": PAGE["title"], "lede": PAGE["lede"], "question": PAGE["question"],
+        "batch": grid, "title": PAGE["title"].format(grid=grid), "lede": PAGE["lede"], "question": PAGE["question"],
         "steps": PAGE["steps"], "evidence": PAGE["evidence"],
         "legend": [{"label": "the piece judged", "color": OUTLINE_COLOUR},
                    {"label": "the centreline recovery draws, if any", "color": DRAWN_COLOUR},
@@ -352,6 +357,22 @@ def page_data(examples: list) -> dict:
         "verdicts": [{"value": v, "label": label, "short": v, "tone": tone} for v, label, tone in PAGE["verdicts"]],
         "examples": examples,
     }
+
+
+def shown_centres(key_paths) -> set[str]:
+    """The pieces earlier grids showed, by their centre voxel as the keys
+    write it (``centre_zyx_vox``)."""
+    shown = set()
+    for path in key_paths or ():
+        with open(path, encoding="utf-8") as handle:
+            shown |= {row["centre_zyx_vox"] for row in csv.DictReader(handle) if row.get("centre_zyx_vox")}
+    return shown
+
+
+def fresh(rows: list[dict], shown: set[str], *, drawn_only: bool = False) -> list[dict]:
+    """The rows no earlier grid showed; with *drawn_only*, only the pieces
+    recovery draws a centreline into."""
+    return [r for r in rows if str(r["centre_zyx_vox"]) not in shown and (not drawn_only or r["drawn_um"] > 0)]
 
 
 def _channel(path: str, channel: int, shape) -> np.ndarray:
@@ -393,7 +414,12 @@ def main(argv=None) -> int:
     parser.add_argument("--endothelial-channel", type=int, default=1)
     parser.add_argument("--voxel-size-zyx", type=float, nargs=3, required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--grid", default=GRID, help="the grid's name (UR2 for the fresh check)")
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--exclude-keys", nargs="*", default=[], help="earlier grids' keys: their pieces are left out")
+    parser.add_argument("--drawn-only", action="store_true", help="only the pieces recovery draws a centreline into")
     args = parser.parse_args(argv)
+    grid = args.grid
 
     from haemolynx.graph.dead_ends import _Centrelines
     from haemolynx.graph.mask_recovery import uncovered_mask_voxels
@@ -425,27 +451,29 @@ def main(argv=None) -> int:
     rows = [measure(k, regions, support, plasma, endothelial, centrelines, drawn.get(k, nothing), final_uncovered)
             for k in range(len(regions.pieces))]
     print(f"{sum(r['drawn_um'] > 0 for r in rows)} pieces with a centreline drawn in them")
-    chosen = choose(rows)
-    random.Random(SEED).shuffle(chosen)
+    pool = fresh(rows, shown_centres(args.exclude_keys), drawn_only=args.drawn_only)
+    print(f"{len(pool)} pieces in the pool")
+    chosen = choose(pool, drawn_share=COUNT if args.drawn_only else DRAWN_SHARE)
+    random.Random(args.seed).shuffle(chosen)
 
     drawer = RegionDrawer(before, mask, {"Dextran": dextran, "Claudin-5": claudin}, vs, regions.label_volume())
     examples, key = [], []
     for number, row in enumerate(chosen, start=1):
-        ident = f"{GRID}-{number:02d}"
+        ident = f"{grid}-{number:02d}"
         k = row["region"]
         examples.append({"id": ident, "where": "centre at z {}, y {}, x {} (voxels)".format(*row["centre_zyx_vox"]),
                          "views": views(drawer, k, regions, drawn.get(k, nothing), vs)})
-        key.append({"id": ident, "grid": GRID, **row})
+        key.append({"id": ident, "grid": grid, **row})
     template = (HERE.parent / "dead_end_review" / "template_panels.html").read_text(encoding="utf-8")
-    html = template.replace("__TITLE__", f"Uncovered Region Review {GRID}").replace(
-        "__EXAMPLES_JSON__", json.dumps(page_data(examples), separators=(",", ":")).replace("</", "<\\/"))
-    (out / f"{GRID}_review.html").write_text(html, encoding="utf-8")
-    _write_csv(out / f"{GRID}_key.csv", key)
-    _write_csv(out / f"{GRID}_candidates.csv", rows)
+    html = template.replace("__TITLE__", f"Uncovered Region Review {grid}").replace(
+        "__EXAMPLES_JSON__", json.dumps(page_data(examples, grid), separators=(",", ":")).replace("</", "<\\/"))
+    (out / f"{grid}_review.html").write_text(html, encoding="utf-8")
+    _write_csv(out / f"{grid}_key.csv", key)
+    _write_csv(out / f"{grid}_candidates.csv", rows)
     calibrations = {name: None if e is None else e.calibration.as_dict()
                     for name, e in (("dextran", plasma), ("claudin-5", endothelial))}
-    (out / f"{GRID}_calibration.json").write_text(json.dumps(calibrations, indent=2), encoding="utf-8")
-    print(f"{GRID}: {len(examples)} examples -> {out / f'{GRID}_review.html'}")
+    (out / f"{grid}_calibration.json").write_text(json.dumps(calibrations, indent=2), encoding="utf-8")
+    print(f"{grid}: {len(examples)} examples -> {out / f'{grid}_review.html'}")
     return 0
 
 

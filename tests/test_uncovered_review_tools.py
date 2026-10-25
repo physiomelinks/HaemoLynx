@@ -127,3 +127,54 @@ def test_each_card_outlines_its_piece_in_every_channel():
         reach = np.linalg.norm(ring, axis=1)
         assert reach.min() >= BLOB_RADIUS - 1.5 and reach.max() <= BLOB_RADIUS + 1.5
         assert len(plane["images"]) == 3
+
+
+def test_a_fresh_grid_leaves_out_the_pieces_an_earlier_one_showed(tmp_path):
+    key = tmp_path / "UR1_key.csv"
+    key.write_text("id,centre_zyx_vox\nUR1-01,\"(1, 2, 3)\"\n", encoding="utf-8")
+    rows = [{"centre_zyx_vox": (1, 2, 3), "drawn_um": 4.0}, {"centre_zyx_vox": (4, 5, 6), "drawn_um": 0.0},
+            {"centre_zyx_vox": (7, 8, 9), "drawn_um": 2.0}]
+    shown = build_ur1.shown_centres([key])
+    assert shown == {"(1, 2, 3)"}
+    assert [r["centre_zyx_vox"] for r in build_ur1.fresh(rows, shown)] == [(4, 5, 6), (7, 8, 9)]
+    assert [r["centre_zyx_vox"] for r in build_ur1.fresh(rows, shown, drawn_only=True)] == [(7, 8, 9)]
+    # Fewer drawn pieces than the grid holds: every one of them.
+    assert len(build_ur1.choose([dict(r, depth_um=1.0, volume_um3=1.0, dextran_median=0.5,
+                                      dextran_over_neighbour=0.5, region=i)
+                                 for i, r in enumerate(rows) if r["drawn_um"] > 0], drawn_share=30)) == 2
+
+
+def _marked(values, marks, grid="UR1"):
+    rows = [{"id": f"{grid}-{i:02d}", "grid": grid, "region": str(i), "drawn_um": "5.0",
+             "dextran_over_neighbour": "" if v is None else str(v)} for i, v in enumerate(values, start=1)]
+    return rows, {row["id"]: {"verdict": m} for row, m in zip(rows, marks)}
+
+
+def test_a_measure_that_splits_the_marks_scores_every_piece_left_out_in_turn():
+    from uncovered_review import fit_ur1
+
+    rows, marks = _marked([0.2, 0.3, 0.4, 0.5, 1.5, 1.6, 0.35, 0.45], list("HHHHVVHH"))
+    one_way, results = fit_ur1.fit(fit_ur1.judged(rows, marks))
+    assert one_way == 6
+    best = results[0]
+    assert best["measure"] == "dextran_over_neighbour" and best["loo"] == best["n"] == 8
+    assert best["above"] and 0.5 < best["threshold"] < 1.5
+    # The piece's number is a label, not a measure.
+    assert all(r["measure"] != "region" for r in results)
+
+
+def test_a_fresh_grids_fixed_rules_are_scored_unfitted_and_unsure_marks_left_out():
+    from uncovered_review import fit_ur1
+
+    rows, marks = _marked([1.2, 0.9, 1.1, None, 0.5, 0.4], list("VHHV?H"), grid="UR2")
+    marked = fit_ur1.judged(rows, marks)
+    assert [r["id"] for r in marked] == ["UR2-01", "UR2-02", "UR2-03", "UR2-04", "UR2-06"]
+    checked = {c["rule"]: c for c in fit_ur1.check_rules("UR2", marked)}
+    local = checked["dextran over its neighbours above 1.05"]
+    # 01 V and 1.2: right; 03 H but 1.1: wrong; 04 V with no reading: called H, wrong.
+    assert (local["right"], local["n"], local["wrong"]) == (3, 5, ["UR2-03", "UR2-04"])
+    assert checked["every piece H (recovery draws nothing)"]["wrong"] == ["UR2-01", "UR2-04"]
+    text = fit_ur1.report(rows, marks)
+    assert "Unsure or unmarked, left out: UR2-05." in text
+    assert "| dextran over its neighbours above 1.05 | 3/5 | UR2-03, UR2-04 |" in text
+    assert fit_ur1.check_rules("UR1", marked) == []
