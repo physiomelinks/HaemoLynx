@@ -21,7 +21,7 @@ image is claudin-5.
 | Cost on E14.5 | **Measured** | Section 6 (Risks) |
 | B. Measure and record, re-fit G1-G4 (R1) | **Waits** on `graph/dead_ends.py`, `graph/network_review.py` and the census, which the dead-ends and bridging sessions are finishing | Section 4 |
 | C. The grid | **Marked and fitted** (Harvey, 2026-10-25): DR1 (`9debc4d1`), https://claude.ai/artifact/FUrmkvLXHiSobkY1zAk9Jf. No rule reaches 90% on either question | Section 4 |
-| D. Rules | **Nothing to build**: DR1 confirmed no rule, so there is nothing for a fresh grid DR2 to check. Q2's lead (E3, 71%) and E4 are for Harvey | Section 4, decision R6 |
+| D. Rules | **E4 built** (`8f2a0a3f`) at Harvey's call (R6), and **grid DR2 built and sent** to judge it (`9a906d10`): https://claude.ai/artifact/TxStjPa2g9wP4StiokPwtH, its rules fixed in `fit_marks.FRESH_RULES["DR2"]` first. Waits on Harvey's marks; no rule is built until one reaches 90% there | Section 4 |
 | E. Docs, second dataset | CLAUDE.md, the notes and `RELEASE_REVIEW.md` `graph.6b` updated for A and C; a plasma-only dataset waits on data | Section 4 |
 
 ---
@@ -91,6 +91,16 @@ fresh grid confirms it (CLAUDE.md, "Marked example grids").
   is low inside `enclosed_by_walls` and high on the walls themselves. That reuses the Add-vessel
   A* (`graph/post_processing.py`'s trace through raw data), which already reads an intensity
   cost field.
+  **Built (2026-10-25, `8f2a0a3f`) as a tracker, not that A*:** a least-cost route needs an end
+  point, and choosing it (the nearest centreline) is what made G5's route through the mask join
+  neighbours. `RawEvidenceEndothelial.route_ahead` follows the walls from one lumen radius past the
+  tip, 1 um a step up to 30 um:
+  - each step it takes the direction with the most of the ring round it wall over three steps
+    ahead, within 30 deg of its last and 60 deg of the heading (the classifier's
+    `AHEAD_MAX_TURN_DEG`), and re-centres within 0.5 um;
+  - a step reads as vessel as E3's readings do; it crosses dark stretches of up to 2 um;
+  - it stops where the walls stop, in another vessel's lumen, or heading out of the image.
+  With no turn and no gap it is E3 (pinned in the tests).
 
 All four read through `RawEvidence` windows. The stain comes from `G.graph["raw_image_stain"]`,
 resolved once by the Diameters stage, or by `resolve_stain` when classification runs first.
@@ -264,6 +274,50 @@ have no rule to check. A DR2 checking it is not worth Harvey's marking: at 71% i
 90%. What could still lift Q2 is E4, a route through the wall-enclosed lumen that follows a vessel
 round a turn, judged on a new grid; whether to build it is decision R6.
 
+**R6, Harvey (2026-10-25): build E4 and a fresh grid to judge it on.** E4 is built (section 3). Its
+history, honestly:
+
+- **Steering:** by `vesselness`'s best pair it failed on a synthetic bend, because a direction
+  across a vessel meets one pair of walls too. It now steers by the mean of the four pairs.
+- **Look-ahead:** without it, the route turned along a gap's edge.
+- **Two changes after reading DR1's marked dead ends** (a look, not a fit; DR1's marks motivated
+  E4):
+  - The turn limit fell from 100 to 60 deg: the route had turned into neighbours.
+  - It stops when heading out of the image: it had turned along the face, where ring samples past
+    it read as background.
+- **On DR1's 21 Y/E marks:** "E4 runs on to the limit or into a vessel" now reads 17/21 and
+  `e4_run_um > 11` reads 14/21, beside E3's fitted 16/21. Before the two changes they read 13/21
+  each. None of this is a test: DR2 is.
+
+**E4 on E14.5** (`outputs/dead_ends_raw/measure_e4.py`, `e4_summary.json`):
+
+- It costs 0.13 s a dead end in one process (E3 7 ms).
+- Over the 209 interior dead ends it runs a median 10 um against E3's 6, and further than E3 at
+  136.
+- It stops: in another vessel 62, ends 92, runs on 33, at the face 22.
+
+**Grid DR2 (`9a906d10`, `scripts/dead_end_review/build_dr2.py`):**
+https://claude.ai/artifact/TxStjPa2g9wP4StiokPwtH. Key, candidates and calibration:
+`outputs/dead_end_review/DR2_*` in worktree `plan-dead-ends-raw-04d14a`.
+
+- **Fresh:** 30 of the 78 interior dead ends with a heading that no grid had shown, DR1's included
+  (the nearest DR1 tip is 24 voxels away).
+- **Spread:** thirds of E4's run, and within each evenly across how much further E4 went than E3
+  (from -15 to +28 um). The 30 are 16 `unknown`, 12 `stops_short`, 2 `artefact`.
+- **Questions:**
+  - Does the vessel go on past the tip (Y / E / ?)? Answered with the route hidden.
+  - Is the traced route right? R follows the vessel and stops where it stops, A goes astray, S
+    stops short, or ?. Answered after ticking "Show the traced route".
+- **Page:** DR1's three planes. The third turns about the heading into the plane the route turns
+  in (10 deg or more).
+- **Fixed before the grid** (`fit_marks.FRESH_RULES["DR2"]`, committed with the builder):
+  - `e3_run_um > 11` is Y, fitted on DR1;
+  - `e4_run_um > 11` is Y;
+  - E4 running on to the limit or into a vessel (`e4_goes_on`) is Y.
+
+  Each will be scored right / all one way / wrong IDs, bar 90%. The route question is scored R
+  against A or S.
+
 - **Q1 ⇒ prune.** A chain with no ring of its own, or one inside another vessel's walls, joins
   the artefacts the stub prune removes (`prune.prune_vascular_stubs`, agreed with the session
   that owns it).
@@ -297,7 +351,7 @@ repeat waits on a dataset with a plasma raw image and no endothelial one.
 | R3 | Should an unfilled sprout (walls, no plasma) become a vessel in the graph, with no flow (`blind_end`), or stay a note in the review? | Review first, since it adds vessels the segmentation never had. **Open, for Harvey.** DR1 found no measure that tells one from the walls alone (Q2 at 71%), so there is nothing yet to draw it by |
 | R4 | A dataset with both a plasma and an endothelial channel: one raw channel (today), or a second for evidence? | One. The segmentation already carries the plasma; the raw channel should be the other stain |
 | R5 | Which channel is E14.5's raw image? D5 (2026-10-12) said one channel only, the one the segmentation came from (dextran). On 2026-10-13 Harvey said the endothelial channel (claudin-5) "would be better" for this dataset. | **Decided: claudin-5** (Harvey, 2026-10-13, D5 overturned; relayed by the raw-confirmation session, which records it in `PLAN_raw_confirmation.md`). Dextran read along the chain had done no better than chance on G4 (15/27), and on that session's grids H and H2 (17/30 each, `outputs/doubled_run_review/FIT_raw.md`) |
-| R6 | After DR1 (2026-10-25): build E4, a route through the wall-enclosed lumen for Q2 (does it go on, and where), and ask for a grid on it? Or close this plan's rules, keeping E1-E3 as measures for the census and the review list (Phase B)? | **Open, for Harvey.** E3's misses were vessels that turn, which is what E4 would follow; but G5's route through the mask did no better than never joining (23/29), and E4 is the same idea on the walls |
+| R6 | After DR1 (2026-10-25): build E4, a route through the wall-enclosed lumen for Q2 (does it go on, and where), and ask for a grid on it? Or close this plan's rules, keeping E1-E3 as measures for the census and the review list (Phase B)? | **Decided: build E4 and a fresh grid** (Harvey, 2026-10-25). E4 built (`8f2a0a3f`), DR2 sent (`9a906d10`) |
 
 ## 6. Risks
 

@@ -182,3 +182,9 @@ Harvey marked DR1 the same day (`outputs/dead_end_review/FIT_DR1.md` in worktree
 - Whether it goes on past the tip (9 Y / 12 E, 7 unsure): E3's run over 11 um scores 15/21 against
   12/21. Its misses are vessels whose walls stop along the straight line ahead, the vessel likely
   turning.
+E4 (`route_ahead`, `8f2a0a3f`), at Harvey's call after DR1: a tracker that follows the walls from
+one lumen radius past the tip, steering by the wall all round over three steps ahead, within 60 deg
+of the heading, and stopping heading out of the image. Those last two came after reading DR1's
+marked dead ends: at 100 deg it turned into neighbours and along the image face. On E14.5 it costs
+0.13 s a dead end and runs a median 10 um against E3's 6. Grid DR2 (`9a906d10`) judges it on 30
+fresh dead ends, with its three rules fixed in `fit_marks.FRESH_RULES["DR2"]` beforehand.
