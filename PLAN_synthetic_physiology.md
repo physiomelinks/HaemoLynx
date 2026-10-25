@@ -347,3 +347,14 @@ Being built in the phase order above.
   (`generate._capillary_lengths_by_tortuosity`; at most 3 times, `MAX_TORTUOSITY_SCALE`). E14.5,
   five seeds: every curvature row within (26 +- 6 degrees), 582 of 620 banded rows within.
   Fixture templates (no layout) draw bit for bit as before.
+- **Grid D1c, marked by Harvey 2026-10-25: three drawn networks pass.** Twelve renders at
+  `6d13fe6a` (template at #2; Delaunay seeds 31-36, Voronoi 31-35; key
+  `outputs/synthetic_review/grid_d1c_key.csv`). Harvey: "2 and 1 are best, 11 is okay", "12 is also
+  okay" -- #1 Delaunay 31, #11 Delaunay 33, #12 Delaunay 34; none of the five Voronoi beds, nor
+  Delaunay 32, 35 and 36. Measured on all eleven: every Voronoi bed's capillaries had lost most of
+  their curvature (0.2-20 degrees per 10 um against 26: the length budget the Delaunay bed had
+  before); among the Delaunay beds the three picked are exactly those whose venous trees reach
+  across the box as the template's do (furthest leaf 281-285 um from its outlet against 272),
+  the others stopping at 127-255 um; every other measure overlaps between picked and not. The rule
+  of verification 2 (taken for the tissue as often as the template) is met by 3 of 11, all
+  Delaunay.

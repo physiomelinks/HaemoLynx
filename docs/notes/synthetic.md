@@ -131,3 +131,8 @@ template's have side branches ending at each order (27 leaves on E14.5) where th
 handed every side branch to the bed (11 leaves). Both now read from the template, with each
 capillary's length its chord times a tortuosity drawn from the template's, so none is drawn
 straight to fit the length budget.
+
+Grid D1c (Harvey, the same day): three of six Delaunay networks passed with the template (#1 best,
+#11 and #12 okay), no Voronoi one. What the picked share: their venous trees reach across the box
+as the template's do (281-285 um against 272; the others 127-255); every Voronoi bed had lost its
+capillaries' curvature (0.2-20 against 26 degrees per 10 um).
