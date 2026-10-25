@@ -273,6 +273,36 @@ lost surface pieces only the mask share separated cleanly, so it is half, not 80
 vessels), mask covered 74.5 -> 75.4%, 30.8% of Harvey's missing length covered (26.1% at 80%);
 pairs in one lumen by the mask 4 -> 14, short loops 42 -> 63, dead ends unchanged.
 
+Again on 2026-10-25 (origin `94320b75` plus the census, Harvey's Claudin segmentation, the
+graph built from the thick-bridges capture as `build_network` builds it and finished three
+ways; `outputs/sc/e14_variants.py` and `REPORT.md` in worktree `quirky-goodall-bbcb6f`):
+
+| | off | pieces only | pieces + joins (default) |
+|---|---:|---:|---:|
+| re-traced | 0 | 17 (940 um) | 17 + 2 joins (989 um) |
+| skeleton reach, all | 77.8% | 79.3% | 79.4% |
+| surface beside the large vessels / other / deep | 60.3 / 77.2 / 89.2% | 63.2 / 78.8 / 89.8% | 63.4 / 79.0 / 89.8% |
+| mask covered | 81.5% | 82.1% | 82.1% |
+| pairs in one lumen / doubled centreline | 13 / 912 um | 17 / 974 um | 17 / 975 um |
+| short loops / loops inside one lumen / dead ends | 79 / 1 / 207 | 86 / 1 / 206 | 87 / 1 / 206 |
+
+The re-trace takes 1.9 s of a 59 s finish. What it leaves on the surface beside the large
+vessels (6,071 of 16,565 skeleton voxels): 2,962 in pieces round a hole of 10 um or less, 1,516
+beside a kept vessel, 1,295 in pieces under 20 um, 260 meeting the graph once
+(`scripts/graph_artefacts.py --by-place`, the "why" columns). On the same skeleton the thick
+gate drops 7,462 um of plain-Lee centreline in 183 pieces: 5,709 um inside the thick region,
+1,311 um within its 3 um shell, 441 um beyond; 2,897 um inside the large-vessel masks
+(`preprocessing.diagnose_centreline_dropped_by_thick_gate`; grid P called 25 of 30 such pieces
+the large vessel itself, so the pipeline does not log it).
+
+What the re-trace leaves is listed for hand review: Post processing's "Skeleton the graph does
+not follow" (`network_review.find_lost_skeleton`, reading the mask and the run's skeleton layer):
+every lost piece of 20 um or more and at least half in the mask, longest first (Harvey's
+missing-vessel drawing ranked length above every other measure, AUC 0.78), with the re-trace's
+reason, hole, far and mask shares. Draw along the skeleton adds the route the re-trace would
+draw, split into the vessels at both ends; a piece meeting the network once is traced with Add
+vessel. On the E14.5 graph above the list holds about 155 pieces, 9.8 mm of skeleton.
+
 ## graph/smoothing.py
 
 **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each

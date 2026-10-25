@@ -72,7 +72,10 @@ decision and CSV row, skipping one a vessel was drawn onto since the scan and re
 holding a boundary node), two vessels in one lumen, facing
 dead ends the join left open (`facing_ends.facing_dead_end_pairs`, with why; Join the two
 ends), segmented vessels without a centreline (`mask_recovery.uncovered_mask_regions`),
-unsolved pieces (`graph.unsolved_pieces`), flow against the branch orders, flow outliers,
+skeleton the graph does not follow (`network_review.find_lost_skeleton`: the skeleton
+re-trace's verdict on each lost piece of the run's skeleton layer, longest first; Draw along
+the skeleton adds the route the re-trace would draw, `vessel_end_nearest` finding the vessel at
+each end), unsolved pieces (`graph.unsolved_pieces`), flow against the branch orders, flow outliers,
 boundary-node issues, terminal nodes (`find_terminal_nodes`: the inlets, the outlets, then
 dead ends leaving the image widest first, then the other dead ends; Make inlet / Make outlet /
 Remove inlet/outlet, `graph.set_terminal_role`: the lists kept on the graph as
@@ -80,7 +83,7 @@ Remove inlet/outlet, `graph.set_terminal_role`: the lists kept on the graph as
 removed; `post_process` takes them in place of the run's, `_take_edited_terminal_roles`, and
 draws the boundary-nodes layer again), unmeasured diameters and diameter jumps (Set diameter,
 `graph.set_vessel_diameter`: an override, the vessel *not* marked edited, so `post_process`
-does not measure it again and replace it). The four that read the segmented image run off
+does not measure it again and replace it). The lists that read the segmented image run off
 the GUI thread, and after an edit only drop what it took away (the list says it may be out
 of date); the others are made again. Their thresholds only decide what is listed. Each
 decision is a `ReviewDecision`, matched by kind and centre, kept with the run (the
