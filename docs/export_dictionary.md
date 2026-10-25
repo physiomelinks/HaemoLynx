@@ -609,7 +609,7 @@ Written to the batch's output folder. One row per image of a batch run.
 
 ## `{condition}.haemobatch`
 
-Written to the batch's output folder. A synthetic template per condition (batch.haemobatch with none): gzip JSON of each finished image's templates, by its statistics report and by its graph, with the runs left out and why. A synthetic run loads it as its template, the runs averaged (PLAN_batch_templates.md).
+Written to the batch's output folder. A synthetic template per condition (batch.haemobatch with none): gzip JSON of each finished image's templates, by its statistics report and by its graph, with the runs left out and why and the batch's batch_settings.yaml. A synthetic run loads it as its template, the runs averaged (PLAN_batch_templates.md).
 
 NetworkTemplate fields; see synthetic/batch_template.py.
 

@@ -670,6 +670,10 @@ def write_batch_templates(
         groups: dict[str | None, list[BatchResult]] = {None: done}
     else:
         groups = {c.label: [r for r in done if r.condition == c.label] for c in conditions.conditions}
+    try:
+        settings = (Path(output_root) / SETTINGS_FILENAME).read_text(encoding="utf-8")
+    except OSError:
+        settings = None
     written: list[Path] = []
     for label, members in groups.items():
         if not members:
@@ -679,6 +683,7 @@ def write_batch_templates(
                 Path(output_root) / batch_template_filename(label),
                 [(r.match.stem, Path(r.haemorun)) for r in members],
                 condition=label,
+                batch_settings=settings,
             )
         except Exception:  # noqa: BLE001 - the images' own outputs stand
             logger.exception("could not write the batch template for %s", label or "the batch")

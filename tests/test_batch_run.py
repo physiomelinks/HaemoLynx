@@ -1278,6 +1278,10 @@ def test_a_batch_writes_a_synthetic_template_per_condition(tmp_path, schema, mon
     assert (wt.condition, [m.stem for m in wt.members]) == ("wt", ["WT_1", "WT_2"])
     assert (ko.condition, [m.stem for m in ko.members]) == ("ko", ["KO_1"])  # KO_2 failed
     assert all(m.templates["statistics"] and m.templates["graph"] for m in wt.members + ko.members)
+    # Each carries the batch's settings file as written.
+    settings_file = (out / "batch_settings.yaml").read_text(encoding="utf-8")
+    assert wt.batch_settings == ko.batch_settings == settings_file
+    assert "# batch_condition_a: wt" in wt.batch_settings
     assert "Synthetic templates:" in summary.message()
 
 

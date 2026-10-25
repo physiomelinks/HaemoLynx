@@ -152,7 +152,7 @@ Harvey asked for a condition's average network as a template, a batch run writin
 condition, and chose B1a, B2a, B3a, B4b beside a and B5a. Every batch run now writes
 `{condition}.haemobatch` (`batch.haemobatch` with no conditions) of the images that finished:
 gzip JSON of each run's two templates (by its report and by its graph), its `.haemorun` path and
-SHA-256, and the runs left out with why. `load_template` reads one as its runs averaged
+SHA-256, the runs left out with why, and the batch's `batch_settings.yaml` as written. `load_template` reads one as its runs averaged
 (`synthetic/average.py`), so the panel, preflight and the stages need nothing else.
 
 - **The box** (B1a) is each axis's mean extent, and every count the runs' mean density times its

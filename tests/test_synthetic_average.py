@@ -162,6 +162,7 @@ def test_a_haemobatch_is_written_read_and_averaged(two_runs):
     file = read_batch_template(path)
     assert file.condition == "wt" and [m.stem for m in file.members] == ["WT_1", "WT_2", "WT_3"]
     assert [stem for stem, _why in file.left_out] == ["junk"]
+    assert file.batch_settings is None  # none was given
     for source in ("statistics", "graph"):
         T = load_template(path, source)
         members = [load_template(run, source) for run in (a, b, c)]

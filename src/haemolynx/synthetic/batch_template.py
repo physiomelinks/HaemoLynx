@@ -5,7 +5,8 @@ A batch run writes one per condition, or one for the whole batch with none
 (``gui.batch_run``): gzip JSON holding, for each image run of it that can be a
 template, its stem, its ``.haemorun`` path and SHA-256 and its two templates
 (``NetworkTemplate.to_dict``, by the statistics report and by the graph), with
-the condition and the runs left out and why. :func:`load_batch_template`
+the condition, the runs left out and why, and the batch's settings (its
+``batch_settings.yaml`` as written). :func:`load_batch_template`
 averages the members' templates of the asked source
 (``synthetic.average.average_templates``); ``synthetic.load_template`` hands
 a ``.haemobatch`` to it, so everything that reads a template reads one.
@@ -53,6 +54,8 @@ class BatchTemplateFile:
     left_out: tuple
     created: Optional[str] = None
     haemolynx_version: Optional[str] = None
+    #: The batch's ``batch_settings.yaml`` as it was written, or None.
+    batch_settings: Optional[str] = None
 
 
 def is_batch_template(path: Path | str) -> bool:
@@ -77,12 +80,17 @@ def _sha256(path: Path) -> str:
 
 
 def write_batch_template(
-    path: Path | str, runs: Sequence[tuple[str, Path | str]], *, condition: Optional[str] = None
+    path: Path | str,
+    runs: Sequence[tuple[str, Path | str]],
+    *,
+    condition: Optional[str] = None,
+    batch_settings: Optional[str] = None,
 ) -> Optional[Path]:
     """Write the ``.haemobatch`` of *runs* (``(stem, .haemorun path)`` pairs)
     to *path*: each run's templates by both sources, a run neither source
-    can read left out with why. None, and nothing written, when no run can
-    be a template."""
+    can read left out with why, and *batch_settings* (the batch's
+    ``batch_settings.yaml``) as given. None, and nothing written, when no run
+    can be a template."""
     from haemolynx.gui.run_snapshot import RunSnapshotError
 
     from .template import load_template
@@ -123,6 +131,7 @@ def write_batch_template(
         "haemolynx_version": version,
         "members": members,
         "left_out": left_out,
+        "batch_settings": batch_settings,
     }
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -157,6 +166,7 @@ def read_batch_template(path: Path | str) -> BatchTemplateFile:
         left_out=tuple(tuple(item) for item in data.get("left_out", ())),
         created=data.get("created"),
         haemolynx_version=data.get("haemolynx_version"),
+        batch_settings=data.get("batch_settings"),
     )
 
 
