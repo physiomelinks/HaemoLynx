@@ -71,3 +71,37 @@ def test_the_picks_are_spread_over_both_measures_before_any_cell_gives_two():
     assert len(spread(cases, 50, random.Random(0))) == len(cases)
     with_must = spread(cases, 4, random.Random(0), must=[12])
     assert cases[12] in with_must and len(with_must) == 4
+
+
+def test_the_best_threshold_and_its_leave_one_out_score():
+    from thick_bridge_review.fit_marks import best_threshold, leave_one_out
+
+    x = np.array([1.0, 2.0, 3.0, 10.0, 11.0, 12.0, np.nan])
+    y = np.array([False, False, False, True, True, True, True])
+    right, threshold, direction = best_threshold(x, y)
+    assert (right, threshold, direction) == (6, 6.5, ">"), "midway between the groups; the unmeasured case not counted"
+    assert leave_one_out(x, y) == 6
+    # Nothing beats marking all one way: no threshold is offered.
+    assert best_threshold(np.array([1.0, 2.0, 3.0]), np.array([True, True, True]))[1] is None
+    # One case out of place: the threshold fitted without it calls it wrong.
+    noisy = np.array([False, False, True, False, True, True])
+    assert leave_one_out(np.arange(6.0), noisy) < best_threshold(np.arange(6.0), noisy)[0]
+
+
+def test_the_fit_reports_the_rule_against_marking_all_one_way():
+    from thick_bridge_review.fit_marks import fit
+
+    rows = [
+        {"id": 1, "kind": "bridge", "mark": "B", "length_over_radius": 1.0},
+        {"id": 2, "kind": "bridge", "mark": "C", "length_over_radius": 3.0},
+        {"id": 3, "kind": "near_miss", "mark": "V", "length_over_radius": 0.5},
+        {"id": 4, "kind": "near_miss", "mark": "N", "length_over_radius": 4.0},
+        {"id": 5, "kind": "bridge", "mark": "", "length_over_radius": 2.0},
+    ]
+
+    text = fit(rows)
+
+    assert "4 cases marked. Marks: B 1, V 1, C 1, N 1." in text
+    assert "agrees on **2/4**" in text and "wrong on IDs 2, 4." in text
+    assert "no bridges at all (every piece keeps its resistance) 2/4" in text
+    assert "## Bridges (2)" in text and "## Near-misses (2)" in text

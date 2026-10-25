@@ -224,3 +224,20 @@ inside run ending at a dead end on an image face is now the thick vessel's own p
 path through a connector (`_at_image_face`;
 `test_a_thick_vessels_end_at_the_image_face_stays_when_a_vessel_joins_beside_it`).
 
+**The Phase 5 grid, sheet 1 marked (Harvey, 2026-10-25).** IDs 1-30 (17 bridges, 13 near-misses;
+`outputs/thick_bridge_review/marks.csv`, fit by `scripts/thick_bridge_review/fit_marks.py` into
+`FIT.md`, E14.5 at `47edef60`): B 3, V 3, C 13, N 11. The current rule agrees on 9 of 30 (2 of the
+17 bridges marked a bridge, 7 of the 13 near-misses marked vessel or thick centreline), against 13
+for marking all C and 16 for making no bridge at all. 7 bridges are the thick vessel's own
+centreline by Harvey's marks and 6 should not be connected, as should 5 near-misses. Neither
+measure the plan assumed -- distance from the tree over the tolerance, length over the lumen radius
+-- separates the marks: every single threshold on them, and on the bridge's angle to the thick
+vessel's axis, the share of it on the tree, and where and how wide the vessel beyond it runs, gains
+at most 3 cases over marking all one way and loses them under leave-one-out, bar one: a bridge's
+lumen radius at its outer end over the thick vessel's radius at most 0.35 calls it thick
+centreline on 13 of 17 bridges, leave-one-out 13, against 10 all one way, on a margin of 0.33
+against 0.36. That waits on sheet 2 (IDs 31-60, not marked) as a fresh check. No rule is built and
+`thick_bridge_centreline_tolerance_um` stays at 1.5 um. The grid's bridges are those of
+`47edef60`, before the taper rule was dropped, the wall join's reach raised to 15 um and equal
+forks left unbridged (above): its forks, IDs 4 and 28, and any taper among its near-misses are
+judged as that commit made them.
