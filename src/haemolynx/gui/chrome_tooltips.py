@@ -213,8 +213,9 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
     ),
     "dead_ends": (
         "Vessels that end without joining another, by kind: leaving the "
-        "image, stopped short of the segmented vessel, broken by the "
-        "segmentation, artefacts, blind (marked by hand), unknown, or ends of "
+        "image, at a thick vessel's wall but not joined to it, stopped short of "
+        "the segmented vessel, broken by the segmentation, artefacts, blind "
+        "(marked by hand), unknown, or ends of "
         "pieces with no junction. Also the interior ones per mm of vessel, "
         "their length, and how much of the network the image faces cut"
     ),
@@ -837,9 +838,10 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "vessel it should go on to, and on a node or vessel to finish it"
     ),
     "review_join_ahead": (
-        "Join the chosen dead end to the vessel straight ahead of it, with a "
-        "vessel traced from its tip to where its heading meets that vessel "
-        "through the image Add vessel uses; that vessel is split there"
+        "Join the chosen dead end to the vessel straight ahead of it (at a "
+        "thick vessel, to its centreline), with a vessel traced from its tip "
+        "to where it meets that vessel through the image Add vessel uses; that "
+        "vessel is split there"
     ),
     "review_mark_blind": (
         "Say the chosen dead end is a real blind end (a sprout, or a vessel "

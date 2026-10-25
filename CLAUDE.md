@@ -714,11 +714,15 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 
 - **`graph/dead_ends.py`** — the one definition of what each dead end (degree-1 node) is, judged
   as its whole chain (`chain_to_junction`): `leaves_image`, `island_end`, `artefact`,
-  `stops_short`, `broken`, `blind` (a person's mark: `set_dead_end_kind`, kept through
+  `thick_wall` (within reach of a thick vessel's lumen, off its centreline, not joined: the wall
+  join's candidates it left; in place of the three below, never of an artefact), `stops_short`,
+  `broken`, `blind` (a person's mark: `set_dead_end_kind`, kept through
   reclassifying) or `unknown`. Every module asks it. `build_network` writes `dead_end_kind` on each
-  dead end and `image_extent_um` on the graph, so stages without the mask read the same answer
+  dead end, and `image_extent_um` and the thick centreline tree (`record_thick_centreline`,
+  `G.graph["thick_centreline"]`) on the graph, so stages without the mask read the same answer
   (`node_leaves_image`, `open_end_nodes`); `post_process` reclassifies only the touched nodes
-  (`reclassify_dead_ends`). No rule reached 90% on Harvey's grids, so the kinds only label and
+  (`reclassify_dead_ends`). Post processing lists `thick_wall` ends apart ("Dead ends at thick
+  vessels", `network_review.find_dead_ends_at_thick_walls`), each with where a join lands. No rule reached 90% on Harvey's grids, so the kinds only label and
   list, and every repair in `graph/dead_end_extension.py` stays off. `remove_pieces_without_junction`
   and `remove_interior_dead_ends` (Graph tab) are off by default. The fresh grids G1'-G3'
   (`scripts/dead_end_review/build_grids.py --fresh`, rules fixed in `fit_marks.FRESH_RULES`),

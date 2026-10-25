@@ -188,3 +188,37 @@ of the heading, and stopping heading out of the image. Those last two came after
 marked dead ends: at 100 deg it turned into neighbours and along the image face. On E14.5 it costs
 0.13 s a dead end and runs a median 10 um against E3's 6. Grid DR2 (`9a906d10`) judges it on 30
 fresh dead ends, with its three rules fixed in `fit_marks.FRESH_RULES["DR2"]` beforehand.
+
+## Dead ends at a thick vessel's wall (2026-10-25, PLAN_bridging.md 1.3 and 0.2)
+
+`thick_wall`: a dead end whose tip lies within the lumen's radius plus `WALL_JOIN_REACH_UM`
+(10 um) of the thick vessels' centreline tree, and further than the split's tolerance of it
+(`thick_bridge_centreline_tolerance_um`, or 30% of the radius) -- the dead ends the split's wall
+join looks at -- which the join left. It takes the place of `stops_short`, `broken` and
+`unknown`; an `artefact` stays one (it is no vessel's end), as do `leaves_image` and
+`island_end`. The tree is the one the split bridges to: `stages.mark_dead_end_kinds` records it
+on the graph (`record_thick_centreline`, `G.graph["thick_centreline"]`: its points, the lumen's
+radius at each, the tolerance floor), so post processing's re-judging, the review lists and the
+statistics read the same kind without the thick region, as they read `image_extent_um`. A graph
+built before has no record, and no `thick_wall` ends until it is built again. It is an interior
+kind (`remove_interior_dead_ends` takes it, as it took the kinds it replaces) and counts in the
+interior dead-end density; the statistics' Dead Ends section gives it its own row. The repairs in
+`dead_end_extension.py` (off) read `stops_short` and `broken` only, so they pass these ends by.
+
+The Post processing tab lists them in "Dead ends at thick vessels"
+(`network_review.find_dead_ends_at_thick_walls`, after "Dead ends", nearest the lumen first;
+the "Dead ends" list keeps them too, under its Show filter). Each item carries how far the tip
+stopped from the lumen (negative inside it), the turn from its heading onto the thick centreline,
+and the point of the graph's own thick centreline nearest the tree there (`thick_edge`,
+`thick_point_um` on the `DeadEnd`; `ahead_edge` / `ahead_point_um` on the item): "Join to the
+vessel ahead" lands there, and post processing bridges the stretch inside the lumen. Delete takes
+the dead end's own chain only.
+
+E14.5 (Harvey's Claudin segmentation, the build at `155699f4`; `outputs/thick_junction_review/thick_wall_2026-10-25/`): 36 of
+393 dead ends are `thick_wall` (20 were `stops_short`, 16 `unknown`); of the 58 tips within reach
+the rest leave the image (15), are artefacts (7) or lie on the tree (4). 30 of the 36 turn more
+than 80 degrees from the way to the thick centreline (all but one more than 60): vessels running
+beside the thick one or away from it, like the wall join's 4 turn refusals on grid P, all of
+which Harvey marked N ("not a junction"). 2 stop inside the lumen; 30 have a join point on the graph's thick
+centreline. The record is 2,822 tree points (45 kB), and judging every dead end with it took no
+longer than without.

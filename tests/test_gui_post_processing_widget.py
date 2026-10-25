@@ -1354,12 +1354,12 @@ def test_a_dead_end_marked_by_hand_keeps_its_kind_and_leaves_the_list(
     assert c.state.graph.nodes[3][DEAD_END_KIND] == kind, "a person's mark outlives reclassifying"
 
 
-def _broken_page(viewer, tmp_path):
-    """dead_end_fixtures' broken vessel: a branch ending 9 um short of
-    another vessel's side across a gap in the segmentation."""
+def _broken_page(viewer, tmp_path, make=None, choice=DEAD_ENDS):
+    """dead_end_fixtures' broken vessel (or *make*'s case): a branch ending
+    9 um short of another vessel's side across a gap in the segmentation."""
     from dead_end_fixtures import broken_towards_side
 
-    case = broken_towards_side()
+    case = (make or broken_towards_side)()
     G = nx.convert_node_labels_to_integers(case.graph, ordering="sorted")
     tip = next(n for n, d in G.nodes(data=True) if tuple(map(float, d["pos"])) == case.tip)
     for _u, _v, d in G.edges(data=True):
@@ -1379,7 +1379,7 @@ def _broken_page(viewer, tmp_path):
         settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
     )
     c.refresh()
-    c.review_choice.setCurrentText(DEAD_ENDS)
+    c.review_choice.setCurrentText(choice)
     return c, tip
 
 
@@ -1396,6 +1396,33 @@ def test_a_broken_dead_end_is_joined_to_the_side_of_the_vessel_ahead(make_napari
     assert c.state.graph.degree(tip) == 2
     assert nx.number_connected_components(c.state.graph) == 1
     rows = _csv_rows(tmp_path / "run_dead_ends_review.csv")
+    assert [r["decision"] for r in rows] == ["joined to the vessel ahead"]
+
+
+def test_a_dead_end_at_a_thick_wall_is_joined_to_the_thick_centreline(make_napari_viewer, qtbot, tmp_path):
+    """PLAN_bridging.md 0.2: "Dead ends at thick vessels" lists the dead end
+    the wall join left, and "Join to the vessel ahead" draws it on to the
+    thick vessel's own centreline beside it."""
+    from dead_end_fixtures import THICK_AXIS, at_a_thick_wall
+
+    c, tip = _broken_page(make_napari_viewer(), tmp_path, make=at_a_thick_wall, choice="Dead ends at thick vessels")
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    (item,) = c.state.review_items
+    assert item.nodes[0] == tip and item.measures["kind"] == "thick_wall"
+    c.review_items.setCurrentRow(0)
+    assert _shown_buttons(c) == {ACTION_TRACE_ON, ACTION_JOIN_AHEAD, ACTION_DELETE_ITEM, ACTION_MARK_BLIND, ACTION_KEEP}
+    assert c.review_buttons[ACTION_JOIN_AHEAD].isEnabled()
+    assert nx.number_connected_components(c.state.graph) == 2
+
+    c.review_buttons[ACTION_JOIN_AHEAD].click()
+
+    assert c.state.graph.degree(tip) == 2
+    assert nx.number_connected_components(c.state.graph) == 1
+    landed = [n for n in c.state.graph if c.state.graph.degree(n) == 3
+              and abs(float(c.state.graph.nodes[n]["pos"][1]) - THICK_AXIS[0][1]) < 0.6]
+    assert len(landed) == 1, "the join lands on the thick vessel's centreline"
+    rows = _csv_rows(tmp_path / "run_thick_wall_ends_review.csv")
     assert [r["decision"] for r in rows] == ["joined to the vessel ahead"]
 
 

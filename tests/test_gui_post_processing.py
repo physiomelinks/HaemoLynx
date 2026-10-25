@@ -646,7 +646,7 @@ def test_the_dropdown_lists_none_first_then_junctions_loops_and_every_check_once
     for action in ACTION_LABELS:
         assert POST_PROCESSING_TOOLTIPS[f"review_{action}"].strip()
     mask_lists = {entry.key for entry in REVIEW_LISTS if entry.uses_mask}
-    assert mask_lists == {nr.DEAD_ENDS, nr.TWO_IN_ONE_LUMEN, nr.FACING_ENDS, nr.UNCOVERED_MASK}
+    assert mask_lists == {nr.DEAD_ENDS, nr.THICK_WALL_ENDS, nr.TWO_IN_ONE_LUMEN, nr.FACING_ENDS, nr.UNCOVERED_MASK}
     assert REVIEW_MARKERS in POST_PROCESSING_LAYERS and REVIEW_REGION in POST_PROCESSING_LAYERS
 
 
@@ -1098,3 +1098,33 @@ def test_a_broken_vessel_reads_as_a_pair_or_a_side_join():
     assert review_label(
         _item(nr.BROKEN_VESSELS, nodes=(3, 9), join=nr.JOIN_SIDE, gap_um=9.0, turn_deg=12.0), 2
     ) == "2. Node 3: 9 µm to a vessel's side, turning 12°"
+
+
+def test_dead_ends_at_thick_vessels_have_their_list_label_and_join():
+    """PLAN_bridging.md 0.2: the list after Dead ends, read by how far each
+    tip stopped from the thick lumen; "Join to the vessel ahead" applies
+    where the thick centreline was found beside it."""
+    from haemolynx.gui.post_processing import (
+        ACTION_DELETE_ITEM,
+        ACTION_JOIN_AHEAD,
+        ACTION_KEEP,
+        ACTION_MARK_BLIND,
+        ACTION_TRACE_ON,
+        REVIEW_LIST_BY_KEY,
+        REVIEW_LIST_BY_LABEL,
+        action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_KEY[nr.THICK_WALL_ENDS]
+    assert entry is REVIEW_LIST_BY_LABEL["Dead ends at thick vessels"]
+    assert entry.actions == (ACTION_TRACE_ON, ACTION_JOIN_AHEAD, ACTION_DELETE_ITEM, ACTION_MARK_BLIND, ACTION_KEEP)
+    keys = [e.key for e in REVIEW_LISTS]
+    assert keys.index(nr.THICK_WALL_ENDS) == keys.index(nr.DEAD_ENDS) + 1
+    outside = _item(nr.THICK_WALL_ENDS, thick_lumen_um=6.0, length_um=11.0,
+                    ahead_edge=(4, 5, 0), ahead_point_um=(1.0, 2.0, 3.0))
+    inside = _item(nr.THICK_WALL_ENDS, thick_lumen_um=-2.5, length_um=11.0,
+                   ahead_edge=None, ahead_point_um=None)
+    assert review_label(outside, 1) == "1. Node 5: 6 µm from the lumen, 11 µm"
+    assert review_label(inside, 2) == "2. Node 5: 2.5 µm inside the lumen, 11 µm"
+    assert action_applies(outside, ACTION_JOIN_AHEAD) and not action_applies(inside, ACTION_JOIN_AHEAD)
+    assert all(action_applies(outside, a) for a in (ACTION_TRACE_ON, ACTION_DELETE_ITEM, ACTION_MARK_BLIND))

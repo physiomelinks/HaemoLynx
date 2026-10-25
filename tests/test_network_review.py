@@ -612,3 +612,63 @@ def test_broken_vessels_come_closest_first(monkeypatch):
     items = nr.find_broken_vessels(G, support)
 
     assert [item.nodes[0] for item in items] == ["t1", "t2", "t0"]
+
+
+# --- "Dead ends at thick vessels" (PLAN_bridging.md 0.2, 1.3) -----------------------
+
+
+def test_dead_ends_at_thick_walls_are_listed_with_where_a_join_lands():
+    """Each dead end the definition calls ``thick_wall``: its chain to the
+    junction (what Delete takes, never the thick vessel), how far it stopped
+    from the lumen, and the point on the thick vessel's own centreline that
+    "Join to the vessel ahead" joins it to."""
+    from dead_end_fixtures import THICK_AXIS, at_a_thick_wall
+    from dead_end_fixtures import VOXEL_SIZE as FIXTURE_VOXELS
+
+    case = at_a_thick_wall()
+    support = MaskSupport(case.mask, FIXTURE_VOXELS)
+    before = _unchanged(case.graph)
+
+    (item,) = nr.find_dead_ends_at_thick_walls(case.graph, support)
+
+    assert _unchanged(case.graph) == before
+    assert item.kind == nr.THICK_WALL_ENDS and item.nodes[0] == case.tip
+    assert item.measures["kind"] == "thick_wall"
+    assert item.measures["thick_lumen_um"] == pytest.approx(6.0)
+    assert item.measures["thick_centreline_um"] == pytest.approx(12.0)
+    assert item.measures["thick_turn_deg"] == pytest.approx(0.0, abs=1.0)
+    assert set(item.measures["ahead_edge"][:2]) == set(THICK_AXIS)
+    assert case.graph.has_edge(*item.measures["ahead_edge"])
+    assert item.measures["ahead_point_um"] == pytest.approx((10.0, 7.0, 40.0), abs=0.6)
+    (chain,) = item.edges
+    assert case.tip in chain[:2] and not set(chain[:2]) & set(THICK_AXIS)
+    assert "6 µm from a thick vessel's lumen" in item.why
+
+    unrecorded = at_a_thick_wall(recorded=False)
+    assert nr.find_dead_ends_at_thick_walls(unrecorded.graph, support) == []
+
+
+def test_dead_ends_at_thick_walls_come_nearest_the_lumen_first(monkeypatch):
+    from haemolynx.graph import dead_ends as de
+
+    junction = (0.0, 0.0, 0.0)
+    tips = {"a": (0.0, 10.0, 0.0), "b": (0.0, 0.0, 10.0), "c": (0.0, -10.0, 0.0), "d": (0.0, 0.0, -10.0)}
+    G = _graph({"j": junction, **tips})
+    for tip in tips:
+        _vessel(G, tip, "j")
+    lumen = {"a": 8.0, "b": -2.0, "c": 3.0, "d": None}
+
+    def fake(G, **_kw):
+        return {
+            tip: de.DeadEnd(tip=tip, junction="j", kind=de.THICK_WALL if lumen[tip] is not None else de.UNKNOWN,
+                            chain=((tip, "j", 0),), chain_length_um=10.0, tip_um=tips[tip], heading=None,
+                            thick_lumen_um=lumen[tip], thick_centreline_um=lumen[tip],
+                            at_thick_wall=lumen[tip] is not None)
+            for tip in tips
+        }
+
+    monkeypatch.setattr(de, "classify_dead_ends", fake)
+    items = nr.find_dead_ends_at_thick_walls(G, MaskSupport(np.zeros((12, 12, 12), dtype=bool), (1.0, 1.0, 1.0)))
+
+    assert [item.nodes[0] for item in items] == ["b", "c", "a"]
+    assert "2 µm in" in items[0].why and items[0].measures["ahead_edge"] is None

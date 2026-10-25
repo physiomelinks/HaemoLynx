@@ -794,6 +794,42 @@ def test_a_vessel_stopping_across_background_from_the_wall_is_not_drawn_on():
     assert result.degree("S") == 1
 
 
+def _dead_end_kinds_after_split(result, lumen, body, tree):
+    """Every dead end's kind on the split's *result*, the thick centreline
+    recorded on it as the build records it (``stages.mark_dead_end_kinds``)."""
+    from haemolynx.graph import dead_ends as de
+    from haemolynx.graph.thick_vessel_junctions import ThickCentreline, thick_centreline_points_um
+    from haemolynx.preprocessing import MaskSupport
+
+    follower = ThickCentreline.from_region(_region(lumen, body), VS, segmentation=lumen, centreline=tree)
+    de.record_thick_centreline(result, thick_centreline_points_um(tree, VS), follower.radius_um, tolerance_um=1.5)
+    ends = de.classify_dead_ends(result, extent_um=de.image_extent_um(SHAPE, VS), support=MaskSupport(lumen, VS))
+    return {tip: end.kind for tip, end in ends.items()}
+
+
+@pytest.mark.parametrize(("stop_x", "mask_from_x", "joined"), [(33.0, 20.0, True), (35.0, 34.0, False)],
+                         ids=["at the wall", "across background"])
+def test_a_vessel_the_wall_join_leaves_is_a_thick_wall_dead_end(stop_x, mask_from_x, joined):
+    """Phase 1.4 (iii): a vessel stopping across 6 um of background from the
+    thick vessel's lumen gets no bridge, and its dead end is ``thick_wall``
+    -- for review, where "Join to the vessel ahead" lands on the thick
+    centreline. Stopping at the wall (ii), it is joined and no dead end."""
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, mask_from_x), (20, 30, 63))
+    _thin_vessel(lumen, (20, 30, 50), (20, 63, 50))
+    G = _graph(("T0", "T1", T0, T1), ("X", "J", (20, 30, 63), (20, 30, 50)),
+               ("J", "S", (20, 30, 50), (20, 30, stop_x)), ("J", "Y", (20, 30, 50), (20, 63, 50)))
+
+    result = _split(G, lumen, body, tree)
+    kinds = _dead_end_kinds_after_split(result, lumen, body, tree)
+
+    assert bool(_bridges(result)) is joined
+    assert ("S" not in kinds) is joined
+    if not joined:
+        assert kinds["S"] == "thick_wall"
+    assert kinds["X"] == kinds["Y"] == "leaves_image"
+
+
 def test_a_vessel_running_alongside_the_thick_one_is_not_drawn_on_to_it():
     """Ending beside the thick vessel but heading along it (90 degrees off
     the way to its centreline), the mask joined to it all along: not a vessel

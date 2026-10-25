@@ -8,7 +8,7 @@ no flow, and why (``graph.FLOW_STATE``).
 Dead ends that leave the image are open in the tissue: they are counted, but
 never in a dead-end density. The density counts only the interior ones that
 could be the tissue's own blind ends (``blind``, ``unknown``, ``broken``,
-``stops_short``), per mm of vessel and per mm^3 of tissue when the tissue was
+``stops_short``, ``thick_wall``), per mm of vessel and per mm^3 of tissue when the tissue was
 measured; a vessel the image cut has a censored length, and the share of the
 network on such chains is reported, with the mean and median vessel length
 both without the cut vessels and of the cut vessels alone, so the length
@@ -24,10 +24,11 @@ import numpy as np
 
 #: The kinds an interior dead-end density counts: everything that could be
 #: the tissue's own end -- not the image's, not an artefact, not an island.
-DENSITY_KINDS = ("blind", "unknown", "broken", "stops_short")
+DENSITY_KINDS = ("blind", "unknown", "broken", "stops_short", "thick_wall")
 
 _KIND_ROWS = {
     "leaves_image": "Dead Ends Leaving the Image",
+    "thick_wall": "Dead Ends at a Thick Vessel's Wall (not joined)",
     "stops_short": "Dead Ends the Graph Stopped Short of (mask runs on)",
     "broken": "Dead Ends of Vessels Broken by the Segmentation",
     "artefact": "Dead Ends That Are Artefacts",

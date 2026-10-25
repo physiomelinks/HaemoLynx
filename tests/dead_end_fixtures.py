@@ -151,6 +151,32 @@ def island() -> Case:
                 "an end of a piece with no junction")
 
 
+#: A thick vessel along x at (z, y) = (10, 7), 6 um in radius (its wall at
+#: y = 13), both its ends leaving the image, and the tip of
+#: :func:`at_a_thick_wall`'s branch, 12 um from its centreline.
+THICK_AXIS = ((10.0, 7.0, 0.0), (10.0, 7.0, 79.0))
+THICK_RADIUS = 6.0
+THICK_WALL_TIP = (10.0, 19.0, 40.0)
+
+
+def at_a_thick_wall(*, recorded: bool = True) -> Case:
+    """An 11 um branch heading straight for a thick vessel and stopping 6 um
+    short of its lumen across background: within the wall join's reach, off
+    the thick centreline, not joined. Its kind comes from the thick
+    centreline the build records on the graph; without the record it is a
+    blind end (the thick centreline lies past the 10 um a vessel ahead is
+    looked for)."""
+    from haemolynx.graph.dead_ends import record_thick_centreline
+
+    mask, G = _with_branch([THICK_WALL_TIP], extra_paths=[list(THICK_AXIS)])
+    capsule(mask, (10, 7, -5), (10, 7, 85), THICK_RADIUS)
+    if recorded:
+        points = np.array([[10.0, 7.0, x] for x in range(80)])
+        record_thick_centreline(G, points, np.full(len(points), THICK_RADIUS), tolerance_um=1.5)
+    return Case("at_a_thick_wall", mask, G, _node(THICK_WALL_TIP), "thick_wall" if recorded else "unknown",
+                "it stops within reach of a thick vessel's lumen, off its centreline")
+
+
 CASES = (
     leaves_through_face,
     stops_short_of_face,
@@ -163,4 +189,5 @@ CASES = (
     island,
     facing_pair,
     tip_near_own_junction,
+    at_a_thick_wall,
 )

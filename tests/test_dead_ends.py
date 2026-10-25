@@ -427,3 +427,104 @@ def test_the_vessels_the_image_faces_cut_are_the_chains_of_the_ends_leaving_it()
     assert cut == {edge_id(*e) for e in G.edges(keys=True)}
     G.nodes[case.tip][de.DEAD_END_KIND] = "unknown"
     assert len(de.vessels_cut_by_image_faces(G)) == 2
+
+
+# --- at a thick vessel's wall (PLAN_bridging.md 1.3) ---------------------------
+
+
+def test_a_dead_end_at_a_thick_wall_is_told_from_the_recorded_centreline():
+    """The kind is judged on the thick centreline the build recorded on the
+    graph: without the record the same tip is a blind end, and a record of
+    no points is no record."""
+    from dead_end_fixtures import THICK_AXIS, THICK_RADIUS, at_a_thick_wall
+
+    case = at_a_thick_wall()
+    ends, _support = _judge(case)
+    end = ends[case.tip]
+
+    assert end.kind == de.THICK_WALL and end.at_thick_wall
+    assert end.thick_centreline_um == pytest.approx(12.0)
+    assert end.thick_lumen_um == pytest.approx(12.0 - THICK_RADIUS)
+    assert end.thick_turn_deg == pytest.approx(0.0, abs=1.0)
+    # Where a join lands: the thick vessel's own centreline, beside the tip.
+    assert case.graph.has_edge(*end.thick_edge)
+    assert set(end.thick_edge[:2]) == set(THICK_AXIS)
+    assert end.thick_point_um == pytest.approx((10.0, 7.0, 40.0), abs=0.6)
+    row = end.measures()
+    assert row["thick_point_um"] == "10;7;40" and row["thick_lumen_um"] == pytest.approx(6.0)
+
+    assert _judge(at_a_thick_wall(recorded=False))[0][case.tip].kind == de.UNKNOWN
+    de.record_thick_centreline(case.graph, None, None, tolerance_um=1.5)
+    assert de.THICK_CENTRELINE not in case.graph.graph
+    assert _judge(case)[0][case.tip].kind == de.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("offset_um", "at_wall"),
+    [
+        (-0.5, False),   # the tree 0.5 um from the tip: on it
+        (-1.7, False),   # 1.7 um: past the 1.5 um floor, within 30% of the 6 um radius
+        (2.5, True),     # 2.5 um: off the tree, inside the lumen
+        (15.5, True),    # 15.5 um: 9.5 um past the lumen, within the 10 um reach
+        (16.5, None),    # 16.5 um: beyond the reach, not judged at all
+    ],
+)
+def test_the_wall_is_the_wall_joins_own_candidates(offset_um, at_wall):
+    """A tip within the lumen's radius plus ``WALL_JOIN_REACH_UM`` of the
+    thick centreline and further than the split's tolerance of it (the floor,
+    or 30% of the radius) -- the dead ends the split's wall join looks at."""
+    from dead_end_fixtures import THICK_RADIUS, THICK_WALL_TIP, at_a_thick_wall
+
+    case = at_a_thick_wall(recorded=False)
+    tree_y = THICK_WALL_TIP[1] - offset_um
+    points = np.array([[10.0, tree_y, x] for x in range(80)])
+    de.record_thick_centreline(case.graph, points, np.full(len(points), THICK_RADIUS), tolerance_um=1.5)
+    end = _judge(case)[0][case.tip]
+
+    if at_wall is None:
+        assert end.thick_centreline_um is None and not end.at_thick_wall
+    else:
+        assert end.at_thick_wall is at_wall
+        assert end.thick_centreline_um == pytest.approx(abs(offset_um))
+    assert (end.kind == de.THICK_WALL) is bool(at_wall)
+
+
+def test_an_artefact_at_a_thick_wall_stays_an_artefact():
+    """A spur shorter than the stub prune's three radii is no vessel's end,
+    at a thick vessel's wall or not."""
+    from dead_end_fixtures import THICK_RADIUS, _with_branch
+
+    _mask, G = _with_branch([(10, 26, 40)])
+    support = MaskSupport(_mask, VOXEL_SIZE)
+    points = np.array([[10.0, 16.0, x] for x in range(80)])
+    de.record_thick_centreline(G, points, np.full(len(points), THICK_RADIUS), tolerance_um=1.5)
+    end = de.classify_dead_ends(G, extent_um=EXTENT, support=support)[(10.0, 26.0, 40.0)]
+    assert end.at_thick_wall and end.kind == de.ARTEFACT
+
+
+def test_a_recorded_radius_unknown_reads_as_none():
+    """The split reads a tree point whose lumen radius it could not measure
+    as radius 0, and so does the definition."""
+    from dead_end_fixtures import at_a_thick_wall
+
+    case = at_a_thick_wall(recorded=False)
+    points = np.array([[10.0, 7.0, x] for x in range(80)])
+    de.record_thick_centreline(case.graph, points, np.full(len(points), np.inf), tolerance_um=1.5)
+    end = _judge(case)[0][case.tip]
+    # 12 um from the tree, radius 0: 12 um past the "lumen", beyond the reach.
+    assert end.thick_centreline_um is None and end.kind == de.UNKNOWN
+    de.record_thick_centreline(case.graph, points, None, tolerance_um=1.5)
+    assert _judge(case)[0][case.tip].kind == de.UNKNOWN
+
+
+def test_a_dead_end_at_a_thick_wall_is_an_interior_kind_and_not_an_open_end():
+    from dead_end_fixtures import at_a_thick_wall
+
+    case = at_a_thick_wall()
+    support = MaskSupport(case.mask, VOXEL_SIZE)
+    de.record_image_extent(case.graph, SHAPE, VOXEL_SIZE)
+    de.classify_and_mark(case.graph, support=support)
+    assert case.graph.nodes[case.tip][de.DEAD_END_KIND] == de.THICK_WALL
+    assert de.THICK_WALL in de.INTERIOR_DEAD_END_KINDS
+    assert case.tip not in de.open_end_nodes(case.graph)
+    assert de.dead_end_census(de.classify_dead_ends(case.graph, support=support))[de.THICK_WALL] == 1

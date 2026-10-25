@@ -149,6 +149,9 @@ _REVIEW_MEASURES = (
     _c("in_mask_fraction", "fraction", "Dead ends: the share of the chain inside the segmentation."),
     _c("ahead_edge", "-", "Dead ends: the vessel straight ahead, as (u, v, key)."),
     _c("ahead_point_um", "um", "Dead ends: the point on it the join would reach, (z, y, x)."),
+    _c("thick_lumen_um", "um", "Dead ends at thick vessels: how far the tip lies past the thick vessel's lumen (negative inside it)."),
+    _c("thick_centreline_um", "um", "Dead ends at thick vessels: the tip's distance to the thick vessel's centreline tree."),
+    _c("thick_turn_deg", "degrees", "Dead ends at thick vessels: the turn from the tip's heading onto that centreline."),
     _c("shorter_um", "um", "Two in one lumen: the shorter vessel's length."),
     _c("lengths_um", "um", "Two in one lumen: both lengths (;-separated)."),
     _c("cuts_off", "-", "Two in one lumen: for each, whether deleting it cuts vessels off (;-separated)."),
@@ -208,7 +211,7 @@ VESSEL_ARRAYS: dict[str, str] = {
 }
 NODE_ARRAYS: dict[str, str] = {
     "node_id": "The graph's node ID (the IDs boundary settings and the panel use).",
-    "dead_end_kind": "For a dead end: leaves_image, island_end, artefact, stops_short, broken, blind or unknown; empty for every other node.",
+    "dead_end_kind": "For a dead end: leaves_image, island_end, artefact, thick_wall, stops_short, broken, blind or unknown; empty for every other node.",
     "boundary_role": "inlet, outlet, open_end_feeds or open_end_drains (an open end leaving the image that the solve gave a condition, by which way its flow runs), open_end (given a condition, no flow), or empty.",
     "pressure": "The node's pressure; blank where no inlet and outlet reach it.",
 }

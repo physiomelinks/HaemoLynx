@@ -1535,6 +1535,28 @@ def test_statistics_leave_zero_resistance_bridges_out():
     assert G.number_of_edges() == 4, "the graph itself keeps its bridge"
 
 
+def test_a_dead_end_at_a_thick_wall_has_its_row_and_counts_in_the_density():
+    """PLAN_bridging.md 1.3: a vessel ending at a thick vessel's wall, not
+    joined, could be the tissue's own end; an artefact never is."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND
+
+    G = nx.MultiGraph()
+    pos = {0: (5, 5, 0), 1: (5, 5, 20), 2: (5, 5, 40), 3: (5, 15, 20)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p, dtype=float))
+    for v in (0, 2, 3):
+        G.add_edge(1, v, length=float(np.linalg.norm(np.subtract(pos[1], pos[v]))))
+    for n, kind in {0: "leaves_image", 2: "thick_wall", 3: "artefact"}.items():
+        G.nodes[n][DEAD_END_KIND] = kind
+
+    rows = compute_comprehensive_vessel_statistics(G, enabled_measures=frozenset({"dead_ends"}))["Dead Ends"]
+
+    assert rows["Dead Ends at a Thick Vessel's Wall (not joined)"] == 1
+    assert rows["Dead Ends That Are Artefacts"] == 1
+    assert rows["Interior Dead Ends per mm of Vessel (1/mm)"] == pytest.approx(1 / (50 / 1000))
+    assert rows["Interior Dead-End Chain Length, median (microns)"] == pytest.approx(20.0)
+
+
 def test_the_dead_ends_section_counts_kinds_density_cut_length_and_why_there_is_no_flow():
     """PLAN_dead_ends.md Phase 7: by kind, the interior density (open ends
     and artefacts never in it), chain lengths, the share the faces cut, and

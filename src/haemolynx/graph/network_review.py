@@ -36,6 +36,7 @@ __all__ = [
     "HAIRPINS",
     "REVIEW_KINDS",
     "TERMINAL_NODES",
+    "THICK_WALL_ENDS",
     "ReviewItem",
     "TWO_IN_ONE_LUMEN",
     "UNCOVERED_MASK",
@@ -44,6 +45,7 @@ __all__ = [
     "find_boundary_issues",
     "find_close_junctions",
     "find_dead_ends",
+    "find_dead_ends_at_thick_walls",
     "find_diameter_jumps",
     "find_broken_vessels",
     "find_facing_ends",
@@ -66,6 +68,9 @@ EdgeKey = tuple[Any, Any, Any]
 CLOSE_JUNCTIONS = "close_junctions"
 HAIRPINS = "hairpins"
 DEAD_ENDS = "dead_ends"
+#: The "Dead ends at thick vessels" list (PLAN_bridging.md 0.2, 1.3): every
+#: dead end the definition calls ``thick_wall``.
+THICK_WALL_ENDS = "thick_wall_ends"
 TWO_IN_ONE_LUMEN = "two_in_one_lumen"
 FACING_ENDS = "facing_ends"
 #: The "Broken vessels" review list (PLAN_dead_ends.md Phase 6): the facing
@@ -90,6 +95,7 @@ REVIEW_KINDS = (
     CLOSE_JUNCTIONS,
     HAIRPINS,
     DEAD_ENDS,
+    THICK_WALL_ENDS,
     TWO_IN_ONE_LUMEN,
     FACING_ENDS,
     UNCOVERED_MASK,
@@ -885,6 +891,7 @@ def find_boundary_issues(
 #: the list groups them.
 DEAD_END_WORDS = {
     "artefact": "not a vessel end",
+    "thick_wall": "it stops at a thick vessel's wall, not joined to it",
     "stops_short": "the segmented vessel runs on past its tip",
     "broken": "another vessel lies straight ahead across a gap",
     "unknown": "a blind end, or a broken vessel",
@@ -967,6 +974,73 @@ def find_dead_ends(
         )))
     items.sort(key=lambda entry: entry[:2])
     return [item for _rank, _length, item in items]
+
+
+def find_dead_ends_at_thick_walls(
+    G: nx.MultiGraph,
+    support,
+    *,
+    stub_radius_multiple: float = 3.0,
+) -> list[ReviewItem]:
+    """Every dead end the definition calls ``thick_wall`` (:mod:`haemolynx.graph.dead_ends`):
+    a vessel stopping within reach of a thick vessel's lumen, off its
+    centreline, that the thick-vessel split did not join to it -- a vessel
+    opening into the thick one the wall join refused (turning away, across
+    background, beside a vessel in the same lumen, closing a loop), or one
+    ending beside it. Nearest the lumen first. Each carries how far its tip
+    lies past the lumen, the turn onto the thick centreline, and where on the
+    graph's own thick centreline a join lands (``ahead_edge``,
+    ``ahead_point_um``: "Join to the vessel ahead" joins it there, and post
+    processing bridges the stretch inside the lumen). Empty for a graph
+    without a thick centreline recorded (``dead_ends.record_thick_centreline``)."""
+    from .dead_ends import THICK_WALL, classify_dead_ends, image_extent_um
+
+    ends = classify_dead_ends(
+        G, extent_um=image_extent_um(support.mask.shape, support.voxel_size_zyx), support=support,
+        stub_radius_multiple=stub_radius_multiple,
+    )
+    pos = _node_pos(G)
+    name = _namer(G)
+    items = []
+    for tip, end in ends.items():
+        if end.kind != THICK_WALL:
+            continue
+        chain = tuple(name(*e) for e in end.chain)
+        edge = None if end.thick_edge is None or not G.has_edge(*end.thick_edge) else tuple(name(*end.thick_edge))
+        point = None if edge is None else tuple(float(c) for c in end.thick_point_um)
+        inside = (end.thick_lumen_um or 0.0) < 0.0
+        turn = "" if end.thick_turn_deg is None else f", turning {end.thick_turn_deg:.0f}° onto its centreline"
+        why = (
+            f"Dead end {tip} stops "
+            + (f"inside a thick vessel's lumen, {-end.thick_lumen_um:.3g} µm in" if inside
+               else f"{end.thick_lumen_um:.3g} µm from a thick vessel's lumen")
+            + f"{turn}, not joined to it: a vessel opening into it, or one ending beside it."
+        )
+        measures = {
+            "kind": end.kind,
+            "length_um": end.chain_length_um,
+            "vessels": len(chain),
+            "thick_lumen_um": end.thick_lumen_um,
+            "thick_centreline_um": end.thick_centreline_um,
+            "thick_turn_deg": end.thick_turn_deg,
+            "tip_radius_um": end.tip_radius_um,
+            "mask_run_um": end.mask_run_um,
+            "in_mask_fraction": end.in_mask_fraction,
+            "ahead_edge": edge,
+            "ahead_point_um": point,
+        }
+        points = _points(G, chain, pos, extra=[np.asarray(point)] if point is not None else ())
+        items.append((float(end.thick_lumen_um), ReviewItem(
+            kind=THICK_WALL_ENDS,
+            nodes=(tip, end.junction),
+            edges=chain,
+            centre_um=_centre([pos[tip]]) if tip in pos else _centre(points),
+            why=why,
+            measures=measures,
+            points_um=points,
+        )))
+    items.sort(key=lambda entry: entry[0])
+    return [item for _distance, item in items]
 
 
 def find_two_in_one_lumen(G: nx.MultiGraph, support) -> list[ReviewItem]:

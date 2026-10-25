@@ -290,6 +290,58 @@ def test_the_clean_ups_judge_the_strand_on_the_thick_centreline_by_the_runs_tole
     assert lengths[4.0] > 25.0
 
 
+def test_marking_dead_ends_records_the_thick_centreline_the_wall_is_judged_on(tmp_path):
+    """``mark_dead_end_kinds`` keeps the thick vessels' centreline tree on the
+    graph it marks (PLAN_bridging.md 1.3), so the dead end stopping at the
+    thick vessel's wall is ``thick_wall`` there and to every later reader of
+    the graph -- post processing's re-judging, the review lists -- without
+    the mask's thick region at hand."""
+    from dead_end_fixtures import SHAPE as FIXTURE_SHAPE
+    from dead_end_fixtures import THICK_AXIS, THICK_RADIUS, at_a_thick_wall
+    from dead_end_fixtures import VOXEL_SIZE as FIXTURE_VOXELS
+    from lumen_artefact_fixtures import capsule
+
+    from haemolynx.graph import dead_ends as de
+    from haemolynx.pipeline.stages import mark_dead_end_kinds, network_context
+
+    case = at_a_thick_wall(recorded=False)
+    body = capsule(np.zeros(FIXTURE_SHAPE, dtype=bool), (10, 7, -5), (10, 7, 85), THICK_RADIUS)
+    region = case.mask & (ndimage.distance_transform_edt(~body) <= 3.0)
+    settings = _settings(tmp_path, thick_bridge_centreline_tolerance_um=1.2)
+
+    mark_dead_end_kinds(settings, case.graph, network_context(settings, case.mask, FIXTURE_VOXELS, region))
+
+    record = case.graph.graph[de.THICK_CENTRELINE]
+    points = record["points_um"]
+    # The tree the split bridges to, inside the thick vessel along its length.
+    off_axis = np.hypot(points[:, 0] - THICK_AXIS[0][0], points[:, 1] - THICK_AXIS[0][1])
+    assert np.all(off_axis <= THICK_RADIUS) and np.ptp(points[:, 2]) > 60.0
+    assert len(record["radius_um"]) == len(points)
+    assert np.all(np.isfinite(record["radius_um"]) & (record["radius_um"] <= THICK_RADIUS + 1.0))
+    assert record["tolerance_um"] == 1.2
+    assert case.graph.nodes[case.tip][de.DEAD_END_KIND] == de.THICK_WALL
+
+    # A run with no thick region keeps no record, a stale one included.
+    mark_dead_end_kinds(settings, case.graph, network_context(settings, case.mask, FIXTURE_VOXELS))
+    assert de.THICK_CENTRELINE not in case.graph.graph
+    assert case.graph.nodes[case.tip][de.DEAD_END_KIND] == de.UNKNOWN
+
+
+def test_the_built_network_carries_its_thick_centreline(tmp_path):
+    from haemolynx.graph import dead_ends as de
+
+    skeleton, image, region = _thick_tee()
+    volume = _volume(tmp_path, skeleton, image)
+    volume.thick_vessel_mask = region
+    network = build_network(_settings(tmp_path, visualize_results=False), volume, SCHEMA)
+
+    points = network.graph.graph[de.THICK_CENTRELINE]["points_um"]
+    assert len(points) > 30 and np.all(np.hypot(points[:, 0] - 24.0, points[:, 1] - 24.0) <= 5.0)
+
+    plain = build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+    assert de.THICK_CENTRELINE not in plain.graph.graph
+
+
 def test_a_run_without_a_thick_vessel_region_leaves_the_choice_to_the_wall(tmp_path, monkeypatch):
     seen = _spy_on_graph_building(monkeypatch)
     build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)

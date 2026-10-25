@@ -349,6 +349,13 @@ def thick_vessel_centreline_voxels(
     )
 
 
+def thick_centreline_points_um(centreline: np.ndarray, voxel_size_zyx) -> np.ndarray:
+    """The tree's points in physical ``(z, y, x)`` microns, in the order its
+    radii are measured (:class:`ThickCentreline`), from a volume of it or its
+    voxels."""
+    return _centreline_voxels(centreline, 3) * np.asarray(voxel_size_zyx, dtype=float)
+
+
 def _centreline_voxels(centreline: np.ndarray, ndim: int) -> np.ndarray:
     """The tree's voxels in C order, from either form a caller may hold: a
     boolean volume of it, or its voxels already (an ``(n, ndim)`` integer

@@ -2730,10 +2730,19 @@ def _mark_dead_end_kinds(
 def mark_dead_end_kinds(settings: Mapping[str, Any], G: nx.MultiGraph, context: NetworkContext) -> None:
     """What each dead end of *G* is, judged through *context*'s mask and
     written on its node, as :func:`build_network` marks the graph it saves:
-    the image's extent recorded, then every dead end's kind
-    (``graph.dead_ends``). The settings optimiser's scorecard counts the
-    same marks on its graphs."""
+    the image's extent and the thick vessels' centreline tree recorded (so
+    every later reader of the graph judges a dead end at a thick vessel's
+    wall alike), then every dead end's kind (``graph.dead_ends``). The
+    settings optimiser's scorecard counts the same marks on its graphs."""
     graph.dead_ends.record_image_extent(G, context.binary_mask.shape, context.voxel_size_zyx)
+    graph.dead_ends.record_thick_centreline(
+        G,
+        None if context.thick_tree is None else graph.thick_vessel_junctions.thick_centreline_points_um(
+            context.thick_tree, context.voxel_size_zyx
+        ),
+        context.thick_tree_radius,
+        tolerance_um=thick_bridge_centreline_tolerance_um(settings),
+    )
     _mark_dead_end_kinds(
         settings, G, context.binary_mask, context.voxel_size_zyx, context.radius_at,
         support=context.mask_support,

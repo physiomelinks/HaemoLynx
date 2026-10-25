@@ -118,14 +118,11 @@ the same-lumen guard (a short join judged at its middle) and the loop guards, ne
 -- one the clean-up would break (on E14.5 all 10 short loops the build left ran through such
 a join), then bridged like any vessel (`join_dead_ends_at_walls`; the
 edge records `joined_at_thick_wall_um`) -- skeletonisation often ends a thin arm at the wall;
-a bridge carrying a thick centreline's end on along its own line (`TAPER_MIN_COSINE`, 45
-degrees), the one most along it at each end, is the thick vessel narrowing and stays vessel
-(an elbow at the end keeps its bridge, and so does a side vessel leaving the same end), marked
-`THICK_TAPER` so the clean-up after the split leaves it alone as it does a bridge (never one of
-a pair in one lumen, a doubled stretch or a short loop's side; degree-2 merging keeps a taper
-apart from a vessel as it does a bridge, `taper_meets_vessel`: merged, the mark spread along
-the whole vessel and on with every merge, and dropped, the clean-up rewired E14.5's tapers as
-second strands); and at a fork of the thick centreline an arm at most
+a bridge carrying a thick centreline's end on along its own line was, until 2026-10-25, the
+thick vessel narrowing and stayed vessel (`TAPER_MIN_COSINE`, 45 degrees, marked `THICK_TAPER`;
+dropped by Harvey after grid P, below: it is bridged like any other now, and the clean-up still
+leaves an edge marked `THICK_TAPER` alone, as it does a bridge, for graphs saved before); and at
+a fork of the thick centreline an arm at most
 `FORK_BRANCH_MAX_RADIUS_FRACTION` (0.8) of the trunk's radius gets a bridge over its stretch
 inside the trunk's lumen (`bridge_forks`). `thick_vessel_extend_centreline_ends`
 (`extend_thick_ends`, **on by default** since 2026-10-20, Harvey's call; not yet checked on a
@@ -200,4 +197,7 @@ without: tapers left as vessel 15 -> 0, bridges in the built graph 63 (505 um) -
 radius-shaped, 13 longer than the radius, 4 at forks, 1 along the centreline: no new shape), vessel
 47,139 -> 47,012 um, dead ends 394 -> 393, vessels solved 1,101 -> 1,119, network resistance
 2.96e15 -> 2.65e15 Pa.s/m^3 (-10%), build 196 -> 194 s. The clean-up still leaves an edge marked
-`THICK_TAPER` alone, for graphs saved before.
+`THICK_TAPER` alone, for graphs saved before. **A dead end the wall join leaves** (within its
+reach of the lumen, off the tree) is a `thick_wall` dead end since 2026-10-25, judged on the tree
+the build records on the graph and listed in Post processing's "Dead ends at thick vessels"
+(`dead_ends_and_open_ends.md`): 36 of E14.5's 393.

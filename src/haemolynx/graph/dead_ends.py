@@ -13,6 +13,14 @@ hangs from), as the stub prune judges a stub -- and given one kind:
   tip inside the lumen of the vessel it leaves or of one close by in the
   network, a strand beside another centreline in one lumen, or a blind end
   shorter than the stub prune's radius rule.
+- :data:`THICK_WALL` -- it stops at a thick vessel's wall and was not joined:
+  its tip lies within ``thick_vessel_junctions.WALL_JOIN_REACH_UM`` of a thick
+  vessel's lumen and off its centreline (the candidates the thick-vessel
+  split's wall join looks at), judged on the thick centreline the build
+  recorded on the graph (:func:`record_thick_centreline`). A vessel opening
+  into the thick one that the join refused, or one ending beside it: for
+  review (PLAN_bridging.md 1.3). It takes the place of stops short, broken
+  and unknown; an artefact stays an artefact.
 - :data:`STOPS_SHORT` -- the segmented vessel runs on past the tip: a vessel
   the graph stopped short of.
 - :data:`BROKEN` -- another vessel lies straight ahead across one stretch of
@@ -48,12 +56,13 @@ from ._helpers import densify_polyline, edge_id, edge_sample_points, points_with
 LEAVES_IMAGE = "leaves_image"
 ISLAND_END = "island_end"
 ARTEFACT = "artefact"
+THICK_WALL = "thick_wall"
 STOPS_SHORT = "stops_short"
 BROKEN = "broken"
 BLIND = "blind"
 UNKNOWN = "unknown"
 #: Every kind, in the order the census and the review list show them.
-DEAD_END_KINDS = (LEAVES_IMAGE, STOPS_SHORT, BROKEN, ARTEFACT, BLIND, UNKNOWN, ISLAND_END)
+DEAD_END_KINDS = (LEAVES_IMAGE, THICK_WALL, STOPS_SHORT, BROKEN, ARTEFACT, BLIND, UNKNOWN, ISLAND_END)
 
 #: The node attribute :func:`mark_dead_end_kinds` writes, and who set it.
 DEAD_END_KIND = "dead_end_kind"
@@ -87,6 +96,9 @@ AHEAD_MAX_HOPS = 40
 MASK_RUN_MAX_UM = 30.0
 #: The tip is "inside" another lumen within that lumen's radius plus this.
 LUMEN_MARGIN_UM = 1.0
+#: The graph attribute :func:`record_thick_centreline` writes: the thick
+#: vessels' centreline tree, so every caller judges :data:`THICK_WALL` alike.
+THICK_CENTRELINE = "thick_centreline"
 
 
 @dataclass(frozen=True)
@@ -135,6 +147,18 @@ class DeadEnd:
     ahead_junctions_away: Optional[int] = None
     ahead_background_stretches: Optional[int] = None
     ahead_background_um: Optional[float] = None
+    #: For a tip within reach of a thick vessel (:func:`record_thick_centreline`):
+    #: its distance to the thick centreline tree, past the thick lumen's wall
+    #: (negative inside the lumen), the turn from its heading onto the tree,
+    #: whether it is at the wall (off the tree, within the reach), and the
+    #: point of the graph's own thick centreline nearest the tree there, with
+    #: its edge -- where a join to the thick vessel lands.
+    thick_centreline_um: Optional[float] = None
+    thick_lumen_um: Optional[float] = None
+    thick_turn_deg: Optional[float] = None
+    at_thick_wall: bool = False
+    thick_edge: Optional[tuple] = None
+    thick_point_um: Optional[tuple] = None
     #: The old artefact labels, for the lumen-artefact report:
     #: ``inside_other_lumen``, ``beside_vessel``, ``off_mask``,
     #: ``mask_continues``, ``short``.
@@ -154,7 +178,7 @@ class DeadEnd:
         row.pop("extra", None)
         row["chain"] = ";".join(f"{a}-{b}" for a, b, _k in self.chain)
         row["flags"] = ";".join(self.flags)
-        for name in ("tip_um", "heading", "ahead_edge"):
+        for name in ("tip_um", "heading", "ahead_edge", "thick_edge", "thick_point_um"):
             value = row.get(name)
             row[name] = "" if value is None else ";".join(f"{v:.4g}" if isinstance(v, float) else str(v) for v in value)
         if self.tip_radius_um and self.junction_radius_um:
@@ -301,6 +325,90 @@ def leaves_image(
     return runs_on, runs_on
 
 
+def record_thick_centreline(
+    G: nx.Graph, points_um: Optional[np.ndarray], radius_um: Optional[np.ndarray], *, tolerance_um: float
+) -> None:
+    """Keep the thick vessels' centreline tree on *G*: its points (physical
+    ``(z, y, x)`` microns), the lumen's radius at each (NaN where unknown) and
+    the split's tolerance floor (``thick_bridge_centreline_tolerance_um``),
+    so every caller of :func:`classify_dead_ends` judges :data:`THICK_WALL`
+    on the same tree, as :func:`record_image_extent` keeps the image's
+    extent. With no points the record is taken off."""
+    points = np.empty((0, 3)) if points_um is None else np.asarray(points_um, dtype=float).reshape(-1, 3)
+    if not len(points):
+        G.graph.pop(THICK_CENTRELINE, None)
+        return
+    radius = np.full(len(points), np.nan) if radius_um is None else np.asarray(radius_um, dtype=float).reshape(-1)
+    G.graph[THICK_CENTRELINE] = {
+        "points_um": points.astype(np.float32),
+        "radius_um": radius.astype(np.float32),
+        "tolerance_um": float(tolerance_um),
+    }
+
+
+class _ThickWall:
+    """The thick centreline :func:`record_thick_centreline` kept on a graph,
+    read as the split's wall join reads its tree: a tip within the lumen's
+    radius plus ``WALL_JOIN_REACH_UM`` of it, and further than the tree's
+    tolerance, is at the wall."""
+
+    def __init__(self, record: Mapping[str, Any]):
+        from scipy.spatial import cKDTree
+
+        from .thick_vessel_junctions import CENTRELINE_TOLERANCE_PER_RADIUS, WALL_JOIN_REACH_UM
+
+        self.points = np.asarray(record["points_um"], dtype=float).reshape(-1, 3)
+        radius = np.asarray(record["radius_um"], dtype=float).reshape(-1)
+        self.radius = np.where(np.isfinite(radius), radius, 0.0)
+        self.tolerance = np.maximum(float(record["tolerance_um"]), CENTRELINE_TOLERANCE_PER_RADIUS * self.radius)
+        self.reach_um = float(WALL_JOIN_REACH_UM)
+        self.tree = cKDTree(self.points)
+
+    @classmethod
+    def of(cls, G: nx.Graph) -> Optional["_ThickWall"]:
+        record = G.graph.get(THICK_CENTRELINE)
+        if not record or not len(record.get("points_um", ())):
+            return None
+        return cls(record)
+
+
+def _thick_wall_values(
+    G: nx.MultiGraph, thick: _ThickWall, tip_um: np.ndarray, heading: Optional[np.ndarray],
+    centrelines: "_Centrelines", own: set,
+) -> dict[str, Any]:
+    """The :class:`DeadEnd` fields for a tip near a thick vessel; empty for
+    one beyond the reach."""
+    from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    distance, nearest = thick.tree.query(tip_um)
+    radius = float(thick.radius[nearest])
+    if distance > radius + thick.reach_um:
+        return {}
+    target = thick.points[nearest]
+    values: dict[str, Any] = {
+        "thick_centreline_um": float(distance),
+        "thick_lumen_um": float(distance) - radius,
+        "at_thick_wall": bool(distance > thick.tolerance[nearest]),
+    }
+    if heading is not None and distance > 0:
+        cosine = float(np.dot(target - tip_um, heading)) / float(distance)
+        values["thick_turn_deg"] = float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
+    # The graph's own thick centreline at that tree point: a vessel's samples
+    # (never a bridge's, never the dead end's own chain) within the tree's
+    # tolerance of it, else within its lumen.
+    for reach in (float(thick.tolerance[nearest]), max(radius, float(thick.tolerance[nearest]))):
+        near = [
+            i for i in centrelines.near(target, reach, own)
+            if not G.edges[centrelines.edges[int(centrelines.owners[i])]].get(IS_ZERO_RESISTANCE)
+        ]
+        if near:
+            best = min(near, key=lambda i: float(np.linalg.norm(centrelines.points[i] - target)))
+            values["thick_edge"] = tuple(centrelines.edges[int(centrelines.owners[best])])
+            values["thick_point_um"] = tuple(float(c) for c in centrelines.points[best])
+            break
+    return values
+
+
 def mask_run_um(tip_um: np.ndarray, heading: np.ndarray, support, *, limit_um: float = MASK_RUN_MAX_UM) -> float:
     """How far the mask runs on from the tip along *heading* before the first
     background, starting one lumen radius out (the tip's own lumen does not
@@ -440,6 +548,7 @@ def classify_dead_ends(
         if n in G and G.degree(n) == 1 and G.nodes[n].get("pos") is not None
     ]
     centrelines = _Centrelines(G, support) if wanted else None
+    thick = _ThickWall.of(G) if wanted else None
     found: dict[Any, DeadEnd] = {}
     for tip in wanted:
         chain_nodes, chain_edges = chain_to_junction(G, tip)
@@ -521,6 +630,8 @@ def classify_dead_ends(
                         )
                         values["ahead_background_stretches"] = stretches
                         values["ahead_background_um"] = background
+        if thick is not None:
+            values.update(_thick_wall_values(G, thick, tip_um, heading, centrelines, own))
         values["flags"] = tuple(flags)
         values["kind"] = (
             G.nodes[tip][DEAD_END_KIND] if values.get("source") == SOURCE_REVIEW
@@ -535,11 +646,21 @@ def _not_a_neighbour(junctions_away: Optional[int]) -> bool:
 
 
 def _kind(values: Mapping[str, Any], *, junction_degree: int, leaves: bool, has_mask: bool) -> str:
-    """The first proposal of PLAN_dead_ends.md, section 4, in its order."""
+    """The first proposal of PLAN_dead_ends.md, section 4, in its order, then
+    :data:`THICK_WALL` (PLAN_bridging.md 1.3) in place of any vessel's end
+    the split's wall join looked at and left. An artefact stays one: it is
+    no vessel's end."""
     if junction_degree <= 1:
         return ISLAND_END
     if leaves:
         return LEAVES_IMAGE
+    kind = _interior_kind(values, has_mask=has_mask)
+    if kind != ARTEFACT and values.get("at_thick_wall"):
+        return THICK_WALL
+    return kind
+
+
+def _interior_kind(values: Mapping[str, Any], *, has_mask: bool) -> str:
     flags = set(values.get("flags", ()))
     if values.get("tip_in_other_lumen") and _not_a_neighbour(values.get("lumen_junctions_away")):
         # It ends inside a vessel the network only reaches round about: a
@@ -708,7 +829,7 @@ def remove_pieces_without_junction(G: nx.MultiGraph) -> dict[str, float]:
 #: The dead ends :func:`remove_interior_dead_ends` takes: those inside the
 #: image the classifier marked (not one leaving it, not an island's, not one a
 #: person marked a real blind end).
-INTERIOR_DEAD_END_KINDS = (STOPS_SHORT, UNKNOWN, ARTEFACT, BROKEN)
+INTERIOR_DEAD_END_KINDS = (STOPS_SHORT, UNKNOWN, ARTEFACT, BROKEN, THICK_WALL)
 
 
 def remove_interior_dead_ends(G: nx.MultiGraph, kinds: Sequence[str] = INTERIOR_DEAD_END_KINDS) -> dict[str, float]:
@@ -774,6 +895,8 @@ __all__ = [
     "SOURCE_CLASSIFIER",
     "SOURCE_REVIEW",
     "STOPS_SHORT",
+    "THICK_CENTRELINE",
+    "THICK_WALL",
     "UNKNOWN",
     "chain_length_um",
     "chain_path",
@@ -791,6 +914,7 @@ __all__ = [
     "open_end_nodes",
     "reclassify_dead_ends",
     "record_image_extent",
+    "record_thick_centreline",
     "remove_interior_dead_ends",
     "remove_pieces_without_junction",
     "set_dead_end_kind",

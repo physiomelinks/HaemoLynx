@@ -74,7 +74,7 @@ Written to the run's output folder (vtk_output_prefix's). Every node as a point:
 | Column | Unit | Meaning |
 |---|---|---|
 | `node_id` | `-` | The graph's node ID (the IDs boundary settings and the panel use). |
-| `dead_end_kind` | `-` | For a dead end: leaves_image, island_end, artefact, stops_short, broken, blind or unknown; empty for every other node. |
+| `dead_end_kind` | `-` | For a dead end: leaves_image, island_end, artefact, thick_wall, stops_short, broken, blind or unknown; empty for every other node. |
 | `boundary_role` | `-` | inlet, outlet, open_end_feeds or open_end_drains (an open end leaving the image that the solve gave a condition, by which way its flow runs), open_end (given a condition, no flow), or empty. |
 | `pressure` | `Pa` | The node's pressure; blank where no inlet and outlet reach it. |
 
@@ -558,6 +558,9 @@ Only the measures of the item's own list are filled.
 | `in_mask_fraction` | `fraction` | Dead ends: the share of the chain inside the segmentation. |
 | `ahead_edge` | `-` | Dead ends: the vessel straight ahead, as (u, v, key). |
 | `ahead_point_um` | `um` | Dead ends: the point on it the join would reach, (z, y, x). |
+| `thick_lumen_um` | `um` | Dead ends at thick vessels: how far the tip lies past the thick vessel's lumen (negative inside it). |
+| `thick_centreline_um` | `um` | Dead ends at thick vessels: the tip's distance to the thick vessel's centreline tree. |
+| `thick_turn_deg` | `degrees` | Dead ends at thick vessels: the turn from the tip's heading onto that centreline. |
 | `shorter_um` | `um` | Two in one lumen: the shorter vessel's length. |
 | `lengths_um` | `um` | Two in one lumen: both lengths (;-separated). |
 | `cuts_off` | `-` | Two in one lumen: for each, whether deleting it cuts vessels off (;-separated). |

@@ -164,13 +164,14 @@ names it lists.
 |---|---|---|
 | Dead Ends | count | Dead ends: nodes only one vessel reaches. |
 | Dead Ends Leaving the Image | count | Dead ends whose tip touches an image face, or whose segmented vessel runs on to one: open in the tissue, never in a dead-end density. |
+| Dead Ends at a Thick Vessel's Wall (not joined) | count | Dead ends stopping within 10 um of a thick vessel's lumen, off its centreline, that the thick-vessel split did not join to it. |
 | Dead Ends the Graph Stopped Short of (mask runs on) | count | Dead ends where the segmented vessel runs on past the tip. |
 | Dead Ends of Vessels Broken by the Segmentation | count | Dead ends with another vessel straight ahead across one stretch of background. |
 | Dead Ends That Are Artefacts | count | Dead ends off the mask, inside a neighbouring lumen or along a vessel's wall. |
 | Blind Ends (marked by hand) | count | Dead ends a person marked as real blind ends. |
 | Interior Dead Ends, Blind or Broken (unknown) | count | Interior dead ends no rule could class. |
 | Ends of Pieces Without a Junction | count | Dead ends of pieces of network with no junction. |
-| Interior Dead Ends per mm of Vessel (1/mm) | 1/mm | Interior dead ends that could be the tissue's own (blind, unknown, broken, stopped short) per mm of vessel. |
+| Interior Dead Ends per mm of Vessel (1/mm) | 1/mm | Interior dead ends that could be the tissue's own (blind, unknown, broken, stopped short, at a thick vessel's wall) per mm of vessel. |
 | Interior Dead Ends per mm^3 of Tissue (1/mm^3) | 1/mm^3 | The same dead ends per cubic millimetre of measured tissue. |
 | Interior Dead-End Chain Length, median (microns) | um | The median length of those dead ends' chains, tip to junction. |
 | Interior Dead-End Chain Length, 10th / 90th percentile (microns) | um | The 10th and 90th percentiles of those chain lengths. |
