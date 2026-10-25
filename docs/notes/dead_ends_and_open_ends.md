@@ -132,3 +132,25 @@ What landed on `claude/plan-dead-ends-36f84f`, and why each choice:
   outlet in, each with a drop of exactly 0: the order's mean read low. They are out now.
 - **"Dead end" counts in network handling** counted loops off one node, parallel pairs and
   self-loops; those are `removed_loop_*` now.
+
+## The fresh grids marked (2026-10-25)
+
+Harvey marked G1'-G3' (90 marks; `outputs/dead_end_review/FIT_G1b_G2b_G3b.md` in the
+`plan-dead-ends-36f84f` worktree). None of the rules fixed beforehand reaches 90%:
+
+| grid | rule | right | all one way |
+|---|---|---|---|
+| G1' | `beside_share > 0.0104` is X | 13/21 | 12/21 |
+| G2' | the classifier's `leaves_image` is F | 14/26 | 18/26 |
+| G2' | `face_distance_um <= 11.3` is F | 18/26 | 18/26 |
+| G3' | `ahead_turn_deg <= 30.5` is J | 21/30 | 29/30 |
+
+- The turn-angle order the review lists had been given on G3's fit was taken out again.
+- G3': 1 of 30 joins was the same vessel. Joins stay review only.
+- G1' by depth: below 40 um, 12 S / 2 X / 1 T; in the top 40 um, 7 X / 6 T / 2 B, no S. G1 (another
+  segmentation) showed no difference.
+- G1' and `stops_short`: 7 of the classifier's 9 `stops_short` tips were marked S, 2 X, none T;
+  Harvey's 7 T marks fell on `unknown`, `broken` and `artefact`. Nothing separates T from the
+  rest (best 24/30 against 23/30).
+- G2': tips near the deep z face marked as leaving even 12-14 um out; some the definition calls
+  leaving (x faces, one at the top face) marked as ending inside.

@@ -562,10 +562,24 @@ def test_terminal_edge_lengths_um_only_counts_degree_one_endpoints():
     assert lengths.size == 0  # no degree-1 nodes once the loop closes
 
 
-def test_terminal_edge_lengths_um_finds_a_dangling_stub():
+def test_terminal_edge_lengths_um_reads_each_stub_whole_to_its_junction():
+    """The dead-end definition's chain (PLAN_dead_ends.md 3.2 item 2): a
+    stub of two short edges off a junction is one 7 um stub, as the prune
+    judges it, not its 4 um last edge."""
+    G = nx.MultiGraph()
+    for leaf in ("A", "B", "C"):
+        G.add_edge("J", leaf, length=20.0)
+    G.add_edge("J", "x", length=3.0)
+    G.add_edge("x", "tip", length=4.0)
+    lengths = c.terminal_edge_lengths_um(G)
+    assert sorted(lengths.tolist()) == [7.0, 20.0, 20.0, 20.0]
+
+
+def test_terminal_edge_lengths_um_counts_a_piece_without_a_junction_once():
     G = nx.MultiGraph()
     G.add_edge("A", "B", length=5.0)
     G.add_edge("B", "C", length=3.0)
-    G.add_edge("C", "D", length=2.0)  # A and D are both degree-1 terminals
-    lengths = c.terminal_edge_lengths_um(G)
-    assert sorted(lengths.tolist()) == [2.0, 5.0]
+    G.add_edge("C", "D", length=2.0)  # A and D both end the one piece
+    assert c.terminal_edge_lengths_um(G).tolist() == [10.0]
+    G.add_edge("E", "F")  # no length: left out
+    assert c.terminal_edge_lengths_um(G).tolist() == [10.0]

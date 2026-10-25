@@ -567,24 +567,10 @@ def test_a_dead_end_in_a_facing_pair_is_not_listed_again_as_a_side_join():
     assert case.tip in items[0].nodes
 
 
-def test_broken_vessels_are_ranked_by_the_turn_onto_the_join():
-    """G3's best measure (Harvey, 2026-10-12): the smaller the turn onto the
-    vessel ahead, the likelier the join. Ties go to the shorter gap."""
-    G, support = _broken_vessel(15.0)
-    items = nr.find_broken_vessels(G, support, max_gap_um=10.0)
-    fake = [
-        nr.ReviewItem(kind=nr.FACING_ENDS, nodes=(n,), edges=(), centre_um=(0.0, 0.0, 0.0), why="",
-                      measures={**items[0].measures, "turn_deg": turn, "gap_um": gap})
-        for n, (turn, gap) in enumerate([(40.0, 1.0), (5.0, 9.0), (5.0, 2.0)])
-    ]
-    fake.sort(key=lambda item: (item.measures["turn_deg"], item.measures["gap_um"]))
-    assert [item.nodes[0] for item in fake] == [2, 1, 0]
-
-
-def test_dead_ends_with_a_vessel_ahead_come_first_within_their_kind_smallest_turn_first(monkeypatch):
-    """PLAN_dead_ends.md Phase 9: within the kinds a join could mend, the list
-    ranks by ahead_turn_deg (G3's best measure), the dead ends with nothing
-    ahead after them longest first; an artefact keeps longest first."""
+def test_dead_ends_stay_longest_first_within_their_kind_whatever_their_turn(monkeypatch):
+    """A turn-first order was tried and taken out: the fresh grid G3′
+    (Harvey, 2026-10-25) scored the turn rule 21/30 against 29/30 for marking
+    every join wrong. The turn stays a measure of each item."""
     from haemolynx.graph import dead_ends as de
 
     junction = (0.0, 0.0, 0.0)
@@ -593,7 +579,7 @@ def test_dead_ends_with_a_vessel_ahead_come_first_within_their_kind_smallest_tur
     G = _graph({"j": junction, **tips})
     for tip in tips:
         _vessel(G, tip, "j")
-    kinds = {"a": ("broken", 40.0, 10.0), "b": ("broken", 10.0, 10.0), "c": ("broken", None, 50.0),
+    kinds = {"a": ("broken", 40.0, 10.0), "b": ("broken", 10.0, 20.0), "c": ("broken", None, 50.0),
              "d": ("artefact", 5.0, 2.0), "e": ("artefact", None, 4.0)}
 
     def fake(G, **_kw):
@@ -606,5 +592,23 @@ def test_dead_ends_with_a_vessel_ahead_come_first_within_their_kind_smallest_tur
     monkeypatch.setattr(de, "classify_dead_ends", fake)
     items = nr.find_dead_ends(G, MaskSupport(np.zeros((12, 12, 12), dtype=bool), (1.0, 1.0, 1.0)))
 
-    assert [item.nodes[0] for item in items] == ["e", "d", "b", "a", "c"]
-    assert [item.measures["ahead_turn_deg"] for item in items] == [None, 5.0, 10.0, 40.0, None]
+    assert [item.nodes[0] for item in items] == ["e", "d", "c", "b", "a"]
+    assert [item.measures["ahead_turn_deg"] for item in items] == [None, 5.0, None, 10.0, 40.0]
+
+
+def test_broken_vessels_come_closest_first(monkeypatch):
+    from haemolynx.graph import dead_ends as de
+
+    G, support = _broken_vessel(15.0)
+    (template,) = nr.find_facing_ends(G, support, max_gap_um=10.0)
+    pairs = [
+        nr.ReviewItem(kind=nr.FACING_ENDS, nodes=(f"t{n}", f"u{n}"), edges=(), centre_um=(0.0, 0.0, 0.0), why="",
+                      measures={**template.measures, "turn_deg": turn, "gap_um": gap})
+        for n, (turn, gap) in enumerate([(5.0, 9.0), (40.0, 1.0), (5.0, 2.0)])
+    ]
+    monkeypatch.setattr(nr, "find_facing_ends", lambda *_a, **_k: pairs)
+    monkeypatch.setattr(de, "classify_dead_ends", lambda *_a, **_k: {})
+
+    items = nr.find_broken_vessels(G, support)
+
+    assert [item.nodes[0] for item in items] == ["t1", "t2", "t0"]

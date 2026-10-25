@@ -899,11 +899,6 @@ _ARTEFACT_WORDS = {
 }
 
 
-#: The dead-end kinds "Join to the vessel ahead" could mend: the dead-end
-#: list ranks these by the turn onto the vessel ahead.
-_JOINABLE_KINDS = ("broken", "stops_short", "unknown")
-
-
 def find_dead_ends(
     G: nx.MultiGraph,
     support,
@@ -914,11 +909,10 @@ def find_dead_ends(
     """Every dead end that does not leave the image, with its kind
     (:mod:`haemolynx.graph.dead_ends`, judged against the mask) and its chain
     back to the junction, grouped by kind in :data:`DEAD_END_WORDS` order --
-    artefacts first. Within the kinds a join could mend (broken, stopped
-    short, unknown) the dead ends with a vessel straight ahead come first,
-    the smallest turn onto it first (``ahead_turn_deg``, the measure that
-    best told a join from no join on Harvey's grid G3, 24/27), then the rest
-    longest first; within every other kind, longest first. A piece with no junction is listed
+    artefacts first -- and longest first within each. (Ranking by the turn
+    onto the vessel ahead, ``ahead_turn_deg``, was tried: G3 fitted it 24/27,
+    but the fresh grid G3′ scored it 21/30 against 29/30 for "no join" every
+    time, Harvey 2026-10-25, so it stays a measure, not an order.) A piece with no junction is listed
     once, not once per end. *image_face_margin_um*, when given, replaces the
     face test with a fixed distance."""
     from .dead_ends import LEAVES_IMAGE, classify_dead_ends, image_extent_um
@@ -962,9 +956,7 @@ def find_dead_ends(
                 float(c) for c in np.asarray(end.tip_um) + float(end.ahead_um) * np.asarray(end.heading)
             )
         rank = order.index(end.kind) if end.kind in order else len(order)
-        joinable = end.kind in _JOINABLE_KINDS and end.ahead_turn_deg is not None
-        within = (0, end.ahead_turn_deg) if joinable else (1, -end.chain_length_um)
-        items.append((rank, within, ReviewItem(
+        items.append((rank, -end.chain_length_um, ReviewItem(
             kind=DEAD_ENDS,
             nodes=(tip, end.junction),
             edges=chain,
@@ -974,7 +966,7 @@ def find_dead_ends(
             points_um=points,
         )))
     items.sort(key=lambda entry: entry[:2])
-    return [item for _rank, _within, item in items]
+    return [item for _rank, _length, item in items]
 
 
 def find_two_in_one_lumen(G: nx.MultiGraph, support) -> list[ReviewItem]:
@@ -1079,8 +1071,8 @@ def find_broken_vessels(
     :data:`JOIN_ENDS` or :data:`JOIN_SIDE`) and the same measures, so their
     decisions share one CSV. A pair whose ends both leave the image is two
     vessels running out of it, not one broken vessel, and is left out.
-    Ranked by the turn onto the join, smallest first (G3's measure), then by
-    the gap."""
+    Closest first. On the fresh grid G3′ (Harvey, 2026-10-25) 1 of 30 such
+    joins was the same vessel."""
     from .dead_ends import BROKEN, LEAVES_IMAGE, classify_dead_ends, image_extent_um, leaves_image
 
     extent = image_extent_um(support.mask.shape, support.voxel_size_zyx)
@@ -1137,7 +1129,7 @@ def find_broken_vessels(
             },
             points_um=_points(G, chain, pos),
         ))
-    items.sort(key=lambda item: (item.measures["turn_deg"], item.measures["gap_um"]))
+    items.sort(key=lambda item: (item.measures["gap_um"], item.measures["turn_deg"]))
     return items
 
 

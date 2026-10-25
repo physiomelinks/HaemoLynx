@@ -599,12 +599,27 @@ def nearest_neighbour_node_distances_um(G: nx.Graph) -> np.ndarray:
 
 
 def terminal_edge_lengths_um(G: nx.Graph) -> np.ndarray:
-    """Length of every edge touching a degree-1 (terminal) node."""
-    degrees = dict(G.degree())
+    """The length of every dead end's chain, from its tip through degree-2
+    nodes to the junction it hangs from: the dead-end definition's chain
+    (``graph.dead_ends.chain_to_junction``), the stub the prune judges whole.
+    A piece with no junction is one chain, not one per end; a chain with an
+    edge that has no ``length`` is left out. (Each end's last edge alone
+    read a long stub in short pieces as short, PLAN_dead_ends.md 3.2 item 2.)"""
+    from haemolynx.graph._helpers import edge_id
+    from haemolynx.graph.dead_ends import chain_to_junction
+
+    multi = G if G.is_multigraph() else nx.MultiGraph(G)
     lengths: list[float] = []
-    for u, v, data in G.edges(data=True):
-        if degrees.get(u) == 1 or degrees.get(v) == 1:
-            length = data.get("length")
-            if length is not None:
-                lengths.append(float(length))
+    seen: set = set()
+    for tip in multi.nodes:
+        if multi.degree(tip) != 1:
+            continue
+        _nodes, edges = chain_to_junction(multi, tip)
+        chain = frozenset(edge_id(*edge) for edge in edges)
+        if not edges or chain in seen:
+            continue
+        seen.add(chain)
+        parts = [multi.edges[edge].get("length") for edge in edges]
+        if all(part is not None for part in parts):
+            lengths.append(float(sum(float(part) for part in parts)))
     return np.asarray(lengths, dtype=float)

@@ -551,7 +551,7 @@ Only the measures of the item's own list are filled.
 | `junction_radius_um` | `um` | Dead ends: the lumen radius where its chain meets a junction. |
 | `mask_run_um` | `um` | Dead ends: how far the segmentation runs on past the tip. |
 | `ahead_um` | `um` | Dead ends: the distance to the vessel straight ahead. |
-| `ahead_turn_deg` | `degrees` | Dead ends: the turn from the tip's heading onto the vessel ahead (the list ranks by it). |
+| `ahead_turn_deg` | `degrees` | Dead ends: the turn from the tip's heading onto the vessel ahead. |
 | `ahead_background_um` | `um` | Broken vessels: the background the straight join to the vessel ahead crosses. |
 | `ahead_junctions_away` | `count` | Dead ends: how many junctions away that vessel is in the graph. |
 | `face_distance_um` | `um` | Dead ends: the tip's distance to the nearest image face. |

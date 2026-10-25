@@ -715,8 +715,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`reclassify_dead_ends`). No rule reached 90% on Harvey's grids, so the kinds only label and
   list, and every repair in `graph/dead_end_extension.py` stays off. `remove_pieces_without_junction`
   and `remove_interior_dead_ends` (Graph tab) are off by default. The fresh grids G1'-G3'
-  (`scripts/dead_end_review/build_grids.py --fresh`, rules fixed in `fit_marks.FRESH_RULES`) wait
-  on Harvey's marks. `vessels_cut_by_image_faces`: the vessels on a leaving dead end's chain,
+  (`scripts/dead_end_review/build_grids.py --fresh`, rules fixed in `fit_marks.FRESH_RULES`),
+  marked by Harvey, confirmed no rule either. `vessels_cut_by_image_faces`: the vessels on a leaving dead end's chain,
   whose lengths are censored (decision D5): flagged in the VTK (`cut_by_image_face`) and the
   connectivity CSV, and given apart in the statistics' Dead Ends section.
 - **Flow states** — the solve writes `graph.FLOW_STATE` (`solved`, `blind_end`, `closed_end`,

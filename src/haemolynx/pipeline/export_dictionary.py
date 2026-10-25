@@ -142,7 +142,7 @@ _REVIEW_MEASURES = (
     _c("junction_radius_um", "um", "Dead ends: the lumen radius where its chain meets a junction."),
     _c("mask_run_um", "um", "Dead ends: how far the segmentation runs on past the tip."),
     _c("ahead_um", "um", "Dead ends: the distance to the vessel straight ahead."),
-    _c("ahead_turn_deg", "degrees", "Dead ends: the turn from the tip's heading onto the vessel ahead (the list ranks by it)."),
+    _c("ahead_turn_deg", "degrees", "Dead ends: the turn from the tip's heading onto the vessel ahead."),
     _c("ahead_background_um", "um", "Broken vessels: the background the straight join to the vessel ahead crosses."),
     _c("ahead_junctions_away", "count", "Dead ends: how many junctions away that vessel is in the graph."),
     _c("face_distance_um", "um", "Dead ends: the tip's distance to the nearest image face."),

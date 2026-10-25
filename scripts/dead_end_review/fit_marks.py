@@ -178,6 +178,7 @@ def main(argv=None) -> int:
     parser.add_argument("--graph", required=True)
     parser.add_argument("--mask", required=True)
     parser.add_argument("--raw")
+    parser.add_argument("--raw-channel", type=int, help="the raw image's channel, for a multi-channel file (z c y x)")
     parser.add_argument("--voxel-size-zyx", type=float, nargs=3, required=True)
     parser.add_argument("--grids", nargs="*", help="only these grids (each grid's keys name nodes of the graph it was built from)")
     args = parser.parse_args(argv)
@@ -191,7 +192,10 @@ def main(argv=None) -> int:
         from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
         mask = np.asarray(_to_binary_volume_for_skeletonization(tifffile.imread(args.mask)), dtype=bool)
-    raw = tifffile.imread(args.raw).astype(np.float32) if args.raw else None
+    raw = tifffile.imread(args.raw) if args.raw else None
+    if raw is not None and args.raw_channel is not None:
+        raw = raw[:, args.raw_channel]
+    raw = raw.astype(np.float32) if raw is not None else None
     vs = tuple(args.voxel_size_zyx)
     report = ["# Dead-end marks: the rules fitted", ""]
     for grid, (positive, negative) in QUESTIONS.items():
