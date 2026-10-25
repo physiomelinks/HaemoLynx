@@ -699,3 +699,71 @@ def test_a_mask_of_another_shape_is_an_error_not_a_quiet_ungated_run(entry):
             preprocess_skeleton_for_graph(skeleton, segmentation_mask=cropped)
         else:
             connect_skeleton_components(skeleton, max_bridge_distance=8, mask_support=_support(cropped))
+
+
+def _two_tips_and_a_way_round_behind_one():
+    """Branch A along x at y = 2, its tip at x = 10, and branch B along x at
+    y = 5, its tip at x = 17, facing each other across background. The
+    mask's only way between them, inside the router's window, leaves A's
+    line three voxels behind its tip (x = 7), runs over the top (y = 8) and
+    down into B's tip: a route that leaves A heading back the way it came."""
+    mask = np.zeros((7, 12, 30), dtype=bool)
+    mask[3, 2, 2:11] = True  # A
+    mask[3, 5, 17:28] = True  # B
+    mask[3, 2:9, 7] = True  # up from A, behind its tip ...
+    mask[3, 8, 7:18] = True  # ... across the top ...
+    mask[3, 5:9, 17] = True  # ... and down into B's tip
+    skeleton = np.zeros_like(mask)
+    skeleton[3, 2, 2:11] = True
+    skeleton[3, 5, 17:28] = True
+    return skeleton, mask
+
+
+@pytest.mark.parametrize("weight_by_segmentation", [False, True])
+def test_a_route_through_the_mask_that_folds_back_on_a_tip_is_refused(
+    caplog, weight_by_segmentation
+):
+    """Regression (PLAN_bridging.md F2, the skeleton half): the facing rule
+    judged the straight chord, and the route through the mask -- what is
+    drawn -- left A's tip going back along A and round. The reach (8 um)
+    holds each tip to the other's tip alone."""
+    import logging
+
+    skeleton, mask = _two_tips_and_a_way_round_behind_one()
+    chord = skeleton_mod._straight_voxel_path(np.array([3, 2, 10]), np.array([3, 5, 17]))
+    route = skeleton_mod._bridge_path_through_mask(
+        mask, np.array([3, 2, 10]), np.array([3, 5, 17]), np.ones(3)
+    )
+    assert not _support(mask).accepts(chord * 1.0), "the chord crosses background"
+    assert _support(mask).accepts(route * 1.0) and route[1:4, 2].tolist() == [9, 8, 7]
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.preprocessing.skeleton"):
+        gated = connect_skeleton_components(
+            skeleton, max_bridge_distance=8, mask_support=_support(mask),
+            weight_by_segmentation=weight_by_segmentation,
+        )
+
+    assert np.array_equal(np.asarray(gated), skeleton)
+    (line,) = [r.getMessage() for r in caplog.records if "left unbridged" in r.getMessage()]
+    assert line.startswith("Skeleton bridging: 2 branch end(s) left unbridged")
+    assert "2 whose only way through the mask turned back on an end" in line
+
+
+def test_a_route_round_background_that_still_heads_on_is_drawn():
+    """The turn is judged where the route has gone by the chord's length,
+    so a route stepping round a dropout and on towards the target is no
+    fold-back: B's tip lies behind background, the route climbs one voxel
+    over the gap and on along the top, and the two branches are joined."""
+    mask = np.zeros((7, 10, 30), dtype=bool)
+    mask[2:5, 1:4, 2:11] = True  # A, ending at x = 10
+    mask[2:5, 1:4, 18:28] = True  # B, ending at x = 18
+    mask[2:5, 5:7, 6:22] = True  # a way over the top, one voxel above both
+    mask[2:5, 1:7, 19:22] = True  # and down into B
+    skeleton = np.zeros_like(mask)
+    skeleton[3, 2, 2:11] = True
+    skeleton[3, 2, 18:28] = True
+
+    gated = connect_skeleton_components(skeleton, max_bridge_distance=9, mask_support=_support(mask))
+
+    assert _count(gated) == 1
+    assert gated[3, 5, 12:17].all(), "drawn over the top, where the mask is"

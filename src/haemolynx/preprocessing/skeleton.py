@@ -1627,28 +1627,83 @@ def _straight_voxel_path(start: np.ndarray, end: np.ndarray) -> np.ndarray:
     return np.round(start + t * (end - start)).astype(int)
 
 
+def _point_along(points: np.ndarray, distance: float) -> np.ndarray:
+    """The point *distance* along the polyline *points*, clamped to its end."""
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(steps)))
+    target = min(max(float(distance), 0.0), float(cumulative[-1]))
+    idx = min(max(int(np.searchsorted(cumulative, target, side="left")), 1), len(points) - 1)
+    span = float(cumulative[idx] - cumulative[idx - 1])
+    frac = (target - float(cumulative[idx - 1])) / span if span > 0.0 else 0.0
+    return points[idx - 1] + frac * (points[idx] - points[idx - 1])
+
+
 class _SkeletonBridgeGate:
     """The mask test :func:`connect_skeleton_components` puts each bridge
     to: its path (straight, or routed through the mask -- whichever
     *routed_first* tries first, then the other) must pass *support*'s
-    background test and must not run beside the skeleton, or beside a bridge
-    drawn before it, in the same lumen. The path it accepted is the one
-    drawn."""
+    background test, a routed one must still leave each tip within the
+    facing limit the chord was held to (:meth:`_turns_back`), and it must
+    not run beside the skeleton, or beside a bridge drawn before it, in the
+    same lumen. The path it accepted is the one drawn."""
 
-    def __init__(self, support: MaskSupport, coords: np.ndarray, *, routed_first: bool):
+    def __init__(
+        self,
+        support: MaskSupport,
+        coords: np.ndarray,
+        *,
+        routed_first: bool,
+        tips: _TipGeometry | None = None,
+        weights: np.ndarray | None = None,
+        min_facing_cosine: float = -1.0,
+    ):
         self.support = support
         self.spacing = np.asarray(support.voxel_size_zyx, dtype=float)
         self.relative = self.spacing / float(self.spacing.min())
         self.points = coords * self.spacing
         self.routed_first = routed_first
+        self.directions = {} if tips is None else tips.directions
+        self.weights = self.spacing if weights is None else np.asarray(weights, dtype=float)
+        self.min_facing_cosine = float(min_facing_cosine)
         self._tree = None
         self.paths: dict[tuple[int, int], np.ndarray] = {}
         self.drawn: list[np.ndarray] = []
         #: What became of each branch end the gate was asked about: "accepted",
-        #: "drawn", or why it was refused ("background", "duplicate"). A tip
-        #: tries up to _MAX_MASK_TESTED_TARGETS_PER_TIP targets, so counting
-        #: refusals per target said several times more than were refused.
+        #: "drawn", or why it was refused ("background", "turn", "duplicate").
+        #: A tip tries up to _MAX_MASK_TESTED_TARGETS_PER_TIP targets, so
+        #: counting refusals per target said several times more than were
+        #: refused.
         self.outcome: dict[int, str] = {}
+
+    def _turns_back(self, path: np.ndarray, tip: int, end: int) -> bool:
+        """Whether the routed *path* leaves *tip*, or *end* when that is a
+        tip too, further off its heading than ``min_facing_cosine`` allows
+        (PLAN_bridging.md F2). The chord was judged by
+        :func:`_bridge_candidates`; a route round background can leave a tip
+        sideways or back the way it came where the chord does not. Read as
+        the chord was, in the same (z-weighted) space, at the point the
+        chord's length along the path; a path along the chord, up to the
+        rounding of a line drawn through voxels, is the chord."""
+        walk = path * self.weights
+        start, stop = walk[0], walk[-1]
+        chord = stop - start
+        reach = float(np.linalg.norm(chord))
+        if reach <= 0.0:
+            return False
+        t = np.clip(((walk - start) * chord).sum(axis=1) / (reach * reach), 0.0, 1.0)
+        off = np.linalg.norm(walk - (start + t[:, None] * chord), axis=1)
+        if float(off.max()) <= float(self.weights.max()):
+            return False
+        for node, along in ((tip, walk), (end, walk[::-1])):
+            heading = self.directions.get(int(node))
+            if heading is None:
+                continue
+            ahead = _point_along(along, reach) - along[0]
+            # Elementwise, as _bridge_candidates judges the chord.
+            dot = ahead[0] * heading[0] + ahead[1] * heading[1] + ahead[2] * heading[2]
+            if float(dot) < self.min_facing_cosine * float(np.linalg.norm(ahead)):
+                return True
+        return False
 
     def _refuse(self, tip: int, reason: str) -> None:
         if self.outcome.get(tip) not in ("accepted", "drawn"):
@@ -1666,12 +1721,17 @@ class _SkeletonBridgeGate:
             return _bridge_path_through_mask(self.support.mask, start, stop, self.relative)
 
         order = (routed, lambda: straight) if self.routed_first else (lambda: straight, routed)
+        turned = False
         for make in order:
             path = make()
-            if path is not None and self.support.accepts(path * self.spacing):
-                break
+            if path is None or not self.support.accepts(path * self.spacing):
+                continue
+            if path is not straight and self._turns_back(path, tip, end):
+                turned = True
+                continue
+            break
         else:
-            self._refuse(tip, "background")
+            self._refuse(tip, "turn" if turned else "background")
             return False
         if self._tree is None:
             from scipy.spatial import cKDTree
@@ -1872,7 +1932,8 @@ def connect_skeleton_components(
         gate = None
         if mask_support is not None:
             gate = _SkeletonBridgeGate(
-                mask_support, coords, routed_first=bool(weight_by_segmentation)
+                mask_support, coords, routed_first=bool(weight_by_segmentation),
+                tips=tips, weights=weights, min_facing_cosine=min_facing_cosine,
             )
         candidates, declined = _bridge_candidates(
             tips, labels, reach, min_facing_cosine,
@@ -1927,10 +1988,11 @@ def connect_skeleton_components(
     if gate is not None:
         logger.info(
             "Skeleton bridging: %d branch end(s) left unbridged by the mask test: %d whose "
-            "every target lay across background, %d whose bridge ran beside a vessel in the "
-            "same lumen.",
-            gate.refused("background") + gate.refused("duplicate"),
+            "every target lay across background, %d whose only way through the mask turned "
+            "back on an end, %d whose bridge ran beside a vessel in the same lumen.",
+            gate.refused("background") + gate.refused("turn") + gate.refused("duplicate"),
             gate.refused("background"),
+            gate.refused("turn"),
             gate.refused("duplicate"),
         )
     # The components' labels are gone (never a volume under the low-RAM
