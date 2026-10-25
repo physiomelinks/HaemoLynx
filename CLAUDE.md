@@ -1061,10 +1061,16 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`io.ilastik.ilastik_segmented_stem`, the one naming rule). `io/batch_matching.py`'s
   `match_batch` pairs each image with its raw image, masks and the other files the run reads
   (`FILE_ROLES`: pericyte, cell, 3D-distance vessel, tissue, blocks; a folder each, matched only
-  while read, `batch_file_roles`) by name; ties are named, never guessed. `pipeline/batch.py`:
+  while read, `batch_file_roles`) by name; ties are named, never guessed. A folder given turns on
+  what reads its files, in the window and on the command line (`settings_reading_folders`: the
+  switches over the row; a mask of blocks adds a `capillary_block_mask` perturbation); nothing is
+  turned off. `pipeline/batch.py`:
   `item_settings` (each image's files, its perturbations' too, and its own output folder),
-  `check_batch(settings, schema, folders)` (refuses what cannot be per-image: node IDs, synthetic,
-  one `FILE_ROLES` file read for every image), `batch_preflight`. ilastik's vessel masks read each
+  `check_batch(settings, schema, folders, match)` (refuses what cannot be per-image: inlets and
+  outlets its large vessel masks do not choose, whatever the Inlet/Outlet method, a large tier
+  method other than `mask_stump`, vessel boundaries by node IDs, coordinates or volume, judged on
+  the image's own masks (the panel's mask rows are empty in a batch); synthetic; one `FILE_ROLES`
+  file read for every image), `batch_preflight`. ilastik's vessel masks read each
   image's own raw image.
   `gui/batch_run.py`'s `run_batch` runs
   them in turn with fresh state each, records a failure and goes on, rewrites `batch_summary.csv`

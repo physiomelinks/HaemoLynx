@@ -24,6 +24,7 @@ from haemolynx.pipeline.batch import (
     ilastik_output_paths,
     item_settings,
     output_paths,
+    settings_reading_folders,
 )
 
 
@@ -32,9 +33,21 @@ def schema():
     return default_schema()
 
 
+#: What a batch needs to choose each image's inlets and outlets: its own pair
+#: of large vessel masks (the paths stand for each image's, matched per image).
+MASKS_CHOOSE_INLETS = {
+    "automated_vessel_assignment": True,
+    "use_large_vessel_masks": True,
+    "inlets_outlets_from_vessel_masks": True,
+    "large_arteriole_mask_path": "arteriole.tif",
+    "large_venule_mask_path": "venule.tif",
+}
+
+
 @pytest.fixture
 def base(schema):
-    return schema.defaults()
+    """Settings a batch takes: each image's large masks choose its inlets."""
+    return {**schema.defaults(), **MASKS_CHOOSE_INLETS}
 
 
 def _match(tmp_path: Path, *names: str, sizes=()):
@@ -77,26 +90,75 @@ def test_mask_sizes_follow_the_roles_in_use(base):
     assert "large" not in batch_mask_sizes({**on, "use_ilastik_large_vessel_segmentation": True})
 
 
-def test_the_defaults_pass_the_batch_checks(base, schema):
-    report = check_batch(base, schema)
-    assert report.errors == []
+INLET_METHODS = ("edge_percent", "all_degree_1", "degree_1_from_inlet", "coordinates", "volume", "node_ids")
 
 
-def test_node_ids_are_refused(base, schema):
-    settings = {**base, "inlet_node_selection_method": "node_ids", "automated_vessel_assignment": False}
-    assert any("node_ids" in error for error in check_batch(settings, schema).errors)
+def test_a_batch_takes_its_inlets_and_outlets_from_each_images_masks(base, schema):
+    assert check_batch(base, schema).errors == []
+    # The defaults: the Inlet and Outlet tabs' edge_percent, one rule for every image.
+    (error,) = check_batch(schema.defaults(), schema).errors
+    assert "inlet_node_selection_method 'edge_percent'" in error
+    assert "turn on automated_vessel_assignment and use_large_vessel_masks" in error
+    for method in INLET_METHODS:
+        tabs = {**base, "automated_vessel_assignment": False, "outlet_node_selection_method": method}
+        (error,) = check_batch(tabs, schema).errors
+        assert f"outlet_node_selection_method '{method}'" in error
+    (error,) = check_batch({**base, "inlets_outlets_from_vessel_masks": False}, schema).errors
+    assert error.endswith("turn on inlets_outlets_from_vessel_masks.")
+    # One mask and no venule mask tells no inlet from an outlet.
+    (error,) = check_batch({**base, "large_venule_mask_path": None}, schema).errors
+    assert "both an arteriole and a venule mask (large)" in error
+    # The masks choosing, the tabs' methods are not read, whatever they hold.
+    for method in INLET_METHODS:
+        assert check_batch({**base, "inlet_node_selection_method": method}, schema).errors == []
 
 
-def test_coordinates_warn(base, schema):
-    settings = {
-        **base,
-        "automated_vessel_assignment": False,
-        "inlet_node_selection_method": "coordinates",
-        "inlet_node_coordinates": [[1.0, 2.0, 3.0]],
+def test_each_images_own_masks_decide_whether_they_choose(base, schema, tmp_path):
+    # The panel's rows are empty in a batch, which reads as one global mask
+    # choosing no inlets; each image's own pair of masks chooses them.
+    rows_empty = {**base, "large_arteriole_mask_path": None, "large_venule_mask_path": None}
+    (match,) = _match(
+        tmp_path, "E14_seg.tif", "E14_large_arteriole.tif", "E14_large_venule.tif", sizes=("large",)
+    )
+    assert match.settings()["large_venule_mask_path"] is not None
+    assert check_batch(rows_empty, schema).errors
+    assert check_batch(rows_empty, schema, match=match).errors == []
+    preflight_errors = batch_preflight(rows_empty, match, tmp_path / "out", schema).errors
+    assert not any("inlet_node_selection_method" in error for error in preflight_errors)
+    # An image whose venule mask was not found is refused on its own.
+    (alone,) = _match(tmp_path / "other", "E15_seg.tif", "E15_large_arteriole.tif", sizes=("large",))
+    (error,) = check_batch(rows_empty, schema, match=alone).errors
+    assert "both an arteriole and a venule mask (large)" in error
+
+
+def test_the_large_tier_takes_each_images_mask_stumps(base, schema):
+    tier = {**base, "cut_network_at_large_vessel_volumes": False, "assign_large_vessel_branch_orders": True}
+    assert check_batch(tier, schema).errors == []
+    for method in INLET_METHODS:
+        (error,) = check_batch({**tier, "large_vessel_outlet_node_selection_method": method}, schema).errors
+        assert f"large_vessel_outlet_node_selection_method is '{method}'" in error
+        assert "choose mask_stump" in error
+    # With the network cut at the large vessels the tier does not run.
+    cut = {**tier, "cut_network_at_large_vessel_volumes": True}
+    assert check_batch({**cut, "large_vessel_outlet_node_selection_method": "volume"}, schema).errors == []
+
+
+def test_vessel_boundaries_by_position_are_refused(base, schema):
+    boundary = {**base, "arteriole_boundary_selection_method": "coordinates"}
+    # An arteriole boundary runs only with its list.
+    assert check_batch(boundary, schema).errors == []
+    boundary["arteriole_boundary_node_coordinates"] = [[1.0, 2.0, 3.0]]
+    (error,) = check_batch(boundary, schema).errors
+    assert "arteriole_boundary_selection_method is 'coordinates'" in error
+    assert "use_small_vessel_masks_for_boundary_assignment" in error
+    # The small masks choose them instead: the list is not read.
+    small = {
+        **boundary,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "small_arteriole_mask_path": "small_arteriole.tif",
+        "small_venule_mask_path": "small_venule.tif",
     }
-    report = check_batch(settings, schema)
-    assert report.errors == []
-    assert any("same positions" in warning for warning in report.warnings)
+    assert check_batch(small, schema).errors == []
 
 
 def test_a_single_per_image_file_in_effect_is_refused(base, schema, tmp_path):
@@ -127,6 +189,7 @@ def test_ilastik_vessel_masks_are_made_from_each_images_own_raw_image(base, sche
         "use_large_vessel_masks": True,
         "use_ilastik_large_vessel_segmentation": True,
         "ilastik_arteriole_channels": (1,),
+        "ilastik_venule_classifier_path": "venule.ilp",
     }
     assert check_batch(on, schema).errors == []
     seg = _folder(tmp_path / "seg", "E14_seg.tif", "E15_seg.tif")
@@ -210,6 +273,70 @@ def test_a_pericyte_sweep_reading_one_mask_is_refused_without_a_folder(base, sch
     assert "perturbation 'dilate' reads one pericyte mask" in error
     folders = BatchFolders(tmp_path, pericyte=tmp_path / "pericytes")
     assert check_batch(settings, schema, folders).errors == []
+    # The sweep reads the mask already: a folder of them turns nothing on.
+    assert settings_reading_folders(settings, schema, ["pericyte"]) == {}
+
+
+# -- a folder of other files turns on what reads them -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "turned"),
+    [
+        ("pericyte", {"use_pericyte_mask_constriction": True}),
+        ("cell", {"measurement_3d_to_cell_mask": True}),
+        ("vessel_3d", {"measurement_3d_to_cell_mask": True}),
+        ("tissue", {"measure_tissue_volume": True}),
+    ],
+)
+def test_a_folder_turns_on_the_switch_reading_its_files(base, schema, key, turned):
+    assert batch_file_roles(base, schema) == ()
+    assert settings_reading_folders(base, schema, [key]) == turned
+    assert key in batch_file_roles({**base, **turned}, schema)
+    assert settings_reading_folders({**base, **turned}, schema, [key]) == {}
+
+
+def test_a_folder_turns_on_every_switch_over_its_row_and_nothing_off(base, schema):
+    off = {**base, "run_haemodynamics": False}
+    assert settings_reading_folders(off, schema, ["pericyte"]) == {
+        "use_pericyte_mask_constriction": True,
+        "run_haemodynamics": True,
+    }
+    assert settings_reading_folders(base, schema, ["cell", "vessel_3d", "tissue"]) == {
+        "measurement_3d_to_cell_mask": True,
+        "measure_tissue_volume": True,
+    }
+    assert settings_reading_folders(base, schema, []) == {}
+    on = {**base, "measurement_3d_to_cell_mask": True, "measure_tissue_volume": True}
+    assert settings_reading_folders(on, schema, []) == {}
+
+
+def test_a_folder_of_masks_of_blocks_adds_a_perturbation_reading_them(base, schema, tmp_path):
+    turned = settings_reading_folders(base, schema, ["capillary_block"])
+    assert turned == {
+        "run_perturbations": True,
+        "perturbations": [{"name": "perturbation_1", "type": "capillary_block_mask", "overrides": {}}],
+    }
+    settings = {**base, **turned}
+    assert batch_file_roles(settings, schema) == ("capillary_block",)
+    # The entry names no mask of its own, so each image's reaches it.
+    seg = _folder(tmp_path / "seg", "E14_seg.tif")
+    blocks = _folder(tmp_path / "blocks", "E14_blocks.tif")
+    folders = BatchFolders(seg, capillary_block=blocks)
+    assert check_batch(settings, schema, folders).errors == []
+    (match,) = match_batch(folders, roles=batch_file_roles(settings, schema))
+    image = item_settings(settings, match, tmp_path / "out")
+    assert image["capillary_block_mask_path"] == blocks / "E14_blocks.tif"
+    # Added after the user's own entries; one already there is not doubled.
+    sweep = {"name": "flow", "type": "pressure_sweep", "overrides": {}}
+    added = settings_reading_folders({**base, "perturbations": [sweep]}, schema, ["capillary_block"])
+    assert [(entry["name"], entry["type"]) for entry in added["perturbations"]] == [
+        ("flow", "pressure_sweep"),
+        ("perturbation_1", "capillary_block_mask"),
+    ]
+    stall = {"name": "stall", "type": "capillary_block_mask", "overrides": {}}
+    with_one = {**base, "perturbations": [stall]}
+    assert settings_reading_folders(with_one, schema, ["capillary_block"]) == {"run_perturbations": True}
 
 
 # -- a batch ilastik segments ------------------------------------------------------

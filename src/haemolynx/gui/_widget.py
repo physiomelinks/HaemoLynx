@@ -10184,8 +10184,10 @@ class _BatchRunWindow:
     *on_run* the one to run now, *on_run_again* the setup and the one image's
     stem to run again; *on_leave* is called to go back to one image, *on_stop*
     to stop the running batch after its image, *on_open* with an image's
-    ``.haemorun`` to open it, and *on_load_settings* with a
-    ``batch_settings.yaml`` to put its settings in the panel. *parent* is the
+    ``.haemorun`` to open it, *on_load_settings* with a
+    ``batch_settings.yaml`` to put its settings in the panel, and
+    *on_set_settings* with the settings a folder of other files turns on
+    (:func:`~haemolynx.pipeline.batch.settings_reading_folders`). *parent* is the
     panel: the window stays a window of its own, but as the panel's child it
     takes napari's stylesheet (and its theme changes), which napari sets on
     its main window and so never reaches a parentless one.
@@ -10196,7 +10198,8 @@ class _BatchRunWindow:
         ("raw", "Raw images"),
         ("large", "Large vessel masks"),
         ("small", "Small vessel masks"),
-        # The other files read beside each image: a row shows while one is read.
+        # The other files read beside each image: a folder entered turns on
+        # what reads them.
         ("pericyte", "Pericyte masks"),
         ("cell", "Cell masks"),
         ("vessel_3d", "Vessel masks (3D distances)"),
@@ -10235,6 +10238,7 @@ class _BatchRunWindow:
         on_run_again=None,
         on_stop=None,
         on_load_settings=None,
+        on_set_settings=None,
         parent=None,
     ) -> None:
         from qtpy.QtCore import Qt
@@ -10268,6 +10272,7 @@ class _BatchRunWindow:
         self._on_run_again = on_run_again
         self._on_stop = on_stop
         self._on_load_settings = on_load_settings
+        self._on_set_settings = on_set_settings
         self._filling = False
         self._running = False
         self._record = None
@@ -10526,10 +10531,12 @@ class _BatchRunWindow:
     def _refresh_mask_rows(self) -> None:
         """Grey what the settings do not read, saying what would: the
         segmented folder while ilastik segments the raw images, a mask size
-        no switch uses; show the other files' rows only while one is read."""
-        from haemolynx.gui.batch_run import mask_switch_hint
+        no switch uses; an other file's row not read says what a folder in
+        it turns on."""
+        from haemolynx.gui.batch_run import mask_switch_hint, turned_on_text
         from haemolynx.gui.form import label_for
         from haemolynx.io.batch_matching import FILE_ROLES
+        from haemolynx.pipeline.batch import settings_reading_folders
 
         sizes = self._sizes()
         values = self._values()
@@ -10556,15 +10563,39 @@ class _BatchRunWindow:
             )
         roles = self._roles()
         for role in FILE_ROLES:
-            shown = role.key in roles
-            for widget in (self.folder_labels[role.key], self.fields[role.key], self.browse_buttons[role.key]):
-                widget.setVisible(shown)
-            self.fields[role.key].setPlaceholderText(
-                f"blank: {role.fallback}"
-                if role.fallback
-                else f"blank: none (one {role.label} for every image is refused)"
-            )
+            if role.key in roles:
+                text = (
+                    f"blank: {role.fallback}"
+                    if role.fallback
+                    else f"blank: none (one {role.label} for every image is refused)"
+                )
+            else:
+                turned = settings_reading_folders(values, self._schema, (role.key,))
+                text = (
+                    f"not read: a folder here turns on {turned_on_text(turned)}"
+                    if turned
+                    else "not read by these settings"
+                )
+            self.fields[role.key].setPlaceholderText(text)
         self._fit_rows()
+
+    def _turn_on_readers(self) -> None:
+        """Turn on in the panel what reads each other file given a folder,
+        saying what was turned on in the report box."""
+        from haemolynx.gui.batch_run import turned_on_text
+        from haemolynx.io.batch_matching import FILE_ROLE_KEYS
+        from haemolynx.pipeline.batch import settings_reading_folders
+
+        if self._on_set_settings is None or self._filling:
+            return
+        keys = [key for key in FILE_ROLE_KEYS if self.fields[key].text().strip()]
+        turned = settings_reading_folders(self._values(), self._schema, keys)
+        if not turned:
+            return
+        self._on_set_settings(turned)
+        self._refresh_mask_rows()
+        self._refresh_settings_line()
+        self._report([f"Turned on {turned_on_text(turned)} in the panel, to read the folders given."])
 
     def _refresh_settings_line(self) -> None:
         from haemolynx.gui.batch_run import settings_changed
@@ -10587,8 +10618,10 @@ class _BatchRunWindow:
         self._report(["Settings every image runs with that differ from the defaults:", *lines])
 
     def _folders_changed(self) -> None:
-        """A folder typed or chosen: offer the output folder's last batch, and
-        match again once there are images and somewhere to put them."""
+        """A folder typed or chosen: turn on what reads its files, offer the
+        output folder's last batch, and match again once there are images and
+        somewhere to put them."""
+        self._turn_on_readers()
         self._refresh_last_batch()
         if self.fields[self._images_key()].text().strip() and self.fields["output"].text().strip():
             self.match()
@@ -10824,6 +10857,7 @@ class _BatchRunWindow:
         )
         from haemolynx.io.batch_matching import match_batch
 
+        self._turn_on_readers()
         self._refresh_mask_rows()
         self._refresh_settings_line()
         output = self.fields["output"].text().strip()
@@ -15848,6 +15882,14 @@ def settings_widget(napari_viewer=None):
         report.value = "Stopping once this image is done: the images after it will not run."
         return True
 
+    def set_settings_for_batch(changes: Mapping[str, Any]) -> None:
+        """Set the rows the window's folders of other files need on: a
+        folder of cell masks turns on the 3D cell distances, say."""
+        for setting, value in changes.items():
+            if setting in rows:
+                rows[setting].value = display_value_for(schema[setting], value)
+        apply_prerequisites()
+
     def open_batch_window() -> None:
         if batch_window[0] is None:
             batch_window[0] = _BatchRunWindow(
@@ -15860,6 +15902,7 @@ def settings_widget(napari_viewer=None):
                 on_run_again=run_again,
                 on_stop=request_stop,
                 on_load_settings=lambda path: load_config_file(path),
+                on_set_settings=set_settings_for_batch,
                 parent=panel,
             )
         batch_window[0].open(batch_mode.setup)

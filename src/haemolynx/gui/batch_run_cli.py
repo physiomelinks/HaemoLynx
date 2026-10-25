@@ -20,6 +20,7 @@ from haemolynx.pipeline.batch import (
     batch_mask_sizes,
     batch_preflight,
     default_output_root,
+    settings_reading_folders,
 )
 from haemolynx.statistics.batch_comparison import (
     AGGREGATE_NONE,
@@ -58,7 +59,8 @@ def _parser() -> argparse.ArgumentParser:
             dest=role.key,
             help=(
                 f"Folder of {role.label}s, each the {role.label} of the image sharing its name "
-                f"({role.setting}; default: the config's one file, which a batch refuses)."
+                f"({role.setting}; default: the config's one file, which a batch refuses). "
+                "Turns on what reads them, if the config does not."
             ),
         )
     parser.add_argument("--output", help="Output folder (default: the config's vtk_output_prefix folder).")
@@ -151,6 +153,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     if from_raw and args.segmented:
         print("warning: the config has ilastik segment each raw image, so --segmented is not read.")
+    turned = settings_reading_folders(values, schema, folders.file_keys)
+    if turned:
+        values.update(turned)
+        print(f"Turned on {batch_run.turned_on_text(turned, labels=False)} to read the folders given.")
     output_root = Path(args.output) if args.output else default_output_root(values)
     if output_root is None:
         print("No output folder: pass --output, or set vtk_output_prefix to a path with a folder.")

@@ -1151,6 +1151,21 @@ def mask_switch_hint(schema: Schema, values: Mapping[str, Any], size: str) -> st
     return f"not used: tick {named}" + (f" ({', '.join(where)})" if where else "")
 
 
+def turned_on_text(changes: Mapping[str, Any], *, labels: bool = True) -> str:
+    """What :func:`~haemolynx.pipeline.batch.settings_reading_folders`
+    turns on, as the window says it (each row's label) or, without *labels*,
+    as the command line does (each setting's name)."""
+    from haemolynx.gui.form import label_for
+    from haemolynx.pipeline.batch import BLOCK_MASK_PERTURBATION_TYPE
+
+    parts = [
+        f"'{label_for(name)}'" if labels else name for name in changes if name != "perturbations"
+    ]
+    if "perturbations" in changes:
+        parts.append(f"a {BLOCK_MASK_PERTURBATION_TYPE} perturbation")
+    return ", ".join(parts)
+
+
 def settings_changed(values: Mapping[str, Any], schema: Schema) -> list[str]:
     """The settings *values* sets other than as its default, by name, leaving
     out the rows a batch fills for each image: what every image runs with."""
@@ -1233,6 +1248,7 @@ __all__ = [
     "stems_done_before",
     "table_rows",
     "tied_cells",
+    "turned_on_text",
     "write_batch_templates",
     "write_statistics",
 ]

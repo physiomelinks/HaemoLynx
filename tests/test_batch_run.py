@@ -45,6 +45,28 @@ def _values(schema, tmp_path: Path) -> dict:
     return values
 
 
+#: What a batch's checks need to choose each image's inlets and outlets: its
+#: own large vessel masks, matched beside it (:func:`_large_masks`).
+MASKS_CHOOSE_INLETS = {
+    "automated_vessel_assignment": True,
+    "use_large_vessel_masks": True,
+    "inlets_outlets_from_vessel_masks": True,
+}
+
+
+def _checked_values(schema, tmp_path: Path) -> dict:
+    """:func:`_values` a batch's checks pass: each image's large masks choose its inlets."""
+    return {**_values(schema, tmp_path), **MASKS_CHOOSE_INLETS}
+
+
+def _large_masks(folder: Path, *stems: str) -> Path:
+    """Each image's large arteriole and venule masks, beside it."""
+    for stem in stems:
+        for kind in ("arteriole", "venule"):
+            shutil.copy(FIXTURE, folder / f"{stem}_large_{kind}.tif")
+    return folder
+
+
 def _batch(tmp_path: Path, *stems: str):
     folder = tmp_path / "seg"
     folder.mkdir()
@@ -153,7 +175,8 @@ def test_the_command_line_checks_every_image_before_running(tmp_path, schema, mo
     folder.mkdir()
     for stem in ("A_seg", "B_seg"):
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
-    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    _large_masks(folder, "A_seg", "B_seg")
+    config = write_settings_yaml(tmp_path / "config.yaml", _checked_values(schema, tmp_path), schema)
 
     assert main(["--config", str(config), "--segmented", str(folder), "--dry-run"]) == 0
     assert "All 2 image(s) passed their checks." in capsys.readouterr().out
@@ -176,7 +199,8 @@ def test_the_command_line_logs_each_line_with_its_time(tmp_path, schema, monkeyp
     folder = tmp_path / "seg"
     folder.mkdir()
     shutil.copy(FIXTURE, folder / "A_seg.tif")
-    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    _large_masks(folder, "A_seg")
+    config = write_settings_yaml(tmp_path / "config.yaml", _checked_values(schema, tmp_path), schema)
     root = logging.getLogger()
     original_handlers, original_level = list(root.handlers), root.level
     root.handlers.clear()  # basicConfig does nothing while pytest's are there
@@ -363,15 +387,17 @@ def test_conditions_show_in_the_table_and_two_alike_fail_the_checks(tmp_path, sc
     folder.mkdir()
     for stem in ("WT_1", "KO_1", "HET_1"):
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
+    _large_masks(folder, "WT_1", "KO_1", "HET_1")
     folders = BatchFolders(folder)
-    setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=match_batch(folders))
+    matches = match_batch(folders, ("large",))
+    setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=matches)
     assert [row[TABLE_COLUMNS.index("Condition")] for row in table_rows(setup)] == ["", "", ""]
     setup = replace(setup, conditions=BatchConditions.from_text("WT", "KO"))
     assert [(row[1], row[TABLE_COLUMNS.index("Condition")]) for row in table_rows(setup)] == [
         ("HET_1.tif", "neither"), ("KO_1.tif", "KO"), ("WT_1.tif", "WT")
     ]
     assert setup.condition_counts() == "1 in WT, 1 in KO, 1 in neither"
-    values = _values(schema, tmp_path)
+    values = _checked_values(schema, tmp_path)
     checked, lines = check_setup(values, schema, setup)
     assert set(checked.checked.values()) == {""}
     assert lines[0] == "Conditions: 1 in WT, 1 in KO, 1 in neither."
@@ -391,10 +417,11 @@ def test_the_command_line_compares_conditions_without_running(tmp_path, schema, 
     out = tmp_path / "out"
     for stem, length in (("WT_1", 1.0), ("WT_2", 2.0), ("KO_1", 5.0), ("KO_2", 6.0)):
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
+        _large_masks(folder, stem)
         export_statistics_to_csv(
             {"Total Edge Length (microns)": length}, out / stem / f"{stem}_statistics.csv"
         )
-    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    config = write_settings_yaml(tmp_path / "config.yaml", _checked_values(schema, tmp_path), schema)
     argv = ["--config", str(config), "--segmented", str(folder), "--output", str(out)]
 
     assert main(argv + ["--condition-a", "WT", "--condition-b", "KO", "--compare-only"]) == 0
@@ -734,7 +761,8 @@ def test_the_command_line_warns_of_conditions_with_statistics_off(tmp_path, sche
     folder.mkdir()
     for stem in ("WT_1", "KO_1"):
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
-    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    _large_masks(folder, "WT_1", "KO_1")
+    config = write_settings_yaml(tmp_path / "config.yaml", _checked_values(schema, tmp_path), schema)
     argv = ["--config", str(config), "--segmented", str(folder), "--dry-run"]
     assert main(argv + ["--condition-a", "WT", "--condition-b", "KO"]) == 0
     assert "warning: Statistics is off" in capsys.readouterr().out
@@ -924,13 +952,14 @@ def test_an_images_peak_memory_is_its_own_stages_not_the_process(tmp_path):
 def test_check_reads_again_which_images_are_done(tmp_path, schema):
     from haemolynx.gui.batch_run import DONE_BEFORE_SKIPPED, BatchSetup, check_setup, table_rows
 
-    folders, matches = _batch(tmp_path, "A_seg")
+    folders = BatchFolders(_large_masks(_copies(tmp_path / "seg", "A_seg"), "A_seg"))
+    matches = match_batch(folders, ("large",))
     out = tmp_path / "out"
     setup = BatchSetup(folders=folders, output_root=out, matches=tuple(matches))
     done = haemorun_path(out, matches[0])
     done.parent.mkdir(parents=True)
     done.write_bytes(b"since")
-    checked, _lines = check_setup(_values(schema, tmp_path), schema, setup)
+    checked, _lines = check_setup(_checked_values(schema, tmp_path), schema, setup)
     assert checked.done_before == {"A_seg"}
     assert table_rows(checked)[0][-1] == DONE_BEFORE_SKIPPED
 
@@ -1123,9 +1152,13 @@ def test_the_command_line_matches_a_folder_of_cell_masks(tmp_path, schema, monke
 
     calls = []
     monkeypatch.setattr(batch_run, "run_image", _fake_run(calls))
-    seg = _copies(tmp_path / "seg", "A_seg", "B_seg")
+    seg = _large_masks(_copies(tmp_path / "seg", "A_seg", "B_seg"), "A_seg", "B_seg")
     cells = _copies(tmp_path / "cells", "A_cells", "B_cells")
-    values = {**_values(schema, tmp_path), "measurement_3d_to_cell_mask": True, "cell_mask_path": cells / "A_cells.tif"}
+    values = {
+        **_checked_values(schema, tmp_path),
+        "measurement_3d_to_cell_mask": True,
+        "cell_mask_path": cells / "A_cells.tif",
+    }
     config = write_settings_yaml(tmp_path / "config.yaml", values, schema)
     out = tmp_path / "out"
     # The config's one cell mask is refused for every image...
@@ -1137,13 +1170,48 @@ def test_the_command_line_matches_a_folder_of_cell_masks(tmp_path, schema, monke
     assert [Path(values["cell_mask_path"]).name for _stem, values in calls] == ["A_cells.tif", "B_cells.tif"]
 
 
-def _ilastik_config(tmp_path: Path, schema) -> Path:
+def test_the_command_line_turns_on_what_reads_a_folder_given(tmp_path, schema, monkeypatch, capsys):
+    from haemolynx.pipeline.provenance import write_settings_yaml
+
+    calls = []
+    monkeypatch.setattr(batch_run, "run_image", _fake_run(calls))
+    seg = _large_masks(_copies(tmp_path / "seg", "A_seg", "B_seg"), "A_seg", "B_seg")
+    cells = _copies(tmp_path / "cells", "A_cells", "B_cells")
+    config = write_settings_yaml(tmp_path / "config.yaml", _checked_values(schema, tmp_path), schema)
+    args = ["--config", str(config), "--segmented", str(seg), "--cell", str(cells), "--output", str(tmp_path / "out")]
+    assert main(args) == 0
+    assert "Turned on measurement_3d_to_cell_mask to read the folders given." in capsys.readouterr().out
+    assert [values["measurement_3d_to_cell_mask"] for _stem, values in calls] == [True, True]
+    assert [Path(values["cell_mask_path"]).name for _stem, values in calls] == ["A_cells.tif", "B_cells.tif"]
+
+
+def test_what_a_folder_turned_on_is_said_by_label_or_by_name():
+    from haemolynx.gui.batch_run import turned_on_text
+    from haemolynx.gui.form import label_for
+
+    changes = {
+        "measurement_3d_to_cell_mask": True,
+        "run_perturbations": True,
+        "perturbations": [{"name": "perturbation_1", "type": "capillary_block_mask", "overrides": {}}],
+    }
+    assert turned_on_text(changes, labels=False) == (
+        "measurement_3d_to_cell_mask, run_perturbations, a capillary_block_mask perturbation"
+    )
+    assert turned_on_text(changes) == (
+        f"'{label_for('measurement_3d_to_cell_mask')}', '{label_for('run_perturbations')}', "
+        "a capillary_block_mask perturbation"
+    )
+
+
+def _ilastik_config(tmp_path: Path, schema, *, masks: bool = False) -> Path:
+    """A config whose images ilastik segments; with *masks*, each image's
+    large masks choose its inlets, as a batch's checks need."""
     from test_io import _fake_ilastik, _ilastik_project
 
     from haemolynx.pipeline.provenance import write_settings_yaml
 
     values = {
-        **_values(schema, tmp_path),
+        **(_checked_values if masks else _values)(schema, tmp_path),
         "use_ilastik_segmentation": True,
         "ilastik_classifier_path": _ilastik_project(tmp_path / "vessels.ilp"),
         "ilastik_vessel_label": "Vessel",
@@ -1163,8 +1231,8 @@ def test_the_command_line_runs_a_batch_of_raw_images_for_ilastik(tmp_path, schem
         return None
 
     monkeypatch.setattr(batch_run, "run_image", run_image)
-    raw = _copies(tmp_path / "raw", "E14", "E15")
-    config = _ilastik_config(tmp_path, schema)
+    raw = _large_masks(_copies(tmp_path / "raw", "E14", "E15"), "E14", "E15")
+    config = _ilastik_config(tmp_path, schema, masks=True)
     out = tmp_path / "out"
     # No raw folder: there are no images.
     assert main(["--config", str(config), "--segmented", str(raw), "--output", str(out)]) == 1

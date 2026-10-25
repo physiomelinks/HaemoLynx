@@ -495,23 +495,28 @@ BATCH_RUN_TOOLTIPS = {
     ),
     "pericyte": (
         "The folder of pericyte masks: every file in it is the pericyte mask of the "
-        "image sharing its name. Shown while a setting reads pericyte_mask_path"
+        "image sharing its name. A folder here turns on pericytes placed from a mask, "
+        "which each pericyte perturbation reads"
     ),
     "cell": (
         "The folder of cell masks: every file in it is the cell mask of the image "
-        "sharing its name. Shown while the 3D cell distances are measured"
+        "sharing its name. A folder here turns on the 3D cell distances"
     ),
     "vessel_3d": (
         "The folder of vessel masks for the 3D cell distances, one per image by name; "
-        "left blank, each image's own segmentation"
+        "left blank, each image's own segmentation. A folder here turns on the 3D "
+        "cell distances"
     ),
     "tissue": (
         "The folder of tissue images: every file in it is the tissue image of the image "
-        "sharing its name; left blank, each image's raw image"
+        "sharing its name; left blank, each image's raw image. A folder here turns on "
+        "the tissue volume"
     ),
     "capillary_block": (
         "The folder of masks of blocks: every file in it is the mask of blocks of the "
-        "image sharing its name, read by each capillary block from a mask"
+        "image sharing its name, read by each capillary block from a mask. A folder "
+        "here turns on the perturbations, adding a capillary block from a mask if "
+        "there is none"
     ),
     "large": (
         "The folder of large vessel masks; given on its own, every file in it is "

@@ -27,17 +27,30 @@ def panel(qapp):
     return settings_widget(napari_viewer=None)
 
 
-def _images(folder: Path, *stems: str) -> Path:
+@pytest.fixture
+def masks_choose_inlets(panel):
+    """The panel's switches set as a batch's checks need: each image's large
+    masks (beside it, :func:`_images`) choose its inlets and outlets."""
+    rows = panel._haemolynx_rows()
+    for name in ("automated_vessel_assignment", "use_large_vessel_masks", "inlets_outlets_from_vessel_masks"):
+        rows[name].value = True
+
+
+def _images(folder: Path, *stems: str, masks: bool = False) -> Path:
+    """Copies of the fixture named *stems*; with *masks*, each one's large
+    arteriole and venule masks beside it."""
     folder.mkdir(parents=True, exist_ok=True)
     for stem in stems:
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
+        for kind in ("arteriole", "venule") if masks else ():
+            shutil.copy(FIXTURE, folder / f"{stem}_large_{kind}.tif")
     return folder
 
 
 def _setup(tmp_path: Path, *stems: str) -> BatchSetup:
-    folder = _images(tmp_path / "seg", *stems)
+    folder = _images(tmp_path / "seg", *stems, masks=True)
     folders = BatchFolders(folder)
-    return BatchSetup(folders=folders, output_root=tmp_path / "out", matches=match_batch(folders))
+    return BatchSetup(folders=folders, output_root=tmp_path / "out", matches=match_batch(folders, ("large",)))
 
 
 def _on_input_tab(panel, widget) -> bool:
@@ -159,6 +172,7 @@ def test_the_window_says_why_it_cannot_match(panel, tmp_path):
     assert "output folder" in window.status.text()
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_run_pipeline_runs_the_batch_once_its_checks_pass(panel, tmp_path, monkeypatch):
     batch = panel._haemolynx_batch
     started = []
@@ -399,6 +413,7 @@ def test_one_images_actions_refuse_while_a_batch_is_set(panel, tmp_path, monkeyp
     assert started == []
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_run_checks_with_a_batch_checks_every_ticked_image(panel, tmp_path):
     panel._haemolynx_batch.use(_setup(tmp_path, "A_seg", "B_seg"))
     panel._haemolynx_run_checks()
@@ -411,6 +426,7 @@ def test_run_checks_with_a_batch_checks_every_ticked_image(panel, tmp_path):
 # -- the window during and after a batch --------------------------------------
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_the_window_follows_the_batch_as_it_runs(panel, tmp_path, monkeypatch):
     from haemolynx.gui.batch_run import DONE, RUNNING, BatchResult, BatchSummary
 
@@ -448,6 +464,7 @@ def test_the_window_follows_the_batch_as_it_runs(panel, tmp_path, monkeypatch):
     assert [window.table.item(row, column).text() for row in (0, 1)] == [DONE, DONE]
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_a_batch_left_while_it_ran_is_not_set_again_when_it_ends(panel, tmp_path, monkeypatch):
     from haemolynx.gui.batch_run import BatchSummary
 
@@ -509,6 +526,7 @@ def _saved_run(tmp_path: Path) -> Path:
     return write_run_snapshot(tmp_path / "one.haemorun", snapshot)
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_load_run_is_refused_while_a_batch_runs(panel, tmp_path, monkeypatch):
     """Loading a run stops the live one: an overnight batch would be lost to
     a double-click on a finished image."""
@@ -545,9 +563,10 @@ def test_loading_a_run_leaves_the_batch_set(panel, tmp_path):
 
 
 def _open_window(panel, tmp_path, *stems):
-    """The window matched on a folder of *stems*, output in ``tmp_path/out``."""
+    """The window matched on a folder of *stems* (each with its large masks),
+    output in ``tmp_path/out``."""
     batch = panel._haemolynx_batch
-    _images(tmp_path / "seg", *stems)
+    _images(tmp_path / "seg", *stems, masks=True)
     batch.open()
     window = batch.window[0]
     window.fields["segmented"].setText(str(tmp_path / "seg"))
@@ -570,6 +589,7 @@ def test_leaving_a_folder_field_matches_by_itself(panel, tmp_path):
     assert window.match_button.text() == "Match again"
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_run_batch_in_the_window_runs_it_and_keeps_the_window_open(panel, tmp_path, monkeypatch):
     started = []
     monkeypatch.setattr(widget_mod, "_run_batch_in_background", lambda *args, **kwargs: started.append(kwargs))
@@ -585,6 +605,7 @@ def test_run_batch_in_the_window_runs_it_and_keeps_the_window_open(panel, tmp_pa
     assert window.run_button.isEnabled() and not window.stop_button.isEnabled()
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_stop_after_this_image_asks_the_running_batch_to_stop(panel, tmp_path, monkeypatch):
     started = []
     monkeypatch.setattr(widget_mod, "_run_batch_in_background", lambda *args, **kwargs: started.append(kwargs))
@@ -602,6 +623,7 @@ def test_stop_after_this_image_asks_the_running_batch_to_stop(panel, tmp_path, m
     assert window.stop_button.text() == "Stop after this image"
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_the_progress_line_and_figures_follow_the_batch(panel, tmp_path, monkeypatch):
     from haemolynx.gui.batch_run import DONE, RUNNING, TABLE_COLUMNS, BatchResult
 
@@ -622,6 +644,7 @@ def test_the_progress_line_and_figures_follow_the_batch(panel, tmp_path, monkeyp
     assert row[TABLE_COLUMNS.index("Vessels")] == "42"
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_run_again_runs_the_selected_image_alone(panel, tmp_path, monkeypatch):
     from haemolynx.gui.batch_run import DONE, haemorun_path
 
@@ -790,6 +813,7 @@ def test_the_batch_run_button_greys_under_a_synthetic_network(panel, tmp_path):
     assert batch.button.enabled
 
 
+@pytest.mark.usefixtures("masks_choose_inlets")
 def test_the_batch_run_button_greys_while_one_image_runs_but_not_a_batch(panel, tmp_path, monkeypatch):
     from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS
 
@@ -815,21 +839,26 @@ def test_the_batch_run_button_greys_while_one_image_runs_but_not_a_batch(panel, 
 # -- the other files beside each image, and a batch ilastik segments ----------
 
 
-def test_the_window_shows_a_row_for_each_other_file_the_settings_read(panel, tmp_path):
+def test_a_folder_of_other_files_turns_on_what_reads_them(panel, tmp_path):
     from haemolynx.gui.batch_run import TABLE_COLUMNS
+    from haemolynx.gui.form import label_for
+    from haemolynx.io.batch_matching import FILE_ROLE_KEYS
 
     rows = panel._haemolynx_rows()
     batch, window = _open_window(panel, tmp_path, "A_seg", "B_seg")
     column = TABLE_COLUMNS.index("Other files")
-    assert window.fields["cell"].isHidden()
+    # Every other file's row is there, saying what a folder in it turns on.
+    assert not any(window.fields[key].isHidden() for key in FILE_ROLE_KEYS)
+    measure = label_for("measurement_3d_to_cell_mask")
+    assert window.fields["cell"].placeholderText() == f"not read: a folder here turns on '{measure}'"
     assert window.table.isColumnHidden(column)
-    rows["measurement_3d_to_cell_mask"].value = True
+    assert not rows["measurement_3d_to_cell_mask"].value
     cells = _images(tmp_path / "cells", "A_cells", "B_cells")
-    batch.open()
-    assert not window.fields["cell"].isHidden() and not window.fields["vessel_3d"].isHidden()
-    assert window.fields["pericyte"].isHidden() and window.fields["tissue"].isHidden()
     window.fields["cell"].setText(str(cells))
     window.fields["cell"].editingFinished.emit()
+    assert rows["measurement_3d_to_cell_mask"].value
+    assert f"Turned on '{measure}' in the panel" in window.details.toPlainText()
+    assert window.fields["vessel_3d"].placeholderText() == "blank: the run's segmented image"
     assert not window.table.isColumnHidden(column)
     assert [window.table.item(row, column).text() for row in (0, 1)] == [
         "cell mask: A_cells.tif",
@@ -840,6 +869,24 @@ def test_the_window_shows_a_row_for_each_other_file_the_settings_read(panel, tmp
     # Its row says so; a file with no folder keeps the panel's own row.
     assert not batch.labels["cell_mask_path"].isHidden()
     assert batch.labels["measurement_3d_vessel_mask_path"].isHidden()
+
+
+def test_a_folder_of_masks_of_blocks_adds_a_perturbation_reading_them(panel, tmp_path):
+    from haemolynx.gui.batch_run import TABLE_COLUMNS
+
+    rows = panel._haemolynx_rows()
+    _batch, window = _open_window(panel, tmp_path, "A_seg")
+    window.fields["capillary_block"].setText(str(_images(tmp_path / "blocks", "A_blocks")))
+    window.fields["capillary_block"].editingFinished.emit()
+    values = panel._haemolynx_values()
+    assert rows["run_perturbations"].value and values["run_perturbations"]
+    assert [entry["type"] for entry in values["perturbations"]] == ["capillary_block_mask"]
+    assert "a capillary_block_mask perturbation" in window.details.toPlainText()
+    column = TABLE_COLUMNS.index("Other files")
+    assert window.table.item(0, column).text() == "mask of blocks: A_blocks.tif"
+    # Matched again: the entry is not doubled.
+    window.match()
+    assert len(panel._haemolynx_values()["perturbations"]) == 1
 
 
 def test_with_ilastik_on_the_window_lists_the_raw_folders_images(panel, tmp_path):
@@ -898,20 +945,14 @@ def _assert_rows_in_view(window) -> None:
     assert window.splitter.sizes()[1] <= window._report_height(window.REPORT_MIN_LINES)
 
 
-@pytest.mark.parametrize("every_file_row", [False, True], ids=["folders", "every-file-row"])
-def test_the_window_keeps_eight_rows_in_view_after_check(panel, tmp_path, monkeypatch, every_file_row):
+def test_the_window_keeps_eight_rows_in_view_after_check(panel, tmp_path):
     """It opened at 800 px with 7 rows in view, and Check's report box left 4
-    (2 with the other files' rows shown)."""
+    (2 with the other files' rows shown, as they now always are)."""
     from haemolynx.io.batch_matching import FILE_ROLE_KEYS
 
-    batch = panel._haemolynx_batch
-    batch.open()
-    if every_file_row:
-        # The tallest the folders box gets: a row for every other file.
-        monkeypatch.setattr(batch.window[0], "_roles", lambda: FILE_ROLE_KEYS)
     _batch, window = _open_window(panel, tmp_path, *(f"im{index:02d}_seg" for index in range(10)))
     assert window.table.rowCount() == 10
-    assert all(window.fields[key].isVisible() for key in FILE_ROLE_KEYS) is every_file_row
+    assert all(window.fields[key].isVisible() for key in FILE_ROLE_KEYS)
     assert window.splitter.sizes()[1] == 0, "the report box starts folded"
     _assert_rows_in_view(window)
 

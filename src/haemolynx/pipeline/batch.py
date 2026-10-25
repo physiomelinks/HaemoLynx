@@ -26,12 +26,13 @@ from typing import Any, Iterable, Mapping
 
 from haemolynx.graph.boundaries import (
     BOUNDARY_ROLE_SETTINGS,
+    assigns_large_vessel_branch_orders,
     boundary_role_configured,
     inlets_outlets_from_vessel_masks,
     network_is_synthetic,
     vessel_masks_in_use,
 )
-from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS, global_vessel_mask_roles
 from haemolynx.io.batch_matching import FILE_ROLES, BatchFolders, BatchMatch, FileRole, file_role
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport
@@ -54,6 +55,25 @@ PER_IMAGE_FILES = tuple(role.setting for role in FILE_ROLES)
 
 #: Settings nothing reads but a perturbation (an entry of a type reading them).
 READ_BY_PERTURBATIONS_ONLY = frozenset({"capillary_block_mask_path"})
+
+#: Boundary methods naming one image's nodes or positions, refused in a
+#: batch: each image's boundaries come from its own masks.
+ONE_IMAGE_BOUNDARY_METHODS = {
+    "node_ids": "node IDs name one build of one image's graph",
+    "coordinates": "coordinates are positions in one image",
+    "volume": "volume boxes are positions in one image",
+}
+
+#: The large tier's own inlet and outlet, each read off its image's large
+#: mask where the image's face cuts it: the one method a batch takes.
+LARGE_TIER_ROLES = {
+    "large_vessel_inlet": "large arteriole",
+    "large_vessel_outlet": "large venule",
+}
+MASK_STUMP = "mask_stump"
+
+#: The vessel boundaries, which a batch takes from each image's small masks.
+SMALL_MASK_BOUNDARY_ROLES = ("arteriole_boundary", "venule_boundary")
 
 
 def batch_from_raw(settings: Mapping[str, Any]) -> bool:
@@ -91,6 +111,63 @@ def batch_file_roles(settings: Mapping[str, Any], schema: Schema) -> tuple[str, 
     """The other files (:data:`~haemolynx.io.batch_matching.FILE_ROLES`, by
     key) a run on *settings* reads, so a batch matches them per image."""
     return tuple(role.key for role in FILE_ROLES if _readers(schema, role.setting, settings))
+
+
+#: The perturbation type a folder of masks of blocks turns on.
+BLOCK_MASK_PERTURBATION_TYPE = "capillary_block_mask"
+
+
+def settings_reading_folders(
+    settings: Mapping[str, Any], schema: Schema, keys: Iterable[str]
+) -> dict[str, Any]:
+    """What to change in *settings* so a run reads the files of *keys*
+    (:data:`~haemolynx.io.batch_matching.FILE_ROLES`, the folders given, as
+    ``BatchFolders.file_keys``): the switches over each one's row turned on
+    (a cell mask's ``measurement_3d_to_cell_mask``), and for the masks of
+    blocks, which only a perturbation reads, ``run_perturbations`` and a
+    ``capillary_block_mask`` entry. A file read already changes nothing, and
+    nothing is turned off."""
+    keys = set(keys)
+    changes: dict[str, Any] = {}
+    for role in FILE_ROLES:
+        if role.key not in keys:
+            continue
+        merged = {**settings, **changes}
+        if _readers(schema, role.setting, merged):
+            continue
+        if role.setting in READ_BY_PERTURBATIONS_ONLY:
+            turned = _block_mask_perturbation(merged)
+        else:
+            turned = _gates_turned_on(schema, role.setting, merged)
+        if _readers(schema, role.setting, {**merged, **turned}):
+            changes.update(turned)
+    return changes
+
+
+def _gates_turned_on(schema: Schema, name: str, settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The switches and choices over *name* that are not as it needs, set so."""
+    from haemolynx.gui.form import unmet_chain
+    from haemolynx.parsers.schema import PREREQUISITE_EQUALS, PREREQUISITE_ON, parse_prerequisite
+
+    turned: dict[str, Any] = {}
+    for rule in unmet_chain(schema, name, settings):
+        gate, test, expected = parse_prerequisite(rule)
+        if test == PREREQUISITE_ON and schema[gate].kind == "bool":
+            turned[gate] = True
+        elif test == PREREQUISITE_EQUALS:
+            turned[gate] = expected
+    return turned
+
+
+def _block_mask_perturbation(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Perturbations on, with a ``capillary_block_mask`` entry when none is."""
+    from haemolynx.gui.perturbation_editing import add_entry, from_settings
+
+    turned: dict[str, Any] = {"run_perturbations": True}
+    entries = from_settings(settings)
+    if not any(entry["type"] == BLOCK_MASK_PERTURBATION_TYPE for entry in entries):
+        turned["perturbations"] = add_entry(entries, BLOCK_MASK_PERTURBATION_TYPE)
+    return turned
 
 
 def batch_mask_sizes(settings: Mapping[str, Any]) -> tuple[str, ...]:
@@ -164,16 +241,46 @@ def _in_effect(schema: Schema, name: str, settings: Mapping[str, Any]) -> bool:
     return name in schema and not unmet_chain(schema, name, settings)
 
 
+def _inlets_not_from_masks(settings: Mapping[str, Any]) -> str:
+    """Why a batch refuses inlets and outlets its images' masks do not
+    choose, and what would make them."""
+    methods = (
+        f"inlet_node_selection_method '{settings.get('inlet_node_selection_method')}' "
+        f"and outlet_node_selection_method '{settings.get('outlet_node_selection_method')}'"
+    )
+    global_sizes = global_vessel_mask_roles(settings)
+    if not vessel_masks_in_use(settings, "large"):
+        fix = (
+            "take them from each image's large vessel masks: turn on "
+            "automated_vessel_assignment and use_large_vessel_masks, with "
+            "inlets_outlets_from_vessel_masks"
+        )
+    elif global_sizes:
+        fix = (
+            f"give each image both an arteriole and a venule mask "
+            f"({' and '.join(global_sizes)}): without a venule mask the masks tell no "
+            "inlet from an outlet"
+        )
+    else:
+        fix = "take them from each image's large vessel masks: turn on inlets_outlets_from_vessel_masks"
+    return (
+        f"The inlets and outlets come from {methods}, one rule for every image rather "
+        f"than each image's own masks. For a batch, {fix}."
+    )
+
+
 def _role_read(schema: Schema, role: str, settings: Mapping[str, Any]) -> bool:
     """Whether a boundary role's own selection method is read in this run."""
     if not _in_effect(schema, BOUNDARY_ROLE_SETTINGS[role]["method"], settings):
         return False
     if role in ("inlet", "outlet"):
         return not inlets_outlets_from_vessel_masks(settings)
-    if role in ("arteriole_boundary", "venule_boundary"):
+    if role in SMALL_MASK_BOUNDARY_ROLES:
         return not vessel_masks_in_use(settings, "small") and boundary_role_configured(
             settings, role
         )
+    if role in LARGE_TIER_ROLES:
+        return assigns_large_vessel_branch_orders(settings)
     return True
 
 
@@ -208,13 +315,17 @@ def _check_one_file(
 
 
 def check_batch(
-    settings: Mapping[str, Any], schema: Schema, folders: BatchFolders | None = None
+    settings: Mapping[str, Any],
+    schema: Schema,
+    folders: BatchFolders | None = None,
+    match: BatchMatch | None = None,
 ) -> CheckReport:
     """The settings a batch refuses (errors) or doubts (warnings), whatever
     the image: each names something in one image. *folders* are the batch's:
     a file read beside each image is refused unless they give a folder of
     them, and they must list the images the settings ask for (raw images
-    while ilastik segments)."""
+    while ilastik segments). A boundary method is judged with *match*'s own
+    masks, which the panel's empty mask rows would read as global."""
     report = CheckReport()
     if network_is_synthetic(settings):
         report.add_error("A batch runs segmented images: set Input back to a segmented image.")
@@ -232,19 +343,25 @@ def check_batch(
         _check_one_file(
             report, schema, role, settings, folders.file_folder(role.key) if folders else None
         )
+    image = settings if match is None else {**settings, **match.settings()}
+    if not inlets_outlets_from_vessel_masks(image):
+        report.add_error(_inlets_not_from_masks(image))
     for role, names in BOUNDARY_ROLE_SETTINGS.items():
-        if not _role_read(schema, role, settings):
+        if role in ("inlet", "outlet") or not _role_read(schema, role, image):
             continue
-        method = str(settings.get(names["method"]) or "").strip().lower()
-        if method == "node_ids":
+        method = str(image.get(names["method"]) or "").strip().lower()
+        if role in LARGE_TIER_ROLES and method != MASK_STUMP:
             report.add_error(
-                f"{names['method']} is 'node_ids': node IDs name one build of one "
-                "image's graph. Choose another method for a batch."
+                f"{names['method']} is '{method}', the same rule in every image. For a "
+                f"batch, choose {MASK_STUMP}: the stump of each image's own "
+                f"{LARGE_TIER_ROLES[role]} mask."
             )
-        elif method in ("coordinates", "volume") and boundary_role_configured(settings, role):
-            report.add_warning(
-                f"{names['method']} is '{method}': the same positions are used in every "
-                "image, which is right only if the images share one frame."
+        elif role in SMALL_MASK_BOUNDARY_ROLES and method in ONE_IMAGE_BOUNDARY_METHODS:
+            report.add_error(
+                f"{names['method']} is '{method}': {ONE_IMAGE_BOUNDARY_METHODS[method]}, "
+                "not the next. For a batch, take the boundaries from each image's small "
+                "vessel masks (use_small_vessel_masks_for_boundary_assignment), or clear "
+                "the list."
             )
     if settings.get("crop_on_import") and settings.get("crop_method") == "coordinates":
         report.add_warning(
@@ -513,7 +630,7 @@ def batch_preflight(
 
     settings = item_settings(base, match, output_root)
     report = check_batch_item(match, base)
-    report.extend(check_batch(base, schema, match.folders))
+    report.extend(check_batch(base, schema, match.folders, match))
     report.extend(preflight(settings, schema, echo=False))
     return report
 
@@ -529,6 +646,7 @@ __all__ = [
     "WRITTEN_FOR_A_SYNTHETIC_NETWORK",
     "WRITTEN_WHILE",
     "READ_BY_PERTURBATIONS_ONLY",
+    "BLOCK_MASK_PERTURBATION_TYPE",
     "batch_file_roles",
     "batch_from_raw",
     "batch_mask_sizes",
@@ -542,4 +660,5 @@ __all__ = [
     "item_settings",
     "output_paths",
     "path_length_limits",
+    "settings_reading_folders",
 ]

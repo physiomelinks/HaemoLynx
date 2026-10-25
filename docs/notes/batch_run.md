@@ -206,3 +206,21 @@ no raw image fails its checks (`check_ilastik_vessel_mask_channels`).
 images that finished or were skipped as done (`write_batch_templates`); an image in neither
 condition is in none, a run that cannot be a template is left out and named, and writing them never
 fails the batch. What the file is and how it is averaged: `docs/notes/synthetic.md`.
+
+**Boundaries from each image's masks, and folders turn on their readers** (2026-10-25, Harvey's
+decisions). The `coordinates` and `volume` boundary methods only warned ("the same positions are
+used in every image"). A batch now takes each image's inlets and outlets from its own large vessel
+masks and refuses every other way: the Inlet/Outlet tabs' methods, `edge_percent`, `all_degree_1`
+and `degree_1_from_inlet` included, since each is one rule for every image. The large tier's
+inlet and outlet must be `mask_stump`, and the arteriole/venule boundaries come from the small
+masks (a list of node IDs, coordinates or boxes is refused). So a batch without large masks, or
+with one global mask (no venule mask), cannot run. The roles are judged with the image's own masks
+(`check_batch(match=)`): the panel's mask rows are empty in a batch, which read as one global mask
+choosing no inlets and would have refused every mask-driven batch; an image whose venule mask was
+not found is refused on its own. The window's
+rows for the other per-image files are always shown now, and a folder entered turns on what reads
+its files (`settings_reading_folders`: the 3D cell distances, the tissue volume, pericytes placed
+from a mask, or the perturbations with a `capillary_block_mask` entry), as does a folder given on
+the command line; clearing one turns nothing off. A pericyte folder adds no perturbation: which of
+the seven pericyte types is the user's choice. The window then holds all five rows, the case
+measured above at 7 rows and a 3-line box after Check on Harvey's screen. Not tried by hand.
