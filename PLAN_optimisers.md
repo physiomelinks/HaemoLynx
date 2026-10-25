@@ -824,11 +824,15 @@ and B8. Each, and where it stands:
   (on `97f79a1c`) was void: its counting wrapper hid the cleanup's and skeleton clean-up's
   signatures, which `stages.segmentation_cleanup_arguments` and `skeleton_cleanup_arguments` read,
   so every candidate ran at the function defaults (`optimiser/broken_wrapper/`).
+- **The FWHM report's false downsampling line** (found here, fixed 2026-10-25 at Harvey's request;
+  `8eddf2ab`): the report said "Searched on a 13x downsampled copy for speed;
+  voxel-based settings below are already scaled back up to the full-resolution grid", because
+  `fwhm_search` put its pool-to-sample ratio in `OptimisationResult.downsample_factor`, which
+  `report.build_report_text` reads as a grid factor. FWHM measures the image as read, so its
+  factor stays 1, and its first note says what it sampled ("Measured a sample of N of the M
+  vessels the run measures ..."), as the endothelial optimiser's does. Pinned in
+  `tests/test_fwhm_optimisation_search.py` (it failed on the old code: factor 2 for 2 of 4).
 - **Found in passing, outside this plan (listed, not fixed):**
-  - The FWHM report says "Searched on a 13x downsampled copy for speed; voxel-based settings below
-    are already scaled back up to the full-resolution grid": `fwhm_search` puts its pool-to-sample
-    ratio in `OptimisationResult.downsample_factor`, which `report.build_report_text` reads as a
-    grid factor.
   - "Check segmented image" calls `segment` (ilastik runs when it is on) and binarises in RAM
     (Phase 5's note).
   - A run reusing its saved skeleton reads the segmented image uncleaned (Phase 5's note).

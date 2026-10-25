@@ -170,4 +170,6 @@ numbers.
   with loops inside one lumen beside short loops; a kind is a measure only (`ScoreRow`'s
   `higher_is_better=None`: never better or worse), since which way is better waits on a marked
   grid. A search on a coarser grid says that grid was reduced by block max, where a run's
-  downsample on import uses block majority (D2: kept, and said).
+  downsample on import uses block majority (D2: kept, and said). The FWHM report said it had
+  searched a downsampled copy (its pool-to-sample ratio sat in `downsample_factor`); it now says
+  how many of the vessels it sampled, as the endothelial report does (2026-10-25, `8eddf2ab`).
