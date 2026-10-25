@@ -40,6 +40,14 @@ FAR_UM = 50.0
 #: "Along an axis": within this many degrees of it (13.4% of an isotropic
 #: network's length is within 30 degrees of any one axis).
 AXIS_CONE_DEG = 30.0
+#: A run along an axis: capillaries joined end to end whose chords all lie
+#: within AXIS_CONE_DEG of it; one is counted that spans this much of the box
+#: along the axis (um) -- E14.5's columns from the plexus up, a muscle's
+#: fibre-parallel capillaries, read off whatever template has them.
+RUN_SPAN_UM = 100.0
+#: The four classes a capillary's chord falls in: within AXIS_CONE_DEG of z,
+#: y or x, or none of them (the cones do not overlap).
+DIRECTION_CLASSES = ("z", "y", "x", "oblique")
 #: The stretch of a vessel its heading is read over at a junction, and the
 #: step its curvature is read at (um).
 HEADING_UM = 10.0
@@ -84,6 +92,18 @@ class Organisation:
     #: (``bed.template_vertices``). None for a template written before them.
     capillary_node_positions_rel: Optional[tuple[tuple[float, float, float], ...]] = None
     capillary_node_spacing_um: Optional[float] = None
+    #: Per cell, the share of its capillary length whose vessels' chords run
+    #: within AXIS_CONE_DEG of z, y and x (the rest oblique); a cell without
+    #: capillaries holds the whole network's. What the bed's fill matches.
+    chord_axis_share_by_cell: Optional[tuple[tuple[float, float, float], ...]] = None
+    #: The same over the whole network.
+    chord_axis_share: Optional[tuple[float, float, float]] = None
+    #: Along z, y and x, the runs spanning RUN_SPAN_UM or more.
+    long_runs: Optional[tuple[int, int, int]] = None
+    #: The mean chord (um) of the capillaries in each of DIRECTION_CLASSES
+    #: (None for a class with none): on E14.5 its vertical vessels reach past
+    #: nearer junctions, 1.4 times the mean.
+    chord_by_class_um: Optional[tuple[Optional[float], ...]] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -118,6 +138,12 @@ class Organisation:
                 None if self.capillary_node_positions_rel is None else [list(p) for p in self.capillary_node_positions_rel]
             ),
             "capillary_node_spacing_um": self.capillary_node_spacing_um,
+            "chord_axis_share_by_cell": (
+                None if self.chord_axis_share_by_cell is None else [list(s) for s in self.chord_axis_share_by_cell]
+            ),
+            "chord_axis_share": None if self.chord_axis_share is None else list(self.chord_axis_share),
+            "long_runs": None if self.long_runs is None else list(self.long_runs),
+            "chord_by_class_um": None if self.chord_by_class_um is None else list(self.chord_by_class_um),
         }
 
     @classmethod
@@ -146,6 +172,20 @@ class Organisation:
                 else tuple(tuple(float(v) for v in p) for p in data["capillary_node_positions_rel"])
             ),
             capillary_node_spacing_um=opt("capillary_node_spacing_um"),
+            chord_axis_share_by_cell=(
+                None
+                if data.get("chord_axis_share_by_cell") is None
+                else tuple(tuple(float(v) for v in s) for s in data["chord_axis_share_by_cell"])
+            ),
+            chord_axis_share=(
+                None if data.get("chord_axis_share") is None else tuple(float(v) for v in data["chord_axis_share"])
+            ),
+            long_runs=None if data.get("long_runs") is None else tuple(int(v) for v in data["long_runs"]),
+            chord_by_class_um=(
+                None
+                if data.get("chord_by_class_um") is None
+                else tuple(None if v is None else float(v) for v in data["chord_by_class_um"])
+            ),
         )
 
 
@@ -242,6 +282,33 @@ def _curvature(paths: Sequence[np.ndarray]) -> Optional[float]:
     return float(np.mean(turns)) if turns else None
 
 
+def chord_class(chord: np.ndarray) -> int:
+    """The index in :data:`DIRECTION_CLASSES` of a chord's direction."""
+    norm = float(np.linalg.norm(chord))
+    if norm <= 0:
+        return 3
+    along = np.abs(np.asarray(chord, float)) / norm
+    axis = int(np.argmax(along))
+    return axis if along[axis] >= math.cos(math.radians(AXIS_CONE_DEG)) else 3
+
+
+def long_runs(chords: Sequence[tuple[Any, Any, np.ndarray, np.ndarray]]) -> tuple[int, int, int]:
+    """Along z, y and x, how many runs span :data:`RUN_SPAN_UM` or more:
+    *chords* ``(u, v, pos_u, pos_v)``, the capillaries joined end to end at
+    shared nodes, those of one axis's class taken together."""
+    counts = []
+    for axis in range(3):
+        H = nx.Graph()
+        where: dict = {}
+        for u, v, pu, pv in chords:
+            if chord_class(np.asarray(pv) - np.asarray(pu)) == axis:
+                H.add_edge(u, v)
+                where[u], where[v] = float(pu[axis]), float(pv[axis])
+        spans = [max(where[n] for n in part) - min(where[n] for n in part) for part in nx.connected_components(H)]
+        counts.append(int(sum(span >= RUN_SPAN_UM for span in spans)))
+    return tuple(counts)
+
+
 def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Organisation]:
     """The layout of *G* (branch orders labelled) in a box of *extent_um*; None
     for a network without capillaries."""
@@ -260,6 +327,9 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
     capillary_nodes: set = set()
     tree_ends: dict[Any, list[tuple[int, np.ndarray, np.ndarray, str]]] = {}
     axis_lengths = np.zeros(3)
+    chord_classes = np.zeros((cells, 4))
+    chord_sums, chord_counts = np.zeros(4), np.zeros(4)
+    chords: list[tuple[Any, Any, np.ndarray, np.ndarray]] = []
     total_capillary = 0.0
     cos_cone = math.cos(math.radians(AXIS_CONE_DEG))
     for u, v, data in G.edges(data=True):
@@ -287,6 +357,13 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
             total_capillary += float(lengths.sum())
             capillary_points.append(mids)
             capillary_paths.append(path)
+            ends = (np.asarray(G.nodes[u]["pos"], float), np.asarray(G.nodes[v]["pos"], float))
+            chords.append((u, v, *ends))
+            middle = cell_index((ends[0] + ends[1]) / 2.0, extent, shape)[0]
+            kind = chord_class(ends[1] - ends[0])
+            chord_classes[middle, kind] += float(lengths.sum())
+            chord_sums[kind] += float(np.linalg.norm(ends[1] - ends[0]))
+            chord_counts[kind] += 1
         elif category in _ARTERIAL or category in _VENOUS:
             np.add.at(arterial_length if category in _ARTERIAL else venous_length, where, lengths)
             tree_paths.append(path)
@@ -315,6 +392,12 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
             orientation.append(_components(tensors[c] / capillary_length[c]))
         else:
             orientation.append(global_components)
+    whole = chord_classes.sum(axis=0) / max(float(chord_classes.sum()), 1e-12)
+    by_cell = []
+    for c in range(cells):
+        total = float(chord_classes[c].sum())
+        shares = chord_classes[c] / total if total > 0 else whole
+        by_cell.append(tuple(float(v) for v in shares[:3]))
     grid_axes = [np.arange(COVERAGE_STEP_UM / 2, e, COVERAGE_STEP_UM) for e in extent]
     grid = np.stack(np.meshgrid(*grid_axes, indexing="ij"), axis=-1).reshape(-1, 3)
     distance, _ = cKDTree(np.concatenate(capillary_points)).query(grid)
@@ -336,6 +419,12 @@ def measure_organisation(G: nx.Graph, extent_um: Sequence[float]) -> Optional[Or
             tuple(float(v) for v in np.asarray(p, float) / np.maximum(extent, 1e-9)) for p in positions
         ),
         capillary_node_spacing_um=spacing,
+        chord_axis_share_by_cell=tuple(by_cell),
+        chord_axis_share=tuple(float(v) for v in whole[:3]),
+        long_runs=long_runs(chords),
+        chord_by_class_um=tuple(
+            float(chord_sums[k] / chord_counts[k]) if chord_counts[k] else None for k in range(4)
+        ),
     )
 
 
@@ -383,15 +472,19 @@ def share_inside(field: np.ndarray, mask: np.ndarray) -> Optional[float]:
 
 __all__ = [
     "AXIS_CONE_DEG",
+    "DIRECTION_CLASSES",
     "FAR_UM",
     "NEAR_UM",
     "Organisation",
+    "RUN_SPAN_UM",
     "TARGET_CELL_UM",
     "TENSOR_COMPONENTS",
     "cell_centres",
     "cell_index",
+    "chord_class",
     "correlation",
     "grid_shape",
+    "long_runs",
     "measure_organisation",
     "profile",
     "share_inside",

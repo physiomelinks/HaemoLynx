@@ -118,3 +118,9 @@ Harvey marked it the same day: only the template (#7) could be the imaged tissue
 drawn after the plan, like the four from before it, look generated. The measures moved, the look
 did not: straight trunks with short side branches, capillaries rising in columns from the plexus and
 curved meshes are what the template has and the drawn networks lack.
+
+Harvey: the columns are right but particular to E14.5, so they are read from the template, not
+built in. Its vertical capillaries are long -- they reach past nearer junctions -- and a bed whose
+fill wanted one chord length for every direction never drew them; judged against each direction's
+own chord (`bed.class_chord_ratios`) it draws E14.5's columns (10-15 runs spanning 100 um of depth
+against 12), and no columns where a template has none.

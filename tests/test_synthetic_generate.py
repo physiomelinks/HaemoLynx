@@ -1171,6 +1171,70 @@ def test_one_lobe_is_the_bow_and_more_lobes_curve_more_at_one_length():
     assert curvature["26.0"] == pytest.approx(26.0, abs=3.0)
 
 
+def test_each_direction_is_judged_against_its_own_chord():
+    """E14.5's vertical capillaries reach past nearer junctions (1.4 times
+    the mean chord): judged against one wanted length the fill never drew
+    them."""
+    org = replace(_organisation((1, 1, 1), [1.0]), chord_by_class_um=(40.0, None, 20.0, 30.0))
+    ratios = bed_module.class_chord_ratios(org)
+    assert ratios.tolist() == pytest.approx([4 / 3, 1.0, 2 / 3, 1.0])
+    assert bed_module.class_chord_ratios(_organisation((1, 1, 1), [1.0])) is None
+    points = np.array([[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [0.0, 0.0, 20.0]])
+    for chords, expected in ((ratios, (0.0, 0.0)), (None, (10.0, 10.0))):
+        fill = bed_module._Fill(
+            points, np.array([3, 1, 1]), np.zeros(3, dtype=bool), np.random.default_rng(0), 90.0, 30.0,
+            target_chord_um=30.0, class_chords=chords,
+        )
+        vertical, across = fill.score(0, 1, 40.0), fill.score(0, 2, 20.0)
+        assert vertical == pytest.approx(expected[0], abs=2.0 + 1e-9) and across == pytest.approx(expected[1], abs=2.0 + 1e-9)
+        if chords is not None:
+            assert vertical == 0.0 and across == 0.0
+
+
+def _columns_template():
+    """The fixture with the layout of capillary columns rising from a plexus:
+    at every (y, x) of a 40 um grid, vessels from z 5 to 60 and 60 to 115,
+    the plexus joining neighbours at z 5."""
+    from haemolynx.synthetic.organisation import measure_organisation
+
+    T = fixture_template()
+    edges = []
+    for y in np.arange(20.0, 200.0, 40.0):
+        for x in np.arange(20.0, 200.0, 40.0):
+            edges.append(((5.0, y, x), (60.0, y, x)))
+            edges.append(((60.0, y, x), (115.0, y, x)))
+            if x + 40.0 < 200.0:
+                edges.append(((5.0, y, x), (5.0, y, x + 40.0)))
+            if y + 40.0 < 200.0:
+                edges.append(((5.0, y, x), (5.0, y + 40.0, x)))
+    G = nx.MultiGraph()
+    index: dict = {}
+    for a, b in edges:
+        for p in (a, b):
+            if p not in index:
+                index[p] = len(index)
+                G.add_node(index[p], pos=np.asarray(p))
+        G.add_edge(index[a], index[b], voxels=[list(a), list(b)], branch_order="B01")
+    return replace(T, organisation=measure_organisation(G, T.extent_um))
+
+
+def test_a_template_with_columns_gets_columns():
+    from haemolynx.synthetic.organisation import measure_organisation
+
+    columns = _columns_template()
+    assert columns.organisation.long_runs[0] == 25 and columns.organisation.chord_axis_share[0] > 0.6
+    drawn = {"columns": [], "none": []}
+    for seed in (7, 8, 9):
+        for name, T in (("columns", columns), ("none", fixture_template())):
+            G = generate_network(T, seed=seed, options=FAITHFUL)
+            _labelled(G)
+            drawn[name].append(measure_organisation(G, T.extent_um))
+    share = {name: np.mean([o.chord_axis_share[0] for o in orgs]) for name, orgs in drawn.items()}
+    runs = {name: sum(o.long_runs[0] for o in orgs) for name, orgs in drawn.items()}
+    assert share["columns"] > share["none"] + 0.12
+    assert runs["columns"] >= runs["none"] + 4
+
+
 def test_curvature_targets_leave_a_template_without_a_layout_alone():
     """No organisation, no target: the polylines are the bows they were."""
     G = generate_network(fixture_template(), seed=SEED, options=FAITHFUL)

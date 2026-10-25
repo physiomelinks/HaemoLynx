@@ -202,6 +202,37 @@ def test_rows_the_joined_pairs_change_are_judged_against_what_they_make():
     assert rows[("loops", "independent loops")].within is False
 
 
+def test_runs_along_an_axis_are_scored_per_mm2_where_the_template_has_them():
+    from haemolynx.synthetic.compare import MIN_RUNS_SCORED, organisation_rows
+    from haemolynx.synthetic.organisation import ISOTROPIC, Organisation
+
+    def organisation(runs, chords):
+        return Organisation(
+            shape=(1, 1, 1), capillary_nodes=(1.0,), capillary_length_um=(1.0,), arterial_length_um=(0.0,),
+            venous_length_um=(0.0,), orientation=(ISOTROPIC,), global_orientation=ISOTROPIC,
+            axis_share=(1 / 3,) * 3, within_near=0.5, beyond_far=0.1, trunk_turn_deg=None,
+            capillary_curvature_deg=None, tree_curvature_deg=None, chord_axis_share=chords, long_runs=runs,
+        )
+
+    extent = (286.0, 500.0, 500.0)
+    template, drawn = organisation((12, 2, 13), (0.22, 0.12, 0.25)), organisation((10, 3, 14), (0.19, 0.13, 0.23))
+    rows = {r.characteristic: r for r in organisation_rows(template, drawn, extent, extent)}
+    z = rows["capillary runs along z spanning 100 um (per mm^2)"]
+    assert z.template == pytest.approx(12 / 0.25) and z.synthetic == pytest.approx(10 / 0.25) and z.within is True
+    x = rows["capillary runs along x spanning 100 um (per mm^2)"]
+    assert x.template == pytest.approx(13 / (0.286 * 0.5))
+    y = rows["capillary runs along y spanning 100 um (per mm^2)"]
+    assert 2 < MIN_RUNS_SCORED and y.within is None and y.tolerance.startswith("not held (the template has 2 such runs")
+    assert rows["capillary chords within 30 degrees of z (share)"].within is True
+    far = organisation((4, 2, 13), (0.10, 0.12, 0.25))
+    rows = {r.characteristic: r for r in organisation_rows(template, far, extent, extent)}
+    assert rows["capillary runs along z spanning 100 um (per mm^2)"].within is False
+    assert rows["capillary chords within 30 degrees of z (share)"].within is False
+    # Without the boxes: the counts.
+    rows = {r.characteristic: r for r in organisation_rows(template, drawn)}
+    assert rows["capillary runs along z spanning 100 um (per mm^2)"].template == 12.0
+
+
 def test_a_layout_is_scored_only_where_the_template_has_one():
     from haemolynx.synthetic.compare import STRUCTURE_DISPERSION, dispersion, organisation_rows
     from haemolynx.synthetic.organisation import ISOTROPIC, Organisation

@@ -152,10 +152,51 @@ def test_the_capillary_vertices_and_their_spacing_are_recorded():
     assert set(np.round(positions[:, 0], 6)) == {0.0, 40.0}
     assert org.capillary_node_spacing_um == pytest.approx(10.0)  # the grid the vessels stand on
     old = org.to_dict()
-    old.pop("capillary_node_positions_rel")
-    old.pop("capillary_node_spacing_um")
+    for name in ("capillary_node_positions_rel", "capillary_node_spacing_um", "chord_axis_share_by_cell",
+                 "chord_axis_share", "long_runs", "chord_by_class_um"):
+        old.pop(name)
     loaded = Organisation.from_dict(old)
     assert loaded.capillary_node_positions_rel is None and loaded.capillary_node_spacing_um is None
+    assert loaded.long_runs is None and loaded.chord_by_class_um is None and loaded.chord_axis_share_by_cell is None
+
+
+def _columns(extent=(200.0, 200.0, 200.0)):
+    """Four columns of capillaries joined end to end, z 10 to 160 (spanning
+    150 um), and one short one, z 10 to 60."""
+    edges = []
+    for y, x in ((50.0, 50.0), (50.0, 150.0), (150.0, 50.0), (150.0, 150.0)):
+        for z0, z1 in ((10.0, 60.0), (60.0, 110.0), (110.0, 160.0)):
+            edges.append(((z0, y, x), (z1, y, x), "B01"))
+    edges.append(((10.0, 100.0, 100.0), (60.0, 100.0, 100.0), "B01"))
+    return _graph(edges, extent)
+
+
+def test_chord_directions_runs_and_lengths_are_read_off_the_network():
+    """Harvey, 2026-10-25: E14.5's capillary columns, read from whatever
+    template has them, never built in."""
+    slab = measure_organisation(_slab(), EXTENT)
+    assert slab.chord_axis_share == pytest.approx((1.0, 0.0, 0.0))
+    occupied = [s for s, n in zip(slab.chord_axis_share_by_cell, slab.capillary_nodes) if n]
+    assert all(s == pytest.approx((1.0, 0.0, 0.0)) for s in occupied)
+    assert slab.long_runs == (0, 0, 0)  # 40 um vessels, none joined end to end
+    assert slab.chord_by_class_um == (pytest.approx(40.0), None, None, None)
+    columns = measure_organisation(_columns(), (200.0, 200.0, 200.0))
+    assert columns.long_runs == (4, 0, 0)  # the short column spans 50 um
+    lattice = measure_organisation(_lattice(), EXTENT)
+    # Lines of 20 um vessels: along z they span 80 um, along y and x 180.
+    assert lattice.long_runs == (0, 50, 50)
+    assert lattice.chord_by_class_um == tuple(pytest.approx(20.0) for _ in range(3)) + (None,)
+    # 400 vessels along z, 450 along y and along x, all 20 um.
+    assert lattice.chord_axis_share == pytest.approx((400 / 1300, 450 / 1300, 450 / 1300))
+
+
+def test_chord_class_is_the_cone_round_an_axis_or_none():
+    from haemolynx.synthetic.organisation import chord_class
+
+    assert chord_class(np.array([10.0, 1.0, 1.0])) == 0
+    assert chord_class(np.array([0.0, -5.0, 0.5])) == 1
+    assert chord_class(np.array([1.0, 1.0, 1.0])) == 3  # 55 degrees from every axis
+    assert chord_class(np.array([0.0, 0.0, 0.0])) == 3
 
 
 def test_no_capillaries_no_organisation_and_json_round_trips():

@@ -109,6 +109,10 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     ("organisation", "box within 20 um of a capillary"): ("abs", 0.07),
     ("organisation", "box beyond 50 um of a capillary"): ("abs", 0.05),
     ("organisation", "trunk turn (degrees)"): ("abs", 15.0),
+    # Harvey, 2026-10-25: E14.5's capillary columns, read off any template
+    # (a run's count is a few dozen at most: a third either way).
+    ("organisation", "capillary chords along an axis (share)"): ("abs", 0.05),
+    ("organisation", "capillary runs along an axis spanning 100 um (per mm^2)"): ("rel", 0.35),
 }
 
 
@@ -325,7 +329,7 @@ def compare_templates(
         for i in range(interior_from, len(rows)):
             if rows[i].characteristic not in ("artefacts", "ends of pieces without a junction"):
                 rows[i] = not_drawn(rows[i], "no dead ends inside the tissue")
-    rows.extend(organisation_rows(T.organisation, S.organisation))
+    rows.extend(organisation_rows(T.organisation, S.organisation, T.extent_um, S.extent_um))
     return rows
 
 
@@ -376,6 +380,17 @@ def _against_joined_pairs(rows: list, T: NetworkTemplate, joined: int) -> None:
 STRUCTURE_DISPERSION = 2.0
 
 
+def _per_face(count: Optional[int], extent_um: Optional[Sequence[float]], axis: int) -> Optional[float]:
+    """*count* runs along *axis* per mm^2 of the box's face across it; the
+    count itself without the box."""
+    if count is None:
+        return None
+    if extent_um is None:
+        return float(count)
+    others = [float(e) for i, e in enumerate(extent_um) if i != axis]
+    return float(count) / (others[0] * others[1] / 1.0e6)
+
+
 def dispersion(counts: Any) -> float:
     """Variance over mean of *counts* (0 for none)."""
     values = np.asarray(counts, dtype=float).ravel()
@@ -383,11 +398,22 @@ def dispersion(counts: Any) -> float:
     return float(values.var()) / mean if mean > 0 else 0.0
 
 
-def organisation_rows(T: Optional[Organisation], S: Optional[Organisation]) -> list[ComparisonRow]:
+#: The fewest runs along an axis the template must have for that axis's
+#: run row to be scored: fewer is no pattern to match.
+MIN_RUNS_SCORED = 5
+
+
+def organisation_rows(
+    T: Optional[Organisation],
+    S: Optional[Organisation],
+    t_extent_um: Optional[Sequence[float]] = None,
+    s_extent_um: Optional[Sequence[float]] = None,
+) -> list[ComparisonRow]:
     """Where the vessels lie and which way the capillaries run, template
     against synthetic: per-cell fields as correlations (on one grid: a box
-    drawn at another scale has none), shares, coverage, the trunks' turn and
-    the vessels' curvature (reported only)."""
+    drawn at another scale has none), shares, runs along each axis (per mm^2
+    of the face across it, given the boxes; else counts), coverage, the
+    trunks' turn and the vessels' curvature (reported only)."""
     rows: list[ComparisonRow] = []
     if T is None and S is None:
         return rows
@@ -424,6 +450,19 @@ def organisation_rows(T: Optional[Organisation], S: Optional[Organisation]) -> l
         s_share = None if S is None else S.axis_share[axis]
         add(f"capillary length within 30 degrees of {letter} (share)", t_share, s_share,
             key="capillary length along an axis (share)")
+    for axis, letter in enumerate("zyx"):
+        t_chord = None if T is None or T.chord_axis_share is None else T.chord_axis_share[axis]
+        s_chord = None if S is None or S.chord_axis_share is None else S.chord_axis_share[axis]
+        add(f"capillary chords within 30 degrees of {letter} (share)", t_chord, s_chord,
+            key="capillary chords along an axis (share)")
+    for axis, letter in enumerate("zyx"):
+        t_runs = None if T is None or T.long_runs is None else T.long_runs[axis]
+        s_runs = None if S is None or S.long_runs is None else S.long_runs[axis]
+        name = f"capillary runs along {letter} spanning 100 um (per mm^2)"
+        add(name, _per_face(t_runs, t_extent_um, axis), _per_face(s_runs, s_extent_um, axis),
+            key="capillary runs along an axis spanning 100 um (per mm^2)")
+        if t_runs is not None and t_runs < MIN_RUNS_SCORED:
+            rows[-1] = not_held(rows[-1], f"the template has {t_runs} such runs: no pattern to match")
     add("box within 20 um of a capillary", get(T, "within_near"), get(S, "within_near"))
     add("box beyond 50 um of a capillary", get(T, "beyond_far"), get(S, "beyond_far"))
     add("trunk turn (degrees)", get(T, "trunk_turn_deg"), get(S, "trunk_turn_deg"))

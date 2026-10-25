@@ -1034,7 +1034,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   the bed at its orders' own widths (Murray's law in the Art/Ven tier only), grown in the cells
   the template's trees of that side occupy (`trees.TreeLayer`); the bed's vertices are the
   template's capillary vertices moved by their spacing (`bed.template_vertices`; a scaled box: laid
-  cell by cell to its density, `bed.density_vertices`), it runs the way its capillaries run and its
+  cell by cell to its density, `bed.density_vertices`), it runs the way its capillaries run (each
+  direction judged against its own chord length, `bed.class_chord_ratios`: E14.5's columns) and its
   vessels curve as theirs do (`polylines.lobes`), all read by `synthetic/organisation.py` and
   scored in the comparison (a layout only where the template has one, `compare.dispersion`), along
   Delaunay edges or, with `synthetic_bed_model=voronoi`, a Voronoi tessellation's cell edges.

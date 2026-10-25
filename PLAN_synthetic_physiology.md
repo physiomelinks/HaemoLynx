@@ -289,3 +289,21 @@ Being built in the phase order above.
   0.37-0.57 against 0.36-0.64), but a tensor is an average: the template's share along z (0.21)
   needs its vessels split between near-vertical and near-flat, which matching the average does
   not ask for.
+- **The columns, read from the template** (Harvey's go-ahead, 2026-10-25): the organisation records
+  each cell's share of capillary length whose chord runs within 30 degrees of z, y and x
+  (`chord_axis_share_by_cell`, and over the whole network `chord_axis_share`), the runs along each
+  axis spanning 100 um or more (`long_runs`: capillaries joined end to end whose chords all lie in
+  that axis's cone) and the mean chord of each direction class (`chord_by_class_um`). What made the
+  bed follow them: E14.5's vertical capillaries are long (1.4 times the mean chord), so even the
+  template's own vertices' Delaunay candidates within 60 um run only 6% along z, against 22% of its
+  vessels; the fill now judges each candidate against its own direction's chord
+  (`bed.class_chord_ratios`), and the per-cell direction tensor counts four times what it did
+  (`ORIENTATION_WEIGHT` 4; on the old lattice bed that only lengthened the capillaries). A term
+  pushing each cell's drawn share of each direction to the template's, as asked, was built and
+  measured: it did nothing at weight 1-2 and made the z share worse at 4-10, so the fill does not
+  use it; the shares are scored in the comparison instead. E14.5, five seeds: runs along z spanning
+  100 um 10-15 (template 12; before 4-9), along x 9-14 (13), along y 2-6 (2: too few to score,
+  `compare.MIN_RUNS_SCORED`); capillary chords along z 0.16-0.20 (0.22); each depth layer's
+  verticality above the plexus 0.33-0.62 (0.36-0.64). 562 of 600 banded rows within (5 seeds). The
+  comparison adds the chord shares (abs 0.05) and the runs per mm^2 of the face across their axis
+  (rel 0.35). A new grid for Harvey with these networks.

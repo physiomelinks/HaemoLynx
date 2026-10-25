@@ -51,7 +51,7 @@ import numpy as np
 from scipy.spatial import Delaunay, cKDTree
 
 from .draft import BED, NetworkDraft
-from .organisation import Organisation, cell_index, tensor_matrix
+from .organisation import Organisation, cell_index, chord_class, tensor_matrix
 
 #: Candidate edges longer than this many lattice spacings are left out; from
 #: an attached (tree) node, which sits off the lattice, a little longer.
@@ -73,11 +73,14 @@ FALLBACK_NEIGHBOURS = 16
 #: How much a candidate's alignment with the template's capillaries counts in
 #: the fill's score, in local spacings: ``weight * (1/3 - u.T.u) * 3/2`` --
 #: nothing in an isotropic cell, a spacing's bonus along a cell's only
-#: direction, half a spacing's penalty across it. On E14.5 (2026-10-25) 1
-#: brought each depth layer's share of capillary length along z to within
-#: 0.1 of the template's; 2 to 8 moved the whole bed's little more (0.14 to
-#: 0.16, the template 0.21) and lengthened its capillaries out of their band.
-ORIENTATION_WEIGHT = 1.0
+#: direction, half a spacing's penalty across it. On E14.5 (2026-10-25, the
+#: bed on the template's own vertices, each candidate judged against its
+#: direction's own chord) 4 gave its capillaries' verticality layer by layer
+#: and its columns: 10-15 runs along z spanning 100 um against the template's
+#: 12 (1: 5-9). On a lattice bed (before) heavier weights only lengthened the
+#: capillaries. A term pushing each cell's drawn share of each direction to the
+#: template's was tried as well and did worse the heavier it was.
+ORIENTATION_WEIGHT = 4.0
 #: Junctions of the largest piece tried, nearest first, for a piece every one
 #: of whose junctions has a dead end nearest (:func:`join_pieces`' last resort).
 JOIN_NEIGHBOURS = 8
@@ -519,6 +522,19 @@ def _laid_out_seeds(count: int, extent: np.ndarray, pad: float, organisation: Or
     return np.concatenate(chunks) if chunks else rng.uniform(-pad, extent + pad, size=(count, 3))
 
 
+def class_chord_ratios(organisation: Organisation) -> Optional[np.ndarray]:
+    """Each direction class's mean chord over the template's mean chord
+    (weighted by the classes' shares); 1 for a class it has none in."""
+    chords = organisation.chord_by_class_um
+    if chords is None:
+        return None
+    known = [c for c in chords if c]
+    if not known:
+        return None
+    mean = float(np.mean(known))
+    return np.array([float(c) / mean if c else 1.0 for c in chords])
+
+
 def candidate_edges(points: np.ndarray) -> list[tuple[int, int, float]]:
     """``(i, j, length)`` for every Delaunay edge of *points* (every pair
     when there are too few for a tetrahedron)."""
@@ -567,6 +583,7 @@ class _Fill:
         target_chord_um: Optional[float] = None,
         local_spacing: Optional[np.ndarray] = None,
         tensors: Optional[np.ndarray] = None,
+        class_chords: Optional[np.ndarray] = None,
     ):
         self.points = points
         self._tuples = [tuple(float(c) for c in p) for p in points]
@@ -583,6 +600,11 @@ class _Fill:
         self.local = local_spacing
         #: Each vertex's cell's capillary orientation tensor; None: no preference.
         self.tensors = tensors
+        #: The template's mean chord in each direction class
+        #: (``organisation.DIRECTION_CLASSES``) as a ratio: a candidate is
+        #: judged against its own direction's length (E14.5's vertical vessels
+        #: reach past nearer junctions); None: one length for all.
+        self.class_chords = class_chords
         self.degree = np.zeros(len(points), dtype=int)
         self.neighbours: dict[int, list[int]] = {i: [] for i in range(len(points))}
         self.edges: list[tuple[int, int]] = []
@@ -600,6 +622,8 @@ class _Fill:
         if self.local is not None:
             spacing = float(self.local[v])
             wanted *= spacing / self.spacing
+        if self.class_chords is not None and length > 0:
+            wanted *= float(self.class_chords[chord_class(self.points[u] - self.points[v])])
         score = abs(length - wanted) * self.rng.uniform(0.8, 1.2)
         if self.tensors is not None and length > 0:
             unit = (self.points[u] - self.points[v]) / length
@@ -918,7 +942,10 @@ def build_bed(
         cells = cell_index(points, extent, organisation.shape)
         by_cell = np.stack([tensor_matrix(t) for t in organisation.orientation])
         tensors = by_cell[cells]
-    fill = _Fill(points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um, local, tensors)
+    class_chords = None if organisation is None else class_chord_ratios(organisation)
+    fill = _Fill(
+        points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um, local, tensors, class_chords
+    )
 
     candidates: dict[int, list[tuple[int, float]]] = {i: [] for i in range(len(all_nodes))}
     pairs = candidate_edges(points)
