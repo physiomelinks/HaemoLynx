@@ -141,3 +141,7 @@ After D1c: the Voronoi bed curves again (its seeds the template's vertices, litt
 the cost of a thinner plexus than the template's; and each side's trees are the one of six grown
 whose leaves reach nearest the template's, so every seed's venous trees now reach across the box
 (260-283 um against 272).
+
+Grid D1d (Harvey): two of six Delaunay networks pass (#2, #9), no Voronoi one. Every network now
+reaches, curves and ends its trees as the template does, and no measure separates the two from the
+rest; the Voronoi beds' thinner plexus is the plain difference left between the beds.

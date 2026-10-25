@@ -373,3 +373,11 @@ Being built in the phase order above.
   leaf 260-283 um (272; before, seed by seed 127-285), median 102-148 (134); arterial 347-400
   (369). Comparison rows per side (rel 0.15, not calibrated). Delaunay 598 of 640 banded rows
   within (five seeds), Voronoi 354 of 384 (three).
+- **Grid D1d, marked by Harvey 2026-10-25: two drawn networks pass.** Twelve renders at `cf4bed26`
+  (template at #3; Delaunay seeds 41-46, Voronoi 41-45; key `outputs/synthetic_review/grid_d1d_key.csv`).
+  Harvey: "3 is good, 2 and 9 are okay" -- #2 Delaunay 44, #9 Delaunay 41; no Voronoi bed again,
+  though they now curve as the template does (their plexus is the thinner one). With every
+  network now reaching across the box, curving and ending its trees as the template does, no
+  measure separates the two picked from the other four Delaunay beds (vertical chord share
+  0.19-0.20 in both, but 0.21 in #7, not picked). 2 of 11 pass, against D1c's 3: within what one
+  grid of eleven can tell apart.
