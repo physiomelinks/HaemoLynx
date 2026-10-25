@@ -87,3 +87,17 @@ Voronoi tessellation's cell edges (`9e49ddfc`). On E14.5 every large-tier order 
 template's, its widths are, the haemodynamics solve, and 47 of 49 exact rows are equal (the two
 left are the large-vessel boundary counts); the Voronoi bed is more tortuous (1.42 against 1.20)
 with closer capillaries (12 against 22 um). The table is in `PLAN_synthetic_network.md`.
+
+## 2026-10-25: not physiological; the "clustered" reading was wrong
+
+Harvey: the synthetic network does not look physiological and has no defined inlets and outlets.
+Rendered beside its E14.5 template (`outputs/synthetic_review/`, `plan-synthetic-e08d0c` worktree)
+the template is layered -- large vessels in a plexus on one face (z under 25 um), its densest
+capillaries there, the rest running up through the depth and along x -- and fills its box (5% of it
+beyond 50 um of a capillary). The synthetic network's trees wander through the whole depth, its
+capillaries run every way alike, and 37-40% of its box is beyond 50 um of one: the bed "grown from
+the trees" (`ff4f4dcb`) was built on the reading above that E14.5's capillaries are clustered, which
+is wrong; they are short because the plexus is dense, not because they gather. 57-62% of the
+synthetic outflow leaves through open ends, not the outlets. The measures, the decisions for
+Harvey and the phases are in `PLAN_synthetic_physiology.md`.
+

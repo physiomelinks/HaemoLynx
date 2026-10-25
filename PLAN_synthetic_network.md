@@ -378,6 +378,11 @@ through a private index, and do not edit `src/` while a long test run is in flig
 
 ## Status (2026-10-25: done; Harvey's panel check passed)
 
+**Follow-up: `PLAN_synthetic_physiology.md`** (2026-10-25). Harvey judged the networks not
+physiological and without defined inlets and outlets. Rendered beside the template, decision 3 as
+built (the bed grown from the trees) rests on a wrong reading -- E14.5's capillaries are not
+clustered; they fill the box -- and that plan proposes replacing it (its D6).
+
 Implemented 2026-10-18 (`bb831907`, merged `d098de1f`). Since:
 
 - `c8d6624d` (2026-10-18): the large-tier vessels the generator draws are tagged as lying in a
