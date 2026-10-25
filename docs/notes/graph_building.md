@@ -297,5 +297,9 @@ recovery draws into, twenty it does not, each half by depth, spread across the l
 `scripts/uncovered_review/build_ur1.py`), marked by Harvey the same day: 26 H (not a vessel of
 its own), 4 V. No measure beats all H over the 30 (`fit_ur1.py`, `FIT_UR1.md`). Of the ten recovery
 draws into, 8 are H, and the dextran over the neighbouring centrelines' above 1.05 separates them
-10/10 leave-one-out on 2 V. Grid UR2 (the other 29 pieces recovery draws into) checks that and
-"every piece H" (recovery drawing nothing), both fixed before its marks.
+10/10 leave-one-out on 2 V. Grid UR2 (the other 29 pieces recovery draws into) checked that and
+"every piece H" (recovery drawing nothing), both fixed before its marks: Harvey marked 12 V,
+17 H, and the rules got 16/29 and 17/29, all one way 17/29 (`FIT_UR2.md`). Over all 39 pieces
+recovery draws into, 14 are vessels of their own. UR2's best measure, a piece more than 9.15 um
+from the nearest centreline, 23/29 left out, does worse than all H on UR1 (23/30 against 26);
+over the 39, 31 (79 %). So recovery draws what it can, as before.

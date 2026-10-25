@@ -17,8 +17,9 @@ marked grid, and leaves everything else mask-only on purpose.
 ## Status (2026-10-25)
 
 No raw-image rule ships. Every grid the plan built found no raw measure near 90 %, and most did
-no better than marking all one way, so each decision stays the mask's. What is left is grid UR2
-with Harvey and what follows from it.
+no better than marking all one way, so each decision stays the mask's. The last, grids UR1 and
+UR2 on mask recovery, found none either (2026-10-25). What is left needs data or Harvey: the
+muscle stack's budget, and the two review-page items Phase 3 named.
 
 | Item | State | Where |
 |---|---|---|
@@ -34,10 +35,10 @@ with Harvey and what follows from it.
 | Phase 3: "the Post processing page shows the raw panel" | **Not built**: the plan never said what the panel shows. For Harvey | -- |
 | Phase 3 (P5): pinhole plugging | **Closed by the marks**: it needed I2's raw hole threshold, and none passed | Phase 3 |
 | Phase 4 (P6): grid UR1 | **Marked and fitted** (Harvey, 2026-10-25): 26 H / 4 V; no measure beats all H over the 30; on the ten recovery draws into (8 H), dextran over its neighbours above 1.05 gets 10/10 | `8204478d`, `c5bc6ad2`, Phase 4 |
-| Phase 4: grid UR2 | **Built and sent** (2026-10-25), two rules fixed first: the local dextran above 1.05, and every piece H (recovery drawing nothing). https://claude.ai/artifact/NdhbUg7HEzj9eiLKrrg28R | `c5bc6ad2`, Phase 4 |
-| Phase 4: a skip rule in `mask_recovery.py` | **Waits on UR2's marks**; the lead reads dextran, which E14.5's run (claudin-5, D0) does not, so it is Harvey's call even at 90 % | Phase 4 |
+| Phase 4: grid UR2 | **Marked and scored** (Harvey, 2026-10-25): 12 V / 17 H; the two rules fixed first get 16/29 and 17/29, all one way 17/29. https://claude.ai/artifact/NdhbUg7HEzj9eiLKrrg28R | `c5bc6ad2`, Phase 4 |
+| Phase 4: a skip rule in `mask_recovery.py` | **Closed by the marks, nothing ships**: no rule held on UR2, and its best measure (distance to the nearest centreline, 23/29) fails UR1; 79 % over all 39 drawn-into pieces | Phase 4 |
 | Phase 4: the uncovered-mask review list carrying the measure **[later]** | **Closed by UR1's marks**: no measure ranks V above H over the 30 | Phase 4 |
-| Per-depth calibration (Risks) | **Waits**: no rule reads the reader; UR1's key carries the global and the local readings and the depth | Risks |
+| Per-depth calibration (Risks) | **Waits**: no rule reads the reader; on UR1 and UR2 neither the global nor the local (depth-free) dextran reading separated the marks | Risks |
 | Phase 5: docs and the review | **Done** | CLAUDE.md (layout, `lumen_loops`), `docs/notes/graph_building.md`, `RELEASE_REVIEW.md` `graph.6b`, `graph.8b`, `memory.6a` |
 
 ---
@@ -463,6 +464,22 @@ over its neighbours is above 1.05** (it calls 3 of the 29 V: UR2-01, 03, 25), an
 which is mask recovery drawing nothing. Either at ≥ 90 % on UR2 goes to Harvey: the first as a skip
 rule (with the channel question above), the second as `recover_uncovered_mask_vessels` off by
 default, which needs no raw image.
+
+**UR2 marked by Harvey and scored (2026-10-25; `outputs/uncovered_review/FIT_UR2.md`, marks in
+`marks_UR2/`): neither rule holds, and Phase 4 closes with nothing shipped.**
+
+- **The marks**: 12 V, 17 H, every one citing dextran, claudin-5 and segmentation shape; no notes.
+  Far more V than UR1's ten drawn-into pieces (2 V): over all 39 pieces recovery draws into, 14 V,
+  25 H.
+- **The fixed rules, unfitted**: the local dextran above 1.05 16/29, every piece H 17/29, against
+  17/29 for all one way. UR1's lead was two V and did not carry, and recovery is not mostly wrong:
+  it draws a vessel of its own into about a third of the pieces it draws into.
+- **The best measure on UR2** is the graph's, not the raw image's: a piece more than 9.15 µm from
+  the nearest centreline the graph had is V, 23/29 leave-one-out. Fixed and scored on UR1, it gets
+  23/30 (all H 26/30) and 8/10 of the drawn-into (all H 8/10); over the 39 drawn-into pieces 31/39
+  (79 %). Under the bar, and E14.5 has no drawn-into piece left for a third grid.
+- So `mask_recovery.py` keeps drawing every piece it can, the review list stays as it is (closed
+  by UR1), and no channel question arises.
 
 ### Phase 5 — Docs and the review
 

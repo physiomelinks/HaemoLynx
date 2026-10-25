@@ -684,8 +684,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   its arc nearest the wall whatever the mask says, except round a hole wider than
   `short_loop_keep_hole_over_um` (10 µm; `loop_hole_um`). 0 leaves every short loop to the review
   list. `preprocessing/raw_evidence.py` (`RawEvidence`) ships no rule: no raw measure came near
-  90 %, and most did no better than marking all one way (grids H, H2, M, M2, I, I2, and UR1 on
-  uncovered mask); grid UR2 checks a dextran lead for mask recovery (`PLAN_raw_confirmation.md`).
+  90 %, and most did no better than marking all one way (grids H, H2, M, M2, I, I2, and UR1/UR2
+  on what mask recovery draws; `PLAN_raw_confirmation.md`).
 - **`graph/skeleton_retrace.py`** — `retrace_lost_skeleton` (on; inert while
   `short_loop_keep_hole_over_um` is 0): after the last clean-up, skeleton the graph lost that would
   close a loop round a hole wider than `short_loop_keep_hole_over_um` is drawn back along its own
