@@ -53,6 +53,27 @@ memory). On E14.5 the build went 339 -> 255 s with the graph unchanged node for 
 recovery is now the slow step (~134 s): routing its joins through the mask and finding the
 uncovered mask, not tracing its pieces (Lee thinning there is ~5 s).
 
+**Where an edge came from, through merges (2026-10-25, `0b8d0d1b`).** A degree-2 merge kept
+only length, voxels, the taper mark and smoothing, so a recovered strand or a bridge merged into
+its vessel left no trace, and the trivial merge (`create_trivial_merged_edge`, behind
+`edit.delete_edge_and_collapse`) copied its first half's attributes: a vessel merged with a
+recovered stretch listed first came out `recovered=True` whole, which recovery's own trims read
+as theirs to take out. `degree2.carry_merged_provenance` now runs in every merge: `recovered` and
+`bridge_kind` stay only where both halves had them, and `recovered_fraction`,
+`bridged_fraction` (shares, since a split copies its edge's attributes onto both pieces) and
+`bridge_kinds` carry the rest. The loop review CSV's `recovered_um` / `bridged_um` read them
+(`degree2.drawn_um`). On E14.5 the saved graph is unchanged by it.
+
+**The stub prune's protrusion test (2026-10-25).** `scripts/stub_protrusion_review/` measures
+every dead end each stub prune call of a run is handed, as the test reads it (16 nearest
+centreline samples, its own masked out) and uncapped (16 nearest of other centrelines). On
+E14.5 (23 calls, 8,041 readings) 119 dead ends are left to the test by the prune's other rules
+with either reading under 2 radii; today's reading is infinite (never judged) for 58 of them.
+On the hair fixture today's test never judges the 25 um hair, while the uncapped reading takes
+the hair and the trunk's collinear end at the face beside it (`tests/test_stub_protrusion_review.py`).
+Grid S (30 of them, spread over the uncapped reading, collinearity and the face) is with Harvey;
+the rule waits on his marks (`PLAN_one_centreline_per_lumen.md`).
+
 ## Mask-supported bridging
 
 **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
