@@ -1292,6 +1292,39 @@ def test_the_trees_end_where_the_templates_do():
     assert drawn["Art2"] == asked["Art2"]
 
 
+def test_the_trees_are_grown_to_the_templates_reach():
+    """Harvey's grid D1c picked the drawn networks whose venous trees reach
+    across the box as the template's do: of several trees grown per side,
+    the one whose leaves' median and furthest reach miss the template's
+    least is kept, and the others leave nothing behind."""
+    import copy
+
+    from haemolynx.synthetic import generate as generate_module
+    from haemolynx.synthetic.draft import NetworkDraft
+
+    T = _measured_template()
+    reach = dict((s, (m, f)) for s, m, f in T.organisation.tree_reach_um)
+    assert set(reach) == {"arterial", "venous"}
+    extent = np.asarray(T.extent_um)
+    draft = NetworkDraft()
+    roots = generate_module._place_roots(draft, T, extent, np.random.default_rng(0))
+    before = copy.deepcopy(draft)
+    kwargs = dict(spacing_um=40.0, extent_um=extent, min_separation_um=20.0)
+    kept = generate_module._grow_side_to_reach(draft, T, "venous", roots["outlet"], np.random.default_rng(5), **kwargs)
+    median, far = reach["venous"]
+    misses = []
+    for seed in np.random.default_rng(5).integers(0, 2**62, size=generate_module.TREE_CANDIDATES):
+        trial = copy.deepcopy(before)
+        result = trees.grow_side(trial, T, "venous", roots["outlet"], rng=np.random.default_rng(int(seed)), **kwargs)
+        chords = generate_module._leaf_reach(trial, result)
+        misses.append((abs(np.median(chords) - median) / median + abs(max(chords) - far) / far, len(trial.positions)))
+    best = min(misses, key=lambda m: m[0])
+    chords = generate_module._leaf_reach(draft, kept)
+    assert abs(np.median(chords) - median) / median + abs(max(chords) - far) / far == pytest.approx(best[0])
+    assert len(draft.positions) == best[1]  # the candidates grown and rolled back left nothing
+    assert len(draft.edges) == sum(1 for e in draft.edges if e.part == "tree")
+
+
 def test_a_trunk_keeps_to_its_trees_course():
     """At a junction the plane is chosen so the trunk (the least deflected
     child) turns towards the tree's course from its root."""

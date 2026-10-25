@@ -112,6 +112,10 @@ class Organisation:
     #: tree -- how well the trunks hold their course.
     tree_leaves_by_order: Optional[tuple[tuple[str, int], ...]] = None
     trunk_straightness: Optional[float] = None
+    #: Per side (``"arterial"``, ``"venous"``), the straight distance from a
+    #: root to its tree's leaves: median and furthest (um). Harvey's grid D1c
+    #: picked the drawn networks whose venous trees reach as far as these.
+    tree_reach_um: Optional[tuple[tuple[str, float, float], ...]] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -156,6 +160,7 @@ class Organisation:
                 None if self.tree_leaves_by_order is None else [list(item) for item in self.tree_leaves_by_order]
             ),
             "trunk_straightness": self.trunk_straightness,
+            "tree_reach_um": None if self.tree_reach_um is None else [list(item) for item in self.tree_reach_um],
         }
 
     @classmethod
@@ -204,6 +209,11 @@ class Organisation:
                 else tuple((str(label), int(count)) for label, count in data["tree_leaves_by_order"])
             ),
             trunk_straightness=opt("trunk_straightness"),
+            tree_reach_um=(
+                None
+                if data.get("tree_reach_um") is None
+                else tuple((str(side), float(median), float(far)) for side, median, far in data["tree_reach_um"])
+            ),
         )
 
 
@@ -331,11 +341,11 @@ def tree_shape(
     tree_edges: Sequence[tuple[Any, Any, str, float]],
     positions: Mapping[Any, np.ndarray],
     roots: Optional[Sequence[Any]] = None,
-) -> tuple[tuple[tuple[str, int], ...], Optional[float]]:
-    """The trees' leaves by branch-order label and their trunks' straightness
-    (see :class:`Organisation`) from *tree_edges* ``(u, v, label, length)``.
-    The roots are *roots* (the inlets and outlets) where given, else every
-    tree end on a vessel of order 1."""
+) -> tuple[tuple[tuple[str, int], ...], Optional[float], tuple[tuple[str, float, float], ...]]:
+    """The trees' leaves by branch-order label, their trunks' straightness
+    and each side's reach (see :class:`Organisation`) from *tree_edges*
+    ``(u, v, label, length)``. The roots are *roots* (the inlets and outlets)
+    where given, else every tree end on a vessel of order 1."""
     tree = nx.Graph()
     for u, v, label, length in tree_edges:
         tree.add_edge(u, v, label=str(label), length=float(length))
@@ -346,6 +356,7 @@ def tree_shape(
         root_set = {n for n in ends if _order_number(next(iter(tree[n].values()))["label"]) == 1}
     leaves: dict[str, int] = {}
     straightness: list[float] = []
+    reach: dict[str, list[float]] = {}
     for component in nx.connected_components(tree):
         sub = tree.subgraph(component)
         component_roots = [r for r in component if r in root_set]
@@ -362,7 +373,12 @@ def tree_shape(
                 nearest = paths[n][0]
                 chord = float(np.linalg.norm(np.asarray(positions[n], float) - np.asarray(positions[nearest], float)))
                 straightness.append(chord / float(distance[n]))
-    return tuple(sorted(leaves.items())), (float(np.median(straightness)) if straightness else None)
+                side = "arterial" if _category(label) in _ARTERIAL else "venous"
+                reach.setdefault(side, []).append(chord)
+    sides = tuple(
+        (side, float(np.median(chords)), float(np.max(chords))) for side, chords in sorted(reach.items())
+    )
+    return tuple(sorted(leaves.items())), (float(np.median(straightness)) if straightness else None), sides
 
 
 def measure_organisation(
@@ -453,7 +469,7 @@ def measure_organisation(
             orientation.append(_components(tensors[c] / capillary_length[c]))
         else:
             orientation.append(global_components)
-    trees = tree_shape(tree_edges, {n: G.nodes[n]["pos"] for n in G}, roots) if tree_edges else ((), None)
+    trees = tree_shape(tree_edges, {n: G.nodes[n]["pos"] for n in G}, roots) if tree_edges else ((), None, ())
     whole = chord_classes.sum(axis=0) / max(float(chord_classes.sum()), 1e-12)
     by_cell = []
     for c in range(cells):
@@ -489,6 +505,7 @@ def measure_organisation(
         ),
         tree_leaves_by_order=trees[0] if tree_edges else None,
         trunk_straightness=trees[1] if tree_edges else None,
+        tree_reach_um=trees[2] if tree_edges and trees[2] else None,
     )
 
 

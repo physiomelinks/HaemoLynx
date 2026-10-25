@@ -108,6 +108,11 @@ FALLBACK_CAPILLARY_LENGTH_UM = 40.0
 #: Rank matching's noise: chords are ranked with this much log-normal jitter,
 #: so equal chords do not all get the same length.
 RANK_JITTER_SIGMA = 0.25
+#: Trees grown per side for a template that records its trees' reach; the
+#: one whose leaves reach nearest the template's is kept (Harvey's grid D1c:
+#: the drawn networks taken for the tissue were those whose venous trees
+#: reached across the box as the template's do).
+TREE_CANDIDATES = 6
 #: How far a capillary's excess over its chord may be stretched past the
 #: tortuosity drawn for it to make up the template's capillary length.
 MAX_TORTUOSITY_SCALE = 3.0
@@ -417,6 +422,46 @@ def dead_end_pairs_joined(template: NetworkTemplate, options: Any) -> int:
     return missing // 2
 
 
+def _leaf_reach(draft: NetworkDraft, result: SideResult) -> list[float]:
+    """The straight distance from each of a grown side's leaves to its root."""
+    return [
+        float(np.linalg.norm(np.asarray(t.position, float) - draft.position(t.root)))
+        for t in result.leaves
+        if t.root >= 0
+    ]
+
+
+def _grow_side_to_reach(
+    draft: NetworkDraft, template: NetworkTemplate, side: str, roots: Sequence, rng: np.random.Generator, **kwargs: Any
+) -> SideResult:
+    """One side's trees (:func:`trees.grow_side`). With the template's reach
+    for the side (``organisation.tree_reach_um``), :data:`TREE_CANDIDATES` are
+    grown, each from a seed drawn off *rng*, and the one whose leaves'
+    median and furthest reach from their roots come nearest the template's
+    is kept; without it, grown once from *rng* as before."""
+    reach = dict(
+        (s, (median, far)) for s, median, far in (template.organisation.tree_reach_um or ())
+    ) if template.organisation is not None else {}
+    if side not in reach:
+        return grow_side(draft, template, side, roots, rng=rng, **kwargs)
+    median, far = reach[side]
+    seeds = rng.integers(0, 2**62, size=TREE_CANDIDATES)
+    mark = (len(draft.positions), len(draft.edges), len(draft.notes))
+    best: Optional[tuple[float, int]] = None
+    for seed in seeds:
+        result = grow_side(draft, template, side, roots, rng=np.random.default_rng(int(seed)), **kwargs)
+        chords = _leaf_reach(draft, result)
+        if chords:
+            miss = abs(float(np.median(chords)) - median) / max(median, 1e-9) + abs(max(chords) - far) / max(far, 1e-9)
+            if best is None or miss < best[0]:
+                best = (miss, int(seed))
+        del draft.positions[mark[0]:], draft.edges[mark[1]:], draft.notes[mark[2]:]
+        for node in [n for n in draft.roles if n >= mark[0]]:
+            del draft.roles[node]
+    chosen = int(seeds[0]) if best is None else best[1]
+    return grow_side(draft, template, side, roots, rng=np.random.default_rng(chosen), **kwargs)
+
+
 def _template_record(template: NetworkTemplate) -> dict:
     """The template as a plain dict without its per-vessel samples."""
     data = template.to_dict()
@@ -500,11 +545,10 @@ def generate_network(
                 if T.scheme == "hierarchical":
                     draft.add_role(node, side.boundary_role)
             continue
-        side.result = grow_side(
-            draft, T, side.name, side.roots,
-            rng=rng, spacing_um=spacing, extent_um=extent, min_separation_um=min_separation,
-            daughter_angle_sd_deg=options.daughter_angle_sd_deg,
-            closed=closed,
+        side.result = _grow_side_to_reach(
+            draft, T, side.name, side.roots, rng,
+            spacing_um=spacing, extent_um=extent, min_separation_um=min_separation,
+            daughter_angle_sd_deg=options.daughter_angle_sd_deg, closed=closed,
         )
         tree_nodes.extend(side.result.nodes)
         for node in side.result.large_boundary:

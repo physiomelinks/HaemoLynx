@@ -136,3 +136,8 @@ Grid D1c (Harvey, the same day): three of six Delaunay networks passed with the 
 #11 and #12 okay), no Voronoi one. What the picked share: their venous trees reach across the box
 as the template's do (281-285 um against 272; the others 127-255); every Voronoi bed had lost its
 capillaries' curvature (0.2-20 against 26 degrees per 10 um).
+
+After D1c: the Voronoi bed curves again (its seeds the template's vertices, little contraction), at
+the cost of a thinner plexus than the template's; and each side's trees are the one of six grown
+whose leaves reach nearest the template's, so every seed's venous trees now reach across the box
+(260-283 um against 272).

@@ -1040,7 +1040,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   the bed at its orders' own widths (Murray's law in the Art/Ven tier only), grown in the cells
   the template's trees of that side occupy (`trees.TreeLayer`), ending as often per order as the
   template's (its side branches, `organisation.tree_leaves_by_order`) and keeping to their
-  course (`trees.TRUNK_PERSISTENCE`); the bed's vertices are the
+  course (`trees.TRUNK_PERSISTENCE`), the side's trees kept of several grown that reach nearest the
+  template's (`generate._grow_side_to_reach`); the bed's vertices (a Voronoi bed's seeds) are the
   template's capillary vertices moved by their spacing (`bed.template_vertices`; a scaled box: laid
   cell by cell to its density, `bed.density_vertices`), it runs the way its capillaries run (each
   direction judged against its own chord length, `bed.class_chord_ratios`: E14.5's columns) and its

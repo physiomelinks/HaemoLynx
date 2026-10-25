@@ -122,6 +122,8 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     # leaves exactly and its trunks at 0.55-0.62 against 0.63.
     ("organisation", "tree leaves"): ("abs", 3.0),
     ("organisation", "trunk straightness, root to leaf"): ("abs", 0.08),
+    # How far each side's trees reach (Harvey's grid D1c). Not calibrated.
+    ("organisation", "tree reach (um)"): ("rel", 0.15),
     ("organisation", "capillary runs along an axis spanning 100 um (per mm^2)"): ("rel", 0.35),
 }
 
@@ -481,6 +483,13 @@ def organisation_rows(
     )
     add("tree leaves", leaves(T), leaves(S))
     add("trunk straightness, root to leaf", get(T, "trunk_straightness"), get(S, "trunk_straightness"))
+    t_reach = {} if T is None or T.tree_reach_um is None else {s: (m, f) for s, m, f in T.tree_reach_um}
+    s_reach = {} if S is None or S.tree_reach_um is None else {s: (m, f) for s, m, f in S.tree_reach_um}
+    for side in sorted(set(t_reach) | set(s_reach)):
+        for index, which in ((0, "median"), (1, "furthest")):
+            add(f"{side} trees' reach, {which} leaf (um)",
+                t_reach[side][index] if side in t_reach else None, s_reach[side][index] if side in s_reach else None,
+                key="tree reach (um)")
     add("capillary curvature (degrees per 10 um)", get(T, "capillary_curvature_deg"), get(S, "capillary_curvature_deg"))
     add("tree curvature (degrees per 10 um)", get(T, "tree_curvature_deg"), get(S, "tree_curvature_deg"))
     return rows

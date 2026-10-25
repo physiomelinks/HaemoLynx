@@ -99,6 +99,16 @@ VORONOI_VERTICES_PER_SEED = 27.07 / 4.0
 #: the corners it keeps: corners of a dense layer's cells spill into the
 #: sparse one beside it, and the contraction takes them back out.
 VORONOI_LAID_OUT_OVERSAMPLE = 3.0
+#: At the template's own size the seeds are its capillary vertices moved by
+#: their spacing (:func:`_template_seeds`), drawn this many times over: so
+#: little contraction keeps the corners as close as the template's vertices,
+#: and its capillaries room to curve. Contracted three times over to the cell
+#: field, E14.5's Voronoi bed drew chords as long as its vessels and every
+#: capillary straight in some seeds (grid D1c); at 1.5 they curve 22-26
+#: degrees per 10 um (26), though its plexus layer holds 31-37% of the
+#: vertices against the template's 58% (49% contracted): a tessellation's
+#: corners spill out of a sheet thinner than its seeds' spacing.
+VORONOI_TEMPLATE_OVERSAMPLE = 1.5
 #: The fewest vertices a cell is taken to want when the contraction reads
 #: its spacing (a cell the template has none in would want an infinite one).
 VORONOI_MIN_CELL_VERTICES = 0.25
@@ -399,6 +409,7 @@ def voronoi_vertices(
     keep_clear: Optional[np.ndarray],
     spacing_um: float,
     organisation: Optional[Organisation] = None,
+    at_template_size: bool = False,
 ) -> tuple[np.ndarray, list[tuple[int, int]]]:
     """About *count* corners of a Voronoi tessellation of random points in
     the box, and the cell edges between them (index pairs).
@@ -423,17 +434,21 @@ def voronoi_vertices(
     spacing = float(spacing_um)
     pad = 2.0 * spacing
     low, high = -pad * np.ones(3), extent + pad
-    oversample = OVERSAMPLE if organisation is None else VORONOI_LAID_OUT_OVERSAMPLE
+    own = drawn_from_template_vertices(organisation, at_template_size)
+    oversample = (
+        OVERSAMPLE if organisation is None else VORONOI_TEMPLATE_OVERSAMPLE if own else VORONOI_LAID_OUT_OVERSAMPLE
+    )
     wanted = max(int(math.ceil(count * oversample)), 1)
     seed_count = max(int(round(oversample * float(np.prod(high - low)) / (VORONOI_VERTICES_PER_SEED * spacing**3))), 8)
     margin = np.minimum(FACE_MARGIN_SPACINGS * spacing, extent / 4.0)
     clear_tree = cKDTree(np.asarray(keep_clear, dtype=float)) if keep_clear is not None and len(keep_clear) else None
     for _attempt in range(VORONOI_ATTEMPTS):
-        seeds = (
-            rng.uniform(low, high, size=(seed_count, 3))
-            if organisation is None
-            else _laid_out_seeds(seed_count, extent, pad, organisation, rng)
-        )
+        if organisation is None:
+            seeds = rng.uniform(low, high, size=(seed_count, 3))
+        elif own:
+            seeds = _template_seeds(seed_count, extent, pad, organisation, rng)
+        else:
+            seeds = _laid_out_seeds(seed_count, extent, pad, organisation, rng)
         triangulation = Delaunay(seeds, qhull_options="QJ")
         centres = _circumcentres(seeds[triangulation.simplices])
         inside = np.all(np.isfinite(centres), axis=1)
@@ -507,6 +522,26 @@ def _wanted_spacing(points: np.ndarray, extent: np.ndarray, organisation: Organi
     return np.cbrt(volume / np.maximum(expected, VORONOI_MIN_CELL_VERTICES))[cell_index(points, extent, shape)]
 
 
+def _template_seeds(count: int, extent: np.ndarray, pad: float, organisation: Organisation, rng: np.random.Generator) -> np.ndarray:
+    """About *count* seeds over the box padded by *pad*: the box's share of
+    them drawn from the template's capillary vertices, each moved by a normal
+    step of their spacing (as :func:`template_vertices`), and mirrored across
+    each face into the padding, so the faces see the same layout beyond."""
+    inside = int(round(count * float(np.prod(extent)) / float(np.prod(extent + 2.0 * pad))))
+    source = np.asarray(organisation.capillary_node_positions_rel, dtype=float) * extent
+    spread = float(organisation.capillary_node_spacing_um or 0.0) / math.sqrt(3.0)
+    seeds = source[rng.integers(0, len(source), size=inside)] + rng.normal(0.0, spread, size=(inside, 3))
+    seeds = np.clip(seeds, 0.0, extent)
+    parts = [seeds]
+    for axis in range(3):
+        for face in (0.0, float(extent[axis])):
+            near = np.abs(seeds[:, axis] - face) < pad
+            mirrored = seeds[near].copy()
+            mirrored[:, axis] = 2.0 * face - mirrored[:, axis]
+            parts.append(mirrored)
+    return np.concatenate(parts)
+
+
 def _laid_out_seeds(count: int, extent: np.ndarray, pad: float, organisation: Organisation, rng: np.random.Generator) -> np.ndarray:
     """About *count* seeds over the box padded by *pad*: the box's share of
     them over the template's cells in proportion to its capillary vertices,
@@ -526,8 +561,9 @@ def _laid_out_seeds(count: int, extent: np.ndarray, pad: float, organisation: Or
 
 
 def class_chord_ratios(organisation: Organisation) -> Optional[np.ndarray]:
-    """Each direction class's mean chord over the template's mean chord
-    (weighted by the classes' shares); 1 for a class it has none in."""
+    """Each direction class's mean chord over the mean of the classes'
+    means (a ratio: the wanted chord keeps its own scale); 1 for a class with
+    none."""
     chords = organisation.chord_by_class_um
     if chords is None:
         return None
@@ -875,7 +911,8 @@ def build_bed(
     voronoi_pairs: Optional[list] = None
     if model == BED_MODEL_VORONOI:
         bed_points, voronoi_pairs = voronoi_vertices(
-            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
+            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation,
+            at_template_size=at_template_size,
         )
     elif drawn_from_template_vertices(organisation, at_template_size):
         bed_points = template_vertices(

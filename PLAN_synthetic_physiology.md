@@ -358,3 +358,18 @@ Being built in the phase order above.
   the others stopping at 127-255 um; every other measure overlaps between picked and not. The rule
   of verification 2 (taken for the tissue as often as the template) is met by 3 of 11, all
   Delaunay.
+- **After D1c** (Harvey's go-ahead): (1) the Voronoi bed's curvature. Its seeds came from the cell
+  field and its tessellation was contracted three times over, which spread its corners evenly:
+  chords 40-41 um against lengths 41, the capillaries straight. At the template's own size its
+  seeds are now the template's capillary vertices moved by their spacing, mirrored into the
+  padding (`bed._template_seeds`), drawn 1.5 times over (`VORONOI_TEMPLATE_OVERSAMPLE`): curvature
+  22-26 degrees per 10 um (26). The cost, stated: its plexus layer holds 31-37% of the vertices
+  against the template's 58% (49% when contracted, straight) -- a tessellation's corners spill out
+  of a sheet thinner than its seeds' spacing; no setting kept both. (2) The trees' reach: the
+  organisation records each side's root-to-leaf reach (`tree_reach_um`, median and furthest:
+  E14.5 arterial 244/369 um, venous 134/272), and each side is grown `generate.TREE_CANDIDATES`
+  (6) times from seeds drawn off the run's, the trees whose leaves miss those least kept
+  (`generate._grow_side_to_reach`; the others rolled back). E14.5, five seeds: venous furthest
+  leaf 260-283 um (272; before, seed by seed 127-285), median 102-148 (134); arterial 347-400
+  (369). Comparison rows per side (rel 0.15, not calibrated). Delaunay 598 of 640 banded rows
+  within (five seeds), Voronoi 354 of 384 (three).

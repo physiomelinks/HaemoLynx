@@ -247,6 +247,14 @@ def test_the_trees_leaves_and_straightness_are_scored():
         )
 
     template = organisation((("Large_Art5", 1), ("Large_Ven4", 26)), 0.63)
+    template = replace(template, tree_reach_um=(("arterial", 244.0, 369.0), ("venous", 134.0, 272.0)))
+    reaching = replace(organisation((("Large_Ven4", 27),), 0.58), tree_reach_um=(("arterial", 230.0, 357.0), ("venous", 125.0, 283.0)))
+    rows = {r.characteristic: r for r in organisation_rows(template, reaching)}
+    assert rows["venous trees' reach, furthest leaf (um)"].within is True
+    assert rows["arterial trees' reach, median leaf (um)"].within is True
+    short = replace(reaching, tree_reach_um=(("arterial", 230.0, 357.0), ("venous", 77.0, 127.0)))
+    rows = {r.characteristic: r for r in organisation_rows(template, short)}
+    assert rows["venous trees' reach, furthest leaf (um)"].within is False
     rows = {r.characteristic: r for r in organisation_rows(template, organisation((("Large_Ven4", 27),), 0.58))}
     assert rows["tree leaves"].template == 27 and rows["tree leaves"].within is True
     assert rows["trunk straightness, root to leaf"].within is True
