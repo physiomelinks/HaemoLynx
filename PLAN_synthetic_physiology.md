@@ -209,3 +209,15 @@ Being built in the phase order above.
   1,000 vertices), the box beyond 50 um of a capillary 44% -> 6% (template 5%). Still out: the
   share of capillary length along z (0.14 against 0.21; a heavier orientation weight lengthened
   the capillaries out of band instead), the trees' place (phase 3).
+- Phase 3: each side's trees are scored by the template's tree length of that side in the cells
+  they end in and the two spacings ahead along their heading, and by their room to go on before
+  a face (`trees.TreeLayer`, `LAYER_WEIGHT`, `LAYER_LOOKAHEAD_SPACINGS`; read between cell
+  centres), in place of their distance from the faces; a root's first vessel is aimed the same
+  way. Without a layout the trees grow as before. E14.5 (seeds 1-6): the share of tree length in
+  the template's tree cells 0.20 -> 0.73 (0.66-0.85; band 0.75 and up, met by 2-3 of 6), 95% within
+  one cell of them, every tree in the plexus layer (z under 48 um) but for 0-10%; the rest is
+  chords one 50 um cell off a corridor one cell wide (a bifurcation there cannot keep both
+  daughters in it). Heavier weights, a longer lookahead, more planes per junction did not raise it.
+  The trunks' turn was already within band (37 against 40 degrees). Interdigitation is not built
+  separately: with each side's trees where the template's are, the feeds and drains alternate
+  where the template's do.

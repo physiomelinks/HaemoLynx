@@ -757,15 +757,16 @@ def test_a_join_never_runs_through_a_dead_end():
 # -- the bed laid out to the template's organisation (Harvey 2026-10-25: D4, D6)
 
 
-def _organisation(shape, nodes, orientation=ISOTROPIC):
-    """A hand-set layout: capillary vertices by cell, one direction everywhere."""
+def _organisation(shape, nodes, orientation=ISOTROPIC, arterial=None, venous=None):
+    """A hand-set layout: capillary vertices by cell, one direction
+    everywhere, the trees' length by cell (none unless given)."""
     n = int(np.prod(shape))
     return Organisation(
         shape=tuple(shape),
         capillary_nodes=tuple(float(v) for v in nodes),
         capillary_length_um=tuple(float(v) for v in nodes),
-        arterial_length_um=(0.0,) * n,
-        venous_length_um=(0.0,) * n,
+        arterial_length_um=tuple(float(v) for v in (arterial or (0.0,) * n)),
+        venous_length_um=tuple(float(v) for v in (venous or (0.0,) * n)),
         orientation=(tuple(orientation),) * n,
         global_orientation=tuple(orientation),
         axis_share=(1 / 3, 1 / 3, 1 / 3),
@@ -898,6 +899,72 @@ def test_a_voronoi_bed_follows_the_templates_layers():
     below = sum(d["length"] * np.mean(np.asarray(d["voxels"])[:, 0] < 60.0) for d in capillaries)
     assert below / total > 0.75
     validate_synthetic_graph(G)
+
+
+# -- the trees grown in the template's tree layer (Harvey 2026-10-25: D5a) ------
+
+
+def test_a_tree_layer_reads_each_sides_tree_cells():
+    extent = (100.0, 100.0, 100.0)
+    arterial = [10.0, 40.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    org = _organisation((2, 2, 2), [1.0] * 8, arterial=arterial)
+    T = replace(fixture_template(), extent_um=extent, organisation=org)
+    layer = trees.TreeLayer.of(T, "arterial")
+    # Over the median of the cells holding any (25 um), capped at 1; the
+    # cells round them a share of their best neighbour.
+    assert layer.value.ravel().tolist() == pytest.approx([0.4, 1.0] + [trees.LAYER_NEIGHBOUR_SHARE] * 6)
+    assert layer.at(np.array([25.0, 25.0, 75.0])) == pytest.approx(1.0)  # cell 1's centre
+    assert layer.at(np.array([25.0, 25.0, 25.0])) == pytest.approx(0.4)
+    assert layer.at(np.array([25.0, 25.0, 50.0])) == pytest.approx(0.7)  # between them
+    # A side the template has no tree on reads both sides'.
+    assert trees.TreeLayer.of(T, "venous").value.ravel().tolist() == layer.value.ravel().tolist()
+    assert trees.TreeLayer.of(replace(T, organisation=_organisation((2, 2, 2), [1.0] * 8)), "arterial") is None
+    assert trees.TreeLayer.of(fixture_template(), "arterial") is None
+
+
+def test_room_ahead_is_the_distance_to_the_face_along_the_heading():
+    extent = np.array([100.0, 100.0, 100.0])
+    point = np.array([10.0, 20.0, 30.0])
+    assert trees.room_ahead_um(point, np.array([0.0, 0.0, 1.0]), extent) == pytest.approx(70.0)
+    assert trees.room_ahead_um(point, np.array([-1.0, 0.0, 0.0]), extent) == pytest.approx(10.0)
+    diagonal = np.array([-1.0, -1.0, 0.0]) / math.sqrt(2.0)
+    assert trees.room_ahead_um(point, diagonal, extent) == pytest.approx(10.0 * math.sqrt(2.0))
+
+
+def _tree_share_below(G, z_um):
+    inside = total = 0.0
+    for *_e, d in G.edges(data=True):
+        if d[SYNTHETIC_CLASS] in ("arteriole", "venule", "large_arteriole", "large_venule"):
+            path = np.asarray(d["voxels"], dtype=float)
+            lengths = np.linalg.norm(np.diff(path, axis=0), axis=1)
+            inside += float(lengths[(path[1:, 0] + path[:-1, 0]) / 2 < z_um].sum())
+            total += float(lengths.sum())
+    return inside / total
+
+
+def _layered_trees_template():
+    T = fixture_template()
+    shape = grid_shape(T.extent_um)
+    lower = _lower_layer(shape)
+    return replace(T, organisation=_organisation(shape, [1.0] * len(lower), arterial=lower, venous=lower))
+
+
+@pytest.mark.parametrize("seed", [7, 8, 9])
+def test_the_trees_grow_in_the_templates_tree_layer(seed):
+    """The fixture's inlets and outlets sit at 40% and 60% of its depth: a
+    template whose trees lie in its lower half gets trees there."""
+    layered = generate_network(_layered_trees_template(), seed=seed)
+    assert _tree_share_below(layered, 60.0) > 0.8
+    validate_synthetic_graph(layered)
+
+
+def test_trees_without_a_layer_fall_anywhere():
+    """One with no layout keeps them off the faces wherever they fall:
+    about half below (0.43 to 0.63 over seeds 1 to 8 on 2026-10-25)."""
+    seeds = (7, 8, 9)
+    layered = np.mean([_tree_share_below(generate_network(_layered_trees_template(), seed=s), 60.0) for s in seeds])
+    anywhere = np.mean([_tree_share_below(generate_network(fixture_template(), seed=s), 60.0) for s in seeds])
+    assert layered > anywhere + 0.25
 
 
 # -- the Voronoi bed (bed_model="voronoi", Harvey 2026-10-24) -----------------

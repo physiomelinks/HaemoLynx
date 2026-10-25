@@ -31,6 +31,14 @@ daughters open at the template's daughter-daughter angle, the narrower
 deflected more, in the plane round the parent that keeps them inside the box
 and away from other vessels. A child that would leave the box is cut at the
 face and marked as leaving the image.
+
+**The trees grow where the template's do** (``PLAN_synthetic_physiology.md``,
+Harvey's D5a) when the template carries its layout (``synthetic.organisation``):
+a side's vessels are scored by how much of that side's tree length the
+template has in the cells they end in (:class:`TreeLayer`) instead of by
+their distance from the faces, so a tissue whose large vessels lie in a
+plexus on one face gets its trees there. Without a layout they keep away from
+the faces, as before.
 """
 from __future__ import annotations
 
@@ -39,9 +47,11 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 import numpy as np
+from scipy.ndimage import map_coordinates, maximum_filter
 from scipy.spatial import cKDTree
 
 from .draft import TREE, NetworkDraft
+from .organisation import Organisation
 from .template import (
     DEFAULT_DAUGHTER_ANGLE_DEG,
     DEFAULT_DAUGHTER_ANGLE_SD_DEG,
@@ -80,6 +90,16 @@ FALLBACK_LENGTH_UM = 30.0
 FALLBACK_DIAMETER_UM = 8.0
 #: A trunk's side branch's width, for its bend, when the template has no capillary width.
 FALLBACK_SIDE_BRANCH_UM = 5.0
+#: How much ending in one of the template's tree cells counts in a vessel's
+#: score, in spacings (a cell with its median tree length or more: all of it).
+LAYER_WEIGHT = 2.0
+#: What a cell next to the template's tree cells is worth, as a share of
+#: its best neighbour: a slope back towards the layer, not a wall.
+LAYER_NEIGHBOUR_SHARE = 0.3
+#: How far ahead of a vessel's end, in spacings, the layer and the room to
+#: go on are read: a trunk steered only by where it ends runs on out of the
+#: template's corridor, or into a face, before it can turn.
+LAYER_LOOKAHEAD_SPACINGS = 2.0
 
 _SIDE_CATEGORIES = {
     "arterial": ("large_arteriole", "arteriole"),
@@ -374,6 +394,17 @@ def exit_fraction(start: np.ndarray, end: np.ndarray, extent: np.ndarray) -> flo
     return float(max(fraction, 0.0))
 
 
+def room_ahead_um(point: np.ndarray, direction: np.ndarray, extent: np.ndarray) -> float:
+    """How far *point* can go along *direction* before it leaves the box."""
+    room = math.inf
+    for axis in range(3):
+        if direction[axis] > 1e-12:
+            room = min(room, (extent[axis] - point[axis]) / direction[axis])
+        elif direction[axis] < -1e-12:
+            room = min(room, -point[axis] / direction[axis])
+    return float(max(room, 0.0))
+
+
 def snap_to_face(point: np.ndarray, extent: np.ndarray) -> np.ndarray:
     """*point* with the coordinate nearest a face set exactly on it."""
     both = np.concatenate([point, extent - point])
@@ -386,6 +417,31 @@ def snap_to_face(point: np.ndarray, extent: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Growing one side
 # ---------------------------------------------------------------------------
+
+
+def _aim_into_layer(
+    base: np.ndarray,
+    tilt_deg: float,
+    start: np.ndarray,
+    chord: float,
+    extent: np.ndarray,
+    rng: np.random.Generator,
+    first: np.ndarray,
+    layer: TreeLayer,
+) -> tuple[np.ndarray, float]:
+    """A direction for a root's first vessel within *tilt_deg* of *base*:
+    of *first* and :data:`FIRST_VESSEL_AIMS` more, the one whose chord fits
+    the box best and, among those, lies most in the template's tree cells."""
+    best: Optional[tuple[tuple[float, float], np.ndarray, float]] = None
+    for k in range(FIRST_VESSEL_AIMS + 1):
+        direction = first if k == 0 else _tilted(base, tilt_deg, rng)
+        fraction = exit_fraction(start, start + chord * direction, extent)
+        end = start + fraction * chord * direction
+        key = (min(fraction, 1.0), layer.at(0.5 * (start + end), end) + min(room_ahead_um(end, direction, extent), chord) / max(chord, 1e-9))
+        if best is None or key > best[0]:
+            best = (key, direction, fraction)
+    assert best is not None
+    return best[1], best[2]
 
 
 def _aim_first_vessel(
@@ -412,6 +468,41 @@ def _aim_first_vessel(
     return best_direction, best_fraction
 
 
+class TreeLayer:
+    """Where the template's trees of one side lie: per cell of its layout,
+    that side's tree length over the median of the cells holding any,
+    capped at 1, and :data:`LAYER_NEIGHBOUR_SHARE` of the best neighbour's
+    in the cells round them, read between cell centres. A side the template
+    has no tree length on reads both sides'."""
+
+    def __init__(self, organisation: Organisation, side: str, extent_um: Sequence[float]):
+        self.extent = np.asarray(extent_um, dtype=float)
+        self.shape = tuple(organisation.shape)
+        own = organisation.field("arterial_length_um" if side == "arterial" else "venous_length_um")
+        if own.sum() <= 0:
+            own = organisation.field("arterial_length_um") + organisation.field("venous_length_um")
+        held = own[own > 0]
+        value = np.clip(own / float(np.median(held)), 0.0, 1.0) if len(held) else np.zeros_like(own)
+        around = LAYER_NEIGHBOUR_SHARE * maximum_filter(value, size=3, mode="constant", cval=0.0)
+        self.value = np.maximum(value, around)
+        self.active = bool(len(held))
+
+    @classmethod
+    def of(cls, template: NetworkTemplate, side: str) -> Optional["TreeLayer"]:
+        if template.organisation is None:
+            return None
+        layer = cls(template.organisation, side, template.extent_um)
+        return layer if layer.active else None
+
+    def at(self, *points: np.ndarray) -> float:
+        """The mean value over *points*, read between the cells' centres
+        (trilinear), so it peaks where the template's trees are thickest
+        rather than standing flat across a cell."""
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        coordinates = (points / self.extent * np.asarray(self.shape, dtype=float) - 0.5).T
+        return float(map_coordinates(self.value, coordinates, order=1, mode="nearest").mean())
+
+
 class _Occupancy:
     """Where vessels already are (the draft's nodes, index = node id), for
     keeping new ones apart."""
@@ -430,9 +521,32 @@ class _Occupancy:
         return math.inf
 
 
-def _score(end: np.ndarray, extent: np.ndarray, occupancy: _Occupancy, spacing: float, parent: int, min_sep: float) -> float:
+def _score(
+    end: np.ndarray,
+    extent: np.ndarray,
+    occupancy: _Occupancy,
+    spacing: float,
+    parent: int,
+    min_sep: float,
+    layer: Optional[TreeLayer] = None,
+    start: Optional[np.ndarray] = None,
+    direction: Optional[np.ndarray] = None,
+) -> float:
     nearest = occupancy.nearest(end, exclude=parent)
-    score = min(face_distance_um(end, extent), spacing) + 0.5 * min(nearest, spacing)
+    if layer is None:
+        placed = min(face_distance_um(end, extent), spacing)
+    else:
+        # In the layer, heading on along it, and with room to go on: a
+        # plexus on a face runs along it, never into it.
+        points = [end if start is None else 0.5 * (start + end), end]
+        if direction is not None:
+            for step in np.linspace(0.0, LAYER_LOOKAHEAD_SPACINGS, 3)[1:]:
+                points.append(np.clip(end + step * spacing * direction, 0.0, extent))
+        placed = LAYER_WEIGHT * spacing * layer.at(*points)
+        if direction is not None:
+            reach = LAYER_LOOKAHEAD_SPACINGS * spacing
+            placed += spacing * min(room_ahead_um(end, direction, extent), reach) / reach
+    score = placed + 0.5 * min(nearest, spacing)
     if nearest < min_sep:
         score -= 10.0 * spacing
     return score
@@ -447,6 +561,7 @@ def _place_children(
     spacing: float,
     min_sep: float,
     rng: np.random.Generator,
+    layer: Optional[TreeLayer] = None,
 ) -> list[tuple[np.ndarray, np.ndarray, float, bool]]:
     """Each child's ``(end, direction, chord, cut at a face)``, the plane
     round the parent chosen by score; children that cannot stay inside the
@@ -478,7 +593,7 @@ def _place_children(
             if cut:
                 inside = False
                 end = snap_to_face(parent + fraction * chords[i] * direction, extent)
-            total += _score(end, extent, occupancy, spacing, tip.node, min_sep)
+            total += _score(end, extent, occupancy, spacing, tip.node, min_sep, layer, parent, direction)
             children.append((end, direction, float(np.linalg.norm(end - parent)), cut))
         key = (inside, total)
         if best is None or key > (best[1], best[0]):
@@ -526,6 +641,7 @@ def grow_side(
     )
     capillaries = template.class_target("capillary")
     side_branch_um = (capillaries.mean_diameter_um if capillaries else None) or FALLBACK_SIDE_BRANCH_UM
+    layer = TreeLayer.of(template, side)
 
     # Generation 1: one vessel from each root, extra ones in pairs so a root
     # is a terminal or a junction, never a degree-2 node.
@@ -561,7 +677,9 @@ def grow_side(
             tortuosity = draw_tortuosity(first_order, first_class, rng)
             chord = length / tortuosity
             fraction = exit_fraction(root_position, root_position + chord * direction, extent)
-            if fraction < 1.0:
+            if layer is not None:
+                direction, fraction = _aim_into_layer(base, tilt, root_position, chord, extent, rng, direction, layer)
+            elif fraction < 1.0:
                 direction, fraction = _aim_first_vessel(base, tilt, root_position, chord, extent, rng, (direction, fraction))
             # A root's first vessel stays in the box: re-aimed above, else
             # shortened to end inside it. Cut at a face, its tree would be
@@ -596,7 +714,12 @@ def grow_side(
             counts = children_per_tip(len(growable), order.edge_count, draft.notes, order.label)
         if len(counts) < len(growable):
             weights = np.array([
-                min(face_distance_um(t.position, extent), spacing_um)
+                (
+                    min(face_distance_um(t.position, extent), spacing_um)
+                    if layer is None
+                    else _score(t.position, extent, occupancy, spacing_um, t.node, 0.0, layer, None, t.direction)
+                    - 0.5 * min(occupancy.nearest(t.position, exclude=t.node), spacing_um)
+                )
                 + 0.5 * min(occupancy.nearest(t.position, exclude=t.node), spacing_um)
                 + 1e-6
                 for t in growable
@@ -636,7 +759,7 @@ def grow_side(
                 result.handoffs.append(tip.node)
             else:
                 deflections = [angle / 2.0] * count
-            children = _place_children(tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng)
+            children = _place_children(tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng, layer)
             for (end, direction, chord, cut), diameter, tort in zip(children, diameters, tortuosities):
                 node = draft.add_node(end)
                 result.nodes.append(node)
@@ -656,6 +779,7 @@ __all__ = [
     "AZIMUTHS",
     "SideResult",
     "Tip",
+    "TreeLayer",
     "children_per_tip",
     "diameter_fall_per_order",
     "draw_length",
@@ -671,6 +795,7 @@ __all__ = [
     "mean_child_ratio",
     "murray_deflections",
     "murray_ratios",
+    "room_ahead_um",
     "snap_to_face",
     "trunk_children_per_tip",
 ]
