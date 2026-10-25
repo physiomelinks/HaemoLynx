@@ -236,10 +236,24 @@ vessel's axis, the share of it on the tree, and where and how wide the vessel be
 at most 3 cases over marking all one way and loses them under leave-one-out, bar one: a bridge's
 lumen radius at its outer end over the thick vessel's radius at most 0.35 calls it thick
 centreline on 13 of 17 bridges, leave-one-out 13, against 10 all one way, on a margin of 0.33
-against 0.36. That waits on sheet 2 (IDs 31-60, not marked) as a fresh check, put on an interactive page
-for Harvey's marks (https://claude.ai/artifact/6UKspdmpdnnWcZLLqtXNeB, `page_data.py` and grid P's
-`grid_page.py`; marks in its `marks` collection), its two rules fixed before the marks. No rule is built and
-`thick_bridge_centreline_tolerance_um` stays at 1.5 um. The grid's bridges are those of
+against 0.36.
+
+**Sheet 2 marked (Harvey, 2026-10-25)**, the fresh check, on an interactive page
+(https://claude.ai/artifact/6UKspdmpdnnWcZLLqtXNeB, `page_data.py` and grid P's `grid_page.py`;
+marks in its `marks` collection, copied into `marks.csv`): IDs 31-60 (13 bridges, 17 near-misses),
+B 7, V 1, C 8, N 14. Both rules fixed before the marks fail. The rule at `47edef60` agrees on 12 of
+30, against 14 for marking all N (9 for no bridge at all). Sheet 1's radius at the outer end gets
+8 of the 13 bridges right against 11 all one way: the three bridges under 0.35 are all marked N,
+not C. Over all 60 (B 10, V 4, C 21, N 25; `FIT.md`, sheet 1's alone kept as `FIT_sheet1.md`) the
+rule agrees on 21 against 25 for all N. 23 of the 30 bridges are not bridges by the marks: 9 are
+thick centreline, 12 should not be connected and 2 are vessel. No single threshold gains more than
+4 cases over marking all one way under leave-one-out. The best is a near-miss within 1.41 times the
+tolerance of the tree read as thick centreline, 22 of 30 against 18; next, a bridge across the
+thick vessel's axis (|cos| at most 0.16) read as not to be connected, 21 of 30 against 18. Neither
+was fixed beforehand, and neither is near 90%. No rule is built and
+`thick_bridge_centreline_tolerance_um` stays at 1.5 um. The largest group is what should not be
+connected at all, 25 of the 60: that is graph near the thick vessels the clean-up leaves, not a
+bridge's shape, and no measure here finds it. The grid's bridges are those of
 `47edef60`, before the taper rule was dropped, the wall join's reach raised to 15 um and equal
 forks left unbridged (above): its forks, IDs 4 and 28, and any taper among its near-misses are
 judged as that commit made them.
