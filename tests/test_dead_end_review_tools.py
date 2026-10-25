@@ -328,6 +328,63 @@ def test_a_grids_second_question_is_fitted_from_its_own_field_without_its_labels
     assert "| tip |" not in report
 
 
+def test_dr2_is_spread_across_the_route_and_how_far_past_the_straight_line_it_went():
+    from dead_end_review import build_dr2
+
+    rng = np.random.default_rng(3)
+    ends = [_end(i, chain_length_um=float(rng.uniform(5, 50))) for i in range(90)]
+    measures = {}
+    for e in ends:
+        e3 = float(rng.integers(0, 31))
+        e4 = float(rng.integers(int(e3), 31))
+        measures[e.tip] = {"e3_run_um": e3, "e4_run_um": e4, "e4_beyond_e3_um": e4 - e3}
+    chosen = build_dr2.choose(ends, measures, count=30)
+    assert len({e.tip for e in chosen}) == 30
+    runs = np.sort([measures[e.tip]["e4_run_um"] for e in ends])
+    for k, third in enumerate((chosen[:10], chosen[10:20], chosen[20:])):
+        third_runs = [measures[e.tip]["e4_run_um"] for e in third]
+        assert (k == 0 or min(third_runs) >= runs[30 * k - 1]) and (k == 2 or max(third_runs) <= runs[30 * (k + 1) - 1])
+        beyond = sorted(measures[e.tip]["e4_beyond_e3_um"] for e in third)
+        pool = sorted(measures[e.tip]["e4_beyond_e3_um"] for e in ends
+                      if (k == 0 or measures[e.tip]["e4_run_um"] >= runs[30 * k - 1]))
+        assert beyond[0] == pool[0]  # each third spans its own range, lowest included
+
+
+def test_dr2s_route_reads_back_from_its_key_and_turns_the_third_plane():
+    from dead_end_review import build_dr2
+
+    route = [[0.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 3.0, 9.0]]
+    values = {"e4_path": ";".join(",".join(f"{v:.2f}" for v in p) for p in route)}
+    assert build_dr2.route_points(values).tolist() == route
+    assert build_dr2.route_points({}).shape == (0,)
+    heading, e2 = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])
+    tip = np.zeros(3)
+    # 18 deg off the heading: the plane turns to hold the chord (y, not e2's z).
+    a, b, normal = build_dr2.third_plane(heading, e2, np.asarray(route), tip)
+    assert np.allclose(a, heading) and np.allclose(b, [0.0, 1.0, 0.0]) and np.allclose(normal, np.cross(a, b))
+    # A route within 10 deg keeps the chain's own plane.
+    straight = np.asarray([[0.0, 0.0, 0.0], [0.0, 0.5, 9.0]])
+    assert np.allclose(build_dr2.third_plane(heading, e2, straight, tip)[1], e2)
+
+
+def test_dr2s_page_hides_the_route_and_its_rules_were_fixed_first():
+    from fit_marks import FRESH_RULES, QUESTIONS, SECOND_QUESTIONS, judged
+
+    from dead_end_review import build_dr2
+
+    data = build_dr2.page_data([])
+    assert data["toggles"] == [{"group": "route", "label": "Show the traced route"}]
+    assert [v["value"] for v in data["verdicts"]] == ["Y", "E", "?"]
+    assert [v["value"] for v in data["second"]["verdicts"]] == ["R", "A", "S", "?"]
+    assert QUESTIONS["DR2"] == ("Y", "E") and SECOND_QUESTIONS["DR2"] == ("R", ("A", "S"))
+    rules = {rule.measure: rule for rule in FRESH_RULES["DR2"]}
+    assert rules["e3_run_um"].threshold == rules["e4_run_um"].threshold == 11.0
+    assert rules["e4_goes_on"].says_positive({"e4_goes_on": "1.0"})
+    assert not rules["e4_goes_on"].says_positive({"e4_goes_on": "0.0"})
+    rows, labels = judged([{"second": m} for m in ("R", "A", "S", "?", None)], "second", "R", ("A", "S"))
+    assert len(rows) == 3 and labels.tolist() == [True, False, False]
+
+
 def test_the_dr1_page_asks_both_questions():
     from dead_end_review import build_dr1
 

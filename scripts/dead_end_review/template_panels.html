@@ -100,6 +100,8 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
   const BATCH = DATA.batch, EX = DATA.examples, VERDICTS = DATA.verdicts, EVIDENCE = DATA.evidence || [];
   // An optional second question per example: { question, verdicts }.
   const SECOND = DATA.second || null;
+  // Overlay groups hidden until their box in the bar is ticked: [{ group, label }].
+  const TOGGLES = DATA.toggles || [];
   document.getElementById("title").textContent = DATA.title;
   document.getElementById("lede").textContent = DATA.lede;
   DATA.steps.forEach(text => {
@@ -118,6 +120,7 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
   const state = {}, cards = {};
   let db = null;
   const view = { graph: true, context: true, onImages: false };
+  TOGGLES.forEach(t => { view[t.group] = false; });
   EX.forEach(ex => { state[ex.id] = { verdict: null, second: null, evidence: [], note: "" }; });
   function answered(id) { return !!state[id].verdict && (!SECOND || !!state[id].second); }
 
@@ -154,6 +157,7 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
       const all = withLines || view.onImages;
       for (const layer of plane.overlays) {
         if (!all && !layer.marker) continue;
+        if (TOGGLES.some(t => t.group === layer.group) && !view[layer.group]) continue;
         if ((layer.group === "context" && !view.context) || (layer.group !== "context" && !view.graph)) continue;
         if (layer.kind === "dots") {
           ctx.fillStyle = layer.color;
@@ -307,6 +311,13 @@ canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-r
   progress();
   [["showGraph", "graph"], ["showContext", "context"], ["showOnImages", "onImages"]].forEach(([elId, key]) => {
     document.getElementById(elId).addEventListener("change", e => { view[key] = e.target.checked; EX.forEach(ex => drawCard(ex.id)); });
+  });
+  TOGGLES.forEach(t => {
+    const lab = document.createElement("label"), box = document.createElement("input");
+    box.type = "checkbox";
+    box.addEventListener("change", () => { view[t.group] = box.checked; EX.forEach(ex => drawCard(ex.id)); });
+    lab.appendChild(box); lab.appendChild(document.createTextNode(" " + t.label));
+    document.getElementById("copy").before(lab);
   });
   document.getElementById("copy").addEventListener("click", async () => {
     const short = Object.fromEntries(VERDICTS.map(v => [v.value, v.short]));

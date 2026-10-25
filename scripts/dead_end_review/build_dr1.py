@@ -67,23 +67,33 @@ OTHERS_FROM_CHAIN_UM = 15.0
 BEHIND_TIP_UM = 6.0
 
 
-def measure(evidence, G, end, centrelines) -> dict:
-    """E1-E3 of one dead end: the key's columns (``e1_*``, ``e2_*``, ``e3_*``)."""
+def neighbours(G, end, centrelines) -> tuple[np.ndarray, np.ndarray, object]:
+    """``(path, others, other_radii)``: the dead end's chain, tip first, and
+    the points (and lumen radii) of every other centreline within
+    :data:`OTHERS_FROM_TIP_UM` of its tip or :data:`OTHERS_FROM_CHAIN_UM` of
+    its chain -- whose rings and lumens the raw readings may meet."""
     from haemolynx.graph._helpers import edge_id, points_within
     from haemolynx.graph.dead_ends import chain_path
-    from haemolynx.preprocessing import raw_evidence as rx
 
     path = chain_path(G, end.chain, step_um=0.5) if end.chain else np.asarray(end.tip_um).reshape(1, 3)
     tip = np.asarray(end.tip_um, dtype=float)
-    radius = float(end.tip_radius_um or 2.0)
     own = {centrelines.ids[edge_id(*e)] for e in end.chain if edge_id(*e) in centrelines.ids}
     near = np.union1d(
         centrelines.near(tip, OTHERS_FROM_TIP_UM, own),
         points_within(centrelines.tree, path, OTHERS_FROM_CHAIN_UM) if len(path) else np.empty(0, dtype=np.intp),
     ).astype(np.intp)
     near = near[~np.isin(centrelines.owners[near], list(own))] if len(near) else near
-    others = centrelines.points[near]
     other_radii = centrelines.radii[near] if centrelines.radii is not None else 0.0
+    return path, centrelines.points[near], other_radii
+
+
+def measure(evidence, G, end, centrelines) -> dict:
+    """E1-E3 of one dead end: the key's columns (``e1_*``, ``e2_*``, ``e3_*``)."""
+    from haemolynx.preprocessing import raw_evidence as rx
+
+    path, others, other_radii = neighbours(G, end, centrelines)
+    tip = np.asarray(end.tip_um, dtype=float)
+    radius = float(end.tip_radius_um or 2.0)
     ring = evidence.ring_along(path, radius, others_um=others)
     sections = rx._along(path, rx.RING_SECTION_STEP_UM)[1:] if len(path) > 1 else path
     inside = evidence.inside_walls(sections[: int(rx.RING_TIP_REACH_UM / rx.RING_SECTION_STEP_UM)], radius,

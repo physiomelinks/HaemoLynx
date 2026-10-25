@@ -25,11 +25,12 @@ import numpy as np
 QUESTIONS = {
     "G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N"), "G4": ("N", "V"),
     "G1b": ("X", "S"), "G2b": ("F", "I"), "G3b": ("J", "N"),
-    "DR1": ("N", "V"),
+    "DR1": ("N", "V"), "DR2": ("Y", "E"),
 }
-#: A grid's second question, read from the marks' ``second`` field (DR1,
-#: ``PLAN_dead_ends_raw.md``: does the vessel go on past the tip?).
-SECOND_QUESTIONS = {"DR1": ("Y", "E")}
+#: A grid's second question, read from the marks' ``second`` field
+#: (``PLAN_dead_ends_raw.md``): DR1 does the vessel go on past the tip; DR2
+#: is E4's traced route right, against astray or stopping short.
+SECOND_QUESTIONS = {"DR1": ("Y", "E"), "DR2": ("R", ("A", "S"))}
 MEANING = {
     "G1": "X = not a vessel end (remove) against S = a real blind end",
     "G2": "F = leaves the image against I = ends inside it",
@@ -39,12 +40,17 @@ MEANING = {
 MEANING.update({f"{grid}b": MEANING[grid] for grid in ("G1", "G2", "G3")})
 MEANING["DR1"] = MEANING["G4"]
 MEANING["DR1 second"] = "Y = the vessel goes on past the tip against E = it ends there (? unsure, reported apart)"
+MEANING["DR2"] = MEANING["DR1 second"]
+MEANING["DR2 second"] = ("R = E4's route is right against A = it goes astray or S = it stops short "
+                         "(? unsure, reported apart)")
 
 
-def judged(table: list[dict], field: str, positive: str, negative: str) -> tuple[list[dict], np.ndarray]:
-    """The rows of *table* whose *field* holds *positive* or *negative*, and
-    whether each is *positive*: an unsure mark, or none, is not judged."""
-    rows = [r for r in table if r.get(field) in (positive, negative)]
+def judged(table: list[dict], field: str, positive: str, negative) -> tuple[list[dict], np.ndarray]:
+    """The rows of *table* whose *field* holds *positive* or *negative* (one
+    mark, or a tuple of them), and whether each is *positive*: an unsure
+    mark, or none, is not judged."""
+    negatives = (negative,) if isinstance(negative, str) else tuple(negative)
+    rows = [r for r in table if r.get(field) == positive or r.get(field) in negatives]
     return rows, np.asarray([r[field] == positive for r in rows], dtype=bool)
 
 
@@ -85,6 +91,15 @@ FRESH_RULES = {
         Rule("depth_um <= 10.4 is F", "depth_um", 10.4, above=False),
     ),
     "G3b": (Rule("ahead_turn_deg <= 30.5 is J", "ahead_turn_deg", 30.5, above=False),),
+    # PLAN_dead_ends_raw.md, fixed 2026-10-25 before DR2 was built: E3's cut
+    # as DR1 fitted it, and E4 (not fitted on any marks) by the same cut and
+    # by where it stopped (DR1: walls running on to the limit or into a
+    # vessel were all "goes on", to the image face all "ends here").
+    "DR2": (
+        Rule("e3_run_um > 11 is Y (fitted on DR1)", "e3_run_um", 11.0),
+        Rule("e4_run_um > 11 is Y", "e4_run_um", 11.0),
+        Rule("E4 runs on to the limit or into another vessel is Y", "e4_goes_on", 0.5),
+    ),
 }
 
 

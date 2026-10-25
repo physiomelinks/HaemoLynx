@@ -218,7 +218,8 @@ class PanelDrawer(Drawer):
                 else:
                     run.append(p)
             points = [q for k, r in enumerate(runs) for q in ([None] if k else []) + r]
-            layer = dict(kind="line", group="graph", color=line["color"], width=line.get("width", 2.4), points=points)
+            layer = dict(kind="line", group=line.get("group", "graph"), color=line["color"],
+                         width=line.get("width", 2.4), points=points)
             if line.get("marker"):
                 layer["marker"] = True
             overlays.append(layer)
