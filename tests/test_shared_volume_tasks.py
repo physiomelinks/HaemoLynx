@@ -18,6 +18,43 @@ def test_workers_read_an_integer_volume_as_it_is_and_answer_in_order():
     assert pooled == alone == [(bits.dtype.str, int(bits[i].sum()), i) for i in payloads]
 
 
+def _dies_in_a_worker(volume, payload):
+    """Ends any worker it runs in at once, as the OS ends one that ran out of
+    memory; in the parent process it answers."""
+    import multiprocessing
+    import os
+
+    if multiprocessing.parent_process() is not None:
+        os._exit(1)
+    return payload, int(volume[payload].sum())
+
+
+def test_a_worker_killed_mid_run_falls_back_to_this_process_with_the_same_answers(caplog):
+    """The run is not lost when a worker dies (RELEASE_REVIEW.md memory.4b):
+    the pool breaks, and every payload is measured here instead."""
+    volume = np.arange(40, dtype=np.int32).reshape(4, 10)
+    payloads = list(range(4))
+
+    pooled = run_volume_tasks(_dies_in_a_worker, payloads, volume=volume, workers=2, min_payloads=1)
+
+    assert pooled == [(p, int(volume[p].sum())) for p in payloads]
+    assert "measuring in this one" in caplog.text
+
+
+def test_a_worker_killed_mid_stream_finishes_what_is_left_here(tmp_path, caplog):
+    from haemolynx.preprocessing.shared_volume_tasks import iter_volume_tasks
+
+    volume = np.arange(60, dtype=np.int32).reshape(6, 10)
+    payloads = list(range(6))
+
+    streamed = list(iter_volume_tasks(
+        _dies_in_a_worker, payloads, volume=volume, workers=2, memmap_directory=tmp_path,
+    ))
+
+    assert streamed == [(p, int(volume[p].sum())) for p in payloads]
+    assert "finishing in this one" in caplog.text
+
+
 def test_too_few_payloads_stay_in_this_process():
     seen = run_volume_tasks(_dtype_and_sum, [0], volume=np.ones((2, 2), dtype=bool), workers=4, min_payloads=2)
     assert seen == [("|b1", 2, 0)]

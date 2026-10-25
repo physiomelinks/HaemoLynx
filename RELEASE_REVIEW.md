@@ -7,8 +7,11 @@
 Every aspect of the software is scored **out of 10** by a ladder of checks (see
 [How scoring works](#how-scoring-works)). A score is never set by impression. It is the highest
 level whose checks all pass, and a check passes only with evidence written beside it.
-`PLAN_release_review.md` is the plan for a command that re-measures the automated checks. Until
-that command exists, the checks are marked by hand.
+`scripts/release_review.py` is the command that re-measures them (`PLAN_release_review.md`): it
+decides the checks a script can from a `git archive` of a commit, reads the testers' marks from
+`scripts/release_review/human_checks.yaml`, carries every other check from its row here, and flags
+a row whose cited evidence no longer exists. It never edits this file: its scorecard is copied in
+by hand, with a line in the log.
 
 ---
 

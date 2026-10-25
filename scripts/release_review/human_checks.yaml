@@ -1,0 +1,56 @@
+# The release review's recorded marks (RELEASE_REVIEW.md § Testers).
+#
+# Only the named testers can pass an H check: Harvey, Finbar and Mason (the
+# developers) and George, Rebecca and Mike (independent: the only ones who
+# count as "someone other than the developer"). The scorer reads this file
+# and never writes it. An agent may copy a tester's result in, with their
+# name and where their marks are kept; it never adds a mark of its own.
+#
+# One list of marks per check:
+#
+#   usability.8a:
+#     - tester: George
+#       date: 2026-11-02
+#       result: pass            # or fail
+#       evidence: "usability_tasks.md sheet, kept at <where>"
+#       value: {minutes: 41}    # optional: what was measured
+#
+# An R check may be recorded too, with `reviewer:` in place of `tester:` and
+# the file and line that decided it. Most R checks keep their evidence in
+# their row of RELEASE_REVIEW.md, which the scorer reads when nothing is here.
+#
+# Each H check below names who may mark it and how many must. Nothing is
+# marked yet.
+checks:
+  # Graph accuracy
+  graph.6b: []      # any tester; the fitted rules' marked grids (CLAUDE.md § Marked example grids)
+  graph.8b: []      # any tester; each fitted rule on a fresh grid
+  graph.10a: []     # George, Rebecca or Mike: a manual tracing of a real sub-volume
+  # Diameter accuracy
+  diameter.8b: []   # any tester; manual_diameter_protocol.md, 30+ vessels
+  diameter.10a: []  # George, Rebecca or Mike: a second annotator or another modality
+  # Haemodynamic accuracy
+  flow.10a: []      # any tester; flow against measured in vivo flow or red-cell velocity
+  # Statistics
+  stats.10a: []     # George, Rebecca or Mike: the glossary, docs/statistics_glossary.md
+  # Inputs and segmentation
+  input.10a: []     # any tester; Dice against a hand-labelled sub-volume
+  # Speed
+  speed.6c: []      # any tester; no open report of the panel freezing
+  # Usability
+  usability.8a: []  # two of George, Rebecca and Mike: usability_tasks.md, unaided
+  usability.8b: []  # the same two: sus_sheet.md, score >= 68
+  usability.10a: [] # five testers: SUS >= 80
+  # Visualisation
+  visual.8a: []     # George, Rebecca or Mike: visual_grid.py's grid, >= 80% GOOD
+  visual.10a: []    # any tester; figures used in a publication or talk unaltered
+  # Documentation and help
+  docs.6a: []       # Harvey only: the help pages are his words (CLAUDE.md § Help menu)
+  docs.8a: []       # George, Rebecca or Mike: a result reached from the docs alone
+  # Robustness
+  robust.6c: []     # any tester; no open report of a crash or freeze
+  # Installation and packaging
+  package.6b: []    # Harvey (Windows), Mason (macOS) and Finbar (Linux), all three
+  package.8b: []    # George, Rebecca or Mike: a clean first install
+  # Code maintainability
+  code.10a: []      # George, Rebecca or Mike: a change landed from the guide alone

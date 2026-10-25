@@ -417,7 +417,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 GitHub Actions (`.github/workflows/pytest-pr.yml`) runs on pull requests, on pushes to `main` and
 `Devel_GUI_improvements_HD`, and weekly (Mondays). A newer push to a branch or pull request cancels
 the run still going for an older commit (`concurrency`), so only the newest commit is reported; a
-push never cancels the weekly run. Six jobs:
+push never cancels the weekly run. Seven jobs:
 
 - **`lint`** — `ruff check .`, rules `F` and `E9` only (`[tool.ruff]` in `pyproject.toml`). There is
   no formatter: `ruff format` would rewrite most of the codebase, which is Harvey's decision.
@@ -428,6 +428,9 @@ push never cancels the weekly run. Six jobs:
   line coverage of `src/haemolynx` without `gui/` (`[tool.coverage]`, no threshold) into the job
   summary and a `coverage-xml` artifact: 92.7% on the not-slow subset at `2e59fb68`.
 - **`windows`** — `windows-latest`, Python 3.11, `pytest -m "not slow and not gui" -n auto`.
+- **`release-review`** (temporary, with the release review) — `scripts/release_review.py --tree .`:
+  the review's quick tier on the checkout, its score table in the job summary; `continue-on-error`,
+  so it reports and never fails the run.
 - **`installed-package`** — builds the wheel, installs it into an empty environment and runs
   `tests/installed_package_smoke.py` from outside the repository, then `tests/test_installed_package.py`.
 - **`dependency-floors`** — the suite against the oldest supported versions (`constraints-floor.txt`).
@@ -1164,10 +1167,18 @@ pytest tests/integration/test_pipeline_tutorial.py -s
 graph, diameter and haemodynamic accuracy; statistics; inputs and segmentation; speed; memory;
 usability; visualisation; exports; documentation and help; robustness; reproducibility; testing
 and CI; packaging; and maintainability. For each one it lists the checks that hold the score
-where it is, so it doubles as the list of what to do before release. **`PLAN_release_review.md`**
-is the plan for `scripts/release_review/`, a command that will re-measure the automated checks
-(steps R1–R8). Delete both files, the scorer and this section once the release gate in
-`RELEASE_REVIEW.md` is met. First scoring: 2026-10-10 at `9c6a15a`, lowest score 3, mean 3.8.
+where it is, so it doubles as the list of what to do before release. **`scripts/release_review.py`**
+(package `scripts/release_review/`, planned in the local `PLAN_release_review.md`, steps R1–R8) is
+the scorer: it re-measures the checks a script can decide from a `git archive` of the commit
+(`--quick`, the default: static facts; `--fixtures`: the committed fixtures, the edge-case suite,
+the identity runs, the export read-back and the phantoms; `--full`: the reference datasets named in
+the main checkout's git-ignored `release_review_datasets.yaml`), reads the testers' marks from
+`scripts/release_review/human_checks.yaml`, carries every other check from its row, flags rows whose
+cited evidence no longer exists, and writes `outputs/release_review/<date>_<sha>/scorecard.md` in
+the main checkout. It never edits the review: copy what changed by hand. Its tests are
+`tests/test_release_review_*.py`. Delete the review, the plan, the scorer and this section once the
+release gate in `RELEASE_REVIEW.md` is met. First scoring: 2026-10-10 at `9c6a15a`, lowest score 3,
+mean 3.8.
 
 Rules for agents:
 
