@@ -172,3 +172,19 @@ SHA-256, the runs left out with why, and the batch's `batch_settings.yaml` as wr
 Checked on `tests/synthetic_fixtures.py`'s drawn runs and on E14.5 averaged with itself (counts,
 orders, classes, dead ends, loops and inlets as the one run's). Not yet run on a real batch of
 several images, nor marked on a grid.
+
+## 2026-10-25: flow-adapted widths (phase 7) measured on E14.5, not built
+
+Harvey asked for structural adaptation (Pries, Secomb & Gaehtgens 1998) read from the template.
+Fitted to E14.5's solved network, the 1998 balance gives a metabolic weight of 0.69 (the paper's
+0.70), a conducted weight of 0.13 and a shrinking tendency of 1.24, and explains 22% of the
+template's wall shear stress. Its shear does not follow pressure over its 15-30 mmHg (r = -0.04),
+so no pressure term can be read. Applied to the template's own network, the law does not keep its
+widths. Under fixed inlet and outlet pressures they run away, since widening raises flow by the
+fourth power and the metabolic term fades at the template's flows. Holding the inflow, the large
+vessels regress to capillary width (arteriolar median 19 -> 7 um, venular 21 -> 6 um), the
+shunting the 1998 paper describes; the paper's conducted weight (2.45) holds the arterioles but not
+the venules. The template's widths follow its flows weakly (D ~ Q^0.11-0.17 by class, R2
+0.21-0.29), and those flows are computed from the widths. So nothing was built: a law that turns
+the template's own large vessels into capillaries would draw widths less like the template's. The
+options put to Harvey are in `PLAN_synthetic_physiology.md`'s status.
