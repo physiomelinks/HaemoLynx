@@ -799,7 +799,7 @@ and B8. Each, and where it stands:
   `raw_component_mean` and `raw_local_background_median` (tissue 2-6 um round its mask component;
   0 for 7 of 30) beside it. IDs, labels and `grid.png` are unchanged; the old key is kept as
   `key_raw_contrast_clamped.csv`, and the folder's README says so.
-- **`_SEARCH_STEP_CALLS` recounted at 16x and 4x** (Phase 4's bullet; `e834960a`, counted on
+- **`_SEARCH_STEP_CALLS` recounted at 16x and 4x** (Phase 4's bullet; `210986e9`, counted on
   `b34a3e35`). `harness/step_calls.py` runs Optimise settings as the panel does (config.yaml, the
   run's grid and whole settings, the raw image as the cleanup guard, the thick-vessel restriction;
   every group, one pass) on a `git archive` of `b34a3e35` and counts each step the time model
