@@ -513,6 +513,43 @@ def test_building_without_a_callback_is_supported():
     assert G.number_of_edges() == 3
 
 
+def _artefact_lines(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.name == "haemolynx.graph.assemble" and "Lumen artefacts:" in r.getMessage()]
+
+
+def test_debug_logs_the_lumen_artefact_report_after_every_step_and_changes_nothing(caplog):
+    """PLAN_one_centreline_per_lumen.md Phase 0: with ``debug`` and a mask, the
+    build's own log says what each topology step leaves in one lumen, one line
+    per step in step order, and the caller's callback still fires. The report
+    is read-only: the graph is the one a build without it makes."""
+    skeleton = _t_skeleton()
+    mask = _t_mask(skeleton)
+    seen: list[str] = []
+    plain = _build(skeleton, segmentation_mask=mask)
+
+    with caplog.at_level("DEBUG", logger="haemolynx.graph.assemble"):
+        G = _build(skeleton, segmentation_mask=mask, debug=True,
+                   step_callback=lambda graph, label: seen.append(label))
+
+    lines = _artefact_lines(caplog)
+    assert seen == EXPECTED_STEP_LABELS
+    assert [line.split(":", 1)[0] for line in lines] == [f"After {label}" for label in EXPECTED_STEP_LABELS]
+    assert "0 pair(s) of edges share one lumen" in lines[-1]
+    assert sorted(map(str, G.edges())) == sorted(map(str, plain.edges()))
+
+
+@pytest.mark.parametrize("debug, with_mask", [(False, True), (True, False)])
+def test_no_lumen_artefact_report_without_debug_or_without_a_mask(caplog, debug, with_mask):
+    skeleton = _t_skeleton()
+    kwargs = {"segmentation_mask": _t_mask(skeleton)} if with_mask else {}
+
+    with caplog.at_level("DEBUG", logger="haemolynx.graph.assemble"):
+        _build(skeleton, debug=debug, **kwargs)
+
+    assert _artefact_lines(caplog) == []
+
+
 # --- the segmentation's gates: bridges, recovery, the final prune ------------
 
 _RECONNECTS = (

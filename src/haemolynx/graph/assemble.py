@@ -35,7 +35,12 @@ from .persistence_collapse import (
     collapse_node_clusters_persistence,
 )
 from .degree2 import smart_multigraph_degree2_removal
-from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
+from .diagnostics import (
+    diagnose_degree2_nodes,
+    diagnose_lumen_artefacts,
+    format_degree2_diagnostics_report,
+    format_lumen_artefacts_report,
+)
 from .mask_recovery import (
     DEFAULT_MIN_LENGTH_UM,
     DEFAULT_MIN_REGION_VOLUME_UM3,
@@ -231,6 +236,30 @@ def _log_degree2_diagnostics(G: nx.MultiGraph, max_degree: int, debug: bool) -> 
         return
     degree2_diag = diagnose_degree2_nodes(G, max_degree=max_degree)
     logger.debug(format_degree2_diagnostics_report(degree2_diag))
+
+
+def _with_lumen_artefact_report(
+    step_callback: StepCallback | None,
+    support: MaskSupport,
+    stub_radius_multiple: float,
+) -> StepCallback:
+    """*step_callback*, after the lumen-artefact report (``diagnostics.
+    diagnose_lumen_artefacts``) is logged at DEBUG on the graph each topology
+    step leaves: which step makes a pair in one lumen, a loop inside one
+    lumen or a dead end, in the build's own log. Read-only; under ``debug``
+    only, since it measures the whole graph thirteen times.
+    ``scripts/graph_artefacts.py --steps`` tabulates the same report."""
+
+    def report_then_call(G: nx.MultiGraph, label: str) -> None:
+        found = diagnose_lumen_artefacts(
+            G, support.mask, voxel_size_zyx=support.voxel_size_zyx, mask_support=support,
+            stub_radius_multiple=stub_radius_multiple,
+        )
+        logger.debug("After %s: %s", label, format_lumen_artefacts_report(found))
+        if step_callback is not None:
+            step_callback(G, label)
+
+    return report_then_call
 
 
 @dataclass(frozen=True)
@@ -523,7 +552,9 @@ def build_graph_from_skeleton(
         Minimum stub length (microns) retained before pruning, wherever the
         stub is not judged by its parent vessel's radius instead.
     debug
-        When True, print degree-2 diagnostic reports after cleanup passes.
+        When True, print degree-2 diagnostic reports after cleanup passes and,
+        with a segmentation mask, the lumen-artefact report after every
+        topology step (``diagnose_lumen_artefacts``, at DEBUG).
     step_callback
         Optional ``callback(G, step_label)`` invoked after each topology step.
     cluster_collapse_method
@@ -701,6 +732,10 @@ def build_graph_from_skeleton(
         max_rounds=lumen_cleanup_max_rounds,
     )
     prune_stubs = cleanup.prune
+    if debug and mask_support is not None:
+        step_callback = _with_lumen_artefact_report(
+            step_callback, mask_support, float(min_stub_length_radius_multiple or 3.0)
+        )
 
     logger.info("Building skan Skeleton object...")
     warmup = skan_numba_warmup_skeleton()
