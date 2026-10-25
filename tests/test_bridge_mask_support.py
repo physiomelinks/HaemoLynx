@@ -115,6 +115,37 @@ def test_background_is_measured_in_microns_on_anisotropic_voxels(axis, holes, ex
     assert bridge_is_supported(support) is accepted
 
 
+@pytest.mark.parametrize("hole_at", [20, 21])
+@pytest.mark.parametrize("path_z", [(5, 35), tuple(range(5, 36)), (18, 23)])
+def test_a_one_voxel_z_dropout_reads_one_micron_on_a_coarse_z(hole_at, path_z):
+    """Regression (PLAN_bridging.md F10): pieces of 0.15 um, half the finest
+    0.3 um voxel, straddle the boundaries of a 1 um z voxel, and one missing
+    z slice read 0.86-1.14 um depending on the path's vertices. The step now
+    divides every axis's half spacing (0.05 um), so it reads 1.0 um."""
+    spacing = (1.0, 0.3, 0.3)
+    mask = np.zeros((40, 5, 5), dtype=bool)
+    mask[:, 1:4, 1:4] = True
+    mask[hole_at] = False
+    path = np.array([(z, 2, 2) for z in path_z], dtype=float) * np.array(spacing)
+
+    support = bridge_mask_support(path, mask, spacing)
+
+    assert support.longest_background_um == pytest.approx(1.0, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    "spacing, step",
+    [((1.0, 0.3, 0.3), 0.05), ((2.0, 0.5, 0.5), 0.25), ((1.0, 1.0, 1.0), 0.5), ((1.0, 0.98, 0.98), 0.49)],
+)
+def test_the_sample_step_divides_every_half_spacing_where_a_small_divisor_does(spacing, step):
+    """0.5 x 0.5 x 2 um and cube voxels keep their step; on 0.98 x 0.98 x 1 um
+    (E14.5) no step within four times the lookups divides both half spacings,
+    so the finest axis's step stays and nothing measured there moves."""
+    from haemolynx.preprocessing.bridge_mask_support import _sample_step
+
+    assert _sample_step(spacing) == pytest.approx(step)
+
+
 def test_a_path_mostly_outside_the_mask_is_refused_however_short_its_gaps():
     """Every gap is a single voxel, but half the path is background: a
     straight line through tissue that happens to cross specks of mask."""

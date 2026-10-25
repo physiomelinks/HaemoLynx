@@ -86,17 +86,33 @@ def check_mask_shape(mask, skeleton, what: str = "The segmentation mask") -> Non
         )
 
 
+#: How far :func:`_sample_step` may shrink the finest axis's step to read a
+#: dropout along every axis exactly: at most this many times the lookups.
+EXACT_STEP_MAX_DIVISOR = 4
+
+
 def _sample_step(voxel_size_zyx: Sequence[float]) -> float:
     """At most 0.5 um, and an even fraction of the finest voxel: pieces that
     long, read at their midpoints, then never straddle a voxel boundary on a
     path stepping from voxel centre to voxel centre along the finest axis,
-    so an n-voxel dropout along it reads n voxels exactly. Along a coarser
-    axis that is exact only when its spacing is a whole multiple of the step
-    (0.5 x 0.5 x 2 um is; 0.98 x 0.98 x 1 um is not, and reads a dropout to
-    within a step): a step dividing every spacing would be the spacings'
-    common divisor, 0.01 um on that stack, fifty times the lookups."""
+    so an n-voxel dropout along it reads n voxels exactly. Along another
+    axis the same holds when the step divides that axis's half spacing (its
+    voxel boundary then falls between two pieces), so the step is shrunk to
+    the largest fraction of that, at most :data:`EXACT_STEP_MAX_DIVISOR`
+    times, that divides every axis's half spacing: 0.15 -> 0.05 um on 0.3 x
+    0.3 x 1 um voxels, where 0.15 read a one-voxel z dropout as 0.86-1.14 um
+    (PLAN_bridging.md F10). Where none does (0.98 x 0.98 x 1 um: the half
+    spacings' common divisor is 0.01 um, fifty times the lookups) the step
+    stays the finest axis's, and a dropout along the other axes reads to
+    within a step."""
     finest = float(np.min(voxel_size_zyx))
-    return finest / (2 * max(1, int(np.ceil(finest - 1e-9))))
+    step = finest / (2 * max(1, int(np.ceil(finest - 1e-9))))
+    halves = 0.5 * np.asarray(voxel_size_zyx, dtype=float)
+    for divisor in range(1, EXACT_STEP_MAX_DIVISOR + 1):
+        pieces = halves / (step / divisor)
+        if np.all(np.abs(pieces - np.round(pieces)) <= 1e-6):
+            return step / divisor
+    return step
 
 
 def _counts(lengths: np.ndarray, step_um: float) -> np.ndarray:
