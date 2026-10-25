@@ -418,6 +418,38 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A c
 | `vessel_voxels` | `-` | Its voxels in each vessel (JSON). |
 | `reason` | `-` | Why it blocks nothing, when it does not. |
 
+## `{name}_mask_distribution.csv`
+
+Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A perturbation reading a mask of objects (a pericyte perturbation with use_pericyte_mask_constriction, or a capillary block read from a mask): how densely its objects sit on the capillaries and where they lie in the image's depth, one metric a row (metric, value). Each metric's unit is in its name; the rows are listed below as columns.
+
+| Column | Unit | Meaning |
+|---|---|---|
+| `metric` | `-` | The metric's name. |
+| `value` | `-` | Its value, in the unit its name carries. |
+| `mask_path` | `-` | The mask. |
+| `mask` | `-` | Which mask: pericyte_mask or capillary_block_mask. |
+| `objects` | `count` | Objects in the mask (connected components). |
+| `objects_on_vessels` | `count` | Of them, placed on a vessel: a pericyte near enough to a capillary and of a pericyte's size, a blob that blocks a vessel. |
+| `objects_on_capillaries` | `count` | Of those, on a capillary. |
+| `capillary_vessels` | `vessels` | The network's capillaries (B orders, Unknown_Cap). |
+| `capillary_length_um` | `um` | Their length. |
+| `objects_per_mm_capillary` | `1/mm` | objects_on_capillaries per mm of capillary_length_um. |
+| `image_depth_um` | `um` | The image's z extent, its first plane to its last (the crop box's, when cut). |
+| `depth_{min\|max\|range\|mean\|mode}_um_{all\|on_vessels}` | `um` | The objects' centroid z from the image's first plane, over every object or over those on vessels: least, greatest, greatest minus least, mean, and the peak of a Gaussian kernel density of them. |
+| `depth_mode_bandwidth_um_{all\|on_vessels}` | `um` | That kernel density's bandwidth (Silverman's rule); 0 when the depths are all alike. |
+
+## `{name}_mask_density_by_branch_order.csv`
+
+Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A perturbation reading a mask of objects: their density per branch order. A pericyte mask lists the capillary orders, the only ones it places pericytes on.
+
+| Column | Unit | Meaning |
+|---|---|---|
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
+| `vessels` | `vessels` | Vessels of that order (thick-vessel bridges are none). |
+| `length_um` | `um` | Their length. |
+| `objects` | `count` | Objects placed on them, each once: a blob on the vessel holding most of its voxels. |
+| `objects_per_mm` | `1/mm` | objects per mm of length_um. |
+
 ## `{arteriole\|capillary\|pericyte}_dilation_sweep.csv, ..._dilation_pressure_sweep.csv, inlet_pressure_sweep.csv`
 
 Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A dilation and/or inlet pressure sweep: one row per grid point.

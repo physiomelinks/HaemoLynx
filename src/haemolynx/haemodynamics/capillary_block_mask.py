@@ -84,6 +84,16 @@ class MaskBlock:
     def blocks(self) -> bool:
         return bool(self.blocked_branch_ids)
 
+    @property
+    def main_branch_id(self) -> int | None:
+        """The vessel holding most of its voxels inside the segmentation
+        (ties to the first in edge order): the one vessel it counts on in the
+        mask's density, also when it blocks every vessel it lies in. None
+        when it blocks nothing."""
+        if not self.blocks:
+            return None
+        return max(sorted(self.vessel_voxels), key=lambda branch_id: self.vessel_voxels[branch_id])
+
 
 def load_capillary_block_mask(
     path: str | Path,

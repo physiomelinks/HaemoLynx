@@ -213,6 +213,142 @@ def _assign_centroids_to_edges(
     return projections
 
 
+def load_pericyte_mask(
+    path: str | Path,
+    graph: nx.MultiGraph,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
+) -> tuple[np.ndarray, tuple[float, float, float], tuple[float, float, float]]:
+    """The pericyte mask as a boolean volume on *graph*'s grid (cut to its
+    crop box, reduced by its downsample on import), its voxel size ``(x, y,
+    z)`` and the same ``(z, y, x)``.
+
+    The mask's voxel size is resolved with the run's *voxel_size_override_xyz*
+    and *voxel_size_policy*, as the main image's and the vessel masks' are,
+    and must match the main image's (the graph's ``image_voxel_size_zyx``,
+    when it records one): a mask exported without z spacing read as 1 um
+    against a 2 um image, and every pericyte landed at half its depth --
+    attached to the wrong vessel, or dropped as too far from any.
+    """
+    mask_bool, metadata_voxel_size, metadata_status = load_binary_mask_voxel_size_and_status(
+        path,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        description=PERICYTE_MASK_DESCRIPTION,
+    )
+    # Its centroids are placed against the graph's positions, which are
+    # measured from the crop_on_import box's corner when the image was cut,
+    # on the grid it was downsampled to.
+    mask_bool = mask_volume_like_graph(mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION)
+    mask_voxel_size, _source = resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size,
+        metadata_status=metadata_status,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
+    )
+    # The mask's own voxel size is the image's as read; reduced with the
+    # image, it is the run's.
+    downsample = graph_downsample(graph)
+    if downsample is not None:
+        mask_voxel_size = downsample.scale_voxel_size_xyz(mask_voxel_size)
+    mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
+    image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
+    if image_voxel_size_zyx is not None and not np.allclose(
+        mask_voxel_size_zyx, np.asarray(image_voxel_size_zyx, dtype=float), rtol=1e-3, atol=0.0
+    ):
+        raise ValueError(
+            f"The pericyte mask's voxel size (z, y, x) {tuple(mask_voxel_size_zyx)} does not "
+            f"match the main image's {tuple(float(v) for v in image_voxel_size_zyx)}: its "
+            "pericytes would be placed against the wrong vessels. Export the mask with the "
+            "image's voxel size, or give the run's voxel_size_override_xyz with "
+            "voxel_size_policy 'override'."
+        )
+    return (
+        mask_bool,
+        tuple(float(v) for v in mask_voxel_size),
+        tuple(float(v) for v in mask_voxel_size_zyx),
+    )
+
+
+@dataclass(frozen=True)
+class PericytePlacement:
+    """Where a pericyte mask's pericytes go on a network.
+
+    One entry per connected component of the mask, numbered from 0 in
+    component order: ``centroids_um`` its centroid in physical ``(z, y, x)``
+    microns like node ``pos``, ``equivalent_diameters_um`` the diameter of the
+    sphere of its volume. ``projections`` maps each pericyte to the capillary
+    whose centreline is nearest, ``((u, v, key), arc position um, distance
+    um)``; ``eligible`` lists, in order, the pericytes near enough to that
+    capillary and of a pericyte's size -- the ones a run places.
+    """
+
+    centroids_um: np.ndarray
+    equivalent_diameters_um: np.ndarray
+    projections: dict[int, tuple[tuple[Any, Any, Any], float, float]]
+    eligible: list[int]
+
+
+def place_pericytes(
+    graph: nx.MultiGraph,
+    mask_bool: np.ndarray,
+    voxel_size_zyx,
+    *,
+    max_assignment_distance_um: float | None = 3.0,
+    min_pericyte_diameter_um: float | None = 5.0,
+    max_pericyte_diameter_um: float | None = 12.0,
+) -> PericytePlacement:
+    """Each pericyte of *mask_bool* (a volume on *graph*'s grid) projected onto
+    the nearest capillary, and which of them are placed there: within
+    *max_assignment_distance_um* of it, and with an equivalent diameter
+    between *min_pericyte_diameter_um* and *max_pericyte_diameter_um* (None:
+    no limit)."""
+    if (
+        min_pericyte_diameter_um is not None
+        and max_pericyte_diameter_um is not None
+        and float(min_pericyte_diameter_um) > float(max_pericyte_diameter_um)
+    ):
+        raise ValueError(
+            "min_pericyte_diameter_um cannot be greater than max_pericyte_diameter_um."
+        )
+
+    all_centroids_phys, equivalent_diameters_um = _extract_pericyte_component_properties(
+        mask_bool,
+        voxel_size_zyx,
+    )
+    edge_records = _build_edge_records(graph)
+    projection_by_centroid = _assign_centroids_to_edges(
+        edge_records,
+        all_centroids_phys,
+    )
+    eligible_indices: list[int] = []
+    for centroid_idx, (_, _, dist_um) in projection_by_centroid.items():
+        diameter_um = float(equivalent_diameters_um[int(centroid_idx)])
+        passes_distance = (
+            max_assignment_distance_um is None
+            or float(dist_um) <= float(max_assignment_distance_um)
+        )
+        passes_min_diameter = (
+            min_pericyte_diameter_um is None
+            or diameter_um >= float(min_pericyte_diameter_um)
+        )
+        passes_max_diameter = (
+            max_pericyte_diameter_um is None
+            or diameter_um <= float(max_pericyte_diameter_um)
+        )
+        if passes_distance and passes_min_diameter and passes_max_diameter:
+            eligible_indices.append(int(centroid_idx))
+    return PericytePlacement(
+        centroids_um=all_centroids_phys,
+        equivalent_diameters_um=equivalent_diameters_um,
+        projections=projection_by_centroid,
+        eligible=sorted(eligible_indices),
+    )
+
+
 class MaskConstrictionSites:
     """Sites already fixed to edges by projecting mask centroids onto them.
 
@@ -295,76 +431,26 @@ def set_poiseuille_resistances_with_pericyte_mask(
     require_positive_constriction_length(constriction_length)
     require_enough_integration_points(num_integration_points)
 
-    mask_bool, metadata_voxel_size, metadata_status = load_binary_mask_voxel_size_and_status(
+    mask_bool, mask_voxel_size, mask_voxel_size_zyx = load_pericyte_mask(
         pericyte_mask_path,
+        graph,
         h5_dataset_name=pericyte_mask_h5_dataset_name,
         axis_order=axis_order,
-        description=PERICYTE_MASK_DESCRIPTION,
-    )
-    # Its centroids are placed against the graph's positions, which are
-    # measured from the crop_on_import box's corner when the image was cut,
-    # on the grid it was downsampled to.
-    mask_bool = mask_volume_like_graph(mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION)
-    mask_voxel_size, _source = resolve_voxel_size_xyz(
-        metadata_voxel_size_xyz=metadata_voxel_size,
-        metadata_status=metadata_status,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
     )
-    # The mask's own voxel size is the image's as read; reduced with the
-    # image, it is the run's.
-    downsample = graph_downsample(graph)
-    if downsample is not None:
-        mask_voxel_size = downsample.scale_voxel_size_xyz(mask_voxel_size)
-    mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
-    image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
-    if image_voxel_size_zyx is not None and not np.allclose(
-        mask_voxel_size_zyx, np.asarray(image_voxel_size_zyx, dtype=float), rtol=1e-3, atol=0.0
-    ):
-        raise ValueError(
-            f"The pericyte mask's voxel size (z, y, x) {tuple(mask_voxel_size_zyx)} does not "
-            f"match the main image's {tuple(float(v) for v in image_voxel_size_zyx)}: its "
-            "pericytes would be placed against the wrong vessels. Export the mask with the "
-            "image's voxel size, or give the run's voxel_size_override_xyz with "
-            "voxel_size_policy 'override'."
-        )
-    if (
-        min_pericyte_diameter_um is not None
-        and max_pericyte_diameter_um is not None
-        and float(min_pericyte_diameter_um) > float(max_pericyte_diameter_um)
-    ):
-        raise ValueError(
-            "min_pericyte_diameter_um cannot be greater than max_pericyte_diameter_um."
-        )
-
-    all_centroids_phys, equivalent_diameters_um = _extract_pericyte_component_properties(
+    placement = place_pericytes(
+        graph,
         mask_bool,
         mask_voxel_size_zyx,
+        max_assignment_distance_um=max_assignment_distance_um,
+        min_pericyte_diameter_um=min_pericyte_diameter_um,
+        max_pericyte_diameter_um=max_pericyte_diameter_um,
     )
-    total_pericytes = int(all_centroids_phys.shape[0])
-    edge_records = _build_edge_records(graph)
-    projection_by_centroid = _assign_centroids_to_edges(
-        edge_records,
-        all_centroids_phys,
-    )
-    eligible_indices: list[int] = []
-    for centroid_idx, (_, _, dist_um) in projection_by_centroid.items():
-        diameter_um = float(equivalent_diameters_um[int(centroid_idx)])
-        passes_distance = (
-            max_assignment_distance_um is None
-            or float(dist_um) <= float(max_assignment_distance_um)
-        )
-        passes_min_diameter = (
-            min_pericyte_diameter_um is None
-            or diameter_um >= float(min_pericyte_diameter_um)
-        )
-        passes_max_diameter = (
-            max_pericyte_diameter_um is None
-            or diameter_um <= float(max_pericyte_diameter_um)
-        )
-        if passes_distance and passes_min_diameter and passes_max_diameter:
-            eligible_indices.append(int(centroid_idx))
-    eligible_indices = sorted(eligible_indices)
+    equivalent_diameters_um = placement.equivalent_diameters_um
+    total_pericytes = int(placement.centroids_um.shape[0])
+    projection_by_centroid = placement.projections
+    eligible_indices = placement.eligible
     eligible_set = set(eligible_indices)
 
     if active_pericyte_indices is not None:

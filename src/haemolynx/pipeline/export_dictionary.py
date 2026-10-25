@@ -574,6 +574,47 @@ FILES: tuple[OutputFile, ...] = (
         ),
     ),
     OutputFile(
+        "{name}_mask_distribution.csv", _PERTURBATION,
+        "A perturbation reading a mask of objects (a pericyte perturbation with "
+        "use_pericyte_mask_constriction, or a capillary block read from a mask): how densely its "
+        "objects sit on the capillaries and where they lie in the image's depth, one metric a row "
+        "(metric, value). Each metric's unit is in its name; the rows are listed below as columns.",
+        (
+            _c("metric", "-", "The metric's name."),
+            _c("value", "-", "Its value, in the unit its name carries."),
+            _c("mask_path", "-", "The mask."),
+            _c("mask", "-", "Which mask: pericyte_mask or capillary_block_mask."),
+            _c("objects", "count", "Objects in the mask (connected components)."),
+            _c("objects_on_vessels", "count",
+               "Of them, placed on a vessel: a pericyte near enough to a capillary and of a "
+               "pericyte's size, a blob that blocks a vessel."),
+            _c("objects_on_capillaries", "count", "Of those, on a capillary."),
+            _c("capillary_vessels", "vessels", "The network's capillaries (B orders, Unknown_Cap)."),
+            _c("capillary_length_um", "um", "Their length."),
+            _c("objects_per_mm_capillary", "1/mm", "objects_on_capillaries per mm of capillary_length_um."),
+            _c("image_depth_um", "um", "The image's z extent, its first plane to its last (the crop box's, when cut)."),
+            _c("depth_{min|max|range|mean|mode}_um_{all|on_vessels}", "um",
+               "The objects' centroid z from the image's first plane, over every object or over "
+               "those on vessels: least, greatest, greatest minus least, mean, and the peak of a "
+               "Gaussian kernel density of them."),
+            _c("depth_mode_bandwidth_um_{all|on_vessels}", "um",
+               "That kernel density's bandwidth (Silverman's rule); 0 when the depths are all alike."),
+        ),
+    ),
+    OutputFile(
+        "{name}_mask_density_by_branch_order.csv", _PERTURBATION,
+        "A perturbation reading a mask of objects: their density per branch order. A pericyte "
+        "mask lists the capillary orders, the only ones it places pericytes on.",
+        (
+            _BRANCH_ORDER,
+            _c("vessels", "vessels", "Vessels of that order (thick-vessel bridges are none)."),
+            _c("length_um", "um", "Their length."),
+            _c("objects", "count",
+               "Objects placed on them, each once: a blob on the vessel holding most of its voxels."),
+            _c("objects_per_mm", "1/mm", "objects per mm of length_um."),
+        ),
+    ),
+    OutputFile(
         "{arteriole|capillary|pericyte}_dilation_sweep.csv, ..._dilation_pressure_sweep.csv, inlet_pressure_sweep.csv",
         _PERTURBATION,
         "A dilation and/or inlet pressure sweep: one row per grid point.",

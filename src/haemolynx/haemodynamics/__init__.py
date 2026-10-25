@@ -93,6 +93,13 @@ from .capillary_block_mask import (
     blocks_from_mask,
     load_capillary_block_mask,
 )
+from .mask_distribution import (
+    MaskDistribution,
+    block_mask_distribution,
+    kernel_density_mode,
+    mask_distribution,
+    pericyte_mask_distribution,
+)
 from .perturbations import (
     CAPILLARY_BLOCK_TYPES,
     INCOMPARABLE_OVERRIDES,
@@ -187,6 +194,11 @@ __all__ = [
     "MaskBlock",
     "blocks_from_mask",
     "load_capillary_block_mask",
+    "MaskDistribution",
+    "block_mask_distribution",
+    "kernel_density_mode",
+    "mask_distribution",
+    "pericyte_mask_distribution",
     "SweepFlowGrid",
     "build_sweep_flow_grid",
     "record_flows_after_solve",

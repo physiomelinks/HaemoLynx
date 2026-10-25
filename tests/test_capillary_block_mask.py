@@ -26,6 +26,8 @@ import tifffile
 from haemolynx.haemodynamics import (
     CAPILLARY_BLOCK_TYPES,
     PERTURBATION_TYPES,
+    MaskBlock,
+    block_mask_distribution,
     blocks_from_mask,
     is_capillary_block,
     load_capillary_block_mask,
@@ -72,6 +74,8 @@ AT_JUNCTION = [(Z, 24, x) for x in range(35, 40)] + [(Z, 23, 39), (Z, 23, 40), (
 #: Inside segmented vessel the graph has no centreline through.
 OFF_GRAPH_SEGMENT = [(Z, 14, x) for x in range(46, 53)]
 OFF_GRAPH = [(Z, 14, 49)]
+#: In the tissue in the stack's top plane, 3 um above the vessels' midplane.
+HIGH_IN_TISSUE = [(7, 14, x) for x in (32, 33, 34)]
 
 
 def _distance_to_segment(points: np.ndarray, a, b) -> np.ndarray:
@@ -202,6 +206,36 @@ def test_a_blob_at_a_junction_blocks_the_vessel_holding_most_of_it_or_every_one(
     assert largest == [edges[ids["bottom"]]]
     assert set(every) == {edges[ids["bottom"]], edges[ids["right"]]}
     assert summary["vessels_per_block"] == "every_overlapped_vessel"
+
+
+def test_a_blob_blocking_every_vessel_it_lies_in_counts_once_on_the_one_holding_most_of_it():
+    G = _graph()
+    ids = _ids(G)
+    _blocked, _s, (block,) = blocks_from_mask(
+        G, _blobs(AT_JUNCTION), (1.0, 1.0, 1.0), vessel_mask=_segmentation(),
+        vessels_per_block="every_overlapped_vessel",
+    )
+
+    distribution = block_mask_distribution(G, [block], image_shape=SHAPE, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert sorted(block.blocked_branch_ids) == sorted([ids["bottom"], ids["right"]])
+    assert block.main_branch_id == ids["bottom"]
+    assert {row["branch_order"]: row["objects"] for row in distribution.by_branch_order} == {
+        "Art1": 0, "BO2": 1, "Ven1": 0
+    }
+    assert distribution.summary["objects_on_vessels"] == 1
+
+
+def test_a_blobs_main_vessel_ties_to_the_first_in_edge_order_and_is_none_when_it_blocks_nothing():
+    def blob(vessel_voxels, blocked):
+        return MaskBlock(
+            number=1, voxels=6, volume_um3=6.0, centroid_um=(0.0, 0.0, 0.0), voxels_in_vessels=6,
+            overlap_fraction=1.0, vessel_voxels=vessel_voxels, blocked_branch_ids=blocked,
+        )
+
+    assert blob({5: 3, 2: 3}, [2, 5]).main_branch_id == 2
+    assert blob({5: 4, 2: 2}, [2, 5]).main_branch_id == 5
+    assert blob({5: 4}, []).main_branch_id is None
 
 
 def test_segmentation_the_graph_has_no_vessel_through_blocks_nothing():
@@ -428,6 +462,54 @@ def test_the_perturbation_blocks_the_vessels_under_the_masks_blobs(tmp_path):
     # The baseline the run goes on to export is as it arrived.
     assert {(u, v, k): d["resistance"] for u, v, k, d in model.graph.edges(keys=True, data=True)} == before
     assert all(BLOCK_EDGE_ATTRIBUTE not in d for *_e, d in model.graph.edges(keys=True, data=True))
+
+
+def test_the_perturbation_writes_how_densely_and_how_deep_the_masks_blobs_lie(tmp_path):
+    """Three blobs, one on the top capillary: 1 per 100 um of capillary. The
+    two in the tissue count in the mask's depths (4, 4 and 7 um), not the
+    placed one's."""
+    from haemolynx.pipeline.export_dictionary import undocumented
+
+    mask_path = tmp_path / "blocks.tif"
+    tifffile.imwrite(str(mask_path), _blobs(ON_TOP, IN_TISSUE, HIGH_IN_TISSUE).astype(np.uint8))
+
+    run = run_perturbations(
+        _settings(tmp_path, [_entry(mask_path)]),
+        HaemodynamicModel(graph=_graph()),
+        _boundaries(),
+        SCHEMA,
+        network=_network(_segmentation()),
+    )
+
+    (result,) = run.results
+    assert result.error is None, result.error
+    written = {path.name for path in result.outputs}
+    assert {"stall_mask_distribution.csv", "stall_mask_density_by_branch_order.csv"} <= written
+    rows = {row["metric"]: row["value"] for row in _read(result.output_dir / "stall_mask_distribution.csv")}
+    assert undocumented("{name}_mask_distribution.csv", list(rows)) == []
+    assert rows["mask"] == "capillary_block_mask"
+    assert rows["mask_path"] == mask_path.as_posix()
+    assert (rows["objects"], rows["objects_on_vessels"], rows["objects_on_capillaries"]) == ("3", "1", "1")
+    assert rows["capillary_vessels"] == "4"
+    assert float(rows["capillary_length_um"]) == pytest.approx(100.0)
+    assert float(rows["objects_per_mm_capillary"]) == pytest.approx(10.0)
+    assert float(rows["image_depth_um"]) == 7.0
+    depths = {name: float(rows[f"depth_{name}_um_all"]) for name in ("min", "max", "range", "mean", "mode")}
+    assert depths == {"min": 4.0, "max": 7.0, "range": 3.0, "mean": 5.0, "mode": 4.0}
+    assert [float(rows[f"depth_{name}_um_on_vessels"]) for name in ("min", "max", "range", "mean", "mode")] == [
+        4.0, 4.0, 0.0, 4.0, 4.0
+    ]
+    assert float(rows["depth_mode_bandwidth_um_on_vessels"]) == 0.0
+    orders = _read(result.output_dir / "stall_mask_density_by_branch_order.csv")
+    assert [
+        (row["branch_order"], int(row["vessels"]), float(row["length_um"]), int(row["objects"]),
+         float(row["objects_per_mm"]))
+        for row in orders
+    ] == [
+        ("Art1", 1, pytest.approx(10.0), 0, 0.0),
+        ("BO2", 4, pytest.approx(100.0), 1, pytest.approx(10.0)),
+        ("Ven1", 1, pytest.approx(10.0), 0, 0.0),
+    ]
 
 
 def test_the_perturbations_overlap_and_vessel_choice_reach_the_blocks(tmp_path):

@@ -56,6 +56,7 @@ from haemolynx.haemodynamics.perturbations import (
     PerturbationSpec,
     is_capillary_block,
     is_sweep_perturbation,
+    places_pericytes,
     perturbation_folder_name,
     perturbation_output_dir,
     perturbation_problems,
@@ -6042,6 +6043,85 @@ CAPILLARY_BLOCK_MASK_COLUMNS = (
     "reason",
 )
 
+#: Metric/value rows of a perturbation mask's `<name>_mask_distribution.csv`:
+#: a pericyte or block mask's objects, how densely they sit on the
+#: capillaries, and where they lie in the image's depth
+#: (haemodynamics.mask_distribution).
+MASK_DISTRIBUTION_COLUMNS = ("metric", "value")
+#: Columns of a perturbation mask's `<name>_mask_density_by_branch_order.csv`.
+MASK_DENSITY_ORDER_COLUMNS = ("branch_order", "vessels", "length_um", "objects", "objects_per_mm")
+
+
+def _write_mask_distribution(
+    distribution: haemodynamics.MaskDistribution,
+    *,
+    output_dir: Path,
+    name: str,
+    mask_path: Any,
+) -> list[Path]:
+    """A perturbation mask's distribution as its two CSVs in *output_dir*:
+    the metric/value summary and the density per branch order."""
+    summary_path = output_dir / f"{name}_mask_distribution.csv"
+    with summary_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(MASK_DISTRIBUTION_COLUMNS)
+        writer.writerow(["mask_path", Path(mask_path).as_posix()])
+        for key, value in distribution.summary.items():
+            writer.writerow([key, value])
+    orders_path = output_dir / f"{name}_mask_density_by_branch_order.csv"
+    with orders_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(MASK_DENSITY_ORDER_COLUMNS))
+        writer.writeheader()
+        writer.writerows(distribution.by_branch_order)
+    rows = distribution.summary
+    logger.info(
+        f"Perturbation '{name}': {rows['objects_on_vessels']} of the mask's {rows['objects']} "
+        f"object(s) lie on vessels, {rows['objects_per_mm_capillary']:.4g} per mm of capillary; "
+        f"depth {rows['depth_min_um_all']:.4g}-{rows['depth_max_um_all']:.4g} um (mean "
+        f"{rows['depth_mean_um_all']:.4g}, mode {rows['depth_mode_um_all']:.4g}) of an image "
+        f"{rows['image_depth_um']:.4g} um deep."
+    )
+    return [summary_path, orders_path]
+
+
+def _pericyte_mask_distribution(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    *,
+    diameter_by_branch_order: Mapping[str, float],
+    output_dir: Path,
+    name: str,
+) -> tuple[haemodynamics.MaskDistribution, list[Path]]:
+    """Where a pericyte perturbation's mask puts its pericytes on *G*, placed
+    as its constriction strategy places them (the same arguments, from
+    `constriction_strategy_kwargs`), and the two CSVs that say so."""
+    from haemolynx.haemodynamics.pericyte_mask import load_pericyte_mask, place_pericytes
+
+    arguments = constriction_strategy_kwargs(settings, diameter_by_branch_order=diameter_by_branch_order)
+    mask, _voxel_size_xyz, voxel_size_zyx = load_pericyte_mask(
+        arguments["pericyte_mask_path"],
+        G,
+        h5_dataset_name=arguments["pericyte_mask_h5_dataset_name"],
+        axis_order=arguments["axis_order"],
+        voxel_size_override_xyz=arguments["voxel_size_override_xyz"],
+        voxel_size_policy=arguments["voxel_size_policy"],
+    )
+    placement = place_pericytes(
+        G,
+        mask,
+        voxel_size_zyx,
+        max_assignment_distance_um=arguments["max_assignment_distance_um"],
+        min_pericyte_diameter_um=arguments["min_pericyte_diameter_um"],
+        max_pericyte_diameter_um=arguments["max_pericyte_diameter_um"],
+    )
+    distribution = haemodynamics.pericyte_mask_distribution(
+        G, placement, image_shape=mask.shape, voxel_size_zyx=voxel_size_zyx
+    )
+    paths = _write_mask_distribution(
+        distribution, output_dir=output_dir, name=name, mask_path=arguments["pericyte_mask_path"]
+    )
+    return distribution, paths
+
 
 def _capillary_blocks_from_mask(
     G: nx.MultiGraph,
@@ -6050,11 +6130,11 @@ def _capillary_blocks_from_mask(
     image: np.ndarray | None,
     output_dir: Path,
     name: str,
-) -> tuple[tuple[list, dict[str, Any]], Path]:
+) -> tuple[tuple[list, dict[str, Any]], list[Path]]:
     """The vessels a block mask's blobs block on *G*, with how they were
-    found, and the per-blob CSV written into *output_dir*. *image* is the
-    run's segmentation on the network's grid; without it the graph's lumens
-    stand in, with a warning."""
+    found, and the per-blob CSV and the mask's distribution CSVs written into
+    *output_dir*. *image* is the run's segmentation on the network's grid;
+    without it the graph's lumens stand in, with a warning."""
     from haemolynx.haemodynamics.capillary_block_mask import (
         blocks_from_mask,
         load_capillary_block_mask,
@@ -6110,7 +6190,12 @@ def _capillary_blocks_from_mask(
                     "reason": block.reason,
                 }
             )
-    return (blocked, summary), path
+    distribution = haemodynamics.block_mask_distribution(
+        G, blocks, image_shape=block_mask.shape, voxel_size_zyx=mask_voxel_size_zyx
+    )
+    summary["mask_distribution"] = distribution.summary
+    paths = _write_mask_distribution(distribution, output_dir=output_dir, name=name, mask_path=mask_path)
+    return (blocked, summary), [path, *paths]
 
 
 def _write_capillary_block_comparison(
@@ -6472,10 +6557,10 @@ def _perturb_one(
         block_seeds = _capillary_block_seeds(perturbed, spec.type)
         chosen = None
         if spec.type == "capillary_block_mask":
-            chosen, blocks_path = _capillary_blocks_from_mask(
+            chosen, mask_paths = _capillary_blocks_from_mask(
                 G, perturbed, image=image, output_dir=result.output_dir, name=spec.name
             )
-            result.outputs.append(blocks_path)
+            result.outputs.extend(mask_paths)
             logger.info(
                 f"Perturbation '{spec.name}': {chosen[1]['mask_blocks_on_vessels']} of the "
                 f"mask's {chosen[1]['mask_blocks']} block(s) lie on vessels "
@@ -6571,6 +6656,19 @@ def _perturb_one(
             replicates=replicates,
             first_seed=block_seeds[0],
         )
+    if places_pericytes(spec.type) and perturbed.get("use_pericyte_mask_constriction"):
+        # Where the mask's pericytes sit, on the baseline's vessels: the
+        # strategy above placed them there, and nothing a perturbation
+        # changes (diameters, tone) moves a pericyte or a vessel's order.
+        distribution, mask_paths = _pericyte_mask_distribution(
+            model.graph,
+            perturbed,
+            diameter_by_branch_order=diameter_table,
+            output_dir=result.output_dir,
+            name=spec.name,
+        )
+        result.outputs.extend(mask_paths)
+        summary["mask_distribution"] = distribution.summary
 
     # Alice-style curves for sweeps; pipeline-like plots/CSVs for a single
     # re-solve. Sweeps keep *graph* for centreline geometry and *sweep_flows*
