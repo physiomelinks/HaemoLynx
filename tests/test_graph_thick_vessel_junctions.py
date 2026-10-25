@@ -848,6 +848,40 @@ def test_a_short_wall_join_beside_a_vessel_in_the_same_lumen_is_refused():
     assert result.has_node("S") and result.degree("S") == 1
 
 
+@pytest.mark.parametrize("stop_x", [28.0, 30.0])
+def test_the_orphan_reconnect_leaves_a_tip_at_a_thick_wall_to_the_split(stop_x):
+    """PLAN_bridging.md Phase 1.4: the orphan reconnect joins a dead end to
+    a *node* within its reach (the run's 3 um), and that stays as it is --
+    the junction step owns thick walls. The thin vessel stops 1 um inside
+    the thick-vessel region (x = 28) or 1 um outside it with the mask
+    running on (x = 30); the thick centreline has a node 3 um along it from
+    the thin vessel's line. The reconnect, run as graph building runs it,
+    leaves the tip alone, and the split gives the vessel its one bridge."""
+    from haemolynx.graph.optimise import reconnect_orphan_and_dangling_nodes
+    from haemolynx.pipeline import default_schema
+    from haemolynx.preprocessing import MaskSupport
+
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 20), (20, 30, 63))
+    node_3um_along = (20.0, 33.0, 20.0)
+    G = _graph(("T0", "N", T0, node_3um_along), ("N", "T1", node_3um_along, T1),
+               ("X", "S", (20, 30, 63), (20, 30, stop_x)))
+    G.graph["voxel_size"] = VS
+    threshold = float(default_schema()["final_orphan_reconnect_threshold"].default)
+
+    reconnected = reconnect_orphan_and_dangling_nodes(
+        G.copy(), reconnect_threshold=threshold, mask_support=MaskSupport(lumen, VS)
+    )
+
+    assert threshold == pytest.approx(3.0)
+    assert reconnected.degree("S") == 1
+    assert not any(d.get("orphan_reconnect") for *_e, d in reconnected.edges(data=True))
+    result = _split(reconnected, lumen, body, tree)
+    (u, v, bridge), = _bridges(result)
+    assert "S" not in result
+    assert REACH - 0.5 <= bridge["length"] <= REACH + 1.0
+
+
 def test_a_post_processing_split_draws_on_only_the_edges_it_names():
     G, lumen, body, tree = _wall_case(33.0)
 
