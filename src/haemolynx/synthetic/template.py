@@ -549,8 +549,8 @@ def _template_from_dict(data: Mapping[str, Any]) -> NetworkTemplate:
         notes=tuple(prov.get("notes", ())),
     )
     # A template written before 2026-10-24 carries a "vessel_box_um" (the
-    # box its nodes spanned), dropped since: the bed's own volume replaced
-    # it (``generate.bed_volume_um3``). It is read past, like any other key.
+    # box its nodes spanned), dropped since: the organisation's per-cell
+    # fields replaced it. It is read past, like any other key.
     basis = normalise_diameter_basis(data.get("diameter_basis"))
     organisation = data.get("organisation")
     return NetworkTemplate(

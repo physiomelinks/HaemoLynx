@@ -40,6 +40,7 @@ from haemolynx.synthetic.template import (
     OrderTarget,
     measure_template,
 )
+from haemolynx.synthetic.organisation import ISOTROPIC, Organisation, cell_index, grid_shape
 from synthetic_fixtures import fixture_template
 
 SEED = 7
@@ -753,56 +754,150 @@ def test_a_join_never_runs_through_a_dead_end():
         assert fill.degree[end] == 1
 
 
-def test_the_bed_volume_is_the_tissue_else_what_the_chord_needs_never_more_than_the_box():
-    from haemolynx.synthetic.generate import BED_AT_CHORD, BED_IN_BOX, BED_IN_TISSUE, bed_volume_um3
-
-    T = fixture_template()
-    box = 120.0 * 200.0 * 200.0
-    # The fixture's 106 vertices at its 43.5 um chord need more than its box: the whole box.
-    assert bed_volume_um3(T, 106) == (box, BED_IN_BOX)
-    big = replace(T, extent_um=(240.0, 400.0, 400.0))
-    chord = 50.0 / 1.15  # mean length over mean tortuosity
-    volume, source = bed_volume_um3(big, 106)
-    assert source == BED_AT_CHORD and volume == pytest.approx(106 * chord**3)
-    assert bed_volume_um3(replace(big, tissue_volume_um3=2.0e6), 106) == (2.0e6, BED_IN_TISSUE)
-    assert bed_volume_um3(replace(T, tissue_volume_um3=1.0e9), 106) == (box, BED_IN_BOX)
+# -- the bed laid out to the template's organisation (Harvey 2026-10-25: D4, D6)
 
 
-def test_a_bed_in_a_box_too_big_for_it_keeps_the_templates_capillary_lengths():
-    """Harvey, 2026-10-24: the bed's spacing is the template's mean capillary
-    chord, filling only as much of the box as it needs, grown from the
-    trees. Spread over the whole box (E14.5's capillaries are clustered) its
-    vessels came out 16% longer than the template's, the median 40%."""
-    T = fixture_template()
-    big = replace(T, extent_um=(240.0, 400.0, 400.0), image_shape=(241, 409, 409))
-    G = generate_network(big, seed=SEED)
-    generated = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
-    assert generated["bed_volume_from"] == "chord"
-    assert generated["spacing_um"] == pytest.approx(50.0 / 1.15, rel=0.05)
-    assert any("the bed fills" in n and "grown from the trees" in n for n in generated["notes"])
-    capillaries = [d["length"] for *_e, d in G.edges(data=True) if d[SYNTHETIC_CLASS] == "capillary"]
-    assert np.mean(capillaries) == pytest.approx(50.0, rel=0.10)
-    assert sum(capillaries) == pytest.approx(160 * 50.0, rel=0.05)
+def _organisation(shape, nodes, orientation=ISOTROPIC):
+    """A hand-set layout: capillary vertices by cell, one direction everywhere."""
+    n = int(np.prod(shape))
+    return Organisation(
+        shape=tuple(shape),
+        capillary_nodes=tuple(float(v) for v in nodes),
+        capillary_length_um=tuple(float(v) for v in nodes),
+        arterial_length_um=(0.0,) * n,
+        venous_length_um=(0.0,) * n,
+        orientation=(tuple(orientation),) * n,
+        global_orientation=tuple(orientation),
+        axis_share=(1 / 3, 1 / 3, 1 / 3),
+        within_near=0.5,
+        beyond_far=0.1,
+        trunk_turn_deg=None,
+        capillary_curvature_deg=None,
+        tree_curvature_deg=None,
+    )
 
 
-def test_a_bed_fills_the_templates_tissue_volume():
-    T = replace(fixture_template(), extent_um=(240.0, 400.0, 400.0), image_shape=(241, 409, 409), tissue_volume_um3=1.2e7)
-    G = generate_network(T, seed=SEED)
-    generated = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
-    assert generated["bed_volume_from"] == "tissue" and generated["bed_volume_um3"] == 1.2e7
-    assert any("the template's tissue volume" in n for n in generated["notes"])
+def _lower_layer(shape):
+    """Every capillary vertex in the lowest layer of cells in z."""
+    n = int(np.prod(shape))
+    return [1.0 if i < n // shape[0] else 0.0 for i in range(n)]
 
 
-def test_lattice_vertices_grown_from_seeds_keep_the_nearest():
-    rng = np.random.default_rng(0)
+def _capillaries(G):
+    return [d for *_e, d in G.edges(data=True) if d[SYNTHETIC_CLASS] == "capillary"]
+
+
+def _axis_shares(G):
+    """Share of capillary length within 30 degrees of z, y and x."""
+    along, total = np.zeros(3), 0.0
+    for d in _capillaries(G):
+        steps = np.diff(np.asarray(d["voxels"], dtype=float), axis=0)
+        lengths = np.linalg.norm(steps, axis=1)
+        ok = lengths > 0
+        units = steps[ok] / lengths[ok, None]
+        along += (np.abs(units) >= math.cos(math.radians(30.0))).T @ lengths[ok]
+        total += float(lengths[ok].sum())
+    return along / total
+
+
+def test_cells_share_the_vertices_by_largest_remainder():
+    assert bed_module._allocate(10, [1.0, 1.0, 1.0]).tolist() == [4, 3, 3]
+    assert bed_module._allocate(7, [3.0, 0.0, 1.0]).tolist() == [5, 0, 2]
+    assert bed_module._allocate(4, [0.0, 0.0]).tolist() == [2, 2]  # nothing to go by: even
+
+
+def test_density_vertices_follow_the_templates_cells():
     extent = np.array([100.0, 100.0, 100.0])
-    seeds = np.array([[50.0, 50.0, 2.0]])
-    points = bed_module.lattice_vertices(extent, 40, rng=rng, keep_clear=None, spacing_um=10.0, grow_from=seeds)
-    assert len(points) == 40
-    distances = np.linalg.norm(points - seeds[0], axis=1)
-    assert distances.max() < 40.0  # a cap round the seed, not points over the box
-    spacing = np.min(np.linalg.norm(points[:, None] - points[None], axis=2) + np.eye(40) * 1e9, axis=1)
-    assert np.median(spacing) == pytest.approx(10.0, rel=0.4)
+    rng = np.random.default_rng(0)
+    org = _organisation((2, 2, 2), _lower_layer((2, 2, 2)))
+    points = bed_module.density_vertices(extent, 200, rng=rng, keep_clear=None, spacing_um=10.0, organisation=org)
+    assert len(points) == 200
+    assert np.all(points[:, 0] < 50.0)  # none where the template has none
+    cells = Counter(cell_index(points, extent, (2, 2, 2)).tolist())
+    assert sorted(cells) == [0, 1, 2, 3] and min(cells.values()) >= 40
+    # Three times the vertices below as above: three quarters of them below.
+    org = _organisation((2, 1, 1), [3.0, 1.0])
+    points = bed_module.density_vertices(extent, 400, rng=rng, keep_clear=None, spacing_um=10.0, organisation=org)
+    assert np.mean(points[:, 0] < 50.0) == pytest.approx(0.75, abs=0.03)
+
+
+def test_local_spacing_is_the_cells_own():
+    extent = np.array([100.0, 100.0, 100.0])
+    org = _organisation((1, 1, 2), [1.0, 1.0])
+    points = np.array([[50.0, 50.0, 10.0]] * 8 + [[50.0, 50.0, 90.0]])
+    spacing = bed_module.local_spacings(points, extent, org, 10.0)
+    assert spacing[:8] == pytest.approx([(5.0e5 / 8) ** (1 / 3)] * 8)
+    assert spacing[8] == pytest.approx(5.0e5 ** (1 / 3))
+    assert bed_module.local_spacings(points, extent, None, 10.0).tolist() == [10.0] * 9
+
+
+def test_a_template_without_an_organisation_gets_an_even_bed():
+    """The hand-set fixtures carry no organisation: the bed is a lattice over
+    the whole box, its spacing the box over the bed's vertices."""
+    G = generate_network(fixture_template(), seed=SEED)
+    generated = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
+    assert generated["bed_layout"] == "even"
+    assert generated["spacing_um"] == pytest.approx((120.0 * 200.0 * 200.0 / generated["bed_vertices"]) ** (1 / 3))
+
+
+@pytest.mark.parametrize("seed", [7, 8, 9])
+def test_a_bed_laid_out_to_a_layered_template_stays_in_its_layer(seed):
+    T = fixture_template()
+    shape = grid_shape(T.extent_um)
+    G = generate_network(replace(T, organisation=_organisation(shape, _lower_layer(shape))), seed=seed)
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["bed_layout"] == "template"
+    capillaries = _capillaries(G)
+    total = sum(d["length"] for d in capillaries)
+    below = sum(d["length"] * np.mean(np.asarray(d["voxels"])[:, 0] < 60.0) for d in capillaries)
+    # The few vessels joining the trees above to the layer run out of it.
+    assert below / total > 0.85
+    validate_synthetic_graph(G)
+
+
+def test_a_bed_runs_the_way_the_templates_capillaries_run():
+    T = fixture_template()
+    shape = grid_shape(T.extent_um)
+    even = [1.0] * int(np.prod(shape))
+    shares = {
+        name: np.mean([
+            _axis_shares(generate_network(replace(T, organisation=_organisation(shape, even, orient)), seed=seed))
+            for seed in (7, 8, 9)
+        ], axis=0)
+        for name, orient in (("isotropic", ISOTROPIC), ("z", (1.0, 0, 0, 0, 0, 0)), ("x", (0, 0, 1.0, 0, 0, 0)))
+    }
+    # An isotropic network has 13.4% of its length within 30 degrees of each axis.
+    assert shares["isotropic"] == pytest.approx([0.134] * 3, abs=0.04)
+    assert shares["z"][0] > shares["isotropic"][0] + 0.1
+    assert shares["x"][2] > shares["isotropic"][2] + 0.1
+    assert shares["z"][2] < shares["isotropic"][2] and shares["x"][0] < shares["isotropic"][0]
+
+
+def test_a_bed_in_a_box_too_big_for_it_keeps_the_templates_capillary_lengths_where_they_are():
+    """The density the template's capillaries have where they are, not the
+    box's: spread evenly over a box four times their own (decision 3's case),
+    the fixture's capillaries come out 40% longer than its 50 um; laid out to
+    a template that holds them in one layer, at its length."""
+    T = replace(fixture_template(), extent_um=(240.0, 400.0, 400.0), image_shape=(241, 409, 409))
+    shape = grid_shape(T.extent_um)
+    laid_out = generate_network(replace(T, organisation=_organisation(shape, _lower_layer(shape))), seed=SEED)
+    lengths = [d["length"] for d in _capillaries(laid_out)]
+    assert np.mean(lengths) == pytest.approx(50.0, rel=0.10)
+    assert sum(lengths) == pytest.approx(160 * 50.0, rel=0.10)
+    even = [d["length"] for d in _capillaries(generate_network(T, seed=SEED))]
+    assert np.mean(even) > 1.25 * 50.0
+
+
+def test_a_voronoi_bed_follows_the_templates_layers():
+    T = fixture_template()
+    shape = grid_shape(T.extent_um)
+    G = generate_network(
+        replace(T, organisation=_organisation(shape, _lower_layer(shape))), seed=SEED, options=GenerationOptions(bed_model="voronoi")
+    )
+    capillaries = _capillaries(G)
+    total = sum(d["length"] for d in capillaries)
+    below = sum(d["length"] * np.mean(np.asarray(d["voxels"])[:, 0] < 60.0) for d in capillaries)
+    assert below / total > 0.75
+    validate_synthetic_graph(G)
 
 
 # -- the Voronoi bed (bed_model="voronoi", Harvey 2026-10-24) -----------------

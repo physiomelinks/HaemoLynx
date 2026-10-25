@@ -1013,11 +1013,12 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic,
   every band from its one `TOLERANCES` table. The large tier is a trunk handing side branches to
-  the bed at its orders' own widths (Murray's law in the Art/Ven tier only); the bed fills the
-  template's tissue volume or what its capillary chord needs (`generate.bed_volume_um3`), along
+  the bed at its orders' own widths (Murray's law in the Art/Ven tier only); the bed is laid out
+  cell by cell to the template's capillary density and runs the way its capillaries run
+  (`synthetic/organisation.py`, measured on the template, scored in the comparison), along
   Delaunay edges or, with `synthetic_bed_model=voronoi`, a Voronoi tessellation's cell edges.
-  Not yet physiological (no layering, a bed short of the tissue, open ends taking the flow):
-  `PLAN_synthetic_physiology.md`. `validate_synthetic_graph` pins the graph contract
+  Still being made physiological (trees in their layer, a closed network, no interior dead
+  ends): `PLAN_synthetic_physiology.md`. `validate_synthetic_graph` pins the graph contract
   (int ids, `pos`/`voxels` in µm, `length` the polyline's, `diameter_source="synthetic"` and, given
   the template, its `diameter_basis`, no degree-2 node, `dead_end_kind` on every dead end,
   connected).

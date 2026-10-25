@@ -18,6 +18,15 @@ loop count) or merged away (a degree-2 vertex's two edges become one), and
 reported. Degree-1 vertices nearest the faces are set on them: they are the
 vessels the box cuts; the rest end blind inside.
 
+**The bed follows the template's layout** (``PLAN_synthetic_physiology.md``,
+Harvey's D4 and D6) when the template carries one (``synthetic.organisation``):
+its vertices are laid cell by cell in proportion to the template's capillary
+vertices (:func:`density_vertices`), so it is dense where the template's
+capillaries are dense and absent where they are; the fill prefers candidates
+running the way the template's capillaries run in that cell
+(:data:`ORIENTATION_WEIGHT`); and a vessel's wanted chord scales with the
+local spacing. A template without one gets an even lattice over the box.
+
 ``model="voronoi"`` (the ``synthetic_bed_model`` setting) draws the bed's
 vertices and candidates from a **Voronoi tessellation** of random points
 instead (:func:`voronoi_vertices`): the vertices are its cells' corners and
@@ -37,6 +46,7 @@ import numpy as np
 from scipy.spatial import Delaunay, cKDTree
 
 from .draft import BED, NetworkDraft
+from .organisation import Organisation, cell_index, tensor_matrix
 
 #: Candidate edges longer than this many lattice spacings are left out; from
 #: an attached (tree) node, which sits off the lattice, a little longer.
@@ -55,6 +65,14 @@ FACE_MARGIN_SPACINGS = 0.25
 ANGLE_WEIGHT = 0.5
 #: Nearest neighbours tried when the Delaunay candidates run out.
 FALLBACK_NEIGHBOURS = 16
+#: How much a candidate's alignment with the template's capillaries counts in
+#: the fill's score, in local spacings: ``weight * (1/3 - u.T.u) * 3/2`` --
+#: nothing in an isotropic cell, a spacing's bonus along a cell's only
+#: direction, half a spacing's penalty across it. On E14.5 (2026-10-25) 1
+#: brought each depth layer's share of capillary length along z to within
+#: 0.1 of the template's; 2 to 8 moved the whole bed's little more (0.14 to
+#: 0.16, the template 0.21) and lengthened its capillaries out of their band.
+ORIENTATION_WEIGHT = 1.0
 #: Junctions of the largest piece tried, nearest first, for a piece every one
 #: of whose junctions has a dead end nearest (:func:`join_pieces`' last resort).
 JOIN_NEIGHBOURS = 8
@@ -66,6 +84,13 @@ BED_MODELS: tuple[str, ...] = (BED_MODEL_DELAUNAY, BED_MODEL_VORONOI)
 #: Corners per cell of a Poisson-Voronoi tessellation in 3-D (27.07), each
 #: shared by four cells: the tessellation's vertices per seed point.
 VORONOI_VERTICES_PER_SEED = 27.07 / 4.0
+#: A tessellation laid out to the template is drawn with this many times
+#: the corners it keeps: corners of a dense layer's cells spill into the
+#: sparse one beside it, and the contraction takes them back out.
+VORONOI_LAID_OUT_OVERSAMPLE = 3.0
+#: The fewest vertices a cell is taken to want when the contraction reads
+#: its spacing (a cell the template has none in would want an infinite one).
+VORONOI_MIN_CELL_VERTICES = 0.25
 #: Tessellations drawn, each with more seeds, before a short one is kept.
 VORONOI_ATTEMPTS = 6
 
@@ -198,21 +223,16 @@ def lattice_vertices(
     rng: np.random.Generator,
     keep_clear: Optional[np.ndarray],
     spacing_um: float,
-    grow_from: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """About *count* jittered lattice points inside the box, none within
     half a spacing of a point of *keep_clear* nor within a quarter of a face,
-    thinned at random to *count* when there are more.
-
-    With *grow_from* (the trees' nodes) the lattice is laid over the whole
-    box at *spacing_um* and the *count* points nearest those nodes are kept:
-    a bed filling only part of the box, grown from the trees."""
+    thinned at random to *count* when there are more."""
     extent = np.asarray(extent_um, dtype=float)
     volume = float(np.prod(np.maximum(extent, 1e-9)))
     wanted = max(int(math.ceil(count * OVERSAMPLE)), 1)
-    step = (volume / wanted) ** (1.0 / 3.0) if grow_from is None else float(spacing_um)
+    step = (volume / wanted) ** (1.0 / 3.0)
     counts = np.maximum(np.round(extent / step).astype(int), 1)
-    while grow_from is None and int(np.prod(counts)) < wanted:
+    while int(np.prod(counts)) < wanted:
         axis = int(np.argmax(extent / counts))
         counts[axis] += 1
     steps = extent / counts
@@ -226,16 +246,87 @@ def lattice_vertices(
         near = tree.query_ball_point(points, r=CLEARANCE_SPACINGS * spacing_um)
         keep = np.array([len(n) == 0 for n in near])
         points = points[keep]
-    if len(points) > count and grow_from is not None and len(grow_from):
-        # Nearest the trees first, the edge of the region left ragged by
-        # up to half a spacing.
-        distances, _ = cKDTree(np.asarray(grow_from, dtype=float)).query(points)
-        order = np.argsort(distances + rng.uniform(0.0, 0.5 * step, size=len(points)), kind="stable")
-        points = points[np.sort(order[:count])]
-    elif len(points) > count:
+    if len(points) > count:
         chosen = rng.choice(len(points), size=count, replace=False)
         points = points[np.sort(chosen)]
     return points
+
+
+def _allocate(total: int, weights: np.ndarray) -> np.ndarray:
+    """*total* shared out in proportion to *weights* by largest remainder."""
+    weights = np.maximum(np.asarray(weights, dtype=float), 0.0)
+    if weights.sum() <= 0:
+        weights = np.ones_like(weights)
+    exact = total * weights / weights.sum()
+    counts = np.floor(exact).astype(int)
+    short = int(total - counts.sum())
+    if short > 0:
+        counts[np.argsort(-(exact - counts), kind="stable")[:short]] += 1
+    return counts
+
+
+def _cell_bounds(extent: np.ndarray, shape: Sequence[int], cell: int) -> tuple[np.ndarray, np.ndarray]:
+    index = np.array(np.unravel_index(cell, tuple(shape)), dtype=float)
+    size = extent / np.asarray(shape, dtype=float)
+    return index * size, (index + 1.0) * size
+
+
+def density_vertices(
+    extent_um: np.ndarray,
+    count: int,
+    *,
+    rng: np.random.Generator,
+    keep_clear: Optional[np.ndarray],
+    spacing_um: float,
+    organisation: Organisation,
+) -> np.ndarray:
+    """About *count* points laid cell by cell in proportion to the template's
+    capillary vertices (``organisation.capillary_nodes``), each cell's a
+    jittered lattice of its own spacing: dense where the template's
+    capillaries are dense, none where it has none. Kept off the faces and
+    *keep_clear* as :func:`lattice_vertices` is, thinned at random to
+    *count* when there are more."""
+    extent = np.asarray(extent_um, dtype=float)
+    shape = tuple(organisation.shape)
+    wanted = max(int(math.ceil(count * OVERSAMPLE)), 1)
+    per_cell = _allocate(wanted, np.asarray(organisation.capillary_nodes, dtype=float))
+    chunks: list[np.ndarray] = []
+    for cell in np.flatnonzero(per_cell):
+        n = int(per_cell[cell])
+        low, high = _cell_bounds(extent, shape, int(cell))
+        size = high - low
+        step = (float(np.prod(size)) / n) ** (1.0 / 3.0)
+        counts = np.maximum(np.round(size / step).astype(int), 1)
+        while int(np.prod(counts)) < n:
+            counts[int(np.argmax(size / counts))] += 1
+        steps = size / counts
+        grids = np.meshgrid(*[low[i] + (np.arange(counts[i]) + 0.5) * steps[i] for i in range(3)], indexing="ij")
+        points = np.stack([g.ravel() for g in grids], axis=1)
+        points = points + rng.uniform(-JITTER, JITTER, size=points.shape) * steps[None, :]
+        if len(points) > n:
+            points = points[np.sort(rng.choice(len(points), size=n, replace=False))]
+        chunks.append(points)
+    points = np.concatenate(chunks) if chunks else np.zeros((0, 3))
+    margin = np.minimum(FACE_MARGIN_SPACINGS * spacing_um, extent / 4.0)
+    points = np.clip(points, margin, extent - margin)
+    if keep_clear is not None and len(keep_clear) and len(points):
+        near = cKDTree(np.asarray(keep_clear, dtype=float)).query_ball_point(points, r=CLEARANCE_SPACINGS * spacing_um)
+        points = points[np.array([len(n) == 0 for n in near])]
+    if len(points) > count:
+        points = points[np.sort(rng.choice(len(points), size=count, replace=False))]
+    return points
+
+
+def local_spacings(points: np.ndarray, extent_um: np.ndarray, organisation: Organisation, default_um: float) -> np.ndarray:
+    """Each point's local spacing: its cell's volume over the points in it,
+    to the third; *default_um* everywhere without an organisation."""
+    if organisation is None or not len(points):
+        return np.full(len(points), float(default_um))
+    extent = np.asarray(extent_um, dtype=float)
+    cells = cell_index(points, extent, organisation.shape)
+    counts = np.bincount(cells, minlength=int(np.prod(organisation.shape)))
+    volume = float(np.prod(extent)) / float(np.prod(organisation.shape))
+    return (volume / np.maximum(counts[cells], 1)) ** (1.0 / 3.0)
 
 
 def _circumcentres(tetrahedra: np.ndarray) -> np.ndarray:
@@ -259,7 +350,7 @@ def voronoi_vertices(
     rng: np.random.Generator,
     keep_clear: Optional[np.ndarray],
     spacing_um: float,
-    grow_from: Optional[np.ndarray] = None,
+    organisation: Optional[Organisation] = None,
 ) -> tuple[np.ndarray, list[tuple[int, int]]]:
     """About *count* corners of a Voronoi tessellation of random points in
     the box, and the cell edges between them (index pairs).
@@ -269,22 +360,32 @@ def voronoi_vertices(
     cubed; the corners are the circumcentres of the seeds' Delaunay
     tetrahedra, joined where two tetrahedra share a face. Corners outside
     the box or within a quarter spacing of a face, or near *keep_clear*,
-    are left out; with *grow_from*, only the nearest are kept, as many as
-    fill the bed's share of the box. Then the shortest edges are contracted
+    are left out. With *organisation* the seeds are laid cell by cell in
+    proportion to the template's capillary vertices (the padding round the
+    box at its face cells' densities), so the corners follow the template's
+    layout as :func:`density_vertices` does. Then the shortest edges are contracted
     (their two corners become one, at their midpoint) until *count* remain:
     a random tessellation's corners come in close pairs, and its shortest
-    edges are a hundredth of its longest.
+    edges are a hundredth of its longest. Laid out, the tessellation is
+    drawn :data:`VORONOI_LAID_OUT_OVERSAMPLE` times over and "shortest" is
+    against the spacing the template's density wants in the corner's cell;
+    by length alone the dense cells' edges went first and the layout was lost.
     """
     extent = np.asarray(extent_um, dtype=float)
     spacing = float(spacing_um)
     pad = 2.0 * spacing
     low, high = -pad * np.ones(3), extent + pad
-    wanted = max(int(math.ceil(count * OVERSAMPLE)), 1)
-    seed_count = max(int(round(OVERSAMPLE * float(np.prod(high - low)) / (VORONOI_VERTICES_PER_SEED * spacing**3))), 8)
+    oversample = OVERSAMPLE if organisation is None else VORONOI_LAID_OUT_OVERSAMPLE
+    wanted = max(int(math.ceil(count * oversample)), 1)
+    seed_count = max(int(round(oversample * float(np.prod(high - low)) / (VORONOI_VERTICES_PER_SEED * spacing**3))), 8)
     margin = np.minimum(FACE_MARGIN_SPACINGS * spacing, extent / 4.0)
     clear_tree = cKDTree(np.asarray(keep_clear, dtype=float)) if keep_clear is not None and len(keep_clear) else None
     for _attempt in range(VORONOI_ATTEMPTS):
-        seeds = rng.uniform(low, high, size=(seed_count, 3))
+        seeds = (
+            rng.uniform(low, high, size=(seed_count, 3))
+            if organisation is None
+            else _laid_out_seeds(seed_count, extent, pad, organisation, rng)
+        )
         triangulation = Delaunay(seeds, qhull_options="QJ")
         centres = _circumcentres(seeds[triangulation.simplices])
         inside = np.all(np.isfinite(centres), axis=1)
@@ -298,11 +399,6 @@ def voronoi_vertices(
         # A small box loses many corners to its faces and the trees: more
         # seeds, by the shortfall.
         seed_count = int(math.ceil(seed_count * max(1.2, 1.05 * wanted / max(len(kept), 1))))
-    if grow_from is not None and len(grow_from):
-        if len(kept) > wanted:
-            distances, _ = cKDTree(np.asarray(grow_from, dtype=float)).query(centres[kept])
-            order = np.argsort(distances + rng.uniform(0.0, 0.5 * spacing, size=len(kept)), kind="stable")
-            kept = np.sort(kept[order[:wanted]])
     index = -np.ones(len(centres), dtype=int)
     index[kept] = np.arange(len(kept))
     pairs: set = set()
@@ -323,7 +419,10 @@ def voronoi_vertices(
 
     groups = len(points)
     if groups > count:
-        ordered = sorted(pairs, key=lambda e: float(np.linalg.norm(points[e[0]] - points[e[1]])))
+        scale = np.ones(len(points)) if organisation is None else _wanted_spacing(points, extent, organisation, count)
+        ordered = sorted(
+            pairs, key=lambda e: float(np.linalg.norm(points[e[0]] - points[e[1]])) / (0.5 * (scale[e[0]] + scale[e[1]]))
+        )
         for i, j in ordered:
             if groups <= count:
                 break
@@ -349,6 +448,33 @@ def voronoi_vertices(
         merged = merged[chosen]
         edges = [(remap[a], remap[b]) for a, b in edges if a in remap and b in remap]
     return merged, edges
+
+
+def _wanted_spacing(points: np.ndarray, extent: np.ndarray, organisation: Organisation, count: int) -> np.ndarray:
+    """The spacing *count* vertices laid out to the template have in each
+    point's cell (at least :data:`VORONOI_MIN_CELL_VERTICES` there)."""
+    shape = tuple(organisation.shape)
+    expected = _allocate(count, np.asarray(organisation.capillary_nodes, dtype=float))
+    volume = float(np.prod(extent)) / float(np.prod(shape))
+    return np.cbrt(volume / np.maximum(expected, VORONOI_MIN_CELL_VERTICES))[cell_index(points, extent, shape)]
+
+
+def _laid_out_seeds(count: int, extent: np.ndarray, pad: float, organisation: Organisation, rng: np.random.Generator) -> np.ndarray:
+    """About *count* seeds over the box padded by *pad*: the box's share of
+    them over the template's cells in proportion to its capillary vertices,
+    and a face cell's density carried on into the padding beyond it."""
+    shape = tuple(organisation.shape)
+    inside = count * float(np.prod(extent)) / float(np.prod(extent + 2.0 * pad))
+    per_cell = _allocate(int(round(inside)), np.asarray(organisation.capillary_nodes, dtype=float))
+    chunks = []
+    for cell in np.flatnonzero(per_cell):
+        low, high = _cell_bounds(extent, shape, int(cell))
+        volume = float(np.prod(high - low))
+        low = np.where(low <= 0.0, -pad, low)
+        high = np.where(high >= extent, extent + pad, high)
+        n = int(round(per_cell[cell] * float(np.prod(high - low)) / volume))
+        chunks.append(rng.uniform(low, high, size=(n, 3)))
+    return np.concatenate(chunks) if chunks else rng.uniform(-pad, extent + pad, size=(count, 3))
 
 
 def candidate_edges(points: np.ndarray) -> list[tuple[int, int, float]]:
@@ -388,7 +514,18 @@ def candidate_edges(points: np.ndarray) -> list[tuple[int, int, float]]:
 class _Fill:
     """The degree-constrained greedy fill over a fixed vertex set."""
 
-    def __init__(self, points: np.ndarray, caps: np.ndarray, attached: np.ndarray, rng: np.random.Generator, angle_deg: float, spacing_um: float, target_chord_um: Optional[float] = None):
+    def __init__(
+        self,
+        points: np.ndarray,
+        caps: np.ndarray,
+        attached: np.ndarray,
+        rng: np.random.Generator,
+        angle_deg: float,
+        spacing_um: float,
+        target_chord_um: Optional[float] = None,
+        local_spacing: Optional[np.ndarray] = None,
+        tensors: Optional[np.ndarray] = None,
+    ):
         self.points = points
         self._tuples = [tuple(float(c) for c in p) for p in points]
         self.caps = caps.astype(int)
@@ -399,6 +536,11 @@ class _Fill:
         #: The chord the template's capillaries have on average; None takes
         #: the shortest candidate.
         self.target_chord = target_chord_um
+        #: Each vertex's own spacing (a bed laid out to the template's
+        #: density), the wanted chord scaled by it; None: *spacing_um* everywhere.
+        self.local = local_spacing
+        #: Each vertex's cell's capillary orientation tensor; None: no preference.
+        self.tensors = tensors
         self.degree = np.zeros(len(points), dtype=int)
         self.neighbours: dict[int, list[int]] = {i: [] for i in range(len(points))}
         self.edges: list[tuple[int, int]] = []
@@ -412,7 +554,15 @@ class _Fill:
 
     def score(self, v: int, u: int, length: float) -> float:
         wanted = self.target_chord if self.target_chord else 0.0
+        spacing = self.spacing
+        if self.local is not None:
+            spacing = float(self.local[v])
+            wanted *= spacing / self.spacing
         score = abs(length - wanted) * self.rng.uniform(0.8, 1.2)
+        if self.tensors is not None and length > 0:
+            unit = (self.points[u] - self.points[v]) / length
+            along = float(unit @ self.tensors[v] @ unit)
+            score += ORIENTATION_WEIGHT * spacing * (1.0 / 3.0 - along) * 1.5
         existing = self.neighbours[v]
         if existing and length > 0:
             pv, pu = self._tuples[v], self._tuples[u]
@@ -427,7 +577,7 @@ class _Fill:
                     penalty += abs(math.acos(max(-1.0, min(1.0, cos))) - self.angle)
                     n += 1
             if n:
-                score += ANGLE_WEIGHT * self.spacing * (penalty / n) / (math.pi / 2.0)
+                score += ANGLE_WEIGHT * spacing * (penalty / n) / (math.pi / 2.0)
         return score
 
     def connect(self, i: int, j: int) -> None:
@@ -633,7 +783,7 @@ def build_bed(
     max_degree: int = 4,
     category: str = "capillary",
     target_chord_um: Optional[float] = None,
-    grow_from: Optional[Sequence[int]] = None,
+    organisation: Optional[Organisation] = None,
     model: str = BED_MODEL_DELAUNAY,
 ) -> BedResult:
     """Add the bed to *draft*. *attached* maps the draft nodes the bed joins
@@ -642,8 +792,8 @@ def build_bed(
     the nodes the lattice stays away from; *face_ends* how many of the
     targets' dead ends go on the faces; *target_chord_um* the chord the
     template's capillaries have on average (the fill prefers candidates near
-    it; None, the shortest); *grow_from*, draft nodes the bed is grown from
-    when it fills only part of the box (:func:`lattice_vertices`); *model*
+    it; None, the shortest); *organisation*, the template's layout the bed
+    follows (``synthetic.organisation``; None: even over the box); *model*
     one of :data:`BED_MODELS`. See the module."""
     if model not in BED_MODELS:
         raise ValueError(f"bed model must be one of {BED_MODELS}, got {model!r}")
@@ -651,16 +801,17 @@ def build_bed(
     result = BedResult()
     attached_nodes = list(attached)
     clear = np.stack([draft.position(n) for n in keep_clear]) if keep_clear else None
-    seeds = np.stack([draft.position(n) for n in grow_from]) if grow_from else None
     voronoi_pairs: Optional[list] = None
     if model == BED_MODEL_VORONOI:
         bed_points, voronoi_pairs = voronoi_vertices(
-            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, grow_from=seeds
+            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
+        )
+    elif organisation is not None:
+        bed_points = density_vertices(
+            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
         )
     else:
-        bed_points = lattice_vertices(
-            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, grow_from=seeds
-        )
+        bed_points = lattice_vertices(extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um)
     if len(bed_points) < targets.vertices:
         draft.note(f"the bed has {len(bed_points)} vertices of the {targets.vertices} wanted (no room beside the trees)")
     bed_nodes = [draft.add_node(p) for p in bed_points]
@@ -710,7 +861,16 @@ def build_bed(
     points = np.stack([draft.position(n) for n in all_nodes]) if all_nodes else np.zeros((0, 3))
     caps = np.concatenate([np.array([attached[n] for n in attached_nodes], dtype=int), local_caps])
     is_attached = np.concatenate([np.ones(len(attached_nodes), bool), np.zeros(len(bed_nodes), bool)])
-    fill = _Fill(points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um)
+    local = tensors = None
+    if organisation is not None:
+        local = np.concatenate([
+            np.full(len(attached_nodes), float(spacing_um)),
+            local_spacings(points[len(attached_nodes):], extent, organisation, spacing_um),
+        ])
+        cells = cell_index(points, extent, organisation.shape)
+        by_cell = np.stack([tensor_matrix(t) for t in organisation.orientation])
+        tensors = by_cell[cells]
+    fill = _Fill(points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um, local, tensors)
 
     candidates: dict[int, list[tuple[int, float]]] = {i: [] for i in range(len(all_nodes))}
     pairs = candidate_edges(points)
@@ -725,7 +885,8 @@ def build_bed(
         ]
     for i, j, length in pairs:
         limit = MAX_ATTACHED_SPACINGS if (is_attached[i] or is_attached[j]) else MAX_CANDIDATE_SPACINGS
-        if length <= limit * spacing_um:
+        reach = spacing_um if local is None else max(float(local[i]), float(local[j]))
+        if length <= limit * reach:
             candidates[i].append((j, length))
             candidates[j].append((i, length))
     # A tree leaf sits off the lattice (it was kept clear): besides its
@@ -941,7 +1102,9 @@ __all__ = [
     "build_bed",
     "candidate_edges",
     "degree_sequence_targets",
+    "density_vertices",
     "join_pieces",
+    "local_spacings",
     "lattice_vertices",
     "voronoi_vertices",
 ]

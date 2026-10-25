@@ -193,3 +193,19 @@ changed only where the phase says.
   their meaning (to confirm with Harvey).
 
 Being built in the phase order above.
+
+**Built:**
+
+- Phase 1 (`af57dcd2`): `synthetic/organisation.py` measures the layout on every template (and on
+  the synthetic network the comparison reads), its rows banded in `compare.TOLERANCES`.
+- Phase 2: the bed's vertices are laid cell by cell in proportion to the template's capillary
+  vertices (`bed.density_vertices`; the Voronoi seeds likewise, the tessellation drawn three times
+  over and contracted against the spacing each cell wants), a vessel's wanted chord scales with
+  the local spacing, and the fill prefers candidates along the cell's orientation tensor
+  (`bed.ORIENTATION_WEIGHT`). `bed_volume_um3` and the bed grown from the trees are gone (D6). A
+  template without an organisation draws exactly as before. E14.5, three seeds, no flows
+  (`outputs/synthetic_e14p5/full_compare.py`): rows within band 324 -> 340 of 372 (Delaunay),
+  338 (Voronoi); capillary vertices by cell correlate 0.96 with the template's (Voronoi 0.8 at
+  1,000 vertices), the box beyond 50 um of a capillary 44% -> 6% (template 5%). Still out: the
+  share of capillary length along z (0.14 against 0.21; a heavier orientation weight lengthened
+  the capillaries out of band instead), the trees' place (phase 3).
