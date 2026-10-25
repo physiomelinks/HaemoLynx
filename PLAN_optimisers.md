@@ -6,7 +6,8 @@
 > optimiser `65068bc1` .. `56be0b79`, B8 `ca5df387` + `aee7da34`. A trial's E14.5 skeleton and graph
 > equal the run's, and so do FWHM and ring-fit trials' widths (see **Measured**). The last pieces
 > are under **Finishing (2026-10-24)** at the end: the scorecard's dead ends by kind and loops
-> inside one lumen, D2's report line, Principle 4's check, the docs.
+> inside one lumen, D2's report line, Principle 4's check, Auto's step counts at 16x and 4x, the
+> docs.
 >
 > **Waiting on Harvey:** the two marked grids (D6's thick-vessel grid and the component filter's;
 > built, no marks yet); whether the stub sweep may move `min_stub_length_radius_multiple` from the
@@ -798,3 +799,36 @@ and B8. Each, and where it stands:
   `raw_component_mean` and `raw_local_background_median` (tissue 2-6 um round its mask component;
   0 for 7 of 30) beside it. IDs, labels and `grid.png` are unchanged; the old key is kept as
   `key_raw_contrast_clamped.csv`, and the folder's README says so.
+- **`_SEARCH_STEP_CALLS` recounted at 16x and 4x** (Phase 4's bullet; `e834960a`, counted on
+  `b34a3e35`). `harness/step_calls.py` runs Optimise settings as the panel does (config.yaml, the
+  run's grid and whole settings, the raw image as the cleanup guard, the thick-vessel restriction;
+  every group, one pass) on a `git archive` of `b34a3e35` and counts each step the time model
+  names, the scorecard's two runs left out:
+
+| step | in the model before | 16x | 4x | 2x (Phase 4) | now |
+|---|---|---|---|---|---|
+| cleanup | 15 | 9 | 21 | -- | 15 |
+| mask score | 24 | 16 | 32 | -- | 24 |
+| plain skeleton | 2 | 1 | 1 | -- | 1 |
+| thick skeleton | 2 | 1 | 24 | -- | 1 |
+| preprocess (skeleton clean-up) | 22 | 20 | 22 | -- | 22 |
+| graph | 19 | 19 | 19 | 19 | 19 |
+| finish | 57 | 57 | 57 | 57 | 57 |
+
+  Graph building and the finish, 90% of the 16x search's 700 s and 77% of the 4x search's 977 s,
+  are the same at every factor. The cleanup and its mask score depend on how many of the cleanup's
+  toggles turn on (each then sweeps its own knob): the model keeps their mean. The thick skeleton
+  runs once where thick vessels lose (16x, and 2x with Phase 4) and 24 times where they win (4x),
+  so a search that keeps them reads low by 23 thick skeletons (29 s of 977 s at 4x). The machine
+  shared both runs with a peer's pytest workers, so the seconds are upper bounds. A first count
+  (on `97f79a1c`) was void: its counting wrapper hid the cleanup's and skeleton clean-up's
+  signatures, which `stages.segmentation_cleanup_arguments` and `skeleton_cleanup_arguments` read,
+  so every candidate ran at the function defaults (`optimiser/broken_wrapper/`).
+- **Found in passing, outside this plan (listed, not fixed):**
+  - The FWHM report says "Searched on a 13x downsampled copy for speed; voxel-based settings below
+    are already scaled back up to the full-resolution grid": `fwhm_search` puts its pool-to-sample
+    ratio in `OptimisationResult.downsample_factor`, which `report.build_report_text` reads as a
+    grid factor.
+  - "Check segmented image" calls `segment` (ilastik runs when it is on) and binarises in RAM
+    (Phase 5's note).
+  - A run reusing its saved skeleton reads the segmented image uncleaned (Phase 5's note).
