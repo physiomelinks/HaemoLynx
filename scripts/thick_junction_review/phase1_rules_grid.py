@@ -441,6 +441,75 @@ def _sheet(cases, out_png, mask, region, tree_points, paths, vs, title):
     plt.close(fig)
 
 
+#: What each rule's marks are, for the interactive page: (key, what it means).
+MARKS = {
+    "wall": (("J", "Join it to the big vessel's centreline"), ("N", "Leave it as a dead end"), ("?", "Unsure")),
+    "taper": (("T", "Taper: one vessel, no bridge"), ("S", "Side entry: a bridge"), ("?", "Unsure")),
+    "fork": (("B", "A narrower branch: bridge it"), ("E", "Vessels of a size: no bridge"), ("?", "Unsure")),
+}
+TITLES = {"wall": "Wall joins", "taper": "Tapers", "fork": "Forks"}
+
+
+def _bits(volume: np.ndarray) -> str:
+    import base64
+
+    return base64.b64encode(np.packbits(np.asarray(volume, bool).ravel())).decode("ascii")
+
+
+def case_view(case, mask, region, tree_points, paths, vs) -> dict:
+    """What the interactive page draws for *case*, in the sheet's own view:
+    the segmentation and the thick-vessel region one plane at a time across
+    the sheet's slab (packed bits, planes then rows then columns), and every
+    line the sheet draws as ``[across, down, depth]`` microns, so the page
+    can show the slab or a single plane."""
+    import build_grid as phase5
+
+    axis = case["axis"]
+    _label, h, w = phase5.PLANES[axis]
+    c = np.asarray(case["centre"], float)
+    lo = np.floor((c - phase5.HALF_WINDOW_UM) / vs).astype(int)
+    hi = np.ceil((c + phase5.HALF_WINDOW_UM) / vs).astype(int) + 1
+    lo[axis] = int(np.floor((c[axis] - phase5.HALF_SLAB_UM) / vs[axis]))
+    hi[axis] = int(np.ceil((c[axis] + phase5.HALF_SLAB_UM) / vs[axis])) + 1
+    lo, hi = np.maximum(lo, 0), np.minimum(hi, mask.shape)
+    box = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    order = (axis, h, w)
+    seg = np.transpose(np.asarray(mask[box], bool), order)
+    reg = np.transpose(np.asarray(region[box], bool), order)
+
+    def keep(points, pad=0.0):
+        return (np.abs(points[:, axis] - c[axis]) <= phase5.HALF_SLAB_UM + pad) & (
+            np.abs(points[:, h] - c[h]) <= phase5.HALF_WINDOW_UM + 5) & (
+            np.abs(points[:, w] - c[w]) <= phase5.HALF_WINDOW_UM + 5)
+
+    def line(points):
+        points = np.asarray(points, float).reshape(-1, 3)
+        return np.round(points[:, [w, h, axis]], 2).tolist()
+
+    lines = []
+    for path, is_bridge in paths:
+        inside = keep(path, pad=2.0)
+        if not inside.any():
+            continue
+        runs = np.split(np.arange(len(path)), np.flatnonzero(np.diff(inside.astype(int))) + 1)
+        for run in runs:
+            if inside[run[0]] and len(run) >= 2:
+                lines.append({"kind": "bridge" if is_bridge else "vessel", "points": line(path[run])})
+    near = tree_points[keep(tree_points)]
+    return {
+        "id": case["id"], "rule": case["rule"], "vox": list(case["vox"]), "view": case["view"],
+        "across": "zyx"[w], "down": "zyx"[h], "depth": "zyx"[axis],
+        "shape": list(seg.shape), "seg": _bits(seg), "region": _bits(reg),
+        "origin_um": [round(float(lo[w] * vs[w]), 3), round(float(lo[h] * vs[h]), 3),
+                      round(float(lo[axis] * vs[axis]), 3)],
+        "step_um": [float(vs[w]), float(vs[h]), float(vs[axis])],
+        "centre_um": [round(float(c[w]), 2), round(float(c[h]), 2), round(float(c[axis]), 2)],
+        "lines": lines, "tree": line(near), "piece": line(case["piece"]),
+        "route": None if case.get("route") is None else line(case["route"]),
+        "tick": None if case.get("tick") is None else line(case["tick"])[0],
+    }
+
+
 KEY_FIELDS = {
     "wall": ("id", "rule", "vox", "centre_um", "view", "decision", "past_lumen_um", "lumen_radius_um",
              "chord_turn_deg", "route_turn_deg", "end_length_um", "to_centreline_um", "route_accepted", "node"),
@@ -455,6 +524,7 @@ def main(argv=None) -> int:
     parser.add_argument("--capture", required=True, help="e14_run.py --capture's finish_input.pkl")
     parser.add_argument("--out", required=True)
     parser.add_argument("--exclude-key", help="the Phase 5 grid's key.csv: leave out cases near its")
+    parser.add_argument("--page-data", help="also write the cases as the interactive page's JSON (grid_page.py)")
     args = parser.parse_args(argv)
 
     import build_grid as phase5
@@ -486,6 +556,7 @@ def main(argv=None) -> int:
     first_id = 1
     summary = {}
     picked_all = []
+    sheets = []
     for rule in ("wall", "taper", "fork"):
         pool = [c for c in pools[rule] if not _excluded(c["centre"], others)]
         picked = _spread(pool, COUNTS[rule], rng, cells[rule], every=EVERY.get(rule))
@@ -528,6 +599,19 @@ def main(argv=None) -> int:
                 row["excluded"] = _excluded(case["centre"], others)
                 writer.writerow(row)
         picked_all += picked
+        if args.page_data:
+            sheets.append({
+                "rule": rule, "title": TITLES[rule], "question": QUESTIONS[rule].split("\n")[0],
+                "marks": [{"key": k, "label": label} for k, label in MARKS[rule]],
+                "cases": [case_view(case, mask, region, tree_points, paths, vs) for case in picked],
+            })
+    if args.page_data:
+        Path(args.page_data).write_text(json.dumps({
+            "dataset": "E14.5 MCA, Harvey's Claudin segmentation",
+            "voxel_size_zyx": [float(v) for v in vs],
+            "slab_um": 2 * phase5.HALF_SLAB_UM,
+            "sheets": sheets,
+        }, separators=(",", ":")), encoding="utf-8")
     with open(out / "marks_template.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["id", "rule", "mark"])

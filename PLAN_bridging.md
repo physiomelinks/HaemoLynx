@@ -465,7 +465,11 @@ Phases 2 and 3 can start today. Phase 1 waits for the grid.
   - **Grid P** (`f7f1b71f`, `scripts/thick_junction_review/phase1_rules_grid.py`): the wall join,
     taper and fork rules on a fresh grid, 30 cases on three sheets (14 J/N, 8 T/S, 8 B/E), every
     join and fork bridge the rules made drawn, places on the Phase 5 bridge grid left out. Sent to
-    Harvey 2026-10-25; `outputs/thick_junction_review/grid_P/`.
+    Harvey 2026-10-25; `outputs/thick_junction_review/grid_P/`. At his ask, also an interactive page
+    to mark it on (https://claude.ai/artifact/3dze8dyKQNvfYmBAWLJnh9: each case drawn from the
+    segmentation, layers toggled, the slab or one plane at a time, zoom, keys): its marks are kept
+    with the page (`marks/<ID>`: `mark`, `note`), read back with `ArtifactData` `list marks`.
+    `phase1_rules_grid.py --page-data` and `grid_page.py` build it.
   - **Phase 4's census** (one skeleton and mask, `040170b` against today, everything since rather
     than this plan alone): dead ends near a thick vessel 100 -> 54 (inside the region 47 -> 2),
     interior ones facing it within 80 degrees -- the missed junctions -- 21 -> 8 (6 refused by the

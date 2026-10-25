@@ -1,0 +1,587 @@
+<meta charset="utf-8">
+<title>Thick-Vessel Grid P</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a sticky marking bar over one section per rule, each a wrap of case cards drawn
+   on a dark microscopy panel; a full-screen viewer for one case at a time. */
+:root {
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --fg: #1b1f27;
+  --muted: #5d6573;
+  --line: #d9dde4;
+  --accent: #2f55c9;
+  --accent-fg: #ffffff;
+  --accent-soft: #e3e9fb;
+  --warn: #9a5b00;
+  --panel: #0b0d11;
+  --panel-seg: #565c66;
+  --panel-fg: #e8eaef;
+  --ov-region: #ff9500;
+  --ov-tree: #ffd60a;
+  --ov-vessel: #3ddc84;
+  --ov-bridge: #ff2ad4;
+  --ov-piece: #ff3b30;
+  --ov-route: #2ad4ff;
+  --ov-tick: #ffffff;
+  --font-ui: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --surface: #1a1e26; --fg: #e6e8ee; --muted: #9aa2b1; --line: #2c323d;
+    --accent: #8ea6ff; --accent-fg: #0d1222; --accent-soft: #232c47; --warn: #f0b35a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --surface: #1a1e26; --fg: #e6e8ee; --muted: #9aa2b1; --line: #2c323d;
+  --accent: #8ea6ff; --accent-fg: #0d1222; --accent-soft: #232c47; --warn: #f0b35a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 48px;
+}
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+h1, h2 { text-wrap: balance; margin: 0; font-weight: 600; }
+h1 { font-size: 1.15rem; }
+h2 { font-size: 1.05rem; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+
+.bar {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface);
+  border-bottom: 1px solid var(--line); margin-inline: calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
+  padding: 12px max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.bar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.bar .meta { color: var(--muted); font-size: 0.85rem; }
+.progress { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.progress-track { width: 140px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.progress-fill { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.store { font-size: 0.8rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.store[data-state="shared"] { color: var(--accent); border-color: var(--accent); }
+.store[data-state="local"], .store[data-state="error"], .store[data-state="readonly"] { color: var(--warn); border-color: var(--warn); }
+.spacer { flex: 1; }
+.chip-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--line);
+  border-radius: 999px; background: transparent; font-size: 0.82rem; color: var(--muted); }
+.chip-toggle[aria-pressed="true"] { color: var(--fg); border-color: var(--fg); }
+.swatch { width: 14px; height: 0; border-top: 3px solid currentColor; display: inline-block; }
+.swatch.dash { border-top-style: dashed; }
+.swatch.dot { width: 7px; height: 7px; border: 0; border-radius: 50%; background: currentColor; }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 5px 11px; }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.copy-out { width: 100%; min-height: 3.5em; font-family: var(--font-data); font-size: 0.8rem; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); padding: 6px 8px; }
+
+.sheet { margin-top: 26px; display: flex; flex-direction: column; gap: 10px; }
+.sheet-head { display: flex; flex-direction: column; gap: 4px; max-width: 70ch; }
+.sheet-head p { margin: 0; color: var(--muted); }
+.mark-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.85rem; }
+.mark-legend b { font-family: var(--font-data); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.card[data-marked="true"] { border-color: var(--accent); }
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-id { font-weight: 600; font-family: var(--font-data); }
+.card-pos { color: var(--muted); font-size: 0.78rem; }
+.card-note { margin-left: auto; font-size: 0.75rem; color: var(--muted); }
+.fig-button { padding: 0; border: 0; background: var(--panel); border-radius: 4px; display: block; width: 100%; aspect-ratio: 1; overflow: hidden; }
+.fig-button svg { width: 100%; height: 100%; display: block; }
+.marks { display: flex; gap: 6px; }
+.mark-btn { flex: 1; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 0;
+  font-family: var(--font-data); font-weight: 500; }
+.mark-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.empty-note { color: var(--muted); }
+
+svg .seg { image-rendering: pixelated; }
+svg .region { fill: none; stroke: var(--ov-region); stroke-width: 1.2px; vector-effect: non-scaling-stroke; }
+svg .tree circle { fill: var(--ov-tree); }
+svg .vessels polyline { fill: none; stroke: var(--ov-vessel); stroke-width: 1.6px; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+svg .bridges polyline { fill: none; stroke: var(--ov-bridge); stroke-width: 2.2px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+svg .route { fill: none; stroke: var(--ov-route); stroke-width: 1.8px; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
+svg .piece { fill: none; stroke: var(--ov-piece); stroke-width: 3.4px; stroke-opacity: .9; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+svg .tick line { stroke: var(--ov-tick); stroke-width: 2.4px; vector-effect: non-scaling-stroke; }
+svg .faint { opacity: .16; }
+svg .scale line { stroke: var(--panel-fg); stroke-width: 2.5px; vector-effect: non-scaling-stroke; }
+svg .scale text { fill: var(--panel-fg); font-family: var(--font-data); }
+body.hide-region .region, body.hide-tree .tree, body.hide-vessels .vessels, body.hide-bridges .bridges,
+body.hide-route .route, body.hide-piece .piece { display: none; }
+body.only-unmarked .card[data-marked="true"] { display: none; }
+
+.viewer { position: fixed; inset: 0; z-index: 20; background: var(--bg); display: grid; grid-template-columns: minmax(0, 1fr) 330px;
+  padding: calc(env(safe-area-inset-top, 0px) + 12px) max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 12px) max(16px, env(safe-area-inset-left, 0px));
+  gap: 14px; }
+.viewer-fig { background: var(--panel); border-radius: 6px; min-height: 0; min-width: 0; position: relative; touch-action: none; }
+.viewer-fig svg { width: 100%; height: 100%; display: block; cursor: grab; }
+.viewer-fig svg.dragging { cursor: grabbing; }
+.viewer-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow-y: auto; overflow-x: hidden; }
+.viewer-side .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.viewer-side h2 { font-family: var(--font-data); }
+.viewer-side .q { color: var(--muted); }
+.viewer .mark-btn { flex: 1 1 100%; text-align: left; padding: 7px 10px; font-family: var(--font-ui); }
+.viewer .mark-btn b { font-family: var(--font-data); margin-right: 8px; }
+.seg-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-toggle button { border: 0; background: transparent; padding: 4px 10px; }
+.seg-toggle button[aria-pressed="true"] { background: var(--accent-soft); color: var(--fg); }
+.plane { width: 100%; margin: 0; }
+.keys { font-size: 0.78rem; color: var(--muted); }
+.keys kbd { font-family: var(--font-data); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+.note { width: 100%; min-height: 4.5em; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); padding: 6px 8px; resize: vertical; }
+@media (max-width: 760px) {
+  .bar { position: static; }
+  .viewer { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .viewer-side { max-height: 46vh; }
+}
+@media (prefers-reduced-motion: reduce) { .progress-fill { transition: none; } }
+</style>
+
+<div class="bar">
+  <div class="bar-row">
+    <h1>Thick-vessel grid P</h1>
+    <span class="meta" id="dataset"></span>
+    <span class="spacer"></span>
+    <span class="store" id="store" data-state="connecting">Connecting to saved marks…</span>
+  </div>
+  <div class="bar-row">
+    <div class="progress"><div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <span class="mono" id="progress-text">0 of 0 marked</span></div>
+    <button class="chip-toggle" id="only-unmarked" aria-pressed="false">Unmarked only</button>
+    <span class="spacer"></span>
+    <button class="btn" id="copy">Copy marks</button>
+  </div>
+  <div class="bar-row" id="layers" aria-label="Layers"></div>
+  <textarea class="copy-out" id="copy-out" hidden readonly aria-label="Marks as text"></textarea>
+</div>
+
+<main id="sheets"></main>
+
+<div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="v-id">
+  <div class="viewer-fig" id="v-fig"></div>
+  <div class="viewer-side">
+    <div class="row"><h2 id="v-id"></h2><span class="spacer"></span>
+      <button class="btn" id="v-prev" aria-label="Previous case">←</button>
+      <button class="btn" id="v-next" aria-label="Next case">→</button>
+      <button class="btn" id="v-close">Close</button></div>
+    <div class="q" id="v-q"></div>
+    <div class="mono" id="v-pos"></div>
+    <div class="row" id="v-marks"></div>
+    <label class="row"><input type="checkbox" id="v-advance" checked> Go to the next unmarked case after marking</label>
+    <div class="row"><span class="seg-toggle" role="group" aria-label="Depth">
+      <button id="v-slab" aria-pressed="true">Slab</button><button id="v-one" aria-pressed="false">One plane</button></span>
+      <button class="btn" id="v-reset">Reset zoom</button></div>
+    <div><input type="range" class="plane" id="v-plane" min="0" max="0" value="0" aria-label="Plane">
+      <div class="mono" id="v-plane-label"></div></div>
+    <label for="v-note">Note</label>
+    <textarea class="note" id="v-note" placeholder="Anything to say about this case"></textarea>
+    <div class="keys">Keys: the mark letters, <kbd>←</kbd> <kbd>→</kbd> cases, <kbd>↑</kbd> <kbd>↓</kbd> planes,
+      <kbd>P</kbd> slab or plane, <kbd>0</kbd> reset zoom, <kbd>Esc</kbd> close. Scroll to zoom, drag to pan.</div>
+  </div>
+</div>
+
+<script id="grid-data" type="application/json">/*GRID_DATA*/</script>
+<script>
+(function () {
+  "use strict";
+  const DATA = JSON.parse(document.getElementById("grid-data").textContent);
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const NEAR_PLANE_UM = 1.5;
+  const LOCAL_KEY = "grid-p-marks-v1";
+  const LAYERS = [
+    ["region", "Thick region edge", "var(--ov-region)", ""],
+    ["tree", "Thick centreline tree", "var(--ov-tree)", "dot"],
+    ["vessels", "Graph vessels", "var(--ov-vessel)", ""],
+    ["bridges", "Bridges", "var(--ov-bridge)", "dash"],
+    ["piece", "Piece judged", "var(--ov-piece)", ""],
+    ["route", "Route a join would draw", "var(--ov-route)", "dash"],
+  ];
+
+  const cases = [];
+  const byId = {};
+  for (const sheet of DATA.sheets) {
+    for (const c of sheet.cases) {
+      c.sheet = sheet;
+      const [n, H, W] = c.shape;
+      c.n = n; c.H = H; c.W = W;
+      c.segBits = bytes(c.seg); c.regBits = bytes(c.region);
+      cases.push(c); byId[c.id] = c;
+    }
+  }
+  const marks = {};
+  let db = null;
+  let readOnly = false;
+
+  function bytes(b64) {
+    const bin = atob(b64); const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function bit(u, i) { return (u[i >> 3] >> (7 - (i & 7))) & 1; }
+  function grid(c, u, plane) {
+    const g = new Uint8Array(c.H * c.W);
+    for (let r = 0; r < c.H; r++) for (let q = 0; q < c.W; q++) {
+      let v = 0;
+      if (plane === null) { for (let p = 0; p < c.n && !v; p++) v = bit(u, (p * c.H + r) * c.W + q); }
+      else v = bit(u, (plane * c.H + r) * c.W + q);
+      g[r * c.W + q] = v;
+    }
+    return g;
+  }
+  function cssColor(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#000";
+  }
+  function rgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex); const n = m ? parseInt(m[1], 16) : 0;
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function segImage(c, plane) {
+    const g = grid(c, c.segBits, plane);
+    const canvas = document.createElement("canvas"); canvas.width = c.W; canvas.height = c.H;
+    const ctx = canvas.getContext("2d"); const img = ctx.createImageData(c.W, c.H);
+    const on = rgb(cssColor("--panel-seg")), off = rgb(cssColor("--panel"));
+    for (let i = 0; i < g.length; i++) {
+      const col = g[i] ? on : off; img.data.set([col[0], col[1], col[2], 255], i * 4);
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas.toDataURL("image/png");
+  }
+  function regionPath(c, plane) {
+    const g = grid(c, c.regBits, plane);
+    const [sw, sh] = c.step_um; const [w0, h0] = c.origin_um;
+    const at = (r, q) => r >= 0 && q >= 0 && r < c.H && q < c.W && g[r * c.W + q];
+    let d = "";
+    for (let r = 0; r < c.H; r++) for (let q = 0; q < c.W; q++) {
+      if (!g[r * c.W + q]) continue;
+      const x0 = w0 + (q - 0.5) * sw, x1 = x0 + sw, y0 = h0 + (r - 0.5) * sh, y1 = y0 + sh;
+      if (!at(r - 1, q)) d += `M${x0.toFixed(2)} ${y0.toFixed(2)}H${x1.toFixed(2)}`;
+      if (!at(r + 1, q)) d += `M${x0.toFixed(2)} ${y1.toFixed(2)}H${x1.toFixed(2)}`;
+      if (!at(r, q - 1)) d += `M${x0.toFixed(2)} ${y0.toFixed(2)}V${y1.toFixed(2)}`;
+      if (!at(r, q + 1)) d += `M${x1.toFixed(2)} ${y0.toFixed(2)}V${y1.toFixed(2)}`;
+    }
+    return d;
+  }
+  function baseBox(c) {
+    const [sw, sh] = c.step_um; const [w0, h0] = c.origin_um;
+    return { x: w0 - sw / 2, y: h0 - sh / 2, w: c.W * sw, h: c.H * sh };
+  }
+  function el(name, attrs, parent) {
+    const node = document.createElementNS(SVGNS, name);
+    for (const k in attrs) node.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+  function pts(points) { return points.map(p => p[0] + "," + p[1]).join(" "); }
+  // Runs of a polyline whose points lie within NEAR_PLANE_UM of depth d.
+  function nearRuns(points, d) {
+    const runs = []; let run = [];
+    for (const p of points) {
+      if (Math.abs(p[2] - d) <= NEAR_PLANE_UM) run.push(p);
+      else { if (run.length > 1) runs.push(run); run = []; }
+    }
+    if (run.length > 1) runs.push(run);
+    return runs;
+  }
+  // The case's drawing; plane null draws the slab, as the sheets do.
+  function drawCase(svg, c, plane) {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const box = baseBox(c);
+    const depth = plane === null ? null : c.origin_um[2] + plane * c.step_um[2];
+    el("image", { href: segImage(c, plane), x: box.x, y: box.y, width: box.w, height: box.h,
+      preserveAspectRatio: "none", class: "seg" }, svg);
+    el("path", { d: regionPath(c, plane), class: "region" }, svg);
+    const tree = el("g", { class: "tree" }, svg);
+    for (const p of c.tree) {
+      const near = depth === null || Math.abs(p[2] - depth) <= NEAR_PLANE_UM;
+      el("circle", { cx: p[0], cy: p[1], r: 0.32, class: near ? "" : "faint" }, tree);
+    }
+    const vessels = el("g", { class: "vessels" }, svg), bridges = el("g", { class: "bridges" }, svg);
+    for (const line of c.lines) {
+      const parent = line.kind === "bridge" ? bridges : vessels;
+      if (depth === null) { el("polyline", { points: pts(line.points) }, parent); continue; }
+      el("polyline", { points: pts(line.points), class: "faint" }, parent);
+      for (const run of nearRuns(line.points, depth)) el("polyline", { points: pts(run) }, parent);
+    }
+    if (c.route) el("polyline", { points: pts(c.route), class: "route" }, svg);
+    el("polyline", { points: pts(c.piece), class: "piece" }, svg);
+    if (c.tick) {
+      const t = el("g", { class: "tick" }, svg), s = 0.9;
+      el("line", { x1: c.tick[0] - s, y1: c.tick[1] - s, x2: c.tick[0] + s, y2: c.tick[1] + s }, t);
+      el("line", { x1: c.tick[0] - s, y1: c.tick[1] + s, x2: c.tick[0] + s, y2: c.tick[1] - s }, t);
+    }
+    el("g", { class: "scale" }, svg);
+    setView(svg, box);
+  }
+  function setView(svg, vb) {
+    svg.setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+    svg._vb = vb;
+    const g = svg.querySelector(".scale");
+    if (!g) return;
+    while (g.firstChild) g.removeChild(g.firstChild);
+    const x = vb.x + vb.w * 0.05, y = vb.y + vb.h * 0.94;
+    el("line", { x1: x, y1: y, x2: x + 10, y2: y }, g);
+    el("text", { x: x, y: y - vb.h * 0.025, "font-size": (vb.w * 0.045).toFixed(2) }, g).textContent = "10 µm";
+  }
+  function viewLabel(c) { return `looking down ${c.depth} (${c.across} across, ${c.down} down)`; }
+  function posLabel(c) { return `vox (z, y, x) ${c.vox.join(", ")}`; }
+
+  // ---------- page ----------
+  document.getElementById("dataset").textContent =
+    `${DATA.dataset}. Each case drawn on the segmentation, a ${DATA.slab_um} µm slab.`;
+  const layersRow = document.getElementById("layers");
+  for (const [key, label, color, style] of LAYERS) {
+    const b = document.createElement("button");
+    b.className = "chip-toggle"; b.setAttribute("aria-pressed", "true"); b.dataset.layer = key;
+    b.innerHTML = `<span class="swatch ${style}" style="color:${color}"></span>`;
+    b.appendChild(document.createTextNode(label));
+    b.addEventListener("click", () => {
+      const on = b.getAttribute("aria-pressed") !== "true";
+      b.setAttribute("aria-pressed", String(on));
+      document.body.classList.toggle("hide-" + key, !on);
+    });
+    layersRow.appendChild(b);
+  }
+  const tickNote = document.createElement("span");
+  tickNote.className = "meta"; tickNote.textContent = "White cross: where a fork's branch leaves the trunk's lumen.";
+  layersRow.appendChild(tickNote);
+
+  const main = document.getElementById("sheets");
+  const cardOf = {};
+  for (const sheet of DATA.sheets) {
+    const section = document.createElement("section"); section.className = "sheet";
+    const head = document.createElement("div"); head.className = "sheet-head";
+    const h2 = document.createElement("h2");
+    h2.textContent = `${sheet.title} · ${sheet.cases[0].id}–${sheet.cases[sheet.cases.length - 1].id}`;
+    const q = document.createElement("p"); q.textContent = sheet.question;
+    const legend = document.createElement("div"); legend.className = "mark-legend";
+    for (const m of sheet.marks) {
+      const s = document.createElement("span"); const b = document.createElement("b");
+      b.textContent = m.key; s.appendChild(b); s.appendChild(document.createTextNode(" " + m.label)); legend.appendChild(s);
+    }
+    head.append(h2, q, legend);
+    const wrap = document.createElement("div"); wrap.className = "cards";
+    for (const c of sheet.cases) {
+      const card = document.createElement("article"); card.className = "card"; card.dataset.id = c.id;
+      const ch = document.createElement("div"); ch.className = "card-head";
+      const id = document.createElement("span"); id.className = "card-id"; id.textContent = c.id;
+      const pos = document.createElement("span"); pos.className = "card-pos mono"; pos.textContent = c.vox.join(", ");
+      pos.title = posLabel(c) + ", " + viewLabel(c);
+      const note = document.createElement("span"); note.className = "card-note";
+      ch.append(id, pos, note);
+      const fig = document.createElement("button"); fig.className = "fig-button";
+      fig.setAttribute("aria-label", `Open ${c.id} to zoom and step through planes`);
+      const svg = el("svg", { preserveAspectRatio: "xMidYMid meet" }, fig);
+      drawCase(svg, c, null);
+      fig.addEventListener("click", () => openViewer(c.id));
+      const markRow = document.createElement("div"); markRow.className = "marks";
+      for (const m of sheet.marks) {
+        const b = document.createElement("button"); b.className = "mark-btn"; b.textContent = m.key;
+        b.title = m.label; b.dataset.mark = m.key; b.setAttribute("aria-pressed", "false");
+        b.addEventListener("click", () => setMark(c.id, m.key));
+        markRow.appendChild(b);
+      }
+      card.append(ch, fig, markRow);
+      wrap.appendChild(card);
+      cardOf[c.id] = card;
+    }
+    section.append(head, wrap);
+    main.appendChild(section);
+  }
+
+  function renderMarks() {
+    let done = 0;
+    for (const c of cases) {
+      const m = marks[c.id] || {};
+      const card = cardOf[c.id];
+      card.dataset.marked = m.mark ? "true" : "false";
+      if (m.mark) done++;
+      for (const b of card.querySelectorAll(".mark-btn")) b.setAttribute("aria-pressed", String(b.dataset.mark === m.mark));
+      card.querySelector(".card-note").textContent = m.note ? "note" : "";
+    }
+    document.getElementById("progress-text").textContent = `${done} of ${cases.length} marked`;
+    document.getElementById("progress-fill").style.width = (100 * done / cases.length) + "%";
+    if (current) renderViewerMarks();
+  }
+  function marksText() {
+    const parts = cases.map(c => `${c.id} ${(marks[c.id] && marks[c.id].mark) || "-"}`);
+    const notes = cases.filter(c => marks[c.id] && marks[c.id].note).map(c => `${c.id}: ${marks[c.id].note}`);
+    return parts.join(", ") + (notes.length ? "\nNotes: " + notes.join(" | ") : "");
+  }
+  document.getElementById("copy").addEventListener("click", () => {
+    const text = marksText(); const out = document.getElementById("copy-out");
+    const show = () => { out.hidden = false; out.value = text; out.focus(); out.select(); };
+    try {
+      navigator.clipboard.writeText(text).then(() => {
+        const b = document.getElementById("copy"); b.textContent = "Copied"; setTimeout(() => { b.textContent = "Copy marks"; }, 1500);
+      }, show);
+    } catch (e) { show(); }
+  });
+  document.getElementById("only-unmarked").addEventListener("click", e => {
+    const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+    e.currentTarget.setAttribute("aria-pressed", String(on));
+    document.body.classList.toggle("only-unmarked", on);
+  });
+
+  // ---------- saving ----------
+  const storeEl = document.getElementById("store");
+  function setStore(state, text) { storeEl.dataset.state = state; storeEl.textContent = text; }
+  function loadLocal() {
+    try { Object.assign(marks, JSON.parse(localStorage.getItem(LOCAL_KEY) || "{}")); } catch (e) { /* none kept */ }
+  }
+  function saveLocal() { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(marks)); } catch (e) { /* not kept */ } }
+  const chains = {};
+  function save(id) {
+    const m = marks[id] || {};
+    const body = { mark: m.mark || "", note: m.note || "", rule: byId[id].rule, updatedAt: new Date().toISOString() };
+    if (!db || readOnly) { saveLocal(); return; }
+    chains[id] = (chains[id] || Promise.resolve()).then(() => db.doc("marks/" + id).set(body)).catch(err => {
+      if (err && err.code === "invalid_argument") { readOnly = true; setStore("readonly", "View only: marks are kept in this browser"); }
+      else setStore("error", "Not saved; use Copy marks");
+      saveLocal();
+    });
+  }
+  function setMark(id, key) {
+    const m = marks[id] || (marks[id] = {});
+    m.mark = m.mark === key ? "" : key;
+    renderMarks(); save(id);
+  }
+  async function connect() {
+    loadLocal(); renderMarks();
+    let store = null;
+    try { store = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { store = null; }
+    if (!store) { setStore("local", "Saved in this browser only; use Copy marks"); return; }
+    db = store;
+    db.collection("marks").onSnapshot(snap => {
+      for (const d of snap.docs) marks[d.id] = Object.assign({}, d.data());
+      for (const ch of snap.docChanges()) if (ch.type === "removed") delete marks[ch.doc.id];
+      setStore(readOnly ? "readonly" : "shared", readOnly ? "View only: marks are kept in this browser" : "Marks saved with the page");
+      renderMarks();
+    }, () => setStore("error", "Saved marks unavailable; use Copy marks"));
+  }
+
+  // ---------- viewer ----------
+  const viewer = document.getElementById("viewer"), vfig = document.getElementById("v-fig");
+  const planeInput = document.getElementById("v-plane"), noteInput = document.getElementById("v-note");
+  const vsvg = el("svg", { preserveAspectRatio: "xMidYMid meet" }, vfig);
+  let current = null, plane = null, lastPlane = 0, noteTimer = null;
+  function openViewer(id) {
+    current = byId[id]; viewer.hidden = false; document.body.style.overflow = "hidden";
+    lastPlane = Math.floor(current.n / 2);
+    planeInput.max = String(current.n - 1); planeInput.value = String(lastPlane);
+    noteInput.value = (marks[id] && marks[id].note) || "";
+    document.getElementById("v-id").textContent = current.id;
+    document.getElementById("v-q").textContent = current.sheet.question;
+    document.getElementById("v-pos").textContent = `${posLabel(current)}; ${viewLabel(current)}`;
+    const row = document.getElementById("v-marks"); row.textContent = "";
+    for (const m of current.sheet.marks) {
+      const b = document.createElement("button"); b.className = "mark-btn"; b.dataset.mark = m.key;
+      const k = document.createElement("b"); k.textContent = m.key; b.append(k, document.createTextNode(m.label));
+      b.addEventListener("click", () => markInViewer(m.key)); row.appendChild(b);
+    }
+    renderViewerMarks(); redraw();
+    document.getElementById("v-close").focus();
+  }
+  function closeViewer() {
+    flushNote(); viewer.hidden = true; document.body.style.overflow = "";
+    if (current && cardOf[current.id]) cardOf[current.id].querySelector(".fig-button").focus();
+    current = null;
+  }
+  function renderViewerMarks() {
+    const m = (current && marks[current.id]) || {};
+    for (const b of document.querySelectorAll("#v-marks .mark-btn")) b.setAttribute("aria-pressed", String(b.dataset.mark === m.mark));
+  }
+  function redraw(keepView) {
+    const vb = keepView ? vsvg._vb : null;
+    drawCase(vsvg, current, plane);
+    if (vb) setView(vsvg, vb);
+    document.getElementById("v-slab").setAttribute("aria-pressed", String(plane === null));
+    document.getElementById("v-one").setAttribute("aria-pressed", String(plane !== null));
+    const p = plane === null ? lastPlane : plane;
+    const d = current.origin_um[2] + p * current.step_um[2];
+    document.getElementById("v-plane-label").textContent = plane === null
+      ? `All ${current.n} planes (${current.depth} ${current.origin_um[2].toFixed(1)}–${(current.origin_um[2] + (current.n - 1) * current.step_um[2]).toFixed(1)} µm); the case's own at ${current.centre_um[2].toFixed(1)}`
+      : `Plane ${plane + 1} of ${current.n}: ${current.depth} = ${d.toFixed(1)} µm (the case's own at ${current.centre_um[2].toFixed(1)})`;
+  }
+  function setPlane(p) { lastPlane = Math.max(0, Math.min(current.n - 1, p)); plane = lastPlane; planeInput.value = String(plane); redraw(true); }
+  planeInput.addEventListener("input", () => setPlane(Number(planeInput.value)));
+  document.getElementById("v-slab").addEventListener("click", () => { plane = null; redraw(true); });
+  document.getElementById("v-one").addEventListener("click", () => setPlane(lastPlane));
+  document.getElementById("v-reset").addEventListener("click", () => setView(vsvg, baseBox(current)));
+  document.getElementById("v-close").addEventListener("click", closeViewer);
+  function step(by) {
+    flushNote();
+    const i = cases.indexOf(current); const next = cases[(i + by + cases.length) % cases.length];
+    const keepPlane = plane; openViewer(next.id); if (keepPlane !== null) setPlane(Math.min(keepPlane, current.n - 1));
+  }
+  document.getElementById("v-prev").addEventListener("click", () => step(-1));
+  document.getElementById("v-next").addEventListener("click", () => step(1));
+  function markInViewer(key) {
+    setMark(current.id, key);
+    if (document.getElementById("v-advance").checked && marks[current.id] && marks[current.id].mark) {
+      const i = cases.indexOf(current);
+      for (let k = 1; k < cases.length; k++) {
+        const c = cases[(i + k) % cases.length];
+        if (!(marks[c.id] && marks[c.id].mark)) { flushNote(); openViewer(c.id); return; }
+      }
+    }
+  }
+  function flushNote() {
+    if (!current || noteTimer === null) return;
+    clearTimeout(noteTimer); noteTimer = null;
+    const m = marks[current.id] || (marks[current.id] = {});
+    if ((m.note || "") !== noteInput.value) { m.note = noteInput.value; renderMarks(); save(current.id); }
+  }
+  noteInput.addEventListener("input", () => { clearTimeout(noteTimer); noteTimer = setTimeout(flushNote, 700); });
+  noteInput.addEventListener("blur", flushNote);
+  document.addEventListener("keydown", e => {
+    if (viewer.hidden) return;
+    if (e.key === "Escape") { e.preventDefault(); closeViewer(); return; }
+    if (e.target === noteInput || e.ctrlKey || e.metaKey || e.altKey) return;
+    const key = e.key === "/" ? "?" : e.key.toUpperCase();
+    if (current.sheet.marks.some(m => m.key === key)) { e.preventDefault(); markInViewer(key); return; }
+    if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setPlane((plane === null ? lastPlane : plane) - 1); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); setPlane((plane === null ? lastPlane : plane) + 1); }
+    else if (key === "P") { e.preventDefault(); if (plane === null) setPlane(lastPlane); else { plane = null; redraw(true); } }
+    else if (e.key === "0") { e.preventDefault(); setView(vsvg, baseBox(current)); }
+  });
+  function toSvg(evt) {
+    const m = vsvg.getScreenCTM(); if (!m) return null;
+    const p = vsvg.createSVGPoint(); p.x = evt.clientX; p.y = evt.clientY;
+    return p.matrixTransform(m.inverse());
+  }
+  vsvg.addEventListener("wheel", e => {
+    e.preventDefault();
+    const at = toSvg(e); if (!at) return;
+    const base = baseBox(current), vb = vsvg._vb;
+    const f = Math.pow(1.0015, e.deltaY);
+    const w = Math.min(base.w * 1.5, Math.max(base.w / 10, vb.w * f)), s = w / vb.w;
+    setView(vsvg, { x: at.x - (at.x - vb.x) * s, y: at.y - (at.y - vb.y) * s, w: w, h: vb.h * s });
+  }, { passive: false });
+  let drag = null;
+  vsvg.addEventListener("pointerdown", e => {
+    drag = { x: e.clientX, y: e.clientY, vb: Object.assign({}, vsvg._vb) };
+    vsvg.setPointerCapture(e.pointerId); vsvg.classList.add("dragging");
+  });
+  vsvg.addEventListener("pointermove", e => {
+    if (!drag) return;
+    const rect = vsvg.getBoundingClientRect();
+    const scale = Math.max(drag.vb.w / rect.width, drag.vb.h / rect.height);
+    setView(vsvg, Object.assign({}, drag.vb, { x: drag.vb.x - (e.clientX - drag.x) * scale, y: drag.vb.y - (e.clientY - drag.y) * scale }));
+  });
+  const endDrag = () => { drag = null; vsvg.classList.remove("dragging"); };
+  vsvg.addEventListener("pointerup", endDrag); vsvg.addEventListener("pointercancel", endDrag);
+
+  connect();
+})();
+</script>
