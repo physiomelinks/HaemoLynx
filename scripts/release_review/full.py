@@ -152,25 +152,77 @@ def _not_run(name: str, skipped: Mapping[str, str]) -> str:
     return f"{TITLES.get(name, name)}: {skipped.get(name, 'not in ' + DATASETS_FILE)}"
 
 
-def speed_2a(run: Optional[manifests.RunRecord], skipped: Mapping[str, str]) -> Optional[CheckResult]:
+def speed_2a(run: Optional[manifests.RunRecord]) -> Optional[CheckResult]:
+    """Decided by an E14.5 run of this scoring; with none (not run, or no
+    room to run it) the check's row decides, so no room is never a fail."""
     if run is None:
-        return measured("speed.2a", False, None, _not_run("e14p5", skipped)) if "e14p5" in skipped else None
+        return None
     stages = ", ".join(f"{stage.stage} {stage.wall_seconds:,.0f} s" for stage in run.stages if stage.wall_seconds)
     return measured("speed.2a", run.finished, run.wall_seconds,
                     f"E14.5 {run.status} in {run.wall_seconds:,.0f} s ({stages})")
 
 
-def memory_2a(run: Optional[manifests.RunRecord], skipped: Mapping[str, str]) -> Optional[CheckResult]:
+def memory_2a(run: Optional[manifests.RunRecord]) -> Optional[CheckResult]:
     if run is None:
-        return measured("memory.2a", False, None, _not_run("e14p5", skipped)) if "e14p5" in skipped else None
+        return None
     return measured("memory.2a", run.finished, run.peak_rss_bytes,
                     f"E14.5 {run.status}, peak {_gib(run.peak_rss_bytes)} on a {_gib(run.machine_ram_bytes)} {run.platform} machine")
 
 
-def per_stage_check(check_id: str, runs: Mapping[str, Optional[manifests.RunRecord]], skipped: Mapping[str, str]) -> CheckResult:
+#: The real stacks whose saved graph's lumen-artefact report counts for
+#: ``graph.6a``.
+LUMEN_REPORT_DATASETS = ("e14p5", "nerve", "mason_sm", "brain")
+
+
+def graph_6a(results: Mapping[str, Optional[Mapping[str, Any]]]) -> Optional[CheckResult]:
+    """The lumen-artefact report on a reference dataset's saved graph,
+    recorded at this commit; None when no such dataset ran."""
+    reports = {
+        name: ((results.get(name) or {}).get("lumen_artefacts") or {})
+        for name in LUMEN_REPORT_DATASETS if results.get(name)
+    }
+    if not reports:
+        return None
+    done = {name: report for name, report in reports.items() if report.get("text")}
+    evidence = "; ".join(f"{TITLES[name]}: {report['text']}" for name, report in done.items())
+    missing = [TITLES[name] for name in reports if name not in done]
+    if missing:
+        evidence += ("; " if evidence else "") + f"no report for {', '.join(missing)}"
+    return measured("graph.6a", bool(done), {name: report.get("counts") for name, report in done.items()}, evidence)
+
+
+def measured_before(rows: Sequence[Mapping[str, Any]], dataset: str) -> Optional[str]:
+    """The latest commit whose benchmark rows give *dataset* a finished run
+    with every stage's time and peak memory."""
+    by_commit: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if row.get("dataset") == dataset:
+            by_commit.setdefault(str(row.get("commit")), []).append(row)
+    for commit in reversed(list(by_commit)):
+        stages = by_commit[commit]
+        total = [row for row in stages if row.get("stage") == "total"]
+        complete = all(
+            trends._float(row.get("wall_seconds")) is not None and trends._float(row.get("peak_rss_mib")) is not None
+            for row in stages if row.get("stage") != "total"
+        )
+        if total and total[-1].get("status") == "finished" and complete and len(stages) > 1:
+            return commit
+    return None
+
+
+def per_stage_check(
+    check_id: str, runs: Mapping[str, Optional[manifests.RunRecord]], skipped: Mapping[str, str],
+    rows: Sequence[Mapping[str, Any]] = (),
+) -> CheckResult:
+    """A per-stage table for each reference dataset at a recorded commit:
+    this scoring's run, or failing that an earlier one in ``benchmarks.csv``."""
     done, missing = manifests.per_dataset(runs, REFERENCE)
+    earlier = {name: measured_before(rows, name) for name in missing}
+    done += [f"{name} (at {commit})" for name, commit in earlier.items() if commit]
+    missing = [name for name, commit in earlier.items() if not commit]
     what = "time" if check_id.startswith("speed") else "peak memory"
-    evidence = f"each stage's {what} recorded for {', '.join(TITLES[name] for name in done) or 'no dataset'}"
+    shown = [TITLES.get(name.split(" ")[0], name) + name[len(name.split(" ")[0]):] for name in done]
+    evidence = f"each stage's {what} recorded for {', '.join(shown) or 'no dataset'}"
     if missing:
         evidence += "; not for " + "; ".join(_not_run(name, skipped) for name in missing)
     return measured(check_id, not missing, {"measured": done, "missing": missing}, evidence)
@@ -242,10 +294,11 @@ def collect(
 ) -> dict[str, CheckResult]:
     every_result = {**(fixture_results or {}), **results}
     found = [
-        speed_2a(runs.get("e14p5"), skipped),
-        memory_2a(runs.get("e14p5"), skipped),
-        per_stage_check("speed.6a", runs, skipped),
-        per_stage_check("memory.6a", runs, skipped),
+        graph_6a(results),
+        speed_2a(runs.get("e14p5")),
+        memory_2a(runs.get("e14p5")),
+        per_stage_check("speed.6a", runs, skipped, rows),
+        per_stage_check("memory.6a", runs, skipped, rows),
         flow_6c(every_result, skipped),
         speed_8b(flagged, compared_with),
         scaling_check("speed.10a", rows, datasets),
@@ -266,6 +319,10 @@ def _run_line(name: str, result: Optional[Mapping[str, Any]]) -> str:
     line = f"- **{name}**: {result.get('status')} in {result.get('seconds')} s"
     if graph.get("edges") is not None:
         line += f"; {graph['edges']} vessels, {graph.get('length_um', 0):,} um"
+    if graph.get("flow_residual"):
+        line += f"; flow balance {graph['flow_residual']['relative']:.1e} of the largest flow"
+    if (result.get("lumen_artefacts") or {}).get("text"):
+        line += f"; {result['lumen_artefacts']['text']}"
     if result.get("error"):
         error = result["error"]
         line += f"; {error.get('type')} in {error.get('raised_in')}: {str(error.get('message'))[:200]}"

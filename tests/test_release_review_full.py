@@ -49,12 +49,11 @@ def _run(stages=2, status="finished"):
 
 
 def test_the_whole_e14_run_decides_speed_2a_and_memory_2a():
-    assert full.speed_2a(_run(), {}).status == PASS
-    assert full.speed_2a(_run(status="failed"), {}).status == FAIL
-    assert full.memory_2a(_run(), {}).evidence.startswith("E14.5 finished, peak 5.0 GiB on a 32.0 GiB Windows")
-    assert full.speed_2a(None, {}) is None  # not attempted: the row decides
-    skipped = full.speed_2a(None, {"e14p5": "needs 8 GiB free, 6.1 GiB free"})
-    assert skipped.status == FAIL and "6.1 GiB free" in skipped.evidence
+    assert full.speed_2a(_run()).status == PASS
+    assert full.speed_2a(_run(status="failed")).status == FAIL
+    assert full.memory_2a(_run()).evidence.startswith("E14.5 finished, peak 5.0 GiB on a 32.0 GiB Windows")
+    # Not run, or no room to run it: the row decides; no room is not a fail.
+    assert full.speed_2a(None) is None and full.memory_2a(None) is None
 
 
 def test_every_reference_dataset_needs_its_table():
@@ -65,6 +64,17 @@ def test_every_reference_dataset_needs_its_table():
     assert result.status == FAIL and "Mason SM: input not on this machine" in result.evidence
 
 
+def test_a_table_recorded_at_an_earlier_commit_counts():
+    rows = manifests.benchmark_rows(_run(), dataset="mason_sm", commit="abc12345", date="2026-10-20")
+    assert full.measured_before(rows, "mason_sm") == "abc12345"
+    assert full.measured_before(rows, "brain") is None
+    runs = {name: _run() for name in full.REFERENCE if name != "mason_sm"}
+    result = full.per_stage_check("speed.6a", runs, {}, rows)
+    assert result.status == PASS and "Mason SM (at abc12345)" in result.evidence
+    failed = manifests.benchmark_rows(_run(status="failed"), dataset="mason_sm", commit="def", date="2026-10-21")
+    assert full.measured_before(failed, "mason_sm") is None
+
+
 def test_the_solved_share_must_be_explained_on_every_dataset():
     graph = {"solved_fraction": 0.5, "length_um": 100.0, "length_um_by_flow_state": {"solved": 50.0, "blind_end": 50.0}}
     results = {name: {"graph": graph} for name in full.REFERENCE}
@@ -72,6 +82,14 @@ def test_the_solved_share_must_be_explained_on_every_dataset():
     results["nerve"] = {"graph": {"solved_fraction": 0.0, "length_um_by_flow_state": {"not solved": 9.0}}}
     result = full.flow_6c(results, {})
     assert result.status == FAIL and "Nerve: no solve" in result.evidence
+
+
+def test_the_lumen_report_counts_on_a_real_stack_only():
+    report = {"text": "Lumen artefacts: 17 pair(s)...", "counts": {"duplicate_pair_count": 17}}
+    assert full.graph_6a({"e14p5": {"lumen_artefacts": report}}).status == PASS
+    assert full.graph_6a({"seven_vessel": {"lumen_artefacts": report}}) is None
+    missing = full.graph_6a({"e14p5": {"status": "failed"}})
+    assert missing.status == FAIL and "no report for E14.5" in missing.evidence
 
 
 def test_a_slowdown_check_needs_an_earlier_commit():

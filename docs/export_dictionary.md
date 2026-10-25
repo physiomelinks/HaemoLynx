@@ -255,6 +255,10 @@ Every other key is text or a nested record; see pipeline/provenance.py.
 
 Written to the run's output folder (vtk_output_prefix's). The settings the run started with, as a config file --config loads. Each setting's unit is in its help (the comments of a config write_default_config writes).
 
+## `{stem}_citations.txt`
+
+Written to the run's output folder (vtk_output_prefix's). Plain text: the publications behind the methods this run used, by section, to cite in a methods section (pipeline/citations.py). Written when export_citations is on.
+
 ## `{name}_summary.csv`
 
 Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. One row: the perturbation's network-level result against the baseline.

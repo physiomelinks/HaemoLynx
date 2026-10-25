@@ -218,14 +218,14 @@ def quick_facts(tree: Path, out: Path, *, repo: Path, commit: str, is_checkout: 
 
 def run_dataset(tree: Path, folder: Path, name: str, settings: Mapping[str, Any], *,
                 config: Optional[Path] = None, single_process: bool = False,
-                stop_after: Optional[str] = None, save_graph: bool = False,
+                stop_after: Optional[str] = None, save_graph: bool = False, lumen_report: bool = False,
                 timeout: Optional[float] = None) -> Optional[dict[str, Any]]:
     """One run in its own process, against *tree*'s ``src``; its ``result.json``."""
     folder.mkdir(parents=True, exist_ok=True)
     spec = {
         "name": name, "output_dir": str(folder), "settings": dict(settings),
         "config": None if config is None else str(config), "single_process": single_process,
-        "stop_after": stop_after, "save_graph": save_graph,
+        "stop_after": stop_after, "save_graph": save_graph, "lumen_report": lumen_report,
     }
     spec_path = folder / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, default=str), encoding="utf-8")
@@ -324,6 +324,7 @@ def fixture_tier(tree: Path, out: Path, *, commit: str, log=print) -> tuple[dict
         fixtures.graph_2a(results.get("nerve_crop")),
         fixtures.diameter_2a(results.get("nerve_crop"), {"the Nerve crop at the skeleton defaults": first_result}),
         fixtures.flow_2a(results.get("nerve_crop")),
+        fixtures.flow_6b(results.get("nerve_crop")),
         fixtures.stats_2a(results.get("seven_vessel"), seven_files),
         fixtures.export_2a(results.get("seven_vessel"), seven_files),
         fixtures.repro_2a(results),
@@ -358,6 +359,7 @@ def full_tier(tree: Path, out: Path, *, commit: str, date: str, datasets_file: P
     skipped: dict[str, str] = {}
     for name, dataset in datasets.items():
         if only and name not in only:
+            skipped[name] = "not chosen for this scoring (--datasets)"
             continue
         missing = full.missing_inputs(dataset)
         if missing:
@@ -372,7 +374,8 @@ def full_tier(tree: Path, out: Path, *, commit: str, date: str, datasets_file: P
         folder = out / name
         settings = full.dataset_settings(dataset)
         started = time.time()
-        results[name] = run_dataset(tree, folder, name, settings, config=full.config_path(dataset))
+        results[name] = run_dataset(tree, folder, name, settings, config=full.config_path(dataset),
+                                    lumen_report=name in full.LUMEN_REPORT_DATASETS)
         log(f"full {name}: {(results[name] or {}).get('status')} in {time.time() - started:.0f} s")
         found = manifests.find(folder)
         runs[name] = manifests.read(found[0]) if found else None

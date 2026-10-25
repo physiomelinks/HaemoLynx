@@ -143,6 +143,24 @@ def flow_2a(nerve: Optional[Mapping[str, Any]]) -> CheckResult:
     return measured("flow.2a", passed, fraction, evidence)
 
 
+#: How closely flow must balance at every interior node, as a share of the
+#: largest flow: the tolerance ``test_nerve_pipeline.py`` holds the solve to.
+FLOW_BALANCE_TOLERANCE = 1e-9
+
+
+def flow_6b(nerve: Optional[Mapping[str, Any]]) -> Optional[CheckResult]:
+    """Kirchhoff's law at every interior node of a real network's solve."""
+    residual = _graph(nerve).get("flow_residual")
+    if not residual:
+        return None
+    relative = residual["relative"]
+    evidence = (
+        f"Nerve crop: the worst of {residual['interior_nodes']} interior nodes' net flow is "
+        f"{relative:.1e} of the largest flow (tolerance {FLOW_BALANCE_TOLERANCE:.0e})"
+    )
+    return measured("flow.6b", _finished(nerve) and relative <= FLOW_BALANCE_TOLERANCE, relative, evidence)
+
+
 def stats_2a(seven: Optional[Mapping[str, Any]], files: Sequence[str]) -> CheckResult:
     written = [name for name in files if name.endswith("_statistics.csv") and "branch" not in name]
     evidence = f"seven-vessel fixture with statistics on: {', '.join(written) or 'no statistics CSV'}"

@@ -32,6 +32,32 @@ def test_the_level_two_checks_read_the_nerve_crop():
     assert fixtures.graph_2a(None).status == FAIL
 
 
+def test_flow_balance_on_the_nerve_crop_is_held_to_the_integration_tests_tolerance():
+    balanced = _result(graph={"flow_residual": {"interior_nodes": 40, "relative": 3e-15}})
+    assert fixtures.flow_6b(balanced).status == PASS
+    leaking = _result(graph={"flow_residual": {"interior_nodes": 40, "relative": 2e-6}})
+    assert fixtures.flow_6b(leaking).status == FAIL
+    assert fixtures.flow_6b(_result()) is None  # no solve to check
+
+
+def test_the_run_measures_flow_balance_at_the_nodes_the_solve_imposed_nothing_on():
+    import networkx as nx
+
+    from release_review._run_dataset import _flow_residual
+
+    chain = nx.MultiGraph()
+    for node, pressure in enumerate((2.0, 1.0, 0.0)):
+        chain.add_node(node, pressure=pressure)
+    chain.add_edge(0, 1, conductance=1.0, flow_signed=1.0)
+    chain.add_edge(1, 2, conductance=1.0, flow_signed=1.0)
+    settings = {"inlet_nodes": [0], "outlet_nodes": [2]}
+    assert _flow_residual(chain, settings) == {"interior_nodes": 1, "worst_m3_s": 0.0, "relative": 0.0}
+    chain.edges[1, 2, 0]["conductance"] = 2.0  # pressures no longer balance node 1
+    assert _flow_residual(chain, settings)["relative"] == 1.0
+    unsolved = nx.MultiGraph([(0, 1)])
+    assert _flow_residual(unsolved, settings) is None
+
+
 def test_inputs_need_both_the_tiff_and_the_h5_to_run():
     assert fixtures.input_2a({"seven_vessel": _result(), "bundled_h5": _result()}).status == PASS
     assert fixtures.input_2a({"seven_vessel": _result(), "bundled_h5": _result("failed", error={})}).status == FAIL

@@ -419,6 +419,11 @@ FILES: tuple[OutputFile, ...] = (
         "The settings the run started with, as a config file --config loads. Each setting's "
         "unit is in its help (the comments of a config write_default_config writes).",
     ),
+    OutputFile(
+        "{stem}_citations.txt", _RUN,
+        "Plain text: the publications behind the methods this run used, by section, to cite "
+        "in a methods section (pipeline/citations.py). Written when export_citations is on.",
+    ),
     # -- perturbations -------------------------------------------------------
     OutputFile(
         "{name}_summary.csv", _PERTURBATION,

@@ -70,6 +70,51 @@ def _graph_summary(graph) -> dict:
     }
 
 
+def _flow_residual(graph, settings: dict) -> dict | None:
+    """Kirchhoff's law at every node the solve imposed no pressure on: the
+    worst net flow, as a share of the largest flow (``flow.6b``). None
+    without a solve."""
+    import math
+
+    from haemolynx.haemodynamics import flow_conservation_residuals
+    from haemolynx.haemodynamics.open_ends import OpenEndConditions
+
+    flows = [
+        abs(float(data["flow_signed"])) for _u, _v, data in graph.edges(data=True)
+        if data.get("flow_signed") is not None and math.isfinite(float(data["flow_signed"]))
+    ]
+    if not flows or max(flows) == 0.0:
+        return None
+    boundary = set(settings.get("inlet_nodes") or ()) | set(settings.get("outlet_nodes") or ())
+    boundary |= set(OpenEndConditions.from_record(graph.graph.get("open_end_conditions")).nodes)
+    residuals = flow_conservation_residuals(graph, boundary_nodes=boundary)
+    worst = max((abs(value) for value in residuals.values()), default=0.0)
+    return {"interior_nodes": len(residuals), "worst_m3_s": worst, "relative": worst / max(flows)}
+
+
+def _lumen_artefacts(output: Path, mask) -> dict:
+    """``graph.diagnose_lumen_artefacts`` on the run's saved graph against
+    its segmented image (``graph.6a``): the one-line summary and the counts."""
+    import pickle
+
+    from haemolynx.graph.diagnostics import diagnose_lumen_artefacts, format_lumen_artefacts_report
+
+    saved = sorted(output.glob("*_graph.pkl"))
+    if not saved or mask is None:
+        return {"error": "no saved graph" if not saved else "no segmented image"}
+    with saved[0].open("rb") as handle:
+        graph = pickle.load(handle)
+    report = diagnose_lumen_artefacts(
+        graph, mask, voxel_size_zyx=tuple(graph.graph.get("voxel_size", (1.0, 1.0, 1.0))),
+    )
+    counts = {
+        key: value for key, value in report.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+    counts["dead_end_counts"] = report.get("dead_end_counts")
+    return {"text": format_lumen_artefacts_report(report), "counts": counts}
+
+
 def _settings_reload(output: Path, before: dict, schema) -> bool | None:
     """Whether the run's settings file loads back to the settings it ran
     with (``repro.2a``); None when it wrote none."""
@@ -126,10 +171,17 @@ def main(spec_path: str) -> int:
         "error": None,
     }
     before = copy.deepcopy(settings)
+    # The skeletonised volume, for the lumen-artefact report's mask.
+    produced = {}
+
+    def keep(stage, output_object):
+        if stage == "skeletonise" and spec.get("lumen_report"):
+            produced[stage] = output_object
+
     started = time.perf_counter()
     graph = None
     try:
-        graph = run_pipeline_stages(settings, SCHEMA, stop_after=spec.get("stop_after"))
+        graph = run_pipeline_stages(settings, SCHEMA, on_stage_output=keep, stop_after=spec.get("stop_after"))
     except BaseException as error:  # noqa: BLE001 - recorded, not hidden
         result["status"] = "failed"
         result["error"] = {
@@ -149,8 +201,15 @@ def main(spec_path: str) -> int:
             pickle.dump(graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
     try:
         result["graph"] = _graph_summary(graph)
+        if graph is not None:
+            result["graph"]["flow_residual"] = _flow_residual(graph, settings)
     except Exception as error:  # noqa: BLE001
         result["graph"] = {"error": f"{type(error).__name__}: {error}"}
+    if spec.get("lumen_report"):
+        try:
+            result["lumen_artefacts"] = _lumen_artefacts(output, getattr(produced.get("skeletonise"), "image", None))
+        except Exception as error:  # noqa: BLE001
+            result["lumen_artefacts"] = {"error": f"{type(error).__name__}: {error}"}
     (output / "result.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     return 0
 
