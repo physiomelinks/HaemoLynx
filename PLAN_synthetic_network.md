@@ -376,7 +376,7 @@ through a private index, and do not edit `src/` while a long test run is in flig
 - Loading a 100 MB template in preflight stalls the GUI thread for a few seconds the first time; the
   memoised loader keeps it to once per template.
 
-## Status (2026-10-24: done; the panel check is Harvey's)
+## Status (2026-10-25: done; Harvey's panel check passed)
 
 Implemented 2026-10-18 (`bb831907`, merged `d098de1f`). Since:
 
@@ -570,7 +570,7 @@ Harvey's results (2026-10-24, the panel on `43bdcb41`, the E14.5 template above)
 - **The saved synthetic run is refused as a template**: "FAILED: synthetic_template_path: The
   template run is itself a synthetic network: choose the microscopy-image run it was generated
   from."
-- Not yet reported: the Voronoi bed (optional).
+- **The Voronoi bed runs** (`synthetic_bed_model=voronoi`, 2026-10-25). Every check of item 6 passed.
 
 **Before the decisions** (the options as they were put to Harvey):
 
