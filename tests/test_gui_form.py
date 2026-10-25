@@ -914,6 +914,8 @@ def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
     assert shown == {
         "statistics", "measurement_3d_to_cell_mask", "measure_tissue_volume",
         "statistics_network_analysis", *_STATISTICS_MEASURE_CHILDREN,
+        # The flow rows' image-face margin (PLAN_dead_ends.md Phase 7).
+        "statistics_flow_face_margin_um",
     }
     # statistics_network_analysis itself shows (nested one level under
     # statistics), but its own children stay hidden until it is on too --
