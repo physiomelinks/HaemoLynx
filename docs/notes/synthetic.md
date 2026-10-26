@@ -301,3 +301,10 @@ plane (the bend's second, perpendicular wave off: `generate.TREE_CROSS_WAVE`). E
 seeds 1-3: median vessel at 10 um 27-28 (26.8), mean turn 27 (29.3), at 2 um 85 (88); spread across
 vessels p25-p75 about 21-34 (19.7-36.2). Generation 6-8 s, from 3-4. Grid D1g (template #9;
 Voronoi 71-76, Delaunay 71-75; key `outputs/synthetic_review/grid_d1g_key.csv`) sent to Harvey.
+
+Grid D1g (Harvey, 2026-10-26): "These all look good now" -- every drawn network, six Voronoi and
+five Delaunay, taken for the tissue beside the template. The plan's verification 2 (drawn networks
+taken for the tissue as often as the template's own render) is met. What is still open: the holes
+(7-11% of the box beyond 50 um of a vessel against E14.5's 0.5%, measured but not drawn to), and
+verification 3, a second tissue as the template, which waits on a run with arteriole/venule masks
+or hand-picked boundaries.
