@@ -170,28 +170,32 @@ def test_the_range_of_the_flow_can_be_read_and_set(run_in_a_viewer):
 def test_the_drawn_flow_is_the_graphs_flow(run_in_a_viewer):
     """Present and colourable is not the same as right.
 
-    Each vessel is drawn as several segments, so its value is repeated across
-    them; check the set of values on the layer against the set on the graph.
-    The layer blanks only flows that are no answer at all
-    (``graph.flow_is_undefined``: no inlet and outlet reach them); a vessel
-    behind a dead end keeps its zero flow (PLAN_dead_ends.md, D4).
+    Each vessel is drawn as several segments, each row naming its vessel by
+    its place in the graph's edge order (``edge_index``). Every row shows its
+    own vessel's flow where the solve reached that vessel, and is blank where
+    it did not (``FLOW_SOLVED`` False): a piece no inlet and outlet reach, and
+    -- since PLAN_dead_ends.md's decision D4 (Harvey, 2026-10-15) -- a vessel
+    behind a dead end too, which the viewer draws grey while the exports keep
+    its 0 (``graph.flow_is_undefined``).
     """
-    from haemolynx.graph import flow_is_undefined
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE
 
     viewer, _results, graph, _stages, _failures = run_in_a_viewer
-    drawn = np.asarray(viewer.layers[VESSELS].features["flow_abs"], dtype=float)
+    features = viewer.layers[VESSELS].features
+    drawn = np.asarray(features["flow_abs"], dtype=float)
+    rows = np.asarray(features["edge_index"], dtype=int)
 
-    edges = (graph.edges(keys=True, data=True) if graph.is_multigraph()
-             else ((u, v, 0, d) for u, v, d in graph.edges(data=True)))
-    from_graph = np.array(
-        [
-            float(d["flow_abs"])
-            for *_ids, d in edges
-            if d.get("flow_abs") is not None and not flow_is_undefined(d)
-        ]
-    )
+    edges = list(graph.edges(keys=True, data=True) if graph.is_multigraph()
+                 else ((u, v, 0, d) for u, v, d in graph.edges(data=True)))
+    expected = np.array([
+        float(edges[i][3]["flow_abs"]) if edges[i][3].get(FLOW_SOLVED) is not False else np.nan
+        for i in rows
+    ])
 
-    assert len(from_graph) > 0
-    assert np.allclose(
-        np.unique(drawn[np.isfinite(drawn)]), np.unique(from_graph), rtol=1e-12
-    )
+    assert np.isfinite(expected).any(), "no vessel carries a solved flow; the test proves nothing"
+    assert np.array_equal(np.isnan(drawn), np.isnan(expected))
+    assert np.allclose(drawn[np.isfinite(drawn)], expected[np.isfinite(expected)], rtol=1e-12)
+    behind = [i for i in set(rows.tolist()) if edges[i][3].get(FLOW_STATE) == "blind_end"]
+    assert behind, "the fixture has no vessel behind a dead end; the D4 half proves nothing"
+    assert all(np.isnan(drawn[rows == i]).all() for i in behind)
+    assert all(edges[i][3]["flow_abs"] == 0.0 for i in behind)  # the graph and exports keep the 0
