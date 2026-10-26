@@ -1,18 +1,58 @@
-# Cleanup plan: the full checklist as it stood
+# Cleanup plan: finished
 
-Moved out of CLAUDE.md on 2026-10-22; CLAUDE.md keeps only the items still open.
+Moved out of CLAUDE.md on 2026-10-22. **Finished on 2026-10-26**, and CLAUDE.md's Cleanup plan
+section is deleted (`57d8a244`). Nothing here is open: the checklist below is kept as it stood,
+every item ticked, as the record of what was done.
 
+- The last item, Phase 4's README note on the preset system, landed in `e6f4f16c` ("Settings and
+  presets": schema declarations, the panel's and the examples' presets, and the order the layers
+  override in, held to `settings_from_command_line` by
+  `tests/test_pipeline_presets.py::test_each_layer_overrides_the_one_before_as_the_readme_says`).
+- CLAUDE.md's Repository layout was checked against the tree in `57d8a244`: the three Phase 2 names
+  were already current and no misnomer caveat was left, but nine modules were missing from it
+  (`io/channels`, `preprocessing/shared_volume_tasks`, `graph/doubled_stretches` and
+  `connectivity`, `visualization/connectivity_map`, and synthetic's `draft`, `organisation`,
+  `average` and `batch_template`), as were the marked-grid builders under `scripts/`, the release
+  review's scorer, `docs/` and the tutorials' READMEs. Every path CLAUDE.md cites exists.
 
-> **Status:** partly implemented — Phases 0, 1 and 3 are done, Phase 4 nearly (only the README
-> note is left), Phase 2 one rename of four. This is a living checklist. Tick items as PRs land, and
-> **remove this entire section** when every phase is done. Until then, treat the descriptions above
-> as the *current* state and the items below as the *target* state.
+### The final run
+
+The whole suite at `57ea2c56` (9,204 tests collected): origin's `6d5c1bb1` with this plan's
+README and CLAUDE.md commits on top, before they were rebased and pushed as `e6f4f16c` and
+`57d8a244`. Run on Windows with peer sessions busy, from a detached worktree of that commit so
+no edit could land mid-run:
+
+| Part | Selection | Result | Time |
+|------|-----------|--------|------|
+| Fast | `-m "not slow and not integration and not gui" -n 5` | 7,974 passed, 17 skipped | 15 min 3 s |
+| Slow and integration | `-m "(slow or integration) and not gui" -n 4` | 399 passed, 1 skipped, 2 xfailed, 2 failed (load) | 17 min 34 s |
+| GUI | `-m gui -n 3`, on the real display | 807 passed, 1 xfailed, 1 failed (stale test) | 2 h 12 min |
+| Tutorial | `tests/integration/test_pipeline_tutorial.py` (in the slow part) | 2 passed: the notebook exports and runs (107 s), and runs without the repository (28 s) | 2 min 16 s |
+
+None of the three failures comes from the cleanup:
+
+- `test_gui_vessel_tubes.py::test_a_network_of_junctions_builds_fast` and
+  `::test_many_separate_vessels_build_fast` are wall-clock limits (10 s and 5 s; they took
+  15.5 s and 9.2 s with four workers and peer pipelines on the CPU). Run alone at the same commit
+  both pass, the two in 21.8 s. `gui/vessel_tubes.py` last changed on 2026-10-15.
+- `test_flow_reaches_the_viewer.py::test_the_drawn_flow_is_the_graphs_flow` fails alone too.
+  Bisected to `10c69230` (2026-10-15, decision D4 of `PLAN_dead_ends.md`): the viewer has blanked
+  `blind_end` vessels' flows since then, but the test still expects them, as
+  `graph.flow_is_undefined` (the exports' rule) keeps them at 0. The fixture has four. The test,
+  not the code, was out of date: sent to the dead-ends plan's session, which fixed it the same
+  day (`131f7a5c`, the viewer's rule); the file's 6 tests pass on top of it.
+
+The two failures recorded at every Phase 2 rename (`test_no_library_module_prints`,
+`test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset`) pass here.
+
+> **Status (as it stood before 2026-10-26):** partly implemented — Phases 0, 1 and 3 are done,
+> Phase 4 nearly (only the README note is left), Phase 2 one rename of four. This is a living
+> checklist. Tick items as PRs land, and **remove this entire section** when every phase is done.
 >
 > **Baseline (Windows):** the suite has grown from 1,188 to **3,794 tests collected under
-> `pytest -m "not slow"`** (4,041 in total, 166 test files) as of 2026-09-25; a fresh full-run pass
-> count has not been recorded since. Record one before starting Phase 2, and re-run it (and the
-> full `pytest`, including `slow`/`integration`) after **every** rename; no phase may reduce the
-> green count. Every behaviour change needs a test (see Testing policy above).
+> `pytest -m "not slow"`** (4,041 in total, 166 test files) as of 2026-09-25. At each Phase 2
+> rename (2026-10-23, from `666cafe8`) the full non-GUI suite gave 7,447 passed and the same two
+> failures; the final run is above.
 
 ### Goals
 Remove duplication, kill dead code, give modules names that match what they do, and make the
@@ -77,7 +117,8 @@ Keep the **public function names** the same so the API surface doesn’t move; o
       `statistics/__init__.py` is gone, replaced by a normal
       `from .three_dim_distances import ...`. `tests/test_3d_distances.py` →
       `tests/test_three_dim_distances.py`.
-- [ ] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
+- [x] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
+      (2026-10-23: one commit each, the full non-GUI suite after each; see the baseline above.)
 
 ### Phase 3 — De-duplicate the whole-brain workflow — **DONE**
 - [x] The stage runner moved to `src/haemolynx/pipeline/` (a package: `schema`, `settings`, `checks`,
@@ -102,13 +143,17 @@ Keep the **public function names** the same so the API surface doesn’t move; o
       `run_perturbations` have files of their own (`tests/test_segment_stage.py`,
       `test_skeletonise_stage.py`, `test_perturbation_stage.py`), and the rest are reached through
       `tests/test_pipeline_invariants.py` and the integration runs.
-- [ ] Add a short “preset system” note to the README (schema declarations → preset dicts → CLI/YAML
-      overrides), since the layering isn’t obvious from filenames. The README does not mention
-      presets at all today.
+- [x] Add a short “preset system” note to the README (schema declarations → preset dicts → CLI/YAML
+      overrides), since the layering isn’t obvious from filenames. (2026-10-26, `e6f4f16c`: the
+      README's "Settings and presets".)
 - [x] ~~Populate `examples/local_presets.py` with one realistic example preset.~~ Dropped: the stub is
       gone, and `examples/pipeline_presets.py` ships nine worked presets validated against the schema.
 
 ### When done
-- [ ] Full `pytest` (incl. `slow`/`integration`) green; tutorial notebook still exports & runs.
-- [ ] Update the **Repository layout** and **Key modules** sections above to the new names, drop the
-      “Note”/misnomer caveats, and **delete this entire Cleanup plan section.**
+- [x] Full `pytest` (incl. `slow`/`integration`) green; tutorial notebook still exports & runs.
+      (2026-10-26 at `57ea2c56`: 9,180 of 9,204 passed and the tutorial exports and runs; the
+      three failures are two load-sensitive timings and one test stale since D4, fixed in
+      `131f7a5c`; none came from the cleanup. See "The final run" above.)
+- [x] Update the **Repository layout** and **Key modules** sections above to the new names, drop the
+      “Note”/misnomer caveats, and **delete this entire Cleanup plan section.** (2026-10-26,
+      `57d8a244`.)

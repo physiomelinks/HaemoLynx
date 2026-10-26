@@ -23,4 +23,4 @@ Add a new measurement history here (or to the matching `PLAN_*.md`), not to CLAU
 | [gui.md](gui.md) | `.haemorun` save timings, layout, Statistics tab, layer sets, vessel tubes |
 | [batch_run.md](batch_run.md) | Batch matching, conditions, paired comparison, sections left out |
 | [synthetic.md](synthetic.md) | Synthetic networks |
-| [cleanup_plan.md](cleanup_plan.md) | The cleanup checklist with its finished phases |
+| [cleanup_plan.md](cleanup_plan.md) | The cleanup plan, finished 2026-10-26: its checklist and the final full-suite run |
