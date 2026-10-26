@@ -34,6 +34,68 @@ def test_the_datasets_file_resolves_paths_and_fills_in_crops(tmp_path):
     assert full.load_datasets(tmp_path / "absent.yaml") == {}
 
 
+#: E14.5's stumps (whole-stack masks at 340e8518): the arteriole leaves by
+#: the far x face, the venule by the near one in five places.
+E14_STUMPS = [
+    {"axis": "x", "face_index": 511, "min_zyx": [6, 180, 511], "max_zyx": [26, 203, 511]},
+    {"axis": "x", "face_index": 0, "min_zyx": [4, 255, 0], "max_zyx": [29, 315, 0]},
+    {"axis": "x", "face_index": 0, "min_zyx": [16, 190, 0], "max_zyx": [27, 233, 0]},
+    {"axis": "x", "face_index": 0, "min_zyx": [18, 101, 0], "max_zyx": [25, 109, 0]},
+    {"axis": "x", "face_index": 0, "min_zyx": [17, 158, 0], "max_zyx": [25, 168, 0]},
+    {"axis": "x", "face_index": 0, "min_zyx": [0, 319, 0], "max_zyx": [26, 352, 0]},
+]
+
+
+@pytest.mark.parametrize("fraction", [0.125, 0.25, 0.5])
+def test_a_stump_keeping_crop_holds_every_stump_on_its_own_face(fraction):
+    shape = (287, 512, 512)
+    box = full.stump_keeping_box(shape, fraction, E14_STUMPS)
+    (z0, y0, x0), (z1, y1, x1) = box
+    assert (x0, x1) == (0, 511)  # stumps on both x faces: x kept whole
+    for stump in E14_STUMPS:
+        for axis in range(3):
+            assert box[0][axis] <= stump["min_zyx"][axis] - (axis != 2) * 4 or stump["min_zyx"][axis] < 4
+            assert stump["max_zyx"][axis] + (axis != 2) * 4 <= box[1][axis]
+    assert full.box_voxels(box) / (287 * 512 * 512) == pytest.approx(fraction, rel=0.02)
+
+
+def test_stump_keeping_boxes_flush_with_a_face_and_refuse_what_cannot_fit():
+    one_face = [{"axis": "z", "face_index": 99, "min_zyx": [99, 40, 40], "max_zyx": [99, 50, 50]}]
+    (z0, y0, x0), (z1, y1, x1) = full.stump_keeping_box((100, 100, 100), 0.125, one_face)
+    assert z1 == 99 and z1 - z0 + 1 == 50  # flush with z = 99, the rest cut by one factor
+    assert y0 <= 36 and y1 >= 54 and x0 <= 36 and x1 >= 54
+    spread = [  # both x faces, each across the whole face: only the whole volume keeps them
+        {"axis": "x", "face_index": 0, "min_zyx": [0, 0, 0], "max_zyx": [99, 99, 0]},
+        {"axis": "x", "face_index": 99, "min_zyx": [0, 0, 99], "max_zyx": [99, 99, 99]},
+    ]
+    with pytest.raises(ValueError, match="need"):
+        full.stump_keeping_box((100, 100, 100), 0.125, spread)
+
+
+def test_a_crop_box_becomes_coordinate_settings_and_its_voxel_count(tmp_path):
+    box = [[0, 98, 0], [70, 357, 511]]
+    assert full.crop_box_settings(box) == {
+        "crop_on_import": True, "crop_method": "coordinates",
+        "crop_start_xyz": [0, 98, 0], "crop_end_xyz": [511, 357, 70],
+    }
+    assert full.box_voxels(box) == 71 * 260 * 512
+    (tmp_path / "datasets.yaml").write_text(yaml.safe_dump({
+        "e14p5": {"settings": {"input_path": "e14.tif"}, "shape_zyx": [287, 512, 512]},
+        "e14p5_eighth": {"of": "e14p5", "crop_fraction": 0.125, "crop_box_zyx": box},
+    }))
+    eighth = full.load_datasets(tmp_path / "datasets.yaml")["e14p5_eighth"]
+    assert eighth["settings"]["crop_method"] == "coordinates" and eighth["voxels"] == 71 * 260 * 512
+
+
+def test_the_crop_entries_name_each_box_and_its_share():
+    from release_review import crop_boxes
+
+    text = crop_boxes.entries("e14p5", (287, 512, 512), E14_STUMPS)
+    lines = text.splitlines()
+    assert [line.split(":")[0] for line in lines] == ["e14p5_eighth", "e14p5_quarter", "e14p5_half"]
+    assert "crop_box_zyx: [[0," in lines[0] and "# 0.12" in lines[0]
+
+
 def test_a_crop_keeps_the_fraction_of_the_volume():
     for fraction in (0.125, 0.25, 0.5):
         assert full.cropped_voxels((287, 512, 512), fraction) / (287 * 512 * 512) == pytest.approx(fraction, rel=0.02)

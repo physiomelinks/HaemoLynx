@@ -12,8 +12,13 @@ checkout's ``release_review_datasets.yaml`` (git-ignored, as every root
     e14p5_eighth:                  # the same, cut to an eighth (speed.10a)
       of: e14p5
       crop_fraction: 0.125
+      crop_box_zyx: [[0, 98, 0], [70, 357, 511]]   # optional: this box, not a centred one
 
-A ``*_path`` setting given relative is read from that folder too. A dataset
+A crop given only its fraction is a centred box. One given ``crop_box_zyx``
+(first and last voxel kept, ``(z, y, x)``) is that box: ``crop_boxes.py``
+places it to keep every large-vessel stump of the whole stack, so the crop's
+boundaries are found as the whole stack's are. A ``*_path`` setting given
+relative is read from that folder too. A dataset
 whose input is missing is reported as not on this machine, never run on a
 stand-in.
 """
@@ -54,13 +59,17 @@ def load_datasets(path: Path) -> dict[str, dict[str, Any]]:
         entry = dict(entry or {})
         parent = raw.get(entry.get("of")) if entry.get("of") else None
         if parent is not None:
-            fraction = float(entry["crop_fraction"])
-            shape = parent["shape_zyx"]
+            box = entry.get("crop_box_zyx")
+            if box:
+                crop, voxels = crop_box_settings(box), box_voxels(box)
+            else:
+                fraction = float(entry["crop_fraction"])
+                crop, voxels = crop_settings(parent["shape_zyx"], fraction), cropped_voxels(parent["shape_zyx"], fraction)
             entry = {
                 **{key: value for key, value in parent.items() if key not in ("shape_zyx", "voxels")},
                 **entry,
-                "settings": {**(parent.get("settings") or {}), **crop_settings(shape, fraction), **(entry.get("settings") or {})},
-                "voxels": cropped_voxels(shape, fraction),
+                "settings": {**(parent.get("settings") or {}), **crop, **(entry.get("settings") or {})},
+                "voxels": voxels,
             }
         elif entry.get("shape_zyx") and not entry.get("voxels"):
             shape = entry["shape_zyx"]
@@ -93,6 +102,101 @@ def crop_settings(shape_zyx: Sequence[int], fraction: float) -> dict[str, Any]:
         "crop_on_import": True, "crop_method": "size", "crop_size_xyz": crop_size_xyz(shape_zyx, fraction),
         "crop_location": "centre", "crop_z_location": "centre",
     }
+
+
+def crop_box_settings(box_zyx: Sequence[Sequence[int]]) -> dict[str, Any]:
+    """``crop_on_import`` by coordinates for a box given as its first and
+    last kept voxel, ``(z, y, x)``; the settings take ``(x, y, z)``."""
+    (z0, y0, x0), (z1, y1, x1) = (tuple(int(v) for v in corner) for corner in box_zyx)
+    return {
+        "crop_on_import": True, "crop_method": "coordinates",
+        "crop_start_xyz": [x0, y0, z0], "crop_end_xyz": [x1, y1, z1],
+    }
+
+
+def box_voxels(box_zyx: Sequence[Sequence[int]]) -> int:
+    start, end = box_zyx
+    count = 1
+    for low, high in zip(start, end):
+        count *= int(high) - int(low) + 1
+    return count
+
+
+#: How far round a stump's footprint a crop keeps the mask, in voxels.
+STUMP_MARGIN_VOXELS = 4
+
+
+def stump_keeping_box(
+    shape_zyx: Sequence[int],
+    fraction: float,
+    stumps: Sequence[Mapping[str, Any]],
+    margin: int = STUMP_MARGIN_VOXELS,
+) -> list[list[int]]:
+    """A box holding about *fraction* of the volume that keeps every stump
+    where it is: on each stump's face, with its whole footprint and *margin*
+    voxels round it inside the box. An axis with stumps on both its faces is
+    kept whole; one with stumps on one face is flush with it; the box is
+    centred on the stumps along the rest. Those axes are cut by one common
+    factor, as far as the stumps allow. Each stump is ``{"axis": "z"|"y"|"x",
+    "face_index", "min_zyx", "max_zyx"}``, its footprint's voxel extent.
+    Raises ValueError when no box of that size keeps them all."""
+    shape = [int(side) for side in shape_zyx]
+    if not stumps:
+        raise ValueError("no stumps to keep")
+    faces: list[set[int]] = [set(), set(), set()]
+    for stump in stumps:
+        axis = "zyx".index(stump["axis"]) if isinstance(stump["axis"], str) else int(stump["axis"])
+        faces[axis].add(int(stump["face_index"]))
+    low = [max(0, min(int(s["min_zyx"][a]) for s in stumps) - margin) for a in range(3)]
+    high = [min(shape[a] - 1, max(int(s["max_zyx"][a]) for s in stumps) + margin) for a in range(3)]
+    whole = [{0, shape[a] - 1} <= faces[a] for a in range(3)]
+    needed = []
+    for a in range(3):
+        if whole[a]:
+            needed.append(shape[a])
+        elif 0 in faces[a]:
+            needed.append(high[a] + 1)
+        elif shape[a] - 1 in faces[a]:
+            needed.append(shape[a] - low[a])
+        else:
+            needed.append(high[a] - low[a] + 1)
+    goal = float(fraction) * shape[0] * shape[1] * shape[2]
+
+    def sides(factor: float) -> list[float]:
+        return [shape[a] if whole[a] else min(shape[a], max(needed[a], factor * shape[a])) for a in range(3)]
+
+    def volume(factor: float) -> float:
+        return sides(factor)[0] * sides(factor)[1] * sides(factor)[2]
+
+    if volume(0.0) > goal * 1.02:
+        raise ValueError(
+            f"the stumps need {volume(0.0) / (shape[0] * shape[1] * shape[2]):.1%} of the volume, "
+            f"more than {fraction:.1%}"
+        )
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        middle = (lo + hi) / 2.0
+        if volume(middle) < goal:
+            lo = middle
+        else:
+            hi = middle
+    size = [int(round(side)) for side in sides(hi)]
+    box = [[0, 0, 0], [0, 0, 0]]
+    for a in range(3):
+        if whole[a]:
+            start = 0
+        elif 0 in faces[a]:
+            start = 0
+        elif shape[a] - 1 in faces[a]:
+            start = shape[a] - size[a]
+        else:
+            # The spare room split either side of the stumps' extent.
+            start = low[a] - (size[a] - (high[a] - low[a] + 1)) // 2
+            start = min(max(start, 0), shape[a] - size[a])
+        box[0][a], box[1][a] = start, start + size[a] - 1
+        if not (box[0][a] <= low[a] and high[a] <= box[1][a]):
+            raise ValueError(f"the box along {'zyx'[a]} does not hold the stumps")
+    return box
 
 
 def config_path(dataset: Mapping[str, Any]) -> Optional[Path]:
