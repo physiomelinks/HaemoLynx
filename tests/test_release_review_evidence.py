@@ -57,6 +57,12 @@ def test_the_audit_finds_missing_files_and_lines_past_the_end(tmp_path):
     }
 
 
+def test_a_bare_name_is_found_at_the_root_too(tmp_path):
+    tree = _tree(tmp_path)
+    (tree.root / "hang_debug.py").write_text("x = 1\n")
+    assert evidence.audit([("code.6c", "`hang_debug.py` at the root")], tree, check_outputs=True) == []
+
+
 def test_outputs_go_unchecked_where_there_are_none(tmp_path):
     """In CI the git-ignored outputs do not exist; their absence proves nothing."""
     findings = evidence.audit([("flow.2a", "`outputs/p6/x.json`")], _tree(tmp_path), check_outputs=False)
