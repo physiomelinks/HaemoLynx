@@ -260,8 +260,8 @@ tolerance of the tree read as thick centreline, 22 of 30 against 18; next, a bri
 thick vessel's axis (|cos| at most 0.16) read as not to be connected, 21 of 30 against 18. Neither
 was fixed beforehand, and neither is near 90%. No rule is built and
 `thick_bridge_centreline_tolerance_um` stays at 1.5 um. The largest group is what should not be
-connected at all, 25 of the 60: that is graph near the thick vessels the clean-up leaves, not a
-bridge's shape, and no measure here finds it. The grid's bridges are those of
+connected at all, 25 of the 60: that is graph near the thick vessels, not a bridge's shape (12 of
+the 25 drawn by the thin-arm join, below), and no measure here finds it. The grid's bridges are those of
 `47edef60`, before the taper rule was dropped, the wall join's reach raised to 15 um and equal
 forks left unbridged (above): its forks, IDs 4 and 28, and any taper among its near-misses are
 judged as that commit made them.
@@ -303,3 +303,47 @@ three outlets; the solve's resistance follows the inlet, so it cannot be compare
 two runs. A small change of the thick body choosing another stump is worth a look in
 `graph/large_vessel_network.py`.
 
+## Where the connections that should not exist come from (2026-10-26)
+
+The Phase 5 grid's 25 N cases ("should not be connected at all"), traced on E14.5 (Harvey's
+Claudin segmentation, `config.yaml`) built again at `26ba5ab1`: all 25 are still there, 12 as
+bridges and 13 as near-misses. `scripts/thick_bridge_review/capture_steps.py` runs to
+`build_network` keeping the skeleton before and after the thin-arm join, the graph after every
+topology step and every step after them, and the graph the split was handed (E14.5: 660 s, about
+5 GB). `connection_steps.py` looks for each case's course (a near-miss's piece; for a bridge, its
+vessel's way from the region's edge to the centreline in the graph the split was handed) in every
+step's graph, and puts it down to the first step of the last unbroken run that has it; where the
+skeleton's own graph has it, to the skeleton step whose output first joins its two ends. What made
+each (voxel z, y, x; b bridge, n near-miss):
+
+| step | cases | IDs |
+|---|---|---|
+| thin-arm join (`_join_thin_arms_to_fat_ridge`) | 12 | b 13 (15, 284, 360), 18 (26, 162, 1), 22 (13, 269, 396), 35 (11, 370, 502), 39 (10, 279, 236), 41 (6, 136, 163), 52 (25, 253, 467), 56 (15, 246, 411); n 25 (10, 227, 190), 34 (7, 428, 269), 53 (29, 87, 102), 55 (7, 67, 186) |
+| skeleton clean-up (gap filling, closing, bundles, thinned again) | 5 | b 24 (22, 470, 78), 54 (15, 339, 450); n 5 (8, 261, 378), 31 (12, 78, 154), 57 (4, 421, 333) |
+| mask recovery | 2 | b 26 (20, 253, 482), the wall join's mark on it too; n 48 (28, 236, 497) |
+| the tree itself | 2 | b 4 (6, 309, 85), a fork bridge; n 23 (3, 367, 286) |
+| lumen clean-up | 2 | n 8 (20, 278, 415), at the end of graph building; n 43 (17, 337, 116), taken out by it and drawn again after the split |
+| Lee on the thin catchment | 1 | n 42 (19, 384, 123) |
+| the split's end extension | 1 | n 11 (28, 58, 153) |
+
+The clean-up thins the whole skeleton again (25,549 voxels added, 28,980 taken on E14.5), moving a
+join's path two or three voxels, so a skeleton step is judged by whether its skeleton joins the
+course's ends within 3 um, not by covering it. **The join is the largest group, and it is also how
+every other vessel meets a thick one.** It gives each thin skeleton component one path to the
+ridge, from the component's voxel nearest it; Lee stops 3 um short of the region, and 90 of
+E14.5's 212 paths start on a one-voxel arm that cut leaves (47 of the 212 are still a connection
+in the saved graph). Of all 60 Phase 5 cases the join made 32: N 12, C 12, B 6, V 2. Of today's 77
+bridges it made 49 (the split 12, the skeleton clean-up 6, the tree 4, other steps 6). **No measure
+is worth a grid.** On those 32 (all one way 20/32): the arm's direction against the path
+(`join_paths.py`'s `approach_cos`) is undefined on 19, the arm being one voxel, and where defined
+spans N 0.03-0.90 and C 0.14-0.94; a path from a one-voxel arm read as real 22/32; a connection
+that is the only link to what lies beyond it, read as N, 22/32; the claudin-5 wall along the way in
+(`RawEvidenceEndothelial.wall_between`) is under 0.07 on 10 of 12 N and 16 of 20 others read from
+the region's edge, and read from 6 um out along the joined vessel peaks (over 1) on 2 of 10 N
+against 8 of 16 others, the wrong way. Of the grid's 30 bridges only 2 leave the side of a vessel
+running on past them (13, N; 7, C); the other 28 end their vessel. None gains more than 2 of 32
+over marking all one way (`FIT.md`'s measures, on all 60, at most 4 of 30 under leave-one-out), so
+no grid was built and nothing in the build changed. The 12 C the join made say where
+the tree misses the thick vessel's own centreline: the region-coverage track would change what the
+join is asked to connect. Harness and traces: `outputs/nc/` in worktree `angry-chandrasekhar-eb21c0`
+(git-ignored; `trace_N/TRACE.md`, `trace_bridges/`, `joins/`).
