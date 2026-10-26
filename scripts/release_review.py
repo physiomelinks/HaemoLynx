@@ -25,6 +25,9 @@ The full tier too (the reference datasets named in the main checkout's
 
     python scripts/release_review.py --full --datasets e14p5
 
+``--no-fixtures`` leaves the fixture tier out of a full-tier run, to time one
+more dataset at a commit already scored.
+
 CI scores its own clean checkout's quick tier and adds the table to the job
 summary::
 
@@ -59,6 +62,10 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     parser.add_argument("--commit", default="HEAD", help="the commit to score (default HEAD)")
     parser.add_argument("--fixtures", action="store_true", help="run the fixture tier too")
     parser.add_argument("--full", action="store_true", help="run the fixture and full tiers too")
+    parser.add_argument(
+        "--no-fixtures", action="store_true",
+        help="with --full, leave the fixture tier out (the fixtures' tables then come from benchmarks.csv)",
+    )
     parser.add_argument("--tree", type=Path, help="measure this checkout as it is, not a git archive")
     parser.add_argument("--out", type=Path, help="report root (default: the main checkout's outputs/release_review)")
     parser.add_argument("--coverage-xml", type=Path, help="a coverage.xml to read tests.6a from")
@@ -68,13 +75,20 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv=None) -> int:
-    arguments = parse_arguments(argv)
+def tiers_for(arguments: argparse.Namespace) -> list[str]:
+    """The tiers a command line asks for: the quick tier always, the fixture
+    tier with --fixtures or --full (unless --no-fixtures), the full with --full."""
     tiers = [QUICK]
-    if arguments.fixtures or arguments.full:
+    if arguments.fixtures or (arguments.full and not arguments.no_fixtures):
         tiers.append(FIXTURES)
     if arguments.full:
         tiers.append(FULL)
+    return tiers
+
+
+def main(argv=None) -> int:
+    arguments = parse_arguments(argv)
+    tiers = tiers_for(arguments)
     repo = Path(arguments.tree or Path.cwd()).resolve()
     folder, card = runner.score(
         repo=repo,

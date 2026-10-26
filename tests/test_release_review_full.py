@@ -222,3 +222,20 @@ def test_the_latest_earlier_scorecard_is_found(tmp_path):
         (tmp_path / name / "scorecard.json").write_text(json.dumps({"commit": name}))
     assert report.latest_previous(tmp_path, tmp_path / "2026-10-25_ccc")["commit"] == "2026-10-24_bbb"
     assert report.latest_previous(tmp_path / "nothing", tmp_path) is None
+
+
+def test_the_command_line_picks_its_tiers():
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "release_review.py"
+    spec = importlib.util.spec_from_file_location("release_review_command", path)
+    command = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(command)
+
+    def tiers(*argv):
+        return command.tiers_for(command.parse_arguments(list(argv)))
+
+    assert tiers() == ["quick"]
+    assert tiers("--fixtures") == ["quick", "fixtures"]
+    assert tiers("--full") == ["quick", "fixtures", "full"]
+    assert tiers("--full", "--no-fixtures") == ["quick", "full"]
