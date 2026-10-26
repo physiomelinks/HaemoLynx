@@ -318,6 +318,20 @@ threshold reaches 90%: 5-8 um gets 45/55, the rule's 10 um 43/55, all V 29/55. L
 (inside one lumen by the mask) are the part the hole cannot reach: 17 pieces, 5 of them V. The
 rule is unchanged; what it leaves is the review list's.
 
+Grid O (sent 2026-10-26, unmarked): segmentation no skeleton crosses. On E14.5 at `6d5c1bb1`
+(Harvey's Claudin segmentation) the mask no centreline of the skeleton covers by mask recovery's
+own rule (the skeleton as graph building's first step makes it: 1.02 M voxels in 12,004 pieces)
+leaves 723 pieces of at least 200 um^3 whose widest point lies within 2 r + 3 um of the skeleton
+and that are under half in the thick region (174 on the surface). They are lumps more than
+sheets on this segmentation (inscribed radius 2.4-8 um, width 1-2 times thickness, far edge 7-18
+um from the centreline beside them), and plain Lee draws through few of them. 30 cases (24
+surface, 6 deep), spread over the dextran ridges across them (0, 1, 2: 121 / 367 / 206 of the
+pool) and width over thickness, shuffled; each drawn in its own plane, segmentation beside
+dextran. Question: V a vessel the skeleton misses, X one wide vessel and the centreline is enough
+(`outputs/sc/build_grid_o.py`, `O_key.csv`, `O_pool.csv`, scorer `fit_o.py`, worktree
+`quirky-goodall-bbcb6f`; page https://claude.ai/artifact/5JV79DThQbhZ2ZkAo2N4Qn, marks in
+`annotations`). Grids UR1/UR2 asked the same of the mask the *graph* misses and found no measure.
+
 ## graph/smoothing.py
 
 **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each

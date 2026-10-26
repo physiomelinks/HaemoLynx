@@ -265,3 +265,41 @@ bridge's shape, and no measure here finds it. The grid's bridges are those of
 `47edef60`, before the taper rule was dropped, the wall join's reach raised to 15 um and equal
 forks left unbridged (above): its forks, IDs 4 and 28, and any taper among its near-misses are
 judged as that commit made them.
+
+## Decision D2: the large masks as the thick body, gated by radius (2026-10-26)
+
+`PLAN_surface_coverage.md` D2: with `skeleton_thick_vessel_restrict_to_mask: large` every segmented
+voxel inside the large-vessel masks is the thick body, so a capillary inside or within the wall
+of a large mask gets no Lee centreline. D2's alternative, the body as large mask AND inscribed
+radius (of the hole-filled segmentation) of at least half `skeleton_thick_vessel_min_radius_um`
+(1.5 um on E14.5), measured on E14.5 at origin `6d5c1bb1` (Harvey's Claudin segmentation, the
+main checkout's config, each run to the solve with the restriction swapped for the run; no code
+changed; `outputs/sc/d2/d2_run.py`, `d2_score.py`, `REPORT_D2.md` in worktree
+`quirky-goodall-bbcb6f`):
+
+| | today | D2 |
+|---|---:|---:|
+| large-mask segmentation the gate takes off the body | | 27,169 of 428,964 voxels |
+| large-mask segmentation left outside the thick region | 0 | 207 voxels (wall absorption puts the rest back) |
+| thick region | 878,982 voxels | 870,313 (-1%) |
+| skeleton voxels inside the large masks | 3,460 | 3,542 |
+| plain-Lee centreline the gate drops | 7,462 um | 7,278 um (2,815 inside the large masks, from 2,897) |
+| Harvey's grid P strokes (538 um) with skeleton / graph within 2 um | 49.8 / 39.0% | 49.9 / 37.2% |
+| his missing-vessel drawing (1.73 mm) with skeleton within 2 / graph within 3 um | 30.1 / 35.8% | 31.4 / 37.1% |
+| pairs in one lumen / doubled centreline / dead ends | 17 / 975 um / 206 | 15 / 935 um / 200 |
+| thick-vessel bridges | 77 | 89 |
+| network resistance | 1.93e15 | 2.78e15, not comparable: the inlet moved (below) |
+
+The radius gate takes the narrow edge of the large masks off the body, and the 3 um wall
+absorption grows the body straight back over it: the vessels Harvey drew inside the large masks
+are fused with the large lumen (grid P: median inscribed radius 3.7 um), so a radius floor does
+not separate them, as grid P predicted (1-10% released). D2 gives his drawn vessels no more
+centreline (+0.1 point on grid P's strokes, +1.3 on the drawing) and is not built. Narrower
+large masks remain the other way (retrained ilastik masks, outside this repo).
+
+Found in passing: the 1% change of the thick region moved the arteriole inlet the `mask_stump`
+method picks on the x = 497 um face from y 173 um (node 3984 today) to y 438 um, with the same
+three outlets; the solve's resistance follows the inlet, so it cannot be compared between the
+two runs. A small change of the thick body choosing another stump is worth a look in
+`graph/large_vessel_network.py`.
+
