@@ -731,14 +731,14 @@ def test_a_contact_whose_only_end_is_a_capillary_takes_no_node_when_another_has_
 
 def test_a_mask_whose_only_end_is_a_capillary_still_falls_back_and_warns():
     """With no stump of the mask ending its own vessel, the run would have no
-    inlet: the nearest terminal in the mask is taken, as before, with the
-    warning that says so."""
+    inlet: the nearest end near the contact is taken, with the warning that
+    says so."""
     from haemolynx.graph.boundaries import BoundaryCoordinateWarning
 
     mask, segmentation = _vein_with_a_capillary_in_its_mask()
     G = _vessel_graph({(2, 3): [(15, 27, 1), (15, 27, 60)]})
 
-    with pytest.warns(BoundaryCoordinateWarning, match="nearest terminal inside the mask"):
+    with pytest.warns(BoundaryCoordinateWarning, match="nearest end within"):
         inlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
             G, mask, node_role="inlet", voxel_size_zyx=(1.0, 1.0, 1.0), image_shape=mask.shape,
             coordinates_setting_name="large_arteriole_mask stump", segmentation=segmentation,
@@ -752,14 +752,68 @@ def test_a_stump_with_no_vessel_end_at_its_face_warns_how_far_its_node_is():
     the candidates alone, one node, so every stump lay outside it."""
     from haemolynx.graph.boundaries import BoundaryCoordinateWarning
 
-    mask = np.zeros((20, 20, 120), dtype=bool)
+    mask = np.zeros((20, 40, 120), dtype=bool)
     mask[7:13, 7:13, 0:100] = True
     G = _vessel_graph({
         (0, 1): [(10, 10, 40), (10, 10, 95)],  # inside the mask, nowhere near the face
-        (2, 3): [(10, 19, 0), (10, 19, 30)],  # outside it
+        (2, 3): [(10, 30, 0), (10, 30, 30)],  # outside it, 18 um from the contact across the face
     })
 
     with pytest.warns(BoundaryCoordinateWarning, match=r"x=0 face .* node 0, 40\.\d um away"):
         inlets = _stump_inlets(G, mask)
 
-    assert inlets == [0], "the nearest terminal inside the mask, as before"
+    assert inlets == [0], "no end near the contact: the nearest terminal inside the mask, as before"
+
+
+# --- only ends near the contact -----------------------------------------------------
+
+
+def _arteriole_ending_just_outside_its_mask(own_end_y):
+    """A large vessel 6 x 6 um from the x = 0 face, its mask's one contact at
+    y 7-12, and its own end at *own_end_y* on the face, its vessel running
+    little of its first 50 um within 6 um of the mask (it fails the
+    run-along test); another vessel runs along the mask from the face at y
+    150, the component reaching it along the face."""
+    mask = np.zeros((20, 170, 120), dtype=bool)
+    mask[7:13, 7:13, 0:100] = True  # the vessel's contact on x = 0
+    mask[7:13, 7:160, 80:86] = True  # its mask runs along y, deep in the stack ...
+    mask[7:13, 147:153, 3:86] = True  # ... and back to within 3 um of the face at y 150
+    G = _vessel_graph({
+        (0, 1): [(10, own_end_y, 0), (10, own_end_y + 25, 0), (10, own_end_y + 25, 40), (10, 10, 60)],
+        (2, 3): [(10, 150, 1), (10, 150, 80)],  # 140 um along the face, running along the mask
+    })
+    return mask, G
+
+
+def test_a_stump_takes_no_end_far_from_its_contact_along_the_face():
+    """Regression (E14.5, 2026-10-26): on a graph where the arteriole's own
+    end just failed the run-along test (48% for 50%), the inlet went to an end
+    239 um away across the face, where the arteriole's mask comes within 3 um
+    of the face without touching it: the one contact's reach across the face
+    was the component's bounding box. Only ends within its radius and 6 um of
+    the contact count; none passing, the nearest of them is taken, warned."""
+    from haemolynx.graph.boundaries import BoundaryCoordinateWarning
+
+    mask, G = _arteriole_ending_just_outside_its_mask(own_end_y=16)
+
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+    with pytest.warns(BoundaryCoordinateWarning, match=r"node 0, .* the nearest end within 9\.\d um of the contact"):
+        inlets = _stump_inlets(G, mask)
+
+    assert len(points) == 1, "the mask touches the face once"
+    assert inlets == [0], "its own end, 4 um from the contact, not the far end along the face"
+
+
+def test_an_end_beyond_the_contacts_reach_across_the_face_is_not_taken():
+    """The far end is the only candidate that runs along the mask; with the
+    vessel's own end out of reach too (13 um across the face for 9), the
+    stump falls back to the nearest terminal inside the mask, not the far
+    end it would once have taken."""
+    from haemolynx.graph.boundaries import BoundaryCoordinateWarning
+
+    mask, G = _arteriole_ending_just_outside_its_mask(own_end_y=25)
+
+    with pytest.warns(BoundaryCoordinateWarning, match="nearest terminal inside the mask"):
+        inlets = _stump_inlets(G, mask)
+
+    assert inlets == [1], "the vessel's other end, inside the mask, 60 um in; not the far end"

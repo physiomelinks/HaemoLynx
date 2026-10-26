@@ -351,8 +351,8 @@ def _own_face_end(
     """The terminal that ends *stump*'s own large vessel at its face, or None.
 
     A candidate lies within :data:`STUMP_SNAP_OFFSET_UM` of the stump's own
-    mask component, within that offset and the vessel's radius of the face,
-    and the first :data:`STUMP_SNAP_VESSEL_UM` of its vessel runs along the
+    mask component, near its contact (:func:`_near_contact`), and the first
+    :data:`STUMP_SNAP_VESSEL_UM` of its vessel runs along the
     component (:data:`STUMP_SNAP_MIN_VESSEL_FRACTION`) -- the large vessel's
     centreline, not a capillary ending beside it. One inside the component
     comes first, then the one whose vessel runs most along the component,
@@ -364,15 +364,13 @@ def _own_face_end(
     there, not the large vessel's end (:func:`_fills_its_mask`; Harvey,
     2026-10-26).
     """
-    face_um = stump.face_index * float(scale[stump.axis])
-    face_reach = STUMP_SNAP_OFFSET_UM + stump.radius_um
     box = labeled.box(stump.component)
     lo = np.asarray([s.start for s in box], dtype=float) * scale - STUMP_SNAP_OFFSET_UM
     hi = (np.asarray([s.stop for s in box], dtype=float) - 1.0) * scale + STUMP_SNAP_OFFSET_UM
     best: tuple[tuple[bool, float], Any] | None = None
     for node in candidates:
         tip = pos[node]
-        if abs(float(tip[stump.axis]) - face_um) > face_reach:
+        if not _near_contact(tip, stump, scale):
             continue
         if np.any(tip < lo) or np.any(tip > hi):
             continue
@@ -451,6 +449,20 @@ def _in_plane_distance_um(tip: np.ndarray, stump: _Stump) -> float:
     return float(np.sqrt((offsets * offsets).sum(axis=1)).min())
 
 
+def _near_contact(tip: np.ndarray, stump: _Stump, scale: np.ndarray) -> bool:
+    """Whether *tip* lies within the stump's radius and
+    :data:`STUMP_SNAP_OFFSET_UM` of its contact, both off the face and across
+    it (from its footprint). Across the face only the component's bounding
+    box held a stump with one contact, so on a graph where the arteriole's
+    own end just failed the tests the inlet went to an end 239 um away along
+    the face (E14.5, 2026-10-26; Harvey's call)."""
+    reach = STUMP_SNAP_OFFSET_UM + stump.radius_um
+    face_um = stump.face_index * float(scale[stump.axis])
+    if abs(float(tip[stump.axis]) - face_um) > reach:
+        return False
+    return _in_plane_distance_um(tip, stump) <= reach
+
+
 def _own_candidates(stumps: list[_Stump], pos: dict[Any, np.ndarray], candidates: list[Any]) -> list[list[Any]]:
     """Each stump's candidates: those nearer its footprint, across the face,
     than any other footprint its component leaves the same face by. One
@@ -492,7 +504,8 @@ def _snap_stumps_to_terminals(
     nearer it than the others (:func:`_own_candidates`), and a stump with no
     end of its own takes no node while another stump of the mask has one. A
     stump whose vessel has no such end otherwise -- the mask would have no
-    node at all -- takes the nearest terminal inside
+    node at all -- takes the nearest of its ends near its contact
+    (:func:`_near_contact`), and with none there the nearest terminal inside
     *mask* (every terminal, when none is), with a
     :class:`~haemolynx.graph.boundaries.BoundaryCoordinateWarning` naming the
     stump and how far the node is from it: an inlet chosen there may be
@@ -517,7 +530,7 @@ def _snap_stumps_to_terminals(
     # or a vein whose own centreline runs past the face with only capillaries
     # ending there (E14.5's second vein contact; Harvey, 2026-10-26).
     ended = any(node is not None for node in ends)
-    for stump, node in zip(stumps, ends):
+    for stump, node, mine in zip(stumps, ends, own):
         if node is not None:
             selected.append(node)
             continue
@@ -528,23 +541,35 @@ def _snap_stumps_to_terminals(
                 coordinates_setting_name, tuple(round(float(v), 1) for v in stump.point),
             )
             continue
-        if fallback is None:
-            inside = points_inside_mask(
-                np.asarray([pos[n] for n in candidates], dtype=float),
-                np.asarray(mask, dtype=bool),
-                voxel_size_zyx=voxel_size_zyx,
+        # The nearest end near the contact, though none passed the tests,
+        # before the nearest terminal anywhere inside the mask: on E14.5 the
+        # arteriole's own end, 5 um from its contact, just failed them and
+        # the mask's nearest terminal lay 365 um inside it (2026-10-26).
+        near = [n for n in mine if _near_contact(pos[n], stump, scale)]
+        if near:
+            pool, which = near, (
+                f"the nearest end within {STUMP_SNAP_OFFSET_UM + stump.radius_um:.1f} um "
+                "of the contact (its radius and "
+                f"{STUMP_SNAP_OFFSET_UM:g} um)"
             )
-            fallback = [n for n, is_inside in zip(candidates, inside) if is_inside] or candidates
-        node = min(fallback, key=lambda n: float(np.linalg.norm(pos[n] - stump.point)))
+        else:
+            if fallback is None:
+                inside = points_inside_mask(
+                    np.asarray([pos[n] for n in candidates], dtype=float),
+                    np.asarray(mask, dtype=bool),
+                    voxel_size_zyx=voxel_size_zyx,
+                )
+                fallback = [n for n, is_inside in zip(candidates, inside) if is_inside] or candidates
+            pool, which = fallback, "the nearest terminal inside the mask"
+        node = min(pool, key=lambda n: float(np.linalg.norm(pos[n] - stump.point)))
         selected.append(node)
         face = f"{_FACE_NAMES[stump.axis]}={'0' if stump.face_index == 0 else stump.face_index}"
         warnings.warn(
             f"{coordinates_setting_name}: no centreline of the large vessel cut off at the "
             f"{face} face at {tuple(round(float(v), 1) for v in stump.point)} um ends there "
             f"(within {STUMP_SNAP_OFFSET_UM:g} um of its mask, along it); it takes node "
-            f"{node}, {float(np.linalg.norm(pos[node] - stump.point)):.1f} um away, the "
-            "nearest terminal inside the mask. Check the inlets/outlets, or pick them on "
-            "the Boundaries tab.",
+            f"{node}, {float(np.linalg.norm(pos[node] - stump.point)):.1f} um away, "
+            f"{which}. Check the inlets/outlets, or pick them on the Boundaries tab.",
             BoundaryCoordinateWarning,
             stacklevel=4,
         )
@@ -568,10 +593,11 @@ def select_large_vessel_mask_stump_terminal_nodes_for_role(
     Each of *mask*'s face-touching components (see
     :func:`find_large_vessel_mask_stump_points`, which also takes
     *min_component_fraction*) takes the terminal ending its own vessel at
-    that face (:func:`_own_face_end`): near the component, near the face,
+    that face (:func:`_own_face_end`): near the component, near its contact,
     its vessel running along the component -- not a capillary tip nearer the
-    face centroid, and not a terminal inside the mask somewhere else. A stump
-    with none takes the nearest terminal inside the mask, with a
+    face centroid, and not a terminal inside the mask somewhere else. When no
+    stump of the mask has one, each takes the nearest end near its contact,
+    else the nearest terminal inside the mask, with a
     :class:`~haemolynx.graph.boundaries.BoundaryCoordinateWarning`. A mask with no
     face-touching component (the vessel ends inside the tissue, not at the
     field of view's edge) yields no node. *exclude_nodes* keeps the other

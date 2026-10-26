@@ -606,13 +606,15 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   its component's largest on the face (a graze), or a contact wider than
   `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (a vessel lying along the face) is no stump. Each stump snaps
   to the end of its own vessel at its face (`_own_face_end`: the end whose vessel runs most along
-  the stump's mask, then the nearest), each contact only to ends nearer it than its component's
-  other contacts there (`_own_candidates`). Given the run's segmentation (`assign_boundaries` passes
+  the stump's mask, then the nearest), only to ends within its radius and `STUMP_SNAP_OFFSET_UM` of
+  its contact, off the face and across it (`_near_contact`), each contact only to ends nearer it
+  than its component's other contacts there (`_own_candidates`). Given the run's segmentation (`assign_boundaries` passes
   `network.volume.image`), an end must fill the mask it runs in (`_fills_its_mask`: half inside it,
   `STUMP_SNAP_MIN_FILL` times as wide there as the mask is deep), so a capillary ending in a large
   vessel's mask is no stump's end. A stump with no end of its own takes no node while another of the
-  mask's stumps has one, else falls back to the nearest terminal in the mask with a
-  `BoundaryCoordinateWarning`. Checked on E14.5 only (Harvey's marks on four ends), not a marked grid.
+  mask's stumps has one, else falls back to the nearest of its ends near the contact, then to the
+  nearest terminal in the mask, with a `BoundaryCoordinateWarning`. Checked on E14.5 only (Harvey's
+  marks on four ends), not a marked grid.
 - **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`, read through
   `voxel_size_zyx` (edge voxels are microns, masks voxel-indexed). The large mask of the class
   counts as coverage when large vessels stay in the network, and
