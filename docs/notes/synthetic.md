@@ -274,3 +274,11 @@ the bottom 48 um 36% -> 62% (template 61%), capillary curvature 20.6 -> 25.5 deg
 50 um of a vessel 7.1% -> 10.6% (0.5%), column share of length 0.17 -> 0.14 (0.22), acute
 junctions 13% -> 18%. The Delaunay bed is unchanged. Grid D1f (template #4; Voronoi 61-66,
 Delaunay 61-65; key `outputs/synthetic_review/grid_d1f_key.csv`) sent to Harvey.
+
+Grid D1f (Harvey, 2026-10-26): "4 is best, everything except 10 and 11 are okay" -- the template
+(#4), all five Delaunay networks and four of six Voronoi (61, 62, 63, 66): nine of eleven, and
+the first Voronoi networks taken for the tissue in any grid. The two left (Voronoi 65 and 64) do
+not differ in plexus share, junction width or holes; their trees wind more (26.1 against 24.7
+degrees per 10 um at 10 um steps; the template 22.9) -- four against two, a lead, not a rule
+(`outputs/synthetic_review/d1f_measures.py`, `.csv`). The Delaunay bed is D1e's code: its 4 of 6
+there and 5 of 5 here is the marking's spread, not a change.
