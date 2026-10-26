@@ -116,6 +116,11 @@ class Organisation:
     #: root to its tree's leaves: median and furthest (um). Harvey's grid D1c
     #: picked the drawn networks whose venous trees reach as far as these.
     tree_reach_um: Optional[tuple[tuple[str, float, float], ...]] = None
+    #: Each capillary junction's depth (z) as a share of the box's, sorted:
+    #: how the template's junctions spread over depth (E14.5: 61% in the
+    #: bottom 48 um, its plexus). A Voronoi bed's corners are put at these
+    #: depths (``bed.depths_like_template``). None for a template written before.
+    capillary_junction_depths_rel: Optional[tuple[float, ...]] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -161,6 +166,9 @@ class Organisation:
             ),
             "trunk_straightness": self.trunk_straightness,
             "tree_reach_um": None if self.tree_reach_um is None else [list(item) for item in self.tree_reach_um],
+            "capillary_junction_depths_rel": (
+                None if self.capillary_junction_depths_rel is None else list(self.capillary_junction_depths_rel)
+            ),
         }
 
     @classmethod
@@ -213,6 +221,11 @@ class Organisation:
                 None
                 if data.get("tree_reach_um") is None
                 else tuple((str(side), float(median), float(far)) for side, median, far in data["tree_reach_um"])
+            ),
+            capillary_junction_depths_rel=(
+                None
+                if data.get("capillary_junction_depths_rel") is None
+                else tuple(float(v) for v in data["capillary_junction_depths_rel"])
             ),
         )
 
@@ -497,6 +510,11 @@ def measure_organisation(
             tuple(float(v) for v in np.asarray(p, float) / np.maximum(extent, 1e-9)) for p in positions
         ),
         capillary_node_spacing_um=spacing,
+        capillary_junction_depths_rel=tuple(sorted(
+            float(G.nodes[n]["pos"][0]) / max(float(extent[0]), 1e-9)
+            for n in capillary_nodes
+            if G.degree(n) >= 3 and G.nodes[n].get("pos") is not None
+        )) or None,
         chord_axis_share_by_cell=tuple(by_cell),
         chord_axis_share=tuple(float(v) for v in whole[:3]),
         long_runs=long_runs(chords),

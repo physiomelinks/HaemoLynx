@@ -258,3 +258,19 @@ and its mesh size; what sets them apart is the plexus: 37% of their junctions li
 against two, too few to fit a rule to) the picked lean the template's way on columns (5.1 against
 4.1 per 10^4 um^2; E14.5 7.7), junction width (smallest angle 69 against 64 degrees) and holes,
 and the other way on tortuosity (P90 1.27 against 1.35; E14.5 1.50).
+
+## 2026-10-26: the Voronoi bed's corners at the template's junction depths (grid D1f)
+
+Harvey: keep the Voronoi bed's corners in the template's plexus layer, by its junctions' share by
+depth read from the template, without losing their curvature. A tessellation of seeds in a sheet
+thinner than their spacing puts its corners above and below the sheet: each corner is the centre of
+a sphere through four seeds, and four spanning a thin sheet put it well off it. The organisation now
+records every capillary junction's depth (`capillary_junction_depths_rel`; E14.5: 644 junctions,
+58.5% in the bottom 48 um), and once the corners are drawn and thinned they are moved, rank for
+rank, onto those depths (`bed.depths_like_template`): each keeps its place in the image plane and
+its cell edges, and the order in depth is kept. E14.5, seeds 1-3, before and after: junctions in
+the bottom 48 um 36% -> 62% (template 61%), capillary curvature 20.6 -> 25.5 degrees per 10 um
+(26.1), tortuosity P90 1.14 -> 1.34 (1.48); and, the cost, the layers above sparser: box beyond
+50 um of a vessel 7.1% -> 10.6% (0.5%), column share of length 0.17 -> 0.14 (0.22), acute
+junctions 13% -> 18%. The Delaunay bed is unchanged. Grid D1f (template #4; Voronoi 61-66,
+Delaunay 61-65; key `outputs/synthetic_review/grid_d1f_key.csv`) sent to Harvey.

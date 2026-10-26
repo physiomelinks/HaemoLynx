@@ -116,6 +116,13 @@ VORONOI_TEMPLATE_OVERSAMPLE = 1.5
 VORONOI_MIN_CELL_VERTICES = 0.25
 #: Tessellations drawn, each with more seeds, before a short one is kept.
 VORONOI_ATTEMPTS = 6
+#: Whether a Voronoi bed's corners are put at the template's junction
+#: depths (:func:`depths_like_template`; Harvey, grid D1e). A tessellation of
+#: seeds in a sheet thinner than their spacing puts its corners above and
+#: below the sheet, not in it: on E14.5 37% of the Voronoi bed's junctions lay
+#: in the bottom 48 um against the template's 61%, and Harvey took no Voronoi
+#: network for the tissue in five grids.
+VORONOI_DEPTHS_FROM_TEMPLATE = True
 #: With a template that records its layout (``statistics.layout``; Harvey,
 #: 2026-10-25, after grid D1d): a candidate leaving either of its vertices
 #: within ``statistics.layout.ACUTE_JUNCTION_DEG`` of a vessel already there
@@ -557,7 +564,28 @@ def voronoi_vertices(
         remap = {int(old): n for n, old in enumerate(chosen)}
         merged = merged[chosen]
         edges = [(remap[a], remap[b]) for a, b in edges if a in remap and b in remap]
+    depths = None if organisation is None else organisation.capillary_junction_depths_rel
+    if VORONOI_DEPTHS_FROM_TEMPLATE and depths and len(merged):
+        merged = merged.copy()
+        merged[:, 0] = depths_like_template(merged[:, 0], depths, float(extent[0]), float(margin[0]))
     return merged, edges
+
+
+def depths_like_template(z: np.ndarray, depths_rel: Sequence[float], extent_z: float, margin: float) -> np.ndarray:
+    """*z* moved, rank for rank, onto the template's junction depths
+    (*depths_rel*, shares of the box's depth): the k-th shallowest point goes
+    to the depth a share (k + 1/2)/n of the template's junctions lie above.
+    The order in depth is kept, so a tessellation's cells keep their
+    neighbours; only how they spread over depth becomes the template's. Kept
+    *margin* off the faces."""
+    z = np.asarray(z, dtype=float)
+    order = np.argsort(z, kind="stable")
+    quantiles = (np.arange(len(z)) + 0.5) / len(z)
+    source = np.sort(np.asarray(depths_rel, dtype=float))
+    levels = np.interp(quantiles, (np.arange(len(source)) + 0.5) / len(source), source) * extent_z
+    out = np.empty_like(z)
+    out[order] = np.clip(levels, margin, extent_z - margin)
+    return out
 
 
 def _wanted_spacing(points: np.ndarray, extent: np.ndarray, organisation: Organisation, count: int) -> np.ndarray:
@@ -1463,6 +1491,7 @@ __all__ = [
     "candidate_edges",
     "degree_sequence_targets",
     "density_vertices",
+    "depths_like_template",
     "drawn_from_template_vertices",
     "template_vertices",
     "join_pieces",

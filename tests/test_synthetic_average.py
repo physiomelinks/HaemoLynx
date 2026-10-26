@@ -121,6 +121,8 @@ def test_layouts_are_pooled_on_the_common_grid():
     assert nodes[0].sum() == pytest.approx(a.field("capillary_nodes").sum() / 2)
     assert nodes[1].sum() == pytest.approx(b.field("capillary_nodes").sum() / 2)
     assert len(org.capillary_node_positions_rel) == len(a.capillary_node_positions_rel) + len(b.capillary_node_positions_rel)
+    pooled = sorted((a.capillary_junction_depths_rel or ()) + (b.capillary_junction_depths_rel or ()))
+    assert list(org.capillary_junction_depths_rel or ()) == pooled
     assert org.axis_share == pytest.approx(a.axis_share)
 
 

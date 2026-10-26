@@ -1045,6 +1045,42 @@ def test_a_voronoi_bed_follows_the_templates_layers():
     validate_synthetic_graph(G)
 
 
+def test_depths_like_template_moves_points_rank_for_rank_onto_the_templates():
+    z = np.array([50.0, 10.0, 90.0, 30.0, 70.0])
+    template = [0.05, 0.1, 0.15, 0.2, 0.25]  # every junction in the bottom quarter
+    out = bed_module.depths_like_template(z, template, 100.0, 2.0)
+    assert list(np.argsort(out)) == list(np.argsort(z))  # the order in depth is kept
+    assert out.tolist() == pytest.approx([15.0, 5.0, 25.0, 10.0, 20.0])
+    # Kept off the faces.
+    assert bed_module.depths_like_template(z, [0.0] * 5, 100.0, 2.0).min() == pytest.approx(2.0)
+
+
+def test_a_voronoi_beds_corners_take_the_templates_junction_depths():
+    """Harvey, grid D1e: the template's junctions lie in its plexus; a
+    tessellation puts its corners above and below a sheet of seeds."""
+    T = fixture_template()
+    shape = grid_shape(T.extent_um)
+    plexus = tuple(float(v) for v in np.linspace(0.02, 0.18, 200))
+    organisation = replace(_organisation(shape, _lower_layer(shape)), capillary_junction_depths_rel=plexus)
+    shares = {}
+    for on in (True, False):
+        bed_module.VORONOI_DEPTHS_FROM_TEMPLATE = on
+        try:
+            G = generate_network(replace(T, organisation=organisation), seed=SEED, options=GenerationOptions(bed_model="voronoi"))
+        finally:
+            bed_module.VORONOI_DEPTHS_FROM_TEMPLATE = True
+        bed_junctions = [
+            n for n in G if G.degree(n) >= 3
+            and all(d.get(SYNTHETIC_CLASS) == "capillary" for *_e, d in G.edges(n, data=True))
+        ]
+        z = np.array([G.nodes[n]["pos"][0] for n in bed_junctions])
+        shares[on] = float(np.mean(z < 0.2 * T.extent_um[0]))
+        if on:
+            validate_synthetic_graph(G)
+    assert shares[True] > 0.85
+    assert shares[True] > shares[False] + 0.2
+
+
 # -- the trees grown in the template's tree layer (Harvey 2026-10-25: D5a) ------
 
 

@@ -161,6 +161,22 @@ def test_the_capillary_vertices_and_their_spacing_are_recorded():
     assert loaded.long_runs is None and loaded.chord_by_class_um is None and loaded.chord_axis_share_by_cell is None
 
 
+def test_the_capillary_junctions_depths_are_recorded():
+    """The lattice's junctions stand on its planes z = 10, 30, ..., 90 um:
+    their depths are those shares of the box's 100 um, every junction once."""
+    G = _lattice()
+    org = measure_organisation(G, EXTENT)
+    junctions = sorted(float(G.nodes[n]["pos"][0]) / EXTENT[0] for n in G if G.degree(n) >= 3)
+    assert list(org.capillary_junction_depths_rel) == pytest.approx(junctions)
+    assert set(np.round(org.capillary_junction_depths_rel, 6)) <= {0.1, 0.3, 0.5, 0.7, 0.9}
+    assert Organisation.from_dict(org.to_dict()).capillary_junction_depths_rel == org.capillary_junction_depths_rel
+    old = org.to_dict()
+    old.pop("capillary_junction_depths_rel")
+    assert Organisation.from_dict(old).capillary_junction_depths_rel is None
+    # The slab's vertical capillaries meet nothing: no junction.
+    assert measure_organisation(_slab(), EXTENT).capillary_junction_depths_rel is None
+
+
 def _columns(extent=(200.0, 200.0, 200.0)):
     """Four columns of capillaries joined end to end, z 10 to 160 (spanning
     150 um), and one short one, z 10 to 60."""

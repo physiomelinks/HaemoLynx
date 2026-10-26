@@ -1100,7 +1100,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   vessels curve as theirs do (`polylines.lobes`; each capillary its chord times a tortuosity drawn
   from the template's, `generate._capillary_lengths_by_tortuosity`), all read by `synthetic/organisation.py` and
   scored in the comparison (a layout only where the template has one, `compare.dispersion`), along
-  Delaunay edges or, with `synthetic_bed_model=voronoi`, a Voronoi tessellation's cell edges.
+  Delaunay edges or, with `synthetic_bed_model=voronoi`, a Voronoi tessellation's cell edges, its
+  corners moved rank for rank onto the template's junction depths
+  (`organisation.capillary_junction_depths_rel`, `bed.depths_like_template`): a tessellation puts
+  its corners above and below a sheet of seeds, not in it.
   The network is closed by default (`synthetic_open_ends=closed`: no vessel leaves the box, all
   flow in at the inlets and out at the outlets, shown in the viewer; `template` cuts the
   template's count at the faces) without interior dead ends (`synthetic_interior_dead_ends`, off):

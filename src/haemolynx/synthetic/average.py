@@ -339,6 +339,9 @@ def average_organisations(
         tree_curvature_deg=_mean([o.tree_curvature_deg for o in members]),
         capillary_node_positions_rel=tuple(tuple(float(v) for v in p) for p in positions) or None,
         capillary_node_spacing_um=_mean([o.capillary_node_spacing_um for o in members]),
+        capillary_junction_depths_rel=tuple(sorted(
+            d for o in members for d in (o.capillary_junction_depths_rel or ())
+        )) or None,
         chord_axis_share_by_cell=(
             None if not chords or chord_whole is None else cellwise("chord_axis_share_by_cell", chord_whole)
         ),
