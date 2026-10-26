@@ -686,21 +686,28 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   the lumen-artefact report is logged after each step too. The last,
   `consolidate_lumen`, repeats until a round changes nothing (at most `lumen_cleanup_max_rounds`):
   degree-2 merging, the second of two edges through one lumen
-  (`lumen_loops.remove_parallel_edges_in_lumen`, deleted whole, never where that cuts vessels off;
-  `REWIRE_PAIRS`, off until Harvey decides, takes it out by `doubled_stretches.rewire_pair`
-  instead: its stretch beside the other cut out, what is left joined where it parts), loops inside
-  one lumen, short loops, doubled stretches (`graph/doubled_stretches.py`: rewired, never deleted
-  whole, bridges never touched; with `GUARD_REJOINS`, off like `REWIRE_PAIRS`, a rejoin makes no
-  join that would close a loop inside one lumen, as the pair rewire never does:
-  `_join_closes_loop_in_one_lumen`). Both switches failed `PLAN_clean_graph.md`'s kill criteria on
-  E14.5 and wait on Harvey. Then dangling bridges, the stub prune. What only the wider
+  (`lumen_loops.remove_parallel_edges_in_lumen`: with `lumen_cleanup_rewire_pairs`, on, taken out
+  by `doubled_stretches.rewire_pair`, its stretch beside the other cut out and what is left joined
+  where it parts, deleted whole only when nothing is left to join; off, deleted whole as before;
+  never where that cuts vessels off), loops inside one lumen, short loops, doubled stretches
+  (`graph/doubled_stretches.py`: rewired, never deleted whole, bridges never touched; with
+  `lumen_cleanup_guard_rejoins`, on, a rejoin makes no join that would close a loop inside one
+  lumen, as the pair rewire never does: `_join_closes_loop_in_one_lumen`). Harvey turned both on
+  (2026-10-26) though they failed `PLAN_clean_graph.md`'s kill criteria on E14.5 (more loops round
+  holes over 10 um, a few more dead ends); off is the clean-up as it was. Then dangling bridges,
+  the stub prune. What only the wider
   of two vessels sees as doubled is listed, not resolved ("Stretches doubled in one lumen",
   `network_review.find_doubled_stretches`). `lumen_cleanup` builds
   what it reads from the build's own settings; `keep_apart=` takes a caller's evidence beyond the
   mask, and `along_thick_centreline=` makes the rules keep the strand on a thick vessel's
   centreline tree unless the other is a vessel of its own beside it (`_vessel_beside`).
   `build_network` runs the clean-up again after smoothing and after the thick-vessel split:
-  nothing is the last step. Rounds after the first re-judge only what changed
+  nothing is the last step, but for the skeleton re-trace and `smooth_straight_steps` after it, and
+  `post_process` runs none (Harvey, 2026-10-26). The lumen-artefact report on the graph it hands on
+  is logged (a warning when it finds a pair in one lumen, a loop inside one or a tip in another
+  lumen) and kept (`graph.lumen_artefact_counts` on `G.graph[graph.LUMEN_ARTEFACT_COUNTS]`, and the
+  manifest's `checks`), never a reason to stop a run; the tests hold the Nerve fixture and the dense
+  capillary bed to it. Rounds after the first re-judge only what changed
   (`diagnose_parallel_duplicates_in_lumen(memo=)`, `FeatureDistance(remember=)`) and must give the
   same graph as judging everything.
 - **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
@@ -887,7 +894,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **`pipeline/provenance.py`** — every run writes `{stem}_run_manifest.json` and
   `{stem}_run_settings.yaml` (a config `--config` loads) into its output folder: the settings after
   `Schema.upgrade` as the run started, version, git commit and dirty paths, environment, each input
-  file's size, mtime and sha256, each stage's times and peak RSS. A failed run writes one too
+  file's size, mtime and sha256, each stage's times and peak RSS, and `checks`: what the run's
+  read-only checks found (`RunProgress.checks`; `lumen_artefacts`, the counts graph building kept on
+  the graph, null under the low-RAM option, which skips the report). A failed run writes one too
   (`status: "failed"`). Writing it never fails a run.
 - **`pipeline/checks.py`** — `preflight(settings, schema)`, the pre-run checklist: the schema's own
   checks (`parsers/checks.py`) plus what only this pipeline knows — the artefact a skipped stage

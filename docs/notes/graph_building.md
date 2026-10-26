@@ -393,9 +393,9 @@ recovery draws into, 14 are vessels of their own. UR2's best measure, a piece mo
 from the nearest centreline, 23/29 left out, does worse than all H on UR1 (23/30 against 26);
 over the 39, 31 (79 %). So recovery draws what it can, as before.
 
-## Pairs rewired and joins guarded (both off), doubling listed (2026-10-25, `PLAN_clean_graph.md` 1d)
+## Pairs rewired and joins guarded (on since 2026-10-26), doubling listed (`PLAN_clean_graph.md` 1d)
 
-**The pair rewire, built and left off.** The pair rule (`lumen_loops.remove_parallel_edges_in_lumen`)
+**The pair rewire.** The pair rule (`lumen_loops.remove_parallel_edges_in_lumen`)
 decides which of two edges in one lumen goes -- the one nearer the wall, the strand on a thick
 vessel's tree kept. With `lumen_loops.REWIRE_PAIRS` it takes that edge out with
 `doubled_stretches.rewire_pair` instead of deleting it whole: its longest stretch beside the other
@@ -419,10 +419,12 @@ it failed them:
   255 -> 260. All 11 loops it adds run round holes of 10-20 um (the ones the short-loop rule keeps,
   which grids Q/Q2 found real 29 times in 32), 4 of them through a join it made; the 5 dead ends are
   kept remainders' own tips, dead ends in the skeleton already. The kill criteria allow neither, so
-  `REWIRE_PAIRS` is off until Harvey decides whether those loops and tips are the vessel kept.
+  it was left off (94320b75) for Harvey to decide whether those loops and tips are the vessel kept.
+  He turned it on (2026-10-26): `lumen_cleanup_rewire_pairs`, on by default, off the deletion as
+  before (`lumen_loops.REWIRE_PAIRS` the library's default).
 
-**Joins guarded (off for the stretch step).** Every join the pair rewire makes, and with
-`doubled_stretches.GUARD_REJOINS` the stretch step's rejoin, is first tested for the loop it closes: the shortest loop through it, the partner from
+**Joins guarded.** Every join the pair rewire makes, and with `lumen_cleanup_guard_rejoins`
+(`doubled_stretches.GUARD_REJOINS`) the stretch step's rejoin, is first tested for the loop it closes: the shortest loop through it, the partner from
 the join to one of its ends, and the rest of the network back, the edge rewired left out
 (`_loop_through_join`). A loop inside one lumen (`lumen_loops.loop_inside_one_lumen`) means what it
 would join is joined already, round that loop, so that join is not made and its part goes with the
@@ -437,10 +439,10 @@ clean-up cost 0.4 s. End to end, on the graph the harness saves (after smoothing
 again and the thick split), against `7f7e699c`: doubled centreline 686 -> 613 um (runs of 5 um or
 more 34 -> 28), mask covered 81.0 -> 81.9 %, but short loops 77 -> 84, interior dead ends 203 ->
 206 (a remainder not joined can leave its junction a stub) and tips in another lumen 3 -> 4. The
-kill criteria allow none of those either, so `GUARD_REJOINS` is off too, and with both switches
-off the graph is origin's. Whether the short-loop criterion should count loops round holes over
-10 um -- which the short-loop rule keeps as real since grids Q/Q2 -- is Harvey's call, and it
-decides both.
+kill criteria allow none of those either, so it was left off as well, and with both off the
+graph is the one before 1d. Harvey turned both on (2026-10-26) though the short-loop criterion,
+written before grids Q/Q2, counts loops round holes over 10 um that the short-loop rule itself
+keeps as real; each setting's off is the clean-up as it was.
 
 **Doubling listed.** What only the wider of two vessels sees as doubled (each sample judged with
 its own radius) is listed for a person, not resolved: "Stretches doubled in one lumen" on the Post
@@ -453,8 +455,8 @@ The Nerve fixture (`tests/data/Nerve_capillaries_cropped.tif`, through `build_ne
 defaults and at the Nerve integration test's skeleton settings): the graph unchanged by every
 measure of the report (129 and 46 edges, no pair in one lumen, 0 loops inside one lumen, 0 tips in
 another lumen, no `artefact` dead end).
-With both switches off the clean-up on E14.5's pre-clean-up graph is `7f7e699c`'s node for node and edge for
-edge, so the defaults change no graph. At `94320b75` the harness's E14.5 graph (no skeleton re-trace) has 1 pair
+With both off the clean-up on E14.5's pre-clean-up graph is `7f7e699c`'s node for node and edge for
+edge (checked at `94320b75`, when off was the default). At `94320b75` the harness's E14.5 graph (no skeleton re-trace) has 1 pair
 in one lumen, 696 um of doubled centreline (333 um seen only from the wider side), 78 short loops, 0 inside one
 lumen, 201 interior dead ends (15 `artefact`, 94 `stops_short`, 88 `unknown`, 4 `broken`), 3 tips in another
 lumen and 81.0 % of the mask covered, built in 153 s; the plan's section 6 holds the targets.
@@ -467,3 +469,24 @@ against 55.4 %, tips in another lumen 21 against 30, centreline +5.6 mm -- and s
 interior dead ends 1,962 against 1,836. The same trade as on E14.5, larger: the kill criteria fail here too.
 At the defaults the crop meets none of the plan's dataset-wide targets: 44 pairs, 1 loop inside one lumen,
 30 tips in another lumen, 102 `artefact` dead ends (its z voxels are five times its in-plane ones).
+
+**The artefact report kept (2026-10-26, Harvey).** The lumen-artefact report `build_network` logs
+on the graph it hands on is kept: its counts (`graph.lumen_artefact_counts`: pairs in one lumen,
+loops inside one, tips in another lumen and whether any was found, the doubled centreline, the
+short loops, the dead ends by place) on `G.graph[graph.LUMEN_ARTEFACT_COUNTS]`, and again in the
+run's manifest as `checks.lumen_artefacts`. The warning stays; a run never stops for it -- E14.5
+at the defaults has a pair and three tips in another lumen, and the skeleton re-trace, kept after
+the last clean-up, can add pairs. The record is put on the graph after `{stem}_graph.pkl` is
+written, and every run makes it again, a loaded graph included; the low-RAM option skips the
+report and leaves none. The tests hold the Nerve fixture (`test_pipeline_invariants.py`) and the
+dense capillary bed (`tests/integration/test_dense_capillary_bed.py`) to it: nothing it would warn
+of, at the defaults (both pass with the rewire and the guard on).
+
+On E14.5 with both on, against both off (`scripts/graph_artefacts.py` on the same skeleton, one run,
+2026-10-26; the harness now runs the skeleton re-trace, so these pairs are not the earlier
+re-trace-free count): centreline 47,440 -> 48,166 um, mask covered 82.0 -> 83.2 %, doubled
+centreline 919 -> 827 um (runs of 5 um or more 51 -> 42), pairs in one lumen 10 -> 10, loops inside
+one lumen 0 -> 0, short loops 90 -> 102, interior dead ends 200 -> 207, tips in another lumen 3 -> 5,
+components 53 -> 53, built in 181 against 149 s (a loaded machine). The pair rule rewired 39 pairs
+and deleted 126 (197 deleted with it off); "Stretches doubled in one lumen" lists 88 (342 um seen
+only from the wider side).
