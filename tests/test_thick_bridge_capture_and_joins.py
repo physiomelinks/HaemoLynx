@@ -1,18 +1,21 @@
-"""The capture of one run's steps (``scripts/thick_bridge_review/capture_steps.py``)
-and the thin-arm join's paths (``join_paths.py``), on a synthetic thick vessel
-with a capillary opening into it: what is captured, what the join drew, how
-its arm meets it, and the capture traced back by ``connection_steps.py``."""
+"""The capture of one run's steps (``scripts/thick_bridge_review/capture_steps.py``),
+the thin-arm join's paths (``join_paths.py``) and their census grid
+(``join_census.py``), on a synthetic thick vessel with a capillary opening
+into it: what is captured, what the join drew, how its arm meets it, which
+paths the census offers, and the capture traced back by ``connection_steps.py``."""
 from __future__ import annotations
 
 import json
 import pickle
 from pathlib import Path
 
+import networkx as nx
 import numpy as np
 import pytest
 import tifffile
 
-from thick_bridge_review.connection_steps import _unpacked
+from thick_bridge_review.connection_steps import StepIndex, _unpacked
+from thick_bridge_review.join_census import census_cases, other_way_um
 from thick_bridge_review.join_paths import approach, arm_voxels, join_paths
 
 
@@ -74,6 +77,62 @@ def test_an_arm_heading_in_meets_its_join_end_on_and_one_running_past_meets_it_s
     assert len(arm_voxels(lee, (6, 20, 16), vs, reach_um=5.0)) == 6
 
 
+def _edge(G, u, v, a, b, **attrs):
+    count = int(np.ceil(np.linalg.norm(np.subtract(b, a)))) + 1
+    path = [tuple(float(c) for c in q) for q in np.linspace(a, b, count)]
+    G.add_node(u, pos=path[0])
+    G.add_node(v, pos=path[-1])
+    G.add_edge(u, v, voxels=path, length=float(np.linalg.norm(np.subtract(b, a))), **attrs)
+
+
+def test_the_other_way_is_the_loop_a_connection_closes():
+    G = nx.MultiGraph()
+    _edge(G, "u", "v", (0, 0, 0), (0, 0, 5))
+    _edge(G, "u", "a", (0, 0, 0), (0, 10, 0))
+    _edge(G, "a", "v", (0, 10, 0), (0, 0, 5))
+    assert other_way_um(G, ("u", "v", 0)) == pytest.approx(10 + np.hypot(10, 5))
+    G.remove_edge("a", "v")
+    assert other_way_um(G, ("u", "v", 0)) == np.inf
+    _edge(G, "u", "v", (0, 0, 0), (0, 0, 5))
+    assert other_way_um(G, ("u", "v", 0)) == pytest.approx(5.0)
+    assert np.isnan(other_way_um(G, None))
+
+
+def test_the_census_offers_the_fresh_paths_the_saved_graph_still_joins():
+    """Two capillaries joined to the tree at y = 20 and y = 30: the saved
+    graph still joins the first (its bridge), not the second (its vessel
+    stops at x = 20). With an earlier grid's piece on the first, none is
+    fresh."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    shape = (12, 40, 40)
+    tree = np.zeros(shape, bool)
+    tree[6, 2:38, 10] = True
+    before = tree.copy()
+    after = tree.copy()
+    for y in (20, 30):
+        before[6, y, 16:35] = True
+        after[6, y, 11:35] = True
+    G = nx.MultiGraph()
+    _edge(G, "T0", "T1", (6, 2, 10), (6, 37, 10))
+    _edge(G, "A0", "A1", (6, 20, 34), (6, 20, 16))
+    _edge(G, "A1", "C", (6, 20, 16), (6, 20, 10), **{IS_ZERO_RESISTANCE: True})
+    _edge(G, "B0", "B1", (6, 30, 34), (6, 30, 20))
+    final = StepIndex(G)
+    vs = (1.0, 1.0, 1.0)
+    tree_points = np.argwhere(tree).astype(float)
+
+    cases = census_cases(join_paths(before, after, tree), before & ~tree, final, vs, tree_points, None)
+
+    (case,) = cases
+    assert case["id"] == "J01" and case["rule"] == "join"
+    assert case["start_vox"] == (6, 20, 16) and case["end_vox"][2] == 10
+    assert case["final_bridge_share"] > 0.5 and case["other_way_um"] == np.inf
+    assert case["view"] == "down z" and case["approach_cos"] == pytest.approx(1.0, abs=0.02)
+    earlier = np.array([[6.0, 20.0, 13.0]])
+    assert census_cases(join_paths(before, after, tree), before & ~tree, final, vs, tree_points, earlier) == []
+
+
 @pytest.mark.slow
 def test_a_capture_keeps_every_step_and_traces_the_bridge_back_to_the_join(tmp_path: Path):
     """A thick vessel along y and a capillary opening into it along x: the
@@ -122,3 +181,16 @@ def test_a_capture_keeps_every_step_and_traces_the_bridge_back_to_the_join(tmp_p
     capillary = [r for r in rows[1:] if ",bridge," in r and ",join," in r]
     assert capillary, rows
     assert json.loads((run / "voxel_size_zyx.json").read_text()) == [1.0, 1.0, 1.0]
+    assert (_unpacked(run / "mask.npz") == mask).all()
+
+    from thick_bridge_review.join_census import main as census_main
+
+    grid = tmp_path / "census"
+    census_main(["--run", str(run), "--out", str(grid)])
+    key = (grid / "key.csv").read_text(encoding="utf-8").splitlines()
+    assert key[0].startswith("id,join,") and key[1].startswith("J01,")
+    data = json.loads((grid / "page.json").read_text(encoding="utf-8"))
+    (sheet,) = data["sheets"]
+    assert [m["key"] for m in sheet["marks"]] == ["J", "C", "N", "?"]
+    assert len(sheet["cases"]) == len(key) - 1 and sheet["cases"][0]["piece"]
+    assert "Thick-vessel grid J" in (grid / "grid_J.html").read_text(encoding="utf-8")

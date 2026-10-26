@@ -347,3 +347,14 @@ no grid was built and nothing in the build changed. The 12 C the join made say w
 the tree misses the thick vessel's own centreline: the region-coverage track would change what the
 join is asked to connect. Harness and traces: `outputs/nc/` in worktree `angry-chandrasekhar-eb21c0`
 (git-ignored; `trace_N/TRACE.md`, `trace_bridges/`, `joins/`).
+
+**Grid J, a census of the join's paths** (sent to Harvey 2026-10-26, unmarked;
+`scripts/thick_bridge_review/join_census.py`): every path the join drew on E14.5 that the saved
+graph still joins and that passes nowhere within 3 um of a Phase 5 piece, 25 of the 212 (only 54
+of the 212 arms are in the saved graph at all), shuffled into J01-J25 and drawn as Phase 5 draws,
+the join's path in red. Marks J joined here, C the big vessel's own centreline, N should not be
+connected at all. No rule is fixed: the key (`outputs/join_census_review/key.csv`, same worktree)
+keeps the arm's approach, its voxels beside the start (0 on 10, 1 on 9, 2 on 6), whether the saved
+graph has a bridge along it (16), the loop it closes (12 the only link), for a rule to be fitted to
+the marks. Page: https://claude.ai/artifact/P35gsPJAhs4A9dKmCi5HQV (marks in its `marks`
+collection).

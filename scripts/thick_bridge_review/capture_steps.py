@@ -2,9 +2,9 @@
 """One run to ``build_network``, with everything a connection could be made
 in kept for ``connection_steps.py`` to trace: the thickness-gated skeleton
 before and after the thin-arm join, the skeleton graph building is handed,
-the thick region and its tree, the graph after every topology step and after
-every step of ``stages.finish_network_graph``, and the graph the split was
-handed.
+the segmentation it reads, the thick region and its tree, the graph after
+every topology step and after every step of ``stages.finish_network_graph``,
+and the graph the split was handed.
 
     python scripts/thick_bridge_review/capture_steps.py --config config.yaml \\
         --input <segmented image> --out <run folder> [--set name=<json>]
@@ -109,6 +109,11 @@ def capturing(out: Path) -> Iterator[Any]:
             snap(stage[len(stages.TOPOLOGY_STEP):], output)
         elif stage == "skeletonise":
             save_packed(out / "skeleton.npz", output.skeleton)
+            if output.image is not None:
+                # The segmentation graph building reads, as it reads it.
+                from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+                save_packed(out / "mask.npz", _to_binary_volume_for_skeletonization(output.image))
             if output.thick_vessel_mask is not None:
                 save_packed(out / "thick.npz", output.thick_vessel_mask)
             tree = getattr(output, "thick_vessel_centreline", None)
