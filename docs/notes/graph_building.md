@@ -303,13 +303,20 @@ reason, hole, far and mask shares. Draw along the skeleton adds the route the re
 draw, split into the vessels at both ends; a piece meeting the network once is traced with Add
 vessel. On the E14.5 graph above the list holds about 155 pieces, 9.8 mm of skeleton.
 
-Grid N3 (sent 2026-10-25, unmarked): N2 checked only what the rule draws, so N3 is 30 fresh pool
+Grid N3, the fresh check: N2 checked only what the rule draws, so N3 is 30 fresh pool
 pieces (none within 15 um of a grid N or N2 case) on both sides of the rule, 13 the run draws
 back and 17 it refuses (13 round a hole of 10 um or less, 3 meeting the graph once, 1 a join
 across background), each spread over the hole; the rule's call is fixed in the
 key before any mark (`outputs/sc/build_grid_n3.py`, `N3_key.csv`, scorer `fit_n3.py`, in worktree
 `quirky-goodall-bbcb6f`; page https://claude.ai/artifact/MaxexHVe2rHdxHjK5rb9eC, marks in its
-`annotations` collection).
+`annotations` collection). Marked by Harvey 2026-10-26 (18 V / 12 X; `FIT_N3.md`): the rule as it
+runs 21/30 (70%) against 18/30 all V. What it draws he kept 11 times in 13 (N3-01 and N3-27 not);
+of the 17 it refuses he marked 7 V: 5 round small holes (N3-05 at 9.3 um and N3-10 at 7.9 um, and
+three loops with no hole at all, N3-07, N3-08, N3-25), one meeting the graph once (N3-22) and the
+join across background (N3-11). Pooled with grid N over the 55 pieces with a loop, no hole
+threshold reaches 90%: 5-8 um gets 45/55, the rule's 10 um 43/55, all V 29/55. Loops with no hole
+(inside one lumen by the mask) are the part the hole cannot reach: 17 pieces, 5 of them V. The
+rule is unchanged; what it leaves is the review list's.
 
 ## graph/smoothing.py
 
