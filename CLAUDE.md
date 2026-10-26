@@ -631,7 +631,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   the stump's mask, then the nearest), only to ends within its radius and `STUMP_SNAP_OFFSET_UM` of
   its contact, off the face and across it (`_near_contact`), each contact only to ends nearer it
   than its component's other contacts there (`_own_candidates`). Given the run's segmentation (`assign_boundaries` passes
-  `network.volume.image`), an end must fill the mask it runs in (`_fills_its_mask`: half inside it,
+  `network.volume.image` read as the run binarises it, a box at a time: `stages._SegmentationBoxes`;
+  an ilastik export's background 2 is not vessel), an end must fill the mask it runs in (`_fills_its_mask`: half inside it,
   `STUMP_SNAP_MIN_FILL` times as wide there as the mask is deep), so a capillary ending in a large
   vessel's mask is no stump's end. A stump with no end of its own takes no node while another of the
   mask's stumps has one, else falls back to the nearest of its ends near the contact, then to the

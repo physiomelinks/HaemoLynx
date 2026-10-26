@@ -2989,6 +2989,29 @@ def _record_graph_voxel_metadata(
         )
 
 
+class _SegmentationBoxes:
+    """The run's segmented *image* read a box at a time as the binary mask its
+    skeleton was made from, by the whole image's rule
+    (:func:`_segmented_image_binarization_rule`, decided on the first read):
+    no whole-volume copy. Read as ``> 0``, an ilastik export's background
+    (2) was vessel, so on E14.5 every end filled its large mask and a
+    capillary took an outlet again (2026-10-26)."""
+
+    def __init__(self, image: np.ndarray, input_path: Any):
+        self.image = image
+        self.shape = image.shape
+        self._input_path = input_path
+        self._rule: Any = None
+
+    def __getitem__(self, box) -> np.ndarray:
+        part = np.asarray(self.image[box])
+        if part.dtype == bool:
+            return part
+        if self._rule is None:
+            self._rule = _segmented_image_binarization_rule(self._input_path, self.image)
+        return np.asarray(self._rule(part), dtype=bool)
+
+
 def _large_vessel_role_terminal_nodes(
     G: nx.Graph,
     image_shape: tuple[int, ...],
@@ -3278,6 +3301,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             # scratch below regardless of which branch this run takes.
             _reset_run_node_list(settings, "inlet_nodes")
             _reset_run_node_list(settings, "outlet_nodes")
+            segmentation = _SegmentationBoxes(image, settings.get("input_path"))
             auto_inlet_nodes = _large_vessel_role_terminal_nodes(
                 G,
                 image.shape,
@@ -3286,7 +3310,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 role="large_vessel_inlet",
                 mask=assignment_large_arteriole_mask,
                 node_role="inlet",
-                segmentation=image,
+                segmentation=segmentation,
             )
             # Written now, not only after this whole block, so a
             # large_vessel_outlet override using degree_1_from_inlet measures
@@ -3301,7 +3325,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 mask=assignment_large_venule_mask,
                 node_role="outlet",
                 exclude_nodes=auto_inlet_nodes,
-                segmentation=image,
+                segmentation=segmentation,
             )
             logger.info(
                 "Large-vessel network mode: arteriole/venule mask interior "

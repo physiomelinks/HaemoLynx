@@ -265,6 +265,7 @@ def test_the_stage_hands_the_stump_its_runs_segmentation(tmp_path, monkeypatch):
 
     G, arteriole, venule = _chain_with_large_vessel_masks()
     network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    network.volume.image[:, 4:6, 4:6] = 255  # a 0/255 segmentation of the chain's vessel
     seen = []
     real = graph_package.select_large_vessel_mask_stump_terminal_nodes_for_role
 
@@ -277,7 +278,43 @@ def test_the_stage_hands_the_stump_its_runs_segmentation(tmp_path, monkeypatch):
 
     assign_boundaries(_assign_boundaries_settings(plot_dir=tmp_path), network)
 
-    assert len(seen) == 2 and all(s is network.volume.image for s in seen), "both sides"
+    whole = (slice(None),) * 3
+    assert len(seen) == 2, "both sides"
+    for segmentation in seen:
+        read = np.asarray(segmentation[whole])
+        assert read.dtype == bool and np.array_equal(read, network.volume.image == 255)
+
+
+def test_the_stump_reads_an_ilastik_label_image_as_the_run_binarises_it(tmp_path):
+    """Regression (E14.5, 2026-10-26): the stage handed the stump the volume
+    as loaded, an ilastik export of 1 (vessel) and 2 (background), and the
+    fill test read it as ``> 0``: all vessel, so every end filled its large
+    mask and the capillary 2310 took an outlet again in the re-solve, though
+    the offline check on the binary mask had dropped it."""
+    mask, segmentation = _vein_with_a_capillary_in_its_mask()
+    venule = _tube_along_x(np.zeros(mask.shape, dtype=bool), 42, 15, 3.0, 200)
+    venule[:, :, :90] = False  # a second large vessel leaving the x = 119 face
+    vein_segmented = _tube_along_x(np.zeros(mask.shape, dtype=bool), 42, 15, 5.0, 200)
+    vein_segmented[:, :, :90] = False
+    segmentation |= vein_segmented
+    G = _capillary_and_vein_graph()
+    G.add_edges_from(_vessel_graph({(4, 5): [(15, 42, 118), (15, 42, 95)]}).edges(data=True))
+    for node, x in ((4, 118.0), (5, 95.0)):
+        G.nodes[node]["pos"] = (15.0, 42.0, x)
+    volume = SkeletonisedVolume(
+        image=np.where(segmentation, 1, 2).astype(np.uint8),
+        skeleton=np.zeros(mask.shape, dtype=np.uint8),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        output_dir=tmp_path,
+    )
+    network = VesselNetwork(graph=G, volume=volume, large_arteriole_mask=mask, large_venule_mask=venule)
+    settings = _assign_boundaries_settings(plot_dir=tmp_path, input_path=str(tmp_path / "e14_segmented.tif"))
+
+    assign_boundaries(settings, network)
+
+    assert settings["inlet_nodes"] == [0], "the vein's own end, not the capillary ending in its mask"
+    assert settings["outlet_nodes"] == [4]
 
 
 def test_large_vessel_inlet_override_replaces_the_mask_stump(tmp_path):
