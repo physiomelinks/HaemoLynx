@@ -20,6 +20,7 @@ haemolynx/
 │   │                       #   mask reduced by the same blocks and the raw image brought onto
 │   │                       #   that grid; the record kept on the graph), ilastik.py, voxel_validation.py, axis_order.py,
 │   │                       #   raw_volume_cache.py (reuse a memmapped raw volume across runs),
+│   │                       #   channels.py (a composite's channels, named as Fiji names them),
 │   │                       #   vessel_masks.py (mask loading/validation),
 │   │                       #   vessel_mask_discovery.py (the masks beside the input image,
 │   │                       #   found by file name), batch_matching.py (a batch run's
@@ -43,7 +44,9 @@ haemolynx/
 │   │                       #   block at a time) and slab_labels.py (components labelled a slab
 │   │                       #   of planes at a time), the low-RAM option's thick-vessel steps,
 │   │                       #   bridge_mask_support.py (whether a bridge path stays in the mask
-│   │                       #   and off a vessel already in the same lumen)
+│   │                       #   and off a vessel already in the same lumen),
+│   │                       #   shared_volume_tasks.py (per-item work over one volume, shared
+│   │                       #   out to worker processes that read one memmapped copy)
 │   ├── graph/              # assemble.py (orchestrator) + build, reconnect, optimise, degree2,
 │   │                       #   prune, collapse (+ direction_aware_collapse, persistence_collapse,
 │   │                       #   cartwheel_guard), branch_order, boundaries, boundary_node_fallback,
@@ -62,6 +65,9 @@ haemolynx/
 │   │                       #   (terminal-node assignment), mask_recovery.py (segmented vessels
 │   │                       #   the graph lost, traced and joined back through the mask),
 │   │                       #   lumen_loops.py (loops lying inside one lumen: Lee rings, broken),
+│   │                       #   doubled_stretches.py (centreline doubled beside another in one
+│   │                       #   lumen, rewired), connectivity.py (the connectivity CSV: one row
+│   │                       #   per vessel, oriented away from the inlets),
 │   │                       #   facing_ends.py (two dead ends heading for each other across a
 │   │                       #   gap in the segmentation, joined), network_review.py (what the
 │   │                       #   Post processing tab's review lists find, one finder per list),
@@ -169,13 +175,18 @@ haemolynx/
 │   │                       #   geometry.py (an edge -> a drawable polyline),
 │   │                       #   secomb_io.py (a solved network as Secomb's Network.dat,
 │   │                       #   for NetFlow and FlowEstimate, and their output read back),
+│   │                       #   connectivity_map.py (a 2D map drawn from the connectivity CSV),
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
 │   ├── synthetic/          # network_source=synthetic: template.py (what a run's .haemorun
 │   │                       #   says its network is like, by its statistics or its graph),
 │   │                       #   generate.py + trees.py + bed.py + polylines.py (a new network
-│   │                       #   drawn to it), compare.py (how close it came, per characteristic)
+│   │                       #   drawn to it), compare.py (how close it came, per characteristic),
+│   │                       #   draft.py (the network while it is drawn), organisation.py (where
+│   │                       #   a template's vessels lie and which way they run), average.py +
+│   │                       #   batch_template.py (a batch condition's runs as one template:
+│   │                       #   the .haemobatch file)
 │   └── pipeline/           # A package, not a module: schema.py (the pipeline's 450 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
@@ -198,7 +209,14 @@ haemolynx/
 │   │                                         #   haemolynx.pipeline.schema; configs are generated
 │   ├── pipeline_presets.py                   # The panel's presets + the examples' own, for --preset
 │   └── regenerate_configs.py                 # Rewrite every *_config.yaml from its schema
+├── docs/
+│   ├── export_dictionary.md       # Every output file's columns and units (generated, see
+│   │                              #   pipeline/export_dictionary.py)
+│   ├── statistics_glossary.md     # Every statistic's definition (generated, statistics/glossary.py)
+│   └── notes/                     # Design notes and measurement history, one file per area
 ├── tutorials/
+│   ├── README.md                  # The user guide the main README points to
+│   ├── dev_README.md              # Tests, branch comparison, adding a setting, releasing
 │   ├── pipeline_tutorial.ipynb   # **Source of truth** for the step-by-step tutorial
 │   ├── pipeline_tutorial.py       # Auto-generated from the notebook (do not edit by hand)
 │   ├── tutorial_plots.py          # Inline plot helpers for the notebook
@@ -214,6 +232,12 @@ haemolynx/
 │   │                       #   G4 (build_g4.py: segmentation, dextran and claudin-5 side by side),
 │   │                       #   DR1 (build_dr1.py: does the vessel go on past the tip?),
 │   │                       #   DR2 (build_dr2.py: and does E4's route follow it?)
+│   ├── *_review/           # The other marked grids' builders and mark fitters (see Marked
+│   │                       #   example grids): bridge_review (M), doubled_run_review (H, H2),
+│   │                       #   loop_review (I), stub_protrusion_review (S), thick_bridge_review,
+│   │                       #   thick_junction_review, uncovered_review (UR1)
+│   ├── release_review.py   # The release review's scorer, package release_review/ (TEMPORARY:
+│   │                       #   see Release review)
 │   ├── open_end_sensitivity.py # One solved network under every open_end_model
 │   ├── stats_cross_check.py # The statistics against skan, maskel and VesselVio on one mask
 │   │                       #   (stats.8a), and a ledger of which HaemoLynx step makes each
@@ -227,8 +251,6 @@ haemolynx/
 │   └── integration/        # Full-pipeline and tutorial tests (@pytest.mark.integration)
 └── tests/data/             # Small TIFF/H5 fixtures for tests and tutorial input
 ```
-
-> **Note:** there is an active repo-cleanup effort — see **“Cleanup plan”** at the end of this file.
 
 ---
 
@@ -1254,25 +1276,3 @@ Rules for agents:
   next check. The scorecard's "Work in order" list is that order.
 - **Measure a `git archive` of the commit being scored**, not the live tree: peer sessions edit
   `src/` mid-run.
-
----
-
-# Cleanup plan (TEMPORARY — delete this whole section once implemented)
-
-> **Status:** Phases 0, 1, 2 and 3 are done (Phase 2's renames on 2026-10-23), Phase 4 all but
-> the README note. The finished items and the findings behind the plan are in `docs/notes/cleanup_plan.md`.
-> Record a full-run pass count before starting Phase 2, and re-run the full `pytest` (including
-> `slow`/`integration`) after **every** rename; no phase may reduce the green count. Tick items as
-> they land, and **remove this entire section** when every one is done.
-
-- [x] **Phase 2 renames** — file/module names only, public function names unchanged; `git mv`, one
-      commit per rename, imports updated in `src/`, `examples/`, `tests/` and the `__init__.py`
-      re-exports:
-  - [x] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`
-  - [x] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`
-  - [x] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py`
-- [ ] **Phase 4** — a short "preset system" note in the README (schema declarations → preset dicts →
-      CLI/YAML overrides); the README does not mention presets today.
-- [ ] **When done** — full `pytest` green, the tutorial notebook still exports and runs; update the
-      Repository layout and Key modules sections to the new names, drop the misnomer caveats, and
-      delete this section.
