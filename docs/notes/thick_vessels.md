@@ -348,7 +348,7 @@ the tree misses the thick vessel's own centreline: the region-coverage track wou
 join is asked to connect. Harness and traces: `outputs/nc/` in worktree `angry-chandrasekhar-eb21c0`
 (git-ignored; `trace_N/TRACE.md`, `trace_bridges/`, `joins/`).
 
-**Grid J, a census of the join's paths** (sent to Harvey 2026-10-26, unmarked;
+**Grid J, a census of the join's paths** (Harvey, 2026-10-26;
 `scripts/thick_bridge_review/join_census.py`): every path the join drew on E14.5 that the saved
 graph still joins and that passes nowhere within 3 um of a Phase 5 piece, 25 of the 212 (only 54
 of the 212 arms are in the saved graph at all), shuffled into J01-J25 and drawn as Phase 5 draws,
@@ -356,5 +356,11 @@ the join's path in red. Marks J joined here, C the big vessel's own centreline, 
 connected at all. No rule is fixed: the key (`outputs/join_census_review/key.csv`, same worktree)
 keeps the arm's approach, its voxels beside the start (0 on 10, 1 on 9, 2 on 6), whether the saved
 graph has a bridge along it (16), the loop it closes (12 the only link), for a rule to be fitted to
-the marks. Page: https://claude.ai/artifact/P35gsPJAhs4A9dKmCi5HQV (marks in its `marks`
-collection).
+the marks. Page: https://claude.ai/artifact/P35gsPJAhs4A9dKmCi5HQV. **Marked all wrong** (Harvey, in
+chat the same day, none on the page: "All of these are wrong, most are on top of existing
+bridges"; `outputs/join_census_review/marks.csv`, N on all 25). Most lie on a bridge because the
+split straightened the join's own path into it (16 of 25; the other 9 lie along vessel). With the
+Phase 5 cases the join made, 57 marked: N 37, C 12, B 6, V 2. So the join's connections are wrong
+nearly two times in three, a real vessel opening in one time in ten, and the thick vessel's own
+centreline, where the tree misses it, one time in five; all N is the best any measure can do on
+grid J, and no rule is fitted.
