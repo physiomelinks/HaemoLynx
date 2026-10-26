@@ -157,7 +157,12 @@ direction. **Design C.4**: bridges ending within one lumen radius of each other 
 at `00611a47`, replayed) it moved 11 of 73, and the clean-up after the split then took a different
 path at one tangle at the image face (x < 30 um, y 95-150 um), where the split already joins two
 nodes by a 4 um bridge and a 47 um vessel: saved graph 1,226 -> 1,221 nodes, vessel length 47,314
--> 47,139 um. **Design C.5**: a bridge whose straight line would cross more than 2 um of background
+-> 47,139 um. There C.4 moves two bridge ends onto the junctions beside them (2.8 and 7 um away),
+and the clean-up then takes out a 93 um and a 63 um vessel running along the thick vessel just
+outside its region (in the segmentation; 8.7 and 2.3 um median from the tree) and shortens a 57 um
+one to 30 um, 152 um of the 175. Drawn for Harvey on both graphs, down z and down x, and kept at his
+call (2026-10-26): the tangle reads better with C.4. A judgement on one place, not a marked grid.
+**Design C.5**: a bridge whose straight line would cross more than 2 um of background
 keeps the way its vessel ran through the lumen (`DRAWN_BRIDGE`): 1 of 73 on E14.5.
 **`thick_bridge_centreline_tolerance_um`** (1.5 um, unfitted) replaces the constant;
 `thick_bridge_one_radius` was not made (the drawn-path rule it would switch back to is gone, and
