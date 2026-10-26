@@ -64,7 +64,10 @@ Issues = "https://github.com/physiomelinks/HaemoLynx/issues"
 # whole run with "pytest-qt requires either PySide6, PyQt5 or PyQt6 installed"
 # when there is no Qt binding, rather than skipping. The napari-gui CI job
 # installs it alongside the napari extra, which brings a binding with it.
-dev = ["pytest", "pytest-cov", "pytest-xdist", "ruff", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'"]
+#
+# psutil is for the tests alone (the memory a process hands back, the workers
+# a pool leaves running); the library reads it only when it is there.
+dev = ["pytest", "pytest-cov", "pytest-xdist", "ruff", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'", "psutil"]
 notebook = ["ipykernel"]
 # The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
 # so this extra is installable only there -- deliberately, rather than

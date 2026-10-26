@@ -2,6 +2,7 @@
 always added after a solve with signed flows -- there is no toggle."""
 from __future__ import annotations
 
+import importlib.util
 from types import SimpleNamespace
 
 import networkx as nx
@@ -385,6 +386,16 @@ def test_flow_direction_colouring_lives_on_export_tab():
     assert owner["flow_direction_colouring"] == "10. Export"
 
 
+def _builds_a_viewer(test):
+    """A test taking ``make_napari_viewer`` builds a real viewer: a gui test,
+    run by the napari-gui job and skipped where napari is not installed (every
+    other job; the fixture is napari's own)."""
+    needs_napari = pytest.mark.skipif(
+        importlib.util.find_spec("napari") is None, reason="needs napari"
+    )
+    return pytest.mark.gui(needs_napari(test))
+
+
 def _perpendicular_arrow_graph() -> nx.MultiGraph:
     """Two edges from the origin: one along +z, one along +y (physical z,y,x)."""
     graph = nx.MultiGraph()
@@ -449,6 +460,7 @@ def _heading_colours_for_graphs(make_napari_viewer, *graphs) -> list[np.ndarray]
     return colours
 
 
+@_builds_a_viewer
 def test_flow_heading_y_opposite_colours_differ(make_napari_viewer):
     pos, neg = _heading_colours_for_graphs(
         make_napari_viewer,
@@ -458,6 +470,7 @@ def test_flow_heading_y_opposite_colours_differ(make_napari_viewer):
     assert not np.allclose(pos, neg, atol=0.02)
 
 
+@_builds_a_viewer
 def test_flow_heading_x_opposite_colours_differ(make_napari_viewer):
     pos, neg = _heading_colours_for_graphs(
         make_napari_viewer,
@@ -467,6 +480,7 @@ def test_flow_heading_x_opposite_colours_differ(make_napari_viewer):
     assert not np.allclose(pos, neg, atol=0.02)
 
 
+@_builds_a_viewer
 def test_flow_heading_z_vertical_colours_differ(make_napari_viewer):
     pos, neg = _heading_colours_for_graphs(
         make_napari_viewer,
@@ -476,6 +490,7 @@ def test_flow_heading_z_vertical_colours_differ(make_napari_viewer):
     assert not np.allclose(pos, neg, atol=0.02)
 
 
+@_builds_a_viewer
 def test_flow_heading_deg_uses_fixed_clim(make_napari_viewer):
     from haemolynx.gui._widget import _apply_layers, _colour_layer
 
@@ -489,6 +504,7 @@ def test_flow_heading_deg_uses_fixed_clim(make_napari_viewer):
     assert layer.edge_contrast_limits == pytest.approx((0.0, 360.0))
 
 
+@_builds_a_viewer
 def test_flow_dir_z_colour_distinguishes_perpendicular_arrows(make_napari_viewer):
     """Axis-aligned +z and +y arrows must differ when coloured by flow_dir_z."""
     from haemolynx.gui._widget import _apply_layers, _colour_layer
@@ -510,6 +526,7 @@ def test_flow_dir_z_colour_distinguishes_perpendicular_arrows(make_napari_viewer
     assert layer.edge_contrast_limits == pytest.approx((-1.0, 1.0))
 
 
+@_builds_a_viewer
 def test_flow_direction_combo_colours_by_flow_dir_z(make_napari_viewer):
     """Colour-by combo re-applies diverging limits without re-running export."""
     from haemolynx.gui._widget import _apply_layers, _attach_colour_scale, _layer_controls
@@ -543,6 +560,7 @@ def _rgb_for_axis_graph(make_napari_viewer, along: str, flow_sign: int) -> np.nd
     return np.asarray(layer.edge_color, dtype=float)[0]
 
 
+@_builds_a_viewer
 def test_flow_direction_layer_defaults_to_3d_rgb(make_napari_viewer):
     """Default colour-by is the 3D RGB map, not 2D heading or a 1D LUT."""
     from haemolynx.gui._widget import _active_column, _apply_layers
@@ -564,6 +582,7 @@ def test_flow_direction_layer_defaults_to_3d_rgb(make_napari_viewer):
     np.testing.assert_allclose(colour, (0.5, 0.5, 1.0), atol=0.05)
 
 
+@_builds_a_viewer
 def test_flow_dir_rgb_axis_colours_and_complements(make_napari_viewer):
     expected = {
         ("x", 1): (1.0, 0.5, 0.5),
@@ -588,6 +607,7 @@ def test_flow_dir_rgb_axis_colours_and_complements(make_napari_viewer):
         )
 
 
+@_builds_a_viewer
 def test_flow_dir_rgb_combo_switch_to_flow_abs_uses_colormap(make_napari_viewer):
     from haemolynx.gui._widget import (
         _active_column,
@@ -648,6 +668,7 @@ def test_colormap_catalog_lists_a_wide_grouped_set():
     assert "hsv" in cyclic
 
 
+@_builds_a_viewer
 def test_column_defaults_use_the_real_colormap_property(make_napari_viewer):
     """``edge_color_colormap`` is a stray attr; Vectors store the LUT on edge_colormap."""
     from haemolynx.gui._widget import _apply_layers, _colour_layer
@@ -688,6 +709,7 @@ def _combo_maps(chooser) -> list[str]:
     ]
 
 
+@_builds_a_viewer
 def test_flow_direction_colormap_combo_hidden_for_direct_rgb(make_napari_viewer):
     from haemolynx.gui._widget import _apply_layers, _attach_colour_scale
 
@@ -706,6 +728,7 @@ def test_flow_direction_colormap_combo_hidden_for_direct_rgb(make_napari_viewer)
     assert chooser.native.isEnabled() is False
 
 
+@_builds_a_viewer
 def test_flow_direction_colormap_combo_applies_a_selected_map(make_napari_viewer):
     from haemolynx.gui._widget import (
         _apply_layers,
@@ -737,6 +760,7 @@ def test_flow_direction_colormap_combo_applies_a_selected_map(make_napari_viewer
     assert layer.edge_contrast_limits == pytest.approx((-1.0, 1.0))
 
 
+@_builds_a_viewer
 def test_colour_by_change_resets_colormap_to_the_column_default(make_napari_viewer):
     from haemolynx.gui._widget import (
         _apply_layers,
