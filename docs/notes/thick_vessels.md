@@ -90,7 +90,9 @@ near it counts only if long enough (3 um at an edge's end, 6 um within). Every e
 region is labelled outside / centreline / inside: inside stretches joined through their nodes
 that lead out of the region and meet the centreline, or come within one lumen radius of it, are
 removed and each exit gets a straight bridge to where the stretch met the centreline (else the
-nearest centreline point, within 2 radii + 5 um); a stretch that only skims the region's edge
+nearest centreline point, within 2 radii + 5 um; the design's nearest point for every bridge, C.2,
+was not built, and Harvey kept the vessel's own line on 2026-10-26, the Phase 5 grid's marks not
+separating long bridges from short); a stretch that only skims the region's edge
 stays vessel, and the thick vessel's own path where its centreline strays off the tree (the
 shortest way between two places a stretch meets the centreline, or a stretch that never leads
 out) stays as it is. Stretches under 2 um are flicker. Nothing is ever cut off: a stretch whose
@@ -166,7 +168,8 @@ call (2026-10-26): the tangle reads better with C.4. A judgement on one place, n
 keeps the way its vessel ran through the lumen (`DRAWN_BRIDGE`): 1 of 73 on E14.5.
 **`thick_bridge_centreline_tolerance_um`** (1.5 um, unfitted) replaces the constant;
 `thick_bridge_one_radius` was not made (the drawn-path rule it would switch back to is gone, and
-Phase 6 runs it from a script). The Phase 5 grid (30 bridges, 30 near-misses, E14.5 at `47edef60`,
+Phase 6 runs it from a script), and stays dropped at Harvey's call (2026-10-26); that script is
+kept only in the git-ignored `outputs/tb/` of worktree `plan-thick-bridges-e32666`. The Phase 5 grid (30 bridges, 30 near-misses, E14.5 at `47edef60`,
 `scripts/thick_bridge_review/build_grid.py`) went to Harvey on 2026-10-24 for marks. **Phase 6**,
 E14.5 built and solved at `47edef60` with the rule before 43dcf453 and with this one: bridges 123
 (1,847 um) -> 63 (505 um), length over radius median 1.31 -> 1.08, vessel length 46,471 -> 47,139
