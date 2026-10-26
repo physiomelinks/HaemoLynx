@@ -120,6 +120,10 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     # row said so. Not calibrated: E14.5 draws 22-25.
     ("organisation", "capillary curvature (degrees per 10 um)"): ("abs", 6.0),
     ("organisation", "tree curvature (degrees per 10 um)"): ("abs", 6.0),
+    # Read at two steps (Harvey, grid D1f: the trees Harvey passed over wound
+    # more). Not calibrated.
+    ("organisation", "tree curvature, median vessel (degrees per 10 um)"): ("abs", 4.0),
+    ("organisation", "tree curvature at 2 um steps, median vessel (degrees per 10 um)"): ("abs", 10.0),
     # The trees' shape (Harvey, grid D1b): their side branches and how well
     # their trunks hold their course. Not calibrated: E14.5 draws its 27
     # leaves exactly and its trunks at 0.55-0.62 against 0.63.
@@ -542,6 +546,14 @@ def organisation_rows(
                 key="tree reach (um)")
     add("capillary curvature (degrees per 10 um)", get(T, "capillary_curvature_deg"), get(S, "capillary_curvature_deg"))
     add("tree curvature (degrees per 10 um)", get(T, "tree_curvature_deg"), get(S, "tree_curvature_deg"))
+    median_vessel = lambda o: (  # noqa: E731
+        None if o is None or not o.tree_curvature_by_vessel_deg else float(np.median(o.tree_curvature_by_vessel_deg))
+    )
+    add("tree curvature, median vessel (degrees per 10 um)", median_vessel(T), median_vessel(S))
+    add(
+        "tree curvature at 2 um steps, median vessel (degrees per 10 um)",
+        get(T, "tree_fine_curvature_deg"), get(S, "tree_fine_curvature_deg"),
+    )
     return rows
 
 

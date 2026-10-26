@@ -52,6 +52,9 @@ DIRECTION_CLASSES = ("z", "y", "x", "oblique")
 #: step its curvature is read at (um).
 HEADING_UM = 10.0
 CURVATURE_STEP_UM = 10.0
+#: The finer step the trees' turn is also read at (still per 10 um of path):
+#: where a centreline's wobble shows (Harvey, grid D1f).
+FINE_CURVATURE_STEP_UM = 2.0
 
 #: The tensor's six independent components, in this order.
 TENSOR_COMPONENTS = ("zz", "yy", "xx", "zy", "zx", "yx")
@@ -121,6 +124,13 @@ class Organisation:
     #: bottom 48 um, its plexus). A Voronoi bed's corners are put at these
     #: depths (``bed.depths_like_template``). None for a template written before.
     capillary_junction_depths_rel: Optional[tuple[float, ...]] = None
+    #: Each tree vessel's own turn per 10 um at :data:`CURVATURE_STEP_UM`
+    #: steps (:func:`path_turning`), sorted: the spread the drawn trees take
+    #: their curves from (E14.5: median 22.9 where the mean over every
+    #: stretch is 29.3); and the median vessel's turn per 10 um read at
+    #: :data:`FINE_CURVATURE_STEP_UM` steps (E14.5: 83). None before them.
+    tree_curvature_by_vessel_deg: Optional[tuple[float, ...]] = None
+    tree_fine_curvature_deg: Optional[float] = None
 
     # -- reading -----------------------------------------------------------
 
@@ -169,6 +179,10 @@ class Organisation:
             "capillary_junction_depths_rel": (
                 None if self.capillary_junction_depths_rel is None else list(self.capillary_junction_depths_rel)
             ),
+            "tree_curvature_by_vessel_deg": (
+                None if self.tree_curvature_by_vessel_deg is None else list(self.tree_curvature_by_vessel_deg)
+            ),
+            "tree_fine_curvature_deg": self.tree_fine_curvature_deg,
         }
 
     @classmethod
@@ -222,6 +236,12 @@ class Organisation:
                 if data.get("tree_reach_um") is None
                 else tuple((str(side), float(median), float(far)) for side, median, far in data["tree_reach_um"])
             ),
+            tree_curvature_by_vessel_deg=(
+                None
+                if data.get("tree_curvature_by_vessel_deg") is None
+                else tuple(float(v) for v in data["tree_curvature_by_vessel_deg"])
+            ),
+            tree_fine_curvature_deg=opt("tree_fine_curvature_deg"),
             capillary_junction_depths_rel=(
                 None
                 if data.get("capillary_junction_depths_rel") is None
@@ -321,6 +341,31 @@ def _curvature(paths: Sequence[np.ndarray]) -> Optional[float]:
         for a, b in zip(units[:-1], units[1:]):
             turns.append(_turn_deg(a, b))
     return float(np.mean(turns)) if turns else None
+
+
+def _median_or_none(values) -> Optional[float]:
+    known = [v for v in values if v is not None]
+    return float(np.median(known)) if known else None
+
+
+def path_turning(path: np.ndarray, step_um: float = CURVATURE_STEP_UM) -> Optional[float]:
+    """One path's mean turn (degrees) between successive *step_um* chords,
+    per :data:`CURVATURE_STEP_UM` of path; None for a path shorter than
+    three steps."""
+    path = np.asarray(path, dtype=float)
+    steps = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    total = float(steps.sum())
+    if total < 3 * step_um:
+        return None
+    cumulative = np.concatenate([[0.0], np.cumsum(steps)])
+    stations = np.arange(0.0, total, step_um)
+    points = np.stack([np.interp(stations, cumulative, path[:, i]) for i in range(3)], axis=1)
+    chords = np.diff(points, axis=0)
+    norms = np.linalg.norm(chords, axis=1)
+    ok = norms > 0
+    units = chords[ok] / norms[ok, None]
+    turns = [_turn_deg(a, b) for a, b in zip(units[:-1], units[1:])]
+    return float(np.mean(turns)) * CURVATURE_STEP_UM / step_um if turns else None
 
 
 def chord_class(chord: np.ndarray) -> int:
@@ -506,6 +551,10 @@ def measure_organisation(
         trunk_turn_deg=_trunk_turn(tree_ends),
         capillary_curvature_deg=_curvature(capillary_paths),
         tree_curvature_deg=_curvature(tree_paths),
+        tree_curvature_by_vessel_deg=tuple(sorted(
+            v for v in (path_turning(p) for p in tree_paths) if v is not None
+        )) or None,
+        tree_fine_curvature_deg=_median_or_none(path_turning(p, FINE_CURVATURE_STEP_UM) for p in tree_paths),
         capillary_node_positions_rel=tuple(
             tuple(float(v) for v in np.asarray(p, float) / np.maximum(extent, 1e-9)) for p in positions
         ),

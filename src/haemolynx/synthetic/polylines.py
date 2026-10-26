@@ -63,6 +63,7 @@ def bend_to_lengths(
     iterations: int = 60,
     extent_um: Optional[np.ndarray] = None,
     curvature_deg: Optional[np.ndarray] = None,
+    cross_wave: Optional[np.ndarray] = None,
 ) -> list[np.ndarray]:
     """One polyline per edge from ``starts[i]`` to ``ends[i]`` whose length is
     ``targets[i]``; a target no longer than the chord gives the straight
@@ -71,7 +72,9 @@ def bend_to_lengths(
     it (no draw: the turns are fixed). With *curvature_deg* (per edge, NaN
     for none), an edge long enough to read it on takes the number of lobes,
     1 to :data:`MAX_LOBES`, whose curve turns nearest that many degrees per
-    10 um (see :func:`lobes`)."""
+    10 um (see :func:`lobes`). *cross_wave* (per edge, 1 without it) scales
+    the second, perpendicular wave: 0 draws a bow in one plane, which turns
+    least for its length."""
     starts = np.asarray(starts, dtype=float).reshape(-1, 3)
     ends = np.asarray(ends, dtype=float).reshape(-1, 3)
     targets = np.asarray(targets, dtype=float).reshape(-1)
@@ -102,6 +105,8 @@ def bend_to_lengths(
     envelope = np.sin(np.pi * s) ** 2
     base = b_starts[:, None, :] + s[None, :, None] * b_chords[:, None, :]
     wobble = 0.5 * np.sin(2.0 * np.pi * s[None, :] + psi[:, None]) * envelope[None, :]
+    if cross_wave is not None:
+        wobble = wobble * np.asarray(cross_wave, dtype=float).reshape(-1)[bent][:, None]
     # Each edge's main offset: the one bow unless its curvature asks for more lobes.
     lobe_shape = np.repeat(envelope[None, :], len(bent), axis=0)
 
@@ -162,6 +167,42 @@ def bend_to_lengths(
     return out  # type: ignore[return-value]
 
 
+#: A tree vessel's fine wobble (:func:`fine_wobble`) is held off its
+#: nodes for this far, and grows to its full size over as far again, so the
+#: directions its junctions are read in stay the chords' (8 um out).
+WOBBLE_END_UM = 4.0
+
+
+def fine_wobble(path: np.ndarray, amplitude: float, noise: np.ndarray, step_um: float) -> np.ndarray:
+    """*path* resampled every *step_um* (its ends kept), each station moved
+    across the path by *amplitude* times *noise* (``(stations, 2)``, as many
+    rows as the resample has) in the two directions perpendicular to it,
+    none at the ends: the fine wobble a centreline read off an image has."""
+    path = np.asarray(path, dtype=float)
+    steps = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    total = float(steps.sum())
+    stations = wobble_stations(total, step_um)
+    if len(stations) < 3 or amplitude <= 0:
+        return path
+    cumulative = np.concatenate([[0.0], np.cumsum(steps)])
+    points = np.stack([np.interp(stations, cumulative, path[:, i]) for i in range(3)], axis=1)
+    tangents = np.gradient(points, axis=0)
+    tangents /= np.maximum(np.linalg.norm(tangents, axis=1, keepdims=True), 1e-12)
+    n1, n2 = perpendicular_frame(tangents)
+    from_ends = np.minimum(stations, total - stations)
+    ramp = np.clip((from_ends - WOBBLE_END_UM) / WOBBLE_END_UM, 0.0, 1.0)
+    weight = ramp**2 * (3.0 - 2.0 * ramp)
+    offsets = amplitude * weight[:, None] * (noise[: len(stations), :1] * n1 + noise[: len(stations), 1:2] * n2)
+    return points + offsets
+
+
+def wobble_stations(total_um: float, step_um: float) -> np.ndarray:
+    """The arc-length stations :func:`fine_wobble` resamples a path of
+    *total_um* at: every *step_um*, and its end."""
+    stations = np.arange(0.0, total_um, step_um)
+    return np.append(stations, total_um) if total_um - stations[-1] > 1e-9 else stations
+
+
 def lobes(s: np.ndarray, k: int) -> np.ndarray:
     """``sin(pi s) sin(k pi s)``: *k* lobes along the chord, alternating
     sides, flat at both ends (so a vessel leaves its node along the chord);
@@ -191,6 +232,7 @@ def bend_path(
     bend_points: int = DEFAULT_POINTS,
     extent_um: Optional[np.ndarray] = None,
     curvature_deg: Optional[float] = None,
+    cross_wave: float = 1.0,
 ) -> np.ndarray:
     """A polyline through *points* (two or more; the interior ones are kept)
     of length *target*: each leg bent to its share of the target by chord
@@ -204,7 +246,8 @@ def bend_path(
     shares = chords / total * float(target) if total > 0 else np.full(len(chords), float(target) / len(chords))
     curvature = None if curvature_deg is None else np.full(len(shares), float(curvature_deg))
     legs = bend_to_lengths(
-        np.stack(pts[:-1]), np.stack(pts[1:]), shares, rng, points=bend_points, extent_um=extent_um, curvature_deg=curvature
+        np.stack(pts[:-1]), np.stack(pts[1:]), shares, rng, points=bend_points, extent_um=extent_um, curvature_deg=curvature,
+        cross_wave=np.full(len(shares), float(cross_wave)),
     )
     path = [legs[0]]
     for leg in legs[1:]:

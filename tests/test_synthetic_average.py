@@ -123,6 +123,8 @@ def test_layouts_are_pooled_on_the_common_grid():
     assert len(org.capillary_node_positions_rel) == len(a.capillary_node_positions_rel) + len(b.capillary_node_positions_rel)
     pooled = sorted((a.capillary_junction_depths_rel or ()) + (b.capillary_junction_depths_rel or ()))
     assert list(org.capillary_junction_depths_rel or ()) == pooled
+    trees = sorted((a.tree_curvature_by_vessel_deg or ()) + (b.tree_curvature_by_vessel_deg or ()))
+    assert list(org.tree_curvature_by_vessel_deg or ()) == trees
     assert org.axis_share == pytest.approx(a.axis_share)
 
 

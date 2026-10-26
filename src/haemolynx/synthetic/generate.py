@@ -116,6 +116,13 @@ TREE_CANDIDATES = 6
 #: How far a capillary's excess over its chord may be stretched past the
 #: tortuosity drawn for it to make up the template's capillary length.
 MAX_TORTUOSITY_SCALE = 3.0
+#: The share of the bend's perpendicular wave a tree vessel keeps when the
+#: template's trees' curvature is read per vessel (:func:`_cross_wave`).
+TREE_CROSS_WAVE = 0.0
+#: The tree vessels' fine wobble (:func:`_with_fine_wobble`): the largest
+#: amplitude tried (um) and the bisection's steps.
+WOBBLE_MAX_UM = 2.0
+WOBBLE_BISECTIONS = 12
 #: The standard normal's 90th percentile.
 _Z90 = 1.2815515655446004
 #: Whether vessels leave the box (the ``synthetic_open_ends`` choices).
@@ -804,17 +811,38 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
         targets = np.array([float(e.length_um or 0.0) for e in simple])
         curvature = None
         if template.organisation is not None:
-            curvature = np.array([_curvature_target(template, e.category) for e in simple])
+            curvature = np.array([_curvature_target(template, e.category, rng) for e in simple])
         paths = list(bend_to_lengths(
-            starts, ends, targets, rng, points=options.bend_points, extent_um=extent, curvature_deg=curvature
+            starts, ends, targets, rng, points=options.bend_points, extent_um=extent, curvature_deg=curvature,
+            cross_wave=np.array([_cross_wave(template, e.category) for e in simple]),
         ))
     with_via = [e for e in edges if e.via]
     for edge in with_via:
         paths.append(bend_path(
             [draft.position(edge.u), *edge.via, draft.position(edge.v)], float(edge.length_um or 0.0), rng,
             bend_points=options.bend_points, extent_um=extent,
-            curvature_deg=None if template.organisation is None else _curvature_target(template, edge.category),
+            curvature_deg=None if template.organisation is None else _curvature_target(template, edge.category, rng),
+            cross_wave=_cross_wave(template, edge.category),
         ))
+
+    def rebend(index: int, target: float) -> np.ndarray:
+        """Edge *index* (of ``simple + with_via``) bent again to *target*."""
+        if index < len(simple):
+            edge = simple[index]
+            return bend_to_lengths(
+                starts[index:index + 1], ends[index:index + 1], np.array([target]), rng, points=options.bend_points,
+                extent_um=extent, curvature_deg=None if curvature is None else curvature[index:index + 1],
+                cross_wave=np.array([_cross_wave(template, edge.category)]),
+            )[0]
+        edge = with_via[index - len(simple)]
+        return bend_path(
+            [draft.position(edge.u), *edge.via, draft.position(edge.v)], target, rng, bend_points=options.bend_points,
+            extent_um=extent,
+            curvature_deg=None if template.organisation is None else _curvature_target(template, edge.category, rng),
+            cross_wave=_cross_wave(template, edge.category),
+        )
+
+    paths = _with_fine_wobble(template, simple + with_via, paths, rng, rebend)
     voxels, lengths = densify_paths(paths, step_um=options.voxel_step_um)
     for edge, edge_voxels, length in zip(simple + with_via, voxels, lengths):
         _add_edge(G, new_id, edge, edge_voxels, float(length), template.diameter_basis)
@@ -834,12 +862,96 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
     return G
 
 
-def _curvature_target(template: NetworkTemplate, category: str) -> float:
-    """The turn per 10 um the template's vessels of *category*'s kind have
-    (``organisation``): its capillaries' or its trees'; NaN for none."""
+def _curvature_target(template: NetworkTemplate, category: str, rng: np.random.Generator) -> float:
+    """The turn per 10 um a drawn vessel of *category* is bent toward
+    (``organisation``): its capillaries' mean; for a tree vessel one drawn
+    from the template's own tree vessels (Harvey, grid D1f: aimed at the
+    mean, every drawn tree wound more than the template's median one), else
+    their mean; NaN for none."""
     organisation = template.organisation
-    value = organisation.capillary_curvature_deg if category == "capillary" else organisation.tree_curvature_deg
+    if category == "capillary":
+        value = organisation.capillary_curvature_deg
+    elif organisation.tree_curvature_by_vessel_deg:
+        value = float(rng.choice(np.asarray(organisation.tree_curvature_by_vessel_deg, dtype=float)))
+    else:
+        value = organisation.tree_curvature_deg
     return float("nan") if value is None else float(value)
+
+
+def _cross_wave(template: NetworkTemplate, category: str) -> float:
+    """How much of the bend's second, perpendicular wave a vessel gets: a
+    tree vessel of a template whose trees' curvature is read per vessel,
+    :data:`TREE_CROSS_WAVE`; every other, all of it."""
+    organisation = template.organisation
+    if category == "capillary" or organisation is None or not organisation.tree_curvature_by_vessel_deg:
+        return 1.0
+    return TREE_CROSS_WAVE
+
+
+def _with_fine_wobble(
+    template: NetworkTemplate, edges: Sequence, paths: list, rng: np.random.Generator, rebend: Any = None
+) -> list:
+    """*paths* with the tree vessels' fine wobble: their median vessel's turn
+    read at ``organisation.FINE_CURVATURE_STEP_UM`` steps brought to the
+    template's (Harvey, grid D1f: E14.5's trees turn 88 degrees per 10 um
+    read every 2 um, the drawn ones' smooth curves 72-75), by one amplitude
+    for every tree vessel (:func:`polylines.fine_wobble`), found by
+    bisection; none when they already turn as much. The wobble lengthens a
+    vessel, so with *rebend* (``rebend(index, target_um)``: the vessel bent
+    again to that length) each tree vessel's bow is drawn again to its
+    length less what the wobble adds, and wobbled: the template's trees owe
+    part of their length to their wobble, and a bow drawn to all of it
+    turned more than theirs at 10 um."""
+    from .organisation import FINE_CURVATURE_STEP_UM, path_turning
+    from .polylines import fine_wobble, wobble_stations
+
+    organisation = template.organisation
+    target = None if organisation is None else organisation.tree_fine_curvature_deg
+    trees_at = [i for i, e in enumerate(edges) if e.category != "capillary"]
+    if target is None or not trees_at:
+        return paths
+    step = FINE_CURVATURE_STEP_UM
+    noise = {}
+    for i in trees_at:
+        total = float(np.linalg.norm(np.diff(np.asarray(paths[i], float), axis=0), axis=1).sum())
+        noise[i] = rng.normal(0.0, 1.0, size=(len(wobble_stations(total, step)), 2))
+
+    def median_turn(amplitude: float) -> Optional[float]:
+        values = [path_turning(fine_wobble(paths[i], amplitude, noise[i], step), step) for i in trees_at]
+        known = [v for v in values if v is not None]
+        return float(np.median(known)) if known else None
+
+    now = median_turn(0.0)
+    if now is None or now >= target:
+        return paths
+    low, high = 0.0, WOBBLE_MAX_UM
+    if (median_turn(high) or 0.0) < target:
+        low = high
+    else:
+        for _ in range(WOBBLE_BISECTIONS):
+            mid = 0.5 * (low + high)
+            if (median_turn(mid) or 0.0) < target:
+                low = mid
+            else:
+                high = mid
+    amplitude = 0.5 * (low + high) if low < high else low
+    out = list(paths)
+    for i in trees_at:
+        wobbled = fine_wobble(paths[i], amplitude, noise[i], step)
+        if rebend is not None:
+            bent_length = _path_length(paths[i])
+            gain = _path_length(wobbled) / bent_length if bent_length > 0 else 1.0
+            if gain > 1.0:
+                again = rebend(i, bent_length / gain)
+                total = _path_length(again)
+                fresh = rng.normal(0.0, 1.0, size=(len(wobble_stations(total, step)), 2))
+                wobbled = fine_wobble(again, amplitude, fresh, step)
+        out[i] = wobbled
+    return out
+
+
+def _path_length(path: Any) -> float:
+    return float(np.linalg.norm(np.diff(np.asarray(path, float), axis=0), axis=1).sum())
 
 
 def _add_edge(G: nx.MultiGraph, new_id: Mapping[int, int], edge: Any, voxels: list, length: float, basis: Optional[str]) -> None:

@@ -1098,7 +1098,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   cell by cell to its density, `bed.density_vertices`), it runs the way its capillaries run (each
   direction judged against its own chord length, `bed.class_chord_ratios`: E14.5's columns) and its
   vessels curve as theirs do (`polylines.lobes`; each capillary its chord times a tortuosity drawn
-  from the template's, `generate._capillary_lengths_by_tortuosity`), all read by `synthetic/organisation.py` and
+  from the template's, `generate._capillary_lengths_by_tortuosity`; each tree vessel's turn drawn
+  from the template's own tree vessels, read at 10 um steps, and a fine wobble bringing its turn read
+  at 2 um to the template's, `generate._with_fine_wobble`), all read by `synthetic/organisation.py` and
   scored in the comparison (a layout only where the template has one, `compare.dispersion`), along
   Delaunay edges or, with `synthetic_bed_model=voronoi`, a Voronoi tessellation's cell edges, its
   corners moved rank for rank onto the template's junction depths

@@ -20,6 +20,7 @@ from haemolynx.synthetic.organisation import (
     profile,
 )
 from haemolynx.synthetic.template import NetworkTemplate
+from haemolynx.synthetic.organisation import FINE_CURVATURE_STEP_UM, path_turning
 from synthetic_fixtures import fixture_template, tiny_hierarchical_graph, TINY_EXTENT_UM
 
 
@@ -175,6 +176,47 @@ def test_the_capillary_junctions_depths_are_recorded():
     assert Organisation.from_dict(old).capillary_junction_depths_rel is None
     # The slab's vertical capillaries meet nothing: no junction.
     assert measure_organisation(_slab(), EXTENT).capillary_junction_depths_rel is None
+
+
+def _arc(radius, degrees, step=0.25):
+    angles = np.radians(np.arange(0.0, degrees, step / radius * 180.0 / np.pi))
+    return np.stack([np.zeros_like(angles), radius * np.sin(angles), radius * (1.0 - np.cos(angles))], axis=1)
+
+
+def test_a_paths_turn_reads_the_same_on_an_arc_at_either_step_and_zero_when_straight():
+    """An arc of radius R turns 10/R radians every 10 um, however finely read."""
+    arc = _arc(40.0, 180.0)
+    expected = np.degrees(10.0 / 40.0)
+    assert path_turning(arc) == pytest.approx(expected, rel=0.03)
+    assert path_turning(arc, FINE_CURVATURE_STEP_UM) == pytest.approx(expected, rel=0.03)
+    straight = np.array([[0.0, 0.0, x] for x in np.arange(0.0, 60.0, 0.5)])
+    assert path_turning(straight) == pytest.approx(0.0) and path_turning(straight, 2.0) == pytest.approx(0.0)
+    assert path_turning(straight[:40]) is None  # under three 10 um steps
+
+
+def test_the_trees_curvature_is_recorded_per_vessel_and_read_finely():
+    """Two tree vessels, an arc and a straight one, and the capillaries apart."""
+    G = nx.MultiGraph()
+    arc = _arc(40.0, 120.0) + np.array([10.0, 10.0, 10.0])
+    straight = np.array([[10.0, 150.0, x] for x in np.arange(10.0, 80.0, 0.5)])
+    for i, (path, label) in enumerate(((arc, "Art1"), (straight, "Ven1"))):
+        G.add_node(2 * i, pos=path[0])
+        G.add_node(2 * i + 1, pos=path[-1])
+        G.add_edge(2 * i, 2 * i + 1, voxels=[list(p) for p in path], branch_order=label)
+    G.add_node(9, pos=np.array([50.0, 100.0, 100.0]))
+    G.add_edge(1, 9, voxels=_line(arc[-1], (50.0, 100.0, 100.0)), branch_order="B01")
+    org = measure_organisation(G, (100.0, 200.0, 200.0))
+    assert len(org.tree_curvature_by_vessel_deg) == 2
+    assert org.tree_curvature_by_vessel_deg[0] == pytest.approx(0.0, abs=1e-6)
+    assert org.tree_curvature_by_vessel_deg[1] == pytest.approx(np.degrees(0.25), rel=0.05)
+    assert org.tree_fine_curvature_deg == pytest.approx(np.degrees(0.25) / 2.0, rel=0.05)  # the median of 0 and the arc's
+    again = Organisation.from_dict(org.to_dict())
+    assert again.tree_curvature_by_vessel_deg == org.tree_curvature_by_vessel_deg
+    assert again.tree_fine_curvature_deg == org.tree_fine_curvature_deg
+    old = org.to_dict()
+    old.pop("tree_curvature_by_vessel_deg")
+    old.pop("tree_fine_curvature_deg")
+    assert Organisation.from_dict(old).tree_curvature_by_vessel_deg is None
 
 
 def _columns(extent=(200.0, 200.0, 200.0)):

@@ -282,3 +282,22 @@ not differ in plexus share, junction width or holes; their trees wind more (26.1
 degrees per 10 um at 10 um steps; the template 22.9) -- four against two, a lead, not a rule
 (`outputs/synthetic_review/d1f_measures.py`, `.csv`). The Delaunay bed is D1e's code: its 4 of 6
 there and 5 of 5 here is the marking's spread, not a change.
+
+## 2026-10-26: the trees curved as the template's at 2 and 10 um (grid D1g)
+
+Harvey: draw the large vessels with the template's own tree curvature, read at both 2 and 10 um
+steps. Every tree vessel was bent toward the template's mean turn per 10 um (29.3 on E14.5), while
+its median vessel turns 26.8; and the drawn trees' smooth curves turned less than the template's
+read every 2 um (72-75 against 88, its centrelines' fine wobble). The organisation now records each
+tree vessel's turn at 10 um steps and the median vessel's at 2 um (`path_turning`,
+`tree_curvature_by_vessel_deg`, `tree_fine_curvature_deg`); each drawn tree vessel takes a target
+drawn from the former, and a fine wobble across it (`polylines.fine_wobble`, none within 4 um of
+either node so its junctions are read as before) brings the median vessel's 2 um turn to the
+template's, one amplitude for the network found by bisection. Drawn to the targets alone the bows
+came out at 33 (a bow of the trees' tortuosity turns about 30 per 10 um whatever its target, so the
+low targets were out of reach); two things brought them down: the wobble's added length is taken
+off each tree vessel's bow, which is drawn again to the rest, and a tree vessel's bow keeps to one
+plane (the bend's second, perpendicular wave off: `generate.TREE_CROSS_WAVE`). E14.5, both beds,
+seeds 1-3: median vessel at 10 um 27-28 (26.8), mean turn 27 (29.3), at 2 um 85 (88); spread across
+vessels p25-p75 about 21-34 (19.7-36.2). Generation 6-8 s, from 3-4. Grid D1g (template #9;
+Voronoi 71-76, Delaunay 71-75; key `outputs/synthetic_review/grid_d1g_key.csv`) sent to Harvey.

@@ -337,6 +337,10 @@ def average_organisations(
         trunk_turn_deg=_mean([o.trunk_turn_deg for o in members]),
         capillary_curvature_deg=_mean([o.capillary_curvature_deg for o in members]),
         tree_curvature_deg=_mean([o.tree_curvature_deg for o in members]),
+        tree_curvature_by_vessel_deg=tuple(sorted(
+            v for o in members for v in (o.tree_curvature_by_vessel_deg or ())
+        )) or None,
+        tree_fine_curvature_deg=_mean([o.tree_fine_curvature_deg for o in members]),
         capillary_node_positions_rel=tuple(tuple(float(v) for v in p) for p in positions) or None,
         capillary_node_spacing_um=_mean([o.capillary_node_spacing_um for o in members]),
         capillary_junction_depths_rel=tuple(sorted(

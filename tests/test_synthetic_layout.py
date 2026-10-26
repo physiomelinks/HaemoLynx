@@ -200,6 +200,48 @@ def run_template(tmp_path_factory):
     return load_template(write_generated_run(tmp_path_factory.mktemp("run")), "statistics")
 
 
+def test_a_fine_wobble_keeps_its_ends_and_the_first_microns_off_each_node():
+    from haemolynx.synthetic import polylines
+
+    path = np.array([[0.0, 0.0, x] for x in np.linspace(0.0, 40.0, 81)])
+    noise = np.random.default_rng(1).normal(size=(len(polylines.wobble_stations(40.0, 2.0)), 2))
+    wobbled = polylines.fine_wobble(path, 0.5, noise, 2.0)
+    assert np.allclose(wobbled[0], path[0]) and np.allclose(wobbled[-1], path[-1])
+    near = np.abs(wobbled[:, 2]) <= polylines.WOBBLE_END_UM
+    assert np.allclose(wobbled[near, :2], 0.0)  # still on the chord within the end's reach
+    assert np.abs(wobbled[:, :2]).max() > 0.1
+    assert np.array_equal(polylines.fine_wobble(path, 0.0, noise, 2.0), path)
+
+
+def _tree_turns(G, step):
+    from haemolynx.synthetic.organisation import path_turning
+
+    values = [path_turning(np.asarray(d["voxels"], float), step) for *_e, d in G.edges(data=True) if d.get(SYNTHETIC_CLASS) != "capillary"]
+    return [v for v in values if v is not None]
+
+
+def test_the_trees_take_the_templates_fine_turn_and_keep_their_length(run_template):
+    """Harvey, grid D1f: the trees read at both 2 and 10 um steps."""
+    from haemolynx.synthetic import generate
+
+    org = run_template.organisation
+    assert org.tree_curvature_by_vessel_deg and org.tree_fine_curvature_deg is not None
+    wobbly = replace(run_template, organisation=replace(org, tree_fine_curvature_deg=org.tree_fine_curvature_deg + 25.0))
+    G = generate_network(wobbly, seed=1)
+    assert np.median(_tree_turns(G, 2.0)) == pytest.approx(wobbly.organisation.tree_fine_curvature_deg, rel=0.08)
+    smooth = generate_network(replace(wobbly, organisation=replace(org, tree_fine_curvature_deg=None)), seed=1)
+    tree_length = lambda H: sum(d["length"] for *_e, d in H.edges(data=True) if d.get(SYNTHETIC_CLASS) != "capillary")  # noqa: E731
+    # The bows are drawn shorter by what the wobble adds: the trees keep their length.
+    assert tree_length(G) == pytest.approx(tree_length(smooth), rel=0.03)
+    assert generate.WOBBLE_MAX_UM > 0
+
+
+def test_the_comparison_reads_the_trees_at_both_steps(run_template):
+    rows = {(r.section, r.characteristic): r for r in compare_templates(run_template, run_template)}
+    for name in ("tree curvature, median vessel (degrees per 10 um)", "tree curvature at 2 um steps, median vessel (degrees per 10 um)"):
+        assert rows[("organisation", name)].within is True
+
+
 def test_the_capillaries_tortuosity_tail_follows_the_templates_median_and_p90(run_template):
     """The tail's shape -- its 90th percentile's excess over straight against
     the median's -- is the template's; the class's total length sets the
