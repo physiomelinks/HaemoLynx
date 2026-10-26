@@ -248,3 +248,13 @@ its graph when the report predates them; the comparison bands them (not calibrat
 
 Grid D1e (template at #5; six Delaunay seeds 51-56, five Voronoi 51-55; key
 `outputs/synthetic_review/grid_d1e_key.csv`) sent to Harvey.
+
+Grid D1e (Harvey, 2026-10-26): "5 is best, 1, 6, 8, 9 are okay" -- the template (#5) and Delaunay
+53, 55, 51 and 56: four of eleven, four of six Delaunay beds, no Voronoi (none in any grid,
+D1a-D1e). On the realism battery (`outputs/synthetic_review/d1e_measures.py`, `.csv`) the Voronoi
+beds are nearer E14.5 than the Delaunay ones on its holes, the evenness of its capillary density
+and its mesh size; what sets them apart is the plexus: 37% of their junctions lie in the bottom
+48 um against 60% of the Delaunay beds' and 61% of E14.5's. Among the Delaunay beds (four picked
+against two, too few to fit a rule to) the picked lean the template's way on columns (5.1 against
+4.1 per 10^4 um^2; E14.5 7.7), junction width (smallest angle 69 against 64 degrees) and holes,
+and the other way on tortuosity (P90 1.27 against 1.35; E14.5 1.50).
