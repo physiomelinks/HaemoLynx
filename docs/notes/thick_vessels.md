@@ -364,3 +364,18 @@ Phase 5 cases the join made, 57 marked: N 37, C 12, B 6, V 2. So the join's conn
 nearly two times in three, a real vessel opening in one time in ten, and the thick vessel's own
 centreline, where the tree misses it, one time in five; all N is the best any measure can do on
 grid J, and no rule is fitted.
+
+**The join switched off** (Harvey's request, 2026-10-26): E14.5 captured twice at `e8ce15fb`,
+low-RAM (the same graph as in RAM), with the config as it is and with
+`skeleton_thick_vessel_max_bridge_distance_um` = 0, which leaves every arm past the cap. All 57
+marked cases the join made are joined with it on; with it off, 50 go: N 31 of 37, B 5 of 6, C 12
+of 12, V 2 of 2. Of the 7 left, the wall join puts back 2 (Phase 5's 18 and 52, both N; it drew 19
+dead ends on to a centreline instead of 4, the refusals the same), the thick ends' extension 1 (J18,
+N), the skeleton without the join 4 (J08 and J23, one place, by the clean-up's gap filling; J21;
+Phase 5's 33, a 3.4 um B piece). None of the 5 lost real openings comes back: the nearest dead end
+to each is 16-30 um away, past the wall join's 15 um reach. Right by the marks (N gone, B, C or V
+kept): off 32 of 57, on 20 of 57; neither is near 90%. The thick vessel's own centreline stays one
+piece (2,589 -> 2,923 um along the tree: the end extension draws more), but the saved graph loses
+24 bridges (77 -> 53), 11 more pieces stand apart (53 -> 64; the main network 1,171 -> 1,115
+nodes), island ends 94 -> 116, vessel 47,596 -> 47,437 um. Nothing changed in the build. Harness:
+`outputs/nc/run_on_off.py`, `compare_on_off.py`, `on_off_cases.csv` (same worktree).
