@@ -626,3 +626,31 @@ def test_the_low_ram_option_removes_and_recovers_the_same(tmp_path):
     assert sorted(ram.edges(keys=True)) == sorted(low.edges(keys=True))
     for edge in ram.edges(keys=True):
         assert np.array_equal(np.asarray(ram.edges[edge]["voxels"]), np.asarray(low.edges[edge]["voxels"]))
+
+
+def test_the_built_network_carries_its_lumen_artefact_counts(tmp_path):
+    """The lumen-artefact report the stage logs is kept on the graph it hands
+    on (``graph.LUMEN_ARTEFACT_COUNTS``), the same counts as the report; never
+    a reason to stop the run."""
+    from haemolynx.graph import LUMEN_ARTEFACT_COUNTS, diagnose_lumen_artefacts, lumen_artefact_counts
+
+    mask = _mask_under(LONG_CROSS)
+    network = build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, mask), SCHEMA)
+
+    G = network.graph
+    report = diagnose_lumen_artefacts(G, mask, voxel_size_zyx=(1.0, 1.0, 1.0), stub_radius_multiple=3.0)
+    assert G.graph[LUMEN_ARTEFACT_COUNTS] == lumen_artefact_counts(report)
+    assert G.graph[LUMEN_ARTEFACT_COUNTS]["found"] is False
+
+
+def test_a_low_ram_build_keeps_no_lumen_artefact_counts(tmp_path):
+    """The low-RAM option skips the report; a graph loaded with counts from
+    another build loses them rather than carrying them as this run's."""
+    from haemolynx.graph import LUMEN_ARTEFACT_COUNTS
+
+    mask = _mask_under(LONG_CROSS)
+    network = build_network(
+        _settings(tmp_path, use_memmap_loading=True, memmap_directory=tmp_path / "mm"),
+        _volume(tmp_path, LONG_CROSS, mask), SCHEMA,
+    )
+    assert LUMEN_ARTEFACT_COUNTS not in network.graph.graph

@@ -3569,6 +3569,43 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="lumen_cleanup_rewire_pairs",
+            kind="bool",
+            default=True,
+            help=(
+                "Of two vessels drawn through one segmented vessel, take the one nearer the "
+                "wall out by cutting out only its stretch beside the other and joining what "
+                "is left of it to the other where the two part, rather than deleting it whole. "
+                "What lies beyond the doubled stretch was a vessel more often than not on "
+                "E14.5. On E14.5 this kept 0.9 mm more centreline and 0.7 points more of the "
+                "mask covered, and left 9 more short loops, all round holes over 10 um, and 5 "
+                "more dead ends. Off deletes the second vessel whole, as graph building did "
+                "before. No effect without the segmented mask or with "
+                "bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="lumen_cleanup_guard_rejoins",
+            kind="bool",
+            default=True,
+            help=(
+                "When the clean-up cuts a doubled stretch out of a vessel and joins what is "
+                "left to the vessel beside it, make no join that would close a loop inside "
+                "one segmented vessel; that part goes with the stretch instead. On E14.5 this "
+                "took 73 um more of doubled centreline out and covered 0.9 points more of the "
+                "mask, and left 7 more short loops, all round holes of 10 um or more, and 3 "
+                "more dead ends. Off makes every such join, as graph building did before. The "
+                "rewire of lumen_cleanup_rewire_pairs always makes this test. No effect "
+                "without the segmented mask or with bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
             name="retrace_lost_skeleton",
             kind="bool",
             default=True,

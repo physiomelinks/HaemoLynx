@@ -672,6 +672,8 @@ class RunRecorder:
         self.error: Optional[BaseException] = None
         self._error_stage: Optional[str] = None
         self.settings_error: Optional[str] = None
+        #: What the run's read-only checks found (``RunProgress.checks``).
+        self.checks: dict[str, Any] = {}
         self.recorded_settings: Optional[dict[str, Any]] = None
         self._config_values: Optional[dict[str, Any]] = None
         try:
@@ -833,6 +835,7 @@ class RunRecorder:
             "memory_method": MEMORY_METHOD,
             "peak_rss_bytes": peak_rss_bytes(),
             "stages": self.stages,
+            "checks": plain(self.checks),
             "inputs": inputs,
             "settings_file": None,
             "settings_error": self.settings_error,
@@ -902,7 +905,7 @@ def record_run(
     """
     recorder = RunRecorder(settings, schema, start_from=start_from, stop_after=stop_after)
     try:
-        yield RunProgress(recorder.watch(progress))
+        yield RunProgress(recorder.watch(progress), checks=recorder.checks)
     except BaseException as error:
         recorder.fail(error)
         raise

@@ -331,6 +331,19 @@ def test_a_staged_run_writes_its_manifest_beside_its_outputs(fixture_run):
         assert all(stage["peak_rss_bytes"] > 0 for stage in manifest["stages"])
 
 
+def test_a_staged_runs_manifest_records_the_lumen_artefact_counts(fixture_run):
+    """The counts the graph building stage kept on the graph
+    (``graph.LUMEN_ARTEFACT_COUNTS``) are the manifest's
+    ``checks.lumen_artefacts``: what the run's log warned of, kept."""
+    from haemolynx.graph import LUMEN_ARTEFACT_COUNTS
+
+    folder, _before, graph = fixture_run
+    manifest = _read(folder, FIXTURE.stem)
+    recorded = manifest["checks"][LUMEN_ARTEFACT_COUNTS]
+    assert recorded == graph.graph[LUMEN_ARTEFACT_COUNTS]
+    assert set(recorded) >= {"found", "pairs_in_one_lumen", "loops_inside_one_lumen", "tips_in_another_lumen"}
+
+
 def test_a_staged_runs_settings_file_reruns_the_same_settings(fixture_run):
     folder, before, _graph = fixture_run
     loaded = load_config(folder / f"{FIXTURE.stem}{SETTINGS_SUFFIX}", SCHEMA)

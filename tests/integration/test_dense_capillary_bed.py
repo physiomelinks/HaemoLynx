@@ -19,7 +19,9 @@ pytest.importorskip("skan")
 from haemolynx.graph import (
     build_graph_from_skeleton,
     diagnose_graph_against_mask,
+    diagnose_lumen_artefacts,
     diagnose_parallel_duplicates_in_lumen,
+    lumen_artefact_counts,
 )
 from haemolynx.graph._helpers import EdgeSampleIndex
 from haemolynx.graph.assemble import mask_radius_sampler
@@ -92,6 +94,24 @@ def test_no_vessel_is_drawn_twice_in_one_lumen(built):
     bed, G, _bridges, _before = built
     report = diagnose_parallel_duplicates_in_lumen(G, bed.mask, voxel_size_zyx=bed.voxel_size_zyx)
     assert report["duplicate_pairs"] == []
+
+
+def test_the_lumen_artefact_report_finds_nothing_that_is_never_a_vessel(built):
+    """The report ``build_network`` logs and keeps (``lumen_artefact_counts``),
+    held as the Nerve fixture's is (``test_pipeline_invariants.py``): no loop
+    inside one lumen, no dead end whose tip is in another vessel's lumen,
+    beside another centreline or mostly off the mask, and no pair in one
+    lumen -- nothing its warning would name."""
+    bed, G, _bridges, _before = built
+    report = diagnose_lumen_artefacts(G, bed.mask, voxel_size_zyx=bed.voxel_size_zyx)
+    counts = lumen_artefact_counts(report)
+
+    assert counts["found"] is False, counts
+    assert counts["pairs_in_one_lumen"] == 0
+    assert counts["loops_inside_one_lumen"] == 0
+    assert counts["tips_in_another_lumen"] == 0
+    assert counts["dead_ends_beside_another_centreline"] == 0
+    assert counts["dead_ends_off_the_mask"] == 0
 
 
 def test_nothing_segmented_is_left_out_of_the_graph(built):

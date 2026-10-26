@@ -198,6 +198,8 @@ STAGES: tuple[Stage, ...] = (
             "remove_short_loops_under_um",
             "lumen_cleanup_max_rounds",
             "short_loop_keep_hole_over_um",
+            "lumen_cleanup_rewire_pairs",
+            "lumen_cleanup_guard_rejoins",
             "retrace_lost_skeleton",
             # Read by the thick-vessel split, graph building's last step.
             "thick_vessel_fill_centreline_gaps",
@@ -493,10 +495,14 @@ class RunProgress:
         self,
         callback: Optional[ProgressCallback] = None,
         stages: Sequence[Stage] = STAGES,
+        checks: Optional[dict] = None,
     ) -> None:
         self._callback = callback
         #: Only stages the pipeline actually runs; a panel-only tab is not one.
         self._stages = tuple(stage for stage in stages if stage.call)
+        #: What the run's read-only checks found, by name, for its record
+        #: (``pipeline.provenance``: the manifest's ``checks``).
+        self.checks: dict = checks if checks is not None else {}
 
     @property
     def total(self) -> int:

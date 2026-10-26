@@ -50,6 +50,7 @@ from .mask_recovery import (
 from .facing_ends import DEFAULT_FACING_MAX_GAP_UM, join_facing_dead_ends
 from .lumen_loops import (
     DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
+    REWIRE_PAIRS,
     remove_loops_inside_one_lumen,
     remove_parallel_edges_in_lumen,
     remove_short_loops,
@@ -57,7 +58,7 @@ from .lumen_loops import (
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
-from .doubled_stretches import resolve_doubled_stretches
+from .doubled_stretches import GUARD_REJOINS, resolve_doubled_stretches
 from .thick_vessel_junctions import remove_dangling_bridges
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,13 @@ class LumenCleanup:
     #: The most rounds :func:`consolidate_lumen` runs before it stops,
     #: settled or not (``lumen_cleanup_max_rounds``).
     max_rounds: int = CONSOLIDATION_MAX_ROUNDS
+    #: Whether the pair rule takes the edge that goes out by rewiring it
+    #: (``doubled_stretches.rewire_pair``) rather than deleting it whole
+    #: (``lumen_cleanup_rewire_pairs``).
+    rewire_pairs: bool = REWIRE_PAIRS
+    #: Whether the stretch step's rejoin makes no join that would close a loop
+    #: inside one lumen (``lumen_cleanup_guard_rejoins``).
+    guard_rejoins: bool = GUARD_REJOINS
     #: The pair rule's and the stretch finder's verdicts, kept from round to
     #: round and from one consolidate_lumen call to the next on the same
     #: object: build_network cleans up after smoothing and again after the
@@ -328,6 +336,8 @@ def lumen_cleanup(
     short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
     along_thick_centreline: Callable[[np.ndarray], float] | None = None,
     max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
+    rewire_pairs: bool = REWIRE_PAIRS,
+    guard_rejoins: bool = GUARD_REJOINS,
 ) -> LumenCleanup:
     """The clean-up the end of graph building runs, built from the same
     settings :func:`build_graph_from_skeleton` takes -- so a caller that
@@ -337,7 +347,9 @@ def lumen_cleanup(
     *image_shape* is the skeleton's: the stub prune keeps a short stub at an
     image face. *mask_support*, a ``MaskSupport`` over the mask, is used in
     place of building one. *along_thick_centreline*: see
-    ``LumenCleanup.along_centreline``.
+    ``LumenCleanup.along_centreline``. *rewire_pairs* and *guard_rejoins*:
+    see ``LumenCleanup``; each off is how the clean-up ran before
+    PLAN_clean_graph.md 1d.
     """
     support = None
     if segmentation_mask is not None and bridge_require_mask_support:
@@ -403,6 +415,8 @@ def lumen_cleanup(
         short_loop_keep_hole_um=float(short_loop_keep_hole_over_um or 0.0),
         along_centreline=along_thick_centreline,
         max_rounds=max(1, int(max_rounds)),
+        rewire_pairs=bool(rewire_pairs),
+        guard_rejoins=bool(guard_rejoins),
     )
 
 
@@ -452,7 +466,7 @@ def consolidate_lumen(
         G = remove_edges_off_the_mask(G, cleanup.support)
         G = remove_parallel_edges_in_lumen(
             G, cleanup.support, memo=pairs_memo, keep_apart=cleanup.keep_apart,
-            along_centreline=cleanup.along_centreline,
+            along_centreline=cleanup.along_centreline, rewire=cleanup.rewire_pairs,
         )
         G = remove_loops_inside_one_lumen(
             G, cleanup.support, along_centreline=cleanup.along_centreline, memo=loops_memo
@@ -468,7 +482,7 @@ def consolidate_lumen(
         # another, rewired rather than deleted (graph.doubled_stretches).
         G = resolve_doubled_stretches(
             G, cleanup.support, keep_apart=cleanup.keep_apart, memo=stretch_memo,
-            along_centreline=cleanup.along_centreline,
+            along_centreline=cleanup.along_centreline, guard_joins=cleanup.guard_rejoins,
         )
         # After the thick-vessel split the clean-up runs again, and a strand
         # it takes out can leave the bridge that joined it to the thick
@@ -526,6 +540,8 @@ def build_graph_from_skeleton(
     along_thick_centreline: Callable[[np.ndarray], float] | None = None,
     mask_support: MaskSupport | None = None,
     lumen_cleanup_max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
+    lumen_cleanup_rewire_pairs: bool = REWIRE_PAIRS,
+    lumen_cleanup_guard_rejoins: bool = GUARD_REJOINS,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -657,6 +673,12 @@ def build_graph_from_skeleton(
         (``lumen_loops.loop_hole_um``) is left to the review list rather than
         broken: grids Q and Q2 found most of those real. 0 breaks every short
         loop.
+    lumen_cleanup_rewire_pairs, lumen_cleanup_guard_rejoins
+        Of two edges in one lumen, take the one that goes out by rewiring --
+        its stretch beside the other cut out, what is left joined where it
+        parts -- rather than deleting it whole; and let the stretch step make
+        no join that would close a loop inside one lumen (PLAN_clean_graph.md
+        1d). Both on by default; off is the clean-up as it was before.
     along_thick_centreline
         How much of a polyline (µm) follows the thick-vessel centreline tree
         (``thick_vessel_junctions.ThickCentreline.along_um``), when the run
@@ -730,6 +752,8 @@ def build_graph_from_skeleton(
         short_loop_keep_hole_over_um=short_loop_keep_hole_over_um,
         along_thick_centreline=along_thick_centreline,
         max_rounds=lumen_cleanup_max_rounds,
+        rewire_pairs=lumen_cleanup_rewire_pairs,
+        guard_rejoins=lumen_cleanup_guard_rejoins,
     )
     prune_stubs = cleanup.prune
     if debug and mask_support is not None:

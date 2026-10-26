@@ -411,11 +411,18 @@ FILES: tuple[OutputFile, ...] = (
         "{stem}_run_manifest.json", _RUN,
         "What produced the outputs: the settings as the run started, the HaemoLynx version, "
         "git commit, Python, platform and dependency versions, each input file's size, time and "
-        "sha256, and each stage's start, end, wall time (seconds) and peak memory (bytes).",
+        "sha256, and each stage's start, end, wall time (seconds) and peak memory (bytes); "
+        "checks.lumen_artefacts holds the lumen-artefact report's counts on the graph graph building "
+        "handed on (null where it did not run: the low-RAM option, a synthetic network): pairs of "
+        "edges in one lumen, loops inside one lumen, dead-end tips in another vessel's lumen and "
+        "whether any was found, as the run's log warns.",
         (
             _c("stages[].wall_seconds", "s", "The stage's wall time."),
             _c("stages[].peak_rss_bytes", "bytes", "The stage's peak memory."),
             _c("inputs[].size_bytes", "bytes", "An input file's size."),
+            _c("checks.lumen_artefacts.doubled_centreline_um", "um",
+               "Centreline running beside another in the same lumen."),
+            _c("checks.lumen_artefacts.centreline_um", "um", "The graph's centreline, as the report samples it."),
         ),
         "Every other key is text or a nested record; see pipeline/provenance.py.",
     ),

@@ -703,13 +703,15 @@ def cuts_off_vessels(G: nx.MultiGraph, edge) -> bool:
 
 #: Whether :func:`remove_parallel_edges_in_lumen` rewires the edge of a pair
 #: that goes (``doubled_stretches.rewire_pair``) rather than deleting it
-#: whole, when a caller does not say. Off: on E14.5 (2026-10-25, the clean-up
-#: on one graph either way) rewiring kept 0.9 mm more centreline and 0.7
-#: points more of the mask covered, but 9 more short loops -- all round holes
-#: of 10 um or more, which grids Q/Q2 found mostly real -- and 5 more interior
-#: dead ends, the kept remainders' own tips. PLAN_clean_graph.md's kill
-#: criteria allow neither, so it stays off until Harvey decides.
-REWIRE_PAIRS = False
+#: whole, when a caller does not say; a run says with
+#: ``lumen_cleanup_rewire_pairs``. On E14.5 (2026-10-25, the clean-up on one
+#: graph either way) rewiring kept 0.9 mm more centreline and 0.7 points more
+#: of the mask covered, but left 9 more short loops -- all round holes of
+#: 10 um or more, which grids Q/Q2 found mostly real -- and 5 more interior
+#: dead ends, the kept remainders' own tips. That failed PLAN_clean_graph.md's
+#: kill criteria as written; Harvey turned it on (2026-10-26), the deletion
+#: kept as the setting's off.
+REWIRE_PAIRS = True
 
 
 def remove_parallel_edges_in_lumen(
@@ -723,7 +725,7 @@ def remove_parallel_edges_in_lumen(
 
     The edge nearer the wall goes (``_wall_hugging``), so the centreline
     that stays is the one nearer the lumen's middle. With *rewire* (default
-    :data:`REWIRE_PAIRS`, off) it goes the way
+    :data:`REWIRE_PAIRS`, on) it goes the way
     ``doubled_stretches.rewire_pair`` takes it -- the stretch beside the
     other cut out, what is left joined to the other where it parts -- and is
     deleted whole only when nothing is left to join, or every join would

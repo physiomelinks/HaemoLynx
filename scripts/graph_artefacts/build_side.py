@@ -48,6 +48,12 @@ _CLEANUP_ARGUMENTS = (
     "short_loop_keep_hole_over_um",
 )
 
+#: Build arguments the clean-up takes under another name.
+_CLEANUP_RENAMED = {
+    "lumen_cleanup_rewire_pairs": "rewire_pairs",
+    "lumen_cleanup_guard_rejoins": "guard_rejoins",
+}
+
 
 def peak_rss_mb() -> float | None:
     """This process's peak resident memory so far, in MB, or None where the
@@ -128,7 +134,10 @@ def main(job_path: str) -> None:
             mask, voxel_size, image_shape=skeleton.shape, stub_radius_at=radius_at,
             **accepted_arguments(
                 assemble.lumen_cleanup,
-                {name: job["build"][name] for name in _CLEANUP_ARGUMENTS if name in job["build"]},
+                {
+                    **{name: job["build"][name] for name in _CLEANUP_ARGUMENTS if name in job["build"]},
+                    **{new: job["build"][old] for old, new in _CLEANUP_RENAMED.items() if old in job["build"]},
+                },
             )[0],
         )
     if smoothing:

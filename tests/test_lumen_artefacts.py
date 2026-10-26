@@ -354,3 +354,26 @@ def test_a_tip_is_never_inside_its_own_chains_lumen():
 
     assert report["interior_dead_ends"] == 1, "the branch is the one dead end judged"
     assert tip not in report["dead_ends"]["inside_other_lumen"]
+
+
+def test_the_counts_a_run_keeps_are_the_reports_and_say_what_was_found():
+    """``lumen_artefact_counts``: the numbers ``build_network`` keeps on the
+    graph and the run's manifest repeats, plain and JSON-safe; ``found`` is
+    the warning's own test."""
+    import json
+
+    from haemolynx.graph import lumen_artefact_counts
+
+    mask, G = two_strands_in_one_lumen()
+    report = _report(mask, G)
+    counts = lumen_artefact_counts(report)
+    assert counts["found"] is True
+    assert counts["pairs_in_one_lumen"] == report["duplicate_pair_count"] == 1
+    assert counts["loops_inside_one_lumen"] == report["loops_inside_one_lumen"]
+    assert counts["tips_in_another_lumen"] == report["dead_end_counts"]["inside_other_lumen"]
+    assert counts["doubled_centreline_um"] == pytest.approx(report["duplicated_centreline_um"])
+    assert counts["interior_dead_ends"] == report["interior_dead_ends"]
+    assert json.loads(json.dumps(counts)) == counts
+
+    clean = lumen_artefact_counts(_report(wide_vessel(), nx.MultiGraph()))
+    assert clean["found"] is False and clean["pairs_in_one_lumen"] == 0

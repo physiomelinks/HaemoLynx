@@ -445,6 +445,8 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "remove_short_loops_under_um",
                 "lumen_cleanup_max_rounds",
                 "short_loop_keep_hole_over_um",
+                "lumen_cleanup_rewire_pairs",
+                "lumen_cleanup_guard_rejoins",
                 "retrace_lost_skeleton",
             ),
         ),

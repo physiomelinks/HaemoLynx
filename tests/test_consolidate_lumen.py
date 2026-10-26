@@ -154,13 +154,13 @@ def test_the_wall_side_duplicate_stays_when_it_alone_carries_a_branch():
 
 
 def test_the_wall_side_duplicate_is_deleted_as_before_when_not_rewired():
-    """Not rewiring is the default (``lumen_loops.REWIRE_PAIRS``): the
-    rewire failed PLAN_clean_graph.md's kill criteria on E14.5."""
+    """Rewiring is the default (``lumen_loops.REWIRE_PAIRS``, Harvey's call
+    of 2026-10-26); off, the pair rule deletes as it did before."""
     from haemolynx.graph.lumen_loops import REWIRE_PAIRS
 
-    assert REWIRE_PAIRS is False
+    assert REWIRE_PAIRS is True
     mask, G = _fork_with_a_branch(branch_on_both=False)
-    G = remove_parallel_edges_in_lumen(G, MaskSupport(mask, VOXEL_SIZE))
+    G = remove_parallel_edges_in_lumen(G, MaskSupport(mask, VOXEL_SIZE), rewire=False)
     assert nx.number_connected_components(G) == 1
     assert G.has_edge((7.0, 9.0, 57.0), (7.0, 40.0, 57.0))
     assert not G.has_node((7.0, 6.0, 57.0))  # the medial one went, its dead end with it
@@ -606,6 +606,31 @@ def test_the_round_limit_setting_reaches_graph_building():
     assert graph_build_arguments(settings)["lumen_cleanup_max_rounds"] == CONSOLIDATION_MAX_ROUNDS
 
 
+@pytest.mark.parametrize("name", ["lumen_cleanup_rewire_pairs", "lumen_cleanup_guard_rejoins"])
+def test_the_rewire_settings_are_on_and_reach_graph_building_and_every_clean_up(name):
+    """PLAN_clean_graph.md 1d's pair rewire and rejoin guard, on by default
+    (Harvey, 2026-10-26), each with the clean-up as it was as its off: the
+    setting reaches graph building's own clean-up and the clean-up
+    ``build_network`` runs after smoothing and the split, and settings that
+    predate it read it on."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import graph_build_arguments, lumen_cleanup_switches
+
+    field = {"lumen_cleanup_rewire_pairs": "rewire_pairs", "lumen_cleanup_guard_rejoins": "guard_rejoins"}[name]
+    schema = default_schema()
+    setting = schema[name]
+    assert setting.default is True and setting.advanced
+    settings = schema.defaults()
+    assert graph_build_arguments(settings)[name] is True
+    assert lumen_cleanup_switches(settings)[field] is True
+    settings[name] = False
+    assert graph_build_arguments(settings)[name] is False
+    assert lumen_cleanup_switches(settings)[field] is False
+    assert getattr(lumen_cleanup(None, VOXEL_SIZE, image_shape=(3, 3, 3), **{field: False}), field) is False
+    del settings[name]
+    assert graph_build_arguments(settings)[name] is True
+
+
 # --- Phase 0's fixtures (PLAN_one_centreline_per_lumen.md): what the clean-up
 # does to each today, run with the schema's defaults. Where that is not the
 # plan's right answer, the test says so; no rule changes without marks.
@@ -637,37 +662,35 @@ def _artefacts(G, mask):
     return diagnose_lumen_artefacts(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=0.0)
 
 
-def test_touching_capillaries_lose_one_of_the_two_whole():
+def test_touching_capillaries_lose_one_of_the_two_whole_with_the_rewire_off():
     """The plan wanted two strands: a neck in the lumen between them (2.2 um
     tall against 5 um) was to tell two touching capillaries from one drawn
     twice. No neck test was built: on grid H (2026-10-12) the neck scored
     21/30, below what a rule needs, so the pair rule judges the lumen alone.
-    The bent capillary, beside the straight one along 20 of its 67 um, is
-    read as its second strand and goes whole -- not a cut-off vessel, since
-    it is a piece of its own. With the pair rewire off (``REWIRE_PAIRS``,
-    the default since it failed PLAN_clean_graph.md's kill criteria) that is
-    still so; this pins it, so a neck test (or a guard against deleting a
-    whole piece) shows up here."""
+    With the pair rewire off (``lumen_cleanup_rewire_pairs``, the clean-up as
+    it was before PLAN_clean_graph.md 1d) the bent capillary, beside the
+    straight one along 20 of its 67 um, is read as its second strand and goes
+    whole -- not a cut-off vessel, since it is a piece of its own. This pins
+    it, so a neck test (or a guard against deleting a whole piece) shows up
+    here."""
     from lumen_artefact_fixtures import touching_capillaries
 
     mask, G, ends = touching_capillaries()
     assert _pairs(G, mask) == 1
 
-    H = consolidate_lumen(G.copy(), _as_built(mask))
+    H = consolidate_lumen(G.copy(), _as_built(mask, rewire_pairs=False))
 
     assert H.number_of_edges() == 1
     assert set(H.nodes) == set(ends[:2])
 
 
-def test_touching_capillaries_are_zipped_into_one_shared_stretch_when_rewired(monkeypatch):
-    """With the pair rewire on (``PLAN_clean_graph.md`` 1d), all four ends
-    stay, but where the capillaries touch they are drawn as one: two
-    junctions joined by a single 21 um edge, an X where there were two
+def test_touching_capillaries_are_zipped_into_one_shared_stretch():
+    """With the pair rewire on (``PLAN_clean_graph.md`` 1d, the default), all
+    four ends stay, but where the capillaries touch they are drawn as one:
+    two junctions joined by a single 21 um edge, an X where there were two
     vessels."""
-    import haemolynx.graph.lumen_loops as lumen_loops
     from lumen_artefact_fixtures import touching_capillaries
 
-    monkeypatch.setattr(lumen_loops, "REWIRE_PAIRS", True)
     mask, G, ends = touching_capillaries()
     assert _pairs(G, mask) == 1
 

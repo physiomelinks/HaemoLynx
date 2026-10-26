@@ -36,8 +36,9 @@ A join can be refused when the loop it closes lies inside one lumen
 the rest of the network, the edge rewired left out -- always for the pair
 rewire, and for this step's rejoin with :data:`GUARD_REJOINS`. The failed
 attempts (the parked branch, the missed-branches session's trim-and-rejoin)
-raised the short loops because a rejoin could close one. Both switches are
-off: on E14.5 each failed the plan's kill criteria (see their notes).
+raised the short loops because a rejoin could close one. Both are on by
+default (``lumen_cleanup_rewire_pairs``, ``lumen_cleanup_guard_rejoins``),
+each with the old behaviour as its off (see their notes).
 """
 from __future__ import annotations
 
@@ -80,15 +81,17 @@ MIN_DOUBLED_RUN_RADII = 0.0
 
 #: Whether the stretch step's rejoin, by default, makes no join that would
 #: close a loop inside one lumen (:func:`_join_closes_loop_in_one_lumen`; the
-#: pair rewire always tests its joins). Off: on E14.5 (2026-10-25, the graph
-#: as ``scripts/graph_artefacts.py`` saves it, against 7f7e699c) it took 73 um
-#: of doubled centreline out and covered 0.9 points more of the mask, but left
-#: 7 more short loops -- loops round holes of 10 um or more, which grids Q/Q2
+#: pair rewire always tests its joins); a run says with
+#: ``lumen_cleanup_guard_rejoins``. On E14.5 (2026-10-25, the graph as
+#: ``scripts/graph_artefacts.py`` saves it, against 7f7e699c) it took 73 um of
+#: doubled centreline out and covered 0.9 points more of the mask, but left 7
+#: more short loops -- loops round holes of 10 um or more, which grids Q/Q2
 #: found mostly real -- 3 more interior dead ends (a remainder not joined can
-#: leave its junction a stub) and 1 more tip in another lumen.
-#: PLAN_clean_graph.md's kill criteria allow none of those, so it waits on
-#: Harvey, as the pair rewire does (``lumen_loops.REWIRE_PAIRS``).
-GUARD_REJOINS = False
+#: leave its junction a stub) and 1 more tip in another lumen. That failed
+#: PLAN_clean_graph.md's kill criteria as written; Harvey turned it on
+#: (2026-10-26) with the pair rewire (``lumen_loops.REWIRE_PAIRS``), the
+#: unguarded rejoin kept as the setting's off.
+GUARD_REJOINS = True
 
 #: Edge mark: what :func:`rewire_pair` left of an edge it took out. Such an
 #: edge, found in a pair again, is deleted rather than rewired once more: on
@@ -718,7 +721,7 @@ def resolve_doubled_stretches(
     """Resolve, in place, every stretch of centreline :func:`doubled_stretches`
     finds running beside another in one lumen (see the module docstring).
 
-    *guard_joins* (default :data:`GUARD_REJOINS`, off) has a rejoin make no
+    *guard_joins* (default :data:`GUARD_REJOINS`, on) has a rejoin make no
     join that would close a loop inside one lumen
     (:func:`_join_closes_loop_in_one_lumen`).
 

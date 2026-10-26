@@ -1859,7 +1859,10 @@ def _write_run_final_graph_3d_html(
 def _log_graph_consistency_diagnostics(
     settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx
 ) -> None:
-    """The four read-only graph checks build_network logs. Never change G."""
+    """The four read-only graph checks build_network logs. They never change
+    G's nodes or edges; the lumen-artefact report's counts are kept on
+    ``G.graph`` (``graph.LUMEN_ARTEFACT_COUNTS``), and the run's manifest
+    repeats them."""
     # How much of the skeleton the graph still traces -- see
     # graph.diagnostics.diagnose_skeleton_graph_consistency.
     graph_consistency = graph.diagnose_skeleton_graph_consistency(
@@ -1913,6 +1916,7 @@ def _log_graph_consistency_diagnostics(
         G, image, voxel_size_zyx=voxel_size_zyx,
         stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
     )
+    G.graph[graph.LUMEN_ARTEFACT_COUNTS] = graph.lumen_artefact_counts(artefacts)
     artefacts_report = graph.format_lumen_artefacts_report(artefacts)
     if graph.lumen_artefacts_found(artefacts):
         logger.warning(artefacts_report)
@@ -1969,6 +1973,16 @@ def thick_bridge_centreline_tolerance_um(settings: Mapping[str, Any]) -> float:
     return float(graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM if value is None else value)
 
 
+def lumen_cleanup_switches(settings: Mapping[str, Any]) -> dict[str, bool]:
+    """``lumen_cleanup_rewire_pairs`` and ``lumen_cleanup_guard_rejoins`` as
+    ``graph.assemble.lumen_cleanup`` takes them; on (the library's defaults)
+    when a caller's settings predate them."""
+    return dict(
+        rewire_pairs=bool(settings.get("lumen_cleanup_rewire_pairs", graph.lumen_loops.REWIRE_PAIRS)),
+        guard_rejoins=bool(settings.get("lumen_cleanup_guard_rejoins", graph.doubled_stretches.GUARD_REJOINS)),
+    )
+
+
 def _short_loop_keep_hole_um(settings: dict) -> float:
     """``short_loop_keep_hole_over_um``, its default when a caller's settings
     predate it."""
@@ -2010,6 +2024,8 @@ def graph_build_arguments(settings: dict) -> dict[str, Any]:
         join_dead_ends_to_vessel_sides=bool(settings.get("join_dead_ends_to_vessel_sides", False)),
         stub_face_protection=settings.get("stub_face_protection") or "threshold",
         lumen_cleanup_max_rounds=_lumen_cleanup_max_rounds(settings),
+        lumen_cleanup_rewire_pairs=lumen_cleanup_switches(settings)["rewire_pairs"],
+        lumen_cleanup_guard_rejoins=lumen_cleanup_switches(settings)["guard_rejoins"],
     )
 
 
@@ -2220,6 +2236,7 @@ def finish_network_graph(
             along_thick_centreline=context.along_thick_centreline,
             mask_support=context.mask_support,
             max_rounds=_lumen_cleanup_max_rounds(settings),
+            **lumen_cleanup_switches(settings),
         )
         if settings["smooth_centrelines"]:
             G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
@@ -2568,6 +2585,8 @@ def build_network(
 
     if settings["use_memmap_loading"]:
         logger.info(LOW_RAM_SKIPPED_DIAGNOSTICS_MESSAGE, "skeleton/graph and graph/mask consistency")
+        # Not measured: a loaded graph's counts are of another build.
+        G.graph.pop(graph.LUMEN_ARTEFACT_COUNTS, None)
     else:
         _log_graph_consistency_diagnostics(settings, G, skeleton, image, voxel_size_zyx)
 
@@ -7904,6 +7923,9 @@ def _run_stages(
     network_graph = getattr(network, "graph", None)
     if network_graph is not None:
         network_graph.graph.pop(STATISTICS_REPORT, None)
+        # The lumen-artefact counts of the graph handed on, for the run's
+        # manifest; None where the report did not run (low RAM, synthetic).
+        run.checks[graph.LUMEN_ARTEFACT_COUNTS] = network_graph.graph.get(graph.LUMEN_ARTEFACT_COUNTS)
     _produced(on_stage_output, "build_network", network)
     if stop_after == "build_network":
         return network.graph

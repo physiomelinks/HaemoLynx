@@ -848,6 +848,36 @@ def lumen_artefacts_found(report: Dict[str, Any]) -> bool:
     )
 
 
+#: Where ``build_network`` keeps :func:`lumen_artefact_counts` of the graph it
+#: hands on (``G.graph``), and the key of the run manifest's ``checks`` that
+#: repeats them. Absent where the report did not run (the low-RAM option).
+LUMEN_ARTEFACT_COUNTS = "lumen_artefacts"
+
+
+def lumen_artefact_counts(report: Dict[str, Any]) -> Dict[str, Any]:
+    """The counts of :func:`diagnose_lumen_artefacts`' *report* a run keeps, as
+    plain numbers: what it found that is never a vessel (``found``, as
+    :func:`lumen_artefacts_found`: a pair in one lumen, a loop inside one, a
+    tip in another vessel's lumen), and the rest of the summary line."""
+    counts = report.get("dead_end_counts", {})
+    return {
+        "found": lumen_artefacts_found(report),
+        "pairs_in_one_lumen": int(report.get("duplicate_pair_count", 0)),
+        "loops_inside_one_lumen": int(report.get("loops_inside_one_lumen", 0)),
+        "tips_in_another_lumen": int(counts.get("inside_other_lumen", 0)),
+        "fork_pairs": int(report.get("fork_pair_count", 0)),
+        "doubled_centreline_um": float(report.get("duplicated_centreline_um", 0.0)),
+        "doubled_long_runs": int((report.get("doubled_long_runs") or {}).get("runs", 0)),
+        "centreline_um": float(report.get("centreline_um", 0.0)),
+        "short_loops": int(report.get("short_loop_count", 0)),
+        "interior_dead_ends": int(report.get("interior_dead_ends", 0)),
+        "dead_ends_beside_another_centreline": int(counts.get("beside_vessel", 0)),
+        "dead_ends_off_the_mask": int(counts.get("off_mask", 0)),
+        "dead_ends_at_image_faces": int(report.get("dead_ends_at_image_face", 0)),
+        "isolated_single_edges": int(report.get("isolated_single_edges", 0)),
+    }
+
+
 def format_lumen_artefacts_report(report: Dict[str, Any]) -> str:
     """A one-line summary of :func:`diagnose_lumen_artefacts`."""
     counts = report.get("dead_end_counts", {})

@@ -39,9 +39,9 @@ def _pairs(G, mask):
     return diagnose_parallel_duplicates_in_lumen(G, mask, voxel_size_zyx=VOXEL_SIZE)["duplicate_pair_count"]
 
 
-def _cleanup(mask, min_stub_length=10.0, multiple=3.0):
+def _cleanup(mask, min_stub_length=10.0, multiple=3.0, **switches):
     return lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape,
-                         min_stub_length=min_stub_length, min_stub_length_radius_multiple=multiple)
+                         min_stub_length=min_stub_length, min_stub_length_radius_multiple=multiple, **switches)
 
 
 def _length(G):
@@ -109,19 +109,16 @@ def test_resolving_shortens_the_centreline_and_repeating_settles():
 
 
 @pytest.mark.parametrize("rewire", [False, True])
-def test_the_pair_rule_still_decides_whole_pairs_and_the_stretch_step_what_it_leaves(rewire, monkeypatch):
+def test_the_pair_rule_still_decides_whole_pairs_and_the_stretch_step_what_it_leaves(rewire):
     """The strand through the trunk is a pair with it (half of it beside the
-    trunk): the pair rule decides that the strand goes, and takes it whole --
-    or, with ``REWIRE_PAIRS`` (1d, off by default), by rewiring, its
-    branches staying joined to the trunk; what the rule leaves -- a stretch
-    shorter than half an edge -- is the stretch step's. Both end with the
-    trunk drawn once and nothing cut off."""
-    import haemolynx.graph.lumen_loops as lumen_loops
-
-    monkeypatch.setattr(lumen_loops, "REWIRE_PAIRS", rewire)
+    trunk): the pair rule decides that the strand goes, and takes it out by
+    rewiring (1d, ``lumen_cleanup_rewire_pairs``, on by default), its
+    branches staying joined to the trunk -- or, off, whole, as before; what
+    the rule leaves -- a stretch shorter than half an edge -- is the stretch
+    step's. Both end with the trunk drawn once and nothing cut off."""
     mask, G, (tip_a, tip_b, end_a, end_b) = strand_through_a_trunk()
     assert _pairs(G, mask) == 1
-    G = consolidate_lumen(G, _cleanup(mask, min_stub_length=0.0, multiple=0.0))
+    G = consolidate_lumen(G, _cleanup(mask, min_stub_length=0.0, multiple=0.0, rewire_pairs=rewire))
     assert nx.has_path(G, end_a, end_b)
     assert (G.has_node(tip_a) and nx.has_path(G, tip_a, end_a)) is rewire
     assert (G.has_node(tip_b) and nx.has_path(G, tip_b, end_a)) is rewire
@@ -415,7 +412,7 @@ def test_a_pair_with_a_remainder_is_rewired_at_the_parting_points_not_deleted():
 
     mask, G, (tip_a, tip_b, end_a, end_b) = strand_through_a_trunk()
     support = _support(mask)
-    deleted = remove_parallel_edges_in_lumen(G.copy(), support)
+    deleted = remove_parallel_edges_in_lumen(G.copy(), support, rewire=False)
     assert not deleted.has_node(tip_a) and not deleted.has_node(tip_b)
 
     G = remove_parallel_edges_in_lumen(G, support, rewire=True)
@@ -484,13 +481,13 @@ def test_a_rejoin_closing_a_loop_inside_one_lumen_is_refused(monkeypatch):
         _no_lumen_test(patch)
         unguarded = resolve_doubled_stretches(G.copy(), support, guard_joins=True)
     assert len(nx.cycle_basis(nx.Graph(unguarded))) == 1
-    # Off by default (it failed the plan's kill criteria on E14.5): the
-    # rejoin is made as before, closing the ring.
-    assert module.GUARD_REJOINS is False
-    as_before = resolve_doubled_stretches(G.copy(), support)
+    # On by default (Harvey, 2026-10-26); off, the rejoin is made as before,
+    # closing the ring.
+    assert module.GUARD_REJOINS is True
+    as_before = resolve_doubled_stretches(G.copy(), support, guard_joins=False)
     assert len(nx.cycle_basis(nx.Graph(as_before))) == 1
 
-    G = resolve_doubled_stretches(G, support, guard_joins=True)
+    G = resolve_doubled_stretches(G, support)
     assert nx.cycle_basis(nx.Graph(G)) == []
     assert nx.is_connected(G) and nx.has_path(G, tip, end_b)
     assert G.has_edge(junction, end_a)

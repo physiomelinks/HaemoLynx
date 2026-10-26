@@ -242,7 +242,7 @@ Written to the run's output folder (vtk_output_prefix's). A synthetic run only: 
 
 ## `{stem}_run_manifest.json`
 
-Written to the run's output folder (vtk_output_prefix's). What produced the outputs: the settings as the run started, the HaemoLynx version, git commit, Python, platform and dependency versions, each input file's size, time and sha256, and each stage's start, end, wall time (seconds) and peak memory (bytes).
+Written to the run's output folder (vtk_output_prefix's). What produced the outputs: the settings as the run started, the HaemoLynx version, git commit, Python, platform and dependency versions, each input file's size, time and sha256, and each stage's start, end, wall time (seconds) and peak memory (bytes); checks.lumen_artefacts holds the lumen-artefact report's counts on the graph graph building handed on (null where it did not run: the low-RAM option, a synthetic network): pairs of edges in one lumen, loops inside one lumen, dead-end tips in another vessel's lumen and whether any was found, as the run's log warns.
 
 Every other key is text or a nested record; see pipeline/provenance.py.
 
@@ -251,6 +251,8 @@ Every other key is text or a nested record; see pipeline/provenance.py.
 | `stages[].wall_seconds` | `s` | The stage's wall time. |
 | `stages[].peak_rss_bytes` | `bytes` | The stage's peak memory. |
 | `inputs[].size_bytes` | `bytes` | An input file's size. |
+| `checks.lumen_artefacts.doubled_centreline_um` | `um` | Centreline running beside another in the same lumen. |
+| `checks.lumen_artefacts.centreline_um` | `um` | The graph's centreline, as the report samples it. |
 
 ## `{stem}_run_settings.yaml`
 
