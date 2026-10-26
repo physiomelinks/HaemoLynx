@@ -256,6 +256,30 @@ def _chain_with_large_vessel_masks_and_extra_terminal():
     return G, arteriole, venule
 
 
+def test_the_stage_hands_the_stump_its_runs_segmentation(tmp_path, monkeypatch):
+    """The stump reads the run's own segmentation, on its grid, to tell a
+    capillary ending in a large vessel's mask from that vessel's end."""
+    import functools
+
+    import haemolynx.graph as graph_package
+
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    seen = []
+    real = graph_package.select_large_vessel_mask_stump_terminal_nodes_for_role
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("segmentation"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(graph_package, "select_large_vessel_mask_stump_terminal_nodes_for_role", spy)
+
+    assign_boundaries(_assign_boundaries_settings(plot_dir=tmp_path), network)
+
+    assert len(seen) == 2 and all(s is network.volume.image for s in seen), "both sides"
+
+
 def test_large_vessel_inlet_override_replaces_the_mask_stump(tmp_path):
     """large_vessel_inlet_node_selection_method defaults to mask_stump; the
     other four boundary roles' methods (coordinates here) override it with a
@@ -629,6 +653,98 @@ def test_a_further_contact_with_no_end_of_its_own_takes_no_node():
     with warnings.catch_warnings():
         warnings.simplefilter("error", BoundaryCoordinateWarning)
         assert _stump_inlets(G, mask) == [0]
+
+
+# --- a capillary ending in a large vessel's mask is not its end --------------------
+
+
+def _tube_along_x(volume, y, z, radius, x_stop):
+    """Voxels within *radius* of the line (z, y, 0..x_stop) along x, set."""
+    zz, yy, xx = np.indices(volume.shape)
+    volume |= ((zz - z) ** 2 + (yy - y) ** 2 <= radius ** 2) & (xx <= x_stop)
+    return volume
+
+
+def _vein_with_a_capillary_in_its_mask(shape=(30, 50, 120), y=20):
+    """The vein's mask (the large-vessel segmentation) a tube 4.5 um in radius
+    from the x = 0 face; the run's segmentation of the vein 5 um in radius,
+    its axis 4 um off the mask's (two segmentations, as on E14.5), and a
+    capillary 1.2 um in radius inside the mask by its edge, apart from the
+    vein in the segmentation."""
+    mask = _tube_along_x(np.zeros(shape, dtype=bool), y + 4, 15, 4.5, 100)
+    segmentation = _tube_along_x(np.zeros(shape, dtype=bool), y, 15, 5.0, 100)
+    _tube_along_x(segmentation, y + 7, 15, 1.2, 60)
+    return mask, segmentation
+
+
+def _capillary_and_vein_graph(y=20, first=0):
+    return _vessel_graph({
+        (first, first + 1): [(15, y, 1), (15, y, 80)],  # the vein's own end, 4 um from the contact's centre
+        (first + 2, first + 3): [(15, y + 7, 1), (15, y + 7, 60)],  # the capillary's, 3 um from it
+    })
+
+
+def test_a_capillary_ending_in_the_veins_mask_is_not_its_end():
+    """Harvey (E14.5, 2026-10-26): node 2310, a 4.5 um capillary ending inside
+    the vein's mask, nearer its contact than the vein's own end, took the
+    outlet. Its vessel runs inside the mask but fills it no more than the mask
+    is deep; the vein's own centreline is far wider in the segmentation than
+    the mask is deep where it runs (1.9-2.3 times on E14.5)."""
+    mask, segmentation = _vein_with_a_capillary_in_its_mask()
+    G = _capillary_and_vein_graph()
+
+    without = _stump_inlets(G, mask)
+    with_segmentation = select_large_vessel_mask_stump_terminal_nodes_for_role(
+        G, mask, node_role="inlet", voxel_size_zyx=(1.0, 1.0, 1.0), image_shape=mask.shape,
+        coordinates_setting_name="large_arteriole_mask stump", segmentation=segmentation,
+    )
+
+    assert without == [2], "the nearer capillary, as before"
+    assert with_segmentation == [0]
+
+
+def test_a_contact_whose_only_end_is_a_capillary_takes_no_node_when_another_has_one():
+    """Harvey (2026-10-26): the vein's second contact on E14.5, where its own
+    centreline runs past the face and only capillaries end, gets no outlet --
+    not the nearest terminal in the mask -- while the mask's other contact
+    has its vein's end."""
+    from haemolynx.graph.boundaries import BoundaryCoordinateWarning
+
+    mask, segmentation = _vein_with_a_capillary_in_its_mask(shape=(30, 80, 120))
+    other_mask, other_segmentation = _vein_with_a_capillary_in_its_mask(shape=(30, 80, 120), y=55)
+    mask |= other_mask
+    segmentation |= other_segmentation
+    G = _capillary_and_vein_graph()
+    G.add_edges_from(_vessel_graph({(4, 5): [(15, 62, 1), (15, 62, 60)]}).edges(data=True))
+    for node in (4, 5):
+        G.nodes[node]["pos"] = (15.0, 62.0, 1.0 if node == 4 else 60.0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", BoundaryCoordinateWarning)
+        outlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
+            G, mask, node_role="outlet", voxel_size_zyx=(1.0, 1.0, 1.0), image_shape=mask.shape,
+            coordinates_setting_name="large_venule_mask stump", segmentation=segmentation,
+        )
+
+    assert outlets == [0], "the second vein's only end is a capillary: no outlet there"
+
+
+def test_a_mask_whose_only_end_is_a_capillary_still_falls_back_and_warns():
+    """With no stump of the mask ending its own vessel, the run would have no
+    inlet: the nearest terminal in the mask is taken, as before, with the
+    warning that says so."""
+    from haemolynx.graph.boundaries import BoundaryCoordinateWarning
+
+    mask, segmentation = _vein_with_a_capillary_in_its_mask()
+    G = _vessel_graph({(2, 3): [(15, 27, 1), (15, 27, 60)]})
+
+    with pytest.warns(BoundaryCoordinateWarning, match="nearest terminal inside the mask"):
+        inlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
+            G, mask, node_role="inlet", voxel_size_zyx=(1.0, 1.0, 1.0), image_shape=mask.shape,
+            coordinates_setting_name="large_arteriole_mask stump", segmentation=segmentation,
+        )
+
+    assert inlets == [2]
 
 
 def test_a_stump_with_no_vessel_end_at_its_face_warns_how_far_its_node_is():

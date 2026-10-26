@@ -70,6 +70,24 @@ STUMP_SNAP_VESSEL_UM = 50.0
 #: a capillary ending beside it.
 STUMP_SNAP_MIN_VESSEL_FRACTION = 0.5
 
+#: With the run's segmentation, a terminal is the large vessel's own end only
+#: while at least this share of that stretch lies inside the stump's
+#: component ...
+STUMP_SNAP_MIN_INSIDE_FRACTION = 0.5
+
+#: ... and there its segmented radius is at least this many times the
+#: component's depth (how far its edge is) at the same points, the median
+#: over them: the large vessel's centreline fills its mask, a capillary
+#: ending in it does not. Harvey's marks on E14.5 (2026-10-26): the
+#: arteriole's and the vein's ends 1.9 and 2.3, a capillary ending in the
+#: vein's mask 1.0, another never inside it. Four marks on one stack, not a
+#: marked grid; the masks and the network there come from two segmentations.
+STUMP_SNAP_MIN_FILL = 1.5
+
+#: How far round a stretch (um) a distance is read: a local distance
+#: transform, so a stack of any size costs only the boxes round its ends.
+_DEPTH_READ_UM = 25.0
+
 
 @dataclass(frozen=True, eq=False)
 class _Stump:
@@ -328,6 +346,7 @@ def _own_face_end(
     candidates: list[Any],
     pos: dict[Any, np.ndarray],
     scale: np.ndarray,
+    segmentation: Any = None,
 ) -> Any | None:
     """The terminal that ends *stump*'s own large vessel at its face, or None.
 
@@ -340,7 +359,10 @@ def _own_face_end(
     then the one nearest the stump's centroid: on E14.5 a vessel beside the
     arteriole, running half along its mask and ending nearer the centroid,
     took the inlet from the arteriole's own end, which runs all along it
-    (Harvey's call, 2026-10-25).
+    (Harvey's call, 2026-10-25). With the run's *segmentation*, a terminal
+    whose vessel does not fill the component it runs in is a capillary ending
+    there, not the large vessel's end (:func:`_fills_its_mask`; Harvey,
+    2026-10-26).
     """
     face_um = stump.face_index * float(scale[stump.axis])
     face_reach = STUMP_SNAP_OFFSET_UM + stump.radius_um
@@ -363,10 +385,63 @@ def _own_face_end(
         along = float(np.mean(distances[1:] <= STUMP_SNAP_OFFSET_UM)) if len(vessel) else 0.0
         if len(vessel) and along < STUMP_SNAP_MIN_VESSEL_FRACTION:
             continue
+        if segmentation is not None and not _fills_its_mask(labeled, stump.component, segmentation, vessel, scale):
+            continue
         rank = (bool(distances[0] > 0.0), -along, float(np.linalg.norm(tip - stump.point)))
         if best is None or rank < best[0]:
             best = (rank, node)
     return None if best is None else best[1]
+
+
+def _depth_um(volume: Any, points_um: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """How far (um) each point lies inside *volume* (``> 0``): 0 outside it,
+    from a distance transform of the box round the points; the box's own
+    edge is not taken for background."""
+    from scipy.ndimage import distance_transform_edt
+
+    points = np.asarray(points_um, dtype=float).reshape(-1, 3)
+    shape = np.asarray(np.shape(volume))
+    index = np.clip(np.rint(points / scale).astype(int), 0, shape - 1)
+    pad = np.ceil(_DEPTH_READ_UM / scale).astype(int)
+    lo = np.maximum(index.min(axis=0) - pad, 0)
+    hi = np.minimum(index.max(axis=0) + pad + 1, shape)
+    box = np.asarray(volume[tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))]) > 0
+    distance = distance_transform_edt(np.pad(box, 1, constant_values=True), sampling=scale)[1:-1, 1:-1, 1:-1]
+    return distance[tuple((index - lo).T)]
+
+
+class _ComponentVolume:
+    """One component of a labelled mask as a volume :func:`_depth_um` reads."""
+
+    def __init__(self, labeled: Any, component: int):
+        self.labeled = labeled
+        self.component = component
+        self.shape = labeled.shape
+
+    def __getitem__(self, box):
+        return self.labeled.read(box) == self.component
+
+    def __array__(self, dtype=None):  # pragma: no cover - never read whole
+        raise TypeError("a component is read a box at a time")
+
+
+def _fills_its_mask(labeled: Any, component: int, segmentation: Any, vessel: np.ndarray, scale: np.ndarray) -> bool:
+    """Whether a terminal's *vessel* (its first :data:`STUMP_SNAP_VESSEL_UM`)
+    is the large vessel's own centreline: mostly inside the component, and
+    there wider in the *segmentation* than the component is deep
+    (:data:`STUMP_SNAP_MIN_INSIDE_FRACTION`, :data:`STUMP_SNAP_MIN_FILL`).
+    A vessel the segmentation does not show at all cannot be judged, and is
+    taken as before."""
+    if not len(vessel):
+        return True
+    radius = _depth_um(segmentation, vessel, scale)
+    if not np.any(radius > 0):
+        return True
+    depth = _depth_um(_ComponentVolume(labeled, component), vessel, scale)
+    inside = depth > 0
+    if inside.mean() < STUMP_SNAP_MIN_INSIDE_FRACTION:
+        return False
+    return float(np.median(radius[inside] / depth[inside])) >= STUMP_SNAP_MIN_FILL
 
 
 def _in_plane_distance_um(tip: np.ndarray, stump: _Stump) -> float:
@@ -407,14 +482,17 @@ def _snap_stumps_to_terminals(
     voxel_size_zyx: tuple[float, float, float],
     coordinates_setting_name: str,
     exclude_nodes: Iterable[Any] | None,
+    segmentation: Any = None,
 ) -> list[Any]:
     """One terminal per stump: the end of the stump's own large vessel at
-    its face (:func:`_own_face_end`), so two stumps give two nodes.
+    its face (:func:`_own_face_end`, which reads *segmentation* when given),
+    so two stumps give two nodes.
 
     Of one component's contacts on one face each looks only at the ends
-    nearer it than the others (:func:`_own_candidates`), and one with no end
-    of its own takes no node when another contact of its component has one. A
-    stump whose vessel has no such end otherwise takes the nearest terminal inside
+    nearer it than the others (:func:`_own_candidates`), and a stump with no
+    end of its own takes no node while another stump of the mask has one. A
+    stump whose vessel has no such end otherwise -- the mask would have no
+    node at all -- takes the nearest terminal inside
     *mask* (every terminal, when none is), with a
     :class:`~haemolynx.graph.boundaries.BoundaryCoordinateWarning` naming the
     stump and how far the node is from it: an inlet chosen there may be
@@ -429,19 +507,24 @@ def _snap_stumps_to_terminals(
     fallback: list[Any] | None = None
     selected: list[Any] = []
     own = _own_candidates(stumps, pos, candidates)
-    ends = [_own_face_end(G, stump, labeled, mine, pos, scale) for stump, mine in zip(stumps, own)]
-    # A further contact of a component another contact already ends is a
-    # branch with no vessel end of its own there: no node, rather than the
-    # nearest terminal in the mask, which can lie anywhere (Harvey, 2026-10-25).
-    ended = {stump.component for stump, node in zip(stumps, ends) if node is not None}
+    ends = [
+        _own_face_end(G, stump, labeled, mine, pos, scale, segmentation=segmentation)
+        for stump, mine in zip(stumps, own)
+    ]
+    # A stump with no vessel end of its own takes no node while another of
+    # the mask's stumps has one, rather than the nearest terminal in the
+    # mask, which can lie anywhere: a further branch's contact (2026-10-25),
+    # or a vein whose own centreline runs past the face with only capillaries
+    # ending there (E14.5's second vein contact; Harvey, 2026-10-26).
+    ended = any(node is not None for node in ends)
     for stump, node in zip(stumps, ends):
         if node is not None:
             selected.append(node)
             continue
-        if stump.component in ended:
+        if ended:
             logger.info(
-                "%s: the contact at %s um has no vessel end of its own; its component "
-                "already has one at another contact, so it takes no node.",
+                "%s: the contact at %s um has no vessel end of its own; another of the "
+                "mask's contacts has one, so it takes no node.",
                 coordinates_setting_name, tuple(round(float(v), 1) for v in stump.point),
             )
             continue
@@ -478,6 +561,7 @@ def select_large_vessel_mask_stump_terminal_nodes_for_role(
     coordinates_setting_name: str,
     exclude_nodes: Iterable[Any] | None = None,
     min_component_fraction: float = 0.0,
+    segmentation: np.ndarray | None = None,
 ) -> list[Any]:
     """One side's terminal nodes at *mask*'s own image-edge stump.
 
@@ -493,7 +577,10 @@ def select_large_vessel_mask_stump_terminal_nodes_for_role(
     field of view's edge) yields no node. *exclude_nodes* keeps the other
     side's already-chosen node(s) out of reach, so an arteriole and venule
     mask that both happen to touch the same corner of the volume cannot snap
-    to the same terminal for both the inlet and the outlet.
+    to the same terminal for both the inlet and the outlet. With the run's
+    *segmentation* (the binary image the graph was built from, on its grid),
+    a terminal whose vessel does not fill the mask it runs in is no stump's
+    end (:func:`_fills_its_mask`).
     """
     if node_role not in {"inlet", "outlet"}:
         raise ValueError("node_role must be 'inlet' or 'outlet'.")
@@ -511,6 +598,7 @@ def select_large_vessel_mask_stump_terminal_nodes_for_role(
         voxel_size_zyx=voxel_size_zyx,
         coordinates_setting_name=coordinates_setting_name,
         exclude_nodes=exclude_nodes,
+        segmentation=segmentation,
     )
 
 

@@ -2980,6 +2980,7 @@ def _large_vessel_role_terminal_nodes(
     mask: np.ndarray,
     node_role: str,
     exclude_nodes: list | None = None,
+    segmentation: np.ndarray | None = None,
 ) -> list:
     """One large-vessel-network side's terminal node(s): mask stump, or override.
 
@@ -3006,6 +3007,7 @@ def _large_vessel_role_terminal_nodes(
             min_component_fraction=float(
                 settings["large_vessel_stump_min_component_fraction"]
             ),
+            segmentation=segmentation,
         )
     return graph.select_boundary_nodes_for_role(
         G, image_shape, settings, role, exclude_nodes=exclude_nodes
@@ -3265,6 +3267,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 role="large_vessel_inlet",
                 mask=assignment_large_arteriole_mask,
                 node_role="inlet",
+                segmentation=image,
             )
             # Written now, not only after this whole block, so a
             # large_vessel_outlet override using degree_1_from_inlet measures
@@ -3279,6 +3282,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 mask=assignment_large_venule_mask,
                 node_role="outlet",
                 exclude_nodes=auto_inlet_nodes,
+                segmentation=image,
             )
             logger.info(
                 "Large-vessel network mode: arteriole/venule mask interior "
