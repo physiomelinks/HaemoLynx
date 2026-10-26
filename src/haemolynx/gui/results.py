@@ -2302,12 +2302,11 @@ class ResultLayers:
                 )
         equivalent = getattr(output, "equivalent_resistance", None)
         network = getattr(output, "network_resistance", None)
+        nodes = getattr(output, "equivalent_resistance_nodes", None)
         parts = []
         if equivalent is not None:
-            parts.append(
-                f"Two-point equivalent resistance (first inlet to first outlet) "
-                f"{float(equivalent):.4e} Pa.s/m^3."
-            )
+            between = "first inlet to first outlet" if nodes is None else f"node {nodes[0]} to node {nodes[1]}"
+            parts.append(f"Two-point equivalent resistance ({between}) {float(equivalent):.4e} Pa.s/m^3.")
         if network is not None:
             parts.append(
                 f"Network resistance (pressure drop / total inflow) "

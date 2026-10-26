@@ -519,7 +519,7 @@ _add(T, "A node ID", "fraction", "Full mode: that node's betweenness centrality.
 
 # -- Haemodynamics ------------------------------------------------------------
 T = "Haemodynamics"
-_add(T, "Two-Point Equivalent Resistance (Pa.s/m^3)", "Pa.s/m^3", "The resistance between the first inlet and the first outlet: the pressure difference driving a unit flow between them alone.")
+_add(T, "Two-Point Equivalent Resistance (Pa.s/m^3)", "Pa.s/m^3", "The resistance between the first inlet and the first outlet, or the two nodes chosen on the Post processing tab: the pressure difference driving a unit flow between them alone.")
 _add(T, "Two-Point Resistance Nodes", TEXT, "The two nodes it was found between.")
 _add(T, "Network Resistance, Pressure Drop / Total Inflow (Pa.s/m^3)", "Pa.s/m^3", "Inlet pressure minus outlet pressure over the total flow in through every designated inlet; the flow through open ends is reported beside it, not in it.")
 _add(T, "Open-End Model", TEXT, "The boundary condition on vessels leaving the image (open_end_model): estimated, terminal_resistance or outlet. Written only when open ends were given one.")

@@ -55,7 +55,9 @@ For the other review lists (:mod:`haemolynx.graph.network_review`):
 keeps (the vessels are not marked for measuring again), and
 :func:`set_terminal_role` makes a node an inlet or an outlet, or neither --
 the lists kept on the graph (:data:`BOUNDARY_ROLES`) until Regenerate takes
-them to the stage.
+them to the stage -- and :func:`set_resistance_node` chooses the two nodes
+the two-point resistance is found between, kept on the graph
+(:data:`RESISTANCE_NODE_PAIR`) for every regenerate after.
 """
 from __future__ import annotations
 
@@ -85,6 +87,8 @@ __all__ = [
     "JunctionVessel",
     "MIN_ROUTED_INSIDE_FRACTION",
     "PENDING",
+    "RESISTANCE_NODE_PAIR",
+    "RESISTANCE_PAIR_ENDS",
     "SPLIT_SNAP_UM",
     "ShortLoop",
     "TERMINAL_ROLES",
@@ -108,6 +112,8 @@ __all__ = [
     "merge_junctions",
     "prune_disconnected_branches",
     "record_drawn_vessel_support",
+    "resistance_node_pair_with_edits",
+    "set_resistance_node",
     "set_terminal_role",
     "set_vessel_diameter",
     "short_loops",
@@ -143,6 +149,14 @@ APPLIED = "post_processing_applied"
 BOUNDARY_ROLES = "post_processing_boundary_roles"
 #: The roles :func:`set_terminal_role` gives and takes away.
 TERMINAL_ROLES = ("inlet", "outlet")
+#: Graph attribute: the two nodes ``(start, end)`` the two-point resistance is
+#: found between, as :func:`set_resistance_node` chose them -- what the
+#: ``post_process`` stage solves between in place of the first inlet and the
+#: first outlet. Kept, unlike the edit marks: every later regenerate solves
+#: between them too.
+RESISTANCE_NODE_PAIR = "post_processing_resistance_node_pair"
+#: The two ends of that pair, in its order.
+RESISTANCE_PAIR_ENDS = ("start", "end")
 
 #: Length of the connector vessel :func:`split_junction` inserts.
 DEFAULT_SPLIT_CONNECTOR_LENGTH_UM = 15.0
@@ -311,6 +325,57 @@ def set_terminal_role(
     G.graph[PENDING] = True
     current.update({name: tuple(lists[name]) for name in TERMINAL_ROLES})
     return current
+
+
+def resistance_node_pair_with_edits(
+    pair: Sequence[Any] | None, G: nx.MultiGraph | None
+) -> tuple[Any, Any] | None:
+    """*pair* -- the two nodes the two-point resistance is found between, as
+    the run has them -- or the pair :func:`set_resistance_node` chose on *G*
+    while both its nodes are still in *G*."""
+    chosen = G.graph.get(RESISTANCE_NODE_PAIR) if G is not None else None
+    if chosen is not None and len(chosen) == 2 and all(node in G for node in chosen):
+        return (chosen[0], chosen[1])
+    return None if pair is None else (pair[0], pair[1])
+
+
+def set_resistance_node(
+    G: nx.MultiGraph, pair: Sequence[Any] | None, node: Any, end: str
+) -> tuple[Any, Any]:
+    """Make *node* the start or the end (*end*, one of
+    :data:`RESISTANCE_PAIR_ENDS`) of the two-point resistance.
+
+    *pair* is the pair as the run has it -- the first inlet and the first
+    outlet, unless chosen here before -- and the end is changed on top of
+    whatever earlier calls chose on *G* (:func:`resistance_node_pair_with_edits`).
+    Made the start while it is the end, or the other way round, the two swap.
+    Any node of *G* may be either end, a junction included.
+
+    The pair is kept on *G* (:data:`RESISTANCE_NODE_PAIR`) and *G* is marked
+    :data:`PENDING`, so Regenerate takes it to the ``post_process`` stage,
+    which finds the two-point resistance between them; the network itself is
+    not changed. Returns the pair as it now is.
+    """
+    if end not in RESISTANCE_PAIR_ENDS:
+        raise ValueError(f"{end!r} is not an end of the pair: one of {RESISTANCE_PAIR_ENDS}.")
+    if node not in G:
+        raise ValueError(f"Node {node} is not in the network.")
+    current = resistance_node_pair_with_edits(pair, G)
+    if current is None:
+        raise ValueError(
+            "The network has no two-point resistance pair to change: it needs an "
+            "inlet and an outlet first."
+        )
+    start, finish = current
+    if end == "start":
+        new = (node, start if node == finish else finish)
+    else:
+        new = (finish if node == start else start, node)
+    if new == current:
+        return current
+    G.graph[RESISTANCE_NODE_PAIR] = new
+    G.graph[PENDING] = True
+    return new
 
 
 def _is_bridge(data: Mapping[str, Any]) -> bool:

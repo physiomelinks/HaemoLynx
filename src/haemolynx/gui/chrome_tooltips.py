@@ -365,7 +365,8 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
     ),
     "haemodynamics": (
         "The network's resistance to flow, in Pa.s/m^3: between the first "
-        "inlet and the first outlet (two-point), and for the whole network, "
+        "inlet and the first outlet, or the two nodes Post processing chose "
+        "(two-point), and for the whole network, "
         "the pressure drop over the total inflow through every inlet"
     ),
     "branch_orders": (
@@ -810,9 +811,10 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "review_choice": (
         "Which list Scan network makes: junctions where four or more vessels "
         "meet, short loops, or one of the checks on the network's geometry, "
-        "segmentation, flow, boundaries and diameters, or the terminal nodes "
-        "to make inlets and outlets or take the role from. None lists nothing "
-        "and leaves the network to edit by clicking"
+        "segmentation, flow, boundaries and diameters, the terminal nodes "
+        "to make inlets and outlets or take the role from, or the two nodes "
+        "the two-point resistance is found between, to find and change. None "
+        "lists nothing and leaves the network to edit by clicking"
     ),
     "region": (
         "Make the list only round the middle of the view, within this many "
@@ -889,6 +891,17 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Take the chosen node off the inlets or outlets; a dead end leaving "
         "the image is then an open end in the solve (open_end_model). The "
         "last inlet or outlet cannot be removed: make another one first"
+    ),
+    "review_resistance_start": (
+        "Find the two-point resistance from the chosen node instead (the "
+        "first inlet until changed); chosen while it is the end, the two "
+        "swap. Regenerate graph solves it, and every regenerate after keeps "
+        "the pair"
+    ),
+    "review_resistance_end": (
+        "Find the two-point resistance to the chosen node instead (the first "
+        "outlet until changed); chosen while it is the start, the two swap. "
+        "Regenerate graph solves it, and every regenerate after keeps the pair"
     ),
     "review_join": (
         "Join the chosen pair of dead ends with a vessel traced between "

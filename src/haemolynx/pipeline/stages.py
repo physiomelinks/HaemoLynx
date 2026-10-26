@@ -288,8 +288,8 @@ class Solution:
     pressure: np.ndarray | None = None
     node_list: list[int] = field(default_factory=list)
     #: Two-point resistance (Pa.s/m^3) between `equivalent_resistance_nodes`
-    #: -- the first inlet and the first outlet -- with every other boundary
-    #: node left floating.
+    #: -- the first inlet and the first outlet, or the two nodes the Post
+    #: processing tab chose -- with every other boundary node left floating.
     equivalent_resistance: float | None = None
     equivalent_resistance_nodes: tuple[Any, Any] | None = None
     #: The whole network's resistance (Pa.s/m^3): the inlet-to-outlet pressure
@@ -4822,6 +4822,28 @@ def _take_edited_terminal_roles(
         )
 
 
+def _take_chosen_resistance_pair(boundaries: BoundaryNodes, G: nx.MultiGraph) -> None:
+    """The two nodes the Post processing tab chose for the two-point
+    resistance (``graph.set_resistance_node``, kept on *G*), on *boundaries*
+    in place of the run's pair. A chosen node an edit has since taken out is
+    forgotten, with a warning, and the run's pair kept."""
+    key = graph.post_processing.RESISTANCE_NODE_PAIR
+    chosen = G.graph.get(key)
+    if chosen is None:
+        return
+    if not all(node in G for node in chosen):
+        G.graph.pop(key)
+        logger.warning(
+            f"Post processing: the two-point resistance nodes chosen by hand, {tuple(chosen)}, are "
+            f"no longer all in the network; it is found between {boundaries.resistance_node_pair} instead."
+        )
+        return
+    pair = (chosen[0], chosen[1])
+    if pair != boundaries.resistance_node_pair:
+        logger.info(f"Post processing: two-point resistance between nodes {pair[0]} and {pair[1]}, chosen by hand.")
+    boundaries.resistance_node_pair = pair
+
+
 def post_process(
     settings: dict,
     model: HaemodynamicModel,
@@ -4843,7 +4865,9 @@ def post_process(
 
     1. the boundary-node lists follow the graph -- a prune can drop an inlet
        -- and the inlets and outlets set by hand on the tab's Terminal nodes
-       list replace the run's (:func:`_take_edited_terminal_roles`);
+       list replace the run's (:func:`_take_edited_terminal_roles`), as the
+       two nodes chosen on its Two-point resistance nodes list replace the
+       first inlet and the first outlet (:func:`_take_chosen_resistance_pair`);
     2. an edited vessel that opens into a thick vessel is split where it
        enters, the part inside a zero-resistance bridge
        (:func:`_bridge_edited_vessels`);
@@ -4904,6 +4928,7 @@ def post_process(
             "The post-processing edits removed every inlet or every outlet; the "
             "network has nothing left to solve between."
         )
+    _take_chosen_resistance_pair(boundaries, G)
     # One binarised segmentation and one support for the three readers below.
     segmentation = _PostProcessSegmentation(settings, network)
     G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask, segmentation)
@@ -5263,9 +5288,10 @@ def _warn_about_dense_solver_memory(settings: Mapping[str, Any], G: nx.Graph) ->
 
 def resistance_statistics(solution: Solution) -> dict[str, Any]:
     """The solve's two resistances, as the statistics CSV's Haemodynamics
-    section: the two-point one between the first inlet and the first outlet,
-    and the whole network's (pressure drop over total inflow through the
-    designated inlets). Beside them, when open ends leaving the image were
+    section: the two-point one between the first inlet and the first outlet
+    (or the two nodes the Post processing tab chose), and the whole
+    network's (pressure drop over total inflow through the designated
+    inlets). Beside them, when open ends leaving the image were
     given a condition (``open_end_model``), the flow entering the network
     through them and leaving through them. Empty when the solve produced
     none of these."""
@@ -7727,6 +7753,13 @@ def _stamp_solution(G: nx.MultiGraph, solution: Solution) -> None:
             for key, value in solution.statistics.items()
         },
     }
+
+
+def solved_resistance_node_pair(G: nx.MultiGraph) -> tuple[Any, Any] | None:
+    """The two nodes the last solve on *G* found the two-point resistance
+    between, from the record it left there; None when it found none."""
+    nodes = (G.graph.get(_SOLUTION_RECORD) or {}).get("equivalent_resistance_nodes")
+    return None if nodes is None else (nodes[0], nodes[1])
 
 
 def _solution_from_graph(solved: nx.MultiGraph) -> Solution:

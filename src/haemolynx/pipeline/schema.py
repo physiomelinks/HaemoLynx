@@ -3157,7 +3157,8 @@ SCHEMA = Schema(
             choices=["eigendecomposition", "sparse"],
             help=(
                 "How the two-point equivalent resistance (first inlet to first "
-                "outlet) is found. eigendecomposition computes every eigenvalue and eigenvector "
+                "outlet, unless Post processing chose two other nodes) is found. "
+                "eigendecomposition computes every eigenvalue and eigenvector "
                 "of the network's Laplacian: minutes at 5,000 nodes, hours at "
                 "20,000, and about 49 N^2 bytes at its peak (20 GB at 20,000 "
                 "nodes); the run warns when it would take more than half the "

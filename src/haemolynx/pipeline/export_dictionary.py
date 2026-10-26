@@ -133,6 +133,7 @@ _REVIEW_MEASURES = (
     _c("robust_z", "dimensionless", "Flow outliers: how many robust SDs (1.4826 MAD of log10 velocity) from it."),
     _c("role", "-", "Terminal nodes and boundary issues: inlet, outlet, arteriole/venule boundary, open end."),
     _c("other_roles", "-", "Other roles the same node has (;-separated)."),
+    _c("two_point", "-", "Two-point resistance nodes: start or end of the pair the resistance is found between, empty for the others."),
     _c("leaves_image", "flag", "Terminal nodes: the dead end leaves the image."),
     _c("dead_end_kind", "-", "The node's dead-end kind (graph.dead_ends)."),
     _c("depth_um", "um", "How far inside the image the node is (distance to the nearest face)."),

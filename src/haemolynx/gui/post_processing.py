@@ -56,6 +56,7 @@ from haemolynx.graph.post_processing import (
     has_pending_edits,
     high_degree_junctions,
     junction_vessels,
+    resistance_node_pair_with_edits,
 )
 from haemolynx.gui.results import PREFIX, LayerSpec, node_points, polylines_to_vectors
 
@@ -70,6 +71,8 @@ __all__ = [
     "ACTION_MAKE_OUTLET",
     "ACTION_MERGE",
     "ACTION_REMOVE_TERMINAL",
+    "ACTION_RESISTANCE_END",
+    "ACTION_RESISTANCE_START",
     "ACTION_SET_DIAMETER",
     "ACTION_TRACE_ON",
     "action_applies",
@@ -104,6 +107,7 @@ __all__ = [
     "ReviewList",
     "append_review_record",
     "find_review_items",
+    "resistance_pair_shown",
     "review_mask_support",
     "review_needs_missing",
     "item_still_there",
@@ -1248,6 +1252,9 @@ ACTION_MAKE_OUTLET = "make_outlet"
 ACTION_REMOVE_TERMINAL = "remove_terminal"
 #: The lost-skeleton list's own button: the vessel the skeleton re-trace would draw.
 ACTION_DRAW_ALONG = "draw_along"
+#: The two-point resistance list's own buttons: the node it is found from, or to.
+ACTION_RESISTANCE_START = "resistance_start"
+ACTION_RESISTANCE_END = "resistance_end"
 ACTION_LABELS = {
     ACTION_DELETE_SELECTED: "Delete selected vessels",
     ACTION_DELETE_ITEM: "Delete all its vessels",
@@ -1263,6 +1270,8 @@ ACTION_LABELS = {
     ACTION_MAKE_OUTLET: "Make outlet",
     ACTION_REMOVE_TERMINAL: "Remove inlet/outlet",
     ACTION_DRAW_ALONG: "Draw along the skeleton",
+    ACTION_RESISTANCE_START: "Use as two-point start",
+    ACTION_RESISTANCE_END: "Use as two-point end",
 }
 
 
@@ -1270,7 +1279,8 @@ def action_applies(item: Any, action: str) -> bool:
     """Whether *action* can do anything for review *item*: a dead end joins
     the vessel ahead only when one was found ahead of it, and is not marked
     as what it already is; a terminal node is not made what it already is,
-    and only an inlet or an outlet has a role to remove. Every other action
+    and only an inlet or an outlet has a role to remove; a node is not made
+    the end of the two-point resistance it already is. Every other action
     applies to any item its list offers it for."""
     from haemolynx.graph.dead_ends import BLIND, LEAVES_IMAGE
 
@@ -1290,6 +1300,10 @@ def action_applies(item: Any, action: str) -> bool:
         return measures.get("role") != "outlet"
     if action == ACTION_REMOVE_TERMINAL:
         return measures.get("role") in ("inlet", "outlet")
+    if action == ACTION_RESISTANCE_START:
+        return measures.get("two_point") != "start"
+    if action == ACTION_RESISTANCE_END:
+        return measures.get("two_point") != "end"
     if action == ACTION_DRAW_ALONG:
         # The re-trace got as far as a route only where the piece meets the network twice.
         return getattr(item, "path_um", None) is not None
@@ -1343,6 +1357,9 @@ def _review_lists() -> tuple[ReviewList, ...]:
         ReviewList(nr.BOUNDARY_NODES, "Boundary nodes", (NEEDS_BOUNDARIES,), (ACTION_KEEP,)),
         ReviewList(nr.TERMINAL_NODES, "Terminal nodes (add or remove inlets and outlets)", (),
                    (ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP)),
+        # Not a check: nothing here is a verdict to keep, so no Keep and no decisions CSV.
+        ReviewList(nr.RESISTANCE_NODES, "Two-point resistance nodes (find and change them)", (NEEDS_BOUNDARIES,),
+                   (ACTION_RESISTANCE_START, ACTION_RESISTANCE_END)),
         ReviewList(nr.UNMEASURED_DIAMETERS, "Unmeasured diameters", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
         ReviewList(nr.DIAMETER_JUMPS, "Diameter jumps", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
     )
@@ -1413,14 +1430,17 @@ def review_label(item: Any, number: int) -> str:
         )
     elif kind == nr.BOUNDARY_NODES:
         text = f"Node {nodes} ({m.get('role') or 'no role'}): {m.get('issue')}"
-    elif kind == nr.TERMINAL_NODES:
+    elif kind in (nr.TERMINAL_NODES, nr.RESISTANCE_NODES):
         where = (
             "leaves the image" if m.get("leaves_image")
             else f"{_g(m.get('depth_um'))} µm inside" if m.get("depth_um") is not None
             else "inside"
         )
         width = f", {_g(m.get('diameter_um'))} µm wide" if m.get("diameter_um") is not None else ""
-        text = f"Node {nodes} ({m.get('role') or 'dead end'}): {where}{width}"
+        what = m.get("role") or ("junction" if int(m.get("vessels") or 1) > 1 else "dead end")
+        if m.get("two_point"):
+            what = f"two-point {m['two_point']}, {what}"
+        text = f"Node {nodes} ({what}): {where}{width}"
     elif kind == nr.UNMEASURED_DIAMETERS:
         share = m.get("flow_share")
         text = f"{m.get('diameter_source') or 'flagged'} width" + (
@@ -1885,6 +1905,28 @@ def review_mask_support(image: Any, voxel_size_zyx: Sequence[float], settings: A
     )
 
 
+def resistance_pair_shown(
+    graph: Any, inlets: Sequence[Any], outlets: Sequence[Any]
+) -> tuple[Any, Any] | None:
+    """The two nodes the next solve of *graph* finds the two-point resistance
+    between, as the stages pick them: the pair chosen on this tab
+    (:func:`haemolynx.graph.set_resistance_node`); else the last solve's,
+    while its start is still one of *inlets* and its end one of *outlets*;
+    else the first inlet and the first outlet still in *graph*. None with
+    neither."""
+    from haemolynx.pipeline.stages import solved_resistance_node_pair
+
+    chosen = resistance_node_pair_with_edits(None, graph)
+    if chosen is not None:
+        return chosen
+    inlets = [node for node in inlets if node in graph]
+    outlets = [node for node in outlets if node in graph]
+    solved = solved_resistance_node_pair(graph)
+    if solved is not None and solved[0] in inlets and solved[1] in outlets:
+        return solved
+    return (inlets[0], outlets[0]) if inlets and outlets else None
+
+
 def find_review_items(
     key: str,
     graph: Any,
@@ -1903,7 +1945,8 @@ def find_review_items(
     and ``short_loop_keep_hole_over_um`` (skeleton the graph does not follow). *support* is the segmented image
     (:func:`review_mask_support`), *roles* the boundary nodes by role,
     *extent_um* the image's size in microns, *z_range* the slices a mask
-    scan reads and *skeleton* the run's skeleton."""
+    scan reads and *skeleton* the run's skeleton. The two-point resistance
+    list starts at the pair :func:`resistance_pair_shown` reads off *graph*."""
     from haemolynx.graph import network_review as nr
 
     values = settings or {}
@@ -1956,6 +1999,10 @@ def find_review_items(
         return nr.find_boundary_issues(graph, roles, extent_um=extent_um)
     if key == nr.TERMINAL_NODES:
         return nr.find_terminal_nodes(graph, roles, extent_um=extent_um)
+    if key == nr.RESISTANCE_NODES:
+        return nr.find_resistance_nodes(
+            graph, roles, resistance_pair_shown(graph, inlets, outlets), extent_um=extent_um
+        )
     if key == nr.UNMEASURED_DIAMETERS:
         return nr.find_unmeasured_diameters(graph, inlets)
     if key == nr.DIAMETER_JUMPS:

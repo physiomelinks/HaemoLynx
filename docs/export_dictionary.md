@@ -607,6 +607,7 @@ Only the measures of the item's own list are filled.
 | `robust_z` | `dimensionless` | Flow outliers: how many robust SDs (1.4826 MAD of log10 velocity) from it. |
 | `role` | `-` | Terminal nodes and boundary issues: inlet, outlet, arteriole/venule boundary, open end. |
 | `other_roles` | `-` | Other roles the same node has (;-separated). |
+| `two_point` | `-` | Two-point resistance nodes: start or end of the pair the resistance is found between, empty for the others. |
 | `leaves_image` | `flag` | Terminal nodes: the dead end leaves the image. |
 | `dead_end_kind` | `-` | The node's dead-end kind (graph.dead_ends). |
 | `depth_um` | `um` | How far inside the image the node is (distance to the nearest face). |

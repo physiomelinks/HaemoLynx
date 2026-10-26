@@ -38,6 +38,7 @@ __all__ = [
     "LOST_SKELETON_WHY",
     "FLOW_OUTLIERS",
     "HAIRPINS",
+    "RESISTANCE_NODES",
     "REVIEW_KINDS",
     "TERMINAL_NODES",
     "THICK_WALL_ENDS",
@@ -58,6 +59,7 @@ __all__ = [
     "find_flow_outliers",
     "find_hairpins",
     "find_lost_skeleton",
+    "find_resistance_nodes",
     "find_terminal_nodes",
     "find_two_in_one_lumen",
     "find_uncovered_mask",
@@ -98,6 +100,9 @@ FLOW_AGAINST_ORDER = "flow_against_order"
 FLOW_OUTLIERS = "flow_outliers"
 BOUNDARY_NODES = "boundary_nodes"
 TERMINAL_NODES = "terminal_nodes"
+#: The "Two-point resistance nodes" list: where the two-point resistance is
+#: found, and the nodes it could be found between instead.
+RESISTANCE_NODES = "resistance_nodes"
 UNMEASURED_DIAMETERS = "unmeasured_diameters"
 DIAMETER_JUMPS = "diameter_jumps"
 #: Every kind a finder here returns, in the order the dropdown lists them.
@@ -116,6 +121,7 @@ REVIEW_KINDS = (
     FLOW_OUTLIERS,
     BOUNDARY_NODES,
     TERMINAL_NODES,
+    RESISTANCE_NODES,
     UNMEASURED_DIAMETERS,
     DIAMETER_JUMPS,
 )
@@ -749,6 +755,67 @@ def find_terminal_nodes(
     Whether a dead end leaves the image is the one definition
     (:func:`haemolynx.graph.dead_ends.node_leaves_image`), against the
     image's extent *extent_um* or the graph's own."""
+    item, leaves, inlets, outlets = _terminal_node_reader(G, roles, extent_um)
+    ranked = [(0, item(node, "inlet")) for node in inlets] + [(1, item(node, "outlet")) for node in outlets]
+    for node in G.nodes:
+        if node in inlets or node in outlets or G.degree(node) != 1:
+            continue
+        (_a, other, _k), = G.edges(node, keys=True)
+        if G.degree(other) == 1:
+            continue
+        ranked.append((2 if leaves(node) else 3, item(node, "")))
+    # Inlets and outlets keep their lists' order; the dead ends go widest first.
+    ranked.sort(key=lambda pair: (pair[0], -(pair[1].measures["diameter_um"] or 0.0) if pair[0] >= 2 else 0.0))
+    return [found for _order, found in ranked]
+
+
+def find_resistance_nodes(
+    G: nx.MultiGraph,
+    roles: Mapping[str, Iterable[Any]],
+    pair: Sequence[Any] | None,
+    *,
+    extent_um: Sequence[float] | None = None,
+) -> list[ReviewItem]:
+    """Where the two-point resistance is found, and where else it could be:
+    the two nodes of *pair* -- its start, then its end -- then every other
+    node the Terminal nodes list lists (:func:`find_terminal_nodes`), in its
+    order: the inlets, the outlets, the dead ends leaving the image, the
+    other dead ends. A node of *pair* no longer in *G* is left out; one the
+    Terminal nodes list would not list (a junction) is listed all the same.
+    *roles* maps ``"inlet"``, ``"outlet"`` and the other boundary roles to
+    their nodes. Each item's ``two_point`` measure says which end of the
+    pair it is, empty for the others."""
+    item, _leaves, inlets, outlets = _terminal_node_reader(G, roles, extent_um)
+    ends = dict(zip(pair or (), ("start", "end")))
+    ends = {node: end for node, end in ends.items() if node in G}
+    listed = []
+    for node, end in ends.items():
+        found = item(node, "inlet" if node in inlets else "outlet" if node in outlets else "")
+        other = next((n for n, e in ends.items() if e != end), None)
+        between = f" (to node {other})" if end == "start" and other is not None else (
+            f" (from node {other})" if other is not None else ""
+        )
+        listed.append(replace(
+            found,
+            kind=RESISTANCE_NODES,
+            why=f"Node {node} is the two-point resistance's {end}{between}. {found.why}",
+            measures={"two_point": end, **found.measures},
+        ))
+    for found in find_terminal_nodes(G, roles, extent_um=extent_um):
+        if found.nodes[0] in ends:
+            continue
+        listed.append(replace(found, kind=RESISTANCE_NODES, measures={"two_point": "", **found.measures}))
+    return listed
+
+
+def _terminal_node_reader(
+    G: nx.MultiGraph, roles: Mapping[str, Iterable[Any]], extent_um: Sequence[float] | None
+):
+    """What the Terminal nodes list reads of a node: ``(item, leaves, inlets,
+    outlets)``, where ``item(node, role)`` is its :data:`TERMINAL_NODES` item
+    with *role* (``"inlet"``, ``"outlet"`` or ``""``), ``leaves(node)``
+    whether it leaves the image, and *inlets* and *outlets* the roles' nodes
+    still in *G*, an outlet never an inlet too."""
     pos = _node_pos(G)
     name = _namer(G)
     inlets = [n for n in dict.fromkeys(roles.get("inlet") or ()) if n in G]
@@ -762,7 +829,7 @@ def find_terminal_nodes(
     depth, leaves = _face_readers(G, pos, extent_um, None)
     reference = flow_reference(G, inlets)
 
-    def item(node, order: int, role: str) -> tuple[tuple, ReviewItem]:
+    def item(node, role: str) -> ReviewItem:
         edges = tuple(dict.fromkeys(name(a, b, k) for a, b, k in G.edges(node, keys=True)))
         widths = [w for w in (_diameter(G.edges[e]) for e in edges) if w is not None]
         flows = [s for s in (_flow_share(G.edges[e], reference) for e in edges if _is_solved(G.edges[e]))
@@ -780,6 +847,8 @@ def find_terminal_nodes(
             if G.degree(node) != 1:
                 why += f"; not a dead end: {G.degree(node)} vessels meet there"
             why += "."
+        elif G.degree(node) != 1:
+            why = f"Node {node} is neither inlet nor outlet, {where}: {G.degree(node)} vessels meet there."
         elif out:
             why = (f"Node {node} is a dead end {where}, neither inlet nor outlet: the vessel the image cut "
                    "is an open end in the solve (open_end_model) unless it is made one.")
@@ -804,19 +873,9 @@ def find_terminal_nodes(
             },
             points_um=_points(G, edges, pos, extra=[pos[node]] if node in pos else ()),
         )
-        return (order, -(widest or 0.0)), found
+        return found
 
-    ranked = [item(node, 0, "inlet") for node in inlets] + [item(node, 1, "outlet") for node in outlets]
-    for node in G.nodes:
-        if node in inlets or node in outlets or G.degree(node) != 1:
-            continue
-        (_a, other, _k), = G.edges(node, keys=True)
-        if G.degree(other) == 1:
-            continue
-        ranked.append(item(node, 2 if leaves(node) else 3, ""))
-    # Inlets and outlets keep their lists' order; the dead ends go widest first.
-    ranked.sort(key=lambda pair: pair[0] if pair[0][0] >= 2 else (pair[0][0], 0.0))
-    return [found for _key, found in ranked]
+    return item, leaves, inlets, outlets
 
 
 def find_boundary_issues(

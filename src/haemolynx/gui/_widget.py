@@ -11524,6 +11524,7 @@ def _post_processing_controls(
         merge_junctions,
         prune_disconnected_branches,
         record_drawn_vessel_support,
+        set_resistance_node,
         set_terminal_role,
         set_vessel_diameter,
         short_loops,
@@ -11557,6 +11558,8 @@ def _post_processing_controls(
         ACTION_MARK_OPEN,
         ACTION_MERGE,
         ACTION_REMOVE_TERMINAL,
+        ACTION_RESISTANCE_END,
+        ACTION_RESISTANCE_START,
         ACTION_SET_DIAMETER,
         ACTION_TRACE_ON,
         DEAD_END_SHOW,
@@ -11581,6 +11584,7 @@ def _post_processing_controls(
         removes_listed_pieces,
         item_still_there,
         items_to_review,
+        resistance_pair_shown,
         network_summary,
         review_box_um,
         review_csv_path,
@@ -12003,6 +12007,10 @@ def _post_processing_controls(
         row.addWidget(review_buttons[action])
     review_layout.addLayout(row)
     row = QHBoxLayout()
+    for action in (ACTION_RESISTANCE_START, ACTION_RESISTANCE_END):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
     row.addWidget(review_buttons[ACTION_SET_DIAMETER])
     row.addWidget(review_diameter)
     row.addWidget(review_buttons[ACTION_KEEP])
@@ -12368,7 +12376,7 @@ def _post_processing_controls(
         roles = boundary_roles_with_edits(boundary_roles(), graph)
         state.inlets = tuple(roles.get("inlet", ()) or ())
         state.outlets = tuple(roles.get("outlet", ()) or ())
-        state.protected = frozenset(n for nodes in roles.values() for n in (nodes or ()))
+        state.protected = protected_nodes(roles, graph)
         stop_editing()
         # The viewer shows this tab's own edited graph until Regenerate: its
         # added nodes are still the ones to mark. Any other graph is a new run.
@@ -12843,6 +12851,15 @@ def _post_processing_controls(
             for role, nodes in roles.items()
         }
 
+    def protected_nodes(roles, graph=None) -> frozenset:
+        """The nodes no edit may delete or merge away: every boundary node,
+        and the two the two-point resistance is found between."""
+        graph = state.graph if graph is None else graph
+        pair = None if graph is None else resistance_pair_shown(
+            graph, roles.get("inlet", ()) or (), roles.get("outlet", ()) or ()
+        )
+        return frozenset(n for nodes in roles.values() for n in (nodes or ())) | frozenset(pair or ())
+
     def review_counts() -> str:
         entry = REVIEW_LIST_BY_KEY.get(state.review_key) or review_entry()
         mine = [d for d in state.review_decisions if d.kind == entry.key]
@@ -13296,13 +13313,42 @@ def _post_processing_controls(
             return
         state.inlets = tuple(roles.get("inlet", ()) or ())
         state.outlets = tuple(roles.get("outlet", ()) or ())
-        state.protected = frozenset(n for nodes in roles.values() for n in (nodes or ()))
+        state.protected = protected_nodes(roles)
         written = keep_record(review, row)
         text = f"Node {node} {words}: {len(state.inlets)} inlet(s), {len(state.outlets)} outlet(s)"
         log_edit(text)
         # Redrawn like any edit, so the viewer holds the tab's graph and a
         # scan before Regenerate keeps the lists on it.
         after_review_edit(text, written)
+
+    def on_review_set_resistance_node(end: str) -> None:
+        """Make the chosen node the two-point resistance's start or end
+        (graph.set_resistance_node): the pair is kept on the tab's graph, and
+        Regenerate graph finds the resistance between them. A choice, not a
+        verdict on the node: nothing is written to a decisions CSV, and the
+        list keeps the node, now at its top."""
+        item = chosen_item()
+        if item is None:
+            return
+        node = item.nodes[0]
+        if node not in state.graph:
+            review_summary.setText(f"Node {node} is no longer in the network: scan the network again.")
+            return
+        try:
+            pair = set_resistance_node(
+                state.graph, resistance_pair_shown(state.graph, state.inlets, state.outlets), node, end
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            return
+        state.protected = protected_nodes(review_roles())
+        text = f"Two-point resistance from node {pair[0]} to node {pair[1]}"
+        log_edit(text)
+        after_review_edit(text, "")
+        # The node moved to the top of the list: keep it chosen there.
+        row = next((r for r, listed in enumerate(state.review_items) if listed.nodes[:1] == (node,)), None)
+        if row is not None:
+            review_items.setCurrentRow(row)
 
     def on_review_join_ahead() -> None:
         item = chosen_item()
@@ -14068,6 +14114,8 @@ def _post_processing_controls(
     review_buttons[ACTION_MAKE_INLET].clicked.connect(lambda: on_review_set_terminal_role("inlet"))
     review_buttons[ACTION_MAKE_OUTLET].clicked.connect(lambda: on_review_set_terminal_role("outlet"))
     review_buttons[ACTION_REMOVE_TERMINAL].clicked.connect(lambda: on_review_set_terminal_role(None))
+    review_buttons[ACTION_RESISTANCE_START].clicked.connect(lambda: on_review_set_resistance_node("start"))
+    review_buttons[ACTION_RESISTANCE_END].clicked.connect(lambda: on_review_set_resistance_node("end"))
     dead_end_show.currentTextChanged.connect(on_dead_end_show_changed)
     remove_pieces_button.clicked.connect(on_remove_listed_pieces)
     refresh_review_buttons()

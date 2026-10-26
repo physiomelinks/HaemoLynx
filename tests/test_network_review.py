@@ -787,3 +787,42 @@ def test_dead_ends_at_thick_walls_come_nearest_the_lumen_first(monkeypatch):
 
     assert [item.nodes[0] for item in items] == ["b", "c", "a"]
     assert "2 µm in" in items[0].why and items[0].measures["ahead_edge"] is None
+
+
+# --- "Two-point resistance nodes": where the pair is, and where it could be --------
+
+
+def test_the_two_point_list_starts_at_the_pair_then_lists_the_terminal_nodes_once():
+    G = _terminal_network()
+    before = _unchanged(G)
+    roles = {"inlet": [0], "outlet": [5], "arteriole_boundary": [4]}
+
+    items = nr.find_resistance_nodes(G, roles, (9, 0), extent_um=(100, 100, 100))
+
+    assert _unchanged(G) == before
+    assert [item.nodes[0] for item in items] == [9, 0, 5, 7, 4]
+    assert all(item.kind == nr.RESISTANCE_NODES for item in items)
+    assert [item.measures["two_point"] for item in items] == ["start", "end", "", "", ""]
+    assert [item.measures["role"] for item in items] == ["", "inlet", "outlet", "", ""]
+    assert items[0].why.startswith("Node 9 is the two-point resistance's start (to node 0). Node 9 is a dead end")
+    assert items[1].why.startswith("Node 0 is the two-point resistance's end (from node 9). Node 0 is an inlet")
+    # Everything else as the Terminal nodes list reads it.
+    terminal = {item.nodes[0]: item for item in nr.find_terminal_nodes(G, roles, extent_um=(100, 100, 100))}
+    for item in items:
+        assert {k: v for k, v in item.measures.items() if k != "two_point"} == terminal[item.nodes[0]].measures
+        assert item.centre_um == terminal[item.nodes[0]].centre_um
+
+
+def test_a_junction_in_the_pair_is_listed_and_a_node_gone_is_not():
+    G = _terminal_network()
+    items = nr.find_resistance_nodes(G, {"inlet": [0], "outlet": [5]}, (0, 2), extent_um=(100, 100, 100))
+    junction = items[1]
+    assert junction.nodes == (2,) and junction.measures["two_point"] == "end"
+    assert junction.measures["role"] == "" and junction.measures["vessels"] == 3
+    assert "neither inlet nor outlet" in junction.why and "3 vessels meet there" in junction.why
+    assert [item.nodes[0] for item in items] == [0, 2, 5, 9, 7, 4]
+
+    gone = nr.find_resistance_nodes(G, {"inlet": [0], "outlet": [5]}, (0, 77), extent_um=(100, 100, 100))
+    assert [item.measures["two_point"] for item in gone[:2]] == ["start", ""]
+    assert "to node" not in gone[0].why
+    assert nr.find_resistance_nodes(G, {"inlet": [0], "outlet": [5]}, None)[0].measures["two_point"] == ""

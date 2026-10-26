@@ -1168,3 +1168,58 @@ def test_clearing_the_edit_marks_forgets_the_lists():
     assert BOUNDARY_ROLES not in G.graph
     assert boundary_roles_with_edits(roles, G) == roles
     assert boundary_roles_with_edits(None, None) == {}
+
+
+# --- set_resistance_node (the Two-point resistance nodes list's edit) ---------
+
+from haemolynx.graph import resistance_node_pair_with_edits, set_resistance_node  # noqa: E402
+from haemolynx.graph.post_processing import RESISTANCE_NODE_PAIR  # noqa: E402
+
+
+def test_choosing_a_two_point_end_keeps_the_pair_on_the_graph_and_marks_it_pending():
+    G, _roles = _terminal_chain()
+    before = sorted(map(str, G.edges(keys=True, data=True)))
+
+    assert set_resistance_node(G, (0, 3), 9, "end") == (0, 9)
+
+    assert G.graph[RESISTANCE_NODE_PAIR] == (0, 9)
+    assert has_pending_edits(G)
+    assert sorted(map(str, G.edges(keys=True, data=True))) == before, "the network is not changed"
+    # The next change is made on top of this one, whatever the run's pair says.
+    assert set_resistance_node(G, (0, 3), 2, "start") == (2, 9)
+    assert resistance_node_pair_with_edits((0, 3), G) == (2, 9)
+
+
+def test_choosing_the_other_end_of_the_pair_swaps_the_two():
+    G, _roles = _terminal_chain()
+    assert set_resistance_node(G, (0, 3), 3, "start") == (3, 0)
+    assert set_resistance_node(G, (0, 3), 3, "end") == (0, 3)
+
+
+def test_choosing_the_end_a_node_already_is_changes_nothing():
+    G, _roles = _terminal_chain()
+    assert set_resistance_node(G, (0, 3), 0, "start") == (0, 3)
+    assert RESISTANCE_NODE_PAIR not in G.graph and not has_pending_edits(G)
+
+
+def test_a_two_point_end_may_be_a_junction_but_not_a_node_or_end_that_does_not_exist():
+    G, _roles = _terminal_chain()
+    assert set_resistance_node(G, (0, 3), 1, "end") == (0, 1)
+    with pytest.raises(ValueError, match="not in the network"):
+        set_resistance_node(G, (0, 3), 42, "end")
+    with pytest.raises(ValueError, match="not an end"):
+        set_resistance_node(G, (0, 3), 9, "middle")
+    with pytest.raises(ValueError, match="needs an inlet and an outlet"):
+        set_resistance_node(_terminal_chain()[0], None, 9, "end")
+
+
+def test_the_chosen_pair_outlasts_the_edit_marks_but_not_its_nodes():
+    G, _roles = _terminal_chain()
+    set_resistance_node(G, (0, 3), 9, "end")
+
+    clear_edit_marks(G)
+
+    assert resistance_node_pair_with_edits((0, 3), G) == (0, 9), "every later regenerate keeps it"
+    G.remove_node(9)
+    assert resistance_node_pair_with_edits((0, 3), G) == (0, 3)
+    assert resistance_node_pair_with_edits(None, None) is None

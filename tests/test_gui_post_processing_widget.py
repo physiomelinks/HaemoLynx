@@ -1739,6 +1739,56 @@ def test_a_dead_end_made_an_outlet_is_kept_on_the_graph_for_regenerate(make_napa
     assert page.regenerated[-1].graph[BOUNDARY_ROLES] == {"inlet": [0], "outlet": [5]}
 
 
+
+# --- Two-point resistance nodes: the pair found and changed from the list -----------
+
+from haemolynx.graph.post_processing import RESISTANCE_NODE_PAIR  # noqa: E402
+from haemolynx.gui.post_processing import ACTION_RESISTANCE_END, ACTION_RESISTANCE_START  # noqa: E402
+
+TWO_POINT = "Two-point resistance nodes (find and change them)"
+
+
+def _labels(c) -> list:
+    return [c.review_items.item(i).text().split(":")[0] for i in range(c.review_items.count())]
+
+
+def test_the_two_point_nodes_are_found_and_changed_from_the_list(make_napari_viewer, tmp_path):
+    page = _review_page(make_napari_viewer(), tmp_path)
+    c, viewer = page.controls, page.viewer
+    c.review_choice.setCurrentText(TWO_POINT)
+    c.scan_button.click()
+    assert _shown_buttons(c) == {ACTION_RESISTANCE_START, ACTION_RESISTANCE_END}
+
+    # Found: the pair heads the list, its start chosen and in view.
+    assert _labels(c) == [
+        "1. Node 0 (two-point start, inlet)", "2. Node 4 (two-point end, outlet)", "3. Node 5 (dead end)",
+    ]
+    assert c.state.review_item.nodes == (0,)
+    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    assert np.allclose(centre, np.asarray(c.state.review_item.centre_um)[-len(viewer.dims.displayed):], atol=1e-6)
+    assert not c.review_buttons[ACTION_RESISTANCE_START].isEnabled()
+    assert c.review_buttons[ACTION_RESISTANCE_END].isEnabled()
+
+    c.review_items.setCurrentRow(2)
+    c.review_buttons[ACTION_RESISTANCE_END].click()
+
+    assert c.state.graph.graph[RESISTANCE_NODE_PAIR] == (0, 5)
+    assert 5 in c.state.protected, "a later edit cannot delete it"
+    assert c.regenerate_graph_button.isEnabled()
+    assert _labels(c) == [
+        "1. Node 0 (two-point start, inlet)", "2. Node 5 (two-point end, dead end)", "3. Node 4 (outlet)",
+    ]
+    assert c.state.review_item.nodes == (5,), "the node chosen stays chosen, now second"
+    assert "Two-point resistance from node 0 to node 5" in c.log_box.toPlainText()
+    assert not (tmp_path / "run_resistance_nodes_review.csv").exists(), "a choice, not a verdict"
+    # The outlets are unchanged: the pair is not a role.
+    assert c.state.inlets == (0,) and c.state.outlets == (4,)
+
+    c.regenerate_graph_button.click()
+
+    assert page.regenerated[-1].graph[RESISTANCE_NODE_PAIR] == (0, 5)
+
+
 def _raw_panel_page(viewer, *, raw: bool):
     """The four-way network over a segmentation round its loop, Short loops
     chosen and scanned; with *raw*, the run's raw image in the viewer (the

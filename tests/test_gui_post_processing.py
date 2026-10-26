@@ -663,8 +663,12 @@ def test_the_dropdown_lists_none_first_then_junctions_loops_and_every_check_once
     assert len({entry.label for entry in REVIEW_LISTS}) == len(REVIEW_LISTS)
     assert all(not entry.actions for entry in REVIEW_LISTS[:3])
     for entry in REVIEW_LISTS[3:]:
-        assert entry.actions[-1] == "keep", entry.key
         assert set(entry.actions) <= set(ACTION_LABELS)
+        if entry.key == nr.RESISTANCE_NODES:
+            # A choice of two nodes, not a check: no verdict to keep or record.
+            assert entry.actions == ("resistance_start", "resistance_end")
+            continue
+        assert entry.actions[-1] == "keep", entry.key
     for action in ACTION_LABELS:
         assert POST_PROCESSING_TOOLTIPS[f"review_{action}"].strip()
     mask_lists = {entry.key for entry in REVIEW_LISTS if entry.uses_mask}
@@ -1239,3 +1243,61 @@ def test_drawing_along_the_skeleton_closes_the_ring_the_clean_up_opened():
     assert scene.G.edges[added.edge]["length"] == pytest.approx(40.0, abs=2.0)
     assert nx.cycle_basis(nx.Graph(scene.G))
     assert nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support()) == []
+
+
+# --- Two-point resistance nodes: the list that finds and changes the pair ----------
+
+from haemolynx.graph import set_resistance_node  # noqa: E402
+from haemolynx.gui.post_processing import (  # noqa: E402
+    ACTION_RESISTANCE_END,
+    ACTION_RESISTANCE_START,
+    action_applies,
+    resistance_pair_shown,
+)
+from haemolynx.pipeline.stages import Solution, _stamp_solution, solved_resistance_node_pair  # noqa: E402
+
+
+def test_the_pair_shown_is_the_one_chosen_else_the_last_solves_else_the_first_inlet_and_outlet():
+    G = _network()
+    assert resistance_pair_shown(G, (0, 5), (4,)) == (0, 4)
+    assert resistance_pair_shown(G, (77, 5), (4,)) == (5, 4), "an inlet no longer in the network is skipped"
+    assert resistance_pair_shown(G, (), (4,)) is None
+
+    _stamp_solution(G, Solution(equivalent_resistance_nodes=(5, 4)))
+    assert solved_resistance_node_pair(G) == (5, 4)
+    assert resistance_pair_shown(G, (0, 5), (4,)) == (5, 4)
+    # As the stage re-picks it: not once its start has stopped being an inlet.
+    assert resistance_pair_shown(G, (0,), (4,)) == (0, 4)
+
+    set_resistance_node(G, (5, 4), 2, "end")
+    assert resistance_pair_shown(G, (0,), (4,)) == (5, 2)
+
+
+def test_the_two_point_list_is_made_from_the_pair_shown_and_says_which_end_each_is():
+    G = _network()
+    roles = {"inlet": (0,), "outlet": (4,)}
+    entry = REVIEW_LIST_BY_KEY[nr.RESISTANCE_NODES]
+    assert entry.needs == (NEEDS_BOUNDARIES,) and not entry.uses_mask
+
+    items = find_review_items(nr.RESISTANCE_NODES, G, roles=roles)
+    assert [(item.nodes[0], item.measures["two_point"]) for item in items] == [(0, "start"), (4, "end"), (5, "")]
+    assert review_label(items[0], 1).startswith("1. Node 0 (two-point start, inlet): ")
+    assert review_label(items[2], 3).startswith("3. Node 5 (dead end): ")
+
+    set_resistance_node(G, (0, 4), 1, "end")
+    items = find_review_items(nr.RESISTANCE_NODES, G, roles=roles)
+    assert [(item.nodes[0], item.measures["two_point"]) for item in items] == [
+        (0, "start"), (1, "end"), (4, ""), (5, ""),
+    ]
+    assert review_label(items[1], 2).startswith("2. Node 1 (two-point end, junction): ")
+
+
+def test_a_node_is_not_made_the_end_of_the_pair_it_already_is():
+    from types import SimpleNamespace
+
+    start = SimpleNamespace(measures={"two_point": "start"})
+    other = SimpleNamespace(measures={"two_point": ""})
+    assert not action_applies(start, ACTION_RESISTANCE_START) and action_applies(start, ACTION_RESISTANCE_END)
+    assert action_applies(other, ACTION_RESISTANCE_START) and action_applies(other, ACTION_RESISTANCE_END)
+    for action in (ACTION_RESISTANCE_START, ACTION_RESISTANCE_END):
+        assert ACTION_LABELS[action] and POST_PROCESSING_TOOLTIPS[f"review_{action}"]

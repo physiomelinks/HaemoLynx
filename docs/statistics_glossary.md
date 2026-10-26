@@ -436,7 +436,7 @@ names it lists.
 
 | Statistic | Unit | Definition |
 |---|---|---|
-| Two-Point Equivalent Resistance (Pa.s/m^3) | Pa.s/m^3 | The resistance between the first inlet and the first outlet: the pressure difference driving a unit flow between them alone. |
+| Two-Point Equivalent Resistance (Pa.s/m^3) | Pa.s/m^3 | The resistance between the first inlet and the first outlet, or the two nodes chosen on the Post processing tab: the pressure difference driving a unit flow between them alone. |
 | Two-Point Resistance Nodes | (text) | The two nodes it was found between. |
 | Network Resistance, Pressure Drop / Total Inflow (Pa.s/m^3) | Pa.s/m^3 | Inlet pressure minus outlet pressure over the total flow in through every designated inlet; the flow through open ends is reported beside it, not in it. |
 | Open-End Model | (text) | The boundary condition on vessels leaving the image (open_end_model): estimated, terminal_resistance or outlet. Written only when open ends were given one. |

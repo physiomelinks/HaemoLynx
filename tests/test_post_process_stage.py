@@ -1735,3 +1735,73 @@ def test_the_network_is_solved_between_the_inlets_and_outlets_set_by_hand(tmp_pa
     assert abs(solved.edges[0, 1, 0]["flow_signed"]) > 0
     assert solved.edges[2, 3, 0]["flow_abs"] == pytest.approx(0.0, abs=1e-12 * solved.edges[0, 1, 0]["flow_abs"])
     assert sorted(run_settings["outlet_nodes"]) == [2, LAST]
+
+
+# --- the two-point resistance's nodes chosen by hand (Two-point resistance nodes) ---
+
+from haemolynx.graph import set_resistance_node  # noqa: E402
+from haemolynx.graph.post_processing import RESISTANCE_NODE_PAIR  # noqa: E402
+
+
+def test_the_two_point_nodes_chosen_by_hand_replace_the_first_inlet_and_outlet(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    set_resistance_node(model.graph, boundaries.resistance_node_pair, 2, "end")
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert boundaries.resistance_node_pair == (0, 2)
+    assert boundaries.inlet_nodes == [0] and boundaries.outlet_nodes == [LAST], "no role changes with it"
+    assert out.graph.graph[RESISTANCE_NODE_PAIR] == (0, 2), "kept for every later regenerate"
+    assert not has_pending_edits(out.graph)
+
+
+def test_a_chosen_two_point_node_an_edit_took_out_is_forgotten(tmp_path, caplog):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    edge, tip = _pendant(G)
+    set_resistance_node(G, boundaries.resistance_node_pair, tip, "end")
+    delete_vessels(G, [edge], protected=frozenset({0, LAST}))
+    assert tip not in G
+
+    with caplog.at_level("WARNING", logger=stages.logger.name):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert boundaries.resistance_node_pair == (0, LAST)
+    assert RESISTANCE_NODE_PAIR not in out.graph.graph
+    assert any("no longer all in the network" in record.message for record in caplog.records)
+
+
+def test_the_two_point_resistance_is_solved_between_the_nodes_chosen_and_stays_there(tmp_path, monkeypatch):
+    """In the chain, the resistance between two of its nodes is the vessels'
+    between them in series; a later regenerate, which resumes with the first
+    inlet and outlet as the panel's checkpoints carry them, keeps the pair."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused_out: dict = {}
+    paused = run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, stop_after="solve", on_stage_output=paused_out.__setitem__
+    )
+    assert paused_out["solve"].equivalent_resistance_nodes == (0, LAST)
+    edited = copy.deepcopy(paused)
+    set_resistance_node(edited, (0, LAST), 2, "end")
+
+    outputs: dict = {}
+    solved = run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, start_from="post_process",
+        resume=_resume_from_post_processing(edited), on_stage_output=outputs.__setitem__,
+    )
+
+    solution = outputs["post_process"]
+    assert solution.equivalent_resistance_nodes == (0, 2)
+    series = solved.edges[0, 1, 0]["resistance"] + solved.edges[1, 2, 0]["resistance"]
+    assert solution.equivalent_resistance == pytest.approx(series, rel=1e-6)
+    assert stages.resistance_statistics(solution)["Haemodynamics"]["Two-Point Resistance Nodes"] == "0 -> 2"
+    assert stages.solved_resistance_node_pair(solved) == (0, 2)
+
+    again = copy.deepcopy(solved)
+    set_vessel_diameter(again, [(2, 3, 0)], 4.0)
+    outputs = {}
+    run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, start_from="post_process",
+        resume=_resume_from_post_processing(again), on_stage_output=outputs.__setitem__,
+    )
+    assert outputs["post_process"].equivalent_resistance_nodes == (0, 2)
