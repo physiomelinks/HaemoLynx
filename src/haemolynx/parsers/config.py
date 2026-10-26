@@ -6,7 +6,8 @@ editing a call site — so the examples read as a sequence of pipeline stages
 rather than a wall of keyword arguments.
 
 Precedence, lowest to highest: schema defaults, config file, explicit
-overrides (``--set name=value``).
+overrides (on the command line a ``--preset``, then ``--<setting-name> VALUE``
+flags; see :mod:`.cli`).
 """
 from __future__ import annotations
 

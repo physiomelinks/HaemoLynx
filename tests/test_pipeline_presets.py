@@ -159,3 +159,47 @@ def test_the_command_line_offers_the_panel_presets_beside_the_examples(tmp_path,
     assert settings["haemodynamics_solver"] == "sparse"
     assert settings["equivalent_resistance_solver"] == "sparse"
     assert "Applying preset 'large_image'" in capsys.readouterr().out
+
+
+def test_each_layer_overrides_the_one_before_as_the_readme_says(tmp_path):
+    """README "Settings and presets": schema default -> config file ->
+    --preset -> --<setting-name> flag, and a preset sets only what it names."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert (
+        "schema default  ->  config file (--config)  ->  --preset NAME  ->  "
+        "--<setting-name> VALUE"
+    ) in readme
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "haemodynamics_solver: dense\n"
+        "equivalent_resistance_solver: eigendecomposition\n"
+        "vtk_export: false\n",
+        encoding="utf-8",
+    )
+    settings = settings_from_command_line(
+        SCHEMA,
+        config,
+        presets=PRESETS,
+        argv=["--preset", "large_image", "--haemodynamics-solver", "dense"],
+    )
+    defaults = SCHEMA.defaults()
+    # Named by nothing: the schema default.
+    assert settings["export_citations"] == defaults["export_citations"]
+    # Named by the config only: the config, though the default differs.
+    assert defaults["vtk_export"] is True and settings["vtk_export"] is False
+    # Named by the config and the preset: the preset.
+    assert settings["equivalent_resistance_solver"] == "sparse"
+    # Named by the preset and a flag: the flag.
+    assert settings["haemodynamics_solver"] == "dense"
+
+
+def test_the_readme_names_the_preset_files_that_exist():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    for path in (
+        "src/haemolynx/pipeline/schema.py",
+        "src/haemolynx/pipeline/presets.py",
+        "examples/pipeline_presets.py",
+    ):
+        assert f"[`{path}`]({path})" in readme
+        assert (REPO_ROOT / path).is_file()

@@ -36,6 +36,33 @@ and changing settings.
 run writes holds, column by column, with units; the statistics rows are in
 **[docs/statistics_glossary.md](docs/statistics_glossary.md)**.
 
+## Settings and presets
+
+Every setting is declared once, in
+[`src/haemolynx/pipeline/schema.py`](src/haemolynx/pipeline/schema.py), with its
+default, limits and help text. The panel's form, the YAML config file and the
+command line's `--<setting-name>` flags are all generated from those
+declarations, so none of them can name a setting that does not exist.
+
+A **preset** is a named set of those settings to start a run from. The panel
+lists its presets in the **Preset** menu under *Load config...*: plain dicts in
+[`src/haemolynx/pipeline/presets.py`](src/haemolynx/pipeline/presets.py), each
+picking switches and choices only, never a file or a threshold. The example
+scripts take the same ones with `--preset NAME`, plus their own from
+[`examples/pipeline_presets.py`](examples/pipeline_presets.py), which may name
+files too; `--list-presets` lists them all. Every preset is checked against the
+schema, so none can set a setting that is gone.
+
+A preset sets only what it names. On the command line each layer overrides the
+one before it:
+
+```
+schema default  ->  config file (--config)  ->  --preset NAME  ->  --<setting-name> VALUE
+```
+
+In the panel a preset is loaded once, like a config: it fills the rows it
+names, and a config loaded or a row changed afterwards replaces what it set.
+
 ## Developing
 
 Work against a local checkout, with napari running the code you are editing:
