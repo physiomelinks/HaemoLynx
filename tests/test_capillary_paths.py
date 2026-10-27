@@ -21,7 +21,13 @@ from test_capillary_bed_joins import _large_tier_bed
 from test_statistics_without_haemodynamics import _export_with_haemodynamics_off
 
 ORDERS = "Capillary Orders Between Arteriole and Venule"
+LENGTHS = "Capillary Route Length Between Arteriole and Venule"
 STATUS = "Capillary Path Orders Status"
+LENGTH_STATUS = f"{LENGTHS} Status"
+
+
+def _length(rows, statistic):
+    return rows[f"{LENGTHS}, {statistic} (microns)"]
 
 
 def _vessel(G, u, v, label, length=10.0):
@@ -57,19 +63,23 @@ def test_a_single_route_holds_one_order_per_capillary(capillaries):
     assert rows[f"{ORDERS}, Median"] == capillaries
     assert rows[f"{ORDERS}, Min"] == rows[f"{ORDERS}, Max"] == capillaries
     assert rows[f"{ORDERS}, SD"] == "N/A (one route)"
+    assert _length(rows, "Mean") == _length(rows, "Min") == _length(rows, "Max") == 10.0 * capillaries
+    assert _length(rows, "SD") == "N/A (one route)"
     assert rows["Capillaries Draining to a Venule"] == 1
     assert rows["Capillaries Draining to a Venule No Arteriole Reaches"] == 0
 
 
 def test_every_capillary_draining_into_a_venule_ends_a_route_of_its_own():
     """From feed 1: 1-2-9 drains after 2 capillaries, 1-3-4-10 after 3, and
-    the two parallel capillaries 4-11 after 3 each: orders 2, 3, 3, 3."""
+    the two parallel capillaries 4-11 after 3 each: orders 2, 3, 3, 3. Every
+    vessel is 10 um except one of the parallel pair, 25 um: routes of 20, 30,
+    30 and 45 um."""
     G = nx.MultiGraph()
     _vessel(G, 0, 1, "Art1")
     for u, v, label in ((1, 2, "B01"), (2, 9, "B02"), (1, 3, "B01"), (3, 4, "B02"), (4, 10, "B03")):
         _vessel(G, u, v, label)
     _vessel(G, 4, 11, "B03")
-    _vessel(G, 4, 11, "B03")
+    _vessel(G, 4, 11, "B03", length=25.0)
     for end in (9, 10, 11):
         _vessel(G, end, 20, "Ven1")
 
@@ -80,6 +90,10 @@ def test_every_capillary_draining_into_a_venule_ends_a_route_of_its_own():
     assert rows[f"{ORDERS}, Median"] == 3.0
     assert rows[f"{ORDERS}, SD"] == pytest.approx(np.std([2, 3, 3, 3], ddof=1))
     assert (rows[f"{ORDERS}, Min"], rows[f"{ORDERS}, Max"]) == (2, 3)
+    assert _length(rows, "Mean") == pytest.approx(125 / 4)
+    assert _length(rows, "Median") == 30.0
+    assert _length(rows, "SD") == pytest.approx(np.std([20, 30, 30, 45], ddof=1))
+    assert (_length(rows, "Min"), _length(rows, "Max")) == (20.0, 45.0)
 
 
 def _short_and_long_route():
@@ -109,6 +123,42 @@ def test_the_draining_capillary_is_counted_along_its_own_route_not_by_its_label(
     assert (rows[f"{ORDERS}, Min"], rows[f"{ORDERS}, Max"]) == (2, 5)
     assert rows[f"{ORDERS}, Mean"] == 3.5
     assert rows[f"{ORDERS}, SD"] == pytest.approx(math.sqrt(4.5))
+    assert (_length(rows, "Min"), _length(rows, "Max")) == (20.0, 50.0)
+
+
+def test_the_shortest_route_by_length_need_not_have_the_fewest_capillaries():
+    """Feed 1 to the venule end 9 through the one capillary 2-9 (5 um): 1-2
+    is a single capillary of 100 um, 1-3-4-2 three of 10 um. The fewest
+    capillaries is the long way round (2 orders, 105 um); the shortest route
+    is 35 um, through four."""
+    G = nx.MultiGraph()
+    _vessel(G, 0, 1, "Art1")
+    _vessel(G, 1, 2, "B01", length=100.0)
+    for u, v, label in ((1, 3, "B01"), (3, 4, "B02"), (4, 2, "B02")):
+        _vessel(G, u, v, label)
+    _vessel(G, 2, 9, "B02", length=5.0)
+    _vessel(G, 9, 10, "Ven1")
+
+    rows = _rows(G, [1], [9])
+
+    assert rows["Capillaries Draining to a Venule"] == 1
+    assert rows[f"{ORDERS}, Mean"] == 2.0
+    assert _length(rows, "Mean") == _length(rows, "Min") == 35.0
+
+
+@pytest.mark.parametrize("length", [None, 0.0, float("nan")])
+def test_without_every_capillary_length_it_counts_orders_and_says_why_there_are_no_lengths(length):
+    G, end = _chain(3)
+    if length is None:
+        del G[2][3][0]["length"]
+    else:
+        G[2][3][0]["length"] = length
+
+    rows = _rows(G, [1], [end])
+
+    assert rows[f"{ORDERS}, Mean"] == 3.0
+    assert rows[LENGTH_STATUS] == "N/A (vessel lengths unavailable)"
+    assert not any(name.startswith(f"{LENGTHS},") for name in rows)
 
 
 def test_a_route_runs_through_capillaries_alone_and_past_no_venule_end():
@@ -204,13 +254,16 @@ def test_every_row_it_writes_has_a_glossary_term():
     G, end = _chain(3)
     cut, _end = _chain(3)
     cut.remove_edge(2, 3)
-    written = {**_rows(G, [1], [end]), **_rows(cut, [1], [end])}
-    assert len(written) == 8
+    unmeasured, _end = _chain(3)
+    del unmeasured[2][3][0]["length"]
+    written = {**_rows(G, [1], [end]), **_rows(cut, [1], [end]), **_rows(unmeasured, [1], [end])}
+    assert len(written) == 14
 
     for name in written:
         term = glossary.term_for(name)
         assert term is not None, name
-        assert term.unit == ("" if name == STATUS else "vessels"), name
+        unit = "um" if name.startswith(f"{LENGTHS},") else "vessels"
+        assert term.unit == ("" if name in (STATUS, LENGTH_STATUS) else unit), name
 
 
 # --- as a statistics measure ------------------------------------------------------
@@ -230,7 +283,7 @@ def test_it_counts_from_where_capillaries_leave_and_join_the_large_tier(bridge):
     at 8 (1-5-8), another runs from the arteriole boundary node 3 to the
     venule boundary node 7 (3-4-7). The hand-offs 1 and 8 are read from the
     labels, with the bridge into the large arteriole contracted: two routes
-    of two capillaries each."""
+    of two 10 um capillaries each, the bridge no part of either."""
     G, nodes = _large_tier_bed(bridge=bridge)
 
     rows = _statistics_rows(G, nodes)
@@ -238,6 +291,7 @@ def test_it_counts_from_where_capillaries_leave_and_join_the_large_tier(bridge):
     assert rows["Capillaries Draining to a Venule"] == 2
     assert rows["Capillaries Draining to a Venule No Arteriole Reaches"] == 0
     assert rows[f"{ORDERS}, Mean"] == 2.0
+    assert _length(rows, "Min") == _length(rows, "Max") == 20.0
 
 
 def test_it_is_a_network_analysis_measure_after_the_bed_joins():
@@ -291,6 +345,8 @@ def test_the_export_stage_writes_it_to_the_statistics_csv_with_its_unit(tmp_path
     rows = _statistics_csv_rows(tmp_path)
     mean = rows[f"{ORDERS}, Mean"]
     assert (mean["Section"], mean["Value"], mean["Unit"]) == (SECTION, "4", "vessels")
+    shortest = rows[f"{LENGTHS}, Min"]
+    assert (shortest["Section"], shortest["Value"], shortest["Unit"]) == (SECTION, "12", "um")
     assert rows["Capillaries Draining to a Venule"]["Value"] == "1"
 
 
@@ -303,4 +359,6 @@ def test_the_export_stage_skips_it_when_toggled_off(tmp_path):
 
     rows = _statistics_csv_rows(tmp_path)
     assert "Capillary Bed Join Order, Kaplan-Meier Median" in rows
-    assert not any(name.startswith((ORDERS, "Capillaries Draining", "Capillary Path")) for name in rows)
+    assert not any(
+        name.startswith((ORDERS, LENGTHS, "Capillaries Draining", "Capillary Path")) for name in rows
+    )

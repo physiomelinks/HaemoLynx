@@ -324,6 +324,7 @@ names it lists.
 | Statistic | Unit | Definition |
 |---|---|---|
 | Capillary Orders Between Arteriole and Venule, Mean / Median / SD / Min / Max | vessels | For every capillary draining into a venule (one end at a venule boundary node, or where a capillary joins the large venule), the fewest capillaries on a route to it from an arteriole (the nodes the capillary B orders count from), through capillaries alone: the capillary branch orders blood passes between arteriole and venule. Their mean, median, sample SD and range over those capillaries. |
+| Capillary Route Length Between Arteriole and Venule, Mean / Median / SD / Min / Max (microns) | um | For every capillary draining into a venule, the shortest route to it from an arteriole by centreline length, through capillaries alone and past no other venule end (not necessarily the route with the fewest capillaries). Their mean, median, sample SD and range; the minimum is the shortest arteriole-to-venule route along the capillary bed. |
 | Capillaries Draining to a Venule | vessels | Capillaries with one end at a venule end and the other not: each the last vessel of a capillary route. |
 | Capillaries Draining to a Venule No Arteriole Reaches | vessels | Those no arteriole reaches through capillaries, left out of the orders. |
 

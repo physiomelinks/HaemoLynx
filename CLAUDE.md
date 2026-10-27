@@ -119,7 +119,8 @@ haemolynx/
 │   │                       #   each feed's capillary bed joins another's, Kaplan-Meier),
 │   │                       #   capillary_paths (the capillary orders between arteriole
 │   │                       #   and venule: per capillary draining into a venule, the
-│   │                       #   fewest capillaries back to an arteriole),
+│   │                       #   fewest capillaries back to an arteriole, and the
+│   │                       #   shortest such route in microns),
 │   │                       #   current_flow, occlusion, loops,
 │   │                       #   strahler, spectral, over _route_graph.py / _flow_system.py;
 │   │                       #   csv_export.py, _sampling.py (one shared seed constant),

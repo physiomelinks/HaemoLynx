@@ -291,8 +291,9 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "How many capillary branch orders lie between the arterioles and the "
         "venules. For every capillary draining into a venule, the fewest "
         "capillaries on a route to it from an arteriole, through capillaries "
-        "alone: their mean, median, SD and range, and the capillaries "
-        "draining into a venule that no arteriole reaches"
+        "alone, and the length in microns of the shortest such route: the "
+        "mean, median, SD and range of both, and the capillaries draining "
+        "into a venule that no arteriole reaches"
     ),
     "transit_time": (
         "How long blood takes to cross the network: each vessel's volume "
