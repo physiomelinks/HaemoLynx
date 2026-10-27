@@ -100,6 +100,8 @@ class Tree:
     def _names(self) -> dict[str, list[Path]]:
         if self._by_name is None:
             self._by_name = {}
+            for path in sorted(self.root.glob("*.py")):  # a script at the root
+                self._by_name.setdefault(path.name, []).append(path)
             for folder in ("src", "tests", "scripts", "examples", "tutorials"):
                 for path in sorted((self.root / folder).rglob("*.py")):
                     self._by_name.setdefault(path.name, []).append(path)

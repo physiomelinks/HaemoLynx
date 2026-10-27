@@ -833,7 +833,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   them (`boundary_role`). Flow statistics read `flow_state`, never `== 0`; with
   `statistics_flow_face_margin_um` the per-vessel flow rows leave the vessels by the faces out.
 
-### Thick vessels (`docs/notes/thick_vessels.md`, `PLAN_thick_vessel_bridges.md`, `PLAN_bridging.md`)
+### Thick vessels (`docs/notes/thick_vessels.md`, `PLAN_thick_vessel_bridges.md`)
 
 - **`preprocessing/thick_vessels.py`** — `use_thick_vessel_skeletonisation`: the fat region (an
   inscribed-radius gate) gets a centreline *tree* instead of Lee's medial sheet, and the thin arms
@@ -1274,7 +1274,8 @@ cited evidence no longer exists, and writes `outputs/release_review/<date>_<sha>
 the main checkout. It never edits the review: copy what changed by hand. Its tests are
 `tests/test_release_review_*.py`. Delete the review, the plan, the scorer and this section once the
 release gate in `RELEASE_REVIEW.md` is met. First scoring: 2026-10-10 at `9c6a15a`, lowest score 3,
-mean 3.8.
+mean 3.8. Last full re-score: 2026-10-26 at `2ef161ad`, lowest 3 (testing), mean 4.7; with the whole
+suite passing at `80891af9` the same night (`tests.4c`), lowest 4, mean 4.9.
 
 Rules for agents:
 

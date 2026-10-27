@@ -202,3 +202,141 @@ def test_grid_k_takes_a_contact_held_twice_as_one():
 
     assert [d for d, _p in ranked] == [5.0, 5.0, 9.0]
     assert ranked[0][1] is twice
+
+
+# --- the E15 grid: the tree fill, the wall join and grid K's measures, fresh ------
+
+
+def _gap_on_a_straight_tree(detour=None, filled=False):
+    """A thick centreline tree along x (z 5, y 5), the graph following it
+    from x 0 to 15 and from 25 to 40 and not between: a 10 um gap. With
+    *detour* (y), the graph also runs round the gap that far off the tree;
+    with *filled*, the fill drew the tree across it."""
+    import networkx as nx
+
+    from haemolynx.graph.thick_vessel_junctions import FROM_TREE
+
+    def edge(G, u, v, corners):
+        voxels = []
+        for a, b in zip(corners, corners[1:]):
+            a, b = np.asarray(a, float), np.asarray(b, float)
+            steps = max(int(np.ceil(np.linalg.norm(b - a))), 1)
+            voxels += [tuple(a + (b - a) * t) for t in np.linspace(0.0, 1.0, steps + 1)[(1 if voxels else 0):]]
+        G.add_node(u, pos=tuple(float(c) for c in corners[0]))
+        G.add_node(v, pos=tuple(float(c) for c in corners[-1]))
+        length = float(np.sum(np.linalg.norm(np.diff(np.asarray(voxels), axis=0), axis=1)))
+        G.add_edge(u, v, voxels=voxels, length=length)
+
+    G = nx.MultiGraph()
+    edge(G, 0, 1, [(5, 5, 0), (5, 5, 15)])
+    edge(G, 2, 3, [(5, 5, 25), (5, 5, 40)])
+    if detour is not None:
+        edge(G, 1, 2, [(5, 5, 15), (5, detour, 15), (5, detour, 25), (5, 5, 25)])
+    after = G.copy()
+    if filled:
+        after.add_edge(1, 2, voxels=[(5.0, 5.0, float(x)) for x in range(15, 26)], length=10.0, **{FROM_TREE: True})
+    tree_vox = np.array([(5, 5, x) for x in range(41)])
+    return {
+        "fill_in": G, "fill_out": after,
+        "fill_args": {"tree_voxels": tree_vox, "vs": np.ones(3), "tree_points": tree_vox.astype(float),
+                      "tolerance": np.full(len(tree_vox), 0.5), "tree_radius": np.full(len(tree_vox), 6.0)},
+    }
+
+
+@pytest.mark.parametrize(
+    "detour, ratio, says",
+    [(None, None, "filled"), (15.0, 3.0, "filled"), (7.0, 1.4, "left as it was")],
+    ids=["no-way-round", "a-long-way-round", "about-as-direct"],
+)
+def test_the_e15_grid_reads_each_gaps_way_round_to_the_end(detour, ratio, says):
+    """The tree fill cuts its search at 2.1 times the tree's path; the grid
+    reads the graph's own way between the gap's sides to the end, so its key
+    places every gap on the measure, whichever side of 2.1."""
+    from thick_junction_review.e15_grid import fill_cases
+
+    (case,) = fill_cases(_gap_on_a_straight_tree(detour))
+
+    assert case["sides"] == 2 and case["gap_um"] == pytest.approx(10.0)
+    assert case["tree_way_um"] == pytest.approx(10.0)
+    assert case["rule_says"] == says
+    if ratio is None:
+        assert case["own_way_ratio"] is None
+    else:
+        assert case["own_way_ratio"] == pytest.approx(ratio, rel=0.02)
+    np.testing.assert_allclose(case["piece"][[0, -1], 2], [15.0, 25.0])
+    assert case["decision"] == "left as it was", "nothing was drawn"
+
+
+def test_the_e15_grid_reads_whether_the_fill_drew_the_gap():
+    from thick_junction_review.e15_grid import fill_cases
+
+    (case,) = fill_cases(_gap_on_a_straight_tree(filled=True))
+
+    assert case["decision"] == "filled" and case["drawn_share"] == 1.0
+
+
+def test_the_e15_grids_wall_sheet_takes_joins_and_ends_past_the_reach_heading_in():
+    """Six joins and three dead ends past the 15 um reach heading for the
+    thick vessel (one turned away is not one of the three), then the other
+    decisions."""
+    import random
+
+    from thick_junction_review.e15_grid import COUNTS, WALL_BEYOND, WALL_JOINED, pick_wall
+
+    def case(decision, past, turn):
+        return {"decision": decision, "past_lumen_um": past, "chord_turn_deg": turn, "route_turn_deg": turn}
+
+    pool = ([case("joined", p, 20.0) for p in (1.0, 6.0, 11.0, 12.0, 13.0, 14.0, 2.0, 3.0)]
+            + [case("beyond the reach", p, 30.0) for p in (16.0, 17.0, 18.0, 19.0)]
+            + [case("beyond the reach", 16.5, 150.0)]
+            + [case("heading away (chord)", 4.0, 120.0) for _ in range(6)])
+
+    picked = pick_wall(pool, random.Random(0))
+
+    assert len(picked) == COUNTS["wall"]
+    assert sum(c["decision"] == "joined" for c in picked[:WALL_JOINED]) == WALL_JOINED
+    beyond = picked[WALL_JOINED:WALL_JOINED + WALL_BEYOND]
+    assert all(c["decision"] == "beyond the reach" and c["chord_turn_deg"] < 80.0 for c in beyond)
+    bins = {int(c["past_lumen_um"] // 5) for c in picked[:WALL_JOINED]}
+    assert bins == {0, 1, 2}, "spread over how far past the lumen they end: 0-5, 5-10 and 10-15 um"
+
+
+def test_the_e15_grids_wall_sheet_takes_what_the_other_sheets_leave_of_thirty():
+    """E15 gave the fill and the connectors no case, so the wall sheet asks
+    all thirty; it never asks fewer than its own share, nor more than its
+    pool holds."""
+    import random
+
+    from thick_junction_review.e15_grid import COUNTS, TOTAL, pick_wall, wall_count
+
+    assert wall_count(COUNTS["fill"], COUNTS["connector"]) == COUNTS["wall"]
+    assert wall_count(0, 0) == TOTAL == 30
+    assert wall_count(3, 0) == 27
+    assert wall_count(20, 8) == COUNTS["wall"]
+
+    pool = [{"decision": "heading away (chord)", "past_lumen_um": float(p), "chord_turn_deg": 120.0,
+             "route_turn_deg": 120.0} for p in range(40)]
+    assert len(pick_wall(pool, random.Random(0), wall_count(0, 0))) == 30
+    assert len(pick_wall(pool[:20], random.Random(0), wall_count(0, 0))) == 20
+
+
+def test_the_e15_grid_says_whether_each_exit_on_its_own_would_bridge_a_connector():
+    """Grid K's second measure: a connector one of whose exits is in reach
+    would be bridged there, were each exit taken on its own."""
+    from thick_junction_review.e15_grid import connector_cases
+
+    def exit_(x, fails):
+        return {"where": np.array([0.0, 0.0, x]), "tree_radius_um": 3.0, "reach_um": 11.0,
+                "to_centreline_um": 20.0 if fails else 5.0, "target": np.array([0.0, 5.0, x]),
+                "widest_near_um": 3.0, "fails": fails}
+
+    runs = [np.array([[0.0, 0.0, 0.0], [0.0, 3.0, 0.0]])]
+    seen = {"connectors": [
+        {"runs": runs, "exits": [exit_(0.0, False), exit_(30.0, True)]},
+        {"runs": runs, "exits": [exit_(0.0, True)]},
+        {"runs": runs, "exits": []},
+    ]}
+
+    cases = connector_cases(seen)
+
+    assert [c["each_exit_on_its_own"] for c in cases] == ["bridged", "left"]
