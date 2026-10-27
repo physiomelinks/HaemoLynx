@@ -11,12 +11,16 @@ from haemolynx.gui._widget import settings_widget  # noqa: E402
 from haemolynx.gui.chrome_tooltips import ROTATION_TOOLTIPS  # noqa: E402
 from haemolynx.gui.rotation_movie import (  # noqa: E402
     RECORD_LABEL,
+    ROTATE_LABEL,
     ROTATION_NO_OUTPUT_FOLDER,
     ROTATION_NO_VIEWER,
     ROTATION_NOTHING_SHOWN,
     ROTATION_STEM,
+    STOP_ROTATING_LABEL,
     RotationMovie,
     displayed_axes,
+    rotation_box,
+    start_azimuth,
     to_displayed,
     turntable_directions,
     viewer_camera,
@@ -90,9 +94,14 @@ def test_the_box_sits_under_snapshot_with_its_defaults(make_napari_viewer):
     assert box.speed.value() == 30.0
     assert box.tilt.minimum() == -90.0 and box.tilt.maximum() == 90.0
     assert box.summary.text() == "360 frames, 12.0 s at 30 fps"
+    assert box.rotate.text() == ROTATE_LABEL
     assert box.record.text() == RECORD_LABEL
+    form = group.layout()
+    # Rotate, to see the turn, sits above Record, which writes it.
+    assert form.indexOf(box.summary) < form.indexOf(box.rotate) < form.indexOf(box.record)
     assert box.tilt.toolTip() == ROTATION_TOOLTIPS["tilt"]
     assert box.speed.toolTip() == ROTATION_TOOLTIPS["speed"]
+    assert box.rotate.toolTip() == ROTATION_TOOLTIPS["rotate"]
     assert box.record.toolTip() == ROTATION_TOOLTIPS["record"]
 
     box.speed.setValue(90.0)
@@ -345,3 +354,183 @@ def test_a_real_canvas_turns_in_the_movie(make_napari_viewer, tmp_path, qtbot):
     quarter = np.abs(frames[0].astype(float) - frames[7].astype(float)).mean()
     assert quarter > 1.0
     assert any(frame.max() > 100 for frame in frames)
+
+
+class _SteppingClock:
+    """A clock 0.1 s further on each time it is read."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def __call__(self) -> float:
+        self.reads += 1
+        return 0.1 * (self.reads - 1)
+
+
+def _turn_box(viewer, tmp_path, clock):
+    """The box on its own, with *clock*, a screenshot that only counts and a
+    report that only collects: Rotate must use neither."""
+    shots, reports = [], []
+    box = rotation_box(
+        viewer,
+        output_folder=lambda: tmp_path,
+        screenshot=lambda: shots.append(1),
+        report=reports.append,
+        clock=clock,
+    )
+    return box, shots, reports
+
+
+def _azimuth_and_tilt(viewer):
+    camera = viewer_camera(viewer)
+    view, up = np.asarray(camera.view_direction), np.asarray(camera.up_direction)
+    return start_azimuth(view, up), float(np.degrees(np.arcsin(np.clip(view[0], -1, 1))))
+
+
+def _turned(a: float, b: float) -> float:
+    """How far *b* is round from *a*, in degrees, -180 to 180."""
+    return (b - a + 180.0) % 360.0 - 180.0
+
+
+def test_rotate_turns_the_view_at_the_tilt_and_speed_and_writes_nothing(
+    make_napari_viewer, tmp_path, qtbot
+):
+    viewer = make_napari_viewer()
+    viewer.add_image(_volume())
+    viewer.dims.ndisplay = 3
+    before = _camera(viewer)
+    clock = _SteppingClock()
+    box, shots, reports = _turn_box(viewer, tmp_path, clock)
+    box.tilt.setValue(20.0)
+    box.speed.setValue(90.0)
+
+    box.rotate.click()
+    assert box.rotating and box.rotate.text() == STOP_ROTATING_LABEL
+    assert box.tilt.isEnabled() and box.speed.isEnabled() and box.record.isEnabled()
+    qtbot.waitUntil(lambda: clock.reads >= 6, timeout=10000)
+
+    # napari's default camera is turned 0 round z; 90 deg/s for 0.1 s a tick.
+    azimuth, tilt = _azimuth_and_tilt(viewer)
+    assert _turned(9.0 * (clock.reads - 1), azimuth) == pytest.approx(0.0, abs=1e-6)
+    assert tilt == pytest.approx(20.0, abs=1e-6)
+
+    # Tilt and speed are read afresh each tick: tried while it turns.
+    box.speed.setValue(200.0)
+    box.tilt.setValue(-40.0)
+    reads = clock.reads
+    qtbot.waitUntil(lambda: clock.reads >= reads + 4, timeout=10000)
+    later, tilt = _azimuth_and_tilt(viewer)
+    assert _turned(azimuth, later) == pytest.approx(
+        _turned(0.0, 20.0 * (clock.reads - reads)), abs=1e-6
+    )
+    assert tilt == pytest.approx(-40.0, abs=1e-6)
+
+    box.rotate.click()
+    assert not box.rotating and box.rotate.text() == ROTATE_LABEL
+    assert _camera(viewer) == before
+    stopped = clock.reads
+    qtbot.wait(150)
+    assert clock.reads == stopped
+    assert _camera(viewer) == before
+    assert shots == [] and reports == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_stopping_rotate_turns_back_but_keeps_a_zoom_or_pan(
+    make_napari_viewer, tmp_path, qtbot
+):
+    viewer = make_napari_viewer()
+    viewer.add_image(_volume())
+    viewer.dims.ndisplay = 3
+    angles = tuple(viewer_camera(viewer).angles)
+    clock = _SteppingClock()
+    box, _shots, _reports = _turn_box(viewer, tmp_path, clock)
+
+    box.rotate.click()
+    qtbot.waitUntil(lambda: clock.reads >= 3, timeout=10000)
+    viewer_camera(viewer).zoom = 3.25
+    viewer_camera(viewer).center = (4.0, 6.0, 9.0)
+    qtbot.waitUntil(lambda: clock.reads >= 5, timeout=10000)
+    box.rotate.click()
+
+    camera = viewer_camera(viewer)
+    assert tuple(camera.angles) == angles
+    assert float(camera.zoom) == pytest.approx(3.25)
+    assert tuple(camera.center) == pytest.approx((4.0, 6.0, 9.0))
+
+
+def test_rotate_turns_a_2d_view_in_3d_and_goes_back_to_2d(
+    make_napari_viewer, tmp_path, qtbot
+):
+    viewer = make_napari_viewer()
+    viewer.add_image(_volume())
+    viewer.dims.set_point(0, 5)
+    before = _camera(viewer)
+    clock = _SteppingClock()
+    box, _shots, _reports = _turn_box(viewer, tmp_path, clock)
+
+    box.rotate.click()
+    assert viewer.dims.ndisplay == 3
+    qtbot.waitUntil(lambda: clock.reads >= 3, timeout=10000)
+    box.rotate.click()
+
+    assert _camera(viewer) == before
+
+
+def test_record_while_rotating_records_from_the_view_rotate_turned_back_to(
+    make_napari_viewer, tmp_path, monkeypatch, qtbot
+):
+    viewer = make_napari_viewer()
+    viewer.add_image(_volume())
+    viewer.dims.ndisplay = 3
+    angles = tuple(viewer_camera(viewer).angles)
+    panel, out_dir = _panel_on(viewer, tmp_path)
+    box = panel._haemolynx_rotation
+    seen = _fake_canvas(viewer, monkeypatch)
+    box.tilt.setValue(25.0)
+    box.speed.setValue(360.0)
+
+    box.rotate.click()
+    qtbot.waitUntil(lambda: _azimuth_and_tilt(viewer)[0] > 1.0, timeout=10000)
+    viewer_camera(viewer).zoom = 2.2
+    box.record.click()
+
+    assert not box.rotating and box.rotate.text() == ROTATE_LABEL
+    assert box.recording and not box.rotate.isEnabled()
+    qtbot.waitUntil(lambda: not box.recording, timeout=20000)
+
+    want_view, want_up = turntable_directions(0.0, 25.0)
+    axes = displayed_axes(viewer.dims.displayed, viewer.dims.ndim)
+    np.testing.assert_allclose(seen[0][0], to_displayed(want_view, axes), atol=1e-6)
+    np.testing.assert_allclose(seen[0][1], to_displayed(want_up, axes), atol=1e-6)
+    assert len(seen) == 30
+    assert len(list(out_dir.glob(f"{ROTATION_STEM}_*"))) == 1
+    assert box.rotate.isEnabled()
+    assert tuple(viewer_camera(viewer).angles) == angles
+    assert float(viewer_camera(viewer).zoom) == pytest.approx(2.2)
+
+
+def test_rotate_needs_no_output_folder_but_something_shown(
+    make_napari_viewer, monkeypatch, qtbot
+):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    box = panel._haemolynx_rotation
+    panel._haemolynx_rows()["vtk_output_prefix"].value = ""
+
+    box.rotate.click()
+    assert panel._haemolynx_report() == ROTATION_NOTHING_SHOWN
+    assert not box.rotating
+
+    viewer.add_image(_volume())
+    box.rotate.click()
+    assert box.rotating
+    box.rotate.click()
+    assert not box.rotating
+
+
+def test_rotate_with_no_viewer_says_so(qapp):
+    panel = settings_widget(napari_viewer=None)
+    panel._haemolynx_rotation.rotate.click()
+    assert panel._haemolynx_report() == ROTATION_NO_VIEWER
+    assert not panel._haemolynx_rotation.rotating

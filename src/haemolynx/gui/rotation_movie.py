@@ -6,16 +6,18 @@ tilt is how far the view looks down on the stack from above while it turns:
 0 degrees is side on, 90 straight down onto the top slice, and a negative
 tilt looks up from below. The turn starts where the camera already looks
 round the axis and keeps its zoom and centre, so the first frame is the view
-on screen seen at the chosen tilt.
+on screen seen at the chosen tilt. Rotate turns it the same way on screen,
+writing nothing, until stopped.
 
 Pure up to :func:`rotation_box`: camera directions, frame counts, frame
-fitting and the movie file. ``rotation_box`` builds the view window's box
-and records with Qt, importing it only when called.
+fitting and the movie file. ``rotation_box`` builds the view window's box,
+turns and records with Qt, importing it only when called.
 """
 from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,9 +41,11 @@ ROTATION_STEM = "haemolynx_rotation"
 ROTATION_NO_OUTPUT_FOLDER = (
     "No output folder is set; set the VTK output prefix before recording a rotation."
 )
-ROTATION_NO_VIEWER = "No viewer to record."
-ROTATION_NOTHING_SHOWN = "Nothing on the canvas to record."
+ROTATION_NO_VIEWER = "No viewer to rotate or record."
+ROTATION_NOTHING_SHOWN = "Nothing on the canvas to rotate or record."
 RECORD_LABEL = "Record 360° rotation"
+ROTATE_LABEL = "Rotate"
+STOP_ROTATING_LABEL = "Stop rotating"
 
 #: The stack axis, canonical ``(z, y, x)``.
 _AXIS = np.array([1.0, 0.0, 0.0])
@@ -237,13 +241,16 @@ class _CameraState:
             point=tuple(viewer.dims.point),
         )
 
-    def restore(self, viewer) -> None:
+    def restore(self, viewer, *, framing: bool = True) -> None:
+        """Put the view back; without *framing*, keep the zoom and centre
+        it has now, as a pan or zoom made while Rotate turned it left them."""
         if int(viewer.dims.ndisplay) != self.ndisplay:
             viewer.dims.ndisplay = self.ndisplay
         camera = viewer_camera(viewer)
         camera.angles = self.angles
-        camera.center = self.center
-        camera.zoom = self.zoom
+        if framing:
+            camera.center = self.center
+            camera.zoom = self.zoom
         if tuple(viewer.dims.point) != self.point:
             viewer.dims.point = self.point
 
@@ -254,15 +261,20 @@ def rotation_box(
     output_folder: Callable[[], Path | None],
     screenshot: Callable[[], Any],
     report: Callable[[str], None],
+    clock: Callable[[], float] = time.monotonic,
 ):
-    """The view window's Rotation movie group, recording *viewer*'s canvas.
+    """The view window's Rotation movie group, turning *viewer*'s canvas.
 
-    Record turns the camera one frame a tick of the Qt event loop, so the
-    canvas is seen turning and Stop stays live; each frame is *screenshot*'s
-    picture of the canvas, written straight to the movie. A 2D view is
-    recorded in 3D. Afterwards the view, camera and slice are put back as
-    they were, and *report* is told where the movie went; a stopped or
-    failed recording leaves no file.
+    Rotate turns the camera at the chosen tilt and speed, by *clock*'s
+    seconds, until pressed again, reading both afresh each tick so they can
+    be tried while it turns; it writes nothing, and on stopping the view
+    turns back, keeping any zoom or pan made meanwhile. Record stops it
+    first, then turns the camera one frame a tick of the Qt event loop, so
+    the canvas is seen turning and Stop stays live; each frame is
+    *screenshot*'s picture of the canvas, written straight to the movie.
+    Either turns a 2D view in 3D. After recording, the view, camera and
+    slice are put back as they were, and *report* is told where the movie
+    went; a stopped or failed recording leaves no file.
     """
     from types import SimpleNamespace
 
@@ -298,6 +310,9 @@ def rotation_box(
     )
     summary = QLabel()
     summary.setObjectName("haemolynx_rotation_summary")
+    rotate = QPushButton(ROTATE_LABEL)
+    rotate.setObjectName("haemolynx_rotation_rotate")
+    rotate.setToolTip(ROTATION_TOOLTIPS["rotate"])
     record = QPushButton(RECORD_LABEL)
     record.setObjectName("haemolynx_rotation_record")
     record.setToolTip(ROTATION_TOOLTIPS["record"])
@@ -310,22 +325,29 @@ def rotation_box(
     add("Axis tilt", tilt)
     add("Speed", speed)
     form.addRow(summary)
+    form.addRow(rotate)
     form.addRow(record)
 
     timer = QTimer(group)
     timer.setInterval(0)
+    turn_timer = QTimer(group)
+    turn_timer.setInterval(round(1000 / MOVIE_FPS))
 
     box = SimpleNamespace(
         group=group,
         tilt=tilt,
         speed=speed,
         summary=summary,
+        rotate=rotate,
         record=record,
         timer=timer,
+        turn_timer=turn_timer,
+        rotating=False,
         recording=False,
         path=None,
     )
     take: dict[str, Any] = {}
+    turning: dict[str, Any] = {}
 
     def movie() -> RotationMovie:
         return RotationMovie(tilt_deg=tilt.value(), speed_deg_per_s=speed.value())
@@ -337,8 +359,92 @@ def rotation_box(
         box.recording = on
         tilt.setEnabled(not on)
         speed.setEnabled(not on)
+        rotate.setEnabled(not on)
         if not on:
             record.setText(RECORD_LABEL)
+
+    def take_view(action: str) -> dict[str, Any] | None:
+        """Remember the view, show it in 3D and find where the camera looks
+        round z; None, with the reason reported, when it cannot turn."""
+        if viewer is None:
+            report(ROTATION_NO_VIEWER)
+            return None
+        if not any(getattr(layer, "visible", True) for layer in viewer.layers):
+            report(ROTATION_NOTHING_SHOWN)
+            return None
+        state = _CameraState.of(viewer)
+        try:
+            if state.ndisplay != 3:
+                viewer.dims.ndisplay = 3
+            axes = displayed_axes(viewer.dims.displayed, viewer.dims.ndim)
+            camera = viewer_camera(viewer)
+            start_deg = start_azimuth(
+                from_displayed(camera.view_direction, axes),
+                from_displayed(camera.up_direction, axes),
+            )
+        except Exception as error:  # noqa: BLE001 - must not crash Qt
+            logger.exception("could not start to %s the view", action)
+            state.restore(viewer)
+            report(f"Could not {action} the rotation:\n{error}")
+            return None
+        return {"state": state, "axes": axes, "azimuth": start_deg}
+
+    def turn_to(azimuth: float, tilt_deg: float, axes) -> None:
+        view, up = turntable_directions(azimuth, tilt_deg)
+        viewer_camera(viewer).set_view_direction(
+            to_displayed(view, axes), to_displayed(up, axes)
+        )
+
+    def stop_turning() -> None:
+        if not box.rotating:
+            return
+        turn_timer.stop()
+        state = turning.get("state")
+        turning.clear()
+        box.rotating = False
+        rotate.setText(ROTATE_LABEL)
+        if state is not None:
+            try:
+                state.restore(viewer, framing=False)
+            except Exception:  # noqa: BLE001 - must not crash Qt
+                logger.debug("could not turn the view back after rotating", exc_info=True)
+
+    def turn_on() -> None:
+        now = clock()
+        turning["azimuth"] = (
+            turning["azimuth"] + speed.value() * (now - turning["last"])
+        ) % 360.0
+        turning["last"] = now
+        try:
+            turn_to(turning["azimuth"], tilt.value(), turning["axes"])
+        except Exception as error:  # noqa: BLE001 - must not crash Qt
+            logger.exception("could not rotate the view")
+            stop_turning()
+            report(f"Could not rotate the view:\n{error}")
+
+    def start_turning() -> None:
+        if box.rotating or box.recording:
+            return
+        taken = take_view("rotate")
+        if taken is None:
+            return
+        turning.update(taken, last=clock())
+        box.rotating = True
+        rotate.setText(STOP_ROTATING_LABEL)
+        try:
+            turn_to(turning["azimuth"], tilt.value(), turning["axes"])
+        except Exception as error:  # noqa: BLE001 - must not crash Qt
+            logger.exception("could not rotate the view")
+            stop_turning()
+            report(f"Could not rotate the view:\n{error}")
+            return
+        turn_timer.start()
+
+    def on_rotate() -> None:
+        if box.rotating:
+            stop_turning()
+        else:
+            start_turning()
 
     def finish(message: str, *, keep: bool) -> None:
         timer.stop()
@@ -367,11 +473,7 @@ def rotation_box(
         index = take["index"]
         azimuths = take["azimuths"]
         try:
-            view, up = turntable_directions(azimuths[index], take["tilt"])
-            axes = take["axes"]
-            viewer_camera(viewer).set_view_direction(
-                to_displayed(view, axes), to_displayed(up, axes)
-            )
+            turn_to(azimuths[index], take["tilt"], take["axes"])
             frame = screenshot()
             if not box.recording:
                 # Stopped while the canvas was being captured.
@@ -402,33 +504,26 @@ def rotation_box(
         if folder is None:
             report(ROTATION_NO_OUTPUT_FOLDER)
             return
-        if not any(getattr(layer, "visible", True) for layer in viewer.layers):
-            report(ROTATION_NOTHING_SHOWN)
+        # From the view Rotate turns back to, with any zoom or pan made
+        # while it turned.
+        stop_turning()
+        taken = take_view("record")
+        if taken is None:
             return
-        chosen = movie()
-        state = _CameraState.of(viewer)
         try:
             folder = Path(folder)
             folder.mkdir(parents=True, exist_ok=True)
-            if state.ndisplay != 3:
-                viewer.dims.ndisplay = 3
-            axes = displayed_axes(viewer.dims.displayed, viewer.dims.ndim)
-            camera = viewer_camera(viewer)
-            start_deg = start_azimuth(
-                from_displayed(camera.view_direction, axes),
-                from_displayed(camera.up_direction, axes),
-            )
-        except Exception as error:  # noqa: BLE001 - must not crash Qt
-            logger.exception("could not start recording the rotation")
-            state.restore(viewer)
+        except OSError as error:
+            taken["state"].restore(viewer)
             report(f"Could not record the rotation:\n{error}")
             return
+        chosen = movie()
         take.update(
-            state=state,
-            axes=axes,
+            state=taken["state"],
+            axes=taken["axes"],
             tilt=chosen.tilt_deg,
             fps=chosen.fps,
-            azimuths=chosen.azimuths(start_deg),
+            azimuths=chosen.azimuths(taken["azimuth"]),
             index=0,
             path=unique_movie_path(folder, movie_suffix()),
         )
@@ -447,6 +542,8 @@ def rotation_box(
             start()
 
     timer.timeout.connect(step)
+    turn_timer.timeout.connect(turn_on)
+    rotate.clicked.connect(on_rotate)
     record.clicked.connect(on_record)
     tilt.valueChanged.connect(refresh_summary)
     speed.valueChanged.connect(refresh_summary)
@@ -454,4 +551,6 @@ def rotation_box(
     box.movie = movie
     box.start = start
     box.stop = stop
+    box.start_turning = start_turning
+    box.stop_turning = stop_turning
     return box

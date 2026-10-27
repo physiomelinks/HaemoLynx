@@ -155,7 +155,8 @@ haemolynx/
 │   │                       #   view_snap.py (XY/XZ/YZ plane -> dims order / camera
 │   │                       #   directions, pure), canvas_illumination.py (the view
 │   │                       #   window's surface lamp), rotation_movie.py (the view
-│   │                       #   window's 360° movie about z: tilt, speed, MP4/GIF), layer_sets.py (baseline/perturbation
+│   │                       #   window's 360° movie about z: tilt, speed, a Rotate preview,
+│   │                       #   MP4/GIF), layer_sets.py (baseline/perturbation
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   statistics_view.py (the left panel's Statistics tab: a
 │   │                       #   button per measure the last run's statistics found, pure),

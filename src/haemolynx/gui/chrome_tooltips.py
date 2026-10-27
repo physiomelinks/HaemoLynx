@@ -817,6 +817,13 @@ ROTATION_TOOLTIPS = {
         "How fast the stack turns in the movie, in degrees a second: 30 takes "
         "12 s for the full turn, played at 30 frames a second"
     ),
+    "rotate": (
+        "Turn what is on the canvas about the z axis at this tilt and speed, "
+        "round and round, to see the movie before recording it; the tilt and "
+        "speed can be changed while it turns, and nothing is written. Press "
+        "again to stop: the view turns back, keeping any zoom or pan made "
+        "meanwhile"
+    ),
     "record": (
         "Turn what is on the canvas one full circle and write it as a movie "
         "into the pipeline output folder (MP4, or GIF without imageio-ffmpeg); "
