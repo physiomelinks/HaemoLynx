@@ -41,6 +41,7 @@ markers = [
     "plotting: marks tests that create figures",
     "integration: marks integration tests",
     "realdata: marks tests that read real data on disk; left out of the pre-commit hook",
+    "benchmark: marks the end-to-end tests against the committed reference run (also slow and integration)",
 ]
 filterwarnings = [
     "ignore:.*stored as RGB with separate component planes.*:DeprecationWarning:tifffile",

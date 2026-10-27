@@ -109,3 +109,15 @@ def test_committed_subvolume_is_rebuilt_from_the_real_map():
     assert np.array_equal(cut, committed)
     data = _sidecar()
     assert {key: data[key] for key in record} == record
+
+
+# Everything the benchmark suite commits (the sub-volume and the reference run) stays below this.
+BENCHMARK_BUDGET_BYTES = 100_000_000
+
+
+def test_the_committed_benchmark_files_stay_under_100_mb():
+    files = [path for path in mk.BENCHMARK_DIR.rglob("*") if path.is_file()]
+    total = sum(path.stat().st_size for path in files)
+    assert total < BENCHMARK_BUDGET_BYTES, (
+        f"{mk.BENCHMARK_DIR} holds {total / 1e6:.1f} MB in {len(files)} files, over the "
+        f"{BENCHMARK_BUDGET_BYTES / 1e6:.0f} MB budget.")

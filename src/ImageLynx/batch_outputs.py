@@ -82,6 +82,52 @@ def _finite_or_none(cell):
     return value if np.isfinite(value) else None
 
 
+def read_edge_table(path, where: str) -> dict:
+    """Every row of the edge table at ``path``, in file order, keyed by integer ``(u, v, key)``.
+
+    Each row keeps every column as the file wrote it (strings). A duplicate key raises: two
+    rows for one edge would leave which diameter it has to file order. ``where`` names the run
+    in the messages. ``BatchRun.edge_table`` reads through this; so does anything that compares
+    a run folder that is not a batch run.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"{where}: no {EDGE_TABLE_NAME}.")
+    table = {}
+    duplicates = []
+    with path.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            edge = (int(row["u"]), int(row["v"]), int(row["key"]))
+            if edge in table:
+                duplicates.append(edge)
+            table[edge] = row
+    if duplicates:
+        raise ValueError(
+            f"{where}: {EDGE_TABLE_NAME} has more than one row for edges {duplicates[:10]}.")
+    return table
+
+
+def numeric_cells(table: dict, column: str, where: str) -> dict:
+    """One column of an edge table from ``read_edge_table`` as a finite float per edge.
+
+    The one place an edge-table cell becomes a number. A blank, text, NaN or infinite cell
+    raises, naming the column and edges, rather than becoming NaN, 0 or a dropped row.
+    """
+    if not table:
+        raise ValueError(f"{where}: {EDGE_TABLE_NAME} has no rows.")
+    columns = next(iter(table.values())).keys()
+    if column not in columns:
+        raise KeyError(f"{where}: {EDGE_TABLE_NAME} has no column {column!r}; it has "
+                       f"{sorted(columns)}.")
+    values = {edge: _finite_or_none(row[column]) for edge, row in table.items()}
+    bad = [edge for edge, value in values.items() if value is None]
+    if bad:
+        raise ValueError(
+            f"{where}: {len(bad)} rows of {EDGE_TABLE_NAME} have an empty or "
+            f"non-finite {column}: {bad[:10]}.")
+    return values
+
+
 class BatchRun:
     """An opened batch run. Build it with ``open_batch_run``, which does the checks."""
 
@@ -100,43 +146,14 @@ class BatchRun:
         Each row keeps every column as the file wrote it (strings). A duplicate key raises:
         two rows for one edge would leave which diameter it has to file order.
         """
-        path = self.run_dir / EDGE_TABLE_NAME
-        if not path.exists():
-            raise FileNotFoundError(f"{self._where()}: no {EDGE_TABLE_NAME}.")
-        table = {}
-        duplicates = []
-        with path.open(newline="") as handle:
-            for row in csv.DictReader(handle):
-                edge = (int(row["u"]), int(row["v"]), int(row["key"]))
-                if edge in table:
-                    duplicates.append(edge)
-                table[edge] = row
-        if duplicates:
-            raise ValueError(
-                f"{self._where()}: {EDGE_TABLE_NAME} has more than one row for edges "
-                f"{duplicates[:10]}.")
-        return table
+        return read_edge_table(self.run_dir / EDGE_TABLE_NAME, self._where())
 
     def numeric_column(self, column: str) -> dict:
         """One edge-table column as a float per edge, keyed and ordered as ``edge_table()``.
 
-        The one place an edge-table cell becomes a number. A blank, text, NaN or infinite cell
-        raises, naming the column and edges, rather than becoming NaN, 0 or a dropped row.
+        A blank, text, NaN or infinite cell raises (``numeric_cells``).
         """
-        table = self.edge_table()
-        if not table:
-            raise ValueError(f"{self._where()}: {EDGE_TABLE_NAME} has no rows.")
-        columns = next(iter(table.values())).keys()
-        if column not in columns:
-            raise KeyError(f"{self._where()}: {EDGE_TABLE_NAME} has no column {column!r}; it has "
-                           f"{sorted(columns)}.")
-        values = {edge: _finite_or_none(row[column]) for edge, row in table.items()}
-        bad = [edge for edge, value in values.items() if value is None]
-        if bad:
-            raise ValueError(
-                f"{self._where()}: {len(bad)} rows of {EDGE_TABLE_NAME} have an empty or "
-                f"non-finite {column}: {bad[:10]}.")
-        return values
+        return numeric_cells(self.edge_table(), column, self._where())
 
     def graph(self):
         """The cached network, unpickled afresh, with ``assigned_diameter_um`` on every edge.

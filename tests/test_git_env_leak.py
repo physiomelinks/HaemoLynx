@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parent.parent
 GIT_DRIVING_TESTS = ("tests/test_worktree.py", "tests/test_mutation_check.py",
                      "tests/test_coverage_by_module.py", "tests/test_check_stale_test_names.py",
                      "tests/test_pre_commit_hook.py", "tests/test_benchmark_subvolume.py",
+                     "tests/test_reference_run.py",
                      "tests/test_example_main_blocks.py::test_only_tracked_scripts_are_collected")
 
 
