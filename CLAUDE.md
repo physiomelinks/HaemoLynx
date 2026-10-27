@@ -821,7 +821,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   them (`boundary_role`). Flow statistics read `flow_state`, never `== 0`; with
   `statistics_flow_face_margin_um` the per-vessel flow rows leave the vessels by the faces out.
 
-### Thick vessels (`docs/notes/thick_vessels.md`, `PLAN_thick_vessel_bridges.md`, `PLAN_bridging.md`)
+### Thick vessels (`docs/notes/thick_vessels.md`, `PLAN_thick_vessel_bridges.md`)
 
 - **`preprocessing/thick_vessels.py`** — `use_thick_vessel_skeletonisation`: the fat region (an
   inscribed-radius gate) gets a centreline *tree* instead of Lee's medial sheet, and the thin arms
