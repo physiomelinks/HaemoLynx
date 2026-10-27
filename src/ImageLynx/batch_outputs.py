@@ -31,7 +31,8 @@ from .io.load import read_ilastik_probabilities
 # ROI_RECORD_NAME is defined by the module that writes the record; it is a batch-run file too.
 from .roi_placement import ROI_RECORD_NAME, check_output_roi, place_roi  # noqa: F401
 from .specimens import TH_CHANNEL
-# The network suffixes belong to the writer that adds them, graph_to_vtk.
+# The network suffixes belong to the writers that add them, graph_to_vtk and the flow solve.
+from .haemodynamics.resistance import FLOW_VTP_SUFFIX
 from .visualization.vtk_io import NODES_VTP_SUFFIX, VESSELS_VTP_SUFFIX
 
 EDGE_TABLE_NAME = "per_edge_morphometry.csv"
@@ -39,11 +40,15 @@ GRAPH_NAME = "network_graph.pkl"
 SKELETON_NAME = "skeleton.npy"
 VESSEL_MASK_NAME = "vessel_mask.npy"
 # The pipeline's VTK exports of the network and the mask, in the run folder: its output prefix
-# (carotid_image_to_model.py's vtk_output_prefix) plus a suffix per export. The mask's suffix
-# is added by carotid_image_to_model.py itself, so it lives here.
+# (carotid_image_to_model.py's vtk_output_prefix) plus a suffix per export. The mask's and the
+# perfusion field's suffixes are added by carotid_image_to_model.py itself, so they live here.
+# The flow export replaces the vessels file's extension with its own suffix.
 VTK_PREFIX = "resistance_network"
 VESSEL_MASK_VTI_SUFFIX = "_vessel_mask.vti"
+PERFUSION_VTI_SUFFIX = "_perfusion.vti"
 VESSELS_VTP_NAME = VTK_PREFIX + VESSELS_VTP_SUFFIX
+VESSELS_FLOW_VTP_NAME = Path(VESSELS_VTP_NAME).stem + FLOW_VTP_SUFFIX
+PERFUSION_VTI_NAME = VTK_PREFIX + PERFUSION_VTI_SUFFIX
 NODES_VTP_NAME = VTK_PREFIX + NODES_VTP_SUFFIX
 VESSEL_MASK_VTI_NAME = VTK_PREFIX + VESSEL_MASK_VTI_SUFFIX
 # The pipeline caches its mask, skeleton and graph in "<image stem><CACHE_SUFFIX>", beside the

@@ -20,7 +20,8 @@ folder's own path is first replaced by ``<SNAPSHOT>``. Then, by file type:
   floats are exact, NaN equals NaN.
 - **PNG**: the decoded pixels, equal in shape and values; metadata is ignored.
 - **VTK** (``.vtp``, ``.vti``): the same points and cells (or grid), and the same point, cell
-  and field arrays by name, dtype, shape and value; NaN equals NaN.
+  and field arrays by name, dtype, shape and value; NaN equals NaN. ``vtk_problems`` is this
+  comparer, public so that ``reference_run`` can give it a tolerance rule; snapshots never do.
 - **other files**: bytes.
 
 A file only one snapshot has is a difference. ``compare_snapshots`` refuses, rather than
@@ -40,6 +41,7 @@ from pathlib import Path
 import numpy as np
 
 from .batch_compare import MAX_LISTED
+from .value_compare import gap_text, max_scaled_atol, within
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -56,6 +58,10 @@ RUN_ENV = {"MPLBACKEND": "Agg", "PYVISTA_OFF_SCREEN": "true"}
 PACKAGES = ("numpy", "scipy", "matplotlib", "pyvista", "vtk", "networkx")
 
 DIR, FILE, STDOUT_ONLY = "dir", "file", "stdout"
+
+# The kinds of VTK data array, and the kind vtk_problems' rule is asked about for the points.
+DATA_KINDS = ("point_data", "cell_data", "field_data")
+POINTS = "points"
 
 
 @dataclass(frozen=True)
@@ -260,7 +266,7 @@ def _file_problems(old_path: Path, new_path: Path, old_root: Path, new_root: Pat
     if suffix == ".png":
         return _png_problems(old_path, new_path)
     if suffix in (".vtp", ".vti"):
-        return _vtk_problems(old_path, new_path)
+        return vtk_problems(old_path, new_path)
     old_bytes = old_path.read_bytes().replace(str(old_root).encode(), SNAPSHOT_TOKEN.encode())
     new_bytes = new_path.read_bytes().replace(str(new_root).encode(), SNAPSHOT_TOKEN.encode())
     if suffix == ".json":
@@ -324,43 +330,87 @@ def _png_problems(old_path: Path, new_path: Path) -> list[str]:
     return [f"{count} pixels differ"] if count else []
 
 
-def _vtk_problems(old_path: Path, new_path: Path) -> list[str]:
+def vtk_problems(old_path, new_path, rtol_for=None, kinds=DATA_KINDS,
+                 sides=("OLD", "NEW")) -> list[str]:
+    """Where two VTK files differ: type, then grid or points and cells, then the arrays of each
+    of ``kinds`` by name. Stops after ``MAX_LISTED``.
+
+    With no ``rtol_for`` (as snapshots compare) every value is exact. ``rtol_for(kind, name)``
+    gives a float array its relative tolerance (``kind`` is one of ``DATA_KINDS``, or ``POINTS``
+    for the points), with ``atol = rtol * max|old array|``; integer and text arrays, the cells
+    and an image grid stay exact, text compared by value whatever its width. Each differing
+    array then says how many values moved and by how much. ``sides`` names the two files in
+    the details.
+    """
     import pyvista as pv
+    old_side, new_side = sides
     old, new = pv.read(old_path), pv.read(new_path)
     if type(old) is not type(new):
-        return [f"{type(old).__name__} in OLD, {type(new).__name__} in NEW"]
+        return [f"{type(old).__name__} in {old_side}, {type(new).__name__} in {new_side}"]
     problems = []
     if isinstance(old, pv.ImageData):
         for attribute in ("dimensions", "spacing", "origin", "direction_matrix"):
             if not np.array_equal(getattr(old, attribute), getattr(new, attribute)):
                 problems.append(f"grid {attribute} differs")
     else:
-        if not _same_values(old.points, new.points):
-            problems.append(f"points differ ({old.n_points} in OLD, {new.n_points} in NEW)")
+        points = np.asarray(old.points), np.asarray(new.points)
+        if rtol_for is None or not _same_layout(*points):
+            if not _same_values(*points):
+                problems.append(f"points differ ({old.n_points} in {old_side}, "
+                                f"{new.n_points} in {new_side})")
+        else:
+            problems += [f"points: {moved}" for moved in
+                         _moved_values(*points, rtol_for(POINTS, POINTS))]
         for attribute in ("verts", "lines", "faces", "strips", "cells", "celltypes"):
             if hasattr(old, attribute) and not _same_values(
                     getattr(old, attribute), getattr(new, attribute)):
                 problems.append(f"{attribute} differ")
-    for kind in ("point_data", "cell_data", "field_data"):
-        problems += _array_problems(getattr(old, kind), getattr(new, kind), kind)
+    for kind in kinds:
+        problems += _array_problems(getattr(old, kind), getattr(new, kind), kind, rtol_for, sides)
     return problems[:MAX_LISTED]
 
 
-def _array_problems(old, new, kind: str) -> list[str]:
+def _array_problems(old, new, kind: str, rtol_for, sides) -> list[str]:
     label = kind.replace("_data", "")
     problems = []
     for name in sorted(set(old.keys()) | set(new.keys())):
-        side = _only_in(name, old, new)
-        if side:
-            problems.append(f"{label} array '{name}' {side}")
-        else:
-            a, b = np.asarray(old[name]), np.asarray(new[name])
-            if a.dtype != b.dtype or a.shape != b.shape:
-                problems.append(f"{label} array '{name}' is {a.dtype} {a.shape} in OLD, "
-                                f"{b.dtype} {b.shape} in NEW")
-            elif not _same_values(a, b):
-                problems.append(f"{label} array '{name}' values differ")
+        for side, mine, theirs in zip(sides, (old, new), (new, old)):
+            if name in mine and name not in theirs:
+                problems.append(f"{label} array '{name}' only in {side}")
+        if name not in old or name not in new:
+            continue
+        a, b = np.asarray(old[name]), np.asarray(new[name])
+        if not _same_layout(a, b, text_by_value=rtol_for is not None):
+            problems.append(f"{label} array '{name}' is {a.dtype} {a.shape} in {sides[0]}, "
+                            f"{b.dtype} {b.shape} in {sides[1]}")
+        elif rtol_for is not None:
+            problems += [f"{label} array '{name}': {moved}"
+                         for moved in _moved_values(a, b, rtol_for(kind, name))]
+        elif not _same_values(a, b):
+            problems.append(f"{label} array '{name}' values differ")
     return problems
+
+
+def _same_layout(old: np.ndarray, new: np.ndarray, text_by_value: bool = False) -> bool:
+    """Same shape and dtype. With ``text_by_value``, two text arrays of different widths
+    (``<U9`` and ``<U14``: the longest string changed) count as one layout, so their values
+    are compared."""
+    if old.shape != new.shape:
+        return False
+    return old.dtype == new.dtype or (text_by_value and old.dtype.kind == new.dtype.kind == "U")
+
+
+def _moved_values(old: np.ndarray, new: np.ndarray, rtol: float) -> list[str]:
+    """How many values of two arrays of one layout differ: floats under ``value_compare``'s
+    rule at ``rtol`` with the max-scaled floor and with their largest gap, anything else
+    exactly. Empty when none does."""
+    if old.dtype.kind == "f":
+        outside = ~within(old, new, rtol, max_scaled_atol(old, rtol))
+        gaps = gap_text(old[outside], new[outside])
+    else:
+        outside, gaps = old != new, ""
+    count = int(np.count_nonzero(outside))
+    return [f"{count} of {old.size} values differ{gaps}"] if count else []
 
 
 def _same_values(old, new) -> bool:

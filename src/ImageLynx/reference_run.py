@@ -19,10 +19,29 @@ Parts (``PARTS``), how each is stored, and what counts as equal:
   columns (and their order) and row keys exactly; ``batch_compare.TEXT_COLUMNS`` as text and
   ``batch_compare.INTEGER_COLUMNS`` exactly; every other column under the geometry rule. Every
   number is read through ``batch_outputs.numeric_cells``, so a blank or text cell raises.
+- **flow network**: the flow ``.vtp`` as written. Its cells and integer and text arrays
+  exactly; ``NETWORK_SOLVE_ARRAYS`` under the network rule; the points and every other float
+  array under the geometry rule. Its field data is the next part, not this one.
+- **perfusion field**: the Tier 3 perfusion ``.vti`` as written. The grid exactly, every cell
+  array under the perfusion rule. Its field data is the perfusion tags part.
+- **rheology status**: the flow ``.vtp``'s field data, as the pipeline tags it from
+  ``rheology_status``. Exact, except the float residuals in ``RHEOLOGY_RTOL``.
+- **perfusion tags**: the ``.vti``'s field data, its provenance tags. Exact (tier, solver,
+  converged flag, the settings it ran with), except the final residual (``PERFUSION_TAG_RTOL``)
+  and the Picard iterations, which may move by ``PICARD_ITERATION_STEPS``.
+- **summary**: ``summary.json``, the numbers ``model_results.md`` prints (mean, median, min and
+  max of ``reporting.NETWORK_METRICS`` in the flow network and of every perfusion cell array,
+  NaNs dropped), worked out again at full precision from the two VTK files. Each number
+  follows its source array's rule, with ``atol = rtol * max(|min|, |max|)`` of that array.
 
-The tolerance rule: a float passes when ``|new - ref| <= rtol * |ref| + atol`` with
-``atol = rtol * max|ref|``, the largest finite magnitude of that graph attribute or edge-table
-column in the reference. Geometry floats use ``GEOMETRY_RTOL``. A NaN equals a NaN.
+A tag missing from the rule lists above is compared exactly. A status value or tag on one side
+only is a difference.
+
+The tolerance rule is ``value_compare``'s: a float passes when
+``|new - ref| <= rtol * |ref| + atol`` with ``atol = rtol * max|ref|``, the largest finite
+magnitude of that graph attribute, edge-table column or VTK array in the reference (a lone
+value is its own largest). Geometry floats use ``GEOMETRY_RTOL``, the network solve
+``NETWORK_RTOL``, the perfusion field ``PERFUSION_RTOL``. A NaN equals a NaN.
 
 ``manifest.json`` (commit, Python, package versions, command line) is not a part: a different
 environment is a note in the report, so a failure can be read against it, never a failure itself.
@@ -42,14 +61,23 @@ from pathlib import Path
 import numpy as np
 
 from .batch_compare import INTEGER_COLUMNS, KEY_COLUMNS, MAX_LISTED, TEXT_COLUMNS, PartVerdict
-from .batch_outputs import (CACHE_GLOB, EDGE_TABLE_NAME, GRAPH_NAME, SKELETON_NAME,
-                            VESSEL_MASK_NAME, numeric_cells, read_edge_table)
+from .batch_outputs import (CACHE_GLOB, EDGE_TABLE_NAME, GRAPH_NAME, PERFUSION_VTI_NAME,
+                            SKELETON_NAME, VESSEL_MASK_NAME, VESSELS_FLOW_VTP_NAME, numeric_cells,
+                            read_edge_table)
+from .driver_snapshots import POINTS, vtk_problems
+from .value_compare import close, float_pairs, gap_text, max_scaled_atol, values_equal, within
+from .visualization.reporting import NETWORK_METRICS, distribution_summary
 
-VESSEL_MASK, SKELETON, GRAPH, EDGE_TABLE = PARTS = (
-    "vessel mask", "skeleton", "graph", "edge table")
+(VESSEL_MASK, SKELETON, GRAPH, EDGE_TABLE, FLOW_NETWORK, PERFUSION_FIELD, RHEOLOGY_STATUS,
+ PERFUSION_TAGS, SUMMARY) = PARTS = (
+    "vessel mask", "skeleton", "graph", "edge table", "flow network", "perfusion field",
+    "rheology status", "perfusion tags", "summary")
+# The report's part column is as wide as the longest part name.
+PART_WIDTH = max(len(part) for part in PARTS)
 
 MASKS_NAME = "masks.npz"
 GRAPH_JSON_NAME = "graph.json"
+SUMMARY_NAME = "summary.json"
 MANIFEST_NAME = "manifest.json"
 # The voxel parts: the array name inside masks.npz and the file the pipeline caches.
 VOXEL_PARTS = {VESSEL_MASK: ("vessel_mask", VESSEL_MASK_NAME),
@@ -58,6 +86,19 @@ SHAPE_SUFFIX = "_shape"
 
 # Relative tolerance for geometry floats: coordinates, lengths, diameters, tortuosity.
 GEOMETRY_RTOL = 1e-9
+# For the network solve: pressure, flow, haematocrit, viscosity, resistance, wall shear stress.
+NETWORK_RTOL = 1e-6
+# For the Tier 3 perfusion fields, an iterative (Picard) solve.
+PERFUSION_RTOL = 1e-4
+# The flow network's cell arrays that the rheology and flow solves write.
+NETWORK_SOLVE_ARRAYS = ("hematocrit", "viscosity", "wall_shear_stress_pa", "resistance",
+                        "pressure_u", "pressure_v", "pressure_drop", "flow_signed", "flow_abs")
+# The rheology status values and perfusion tags not compared exactly.
+RHEOLOGY_RTOL = dict.fromkeys(("rheology_max_flow_change", "rheology_relative_flow_change",
+                               "rheology_hematocrit_residual"), NETWORK_RTOL)
+PERFUSION_TAG_RTOL = {"perfusion_final_residual": PERFUSION_RTOL}
+# How far the Picard iteration count may move either way.
+PICARD_ITERATION_STEPS = {"perfusion_picard_iterations": 1}
 
 # Packages whose versions the manifest records: the ones the pipeline's numbers go through.
 PACKAGES = ("numpy", "scipy", "scikit-image", "skan", "networkx", "python-igraph", "numba",
@@ -108,13 +149,16 @@ def write_reference_run(run_dir, reference_dir, command, commit: str) -> dict:
     graph = graph_to_json(_load_pickle(cache / GRAPH_NAME))
     edge_table = run_dir / EDGE_TABLE_NAME
     read_edge_table(edge_table, str(run_dir))  # a duplicate or unkeyed row raises here
+    summary = _summary(run_dir / VESSELS_FLOW_VTP_NAME, run_dir / PERFUSION_VTI_NAME)
     staging = reference_dir.with_name(reference_dir.name + ".new")
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
     np.savez_compressed(staging / MASKS_NAME, **arrays)
     (staging / GRAPH_JSON_NAME).write_text(json.dumps(graph, indent=1) + "\n")
-    shutil.copyfile(edge_table, staging / EDGE_TABLE_NAME)
+    for name in (EDGE_TABLE_NAME, VESSELS_FLOW_VTP_NAME, PERFUSION_VTI_NAME):
+        shutil.copyfile(run_dir / name, staging / name)
+    (staging / SUMMARY_NAME).write_text(json.dumps(summary, indent=1) + "\n")
     manifest = {"commit": commit, **environment(), "command": list(command)}
     (staging / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n")
     if reference_dir.exists():
@@ -140,6 +184,13 @@ def compare_with_reference(run_dir, reference_dir, command=None) -> ReferenceCom
                                   None if cache is None else cache / GRAPH_NAME)
     problems[EDGE_TABLE] = _edge_table_part(reference_dir / EDGE_TABLE_NAME,
                                             run_dir / EDGE_TABLE_NAME)
+    flow = reference_dir / VESSELS_FLOW_VTP_NAME, run_dir / VESSELS_FLOW_VTP_NAME
+    perfusion = reference_dir / PERFUSION_VTI_NAME, run_dir / PERFUSION_VTI_NAME
+    problems[FLOW_NETWORK] = _vtk_part(*flow, _flow_network_rtol)
+    problems[PERFUSION_FIELD] = _vtk_part(*perfusion, lambda kind, name: PERFUSION_RTOL)
+    problems[RHEOLOGY_STATUS] = _tags_part(*flow, RHEOLOGY_RTOL)
+    problems[PERFUSION_TAGS] = _tags_part(*perfusion, PERFUSION_TAG_RTOL, PICARD_ITERATION_STEPS)
+    problems[SUMMARY] = _summary_part(reference_dir / SUMMARY_NAME, flow[1], perfusion[1])
     return ReferenceComparison(
         tuple(PartVerdict(part, not problems[part], "; ".join(problems[part])) for part in PARTS),
         _environment_notes(reference_dir / MANIFEST_NAME, command))
@@ -150,8 +201,8 @@ def format_report(comparison: ReferenceComparison, label: str = "run") -> str:
     lines = [label]
     for verdict in comparison.parts:
         text = "same" if verdict.same else f"DIFFERENT: {verdict.detail}"
-        lines.append(f"  {verdict.part:<12} {text}")
-    lines += [f"  environment  {note}" for note in comparison.environment]
+        lines.append(f"  {verdict.part:<{PART_WIDTH}} {text}")
+    lines += [f"  {'environment':<{PART_WIDTH}} {note}" for note in comparison.environment]
     differing = sum(not verdict.same for verdict in comparison.parts)
     lines.append(f"{len(comparison.parts)} parts compared: "
                  + (f"{differing} differ." if differing else "all match."))
@@ -302,22 +353,22 @@ def _attribute_problems(reference: dict, new: dict, what: str, rtol: float) -> l
     for name in names:
         values = {key: (attrs.get(name, _ABSENT), new[key].get(name, _ABSENT))
                   for key, attrs in reference.items()}
-        scale = max((abs(x) for ref, _ in values.values() for x in _floats(ref)
-                     if math.isfinite(x)), default=0.0)
-        atol = rtol * scale
+        atol = max_scaled_atol([x for ref, _ in values.values() for x in _floats(ref)], rtol)
         differing, gaps = [], []
         for key, (ref, other) in values.items():
-            pairs = _float_pairs(ref, other)
+            pairs = _attribute_pairs(ref, other)
             if pairs is None:
                 differing.append(key)
                 continue
-            outside = [(r, n) for r, n in pairs if not _close(r, n, rtol, atol)]
+            outside = [pair for pair, inside in zip(pairs, _within_pairs(pairs, rtol, atol))
+                       if not inside]
             if outside:
                 differing.append(key)
                 gaps += outside
         if differing:
             problems.append(f"{what} {name}: {len(differing)} of {len(values)} {what}s differ"
-                            + _gap_text(gaps) + f": {differing[:MAX_LISTED]}")
+                            + (gap_text(*zip(*gaps)) if gaps else "")
+                            + f": {differing[:MAX_LISTED]}")
     return problems
 
 
@@ -332,50 +383,18 @@ def _floats(value):
             yield from _floats(item)
 
 
-def _float_pairs(ref, new):
-    """The float leaves of two values side by side, or None when they differ in anything but
-    a float (a type, a length, a key, an integer, text, or the value missing on one side). A
-    value missing on both sides (an attribute only some edges carry) is the same."""
+def _attribute_pairs(ref, new):
+    """``value_compare.float_pairs`` for an attribute that may be missing: missing on both
+    sides (an attribute only some edges carry) is the same, on one side a difference."""
     if ref is _ABSENT and new is _ABSENT:
         return []
-    if ref is _ABSENT or new is _ABSENT or type(ref) is not type(new):
+    if ref is _ABSENT or new is _ABSENT:
         return None
-    if isinstance(ref, float):
-        return [(ref, new)]
-    if isinstance(ref, list):
-        if len(ref) != len(new):
-            return None
-        pairs = []
-        for a, b in zip(ref, new):
-            inner = _float_pairs(a, b)
-            if inner is None:
-                return None
-            pairs += inner
-        return pairs
-    if isinstance(ref, dict):
-        if ref.keys() != new.keys():
-            return None
-        return _float_pairs(list(ref.values()), list(new.values()))
-    return [] if ref == new else None
+    return float_pairs(ref, new)
 
 
-def _close(ref: float, new: float, rtol: float, atol: float) -> bool:
-    """``|new - ref| <= rtol * |ref| + atol``; a NaN equals a NaN, an infinity only itself."""
-    if math.isnan(ref) or math.isnan(new):
-        return math.isnan(ref) and math.isnan(new)
-    if math.isinf(ref) or math.isinf(new):
-        return ref == new
-    return abs(new - ref) <= rtol * abs(ref) + atol
-
-
-def _gap_text(pairs) -> str:
-    """The largest absolute and relative gap among float pairs, if any is finite."""
-    gaps = [(abs(n - r), abs(n - r) / abs(r) if r else math.inf) for r, n in pairs
-            if math.isfinite(r) and math.isfinite(n)]
-    if not gaps:
-        return ""
-    return (f", max abs {max(g for g, _ in gaps):.3g}, "
-            f"max rel {max(rel for _, rel in gaps):.3g}")
+def _within_pairs(pairs, rtol: float, atol: float) -> list[bool]:
+    return within(*zip(*pairs), rtol, atol).tolist() if pairs else []
 
 
 def _edge_table_part(reference_path: Path, new_path: Path) -> list[str]:
@@ -411,13 +430,122 @@ def _edge_table_problems(reference: dict, new: dict, rtol: float) -> list[str]:
         ref_values = numeric_cells(reference, column, REFERENCE)
         new_values = numeric_cells(new, column, NEW)
         column_rtol = 0.0 if column in INTEGER_COLUMNS else rtol
-        atol = column_rtol * max(abs(value) for value in ref_values.values())
-        differing = [edge for edge in shared
-                     if not _close(ref_values[edge], new_values[edge], column_rtol, atol)]
+        atol = max_scaled_atol(list(ref_values.values()), column_rtol)
+        inside = _within_pairs([(ref_values[edge], new_values[edge]) for edge in shared],
+                               column_rtol, atol)
+        differing = [edge for edge, ok in zip(shared, inside) if not ok]
         if differing:
             problems.append(f"{column}: {len(differing)} of {len(shared)} rows differ"
-                            + _gap_text([(ref_values[e], new_values[e]) for e in differing])
+                            + gap_text([ref_values[e] for e in differing],
+                                       [new_values[e] for e in differing])
                             + f": {differing[:MAX_LISTED]}")
+    return problems
+
+
+def _flow_network_rtol(kind: str, name: str) -> float:
+    """The flow network's rule per array: the solve arrays under the network rule, the points
+    and every other float array (lengths, diameters, tortuosity) under the geometry rule."""
+    return NETWORK_RTOL if kind != POINTS and name in NETWORK_SOLVE_ARRAYS else GEOMETRY_RTOL
+
+
+def _vtk_part(reference_path: Path, new_path: Path, rtol_for) -> list[str]:
+    """A VTK file's mesh or grid and its point and cell arrays; its field data is left to the
+    status and tag parts."""
+    missing = _missing(reference_path, new_path)
+    if missing:
+        return missing
+    return vtk_problems(reference_path, new_path, rtol_for=rtol_for,
+                        kinds=("point_data", "cell_data"), sides=(REFERENCE, NEW))
+
+
+def _field_data(path: Path) -> dict:
+    """A VTK file's field data as plain values: a one-value array as its value, else a list."""
+    import pyvista as pv
+    data = pv.read(path).field_data
+    values = {name: np.asarray(data[name]).tolist() for name in data.keys()}
+    return {name: value[0] if len(value) == 1 else value for name, value in values.items()}
+
+
+def _tags_part(reference_path: Path, new_path: Path, rtols: dict, steps=None) -> list[str]:
+    """A VTK file's field data, value by value: a name in ``rtols`` under that rtol (scaled
+    floor from the value itself), a name in ``steps`` an integer that may move by that many,
+    anything else exactly."""
+    missing = _missing(reference_path, new_path)
+    if missing:
+        return missing
+    steps = steps or {}
+    reference, new = _field_data(reference_path), _field_data(new_path)
+    problems = [f"{name} only in {side}"
+                for side, mine, theirs in ((REFERENCE, reference, new), (NEW, new, reference))
+                for name in sorted(mine) if name not in theirs]
+    for name in sorted(name for name in reference if name in new):
+        ref, other = reference[name], new[name]
+        if name in steps:
+            same = (type(ref) is int and type(other) is int
+                    and abs(other - ref) <= steps[name])
+        else:
+            rtol = rtols.get(name, 0.0)
+            pairs = float_pairs(ref, other)
+            atol = max_scaled_atol([r for r, _ in pairs], rtol) if pairs else 0.0
+            same = values_equal(ref, other, rtol, atol)
+        if not same:
+            problems.append(f"{name}: {ref} in {REFERENCE}, {other} in {NEW}")
+    return problems
+
+
+def _summary(flow_path: Path, perfusion_path: Path) -> dict:
+    """``model_results.md``'s numbers at full precision: per flow-network metric and per
+    perfusion cell array, its ``distribution_summary`` with NaNs dropped (None when nothing is
+    left, where the dashboard says the array was empty)."""
+    import pyvista as pv
+    flow, perfusion = pv.read(flow_path).cell_data, pv.read(perfusion_path).cell_data
+    sources = ((FLOW_NETWORK, flow, [name for name in NETWORK_METRICS if name in flow.keys()]),
+               (PERFUSION_FIELD, perfusion, list(perfusion.keys())))
+    summary = {}
+    for section, arrays, names in sources:
+        summary[section] = {}
+        for name in names:
+            values = np.asarray(arrays[name], dtype=float).ravel()
+            values = values[~np.isnan(values)]
+            summary[section][name] = distribution_summary(values) if values.size else None
+    return summary
+
+
+def _summary_rtol(section: str, name: str) -> float:
+    if section == PERFUSION_FIELD:
+        return PERFUSION_RTOL
+    return _flow_network_rtol("cell_data", name)
+
+
+def _summary_part(reference_path: Path, flow_path: Path, perfusion_path: Path) -> list[str]:
+    """Each summary number under its source array's rule, the floor scaled by that array's
+    largest magnitude, ``max(|min|, |max|)``."""
+    missing = _missing(reference_path, flow_path) + [
+        problem for problem in _missing(reference_path, perfusion_path)
+        if problem.startswith(f"missing in {NEW}")]
+    if missing:
+        return missing
+    reference = json.loads(reference_path.read_text())
+    new = _summary(flow_path, perfusion_path)
+    problems = []
+    for section in reference:
+        ref_metrics, new_metrics = reference[section], new.get(section, {})
+        problems += [f"{section} {name} only in {side}"
+                     for side, mine, theirs in ((REFERENCE, ref_metrics, new_metrics),
+                                                (NEW, new_metrics, ref_metrics))
+                     for name in mine if name not in theirs]
+        for name in (name for name in ref_metrics if name in new_metrics):
+            ref, other = ref_metrics[name], new_metrics[name]
+            if ref is None or other is None:
+                if ref != other:
+                    problems.append(f"{section} {name}: {ref} in {REFERENCE}, {other} in {NEW}")
+                continue
+            rtol = _summary_rtol(section, name)
+            atol = max_scaled_atol([ref["min"], ref["max"]], rtol)
+            moved = [stat for stat in ref if not close(ref[stat], other[stat], rtol, atol)]
+            if moved:
+                problems.append(f"{section} {name}: {', '.join(moved)}"
+                                + gap_text([ref[s] for s in moved], [other[s] for s in moved]))
     return problems
 
 

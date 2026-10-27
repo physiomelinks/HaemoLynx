@@ -22,8 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 from ImageLynx import cb_settings, graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
-from ImageLynx.batch_outputs import (CACHE_SUFFIX, EDGE_TABLE_NAME, GRAPH_NAME, SKELETON_NAME,
-                                     VESSEL_MASK_NAME, VESSEL_MASK_VTI_SUFFIX, VTK_PREFIX)
+from ImageLynx.batch_outputs import (CACHE_SUFFIX, EDGE_TABLE_NAME, GRAPH_NAME,
+                                     PERFUSION_VTI_SUFFIX, SKELETON_NAME, VESSEL_MASK_NAME,
+                                     VESSEL_MASK_VTI_SUFFIX, VTK_PREFIX)
 from ImageLynx.haemodynamics.resistance import PASCALS_PER_MMHG, POISEUILLE_FLOW_TO_UM3_PER_S
 
 #: The pipeline's pressure unit, mPa, per mmHg. HaemodynamicsConfig holds its pressures in mPa.
@@ -1637,7 +1638,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         A, q_total, s_incoming = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
         
         # 4. Solve the Non-Linear Steady-State Perfusion field
-        vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
+        vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + PERFUSION_VTI_SUFFIX)
         if perf_config.use_multi_species_model:
             tier, solver_name = 3, "solve_multi_species_perfusion"
             print("  Running Fully Coupled Multi-Species (O2, CO2, pH) Perfusion Solver...")

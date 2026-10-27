@@ -19,9 +19,10 @@ What counts as equal, part by part (``PARTS``):
   So under the reader this part can only show that both runs share source and box, and the
   report says so.
 
-Floats are compared exactly unless ``rtol`` is given; then a float ``a`` against ``b`` is equal
-if ``|a - b| <= rtol * |b|``. Keys, integers, text and masks are always exact. A NaN equals a
-NaN, so a value missing on both sides in the same way is the same content.
+Floats are compared exactly unless ``rtol`` is given; then a float ``new`` against ``old`` is
+equal if ``|new - old| <= rtol * |old|`` (``value_compare``'s rule with ``atol = 0``). Keys,
+integers, text and masks are always exact. A NaN equals a NaN, so a value missing on both
+sides in the same way is the same content.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ import numpy as np
 
 from .batch_outputs import DIAMETER, open_batch_run
 from .specimens import is_sensitivity_run_name
+from .value_compare import values_equal
 
 GRAPH, DIAMETERS, EDGE_TABLE, SKELETON, VESSEL_MASK, TH_MASK = PARTS = (
     "graph", "diameters", "edge table", "skeleton", "vessel mask", "TH mask")
@@ -252,7 +254,7 @@ def _numbers(old: dict, new: dict, what: str, rtol) -> list[str]:
     """Keys on one side only, then how many shared values differ and by how much."""
     problems = _one_side_only(old, new, what)
     shared = [key for key in old if key in new]
-    differing = [key for key in shared if not _values_equal(old[key], new[key], rtol)]
+    differing = [key for key in shared if not values_equal(old[key], new[key], rtol)]
     if differing:
         gaps = np.array([abs(new[key] - old[key]) for key in differing])
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -267,24 +269,4 @@ def _differing(old: dict, new: dict, rtol) -> list:
     """Names of attributes missing on one side or holding different values."""
     return [name for name in sorted(set(old) | set(new), key=str)
             if name not in old or name not in new
-            or not _values_equal(old[name], new[name], rtol)]
-
-
-def _values_equal(old, new, rtol) -> bool:
-    """Same type and same value; floats within ``rtol`` (exact at 0), NaN equal to NaN."""
-    if type(old) is not type(new):
-        return False
-    if isinstance(old, dict):
-        return not _differing(old, new, rtol)
-    if isinstance(old, (list, tuple)):
-        return len(old) == len(new) and all(
-            _values_equal(a, b, rtol) for a, b in zip(old, new))
-    if isinstance(old, np.ndarray):
-        if old.shape != new.shape or old.dtype != new.dtype:
-            return False
-        if old.dtype.kind == "f":
-            return bool(np.all(np.isclose(old, new, rtol=rtol, atol=0, equal_nan=True)))
-        return bool(np.array_equal(old, new))
-    if isinstance(old, (float, np.floating)):
-        return bool(np.isclose(old, new, rtol=rtol, atol=0, equal_nan=True))
-    return bool(old == new)
+            or not values_equal(old[name], new[name], rtol)]

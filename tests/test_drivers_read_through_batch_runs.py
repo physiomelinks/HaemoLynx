@@ -277,7 +277,8 @@ def test_the_name_check_knows_every_batch_file_name():
     assert {name for name, value in vars(batch_outputs).items()
             if name.endswith("_NAME") and isinstance(value, str)} == {
         "EDGE_TABLE_NAME", "GRAPH_NAME", "SKELETON_NAME", "VESSEL_MASK_NAME",
-        "VESSELS_VTP_NAME", "NODES_VTP_NAME", "VESSEL_MASK_VTI_NAME", "ROI_RECORD_NAME"}
+        "VESSELS_VTP_NAME", "NODES_VTP_NAME", "VESSEL_MASK_VTI_NAME", "ROI_RECORD_NAME",
+        "VESSELS_FLOW_VTP_NAME", "PERFUSION_VTI_NAME"}
 
 
 # The pipeline that writes the files, and every test. The reader drivers are left out: on them

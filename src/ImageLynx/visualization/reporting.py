@@ -8,16 +8,21 @@ from pathlib import Path
 # Use Agg backend to avoid GUI issues in CI/headless environments
 matplotlib.use('Agg')
 
+# The flow-network cell arrays the dashboard summarises, in its order. ImageLynx.reference_run
+# keeps the same numbers for the benchmark tests.
+NETWORK_METRICS = (
+    "assigned_diameter_um", "flow_abs", "flow_signed", "hematocrit",
+    "pressure_drop", "resistance", "viscosity", "wall_shear_stress_pa",
+)
+
+
 def generate_model_results_dashboard(vtk_export: dict, perfusion_field: dict, output_dir: Path):
     """
     Extracts 1D network metrics and 3D perfusion metrics, generates static 
     distribution plots (Histogram + KDE), and writes a Markdown dashboard.
     """
     # 1. Define Target Metrics
-    metrics_1d = [
-        "assigned_diameter_um", "flow_abs", "flow_signed", "hematocrit", 
-        "pressure_drop", "resistance", "viscosity", "wall_shear_stress_pa"
-    ]
+    metrics_1d = NETWORK_METRICS
     metrics_3d = ["PO2_mmhg", "PCO2_mmhg", "pH"]
     
     plots_dir = output_dir / "plots"
@@ -91,12 +96,18 @@ def _create_distribution_plot(data: np.ndarray, metric_name: str, plots_dir: Pat
     plt.savefig(save_path, dpi=150)
     plt.close()
 
+def distribution_summary(data) -> dict:
+    """The dashboard's numbers for one metric: mean, median, min and max of ``data``."""
+    data = np.asarray(data)
+    return {"mean": float(np.mean(data)), "median": float(np.median(data)),
+            "min": float(np.min(data)), "max": float(np.max(data))}
+
+
 def _append_markdown_section(md_content: list, data: np.ndarray, metric_name: str):
     """Calculates statistics and appends the Markdown formatting."""
-    mean_val = np.mean(data)
-    median_val = np.median(data)
-    min_val = np.min(data)
-    max_val = np.max(data)
+    summary = distribution_summary(data)
+    mean_val, median_val = summary["mean"], summary["median"]
+    min_val, max_val = summary["min"], summary["max"]
     
     md_content.append(f"### {metric_name}")
     md_content.append(f"**Mean:** `{mean_val:.4f}` | **Median:** `{median_val:.4f}` | **Min:** `{min_val:.4f}` | **Max:** `{max_val:.4f}`\n")

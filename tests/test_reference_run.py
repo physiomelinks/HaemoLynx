@@ -1,9 +1,10 @@
 """Writing a reference run and comparing a run folder with it, on tiny hand-made run folders.
 
-Each test writes a run folder as the pipeline lays it out (``per_edge_morphometry.csv`` beside
-one ``*_cache`` folder with the mask, skeleton and pickled graph: a three-edge graph on a 4^3
-grid), stores it as a reference run, then changes one thing on one side. The update script's
-refusal of a dirty tree is tested on a throwaway git repo.
+Each test writes a run folder as the pipeline lays it out (``per_edge_morphometry.csv``, the
+flow network ``.vtp`` and the perfusion ``.vti`` beside one ``*_cache`` folder with the mask,
+skeleton and pickled graph: a three-edge graph on a 4^3 grid, and a 2^3-cell perfusion grid),
+stores it as a reference run, then changes one thing on one side. The update script's refusal
+of a dirty tree is tested on a throwaway git repo.
 """
 import csv
 import json
@@ -14,14 +15,17 @@ from functools import partial
 import networkx as nx
 import numpy as np
 import pytest
+import pyvista as pv
 
 import update_benchmark_reference_run as update_script
 from conftest import toy_git
-from ImageLynx.batch_outputs import (EDGE_TABLE_NAME, GRAPH_NAME, SKELETON_NAME,
-                                     VESSEL_MASK_NAME)
+from ImageLynx.batch_outputs import (EDGE_TABLE_NAME, GRAPH_NAME, PERFUSION_VTI_NAME,
+                                     SKELETON_NAME, VESSEL_MASK_NAME, VESSELS_FLOW_VTP_NAME)
 from ImageLynx.reference_run import (
-    EDGE_TABLE, GEOMETRY_RTOL, GRAPH, GRAPH_JSON_NAME, MANIFEST_NAME, MASKS_NAME, PARTS,
-    SKELETON, VESSEL_MASK, compare_with_reference, format_report, write_reference_run,
+    EDGE_TABLE, FLOW_NETWORK, GEOMETRY_RTOL, GRAPH, GRAPH_JSON_NAME, MANIFEST_NAME, MASKS_NAME,
+    NETWORK_RTOL, PARTS, PERFUSION_FIELD, PERFUSION_RTOL, PERFUSION_TAGS, RHEOLOGY_STATUS,
+    SKELETON, SUMMARY, SUMMARY_NAME, VESSEL_MASK, compare_with_reference, format_report,
+    write_reference_run,
 )
 
 EDGES = [(0, 1, 0), (1, 2, 0), (1, 2, 1)]
@@ -55,10 +59,47 @@ def _mask():
     return mask
 
 
-def _write_run(run_dir, graph=None, columns=None, mask=None, skeleton=None):
+def _flow_network(**cell_arrays):
+    """The flow network: one line per edge, with edge keys, a geometry array, three solve
+    arrays and the rheology status in its field data. ``cell_arrays`` replace or add arrays."""
+    points = np.array([[0.0, 0, 0], [1, 0, 0], [1, 0, 0], [2, 0, 0], [1, 0, 0], [2, 1, 0]])
+    mesh = pv.PolyData(points, lines=np.array([2, 0, 1, 2, 2, 3, 2, 4, 5]))
+    edges = np.array(EDGES)
+    arrays = {"edge_u": edges[:, 0], "edge_v": edges[:, 1], "edge_key": edges[:, 2],
+              "assigned_diameter_um": np.array([7.0, 8.0, 9.0]),
+              "flow_abs": np.array([100.0, 60.0, 40.0]),
+              "flow_signed": np.array([100.0, -60.0, 40.0]),
+              "hematocrit": np.array([0.45, 0.4, np.nan]),
+              **cell_arrays}
+    for name, values in arrays.items():
+        mesh.cell_data[name] = values
+    mesh.field_data["rheology_stop_reason"] = np.array(["converged"])
+    mesh.field_data["rheology_iterations"] = np.array([330])
+    mesh.field_data["rheology_relative_flow_change"] = np.array([9.9e-7])
+    return mesh
+
+
+def _perfusion_field(po2=None, **tags):
+    """The Tier 3 perfusion field on 2^3 cells, PO2 50 to 85 and pH 7.4, with its tags in its
+    field data. ``tags`` replace tags."""
+    grid = pv.ImageData(dimensions=(3, 3, 3), spacing=(30.0, 30.0, 30.0))
+    grid.cell_data["PO2_mmHg"] = np.linspace(50.0, 85.0, 8) if po2 is None else po2
+    grid.cell_data["pH"] = np.full(8, 7.4)
+    defaults = {"perfusion_tier": 3, "perfusion_solver": "solve_multi_species_perfusion",
+                "perfusion_M_max": 0.05, "perfusion_converged": 1,
+                "perfusion_picard_iterations": 49, "perfusion_final_residual": 5.8e-6}
+    for name, value in {**defaults, **tags}.items():
+        grid.field_data[name] = np.array([value])
+    return grid
+
+
+def _write_run(run_dir, graph=None, columns=None, mask=None, skeleton=None, flow=None,
+               perfusion=None):
     """A run folder laid out as the pipeline writes one; returns it."""
     cache = run_dir / "sub_cache"
     cache.mkdir(parents=True)
+    (_flow_network() if flow is None else flow).save(run_dir / VESSELS_FLOW_VTP_NAME)
+    (_perfusion_field() if perfusion is None else perfusion).save(run_dir / PERFUSION_VTI_NAME)
     np.save(cache / VESSEL_MASK_NAME, _mask() if mask is None else mask)
     skeleton_default = np.zeros(SHAPE, bool)
     skeleton_default[2, 2, :] = True
@@ -123,7 +164,8 @@ def test_rewriting_replaces_the_whole_folder(tmp_path, reference):
     (reference / "left_from_an_old_part.npz").write_bytes(b"x")
     write_reference_run(_write_run(tmp_path / "again"), reference, COMMAND, "def456")
     assert sorted(path.name for path in reference.iterdir()) == sorted(
-        [MASKS_NAME, GRAPH_JSON_NAME, EDGE_TABLE_NAME, MANIFEST_NAME])
+        [MASKS_NAME, GRAPH_JSON_NAME, EDGE_TABLE_NAME, VESSELS_FLOW_VTP_NAME, PERFUSION_VTI_NAME,
+         SUMMARY_NAME, MANIFEST_NAME])
     assert not reference.with_name(reference.name + ".new").exists()
 
 
@@ -293,10 +335,10 @@ def test_the_report_names_the_part_and_the_size_of_the_gap(tmp_path, reference):
                           columns=_length_column((1, 2, 0), 20.0 * (1 + 1e-6)))
     report = format_report(comparison, label="benchmark run")
     assert report.splitlines()[0] == "benchmark run"
-    assert ("  edge table   DIFFERENT: length_um: 1 of 3 rows differ, max abs 2e-05, "
+    assert ("  edge table      DIFFERENT: length_um: 1 of 3 rows differ, max abs 2e-05, "
             "max rel 1e-06: [(1, 2, 0)]") in report
-    assert "  graph        same" in report
-    assert report.splitlines()[-1] == "4 parts compared: 1 differ."
+    assert "  graph           same" in report
+    assert report.splitlines()[-1] == "9 parts compared: 1 differ."
 
 
 def test_a_different_environment_is_a_note_not_a_difference(tmp_path, reference):
@@ -307,8 +349,8 @@ def test_a_different_environment_is_a_note_not_a_difference(tmp_path, reference)
     comparison = _compare(tmp_path, reference)
     assert comparison.same
     report = format_report(comparison)
-    assert "  environment  python 3.10.0 in REFERENCE" in report
-    assert "  environment  numpy 0.0 in REFERENCE" in report
+    assert "  environment     python 3.10.0 in REFERENCE" in report
+    assert "  environment     numpy 0.0 in REFERENCE" in report
 
 
 def test_a_different_command_is_a_note(tmp_path, reference):
@@ -382,7 +424,7 @@ def test_the_update_script_writes_the_first_reference_run_then_reports_against_i
     assert manifest["command"][-1] == update_script.RUN_TOKEN
 
     update_script.update(reference, git=git, run=_write_run, out=printed.append)
-    assert printed[1].endswith("4 parts compared: all match.")
+    assert printed[1].endswith("9 parts compared: all match.")
 
 
 def test_the_pipeline_command_runs_the_sub_volume_with_frozen_defaults(tmp_path):
@@ -400,3 +442,157 @@ def test_the_pipeline_command_runs_the_sub_volume_with_frozen_defaults(tmp_path)
         repo_path(update_script.subvolume.SUBVOLUME_PATH),
         "--specimen", update_script.subvolume.SPECIMEN_ID,
         "--output-dir", update_script.RUN_TOKEN]
+
+
+# --- The flow network and the perfusion field ------------------------------------------------
+
+def _flow(**arrays):
+    return {"flow": _flow_network(**arrays)}
+
+
+def test_the_vtk_files_are_stored_as_written(reference):
+    for name in (VESSELS_FLOW_VTP_NAME, PERFUSION_VTI_NAME):
+        assert (reference / name).read_bytes() == (reference.parent / "made_from" / name).read_bytes()
+
+
+def test_a_solve_array_passes_inside_the_network_band_and_fails_outside(tmp_path, reference):
+    # Flow 60 against a largest |flow_abs| of 100: band 60 * rtol + 100 * rtol = 160 * rtol.
+    inside = _compare(tmp_path / "a", reference,
+                      **_flow(flow_abs=np.array([100.0, 60.0 + 159 * NETWORK_RTOL, 40.0])))
+    assert FLOW_NETWORK not in _differing(inside)
+    outside = _compare(tmp_path / "b", reference,
+                       **_flow(flow_abs=np.array([100.0, 60.0 + 161 * NETWORK_RTOL, 40.0])))
+    assert _differing(outside)[FLOW_NETWORK] == (
+        "cell array 'flow_abs': 1 of 3 values differ, max abs 0.000161, max rel 2.68e-06")
+
+
+def test_a_geometry_array_in_the_flow_network_keeps_the_geometry_band(tmp_path, reference):
+    # Diameter 7 against a largest of 9: the geometry band is 16e-9, far inside the network one.
+    moved = np.array([7.0 + 17 * GEOMETRY_RTOL, 8.0, 9.0])
+    detail = _differing(_compare(tmp_path, reference, **_flow(assigned_diameter_um=moved)))
+    assert detail[FLOW_NETWORK].startswith("cell array 'assigned_diameter_um': 1 of 3 values")
+
+
+def test_the_perfusion_field_passes_inside_its_band_and_fails_outside(tmp_path, reference):
+    # PO2 50 against a largest of 85: band 135 * rtol.
+    po2 = np.linspace(50.0, 85.0, 8)
+    po2[0] = 50.0 + 134 * PERFUSION_RTOL
+    inside = _compare(tmp_path / "a", reference, perfusion=_perfusion_field(po2=po2))
+    assert PERFUSION_FIELD not in _differing(inside)
+    po2[0] = 50.0 + 136 * PERFUSION_RTOL
+    detail = _differing(_compare(tmp_path / "b", reference, perfusion=_perfusion_field(po2=po2)))
+    assert detail[PERFUSION_FIELD].startswith("cell array 'PO2_mmHg': 1 of 8 values differ")
+
+
+def test_an_array_on_one_side_only_is_a_difference(tmp_path, reference):
+    detail = _differing(_compare(tmp_path, reference, **_flow(pressure_drop=np.zeros(3))))
+    assert detail[FLOW_NETWORK] == "cell array 'pressure_drop' only in NEW"
+    grid = _perfusion_field()
+    grid.cell_data.remove("pH")
+    detail = _differing(_compare(tmp_path / "b", reference, perfusion=grid))
+    assert detail[PERFUSION_FIELD] == "cell array 'pH' only in REFERENCE"
+
+
+def test_a_missing_flow_network_is_a_difference_in_every_part_read_from_it(tmp_path, reference):
+    run = _write_run(tmp_path / "run")
+    (run / VESSELS_FLOW_VTP_NAME).unlink()
+    detail = _differing(compare_with_reference(run, reference))
+    assert set(detail) == {FLOW_NETWORK, RHEOLOGY_STATUS, SUMMARY}
+    assert detail[FLOW_NETWORK] == f"missing in NEW: {VESSELS_FLOW_VTP_NAME}"
+
+
+# --- The rheology status and the perfusion tags ----------------------------------------------
+
+def _with_field(mesh, **values):
+    for name, value in values.items():
+        mesh.field_data[name] = np.array([value])
+    return mesh
+
+
+def test_a_changed_tag_fails_in_its_status_part_only(tmp_path, reference):
+    flow = _with_field(_flow_network(), rheology_stop_reason="max_iterations")
+    assert _differing(_compare(tmp_path, reference, flow=flow)) == {
+        RHEOLOGY_STATUS: "rheology_stop_reason: converged in REFERENCE, max_iterations in NEW"}
+
+
+def test_the_rheology_iterations_are_exact(tmp_path, reference):
+    flow = _with_field(_flow_network(), rheology_iterations=331)
+    assert _differing(_compare(tmp_path, reference, flow=flow)) == {
+        RHEOLOGY_STATUS: "rheology_iterations: 330 in REFERENCE, 331 in NEW"}
+
+
+def test_a_rheology_residual_follows_the_network_rule(tmp_path, reference):
+    # A lone value is its own largest: band 2 * rtol * 9.9e-7.
+    inside = _with_field(_flow_network(), rheology_relative_flow_change=9.9e-7 * (1 + 1.9e-6))
+    assert _compare(tmp_path / "a", reference, flow=inside).same
+    outside = _with_field(_flow_network(), rheology_relative_flow_change=9.9e-7 * (1 + 2.1e-6))
+    assert set(_differing(_compare(tmp_path / "b", reference, flow=outside))) == {
+        RHEOLOGY_STATUS}
+
+
+@pytest.mark.parametrize("iterations, same", [(48, True), (50, True), (47, False), (51, False)])
+def test_picard_iterations_pass_at_one_either_way_and_fail_at_two(tmp_path, reference,
+                                                                    iterations, same):
+    comparison = _compare(tmp_path, reference,
+                          perfusion=_perfusion_field(perfusion_picard_iterations=iterations))
+    assert comparison.same is same
+    if not same:
+        assert _differing(comparison) == {
+            PERFUSION_TAGS: f"perfusion_picard_iterations: 49 in REFERENCE, {iterations} in NEW"}
+
+
+@pytest.mark.parametrize("tag, value", [("perfusion_tier", 2), ("perfusion_converged", 0),
+                                        ("perfusion_solver", "solve_coupled_1d3d_perfusion"),
+                                        ("perfusion_M_max", 0.05 * (1 + 1e-12))])
+def test_the_tier_solver_converged_flag_and_settings_tags_are_exact(tmp_path, reference, tag,
+                                                                    value):
+    detail = _differing(_compare(tmp_path, reference, perfusion=_perfusion_field(**{tag: value})))
+    assert set(detail) == {PERFUSION_TAGS} and detail[PERFUSION_TAGS].startswith(tag + ":")
+
+
+def test_the_final_residual_follows_the_perfusion_rule(tmp_path, reference):
+    inside = _perfusion_field(perfusion_final_residual=5.8e-6 * (1 + 1.9e-4))
+    assert _compare(tmp_path / "a", reference, perfusion=inside).same
+    outside = _perfusion_field(perfusion_final_residual=5.8e-6 * (1 + 2.1e-4))
+    assert set(_differing(_compare(tmp_path / "b", reference, perfusion=outside))) == {
+        PERFUSION_TAGS}
+
+
+def test_a_tag_on_one_side_only_is_a_difference(tmp_path, reference):
+    grid = _perfusion_field()
+    grid.field_data.remove("perfusion_converged")
+    assert _differing(_compare(tmp_path, reference, perfusion=grid)) == {
+        PERFUSION_TAGS: "perfusion_converged only in REFERENCE"}
+
+
+# --- The summary scalars ---------------------------------------------------------------------
+
+def test_the_summary_holds_the_dashboards_numbers_at_full_precision(reference):
+    summary = json.loads((reference / SUMMARY_NAME).read_text())
+    assert summary[FLOW_NETWORK]["flow_signed"] == {
+        "mean": 80.0 / 3, "median": 40.0, "min": -60.0, "max": 100.0}
+    assert summary[FLOW_NETWORK]["hematocrit"]["mean"] == pytest.approx(0.425)  # NaN dropped
+    assert set(summary[FLOW_NETWORK]) == {"assigned_diameter_um", "flow_abs", "flow_signed",
+                                          "hematocrit"}
+    assert summary[PERFUSION_FIELD]["PO2_mmHg"] == {
+        "mean": 67.5, "median": 67.5, "min": 50.0, "max": 85.0}
+
+
+def test_a_summary_number_follows_its_sources_rule_with_the_floor_from_its_largest_value(
+        tmp_path, reference):
+    # The median of flow_signed is 40 and the array's largest |value| is 100, so it may move by
+    # 140 * NETWORK_RTOL. Moving the 40 moves the median and the mean (by a third as much).
+    def signed(median):
+        return _flow(flow_signed=np.array([100.0, -60.0, median]))
+
+    inside = _compare(tmp_path / "a", reference, **signed(40.0 + 139 * NETWORK_RTOL))
+    assert SUMMARY not in _differing(inside)
+    outside = _differing(_compare(tmp_path / "b", reference, **signed(40.0 + 141 * NETWORK_RTOL)))
+    assert outside[SUMMARY].startswith("flow network flow_signed: median, max abs 0.000141")
+
+
+def test_a_summary_number_of_the_perfusion_field_uses_the_perfusion_rule(tmp_path, reference):
+    po2 = np.linspace(50.0, 85.0, 8)
+    po2[-1] = 85.0 * (1 + 1.5e-4)  # inside 2 * PERFUSION_RTOL of the max, outside the network
+    assert SUMMARY not in _differing(_compare(tmp_path, reference,
+                                              perfusion=_perfusion_field(po2=po2)))

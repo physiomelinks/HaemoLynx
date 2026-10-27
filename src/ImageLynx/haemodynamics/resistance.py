@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 #: Pascals per mmHg, exact by definition of the conventional millimetre of mercury.
 PASCALS_PER_MMHG = 133.322387415
+# What solve_flow_from_conductance_matrix adds to the vessels file's stem for its flow export.
+# ImageLynx.batch_outputs builds the run-folder file name from it.
+FLOW_VTP_SUFFIX = "_flow.vtp"
 
 #: Converts this pipeline's Poiseuille flow to um^3/s.
 #:
@@ -440,7 +443,7 @@ def solve_flow_from_conductance_matrix(
     vessels.cell_data["flow_signed"] = flow_signed
     vessels.cell_data["flow_abs"] = flow_abs
 
-    flow_path = vessels_path.with_name(f"{vessels_path.stem}_flow.vtp")
+    flow_path = vessels_path.with_name(vessels_path.stem + FLOW_VTP_SUFFIX)
     vessels.save(flow_path)
 
     vtk_export = dict(vtk_export)
