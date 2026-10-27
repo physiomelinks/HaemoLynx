@@ -806,6 +806,23 @@ SNAPSHOT_TOOLTIP = (
     "Write a TIFF of the current napari view into the pipeline "
     "output folder (cosmetic export only; does not feed the run)"
 )
+#: The view window's Rotation movie box.
+ROTATION_TOOLTIPS = {
+    "tilt": (
+        "How far the movie looks down on the stack while it turns about the "
+        "z axis, in degrees: 0 side on, z down the screen as in the XZ view; "
+        "90 straight down onto the top slice; negative looks up from below"
+    ),
+    "speed": (
+        "How fast the stack turns in the movie, in degrees a second: 30 takes "
+        "12 s for the full turn, played at 30 frames a second"
+    ),
+    "record": (
+        "Turn what is on the canvas one full circle and write it as a movie "
+        "into the pipeline output folder (MP4, or GIF without imageio-ffmpeg); "
+        "the view is put back afterwards. Press again to stop without writing"
+    ),
+}
 SAVE_RUN_TOOLTIP = (
     "Write this pipeline run to a .haemorun file: settings, graph, "
     "checkpoints, and viewer layers, so it can be opened again later"

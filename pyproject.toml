@@ -77,8 +77,11 @@ notebook = ["ipykernel"]
 # give a panel that opens: napari itself declares none, and without one it
 # exits with "No Qt bindings found". Use the `napari-plugin` extra instead to
 # take the binding from an existing napari installation.
-napari = ["napari[pyqt6]>=0.8", "magicgui>=0.7", "npe2>=0.8"]
-napari-plugin = ["napari>=0.8", "magicgui>=0.7", "npe2>=0.8"]
+#
+# imageio-ffmpeg is the view window's rotation movie as MP4; without it the
+# movie is a GIF.
+napari = ["napari[pyqt6]>=0.8", "magicgui>=0.7", "npe2>=0.8", "imageio-ffmpeg>=0.4"]
+napari-plugin = ["napari>=0.8", "magicgui>=0.7", "npe2>=0.8", "imageio-ffmpeg>=0.4"]
 
 [project.entry-points."napari.manifest"]
 haemolynx = "haemolynx.gui:napari.yaml"

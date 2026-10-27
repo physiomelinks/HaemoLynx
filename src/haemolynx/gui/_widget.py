@@ -17523,11 +17523,23 @@ def settings_widget(napari_viewer=None):
     from haemolynx.gui.canvas_illumination import illumination_box
 
     illumination = illumination_box(viewer)
+    from haemolynx.gui.rotation_movie import rotation_box
+
+    def set_report(text: str) -> None:
+        report.value = text
+
+    rotation = rotation_box(
+        viewer,
+        output_folder=lambda: output_folder_from_settings(current_values()),
+        screenshot=lambda: _canvas_screenshot(viewer),
+        report=set_report,
+    )
     view_layout = QVBoxLayout(view_panel)
     view_layout.addWidget(display_group)
     view_layout.addWidget(illumination.group)
     view_layout.addWidget(sweep_group)
     view_layout.addWidget(snapshot_group)
+    view_layout.addWidget(rotation.group)
     # Docked, the panel is as tall as the strip; the boxes keep their height.
     view_layout.addStretch(1)
 
@@ -17724,6 +17736,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_sweep_group = sweep_group
     panel._haemolynx_sweep_controls = sweep_controls
     panel._haemolynx_snapshot_button = snapshot_button
+    panel._haemolynx_rotation = rotation
+    panel._haemolynx_rotation_group = rotation.group
     panel._haemolynx_apply_view_z = apply_view_z
     panel._haemolynx_data_for_pipeline = data_for_pipeline
     panel._haemolynx_arrow_length_slider = arrow_length_slider
