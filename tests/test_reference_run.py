@@ -596,3 +596,17 @@ def test_a_summary_number_of_the_perfusion_field_uses_the_perfusion_rule(tmp_pat
     po2[-1] = 85.0 * (1 + 1.5e-4)  # inside 2 * PERFUSION_RTOL of the max, outside the network
     assert SUMMARY not in _differing(_compare(tmp_path, reference,
                                               perfusion=_perfusion_field(po2=po2)))
+
+
+def test_every_tag_a_rule_names_is_in_the_committed_reference_run():
+    """A tag the pipeline renamed would leave its rule naming nothing, and the renamed tag
+    compared exactly; the committed reference run is what the pipeline writes today."""
+    import ImageLynx.reference_run as reference_run
+    stored = update_script.REFERENCE_RUN_DIR
+    flow = reference_run._field_data(stored / VESSELS_FLOW_VTP_NAME)
+    tags = reference_run._field_data(stored / PERFUSION_VTI_NAME)
+    assert set(reference_run.RHEOLOGY_RTOL) <= set(flow)
+    assert set(reference_run.PERFUSION_TAG_RTOL) | set(reference_run.PICARD_ITERATION_STEPS) <= \
+        set(tags)
+    arrays = pv.read(stored / VESSELS_FLOW_VTP_NAME).cell_data.keys()
+    assert set(reference_run.NETWORK_SOLVE_ARRAYS) <= set(arrays)
