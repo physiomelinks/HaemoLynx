@@ -937,7 +937,17 @@ def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
 
 def test_visible_vessel_mask_settings_nests_under_automated_and_parents():
     off = {"automated_vessel_assignment": False}
-    assert visible_vessel_mask_settings(SCHEMA, off) == {"automated_vessel_assignment"}
+    # With the masks off, their alternative: classing the vessels by size.
+    assert visible_vessel_mask_settings(SCHEMA, off) == {
+        "automated_vessel_assignment",
+        "classify_vessels_by_size",
+    }
+    assert visible_vessel_mask_settings(SCHEMA, {**off, "classify_vessels_by_size": True}) == {
+        "automated_vessel_assignment",
+        "classify_vessels_by_size",
+        "vessel_size_mid_min_diameter_um",
+        "vessel_size_wide_min_diameter_um",
+    }
 
     auto_only = {
         "automated_vessel_assignment": True,

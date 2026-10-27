@@ -21,12 +21,18 @@ from haemolynx.graph.post_processing import (
 )
 from haemolynx.graph.prune import FLOW_SOLVED
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.graph.vessel_size_classes import (
+    VESSEL_SIZE_CLASS,
+    size_class_range,
+    size_convention_of,
+)
 
 #: Optional metrics the panel can offer, in display order.
 BRANCH_HOVER_METRICS: tuple[str, ...] = (
     "flow_solution",
     "flow",
     "order",
+    "size_class",
     "diameter",
     "diameter_source",
     "fwhm_status",
@@ -41,6 +47,7 @@ BRANCH_HOVER_LABELS: dict[str, str] = {
     "flow_solution": "flow solution",
     "flow": "branch flow",
     "order": "branch order",
+    "size_class": "size class",
     "diameter": "branch diameter",
     "diameter_source": "diameter source",
     "fwhm_status": "FWHM status",
@@ -55,6 +62,7 @@ _METRIC_ATTR: dict[str, str | None] = {
     "flow_solution": FLOW_SOLVED,
     "flow": "flow_abs",
     "order": "branch_order",
+    "size_class": None,
     "diameter": "diameter_um",
     "diameter_source": "diameter_source",
     "fwhm_status": "fwhm_status",
@@ -65,7 +73,7 @@ _METRIC_ATTR: dict[str, str | None] = {
 }
 
 _TEXT_HOVER_METRICS = frozenset(
-    {"flow_solution", "order", "diameter_source", "fwhm_status", "drawn_support"}
+    {"flow_solution", "order", "size_class", "diameter_source", "fwhm_status", "drawn_support"}
 )
 
 #: What ``flow_solution`` reads for each value of the edge's FLOW_SOLVED.
@@ -145,6 +153,17 @@ def drawn_support_text(data: Mapping[str, Any]) -> str | None:
     )
 
 
+def size_class_text(graph: Any, data: Mapping[str, Any]) -> str | None:
+    """A vessel's size class with the widths it holds, "mid, 6-15 µm", under
+    the size convention its graph records; ``None`` otherwise."""
+    size_class = data.get(VESSEL_SIZE_CLASS)
+    convention = size_convention_of(graph) if size_class else None
+    if convention is None:
+        return None
+    widths = size_class_range(size_class, convention["mid_min_um"], convention["wide_min_um"])
+    return f"{size_class}, {widths}"
+
+
 def _metric_value(
     graph: Any, u: Any, v: Any, data: Mapping[str, Any], metric: str
 ) -> Any | None:
@@ -153,6 +172,8 @@ def _metric_value(
         return edge_tortuosity(graph, u, v, data)
     if metric == "drawn_support":
         return drawn_support_text(data)
+    if metric == "size_class":
+        return size_class_text(graph, data)
     attr = _METRIC_ATTR[metric]
     assert attr is not None
     value = data.get(attr)

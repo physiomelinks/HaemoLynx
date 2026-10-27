@@ -225,7 +225,7 @@ _add(T, "Tissue Working Voxel Size (z, y, x microns)", "um", "The voxel size of 
 
 # -- Vessel classes -----------------------------------------------------------
 T = "Vessel classes (one section per class)"
-_add(T, "Vessel Classes From", TEXT, "How the vessels were classed: by branch-order labels (large and small arterioles, capillaries, small and large venules) or by global masks (large and small vessels).")
+_add(T, "Vessel Classes From", TEXT, "How the vessels were classed: by branch-order labels (large and small arterioles, capillaries, small and large venules), by global masks (large and small vessels), or by a size convention (each vessel by its measured width against two thresholds the run states; the classes are then headed by the widths they hold).")
 _add(T, "Vessel Class Density Volume (micron³)", "um^3", "What every class's densities divide by: the volume Vessel Density in Tissue divides by.")
 _add(T, "Vessel Class Density Volume Source", TEXT, "Where that volume came from.")
 _add(T, "Vessel Class Haemodynamics", TEXT, "Why the flow rows are missing, when they are.")

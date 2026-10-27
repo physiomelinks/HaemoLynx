@@ -410,15 +410,20 @@ def test_the_field_data_names_the_blood_model_and_boundaries_that_made_the_numbe
     from haemolynx import __version__
     from haemolynx.visualization.vtk_io import RUN_FIELD_DATA
 
+    from haemolynx.graph import tag_vessels_by_size
+
     G = _straight_edge_graph(10.0)
     G.graph.update(
         viscosity_law="pries_in_vivo_1994", diameter_basis="endothelial", haematocrit=0.4,
         haematocrit_model="distributed_iterative", open_end_conditions={"model": "estimated"},
     )
+    tag_vessels_by_size(G, 6.0, 15.0)
 
     fields = _run_field_data(pv.read(graph_to_vtk(G, tmp_path / "model")["vessels_path"]))
 
     assert set(fields) == set(RUN_FIELD_DATA)
+    assert float(fields["vessel_size_mid_min_um"]) == 6.0
+    assert float(fields["vessel_size_wide_min_um"]) == 15.0
     assert str(fields["haemolynx_version"]) == str(__version__)
     assert str(fields["viscosity_law"]) == "pries_in_vivo_1994"
     assert str(fields["diameter_basis"]) == "endothelial"

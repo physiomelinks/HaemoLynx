@@ -418,6 +418,7 @@ def stamp_edge_diameters(
     use_endothelial: bool = False,
     class_median_min_edges: int = 0,
     fresh_edges=None,
+    before_fallbacks=None,
 ) -> dict[str, int]:
     """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
 
@@ -455,6 +456,13 @@ def stamp_edge_diameters(
     whatever the segmentation's vessels are. Every other source -- the mask's
     width, the table -- is on the run's own basis, and clears the mark. A
     class median carries the basis of the widths it was taken over.
+
+    *before_fallbacks*, when given, is called once every edge with a width of
+    its own has it, before a class median or the table fills the rest:
+    ``before_fallbacks(G, waiting)``, *waiting* the ``(u, v, key)`` of the
+    edges still to be filled. The size convention classes the vessels there,
+    so the branch orders the fallbacks read follow from the widths
+    (``graph.tag_vessels_by_size``).
     """
     table = diameter_by_branch_order or {}
     counts = {
@@ -473,6 +481,7 @@ def stamp_edge_diameters(
         counts[source] += 1
 
     unmeasured: list[dict] = []
+    waiting: list[tuple] = []
     fresh = edge_selection(fresh_edges) or set()
 
     for u, v, key, data in G.edges(keys=True, data=True):
@@ -528,7 +537,10 @@ def stamp_edge_diameters(
                 counts["override"] += 1
                 continue
         unmeasured.append(data)
+        waiting.append((u, v, key))
 
+    if before_fallbacks is not None:
+        before_fallbacks(G, waiting)
     medians = class_median_diameters(G, min_edges=class_median_min_edges)
     for data in unmeasured:
         order = data.get("branch_order")

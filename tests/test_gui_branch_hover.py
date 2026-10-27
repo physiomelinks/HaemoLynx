@@ -27,6 +27,7 @@ from haemolynx.gui.branch_hover import (
     tooltips_from_feature_table,
 )
 from test_gui_results import a_graph, built, network, spec_named
+from haemolynx.graph import tag_vessels_by_size
 from haemolynx.gui.results import (
     BRANCH_HOVER,
     FLOW_DIRECTION,
@@ -126,7 +127,22 @@ def test_available_metrics_full_solved_graph():
         drawn_mask_fraction=1.0,
         drawn_background_run_um=0.0,
     )
+    tag_vessels_by_size(graph, 6.0, 15.0)
     assert available_branch_hover_metrics(graph) == BRANCH_HOVER_METRICS
+
+
+def test_a_size_class_is_offered_with_the_widths_it_holds_only_under_the_convention():
+    graph = a_graph(diameter_um=7.5)
+    assert "size_class" not in available_branch_hover_metrics(graph)
+    # A class left on a vessel with no convention recorded says nothing.
+    for _u, _v, data in graph.edges(data=True):
+        data["vessel_size_class"] = "mid"
+    assert "size_class" not in available_branch_hover_metrics(graph)
+
+    tag_vessels_by_size(graph, 6.0, 15.0)
+    _ids, features = branch_hover_rows(graph, selected=("size_class",))
+    assert set(features["size_class"]) == {"mid, 6-15 µm"}
+    assert {tip.splitlines()[1] for tip in features["tooltip"]} == {"size class: mid, 6-15 µm"}
 
 
 def test_a_drawn_vessels_segmentation_reading_is_one_hover_line():
@@ -492,6 +508,7 @@ def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
         data["fwhm_status"] = "measured"
     # One vessel drawn by hand, read against the segmentation by post_process.
     graph.edges[1, 2, 0].update(drawn_mask_fraction=1.0, drawn_background_run_um=0.0)
+    tag_vessels_by_size(graph, 6.0, 15.0)
 
     group = results.stage_finished(
         "solve",

@@ -5,7 +5,7 @@ import inspect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import networkx as nx
 import numpy as np
@@ -432,6 +432,48 @@ def measure_edt_diameters(
     return _measure_edt_diameters(G, config, mask_volume=mask_volume, **_subset(edges))
 
 
+def measure_mask_diameters(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    *,
+    mask_volume: np.ndarray | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
+) -> dict[str, Any]:
+    """The segmentation's own width of every vessel of *G* (or of *edges*),
+    ``edt_diameter_um``, and nothing else: no diameter is stamped. What the
+    size convention classes the vessels by when the run measures no
+    diameters (``run_haemodynamics`` off). *mask_volume* is the run's
+    segmentation as loaded, binarised here as :func:`assign_edge_diameters`
+    binarises it; without one, ``edt_mask_path`` is read. A zero-resistance
+    bridge is not measured."""
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    loaded = None
+    if mask_volume is None:
+        mask_volume = loaded = _cropped_like_graph(
+            load_edt_mask_volume(config), G, config, "EDT mask"
+        )
+    if mask_volume is None:
+        return {
+            "skipped": True,
+            "reason": "no in-memory segmentation volume and no segmented image path",
+        }
+    binary = _to_binary_volume_for_skeletonization(
+        mask_volume, use_memmap=config.use_memmap, memmap_directory=config.memmap_directory
+    )
+    if edges is not None:
+        edges = [e for e in edges if not G.edges[tuple(e)].get(IS_ZERO_RESISTANCE)]
+    try:
+        return _measure_edt_diameters(
+            measured_vessels(G), config, mask_volume=binary, **_subset(edges)
+        )
+    finally:
+        if binary is not mask_volume and isinstance(binary, np.memmap):
+            release_memmap_array(binary)
+        if isinstance(loaded, np.memmap):
+            release_memmap_array(loaded)
+
+
 def _measure_fwhm_diameters(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
@@ -797,6 +839,7 @@ def assign_edge_diameters(
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
     calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
     raw_volume: np.ndarray | None = None,
+    before_fallbacks: Callable[[nx.MultiGraph, list[tuple[Any, Any, Any]]], None] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     """Stamp modelled diameters on *G* without writing resistance.
 
@@ -851,6 +894,12 @@ def assign_edge_diameters(
     with ``diameter_source`` ``"bridge"``; its resistance is set apart
     anyway (:func:`apply_final_resistance_overrides`).
 
+    *before_fallbacks* is handed to ``stamp_edge_diameters``: called with
+    *G* and the edges with no width of their own once the measured widths are
+    stamped, before a class median or the table fills those in. The size
+    convention (``classify_vessels_by_size``) classes the vessels and assigns
+    their branch orders there; without it nothing changes.
+
     Returns the graph, a summary, and the raw FWHM intensity volume when a
     FWHM path is set.
     """
@@ -871,6 +920,10 @@ def assign_edge_diameters(
             mask_volume=mask_volume,
             edges=not_a_bridge(edges),
             calibration_edges=not_a_bridge(calibration_edges),
+            before_fallbacks=(
+                None if before_fallbacks is None
+                else lambda _vessels, waiting: before_fallbacks(G, waiting)
+            ),
         )
         _stamp_bridge_diameters(G, bridges, default_diameter=float(config.diameter("default_diameter", 4.0)))
         summary["bridges"] = len(bridges)
@@ -896,7 +949,8 @@ def assign_edge_diameters(
         )
     try:
         return _assign_edge_diameters_binarised(
-            G, config, summary, mask_volume, edges, calibration_edges, raw_volume=raw_volume
+            G, config, summary, mask_volume, edges, calibration_edges, raw_volume=raw_volume,
+            before_fallbacks=before_fallbacks,
         )
     finally:
         if isinstance(loaded_mask, np.memmap):
@@ -928,6 +982,7 @@ def _assign_edge_diameters_binarised(
     edges: list[tuple[Any, Any, Any]] | None = None,
     calibration_edges: list[tuple[Any, Any, Any]] | None = None,
     raw_volume: np.ndarray | None = None,
+    before_fallbacks=None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     if mask_volume is not None:
         # The segmentation exactly as the skeleton was made from it -- the
@@ -951,7 +1006,8 @@ def _assign_edge_diameters_binarised(
         made_binary_on_disk = False
     try:
         return _assign_edge_diameters_with_mask(
-            G, config, summary, mask_volume, edges, calibration_edges, raw_volume=raw_volume
+            G, config, summary, mask_volume, edges, calibration_edges, raw_volume=raw_volume,
+            before_fallbacks=before_fallbacks,
         )
     finally:
         if made_binary_on_disk:
@@ -966,6 +1022,7 @@ def _assign_edge_diameters_with_mask(
     edges: list[tuple[Any, Any, Any]] | None = None,
     calibration_edges: list[tuple[Any, Any, Any]] | None = None,
     raw_volume: np.ndarray | None = None,
+    before_fallbacks=None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     subset = edges is not None
     # An empty subset (only deletions were made) measures nothing: it is here
@@ -1084,6 +1141,7 @@ def _assign_edge_diameters_with_mask(
             config.diameter("diameter_class_median_min_edges", DEFAULT_CLASS_MEDIAN_MIN_EDGES)
         ),
         fresh_edges=edges,
+        before_fallbacks=before_fallbacks,
     )
     if config.use_edt_diameter_crosscheck and not remeasure:
         warn_ratio = float(config.edt_setting("edt_fwhm_disagreement_warn_ratio", 1.5))

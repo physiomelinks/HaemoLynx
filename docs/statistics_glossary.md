@@ -104,7 +104,7 @@ names it lists.
 
 | Statistic | Unit | Definition |
 |---|---|---|
-| Vessel Classes From | (text) | How the vessels were classed: by branch-order labels (large and small arterioles, capillaries, small and large venules) or by global masks (large and small vessels). |
+| Vessel Classes From | (text) | How the vessels were classed: by branch-order labels (large and small arterioles, capillaries, small and large venules), by global masks (large and small vessels), or by a size convention (each vessel by its measured width against two thresholds the run states; the classes are then headed by the widths they hold). |
 | Vessel Class Density Volume (micron³) | um^3 | What every class's densities divide by: the volume Vessel Density in Tissue divides by. |
 | Vessel Class Density Volume Source | (text) | Where that volume came from. |
 | Vessel Class Haemodynamics | (text) | Why the flow rows are missing, when they are. |

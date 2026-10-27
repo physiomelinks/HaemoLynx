@@ -44,14 +44,14 @@ Units are spelled one way everywhere. A column name in code style (lower case, u
 
 ## `{stem}_vessels.vtp`
 
-Written to the run's output folder (vtk_output_prefix's). Every vessel as a polyline (VTK PolyData), one cell per vessel. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit, haematocrit_model and open_end_model. Flow arrays are written once the network is solved.
+Written to the run's output folder (vtk_output_prefix's). Every vessel as a polyline (VTK PolyData), one cell per vessel. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit, haematocrit_model, open_end_model, vessel_size_mid_min_um and vessel_size_wide_min_um. Flow arrays are written once the network is solved.
 
 | Column | Unit | Meaning |
 |---|---|---|
 | `edge_u` | `-` | Node ID at one end (the nodes file's node_id). |
 | `edge_v` | `-` | Node ID at the other end. |
 | `edge_key` | `-` | Which of the vessels between edge_u and edge_v (0 for the first). |
-| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
 | `resistance` | `Pa.s/m^3` | The vessel's hydraulic resistance (Poiseuille, with the run's viscosity law). |
 | `conductance` | `m^3/(Pa.s)` | 1 / resistance. |
 | `length_um` | `um` | The vessel's length along its (smoothed) centreline. |
@@ -61,6 +61,7 @@ Written to the run's output folder (vtk_output_prefix's). Every vessel as a poly
 | `flow_solved` | `flag` | 1 where the solve gave the vessel a flow; 0 where it did not (see flow_state). |
 | `flow_state` | `-` | solved, blind_end (behind a dead end inside the tissue: flow exactly 0), closed_end (behind a face end with no condition: flow exactly 0) or no_boundary (no inlet and outlet reach it: flows blank). |
 | `cut_by_image_face` | `flag` | 1 for a vessel on the chain of a dead end that leaves the image: the image faces cut it, so its length is censored. |
+| `vessel_size_class` | `-` | Under a size convention (classify_vessels_by_size) only: wide, mid or narrow, the vessel's measured width against the thresholds in the field data (vessel_size_mid_min_um, vessel_size_wide_min_um); empty on a bridge. |
 | `discharge_haematocrit` | `fraction` | The red-cell volume fraction of the blood the vessel carries (with a distributed haematocrit model only); blank where no inlet and outlet reach it, as the flows are. |
 | `pressure_u` | `Pa` | Pressure at the edge_u end. |
 | `pressure_v` | `Pa` | Pressure at the edge_v end. |
@@ -253,6 +254,7 @@ Every other key is text or a nested record; see pipeline/provenance.py.
 | `inputs[].size_bytes` | `bytes` | An input file's size. |
 | `checks.lumen_artefacts.doubled_centreline_um` | `um` | Centreline running beside another in the same lumen. |
 | `checks.lumen_artefacts.centreline_um` | `um` | The graph's centreline, as the report samples it. |
+| `checks.vessel_classes_source.{mid\|wide}_min_um` | `um` | Under a size convention (classify_vessels_by_size) only: the thresholds the vessels were classed by; beside them counts (vessels per class), basis_counts (widths per diameter basis) and unsized (vessels with no width, by what became of them). |
 
 ## `{stem}_run_settings.yaml`
 
@@ -290,7 +292,7 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. One
 | `u` | `-` | Node ID at one end of the vessel (graph node, as in the nodes file's node_id). |
 | `v` | `-` | Node ID at the other end. |
 | `key` | `-` | Which of the vessels between u and v (0 for the first). |
-| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
 | `length_um` | `um` | The vessel's length. |
 | `diameter_um` | `um` | Its diameter after the perturbation. |
 | `resistance_pa_s_per_m3` | `Pa.s/m^3` | Its resistance after the perturbation. |
@@ -318,7 +320,7 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A c
 | `u` | `-` | Node ID at one end of the vessel (graph node, as in the nodes file's node_id). |
 | `v` | `-` | Node ID at the other end. |
 | `key` | `-` | Which of the vessels between u and v (0 for the first). |
-| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
 | `length_um` | `um` | The vessel's length. |
 | `diameter_um` | `um` | Its diameter. |
 | `baseline_resistance_pa_s_per_m3` | `Pa.s/m^3` | Its resistance before the block. |
@@ -396,7 +398,7 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A c
 
 | Column | Unit | Meaning |
 |---|---|---|
-| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
 | `vessels` | `vessels` | Vessels of that order. |
 | `blocked` | `vessels` | Of them, blocked. |
 | `baseline_mean_flow_m3_s` | `m^3/s` | Mean flow before the block. |
@@ -438,7 +440,7 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 | `objects` | `count` | Objects in the mask (connected components). |
 | `objects_on_vessels` | `count` | Of them, placed on a vessel: a pericyte near enough to a capillary and of a pericyte's size, a blob that blocks a vessel. |
 | `objects_on_capillaries` | `count` | Of those, on a capillary. |
-| `capillary_vessels` | `vessels` | The network's capillaries (B orders, Unknown_Cap). |
+| `capillary_vessels` | `vessels` | The network's capillaries (B orders, Unknown_Cap: under a size convention, the narrow class). |
 | `capillary_length_um` | `um` | Their length. |
 | `objects_per_mm_capillary` | `1/mm` | objects_on_capillaries per mm of capillary_length_um. |
 | `vessel_{length\|diameter\|branch_angle}_n` | `count` | Objects on vessels whose vessel has that measure: a branch angle only where the vessel leaves a unique lower-order parent. |
@@ -454,7 +456,7 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 
 | Column | Unit | Meaning |
 |---|---|---|
-| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
 | `vessels` | `vessels` | Vessels of that order (thick-vessel bridges are none). |
 | `length_um` | `um` | Their length. |
 | `objects` | `count` | Objects placed on them, each once: a blob on the vessel holding most of its voxels. |
@@ -476,8 +478,8 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 | `u` | `-` | Node ID at one end of the vessel (graph node, as in the nodes file's node_id). |
 | `v` | `-` | Node ID at the other end. |
 | `key` | `-` | Which of the vessels between u and v (0 for the first). |
-| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. |
-| `capillary` | `flag` | True when the vessel is a capillary (B orders, Unknown_Cap). |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
+| `capillary` | `flag` | True when the vessel is a capillary (B orders, Unknown_Cap: under a size convention, the narrow class). |
 | `vessel_length_um` | `um` | The vessel's length. |
 | `vessel_diameter_um` | `um` | Its diameter (width); blank where it has none. |
 | `vessel_branch_angle_deg` | `degrees` | Its branch angle: how far it turns from its parent where it leaves it (the emergence angle {stem}_branch_statistics.csv averages); blank where its junctions have no unique lower-order parent. |
@@ -524,6 +526,7 @@ Written to the run's output folder (vtk_output_prefix's). Post processing's conn
 | `From node ID` | `-` | Its upstream node (by flow, where solved). |
 | `To node ID` | `-` | Its downstream node. |
 | `Branch order` | `-` | Its class. |
+| `Size class` | `-` | Under a size convention (classify_vessels_by_size): wide, mid or narrow by its measured width; empty otherwise. |
 | `Length (um)` | `um` | Its length. |
 | `Diameter (um)` | `um` | Its diameter. |
 | `Notes` | `-` | Bridge, unsolved, inlet/outlet and so on. |

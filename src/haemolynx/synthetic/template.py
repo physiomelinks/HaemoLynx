@@ -51,6 +51,7 @@ from haemolynx.graph.dead_ends import (
     node_leaves_image,
 )
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.graph.vessel_size_classes import size_convention_of
 from haemolynx.haemodynamics.poiseuille import edge_diameter_basis
 from haemolynx.haemodynamics.viscosity import (
     DIAMETER_BASES,
@@ -808,10 +809,14 @@ def check_template_run(snapshot: Any, G: Optional[nx.Graph], boundaries: Mapping
     labels = [d.get("branch_order") for *_e, d in G.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)]
     scheme = vessel_class_scheme(labels)
     if scheme == "global" or any(str(label) in UNKNOWN_VESSEL_CLASSES for label in labels if label is not None):
+        how = (
+            "by a size convention (classify_vessels_by_size)"
+            if size_convention_of(G) is not None
+            else "by size alone (global vessel masks: Unknown_Large/Small/Cap)"
+        )
         raise TemplateError(
-            "The template run classed its vessels by size alone (global vessel "
-            "masks: Unknown_Large/Small/Cap); the generator needs arteriole and "
-            "venule branch orders. Re-run it with arteriole and venule masks or "
+            f"The template run classed its vessels {how}; the generator needs arteriole "
+            "and venule branch orders. Re-run it with arteriole and venule masks or "
             "manual inlets, outlets and boundary nodes.",
             reason="global_classes",
         )

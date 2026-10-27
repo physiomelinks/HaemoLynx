@@ -16,8 +16,10 @@ from haemolynx.graph.boundaries import (
     VESSEL_MASK_SWITCHES,
     assigns_large_vessel_branch_orders,
     boundary_role_configured,
+    vessel_classes_by_size,
     vessel_masks_in_use,
 )
+from haemolynx.graph.vessel_size_classes import check_size_thresholds, size_class_range
 from haemolynx.graph.boundaries import network_is_synthetic
 from haemolynx.haemodynamics.viscosity import run_diameter_basis
 from haemolynx.haemodynamics.perturbations import (
@@ -397,6 +399,80 @@ def check_global_vessel_masks(settings: Mapping[str, Any]) -> CheckReport:
     if unread:
         report.add_warning(
             f"{', '.join(unread)} set, but with global vessel masks no branch "
+            "orders are assigned, so nothing reads them."
+        )
+    return report
+
+
+def check_vessel_size_classes(settings: Mapping[str, Any]) -> CheckReport:
+    """The size convention (``classify_vessels_by_size``,
+    ``graph.vessel_classes_by_size``): refuse a threshold unset or mid not
+    below wide, say what the run does, and warn of what it leaves unread.
+
+    A box left ticked under the vessel masks is out of effect and no error:
+    the panel hides it, and the schema's ``IneffectiveSettingWarning`` says
+    it is set and unread.
+    """
+    report = CheckReport()
+    if not vessel_classes_by_size(settings):
+        return report
+    try:
+        mid, wide = check_size_thresholds(
+            settings.get("vessel_size_mid_min_diameter_um"),
+            settings.get("vessel_size_wide_min_diameter_um"),
+        )
+    except ValueError as problem:
+        report.add_error(
+            f"classify_vessels_by_size is on, but {problem} Fix: state both widths, "
+            "the mid threshold below the wide one."
+        )
+        return report
+    titles = "; ".join(
+        f"{name} {size_class_range(name, mid, wide)}" for name in ("wide", "mid", "narrow")
+    )
+    report.add_pass(
+        "vessel classes by size",
+        f"vessels are classed by their measured width ({titles}) instead of branch "
+        "orders: Unknown_Large, Unknown_Small and Unknown_Cap inside, named by their "
+        "widths in the outputs, with no arteriole or venule side; every step that acts "
+        "on capillaries acts on the narrow class. Each width is compared as measured, "
+        "on its own basis: FWHM reads the plasma column, the endothelial fit wall to "
+        f"wall, the mask the segmentation's ({run_diameter_basis(settings)}), so "
+        "thresholds stated for one basis do not carry to the other",
+    )
+    if not settings.get("run_haemodynamics", True):
+        report.add_warning(
+            "classify_vessels_by_size is on and run_haemodynamics is off: no diameters "
+            "are measured, so the vessels are classed by the mask's own widths (EDT)."
+        )
+    else:
+        from haemolynx.pipeline.stages import measures_diameters_from_raw_image
+
+        mask_widths = bool(
+            settings.get("use_edt_diameter_crosscheck")
+            and settings.get("edt_diameter_prefer_over_table_on_fwhm_failure", True)
+        )
+        if not measures_diameters_from_raw_image(settings) and not mask_widths:
+            report.add_error(
+                "classify_vessels_by_size is on, but no vessel's width is measured: the raw "
+                "image is not measured (measure_diameters_from_raw_image with a "
+                "raw_image_path) and the mask's widths are not used "
+                "(use_edt_diameter_crosscheck with "
+                "edt_diameter_prefer_over_table_on_fwhm_failure), so every vessel would "
+                "be narrow. Fix: turn either on."
+            )
+    unread = [
+        name
+        for name in ("assign_large_vessel_branch_orders", "strict_branch_order_assignment")
+        if settings.get(name)
+    ] + [
+        f"{vessel}_boundary_selection_method"
+        for vessel in ("arteriole", "venule")
+        if boundary_role_configured(settings, f"{vessel}_boundary")
+    ]
+    if unread:
+        report.add_warning(
+            f"{', '.join(unread)} set, but with classify_vessels_by_size no branch "
             "orders are assigned, so nothing reads them."
         )
     return report
@@ -1056,6 +1132,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
     report.extend(check_global_vessel_masks(settings))
+    report.extend(check_vessel_size_classes(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))

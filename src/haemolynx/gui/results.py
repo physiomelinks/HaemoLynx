@@ -518,6 +518,9 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "flow_heading_deg": "solve",
     "flow_dir_rgb": "solve",
     "edt_diameter_um": "assign_diameters",
+    # The size convention's class (classify_vessels_by_size): wide, mid or
+    # narrow; text, so a categorical colouring. Absent without the box.
+    "vessel_size_class": "assign_diameters",
     "fwhm_edt_disagreement_ratio": "assign_diameters",
     "fwhm_low_confidence_vs_edt": "assign_diameters",
     # Only present when haematocrit_model is distributed_iterative --
@@ -830,6 +833,7 @@ TEXT_COLUMNS = frozenset(
         "fiedler_side",
         "capillary_block",
         "flow_state",
+        "vessel_size_class",
     }
 )
 

@@ -2549,6 +2549,55 @@ SCHEMA = Schema(
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
             advanced=True,
         ),
+        # Vessel classes without masks: a size convention the user states
+        # (graph.vessel_classes_by_size, graph/vessel_size_classes.py). Read
+        # in the Diameters stage, once the widths are measured.
+        Setting(
+            name="classify_vessels_by_size",
+            kind="bool",
+            default=False,
+            help=(
+                "Class every vessel by its measured width against the two thresholds "
+                "below, instead of by vessel masks: wide, mid or narrow, named by their "
+                "widths in the outputs. A convention you state, not arterioles, venules "
+                "or capillaries: no vessel is given a side, and every step that acts on "
+                "capillaries acts on the narrow class"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("network_source=segmented_image", "!automated_vessel_assignment"),
+        ),
+        Setting(
+            name="vessel_size_mid_min_diameter_um",
+            kind="float",
+            default=None,
+            placeholder="no default: state the convention",
+            help=(
+                "Class a vessel at least this wide, and narrower than the wide "
+                "threshold, as mid; a narrower one is narrow. Compared with each "
+                "vessel's width as measured, in the basis it was measured on (an "
+                "endothelial fit reads wall to wall, FWHM the plasma column), so a "
+                "threshold stated for one basis does not carry to the other"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=("classify_vessels_by_size", "!automated_vessel_assignment"),
+        ),
+        Setting(
+            name="vessel_size_wide_min_diameter_um",
+            kind="float",
+            default=None,
+            placeholder="no default: state the convention",
+            help=(
+                "Class a vessel at least this wide as wide. Compared with each vessel's "
+                "width as measured, in the basis it was measured on; must be above the "
+                "mid threshold"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=("classify_vessels_by_size", "!automated_vessel_assignment"),
+        ),
                                                         # ------------------------------------------------------------------
         # Boundary assignment
         # ------------------------------------------------------------------

@@ -220,6 +220,8 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
             "Small-vessel masks: arteriole and venule boundaries",
             subtree_of="use_small_vessel_masks_for_boundary_assignment",
         ),
+        # The masks' alternative, shown while they are off.
+        BoxSpec("vessel_size_classes", "Vessel classes by size", subtree_of="classify_vessels_by_size"),
         # Anything else about choosing boundaries that no role page places:
         # its own button above the role tabs, rather than falling in with
         # the node IDs below them.

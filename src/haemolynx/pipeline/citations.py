@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from haemolynx.graph.boundaries import vessel_masks_in_use
+from haemolynx.graph.boundaries import vessel_classes_by_size, vessel_masks_in_use
 from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
 
 from .checks import ilastik_segments_vessel_masks
@@ -896,6 +896,18 @@ def render_citations(settings: Mapping[str, Any]) -> str:
     generation = used_citations(settings, NETWORK_GENERATION_CITATIONS)
     if generation:
         lines.extend(_render_section("Network generation methods", generation, ""))
+    if vessel_classes_by_size(settings):
+        title = "Vessel classes"
+        lines.extend([
+            title,
+            "-" * len(title),
+            "- Size convention (classify_vessels_by_size): each vessel classed by its "
+            "measured width, mid at least "
+            f"{settings.get('vessel_size_mid_min_diameter_um')} um and wide at least "
+            f"{settings.get('vessel_size_wide_min_diameter_um')} um, thresholds stated for "
+            "this run. No published rule: nothing to cite, state the thresholds instead.",
+            "",
+        ])
     return "\n".join(lines).rstrip() + "\n"
 
 

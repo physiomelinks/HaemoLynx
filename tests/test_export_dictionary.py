@@ -66,7 +66,7 @@ def test_code_style_csv_columns_carry_their_unit_in_their_name():
 
 def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
     pv = pytest.importorskip("pyvista")
-    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE, tag_vessels_by_size
     from haemolynx.visualization import graph_to_vtk
     from haemolynx.visualization.vtk_io import ARRAY_UNITS, surface_mesh_to_vtk
 
@@ -82,6 +82,9 @@ def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
             flow_signed=1e-15, flow_abs=1e-15, discharge_haematocrit=0.4,
             **{FLOW_SOLVED: True, FLOW_STATE: "solved"},
         )
+    # A size convention adds its class to every vessel, and its thresholds
+    # to the field data.
+    tag_vessels_by_size(G, 6.0, 15.0)
     out = graph_to_vtk(G, tmp_path / "run")
     surface = surface_mesh_to_vtk(np.eye(3), np.array([[0, 1, 2]]), tmp_path / "run_tissue_surface.vtp")
 
@@ -104,7 +107,11 @@ def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
             assert documented[name] == ARRAY_UNITS[name]
     # This graph exercises every array the VTK writer has.
     assert written == set(ARRAY_UNITS)
-    assert str(pv.read(out["vessels_path"]).field_data["resistance_unit"][0]) == "Pa.s/m^3"
+    vessels = pv.read(out["vessels_path"])
+    assert str(vessels.field_data["resistance_unit"][0]) == "Pa.s/m^3"
+    assert list(vessels.cell_data["vessel_size_class"]) == ["narrow", "narrow"]
+    assert float(vessels.field_data["vessel_size_mid_min_um"][0]) == 6.0
+    assert float(vessels.field_data["vessel_size_wide_min_um"][0]) == 15.0
 
 
 @pytest.mark.parametrize(

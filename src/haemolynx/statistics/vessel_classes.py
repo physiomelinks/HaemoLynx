@@ -7,7 +7,9 @@ A vessel's class is its branch-order label's category
 when the run has no large-vessel tier), ``B`` capillaries, ``Ven`` small
 venules and ``Large_Ven`` large venules; with global vessel masks,
 ``Unknown_Large`` large vessels, ``Unknown_Small`` small vessels and
-``Unknown_Cap`` capillaries. Branch orders counted from the inlets alone (no
+``Unknown_Cap`` capillaries -- or, under a size convention
+(``classify_vessels_by_size``), the same labels named by the widths they
+hold (:func:`vessel_class_title`). Branch orders counted from the inlets alone (no
 arteriole/venule boundaries) are all ``B``, so every ordered vessel of such a
 run is a capillary.
 
@@ -22,7 +24,7 @@ up to the network's.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, Optional, Union
+from typing import Any, Dict, Iterable, Mapping, Optional, Union
 
 import networkx as nx
 import numpy as np
@@ -34,6 +36,12 @@ from haemolynx.graph.branch_order import (
 )
 from haemolynx.graph.prune import FLOW_SOLVED, FLOW_STATE
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.graph.vessel_size_classes import (
+    SIZE_CLASS_BY_CATEGORY,
+    size_class_range,
+    size_class_title,
+    size_convention_of,
+)
 
 from .bifurcation import (
     GLOBAL_MASK_CATEGORIES,
@@ -62,12 +70,15 @@ VESSEL_CLASS_TITLES: Dict[str, str] = {
 VESSEL_CLASS_SCHEMES: Dict[str, tuple[str, ...]] = {
     "hierarchical": BRANCH_ORDER_CATEGORY_SEQUENCE,
     "global": GLOBAL_MASK_CATEGORIES + ("capillary",),
+    # The size convention rides on the global masks' labels.
+    "size": GLOBAL_MASK_CATEGORIES + ("capillary",),
     "capillary": ("capillary",),
     "none": (),
 }
 _SCHEME_TEXT = {
     "hierarchical": "branch orders: large and small arterioles, capillaries, small and large venules",
     "global": "global vessel masks: large vessels, small vessels and capillaries",
+    "size": "a size convention: each vessel by its measured width",
     "capillary": (
         "capillary branch orders counted from the inlets alone (no arteriole or "
         "venule boundaries), so every ordered vessel is a capillary"
@@ -123,6 +134,28 @@ def carries_flow(data: dict) -> bool:
     if state is not None:
         return state == "solved"
     return data.get(FLOW_SOLVED) is not False
+
+
+def vessel_class_title(category: str, convention: Optional[Mapping[str, Any]] = None) -> str:
+    """What a person reads for the vessel class *category*: its
+    :data:`VESSEL_CLASS_TITLES` heading, or -- under a size *convention*
+    (``graph.size_convention_of``) -- the widths it holds, "Vessels 6-15 µm
+    wide"."""
+    if convention is not None and category in SIZE_CLASS_BY_CATEGORY:
+        return size_class_title(
+            SIZE_CLASS_BY_CATEGORY[category], convention["mid_min_um"], convention["wide_min_um"]
+        )
+    return VESSEL_CLASS_TITLES.get(category, category)
+
+
+def _scheme_text(scheme: str, convention: Optional[Mapping[str, Any]]) -> str:
+    if scheme != "size" or convention is None:
+        return _SCHEME_TEXT[scheme]
+    mid, wide = convention["mid_min_um"], convention["wide_min_um"]
+    ranges = ", ".join(
+        f"{name} {size_class_range(name, mid, wide)}" for name in ("wide", "mid", "narrow")
+    )
+    return f"{_SCHEME_TEXT[scheme]} ({ranges}); no arteriole or venule side"
 
 
 def vessel_class_scheme(labels: Iterable[Any]) -> str:
@@ -318,6 +351,11 @@ def compute_vessel_class_statistics(
         by_class.setdefault(branch_order_category(vessel["label"]), []).append(vessel)
 
     scheme = vessel_class_scheme(vessel["label"] for vessel in vessels)
+    convention = size_convention_of(G)
+    if scheme == "global" and convention is not None:
+        scheme = "size"
+    elif scheme != "global":
+        convention = None
     listed = list(VESSEL_CLASS_SCHEMES[scheme])
     listed += [c for c in VESSEL_CATEGORY_SEQUENCE if c in by_class and c not in listed]
     listed += sorted(c for c in by_class if c not in listed)
@@ -335,14 +373,14 @@ def compute_vessel_class_statistics(
     network_length = float(sum(vessel["length"] for vessel in vessels))
 
     rows: Dict[str, Any] = {
-        "Vessel Classes From": _SCHEME_TEXT[scheme],
+        "Vessel Classes From": _scheme_text(scheme, convention),
         "Vessel Class Density Volume (micron³)": volume if volume is not None else source,
         "Vessel Class Density Volume Source": source,
     }
     if not flow_solved:
         rows["Vessel Class Haemodynamics"] = "N/A (no flow solved)"
     for category in listed:
-        rows[VESSEL_CLASS_TITLES.get(category, category)] = _class_rows(
+        rows[vessel_class_title(category, convention)] = _class_rows(
             by_class.get(category, []),
             network_length=network_length,
             volume=volume,
@@ -359,4 +397,5 @@ __all__ = [
     "carries_flow",
     "compute_vessel_class_statistics",
     "vessel_class_scheme",
+    "vessel_class_title",
 ]

@@ -92,7 +92,9 @@ _EDGE_ID = (
 )
 _BRANCH_ORDER = _c(
     "branch_order", "-",
-    "The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO.",
+    "The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. "
+    "Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and "
+    "Unknown_Cap are the wide, mid and narrow classes (vessel_size_class).",
 )
 _SWEEP_RESULTS = (
     _c("inlet_pressure_pa", "Pa", "Pressure held at the inlets for this point."),
@@ -216,6 +218,11 @@ VESSEL_ARRAYS: dict[str, str] = {
     "flow_solved": "1 where the solve gave the vessel a flow; 0 where it did not (see flow_state).",
     "flow_state": "solved, blind_end (behind a dead end inside the tissue: flow exactly 0), closed_end (behind a face end with no condition: flow exactly 0) or no_boundary (no inlet and outlet reach it: flows blank).",
     "cut_by_image_face": "1 for a vessel on the chain of a dead end that leaves the image: the image faces cut it, so its length is censored.",
+    "vessel_size_class": (
+        "Under a size convention (classify_vessels_by_size) only: wide, mid or narrow, the "
+        "vessel's measured width against the thresholds in the field data "
+        "(vessel_size_mid_min_um, vessel_size_wide_min_um); empty on a bridge."
+    ),
     "discharge_haematocrit": "The red-cell volume fraction of the blood the vessel carries (with a distributed haematocrit model only); blank where no inlet and outlet reach it, as the flows are.",
     "pressure_u": "Pressure at the edge_u end.",
     "pressure_v": "Pressure at the edge_v end.",
@@ -423,6 +430,11 @@ FILES: tuple[OutputFile, ...] = (
             _c("checks.lumen_artefacts.doubled_centreline_um", "um",
                "Centreline running beside another in the same lumen."),
             _c("checks.lumen_artefacts.centreline_um", "um", "The graph's centreline, as the report samples it."),
+            _c("checks.vessel_classes_source.{mid|wide}_min_um", "um",
+               "Under a size convention (classify_vessels_by_size) only: the thresholds the "
+               "vessels were classed by; beside them counts (vessels per class), basis_counts "
+               "(widths per diameter basis) and unsized (vessels with no width, by what became "
+               "of them)."),
         ),
         "Every other key is text or a nested record; see pipeline/provenance.py.",
     ),
@@ -606,7 +618,9 @@ FILES: tuple[OutputFile, ...] = (
                "Of them, placed on a vessel: a pericyte near enough to a capillary and of a "
                "pericyte's size, a blob that blocks a vessel."),
             _c("objects_on_capillaries", "count", "Of those, on a capillary."),
-            _c("capillary_vessels", "vessels", "The network's capillaries (B orders, Unknown_Cap)."),
+            _c("capillary_vessels", "vessels",
+               "The network's capillaries (B orders, Unknown_Cap: under a size convention, the "
+               "narrow class)."),
             _c("capillary_length_um", "um", "Their length."),
             _c("objects_per_mm_capillary", "1/mm", "objects_on_capillaries per mm of capillary_length_um."),
             _c("vessel_{length|diameter|branch_angle}_n", "count",
@@ -657,7 +671,9 @@ FILES: tuple[OutputFile, ...] = (
             _c("branch_id", "-", "The vessel's branch ID (its place in the graph's edge order, as the panel shows it)."),
             *_EDGE_ID,
             _BRANCH_ORDER,
-            _c("capillary", "flag", "True when the vessel is a capillary (B orders, Unknown_Cap)."),
+            _c("capillary", "flag",
+               "True when the vessel is a capillary (B orders, Unknown_Cap: under a size "
+               "convention, the narrow class)."),
             _c("vessel_length_um", "um", "The vessel's length."),
             _c("vessel_diameter_um", "um", "Its diameter (width); blank where it has none."),
             _c("vessel_branch_angle_deg", "degrees",
@@ -691,6 +707,9 @@ FILES: tuple[OutputFile, ...] = (
             _c("From node ID", "-", "Its upstream node (by flow, where solved)."),
             _c("To node ID", "-", "Its downstream node."),
             _c("Branch order", "-", "Its class."),
+            _c("Size class", "-",
+               "Under a size convention (classify_vessels_by_size): wide, mid or narrow by its "
+               "measured width; empty otherwise."),
             _c("Length (um)", "um", "Its length."),
             _c("Diameter (um)", "um", "Its diameter."),
             _c("Notes", "-", "Bridge, unsolved, inlet/outlet and so on."),

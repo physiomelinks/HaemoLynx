@@ -682,6 +682,10 @@ BRANCH_HOVER_TOOLTIPS: dict[str, str] = {
     ),
     "flow": "Show on hover the size of the vessel's flow, in m^3/s",
     "order": "Show on hover the vessel's branch order",
+    "size_class": (
+        "Show on hover the vessel's size class and the widths it holds, for a "
+        "network classed by size"
+    ),
     "diameter": "Show on hover the vessel's diameter, in microns",
     "diameter_source": "Show on hover which method gave the vessel its diameter",
     "fwhm_status": "Show on hover what FWHM made of the vessel: measured, or why not",

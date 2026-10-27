@@ -65,6 +65,7 @@ from .tissue_volume import TISSUE_THRESHOLD_METHODS, TissueVolume, measure_tissu
 from .vessel_classes import (
     VESSEL_CLASS_TITLES,
     compute_vessel_class_statistics,
+    vessel_class_title,
 )
 
 __all__ = [
@@ -123,4 +124,5 @@ __all__ = [
     "measure_tissue_volume",
     "VESSEL_CLASS_TITLES",
     "compute_vessel_class_statistics",
+    "vessel_class_title",
 ]

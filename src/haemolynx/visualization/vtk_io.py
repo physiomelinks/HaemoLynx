@@ -28,6 +28,7 @@ ARRAY_UNITS: Dict[str, str] = {
     "flow_solved": "flag",
     "flow_state": "-",
     "cut_by_image_face": "flag",
+    "vessel_size_class": "-",
     "discharge_haematocrit": "fraction",
     "pressure_u": "Pa",
     "pressure_v": "Pa",
@@ -56,6 +57,8 @@ RUN_FIELD_DATA = (
     "haematocrit",
     "haematocrit_model",
     "open_end_model",
+    "vessel_size_mid_min_um",
+    "vessel_size_wide_min_um",
 )
 
 #: Every point of every file HaemoLynx writes is physical (z, y, x) microns.
@@ -215,7 +218,9 @@ def graph_to_vtk(
     solved_flags: List[int] = []
     flow_states: List[str] = []
     cut_flags: List[int] = []
+    size_classes: List[str] = []
     from haemolynx.graph.dead_ends import vessels_cut_by_image_faces
+    from haemolynx.graph.vessel_size_classes import VESSEL_SIZE_CLASS, size_convention_of
     from haemolynx.graph._helpers import edge_id
     from haemolynx.graph.prune import (
         FLOW_SOLVED,
@@ -274,6 +279,7 @@ def graph_to_vtk(
         solved_flags.append(int(data.get(FLOW_SOLVED) is True))
         flow_states.append(str(data.get(FLOW_STATE) or ""))
         cut_flags.append(int(edge_id(u, v, k) in cut))
+        size_classes.append(str(data.get(VESSEL_SIZE_CLASS) or ""))
         undefined = flow_is_undefined(data)
         for name, values in flow_fields.items():
             values.append(np.nan if undefined else _number(data.get(name)))
@@ -295,6 +301,8 @@ def graph_to_vtk(
         vessel_mesh.cell_data["flow_solved"] = np.asarray(solved_flags, dtype=np.uint8)
         vessel_mesh.cell_data["flow_state"] = np.asarray(flow_states)
         vessel_mesh.cell_data["cut_by_image_face"] = np.asarray(cut_flags, dtype=np.uint8)
+        if size_convention_of(graph) is not None:
+            vessel_mesh.cell_data["vessel_size_class"] = np.asarray(size_classes)
         for name, values in flow_fields.items():
             array = np.asarray(values, dtype=float)
             if np.any(np.isfinite(array)):
@@ -395,6 +403,12 @@ def _run_metadata(graph: nx.Graph) -> Dict[str, Any]:
     record = graph.graph.get("open_end_conditions")
     if record:
         meta["open_end_model"] = str(record.get("model", "closed"))
+    from haemolynx.graph.vessel_size_classes import size_convention_of
+
+    convention = size_convention_of(graph)
+    if convention is not None:
+        meta["vessel_size_mid_min_um"] = float(convention["mid_min_um"])
+        meta["vessel_size_wide_min_um"] = float(convention["wide_min_um"])
     return meta
 
 

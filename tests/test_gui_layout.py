@@ -396,8 +396,16 @@ def test_boundaries_box_each_mask_kind_by_its_own_toggle():
         "vessel_masks",
         "large_vessel_masks",
         "small_vessel_masks",
+        "vessel_size_classes",
         "boundary_nodes",
     ]
+    # The masks' alternative, a size convention, in a box of its own.
+    assert layout.box("vessel_size_classes").names == (
+        "classify_vessels_by_size",
+        "vessel_size_mid_min_diameter_um",
+        "vessel_size_wide_min_diameter_um",
+    )
+    assert layout.box("vessel_size_classes").disclosures == ()
     if "boundary_other" in keys:
         assert keys.index("boundary_other") < keys.index("boundary_nodes")
     large = layout.box("large_vessel_masks")

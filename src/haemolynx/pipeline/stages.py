@@ -42,6 +42,7 @@ from haemolynx.haemodynamics.apply import (
     HaemodynamicsApplyConfig,
     apply_poiseuille_resistances,
     assign_edge_diameters,
+    measure_mask_diameters,
 )
 from haemolynx.haemodynamics.constriction_strategy import (
     constriction_strategy_kwargs,
@@ -4369,16 +4370,23 @@ def _assign_branch_orders(
     With global vessel masks (``io.vessel_masks_are_global``) every vessel is
     given its unknown class instead -- Unknown_Large, Unknown_Small or
     Unknown_Cap, from the tags :func:`_tag_vessels_in_global_masks` left --
-    since nothing says which side of the capillary bed a vessel is on.
+    since nothing says which side of the capillary bed a vessel is on. So is
+    a network classed by the size convention (``graph.size_convention_of``:
+    the tags ``graph.tag_vessels_by_size`` left, recorded on the graph, so a
+    hand-edited network is labelled by the convention it was run with).
     """
-    if io.vessel_masks_are_global(settings):
+    convention = graph.size_convention_of(G)
+    if io.vessel_masks_are_global(settings) or convention is not None:
         branch_summary = graph.assign_unknown_vessel_classes(
             G, post_assign_callback=post_assign_callback
         )
-        logger.info(
-            "Global vessel masks: vessels classed by size alone, not given branch "
-            f"orders: {branch_summary['counts']}."
-        )
+        if convention is None:
+            logger.info(
+                "Global vessel masks: vessels classed by size alone, not given branch "
+                f"orders: {branch_summary['counts']}."
+            )
+        else:
+            _log_size_convention(convention)
         return branch_summary
     branch_summary = graph.assign_vessel_branch_orders(
         G,
@@ -4421,6 +4429,68 @@ def _assign_branch_orders(
     return branch_summary
 
 
+def _record_vessel_classes(run: Any, output: Any) -> None:
+    """The size convention's record of a stage *output*'s graph, for the
+    run's manifest (``checks.vessel_classes_source``); nothing for a run
+    without one."""
+    G = getattr(output, "graph", None)
+    convention = graph.size_convention_of(G) if isinstance(G, nx.Graph) else None
+    if convention is not None:
+        run.checks[graph.VESSEL_CLASSES_SOURCE] = convention
+    else:
+        run.checks.pop(graph.VESSEL_CLASSES_SOURCE, None)
+
+
+def _log_size_convention(convention: Mapping[str, Any]) -> None:
+    """The run log's account of a size convention's classes: each class by its
+    range and count, the vessels with no width, and what the capillary
+    readers now act on."""
+    mid, wide = convention["mid_min_um"], convention["wide_min_um"]
+    counts = convention.get("counts", {})
+    unsized = convention.get("unsized", {})
+    logger.info(
+        "Size convention: vessels classed by their measured width, not given branch "
+        "orders or sides: "
+        + ", ".join(
+            f"{counts.get(name, 0)} {graph.size_class_range(name, mid, wide)} ({name})"
+            for name in graph.SIZE_CLASSES
+        )
+        + f"; widths read on {convention.get('basis_counts', {})}. Of the vessels with "
+        f"no width, {unsized.get('neighbours', 0)} took the class of the vessels at "
+        f"both ends and {unsized.get('no_width', 0)} were left narrow. Every step that "
+        f"acts on capillaries acts on the vessels {graph.size_class_range('narrow', mid, wide)} "
+        "wide."
+    )
+
+
+def _size_classes_then_orders(
+    settings: dict,
+    thresholds: tuple[float, float],
+    *,
+    edges=None,
+    width_attribute: str = "diameter_um",
+    post_assign_callback=None,
+):
+    """What the size convention does once the widths are measured: class the
+    vessels (*edges* only, after a hand edit) by *thresholds*, then assign
+    the branch orders the class medians and the table read -- the
+    ``before_fallbacks`` hook ``assign_edge_diameters`` calls."""
+    from haemolynx.haemodynamics.viscosity import run_diameter_basis
+
+    def classify(G: nx.MultiGraph, waiting) -> None:
+        graph.tag_vessels_by_size(
+            G,
+            *thresholds,
+            edges=edges,
+            unsized=waiting,
+            width_attribute=width_attribute,
+            default_basis=run_diameter_basis(settings),
+        )
+        _assign_branch_orders(settings, G, post_assign_callback=post_assign_callback)
+
+    return classify
+
+
 def assign_diameters(settings: dict, network: VesselNetwork, boundaries: BoundaryNodes, schema: Schema):
     """Assign branch orders, then the diameter each edge is modelled with.\n\n    Branch orders come first because they are the key into the diameter\n    table; per-edge FWHM measurements override that table when enabled."""
     if boundaries.graph is not None:
@@ -4429,6 +4499,20 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
     voxel_size_zyx = network.volume.voxel_size_zyx
     # The raw image is read here as raw_image_downsample now says.
     _record_downsample(G, settings, network.volume)
+    # The size convention classes the vessels by the widths measured below,
+    # and their branch orders follow (graph.vessel_classes_by_size); a network
+    # an earlier run classed so, run again without it, loses those classes.
+    by_size = graph.vessel_classes_by_size(settings)
+    thresholds = (
+        graph.check_size_thresholds(
+            settings["vessel_size_mid_min_diameter_um"],
+            settings["vessel_size_wide_min_diameter_um"],
+        )
+        if by_size
+        else None
+    )
+    if not by_size:
+        graph.clear_vessel_size_classes(G, keep_mask_class=io.vessel_masks_are_global(settings))
     # 4) Add branch orders and hemodynamic edge weights.
     if settings["inlet_nodes"]:
 
@@ -4445,17 +4529,32 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 f"{vessel_type_3d_path}"
             )
 
-        _assign_branch_orders(
-            settings,
-            G,
-            post_assign_callback=(
-                _vessel_types_after_branch_assign
-                if _want_midrun_plotly_html(settings)
-                else None
-            ),
+        post_assign = (
+            _vessel_types_after_branch_assign if _want_midrun_plotly_html(settings) else None
         )
+        if not by_size:
+            _assign_branch_orders(settings, G, post_assign_callback=post_assign)
 
         if not settings["run_haemodynamics"]:
+            if by_size:
+                # Nothing is measured without haemodynamics: the classes come
+                # from the mask's own widths.
+                mask_widths = measure_mask_diameters(
+                    G,
+                    _haemodynamics_apply_config(
+                        settings, schema, voxel_size_zyx=voxel_size_zyx,
+                        stain=recorded_raw_image_stain(settings),
+                    ),
+                    mask_volume=network.volume.image,
+                )
+                logger.info(
+                    "Haemodynamics disabled: vessels classed by size from the mask's own "
+                    f"widths (EDT) alone: {mask_widths}"
+                )
+                _size_classes_then_orders(
+                    settings, thresholds, width_attribute="edt_diameter_um",
+                    post_assign_callback=post_assign,
+                )(G, ())
             logger.info(
                 "Haemodynamics disabled; skipping diameter fitting and "
                 "Poiseuille conductance assignment."
@@ -4497,6 +4596,14 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             G, haemo_results, fwhm_raw = assign_edge_diameters(
                 G, haemo_config, mask_volume=network.volume.image,
                 calibration_edges=calibration_edges, raw_volume=raw_volume,
+                # Without the convention the call is as it always was.
+                **(
+                    {"before_fallbacks": _size_classes_then_orders(
+                        settings, thresholds, post_assign_callback=post_assign
+                    )}
+                    if by_size
+                    else {}
+                ),
             )
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
@@ -5034,8 +5141,25 @@ def post_process(
         census = _mark_touched_dead_end_kinds(settings, G, network, touched, segmentation)
         if census is not None:
             summary["dead_ends"] = census
+    # A network classed by the size convention re-classes its edited vessels
+    # by the thresholds it was run with, once they are measured.
+    convention = graph.size_convention_of(G)
+    if convention is not None:
+        _warn_if_size_settings_differ(settings, convention)
+        classify = _size_classes_then_orders(
+            settings, (convention["mid_min_um"], convention["wide_min_um"]), edges=edited
+        )
     if settings["inlet_nodes"]:
-        _assign_branch_orders(settings, G)
+        if convention is None:
+            _assign_branch_orders(settings, G)
+
+        def haemo_config():
+            return _haemodynamics_apply_config(
+                settings, schema, voxel_size_zyx=voxel_size_zyx,
+                stain=recorded_raw_image_stain(settings, G),
+            )
+
+        mask_volume = network.volume.image if network is not None else None
         # Even with no vessel to measure (only deletions): a table or class
         # median diameter follows the branch order just assigned.
         if settings["run_haemodynamics"]:
@@ -5043,19 +5167,26 @@ def post_process(
             # cut from or merged with is measured afresh.
             for u, v, key in edited:
                 start_measurement_afresh(G.edges[u, v, key])
-            haemo_config = _haemodynamics_apply_config(
-                settings, schema, voxel_size_zyx=voxel_size_zyx,
-                stain=recorded_raw_image_stain(settings, G),
-            )
             G, results, _raw = assign_edge_diameters(
                 G,
-                haemo_config,
-                mask_volume=network.volume.image if network is not None else None,
+                haemo_config(),
+                mask_volume=mask_volume,
                 edges=edited,
+                **({} if convention is None else {"before_fallbacks": classify}),
             )
             diameters = results.get("diameters")
             summary["diameters"] = diameters
             summary["measurement"] = results
+        elif convention is not None:
+            for u, v, key in edited:
+                G.edges[u, v, key].pop("edt_diameter_um", None)
+            measure_mask_diameters(G, haemo_config(), mask_volume=mask_volume, edges=edited)
+            _size_classes_then_orders(
+                settings, (convention["mid_min_um"], convention["wide_min_um"]),
+                edges=edited, width_attribute="edt_diameter_um",
+            )(G, ())
+        if convention is not None:
+            summary["vessel_classes"] = graph.size_convention_of(G)
     model.results["post_process"] = summary
     graph.clear_edit_marks(G)
     G.graph[graph.post_processing.APPLIED] = True
@@ -5066,6 +5197,31 @@ def post_process(
         + "."
     )
     return model
+
+
+def _warn_if_size_settings_differ(settings: dict, convention: Mapping[str, Any]) -> None:
+    """Warn when the settings no longer state the size convention a network
+    was classed by: post processing re-classes its edits by the recorded one,
+    and new thresholds take effect only by running again from Diameters."""
+    recorded = (float(convention["mid_min_um"]), float(convention["wide_min_um"]))
+    stated = (
+        settings.get("vessel_size_mid_min_diameter_um"),
+        settings.get("vessel_size_wide_min_diameter_um"),
+    )
+    if graph.vessel_classes_by_size(settings) and all(
+        value is not None and float(value) == want for value, want in zip(stated, recorded)
+    ):
+        return
+    now = (
+        f"mid {stated[0]} um, wide {stated[1]} um"
+        if graph.vessel_classes_by_size(settings)
+        else "classify_vessels_by_size off"
+    )
+    logger.warning(
+        f"Post processing: this network was classed by size at mid {recorded[0]:g} um and "
+        f"wide {recorded[1]:g} um, and its edited vessels are classed by those; the "
+        f"settings now say {now}. Run again from Diameters to class it by the settings."
+    )
 
 
 def solve_post_processed(
@@ -6900,6 +7056,21 @@ def run_perturbations(
         f"resistance of {run.baseline['equivalent_resistance']:.6g}, into {root}"
     )
 
+    convention = graph.size_convention_of(model.graph)
+    if convention is not None:
+        narrow = graph.size_class_range("narrow", convention["mid_min_um"], convention["wide_min_um"])
+        on_capillaries = [spec.name for spec in specs if "capillary" in spec.type or "pericyte" in spec.type]
+        on_arterioles = [spec.name for spec in specs if "arteriole" in spec.type]
+        if on_capillaries:
+            logger.info(
+                f"Size convention: {', '.join(on_capillaries)} act on the vessels {narrow} "
+                "wide (the narrow class) where they act on capillaries."
+            )
+        if on_arterioles:
+            logger.warning(
+                f"Size convention: {', '.join(on_arterioles)} change arterioles, and a network "
+                "classed by size has none, so they change no vessel's diameter."
+            )
     image = None if network is None else getattr(network.volume, "image", None)
     voxel_size_zyx = _baseline_voxel_size_zyx(model.graph, network)
     logger.info(f"Perturbations use the baseline image's voxel size (z, y, x): {voxel_size_zyx}")
@@ -7978,6 +8149,7 @@ def _run_stages(
             diameters = HaemodynamicModel(
                 graph=boundaries.graph if boundaries.graph is not None else network.graph
             )
+    _record_vessel_classes(run, diameters)
     _produced(on_stage_output, "assign_diameters", diameters)
     if stop_after == "assign_diameters":
         return diameters.graph
@@ -8013,6 +8185,7 @@ def _run_stages(
                 solution = solve_post_processed(
                     settings, model, boundaries, schema, network=network
                 )
+    _record_vessel_classes(run, model)
     _produced(on_stage_output, "post_process", solution)
     if stop_after == "post_process":
         return model.graph

@@ -531,6 +531,24 @@ def vessel_masks_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
     )
 
 
+def vessel_classes_by_size(settings: Mapping[str, Any]) -> bool:
+    """Whether this run classes its vessels by their measured width
+    (``classify_vessels_by_size``, :mod:`haemolynx.graph.vessel_size_classes`).
+
+    True only with the box on, a segmented image, and no vessel masks
+    (``automated_vessel_assignment`` off): masks and the convention are two
+    sources of one labelling, and the panel hides the box while the masks
+    are on, so it is off then, whatever it holds. The one place this is
+    decided: the Diameters stage, preflight, batch checks and the citations
+    all ask here.
+    """
+    if network_is_synthetic(settings):
+        return False
+    return bool(settings.get("classify_vessels_by_size")) and not bool(
+        settings.get("automated_vessel_assignment")
+    )
+
+
 def inlets_outlets_from_vessel_masks(settings: Mapping[str, Any]) -> bool:
     """Whether the large-vessel masks choose the inlet and outlet nodes.
 

@@ -30,6 +30,7 @@ from haemolynx.graph.boundaries import (
     boundary_role_configured,
     inlets_outlets_from_vessel_masks,
     network_is_synthetic,
+    vessel_classes_by_size,
     vessel_masks_in_use,
 )
 from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS, global_vessel_mask_roles
@@ -263,9 +264,15 @@ def _inlets_not_from_masks(settings: Mapping[str, Any]) -> str:
         )
     else:
         fix = "take them from each image's large vessel masks: turn on inlets_outlets_from_vessel_masks"
+    convention = (
+        " classify_vessels_by_size classes the vessels without masks, so it cannot "
+        "run in a batch yet: turn it off to take them from the masks."
+        if vessel_classes_by_size(settings)
+        else ""
+    )
     return (
         f"The inlets and outlets come from {methods}, one rule for every image rather "
-        f"than each image's own masks. For a batch, {fix}."
+        f"than each image's own masks. For a batch, {fix}.{convention}"
     )
 
 

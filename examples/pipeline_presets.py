@@ -115,6 +115,22 @@ _EXAMPLE_PRESETS: dict[str, dict] = {
         "description": 'Current baseline behavior from this settings file.',
         "overrides": {},
     },
+    "size_classes": {
+        "description": (
+            "Vessel classes by size, without masks: every vessel classed by its measured "
+            "width, mid at least 6 um and wide at least 15 um (Harvey's convention, "
+            "2026-10-27). No branch orders or sides. The widths are the mask's own "
+            "where the raw image is not measured."
+        ),
+        "overrides": {
+            'automated_vessel_assignment': False,
+            'classify_vessels_by_size': True,
+            'vessel_size_mid_min_diameter_um': 6.0,
+            'vessel_size_wide_min_diameter_um': 15.0,
+            'use_edt_diameter_crosscheck': True,
+            'edt_diameter_prefer_over_table_on_fwhm_failure': True,
+        },
+    },
     "distance_to_mask_3d": {
         "description": 'Run 3D distance-to-mask measurement workflow with vessel assignment (no statistics).',
         "overrides": {

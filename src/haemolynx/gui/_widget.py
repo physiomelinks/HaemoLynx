@@ -4790,6 +4790,8 @@ NOT_WORTH_COLOURING_BY = frozenset(
     {
         "u", "v", "key", "edge_index", "node_id", "tooltip", "branch_id",
         "flow", "order", "tortuosity",
+        # The hover's copy of vessel_size_class, which is the colouring.
+        "size_class",
         # Not a colouring of its own: under any flow-based colouring the
         # unsolved vessels are the grey ones.
         FLOW_SOLUTION,

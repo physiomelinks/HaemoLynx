@@ -309,6 +309,12 @@ vessel_masks:
   small_vessel_swap_min_contact_fraction: 0.3
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
+  # Class every vessel by its measured width against the two thresholds below, instead of by vessel masks: wide, mid or narrow, named by their widths in the outputs. A convention you state, not arterioles, venules or capillaries: no vessel is given a side, and every step that acts on capillaries acts on the narrow class  [needs network_source = segmented_image and automated_vessel_assignment off]
+  classify_vessels_by_size: false
+  # Class a vessel at least this wide, and narrower than the wide threshold, as mid; a narrower one is narrow. Compared with each vessel's width as measured, in the basis it was measured on (an endothelial fit reads wall to wall, FWHM the plasma column), so a threshold stated for one basis does not carry to the other  [um; range 0.0..; needs classify_vessels_by_size and automated_vessel_assignment off]
+  vessel_size_mid_min_diameter_um: null
+  # Class a vessel at least this wide as wide. Compared with each vessel's width as measured, in the basis it was measured on; must be above the mid threshold  [um; range 0.0..; needs classify_vessels_by_size and automated_vessel_assignment off]
+  vessel_size_wide_min_diameter_um: null
 
 # ------------------------------------------------------------------------
 # Boundary assignment

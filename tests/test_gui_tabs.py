@@ -579,6 +579,15 @@ def test_vessel_mask_settings_live_on_boundaries_not_graph():
     ) < boundaries.index("small_vessel_boundary_assignment_fast_mode")
 
 
+#: The size convention's rows (graph.vessel_classes_by_size), declared under
+#: Vessel masks as their alternative.
+SIZE_CONVENTION_ROWS = (
+    "classify_vessels_by_size",
+    "vessel_size_mid_min_diameter_um",
+    "vessel_size_wide_min_diameter_um",
+)
+
+
 def test_vessel_mask_fields_on_boundaries_declare_hide_when_unmet():
     """Every gated Vessel masks row is marked to hide, not merely grey out."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
@@ -590,6 +599,15 @@ def test_vessel_mask_fields_on_boundaries_declare_hide_when_unmet():
             assert field.hide_when_unmet
             assert field.is_visible({})
             assert not field.is_visible({"network_source": "synthetic"})
+        elif field.name in SIZE_CONVENTION_ROWS:
+            # The masks' alternative: hidden while the masks are on.
+            assert field.hide_when_unmet, field.name
+            assert not field.is_visible(
+                {"automated_vessel_assignment": True, "classify_vessels_by_size": True}
+            ), field.name
+            assert field.is_visible(
+                {"automated_vessel_assignment": False, "classify_vessels_by_size": True}
+            ), field.name
         else:
             assert field.hide_when_unmet, field.name
             assert not field.is_visible({"automated_vessel_assignment": False}), field.name
