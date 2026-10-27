@@ -12,6 +12,7 @@ from .capillary_bed_joins import (
     kaplan_meier,
     kaplan_meier_median,
 )
+from .capillary_paths import compute_capillary_path_orders
 from .comprehensive import (
     CONNECTED_NETWORK_MEASURES,
     NETWORK_ANALYSIS_MEASURES,
@@ -112,6 +113,7 @@ __all__ = [
     "export_capillary_bed_joins_csv",
     "kaplan_meier",
     "kaplan_meier_median",
+    "compute_capillary_path_orders",
     "compute_transit_times",
     "compute_flux_heterogeneity",
     "compute_loop_hierarchy",

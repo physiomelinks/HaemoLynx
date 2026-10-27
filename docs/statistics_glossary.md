@@ -319,6 +319,14 @@ names it lists.
 | Capillaries No Feed Reaches | vessels | Capillaries no feed reaches. |
 | Graph Built With Short Loops Removed Under (microns) | um | remove_short_loops_under_um when the graph was built: loops shorter than this were broken, so the earliest joins may be missing. |
 
+## Capillary orders between arteriole and venule
+
+| Statistic | Unit | Definition |
+|---|---|---|
+| Capillary Orders Between Arteriole and Venule, Mean / Median / SD / Min / Max | vessels | For every capillary draining into a venule (one end at a venule boundary node, or where a capillary joins the large venule), the fewest capillaries on a route to it from an arteriole (the nodes the capillary B orders count from), through capillaries alone: the capillary branch orders blood passes between arteriole and venule. Their mean, median, sample SD and range over those capillaries. |
+| Capillaries Draining to a Venule | vessels | Capillaries with one end at a venule end and the other not: each the last vessel of a capillary route. |
+| Capillaries Draining to a Venule No Arteriole Reaches | vessels | Those no arteriole reaches through capillaries, left out of the orders. |
+
 ## Transit time
 
 | Statistic | Unit | Definition |

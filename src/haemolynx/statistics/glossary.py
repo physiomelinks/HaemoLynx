@@ -416,6 +416,12 @@ _add(T, "Capillary Beds Joining Another Arteriolar Tree", "count", "Joins betwee
 _add(T, "Capillaries No Feed Reaches", "vessels", "Capillaries no feed reaches.")
 _add(T, "Graph Built With Short Loops Removed Under (microns)", "um", "remove_short_loops_under_um when the graph was built: loops shorter than this were broken, so the earliest joins may be missing.")
 
+# -- Capillary orders between arteriole and venule ----------------------------
+T = "Capillary orders between arteriole and venule"
+_add(T, "Capillary Orders Between Arteriole and Venule, Mean / Median / SD / Min / Max", "vessels", "For every capillary draining into a venule (one end at a venule boundary node, or where a capillary joins the large venule), the fewest capillaries on a route to it from an arteriole (the nodes the capillary B orders count from), through capillaries alone: the capillary branch orders blood passes between arteriole and venule. Their mean, median, sample SD and range over those capillaries.", pattern=r"Capillary Orders Between Arteriole and Venule, (Mean|Median|SD|Min|Max)")
+_add(T, "Capillaries Draining to a Venule", "vessels", "Capillaries with one end at a venule end and the other not: each the last vessel of a capillary route.")
+_add(T, "Capillaries Draining to a Venule No Arteriole Reaches", "vessels", "Those no arteriole reaches through capillaries, left out of the orders.")
+
 # -- Transit time -------------------------------------------------------------
 T = "Transit time"
 _add(T, "Transit Time Assumptions", TEXT, "What the transit-time model assumes.")

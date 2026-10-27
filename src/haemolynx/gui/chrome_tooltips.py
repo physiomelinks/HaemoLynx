@@ -287,6 +287,13 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "distance, the beds joining within or between arteriolar trees, and "
         "those that never join, by why"
     ),
+    "capillary_path_orders": (
+        "How many capillary branch orders lie between the arterioles and the "
+        "venules. For every capillary draining into a venule, the fewest "
+        "capillaries on a route to it from an arteriole, through capillaries "
+        "alone: their mean, median, SD and range, and the capillaries "
+        "draining into a venule that no arteriole reaches"
+    ),
     "transit_time": (
         "How long blood takes to cross the network: each vessel's volume "
         "over its flow, added up along inlet-to-outlet routes, as a mean and "

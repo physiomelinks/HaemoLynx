@@ -11,6 +11,7 @@ from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 from .bifurcation import compute_daughter_daughter_angles, compute_murray_law_compliance
 from .capillary_bed_joins import compute_capillary_bed_joins
+from .capillary_paths import compute_capillary_path_orders
 from .current_flow import compute_current_flow
 from haemolynx.haemodynamics.red_cells import DEFAULT_RED_CELL_VOLUME_FL
 
@@ -79,6 +80,7 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "current_flow",
     "perfusion_territories",
     "capillary_bed_joins",
+    "capillary_path_orders",
     "transit_time",
     "flux_heterogeneity",
     "loop_hierarchy",
@@ -115,6 +117,7 @@ NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
         "current_flow",
         "perfusion_territories",
         "capillary_bed_joins",
+        "capillary_path_orders",
         "transit_time",
         "flux_heterogeneity",
         "loop_hierarchy",
@@ -308,7 +311,8 @@ def compute_comprehensive_vessel_statistics(
     Omitted (the default), that measure reports exactly what it always has.
 
     *arteriole_boundary_nodes*/*venule_boundary_nodes* are the run's
-    hierarchical boundaries: "capillary_bed_joins" counts its beds from the
+    hierarchical boundaries: "capillary_path_orders" counts its routes from
+    the same nodes, and "capillary_bed_joins" counts its beds from the
     nodes the capillary B orders were counted from -- with a Large tier, also
     where capillaries leave the large arteriole, read from *G*'s orders
     (:func:`~haemolynx.graph.branch_order.capillary_start_nodes`) -- and reports
@@ -579,6 +583,15 @@ def compute_vessel_statistics_by_measure(
             weighting=route_weighting,
             short_loop_removal_um=short_loop_removal_um,
         )
+    if "capillary_path_orders" in enabled:
+        feeds, drains = capillary_start_nodes(
+            inlet_nodes,
+            outlet_nodes,
+            arteriole_boundary_nodes,
+            venule_boundary_nodes,
+            graph=G,
+        )
+        sections["capillary_path_orders"] = compute_capillary_path_orders(G, feeds, drains)
     if "transit_time" in enabled:
         sections["transit_time"] = compute_transit_times(G, inlet_nodes, outlet_nodes)
     if "flux_heterogeneity" in enabled:

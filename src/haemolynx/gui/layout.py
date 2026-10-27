@@ -667,6 +667,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "statistics_current_flow",
                 "statistics_perfusion_territories",
                 "statistics_capillary_bed_joins",
+                "statistics_capillary_path_orders",
                 "statistics_transit_time",
                 "statistics_flux_heterogeneity",
             ),
