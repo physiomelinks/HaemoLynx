@@ -16,6 +16,8 @@ examples/images/images_archive.zip
 *.hdf5
 *.ilp
 *.zip
+# The frozen benchmark sub-volume (examples/make_benchmark_subvolume.py is its only writer)
+!tests/data/benchmark/*.h5
 examples/outputs/
 examples/outputs_CB_results/
 examples/plots/

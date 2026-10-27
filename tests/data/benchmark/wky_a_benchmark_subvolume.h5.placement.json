@@ -1,0 +1,78 @@
+{
+  "specimen_id": "WKY-A",
+  "volume_shape_zyx": [
+    435,
+    456,
+    507
+  ],
+  "centre_zyx": [
+    230,
+    224,
+    186
+  ],
+  "size_zyx": [
+    160,
+    160,
+    160
+  ],
+  "bounds_zyx": [
+    [
+      150,
+      310
+    ],
+    [
+      144,
+      304
+    ],
+    [
+      106,
+      266
+    ]
+  ],
+  "offsets_zyx": [
+    0.028735632183908046,
+    -0.008771929824561403,
+    -0.13313609467455623
+  ],
+  "peak_slice": 230,
+  "source": "z=qc_peak_slice, yx=grayscale_centroid over z 150-310",
+  "centred": false,
+  "source_path": "ilastik_probabilities/C1-CB3-WKY-CB-A-2x2x2_vessels_ilastik_Probabilities.h5",
+  "source_sha256": "9b35cabcd1b1a1b9ec8c1da8e68a50b254a346562dc95580d4e1a1bce37ea363",
+  "classifier_provenance": {
+    "specimen_id": "WKY-A",
+    "group": "WKY",
+    "artefact": "C1-CB3-WKY-CB-A-2x2x2_vessels_ilastik_Probabilities.h5",
+    "shape_zyx": [
+      435,
+      456,
+      507
+    ],
+    "classifier_name": "vessel_segmentation.ilp",
+    "classifier_sha256": "49283a27d82ef0180ef19d0dbeecf8880703407a53873f1204cdfd2829381c0a",
+    "vessel_class_index": 0,
+    "processing_voxel_um": [
+      1.8639,
+      1.866,
+      1.866
+    ],
+    "recorded_at": "2026-08-11T10:02:23+00:00",
+    "labelling": {
+      "total_labelled_voxels": 163035,
+      "selected_features": 13,
+      "label_names": [
+        "vessel",
+        "background"
+      ],
+      "boundary_fraction_by_specimen": {
+        "WKY-A": 0.0411,
+        "WKY-B": 0.2049,
+        "WKY-C": 0.0855,
+        "SHR-A": 0.0205,
+        "SHR-B": 0.2484,
+        "SHR-C": 0.0127
+      }
+    }
+  },
+  "commit": "f93e17c2a70f5854d41542ec46c96fbaf00f318b"
+}

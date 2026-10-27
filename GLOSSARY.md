@@ -11,3 +11,7 @@ Domain terms for the carotid body (CB) study code and its test tooling. Use thes
 **Driver snapshot**: the files and stdout that one run of chosen `examples/cb_*.py` drivers wrote, kept in one folder so a later run can be compared with it by content. Not a batch run: it holds what the drivers make from batch runs.
 
 **Mutation check**: one deliberate break of a source line, applied in a throwaway worktree, with the test meant to guard it. Caught when that test fails, survived when it passes (some breaks are expected to survive).
+
+**Benchmark sub-volume**: WKY-A's Ilastik probability map cut at its placed ROI, both channels, committed as a test fixture. It stays frozen: only its own generating script changes it, and its sidecar records which map and box it came from.
+
+**Reference run**: the chosen outputs of one pipeline run on the benchmark sub-volume, committed so a later run can be compared with it by content. A deliberate change to those outputs regenerates it, and the commit says why. Not a batch run: it is not cut from the full map at test time and holds only the chosen outputs.
