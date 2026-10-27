@@ -85,7 +85,7 @@ from where it leaves the thick region (the segmentation within the margin of the
 body: the thick vessel's segmented boundary) to the centreline; a bridge is never a dead end nor
 attached to one. The centreline is the tree `skeletonize_edt_ridge` draws through the region,
 found again from the region (9 s on E14.5, so nothing new is carried through resume or a
-`.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid; in post-processing only a gap an edited vessel reaches, as far as its bridge would look, and what is drawn is marked edited so the stage measures it); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
+`.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid: E15's held no case; in post-processing only a gap an edited vessel reaches, as far as its bridge would look, and what is drawn is marked edited so the stage measures it); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
 near it counts only if long enough (3 um at an edge's end, 6 um within). Every edge reaching the
 region is labelled outside / centreline / inside: inside stretches joined through their nodes
 that lead out of the region and meet the centreline, or come within one lumen radius of it, are
@@ -213,7 +213,7 @@ a fork of two vessels of a size keeps no bridge (his marks: 4 near-equal forks E
 join's reach and in-lumen loop guard go to grid P2 (`scripts/thick_junction_review/wall_rest_grid.py`:
 every unmarked case of each on E14.5, 5 and 4), the 9 connectors the split leaves unbridged to
 grid K (`connector_grid.py`: 2 read their reach at a thin tree spur, 1 sunk by one exit), and the
-tree fill to a fresh grid on E15, which waits on that stack's pixel size. **P2 and K marked** (the
+tree fill to a fresh grid on E15. **P2 and K marked** (the
 same day; `outputs/thick_junction_review/grid_P2/FIT_P2.md`, `grid_K/FIT_K.md`): every version of
 the join replayed on E14.5 and scored on all 22 marked wall cases (15 J, 7 N): as it is 12/22, the
 reach at 15 um 14/22 (two more joins, both J, none N), the in-lumen loop guard or the beside check
@@ -221,6 +221,15 @@ dropped 12/22 (the short-loop guard then refuses the same joins). Harvey: the re
 guard kept. Grid K: 4 B, 5 N; today's split 5/9, the reach read at the widest tree radius 4/9 (the
 marks contradict the spur cause), each exit bridged on its own 6/9; nothing changes until the E15
 grid checks that and the length inside the region (8/9 here, 6/9 leave-one-out).
+**Grid E15** (2026-10-27, `scripts/thick_junction_review/e15_grid.py`; fit
+`outputs/thick_junction_review/grid_E15/FIT_E15.md`): Harvey's second stack with thick vessels,
+built on large masks from his embryo projects (trained on E14.5; thin on E15, the region 3.2% of
+the segmentation in 24 pieces), holds no tree-fill gap with the graph on two sides and leaves no
+connector unbridged, so the fill and grid K's measures stay unchecked on fresh data. Its 30 wall
+joins (1 joined, 13 past the reach, 15 turned away on the chord, 1 beside a vessel) Harvey marked
+all N: the join 29/30, a 10 um reach 30/30; pooled with E14.5's 22 marked cases 43/52 at 15 um
+against 42/52 at 10 um. The one join (10.9 um past the lumen, 72 degrees on the chord) sits among
+E14.5's J joins on every measure in the key, so nothing changes.
 **A thick vessel's end at the image face is never dropped** (found raising the reach): on
 E14.5 at 15 um a wall join put a node on the arteriole's centreline 17 um from the image face,
 past the tree's end (skeletonisation stops the tree short of the face). The stretch from there to
