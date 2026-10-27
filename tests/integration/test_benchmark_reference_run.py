@@ -14,6 +14,8 @@ from ImageLynx.reference_run import PARTS, compare_with_reference, format_report
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration, pytest.mark.benchmark]
 
+REFERENCE = update_script.REFERENCE_RUN_DIR
+
 
 @pytest.fixture(scope="session")
 def benchmark_run(tmp_path_factory):
@@ -25,11 +27,21 @@ def benchmark_run(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def comparison(benchmark_run):
-    return compare_with_reference(benchmark_run, update_script.REFERENCE_RUN_DIR)
+    """The comparison, or the error it raised (a blank cell, say), so each test can report it
+    with the run folder rather than error in setup."""
+    command = update_script.recorded_command(update_script.pipeline_command(benchmark_run),
+                                             benchmark_run)
+    try:
+        return compare_with_reference(benchmark_run, REFERENCE, command)
+    except Exception as error:  # reported by every test, with the run folder
+        return error
 
 
 @pytest.mark.parametrize("part", PARTS, ids=lambda part: part.replace(" ", "_"))
 def test_the_part_matches_the_reference_run(part, comparison, benchmark_run):
+    if isinstance(comparison, Exception):
+        pytest.fail(f"Comparing with {REFERENCE} raised {comparison!r}\n"
+                    f"Run folder kept: {benchmark_run}")
     assert comparison.verdict(part).same, (
-        f"\n{format_report(comparison, label=f'Benchmark run against {update_script.REFERENCE_RUN_DIR}')}"
+        f"\n{format_report(comparison, label=f'Benchmark run against {REFERENCE}')}"
         f"\nRun folder kept: {benchmark_run}")

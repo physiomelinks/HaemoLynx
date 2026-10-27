@@ -9,19 +9,19 @@ import csv
 import json
 import math
 import pickle
-import subprocess
+from functools import partial
 
 import networkx as nx
 import numpy as np
 import pytest
 
 import update_benchmark_reference_run as update_script
-from conftest import TOY_ENV, toy_git
+from conftest import toy_git
 from ImageLynx.batch_outputs import (EDGE_TABLE_NAME, GRAPH_NAME, SKELETON_NAME,
                                      VESSEL_MASK_NAME)
 from ImageLynx.reference_run import (
-    EDGE_TABLE, GEOMETRY_RTOL, GRAPH, MANIFEST_NAME, MASKS_NAME, PARTS, SKELETON, VESSEL_MASK,
-    compare_with_reference, format_report, write_reference_run,
+    EDGE_TABLE, GEOMETRY_RTOL, GRAPH, GRAPH_JSON_NAME, MANIFEST_NAME, MASKS_NAME, PARTS,
+    SKELETON, VESSEL_MASK, compare_with_reference, format_report, write_reference_run,
 )
 
 EDGES = [(0, 1, 0), (1, 2, 0), (1, 2, 1)]
@@ -112,11 +112,27 @@ def test_the_masks_are_stored_bit_packed_and_the_manifest_records_the_run(refere
 
 
 def test_the_graph_is_stored_as_readable_json_on_forward_edges(reference):
-    graph = json.loads((reference / "graph.json").read_text())
+    graph = json.loads((reference / GRAPH_JSON_NAME).read_text())
     assert graph["type"] == "MultiGraph"
     assert graph["graph"] == {"voxel_size": [1.5, 1.5, 1.5]}
     assert [(e["u"], e["v"], e["key"]) for e in graph["edges"]] == EDGES
     assert graph["nodes"][2] == {"id": 2, "attributes": {"pos": [1.0, 2.0, 1.0]}}
+
+
+def test_rewriting_replaces_the_whole_folder(tmp_path, reference):
+    (reference / "left_from_an_old_part.npz").write_bytes(b"x")
+    write_reference_run(_write_run(tmp_path / "again"), reference, COMMAND, "def456")
+    assert sorted(path.name for path in reference.iterdir()) == sorted(
+        [MASKS_NAME, GRAPH_JSON_NAME, EDGE_TABLE_NAME, MANIFEST_NAME])
+    assert not reference.with_name(reference.name + ".new").exists()
+
+
+def test_a_key_cell_that_is_not_an_integer_raises_naming_the_run(tmp_path, reference):
+    run = _write_run(tmp_path / "run")
+    table = run / EDGE_TABLE_NAME
+    table.write_text(table.read_text().replace("\n1,2,0,", "\n1,two,0,"))
+    with pytest.raises(ValueError, match=f"NEW: {EDGE_TABLE_NAME} line 3 has no integer u, v, key"):
+        compare_with_reference(run, reference)
 
 
 def test_writing_from_a_folder_with_no_cache_raises(tmp_path):
@@ -253,8 +269,9 @@ def test_a_part_file_missing_from_the_run_is_a_difference(tmp_path, reference):
 
 
 def test_a_part_file_missing_from_the_reference_is_a_difference(tmp_path, reference):
-    (reference / "graph.json").unlink()
-    assert _differing(_compare(tmp_path, reference)) == {GRAPH: "missing in REFERENCE: graph.json"}
+    (reference / GRAPH_JSON_NAME).unlink()
+    assert _differing(_compare(tmp_path, reference)) == {
+        GRAPH: f"missing in REFERENCE: {GRAPH_JSON_NAME}"}
 
 
 def test_a_run_folder_without_its_cache_differs_in_every_cached_part(tmp_path, reference):
@@ -294,6 +311,19 @@ def test_a_different_environment_is_a_note_not_a_difference(tmp_path, reference)
     assert "  environment  numpy 0.0 in REFERENCE" in report
 
 
+def test_a_different_command_is_a_note(tmp_path, reference):
+    run = _write_run(tmp_path / "run")
+    assert compare_with_reference(run, reference, COMMAND).environment == ()
+    notes = compare_with_reference(run, reference, [*COMMAND, "--config", "x.yaml"]).environment
+    assert len(notes) == 1 and notes[0].startswith(f"command {COMMAND} in REFERENCE")
+
+
+def test_a_manifest_without_its_keys_raises(tmp_path, reference):
+    (reference / MANIFEST_NAME).write_text(json.dumps({"commit": "abc123"}))
+    with pytest.raises(ValueError, match="has no \\['python', 'packages', 'command'\\]"):
+        _compare(tmp_path, reference)
+
+
 # --- The update script -----------------------------------------------------------------------
 
 def _toy_repo(path):
@@ -305,23 +335,44 @@ def _toy_repo(path):
     return path
 
 
-def _toy_git(repo):
-    return lambda *args: subprocess.run(["git", *args], cwd=repo, env=TOY_ENV, check=True,
-                                        capture_output=True, text=True).stdout
-
-
 def test_the_update_script_refuses_a_tree_with_tracked_changes(tmp_path):
     repo = _toy_repo(tmp_path / "repo")
     (repo / "f.txt").write_text("changed")
     ran = []
     with pytest.raises(RuntimeError, match="tracked changes"):
-        update_script.update(tmp_path / "reference", git=_toy_git(repo), run=ran.append)
+        update_script.update(tmp_path / "reference", git=partial(toy_git, repo), run=ran.append)
     assert ran == [] and not (tmp_path / "reference").exists()
+
+
+@pytest.mark.parametrize("folder", update_script.CODE_FOLDERS)
+def test_the_update_script_refuses_untracked_code(tmp_path, folder):
+    repo = _toy_repo(tmp_path / "repo")
+    (repo / "notes.md").write_text("an untracked note elsewhere is fine")
+    git, ran = partial(toy_git, repo), []
+    assert update_script.refuse_a_dirty_tree(git) == git("rev-parse", "HEAD").strip()
+    (repo / folder).mkdir()
+    (repo / folder / "new_module.py").write_text("")
+    with pytest.raises(RuntimeError, match="untracked code"):
+        update_script.update(tmp_path / "reference", git=git, run=ran.append)
+    assert ran == []
+
+
+def test_the_update_script_writes_nothing_when_the_tree_changes_during_the_run(tmp_path):
+    repo = _toy_repo(tmp_path / "repo")
+
+    def run_and_edit(run_dir):
+        _write_run(run_dir)
+        (repo / "f.txt").write_text("edited mid-run")
+
+    with pytest.raises(RuntimeError, match="tracked changes"):
+        update_script.update(tmp_path / "reference", git=partial(toy_git, repo),
+                             run=run_and_edit, out=lambda text: None)
+    assert not (tmp_path / "reference").exists()
 
 
 def test_the_update_script_writes_the_first_reference_run_then_reports_against_it(tmp_path):
     repo = _toy_repo(tmp_path / "repo")
-    git, printed = _toy_git(repo), []
+    git, printed = partial(toy_git, repo), []
     reference = tmp_path / "reference"
     manifest = update_script.update(reference, git=git, run=_write_run, out=printed.append)
     assert printed == [f"No reference run at {reference}; writing the first one."]
@@ -339,7 +390,13 @@ def test_the_pipeline_command_runs_the_sub_volume_with_frozen_defaults(tmp_path)
     assert "--config" not in command
     assert command[command.index("--placed-input") + 1] == str(
         update_script.subvolume.SUBVOLUME_PATH)
+    token = update_script.REPO_TOKEN
+
+    def repo_path(path):
+        return f"{token}/{path.relative_to(update_script.REPO).as_posix()}"
+
     assert update_script.recorded_command(command, tmp_path / "out") == [
-        "<REPO>/examples/carotid_image_to_model.py", "--placed-input",
-        "<REPO>/tests/data/benchmark/wky_a_benchmark_subvolume.h5", "--specimen", "WKY-A",
-        "--output-dir", "<RUN>"]
+        repo_path(update_script.PIPELINE), "--placed-input",
+        repo_path(update_script.subvolume.SUBVOLUME_PATH),
+        "--specimen", update_script.subvolume.SPECIMEN_ID,
+        "--output-dir", update_script.RUN_TOKEN]

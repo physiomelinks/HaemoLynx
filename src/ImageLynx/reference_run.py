@@ -72,7 +72,7 @@ _ABSENT = object()
 class ReferenceComparison:
     """Every part of a run compared with a reference run, and how their environments differ."""
     parts: tuple[PartVerdict, ...]
-    environment: tuple[str, ...] = ()
+    environment: tuple[str, ...]
 
     @property
     def same(self) -> bool:
@@ -92,8 +92,9 @@ def write_reference_run(run_dir, reference_dir, command, commit: str) -> dict:
     """Store ``run_dir``'s parts in ``reference_dir`` with a manifest; returns the manifest.
 
     ``command`` is the pipeline command line that made the run, as it should be recorded
-    (machine paths already replaced); ``commit`` the HEAD it ran at. Every file is written
-    afresh. A part file missing from the run raises: a reference run is never partial.
+    (machine paths already replaced); ``commit`` the HEAD it ran at. The folder is replaced
+    whole, so a file left from an earlier part list does not stay. A part file missing from the
+    run raises: a reference run is never partial.
     """
     run_dir, reference_dir = Path(run_dir), Path(reference_dir)
     cache = _cache_dir(run_dir)
@@ -107,18 +108,28 @@ def write_reference_run(run_dir, reference_dir, command, commit: str) -> dict:
     graph = graph_to_json(_load_pickle(cache / GRAPH_NAME))
     edge_table = run_dir / EDGE_TABLE_NAME
     read_edge_table(edge_table, str(run_dir))  # a duplicate or unkeyed row raises here
-    reference_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(reference_dir / MASKS_NAME, **arrays)
-    (reference_dir / GRAPH_JSON_NAME).write_text(json.dumps(graph, indent=1) + "\n")
-    shutil.copyfile(edge_table, reference_dir / EDGE_TABLE_NAME)
+    staging = reference_dir.with_name(reference_dir.name + ".new")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    np.savez_compressed(staging / MASKS_NAME, **arrays)
+    (staging / GRAPH_JSON_NAME).write_text(json.dumps(graph, indent=1) + "\n")
+    shutil.copyfile(edge_table, staging / EDGE_TABLE_NAME)
     manifest = {"commit": commit, **environment(), "command": list(command)}
-    (reference_dir / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n")
+    (staging / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n")
+    if reference_dir.exists():
+        shutil.rmtree(reference_dir)
+    staging.rename(reference_dir)
     return manifest
 
 
-def compare_with_reference(run_dir, reference_dir) -> ReferenceComparison:
+def compare_with_reference(run_dir, reference_dir, command=None) -> ReferenceComparison:
     """Compare ``run_dir`` with ``reference_dir`` in every part of ``PARTS``, without stopping
-    early. A missing file is a difference in its part; a blank or text number raises."""
+    early. A missing file is a difference in its part; a blank or text number raises.
+
+    ``command``, the recorded command line that made ``run_dir``, is checked against the
+    manifest's when given; like the Python and package versions, a difference is a note.
+    """
     run_dir, reference_dir = Path(run_dir), Path(reference_dir)
     cache = _cache_dir(run_dir)
     problems = {}
@@ -131,7 +142,7 @@ def compare_with_reference(run_dir, reference_dir) -> ReferenceComparison:
                                             run_dir / EDGE_TABLE_NAME)
     return ReferenceComparison(
         tuple(PartVerdict(part, not problems[part], "; ".join(problems[part])) for part in PARTS),
-        _environment_notes(reference_dir / MANIFEST_NAME))
+        _environment_notes(reference_dir / MANIFEST_NAME, command))
 
 
 def format_report(comparison: ReferenceComparison, label: str = "run") -> str:
@@ -177,24 +188,24 @@ def graph_to_json(G) -> dict:
     """The graph as plain JSON values: type, ``graph`` attributes, nodes, and edges on forward
     ``(u, v, key)``, in the graph's own order. A value of a type JSON cannot hold raises."""
     return {"type": type(G).__name__,
-            "graph": _plain(dict(G.graph)),
-            "nodes": [{"id": _plain(node), "attributes": _plain(data)}
+            "graph": _json_value(dict(G.graph)),
+            "nodes": [{"id": _json_value(node), "attributes": _json_value(data)}
                       for node, data in G.nodes(data=True)],
-            "edges": [{"u": int(u), "v": int(v), "key": int(k), "attributes": _plain(data)}
+            "edges": [{"u": int(u), "v": int(v), "key": int(k), "attributes": _json_value(data)}
                       for u, v, k, data in G.edges(keys=True, data=True)]}
 
 
-def _plain(value):
-    """``value`` with numpy scalars and arrays, tuples and sets made into JSON values."""
+def _json_value(value):
+    """``value`` with numpy scalars and arrays and tuples made into JSON values."""
     if isinstance(value, dict):
         keys = [str(key) for key in value]
         if len(set(keys)) != len(keys):
             raise TypeError(f"dict keys {list(value)} collide as text.")
-        return {str(key): _plain(item) for key, item in value.items()}
+        return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_plain(item) for item in value]
+        return [_json_value(item) for item in value]
     if isinstance(value, np.ndarray):
-        return _plain(value.tolist())
+        return _json_value(value.tolist())
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
     if isinstance(value, (int, np.integer)):
@@ -240,10 +251,10 @@ def _graph_part(reference_path: Path, new_path: Path | None) -> list[str]:
     reference = json.loads(reference_path.read_text())
     # Through text and back, so both sides are in the stored form (a tuple is a list, say).
     new = json.loads(json.dumps(graph_to_json(_load_pickle(new_path))))
-    return graph_problems(reference, new, GEOMETRY_RTOL)
+    return _graph_problems(reference, new, GEOMETRY_RTOL)
 
 
-def graph_problems(reference: dict, new: dict, rtol: float) -> list[str]:
+def _graph_problems(reference: dict, new: dict, rtol: float) -> list[str]:
     """Where two graphs in ``graph_to_json`` form differ: one line per graph attribute and per
     node or edge attribute name, with counts and the largest gap. Stops after ``MAX_LISTED``."""
     problems = []
@@ -310,7 +321,6 @@ def _attribute_problems(reference: dict, new: dict, what: str, rtol: float) -> l
     return problems
 
 
-
 def _floats(value):
     if isinstance(value, float):
         yield value
@@ -374,10 +384,10 @@ def _edge_table_part(reference_path: Path, new_path: Path) -> list[str]:
         return missing
     reference = read_edge_table(reference_path, REFERENCE)
     new = read_edge_table(new_path, NEW)
-    return edge_table_problems(reference, new, GEOMETRY_RTOL)
+    return _edge_table_problems(reference, new, GEOMETRY_RTOL)
 
 
-def edge_table_problems(reference: dict, new: dict, rtol: float) -> list[str]:
+def _edge_table_problems(reference: dict, new: dict, rtol: float) -> list[str]:
     """Where two edge tables from ``read_edge_table`` differ: the header, the row keys, then one
     line per differing column over the shared rows. None is left out."""
     ref_columns, new_columns = (list(next(iter(table.values()), {})) for table in (reference, new))
@@ -411,17 +421,22 @@ def edge_table_problems(reference: dict, new: dict, rtol: float) -> list[str]:
     return problems
 
 
-def _environment_notes(manifest_path: Path) -> tuple[str, ...]:
-    """How this interpreter differs from the one that wrote the reference run."""
+def _environment_notes(manifest_path: Path, command) -> tuple[str, ...]:
+    """How this run's interpreter (and command, when given) differ from the reference run's.
+    A manifest without its keys raises."""
     if not manifest_path.exists():
         return (f"no {MANIFEST_NAME} in {REFERENCE}",)
     stored = json.loads(manifest_path.read_text())
+    lacking = [key for key in ("python", "packages", "command") if key not in stored]
+    if lacking:
+        raise ValueError(f"{manifest_path} has no {lacking}; rewrite the reference run.")
     here = environment()
     notes = []
-    if stored.get("python") != here["python"]:
-        notes.append(f"python {stored.get('python')} in {REFERENCE}, {here['python']} here")
-    stored_packages = stored.get("packages", {})
+    if stored["python"] != here["python"]:
+        notes.append(f"python {stored['python']} in {REFERENCE}, {here['python']} here")
     for name, version in here["packages"].items():
-        if stored_packages.get(name) != version:
-            notes.append(f"{name} {stored_packages.get(name)} in {REFERENCE}, {version} here")
+        if stored["packages"].get(name) != version:
+            notes.append(f"{name} {stored['packages'].get(name)} in {REFERENCE}, {version} here")
+    if command is not None and list(command) != stored["command"]:
+        notes.append(f"command {stored['command']} in {REFERENCE}, {list(command)} here")
     return tuple(notes)

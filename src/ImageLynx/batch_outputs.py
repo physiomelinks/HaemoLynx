@@ -85,8 +85,9 @@ def _finite_or_none(cell):
 def read_edge_table(path, where: str) -> dict:
     """Every row of the edge table at ``path``, in file order, keyed by integer ``(u, v, key)``.
 
-    Each row keeps every column as the file wrote it (strings). A duplicate key raises: two
-    rows for one edge would leave which diameter it has to file order. ``where`` names the run
+    Each row keeps every column as the file wrote it (strings). A key cell that is not an
+    integer raises, and so does a duplicate key: two rows for one edge would leave which
+    diameter it has to file order. ``where`` names the run
     in the messages. ``BatchRun.edge_table`` reads through this; so does anything that compares
     a run folder that is not a batch run.
     """
@@ -96,8 +97,12 @@ def read_edge_table(path, where: str) -> dict:
     table = {}
     duplicates = []
     with path.open(newline="") as handle:
-        for row in csv.DictReader(handle):
-            edge = (int(row["u"]), int(row["v"]), int(row["key"]))
+        for line, row in enumerate(csv.DictReader(handle), start=2):
+            try:
+                edge = (int(row["u"]), int(row["v"]), int(row["key"]))
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"{where}: {EDGE_TABLE_NAME} line {line} has no integer "
+                                 f"u, v, key ({error!r}).") from None
             if edge in table:
                 duplicates.append(edge)
             table[edge] = row
