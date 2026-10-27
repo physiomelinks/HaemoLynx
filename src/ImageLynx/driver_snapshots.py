@@ -40,7 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .batch_compare import MAX_LISTED
+from .batch_compare import MAX_LISTED, listed
 from .value_compare import gap_text, max_scaled_atol, within
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -333,7 +333,7 @@ def _png_problems(old_path: Path, new_path: Path) -> list[str]:
 def vtk_problems(old_path, new_path, rtol_for=None, kinds=DATA_KINDS,
                  sides=("OLD", "NEW")) -> list[str]:
     """Where two VTK files differ: type, then grid or points and cells, then the arrays of each
-    of ``kinds`` by name. Stops after ``MAX_LISTED``.
+    of ``kinds`` by name. Stops after ``MAX_LISTED``, then counts the rest.
 
     With no ``rtol_for`` (as snapshots compare) every value is exact. ``rtol_for(kind, name)``
     gives a float array its relative tolerance (``kind`` is one of ``DATA_KINDS``; the points
@@ -367,7 +367,7 @@ def vtk_problems(old_path, new_path, rtol_for=None, kinds=DATA_KINDS,
                 problems.append(f"{attribute} differ")
     for kind in kinds:
         problems += _array_problems(getattr(old, kind), getattr(new, kind), kind, rtol_for, sides)
-    return problems[:MAX_LISTED]
+    return listed(problems)
 
 
 def _array_problems(old, new, kind: str, rtol_for, sides) -> list[str]:

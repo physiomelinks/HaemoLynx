@@ -12,6 +12,7 @@ from scipy.ndimage import gaussian_filter
 import tifffile
 
 from ImageLynx.batch_outputs import VESSELS_FLOW_VTP_SUFFIX
+from ImageLynx.visualization.vtk_io import NODES_VTP_SUFFIX
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -196,7 +197,7 @@ def _run_angled_vessel_smoothness_case(
     output_dir.mkdir(parents=True, exist_ok=True)
     vtk_prefix = output_dir / f"{case_name}_network"
     flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX)
-    nodes_vtp_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
+    nodes_vtp_path = vtk_prefix.with_name(vtk_prefix.name + NODES_VTP_SUFFIX)
 
     kwargs = _base_pipeline_kwargs(
         image_path=input_tiff,

@@ -60,7 +60,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .batch_compare import INTEGER_COLUMNS, KEY_COLUMNS, MAX_LISTED, TEXT_COLUMNS, PartVerdict
+from .batch_compare import (INTEGER_COLUMNS, KEY_COLUMNS, MAX_LISTED, TEXT_COLUMNS, PartVerdict,
+                            listed)
 from .batch_outputs import (CACHE_GLOB, EDGE_TABLE_NAME, GRAPH_NAME, PERFUSION_VTI_NAME,
                             SKELETON_NAME, VESSEL_MASK_NAME, VESSELS_FLOW_VTP_NAME, numeric_cells,
                             read_edge_table)
@@ -331,9 +332,7 @@ def _graph_problems(reference: dict, new: dict, rtol: float) -> list[str]:
         shared = [k for k in ref_items if k in new_items]
         problems += _attribute_problems({k: ref_items[k] for k in shared},
                                         {k: new_items[k] for k in shared}, what, rtol)
-    if len(problems) > MAX_LISTED:
-        problems = problems[:MAX_LISTED] + [f"and {len(problems) - MAX_LISTED} more"]
-    return problems
+    return listed(problems)
 
 
 def _keyed_items(items: list, key, what: str) -> dict:
@@ -542,9 +541,9 @@ def _summary_part(reference_path: Path, flow_path: Path, perfusion_path: Path) -
         return missing
     reference = json.loads(reference_path.read_text())
     new = _summary(flow_path, perfusion_path)
-    problems = []
-    for section in reference:
-        ref_metrics, new_metrics = reference[section], new.get(section, {})
+    problems = [f"{section} only in {side}" for side, section in _on_one_side(reference, new)]
+    for section in (section for section in reference if section in new):
+        ref_metrics, new_metrics = reference[section], new[section]
         problems += [f"{section} {name} only in {side}"
                      for side, name in _on_one_side(ref_metrics, new_metrics)]
         for name in (name for name in ref_metrics if name in new_metrics):
@@ -553,9 +552,12 @@ def _summary_part(reference_path: Path, flow_path: Path, perfusion_path: Path) -
                 if ref != other:
                     problems.append(f"{section} {name}: {ref} in {REFERENCE}, {other} in {NEW}")
                 continue
+            problems += [f"{section} {name} {stat} only in {side}"
+                         for side, stat in _on_one_side(ref, other)]
             rtol = _summary_rtol(section, name)
             atol = max_scaled_atol([ref["min"], ref["max"]], rtol)
-            moved = [stat for stat in ref if not close(ref[stat], other[stat], rtol, atol)]
+            moved = [stat for stat in ref
+                     if stat in other and not close(ref[stat], other[stat], rtol, atol)]
             if moved:
                 problems.append(f"{section} {name}: {', '.join(moved)}"
                                 + gap_text([ref[s] for s in moved], [other[s] for s in moved]))

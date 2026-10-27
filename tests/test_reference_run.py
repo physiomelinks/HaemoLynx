@@ -19,8 +19,9 @@ import pyvista as pv
 
 import update_benchmark_reference_run as update_script
 from conftest import toy_git
-from ImageLynx.batch_outputs import (EDGE_TABLE_NAME, GRAPH_NAME, PERFUSION_VTI_NAME,
-                                     SKELETON_NAME, VESSEL_MASK_NAME, VESSELS_FLOW_VTP_NAME)
+from ImageLynx.batch_outputs import (CACHE_SUFFIX, EDGE_TABLE_NAME, GRAPH_NAME,
+                                     PERFUSION_VTI_NAME, SKELETON_NAME, VESSEL_MASK_NAME,
+                                     VESSELS_FLOW_VTP_NAME)
 from ImageLynx.reference_run import (
     EDGE_TABLE, FLOW_NETWORK, GEOMETRY_RTOL, GRAPH, GRAPH_JSON_NAME, MANIFEST_NAME, MASKS_NAME,
     NETWORK_RTOL, PARTS, PERFUSION_FIELD, PERFUSION_RTOL, PERFUSION_TAGS, RHEOLOGY_STATUS,
@@ -30,7 +31,8 @@ from ImageLynx.reference_run import (
 
 EDGES = [(0, 1, 0), (1, 2, 0), (1, 2, 1)]
 SHAPE = (4, 4, 4)
-COMMAND = ["--placed-input", "<REPO>/sub.h5"]
+COMMAND = ["--placed-input", f"{update_script.REPO_TOKEN}/sub.h5"]
+CACHE_DIR = "sub" + CACHE_SUFFIX
 
 
 def _columns():
@@ -96,7 +98,7 @@ def _perfusion_field(po2=None, **tags):
 def _write_run(run_dir, graph=None, columns=None, mask=None, skeleton=None, flow=None,
                perfusion=None):
     """A run folder laid out as the pipeline writes one; returns it."""
-    cache = run_dir / "sub_cache"
+    cache = run_dir / CACHE_DIR
     cache.mkdir(parents=True)
     (_flow_network() if flow is None else flow).save(run_dir / VESSELS_FLOW_VTP_NAME)
     (_perfusion_field() if perfusion is None else perfusion).save(run_dir / PERFUSION_VTI_NAME)
@@ -303,7 +305,7 @@ def test_a_text_numeric_cell_raises(tmp_path, reference):
 
 def test_a_part_file_missing_from_the_run_is_a_difference(tmp_path, reference):
     run = _write_run(tmp_path / "run")
-    (run / "sub_cache" / SKELETON_NAME).unlink()
+    (run / CACHE_DIR / SKELETON_NAME).unlink()
     (run / EDGE_TABLE_NAME).unlink()
     assert _differing(compare_with_reference(run, reference)) == {
         SKELETON: f"missing in NEW: {SKELETON_NAME}",
@@ -318,9 +320,9 @@ def test_a_part_file_missing_from_the_reference_is_a_difference(tmp_path, refere
 
 def test_a_run_folder_without_its_cache_differs_in_every_cached_part(tmp_path, reference):
     run = _write_run(tmp_path / "run")
-    for path in (run / "sub_cache").iterdir():
+    for path in (run / CACHE_DIR).iterdir():
         path.unlink()
-    (run / "sub_cache").rmdir()
+    (run / CACHE_DIR).rmdir()
     assert set(_differing(compare_with_reference(run, reference))) == {
         VESSEL_MASK, SKELETON, GRAPH}
 
@@ -338,7 +340,7 @@ def test_the_report_names_the_part_and_the_size_of_the_gap(tmp_path, reference):
     assert ("  edge table      DIFFERENT: length_um: 1 of 3 rows differ, max abs 2e-05, "
             "max rel 1e-06: [(1, 2, 0)]") in report
     assert "  graph           same" in report
-    assert report.splitlines()[-1] == "9 parts compared: 1 differ."
+    assert report.splitlines()[-1] == f"{len(PARTS)} parts compared: 1 differ."
 
 
 def test_a_different_environment_is_a_note_not_a_difference(tmp_path, reference):
@@ -424,7 +426,7 @@ def test_the_update_script_writes_the_first_reference_run_then_reports_against_i
     assert manifest["command"][-1] == update_script.RUN_TOKEN
 
     update_script.update(reference, git=git, run=_write_run, out=printed.append)
-    assert printed[1].endswith("9 parts compared: all match.")
+    assert printed[1].endswith(f"{len(PARTS)} parts compared: all match.")
 
 
 def test_the_pipeline_command_runs_the_sub_volume_with_frozen_defaults(tmp_path):
@@ -603,6 +605,24 @@ def test_a_summary_number_of_the_perfusion_field_uses_the_perfusion_rule(tmp_pat
     po2[-1] = 85.0 * (1 + 2.1e-4)
     detail = _differing(_compare(tmp_path / "b", reference, perfusion=_perfusion_field(po2=po2)))
     assert detail[SUMMARY].startswith("perfusion field PO2_mmHg: max, max abs 0.0179, max rel 0.00021")
+
+
+def test_a_summary_section_on_one_side_only_is_a_difference(tmp_path, reference):
+    summary_path = reference / SUMMARY_NAME
+    summary = json.loads(summary_path.read_text())
+    del summary[PERFUSION_FIELD]
+    summary_path.write_text(json.dumps(summary))
+    detail = _differing(_compare(tmp_path, reference))
+    assert detail == {SUMMARY: f"{PERFUSION_FIELD} only in NEW"}
+
+
+def test_a_summary_statistic_on_one_side_only_is_a_difference(tmp_path, reference):
+    summary_path = reference / SUMMARY_NAME
+    summary = json.loads(summary_path.read_text())
+    summary[FLOW_NETWORK]["flow_signed"]["p95"] = 95.0
+    summary_path.write_text(json.dumps(summary))
+    detail = _differing(_compare(tmp_path, reference))
+    assert detail == {SUMMARY: f"{FLOW_NETWORK} flow_signed p95 only in REFERENCE"}
 
 
 def test_every_tag_a_rule_names_is_in_the_committed_reference_run():

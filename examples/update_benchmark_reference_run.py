@@ -60,12 +60,7 @@ def run_pipeline(out_dir):
     return result
 
 
-def _git(*args) -> str:
-    return subprocess.run(["git", *args], cwd=REPO, check=True, capture_output=True,
-                          text=True).stdout
-
-
-def refuse_a_dirty_tree(git=_git) -> str:
+def refuse_a_dirty_tree(git=subvolume.repo_git) -> str:
     """The HEAD commit, or raise when the tree has tracked changes or untracked code."""
     dirty = "\n".join(filter(None, (
         subvolume.tracked_changes(git),
@@ -77,7 +72,8 @@ def refuse_a_dirty_tree(git=_git) -> str:
     return git("rev-parse", "HEAD").strip()
 
 
-def update(reference_dir=REFERENCE_RUN_DIR, git=_git, run=run_pipeline, out=print) -> dict:
+def update(reference_dir=REFERENCE_RUN_DIR, git=subvolume.repo_git, run=run_pipeline,
+           out=print) -> dict:
     """Refuse a dirty tree, run, print the comparison, check the tree again, rewrite the
     reference run. Returns the new manifest."""
     commit = refuse_a_dirty_tree(git)

@@ -37,12 +37,12 @@ DATASET = specimens.PROBABILITIES_DATASET
 GZIP_LEVEL = 4
 
 
-def _git(*args, cwd=REPO) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+def repo_git(*args) -> str:
+    return subprocess.run(["git", *args], cwd=REPO, check=True, capture_output=True,
                           text=True).stdout
 
 
-def tracked_changes(git=_git) -> str:
+def tracked_changes(git=repo_git) -> str:
     """`git status` lines for tracked files that differ from HEAD (untracked files ignored)."""
     return git("status", "--porcelain", "--untracked-files=no").strip()
 
@@ -112,7 +112,7 @@ def write_subvolume(cut, record, commit, directory=BENCHMARK_DIR, name=SUBVOLUME
     return path
 
 
-def make(overwrite=False, directory=BENCHMARK_DIR, git=_git, build=build_subvolume):
+def make(overwrite=False, directory=BENCHMARK_DIR, git=repo_git, build=build_subvolume):
     """Refuse a dirty tree or an existing output, then build and write. Returns the map path."""
     dirty = tracked_changes(git)
     if dirty:

@@ -177,6 +177,13 @@ def _voxel_problems(old, new) -> list[str]:
     return [f"{differing} of {old.size} voxels differ"] if differing else []
 
 
+def listed(problems: list[str]) -> list[str]:
+    """The first ``MAX_LISTED`` problems, then a line counting the rest."""
+    if len(problems) > MAX_LISTED:
+        return problems[:MAX_LISTED] + [f"and {len(problems) - MAX_LISTED} more"]
+    return problems
+
+
 def _graph_problems(old, new, rtol) -> list[str]:
     """The graph type, its attributes, then the nodes and edges and their attributes. A graph
     can differ in many places, so the list stops after ``MAX_LISTED``."""
@@ -186,9 +193,7 @@ def _graph_problems(old, new, rtol) -> list[str]:
     problems += [f"graph {name}" for name in _differing(old.graph, new.graph, rtol)]
     problems += _keyed(dict(old.nodes(data=True)), dict(new.nodes(data=True)), "node", rtol)
     problems += _keyed(_edges(old), _edges(new), "edge", rtol)
-    if len(problems) > MAX_LISTED:
-        problems = problems[:MAX_LISTED] + [f"and {len(problems) - MAX_LISTED} more"]
-    return problems
+    return listed(problems)
 
 
 def _edges(G) -> dict:

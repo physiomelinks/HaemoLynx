@@ -7,6 +7,7 @@ arrays, the cells and an image grid stay exact.
 import numpy as np
 import pytest
 
+from ImageLynx.batch_compare import MAX_LISTED
 from ImageLynx.driver_snapshots import POINTS, vtk_problems
 
 pv = pytest.importorskip("pyvista")
@@ -93,3 +94,13 @@ def test_an_image_grid_stays_exact_and_its_arrays_follow_the_rule(tmp_path):
                         rtol_for=_rule) == []
     assert vtk_problems(*_pair(tmp_path, grid(), grid(spacing=1.0 + 1e-12), ".vti"),
                         rtol_for=lambda k, n: 1.0) == ["grid spacing differs"]
+
+
+def test_a_long_list_of_differences_ends_by_counting_the_rest(tmp_path):
+    old, new = _polydata(), _polydata()
+    for i in range(MAX_LISTED + 2):
+        old.cell_data[f"a{i:02d}"] = np.array([1.0, 2.0])
+        new.cell_data[f"a{i:02d}"] = np.array([1.0, 3.0])
+    problems = vtk_problems(*_pair(tmp_path, old, new))
+    assert len(problems) == MAX_LISTED + 1
+    assert problems[-1] == "and 2 more"
