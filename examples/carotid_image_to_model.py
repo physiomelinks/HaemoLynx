@@ -2264,6 +2264,54 @@ def _apply_roi_placement(skel_config, specimen, centred=False):
     return roi_record(placement, specimen.shape_zyx, centred=centred)
 
 
+def _apply_placed_input(args, skel_config, pipeline_config):
+    """Take a pre-cut map's placement record from its sidecar; return it.
+
+    ``--placed-input`` runs the pipeline on a probability map that is already cut at its
+    placed box, so nothing may cut it again or look its box up: it refuses ``--roi-voxels``,
+    ``--roi-centred``, ``--use-cache-dir``, ``--sub-volume``, a chunk fraction below 1 (a chunked
+    run reads the anatomy image and re-tiles the map), a crop or cache setting from the YAML, and
+    a ``--specimen`` the sidecar does not name. It checks the map's shape against the sidecar from the file
+    header, so every refusal comes before any data loads. Then it switches the crop off.
+    """
+    from ImageLynx.roi_placement import check_placed_input_shape, read_placed_input_record
+
+    conflicts = []
+    if args.roi_voxels is not None or skel_config.sub_volume_voxels is not None:
+        conflicts.append("--roi-voxels (or SkeletonConfig.sub_volume_voxels) would cut the "
+                         "map again")
+    if args.roi_centred:
+        conflicts.append("--roi-centred would cut the map at the array centre")
+    if args.sub_volume is not None:
+        conflicts.append("--sub-volume would cut the map again")
+    elif skel_config.sub_volume_percentage != SkeletonConfig().sub_volume_percentage:
+        conflicts.append(f"SkeletonConfig.sub_volume_percentage "
+                         f"({skel_config.sub_volume_percentage}) would cut the map again")
+    if any(o != 0 for o in (skel_config.sub_volume_offset_z, skel_config.sub_volume_offset_y,
+                            skel_config.sub_volume_offset_x)):
+        conflicts.append("SkeletonConfig.sub_volume_offset_zyx would cut the map again")
+    if pipeline_config.pre_generated_mask_and_skeleton:
+        conflicts.append("--use-cache-dir would load another run's cached mask and skeleton")
+    if pipeline_config.chunk_fraction < 1.0:
+        conflicts.append(f"chunking (--chunk-fraction {pipeline_config.chunk_fraction}) would "
+                         f"re-tile the map and read the anatomy image, which a pre-cut map "
+                         f"does not come with")
+    if conflicts:
+        raise ValueError("--placed-input cannot be combined with: " + "; ".join(conflicts) + ".")
+
+    record = read_placed_input_record(args.placed_input)
+    if record["specimen_id"] != args.specimen:
+        raise ValueError(
+            f"--specimen is {args.specimen}, but the sidecar of {args.placed_input} names "
+            f"{record['specimen_id']}. Pass --specimen {record['specimen_id']} to run it; "
+            f"--specimen has a default, and it is not read from the sidecar.")
+    check_placed_input_shape(args.placed_input, record, H5_DATASET_NAME)
+
+    # The map is the ROI already: leave every crop setting at "no crop".
+    skel_config.sub_volume_percentage = 1.0
+    return record
+
+
 def _apply_hysteresis_overrides(pre_config, low=None, high=None):
     """Set the hysteresis band from the command line; None leaves a bound as configured.
 
@@ -2326,6 +2374,14 @@ if __name__ == "__main__":
     parser.add_argument("--specimen", type=str, default="WKY-A",
                         help="Which specimen to run: WKY-A/B/C or SHR-A/B/C. Selects the "
                              "probability volume and that specimen's measured voxel size.")
+    parser.add_argument("--placed-input", type=str, default=None, metavar="PATH",
+                        help="Run on a probability map already cut at its placed ROI (zyxc HDF5) "
+                             "instead of the specimen's full map. Its JSON sidecar, "
+                             "PATH.placement.json, holds the placement record (the keys of "
+                             "roi_placement.json); it is written to the run folder as "
+                             "roi_placement.json and place_roi is skipped. Needs --specimen to "
+                             "name the sidecar's specimen. Refuses --roi-voxels, --roi-centred, "
+                             "--sub-volume, --use-cache-dir and a --chunk-fraction below 1.")
     parser.add_argument("--list-specimens", action="store_true",
                         help="Print each specimen's segmentation status and exit.")
     parser.add_argument("--record-provenance", action="store_true",
@@ -2463,6 +2519,10 @@ if __name__ == "__main__":
     if args.optimize_patience is not None:
         pipeline_config.optimize_patience = args.optimize_patience
 
+    PLACED_RECORD = None
+    if args.placed_input is not None:
+        PLACED_RECORD = _apply_placed_input(args, skel_config, pipeline_config)
+
     # Resolve the specimen first: it supplies the probability volume and the artefact paths.
     # The voxel size is deliberately NOT per-specimen - see PipelineConfig.voxel_size_um. An
     # explicit --voxel-size-um still wins.
@@ -2475,7 +2535,10 @@ if __name__ == "__main__":
 
     # Crop at this specimen's placed ROI (open item 27). The sidecar names the box, so the
     # H1/H2 drivers can refuse an output cut anywhere else.
-    ROI_RECORD = _apply_roi_placement(skel_config, active_specimen, centred=args.roi_centred)
+    if PLACED_RECORD is not None:
+        ROI_RECORD = PLACED_RECORD
+    else:
+        ROI_RECORD = _apply_roi_placement(skel_config, active_specimen, centred=args.roi_centred)
     if ROI_RECORD is not None:
         print(f"  ROI {'array centre' if ROI_RECORD['centred'] else 'placed'}: centre "
               f"{tuple(ROI_RECORD['centre_zyx'])}, bounds {ROI_RECORD['bounds_zyx']} "
@@ -2500,7 +2563,9 @@ if __name__ == "__main__":
         print(f"Voxel size (z,y,x) set from configuration: {tuple(VOXEL_SIZE_UM)} um")
 
     # 4. Run Ilastik Segmentation (if enabled)
-    if RUN_ILASTIK:
+    if args.placed_input is not None:
+        target_input_mask_path = Path(args.placed_input)
+    elif RUN_ILASTIK:
         # Example using explicit kwargs for clarity
         target_input_mask_path = run_ilastik_segmentation(
             ilastik_bin=ILASTIK_BINARY_PATH,

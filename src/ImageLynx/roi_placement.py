@@ -179,6 +179,15 @@ def place_roi(
 #: ``place_roi`` before using the output (open item 27).
 ROI_RECORD_NAME = "roi_placement.json"
 
+#: The keys ``roi_record`` writes, in its order. A placed-input sidecar must hold all of them.
+ROI_RECORD_KEYS = (
+    "specimen_id", "volume_shape_zyx", "centre_zyx", "size_zyx", "bounds_zyx", "offsets_zyx",
+    "peak_slice", "source", "centred",
+)
+
+#: Appended to a pre-cut probability map's file name to name the JSON sidecar next to it.
+PLACED_INPUT_SIDECAR_SUFFIX = ".placement.json"
+
 
 def placement_fell_back(placement: RoiPlacement) -> bool:
     """True when any axis of the placement came from the volume centre, not the data."""
@@ -262,6 +271,89 @@ def check_output_roi(directory, specimen, size_zyx: Sequence[int],
             f"has changed since that run; re-run cb_h1_batch.py --stage run."
         )
     return record
+
+
+def placed_input_sidecar_path(map_path):
+    """The JSON sidecar that holds the placement record of the pre-cut map ``map_path``."""
+    from pathlib import Path
+
+    map_path = Path(map_path)
+    return map_path.with_name(map_path.name + PLACED_INPUT_SIDECAR_SUFFIX)
+
+
+def read_placed_input_record(map_path) -> dict:
+    """The placement record of a pre-cut probability map, from its sidecar.
+
+    ``--placed-input`` skips ``place_roi`` and takes the box from here. The sidecar holds every
+    key ``roi_record`` writes (it may hold more, such as where the cut came from); the record
+    returned has those keys only, so it is what ``roi_placement.json`` should hold. Raises when
+    the map or its sidecar is missing, the sidecar is not a JSON object, a key is missing, or
+    the record contradicts itself (a size that is not three voxel counts, bounds that are not
+    that size, a ``centred`` box, which is not a placed one). Reads no image data.
+    """
+    import json
+    from pathlib import Path
+
+    map_path = Path(map_path)
+    if not map_path.is_file():
+        raise FileNotFoundError(f"--placed-input {map_path}: no such file.")
+    sidecar = placed_input_sidecar_path(map_path)
+    if not sidecar.is_file():
+        raise FileNotFoundError(
+            f"--placed-input {map_path}: its placement sidecar {sidecar} does not exist. The "
+            f"sidecar holds the box the map was cut at (the keys of {ROI_RECORD_NAME}).")
+    try:
+        data = json.loads(sidecar.read_text())
+    except json.JSONDecodeError as error:
+        raise ValueError(f"The placement sidecar {sidecar} is not valid JSON: {error}") from error
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"The placement sidecar {sidecar} must hold a JSON object, not {type(data).__name__}.")
+    missing = [key for key in ROI_RECORD_KEYS if key not in data]
+    if missing:
+        raise ValueError(f"The placement sidecar {sidecar} is missing {missing}; it needs "
+                         f"{list(ROI_RECORD_KEYS)}.")
+    record = {key: data[key] for key in ROI_RECORD_KEYS}
+
+    if not isinstance(record["specimen_id"], str):
+        raise ValueError(f"{sidecar}: specimen_id must be text, got {record['specimen_id']!r}.")
+    if record["centred"] is not False:
+        raise ValueError(
+            f"{sidecar}: centred is {record['centred']!r}. A pre-cut map is cut at a placed "
+            f"box, not at the array centre (--roi-centred).")
+    size = record["size_zyx"]
+    if not (isinstance(size, list) and len(size) == 3
+            and all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in size)):
+        raise ValueError(f"{sidecar}: size_zyx must be three positive integers, got {size!r}.")
+    bounds = record["bounds_zyx"]
+    extents = None
+    if (isinstance(bounds, list) and len(bounds) == 3
+            and all(isinstance(b, list) and len(b) == 2 and all(isinstance(v, int) for v in b)
+                    for b in bounds)):
+        extents = [b[1] - b[0] for b in bounds]
+    if extents != size:
+        raise ValueError(f"{sidecar}: bounds_zyx {bounds!r} do not span size_zyx {size!r}.")
+    return record
+
+
+def check_placed_input_shape(map_path, record: dict, dataset: str) -> None:
+    """Refuse a pre-cut map whose spatial shape is not the record's ``size_zyx``.
+
+    Reads the dataset's shape from the HDF5 header only; the array stays on disk.
+    """
+    import h5py
+
+    with h5py.File(map_path, "r") as handle:
+        if dataset not in handle:
+            raise ValueError(f"--placed-input {map_path} has no dataset {dataset!r}; it holds "
+                             f"{list(handle.keys())}.")
+        shape = tuple(int(v) for v in handle[dataset].shape)
+    spatial = shape[:3]
+    if len(shape) != 4 or list(spatial) != list(record["size_zyx"]):
+        raise ValueError(
+            f"--placed-input {map_path}: dataset {dataset!r} has shape {shape}, but its sidecar's "
+            f"size_zyx is {tuple(record['size_zyx'])}. The map must be zyxc, cut at exactly "
+            f"that size.")
 
 
 def format_placement_table(placements: Sequence[RoiPlacement], specimens=None) -> str:
