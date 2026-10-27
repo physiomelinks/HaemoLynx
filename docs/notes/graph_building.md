@@ -318,7 +318,7 @@ threshold reaches 90%: 5-8 um gets 45/55, the rule's 10 um 43/55, all V 29/55. L
 (inside one lumen by the mask) are the part the hole cannot reach: 17 pieces, 5 of them V. The
 rule is unchanged; what it leaves is the review list's.
 
-Grid O (sent 2026-10-26, unmarked): segmentation no skeleton crosses. On E14.5 at `6d5c1bb1`
+Grid O (sent 2026-10-26, rebuilt 2026-10-27, unmarked): segmentation no skeleton crosses. On E14.5 at `6d5c1bb1`
 (Harvey's Claudin segmentation) the mask no centreline of the skeleton covers by mask recovery's
 own rule (the skeleton as graph building's first step makes it: 1.02 M voxels in 12,004 pieces)
 leaves 723 pieces of at least 200 um^3 whose widest point lies within 2 r + 3 um of the skeleton
@@ -331,6 +331,11 @@ dextran. Question: V a vessel the skeleton misses, X one wide vessel and the cen
 (`outputs/sc/build_grid_o.py`, `O_key.csv`, `O_pool.csv`, scorer `fit_o.py`, worktree
 `quirky-goodall-bbcb6f`; page https://claude.ai/artifact/5JV79DThQbhZ2ZkAo2N4Qn, marks in
 `annotations`). Grids UR1/UR2 asked the same of the mask the *graph* misses and found no measure.
+Rebuilt 2026-10-27 (same 30 pieces and IDs, at origin `ea4d4fc9`): the pieces are mostly the
+far wall or a bulge of a wide lumen (O-01 spans 29 x 22 x 20 um but holds 524 um^3), so each is now
+drawn as a 3 um section through the centreline beside it and its far edge -- the vessel a band
+with its centreline along it, the piece filled red to one side -- instead of in its own plane,
+where the centreline did not show; the graph drawn is today's (pair rewire and rejoin guard on).
 
 ## graph/smoothing.py
 
