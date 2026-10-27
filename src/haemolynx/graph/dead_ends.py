@@ -72,6 +72,8 @@ SOURCE_REVIEW = "review"
 SOURCE_CLASSIFIER = "classifier"
 #: Known by construction: the generator of a synthetic network (``haemolynx.synthetic``).
 SOURCE_SYNTHETIC = "synthetic"
+#: Known by construction: a vessel :func:`graph.crop.crop_graph_to_box` cut at a face.
+SOURCE_CROP = "crop"
 
 #: A tip within this many of the finest voxels of a face touches it -- or
 #: within its own lumen radius, whichever is larger.

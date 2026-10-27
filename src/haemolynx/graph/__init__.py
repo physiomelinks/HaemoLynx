@@ -223,6 +223,7 @@ from .large_vessels import (
     swap_minority_touching_vessel_components,
 )
 from .cut_at_large_vessel_volumes import cut_graph_at_large_vessel_volumes
+from .crop import crop_graph_to_box
 from .large_vessel_network import (
     find_large_vessel_mask_stump_points,
     select_large_vessel_mask_stump_terminal_nodes_for_role,
@@ -461,6 +462,7 @@ __all__ = [
     "remove_small_opposite_attached_large_vessel_components",
     "swap_minority_touching_vessel_components",
     "cut_graph_at_large_vessel_volumes",
+    "crop_graph_to_box",
     "find_large_vessel_mask_stump_points",
     "select_large_vessel_mask_stump_terminal_nodes_for_role",
     "select_large_vessel_stump_terminal_nodes",

@@ -322,3 +322,24 @@ a scaled network against the template scaled the same way (`compare_run` reads t
 options); it read the template at its own size, so every box, count and endpoint row of a scaled
 run was outside. At a factor like 1.5 the first tree order can be one vessel short of the scaled
 count (a root grows an odd number of them, `trees.grow_side`'s note), whichever axes.
+
+## 2026-10-27: open-end models against a known beyond (`PLAN_synthetic_surround.md` phase 1)
+
+`scripts/surround_check.py`: a synthetic network drawn at 1.5x its template's box along x and y,
+closed and solved, is the truth; a box of the template's size cut from it (`graph.crop_graph_to_box`)
+is a stand-in image, fed through its widest arterial and venous open ends; the image is solved under
+each `open_end_model` and every vessel's flow scored against the truth. An oracle (each open end at
+the truth's pressure) gives the truth back to 1e-12. Over 10 runs on E14.5's template, the default
+`estimated` is the best of the models and still far from the truth: 76% of vessels flow the true way
+(82% beyond 20 um of a face), median flow error 77%, rank correlation 0.72; `closed` 68%,
+`terminal_resistance` and `outlet` 60-65% with 9-28 times the true inflow through the designated
+inlets. In the truth 89% of the blood entering the image comes through its open ends. At arterial
+and venous open ends the `estimated` direction is right 59 times in 124, no better than a coin. 1.5x,
+not more: the generator roots every tree on the outer faces, so a larger truth holds no box fed from
+both sides.
+
+Harvey (2026-10-27, D5): every arteriole and venule open end is to run on as a trunk to the
+surround's outer face, whichever way its blood ran ("revisit if the harness says otherwise"). On
+the harness a trunk is right at 97 of 124 such ends on E14.5 and 46 of 53 on the fixture, a count
+biased toward it: the truth roots every tree outside the image. The report's last line gives the
+count and says "revisit D5" at half or fewer.

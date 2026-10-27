@@ -3,7 +3,8 @@
 :mod:`.template` reads what a run's ``.haemorun`` says a network is like;
 :mod:`.generate` draws a new network to it (:mod:`.trees`, :mod:`.bed`,
 :mod:`.polylines`); :mod:`.compare` scores the synthetic run's own
-statistics against the template.
+statistics against the template; :mod:`.surround` reads an image's open
+ends for a synthetic network drawn round it (``PLAN_synthetic_surround.md``).
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ from .generate import (
     generate_network,
     validate_synthetic_graph,
 )
+from .surround import ImageOpenEnd, read_open_ends
 from .template import (
     DEFAULT_DAUGHTER_ANGLE_DEG,
     DEFAULT_MURRAY_EXPONENT,
@@ -103,6 +105,7 @@ __all__ = [
     "DeadEndTarget",
     "Endpoint",
     "GenerationOptions",
+    "ImageOpenEnd",
     "LayoutTarget",
     "LoopTarget",
     "NetworkTemplate",
@@ -123,6 +126,7 @@ __all__ = [
     "generate_network",
     "load_template",
     "measure_template",
+    "read_open_ends",
     "required_statistics_for",
     "template_from_graph",
     "template_from_report",
