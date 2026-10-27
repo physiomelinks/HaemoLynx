@@ -62,6 +62,7 @@ from .template import (
     GRAPH_TEMPLATE_RECORD,
     INTERIOR,
     ROLES,
+    SCALE_AXES_XYZ,
     NetworkTemplate,
     lognormal_from_mean_median,
     lognormal_from_median_p10_p90,
@@ -134,6 +135,9 @@ OPEN_ENDS = (OPEN_ENDS_CLOSED, OPEN_ENDS_TEMPLATE)
 @dataclass(frozen=True)
 class GenerationOptions:
     scale: float = 1.0
+    #: ``template.SCALE_AXES``: the axes *scale* grows the box along, all
+    #: three or x and y only (the ``synthetic_scale_axes`` setting).
+    scale_axes: str = SCALE_AXES_XYZ
     #: The template's dead ends inside the tissue drawn too (the
     #: ``synthetic_interior_dead_ends`` setting; off by default, D3a).
     interior_dead_ends: bool = False
@@ -513,7 +517,7 @@ def generate_network(
         raise ValueError(f"open_ends must be one of {', '.join(OPEN_ENDS)}, not {options.open_ends!r}")
     closed = options.open_ends == OPEN_ENDS_CLOSED
     rng = rng if rng is not None else np.random.default_rng(seed)
-    T = template.scaled(options.scale)
+    T = template.scaled(options.scale, options.scale_axes)
     extent = np.asarray(T.extent_um, dtype=float)
     if not T.inlets or not T.outlets:
         raise ValueError("the template has no inlets or no outlets to draw from")

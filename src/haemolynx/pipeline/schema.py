@@ -244,12 +244,27 @@ SCHEMA = Schema(
             default=1.0,
             help=(
                 "Size of the synthetic box relative to the template's image, 1 for the "
-                "same extent; vessel counts scale with the volume, inlets and outlets "
-                "with the faces"
+                "same extent, along the axes synthetic_scale_axes names; vessel counts "
+                "scale with the volume, inlets and outlets with the faces"
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.1,
             maximum=10.0,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_scale_axes",
+            kind="choice",
+            # Kept equal to haemolynx.synthetic.template's SCALE_AXES.
+            default="xyz",
+            choices=("xyz", "xy"),
+            help=(
+                "The axes synthetic_scale grows the synthetic box along: xyz all three, "
+                "xy only x and y, keeping the template's depth (a wider field of the "
+                "same tissue, so vessel counts scale with the area)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
             requires=("network_source=synthetic",),
             advanced=True,
         ),

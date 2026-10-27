@@ -518,6 +518,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "synthetic_template_source": "Match the template by",
     "synthetic_seed": "Synthetic network seed",
     "synthetic_scale": "Synthetic box scale",
+    "synthetic_scale_axes": "Scale the box along",
     "synthetic_interior_dead_ends": "Reproduce dead ends inside the tissue",
     "synthetic_bed_model": "Capillary bed model",
     "synthetic_open_ends": "Vessels leaving the box",
@@ -570,6 +571,10 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
     "synthetic_open_ends": {
         "closed": "None (inlets and outlets only)",
         "template": "As many as the template's",
+    },
+    "synthetic_scale_axes": {
+        "xyz": "x, y and z",
+        "xy": "x and y (the template's depth kept)",
     },
     "segmentation_source": {
         "plasma_column": "Plasma column (luminal stain)",

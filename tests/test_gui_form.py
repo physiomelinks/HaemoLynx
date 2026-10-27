@@ -1473,7 +1473,7 @@ def test_the_input_tab_swaps_its_rows_on_the_network_source():
         assert name not in synthetic, name
     for name in (
         "synthetic_template_path", "synthetic_template_source", "synthetic_seed", "synthetic_scale",
-        "synthetic_interior_dead_ends", "synthetic_open_ends", "synthetic_bed_model",
+        "synthetic_scale_axes", "synthetic_interior_dead_ends", "synthetic_open_ends", "synthetic_bed_model",
     ):
         assert name in synthetic, name
         assert name not in image, name

@@ -135,6 +135,33 @@ def test_compare_run_on_a_generated_network_scores_its_rows():
     assert exact and all(r.within is not False for r in exact)
 
 
+@pytest.mark.parametrize("axes", ["xyz", "xy"])
+def test_a_scaled_network_is_scored_against_the_template_in_its_box(axes):
+    """Regression: the rows read the template at its own size, so every box,
+    count and endpoint row of a network drawn in a larger box was outside.
+    (Twice the size: at 1.5 a root's first order can be one vessel short of
+    the scaled count, a root growing an odd number of them.)"""
+    T = fixture_template()
+    G = generate_network(T, seed=5, options=GenerationOptions(scale=2.0, scale_axes=axes))
+    roles = boundary_nodes(G)
+    from haemolynx.graph.branch_order import assign_vessel_branch_orders
+
+    assign_vessel_branch_orders(G, roles["inlet"], outlet_nodes=roles["outlet"], arteriole_boundary_nodes=roles["arteriole_boundary"], venule_boundary_nodes=roles["venule_boundary"])
+    rows = compare_run(T, G, roles=roles)
+    scaled = T.scaled(2.0, axes)
+    by_name = {(r.section, r.characteristic): r for r in rows}
+    for axis, letter in enumerate("zyx"):
+        extent = by_name[("box", f"extent {letter} (um)")]
+        assert float(extent.template) == pytest.approx(scaled.extent_um[axis]) and extent.within, extent
+    assert int(by_name[("endpoints", "inlets")].template) == scaled.inlet_count
+    exact = [r for r in rows if r.tolerance == "exact"]
+    assert exact and all(r.within is not False for r in exact), [r for r in exact if r.within is False]
+    # A batch template's members are read in the same box.
+    members = compare_run(T, G, roles=roles, members=[T, T])
+    ranged = next(r for r in members if (r.section, r.characteristic) == ("box", "extent y (um)"))
+    assert ranged.within_members is True
+
+
 def test_the_diameter_basis_row_compares_the_names():
     T = replace(fixture_template(), diameter_basis="endothelial")
 

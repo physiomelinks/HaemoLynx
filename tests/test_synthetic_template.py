@@ -596,6 +596,59 @@ def test_a_bad_scale_factor_raises(factor):
         fixture_template().scaled(factor)
 
 
+def test_scaled_along_x_and_y_keeps_the_depth_and_counts_go_as_the_area():
+    template = fixture_template()
+    scaled = template.scaled(2.0, "xy")
+    assert scaled.extent_um == (120.0, 400.0, 400.0)
+    assert scaled.image_shape == (121, 409, 409)
+    assert scaled.voxel_size_zyx == template.voxel_size_zyx
+    assert scaled.image_volume_um3 == pytest.approx(template.image_volume_um3 * 4, rel=0.01)
+    assert scaled.classes["capillary"].count == 160 * 4
+    assert scaled.classes["capillary"].total_length_um == pytest.approx(160 * 50.0 * 4)
+    assert scaled.classes["capillary"].mean_length_um == 50.0
+    assert [o.edge_count for o in scaled.orders] == [8, 16, 24, 8, 16]
+    assert scaled.loops.independent_loops == 51 * 4
+    assert scaled.arteriole_boundary_count == 24 and scaled.venule_boundary_count == 16
+    # The x faces the inlets and outlets sit on grow as y alone: twice.
+    assert len(scaled.inlets) == 4 and {e.face for e in scaled.inlets} == {"x0"}
+    assert len(scaled.outlets) == 4 and {e.face for e in scaled.outlets} == {"x1"}
+    # Dead ends at the faces go as the box's surface: its two 200 x 200 faces
+    # four times larger, its four 120 x 200 faces twice.
+    surface = (2 * 40000 * 4 + 4 * 24000 * 2) / (2 * 40000 + 4 * 24000)
+    assert scaled.dead_ends.leaves_image == round(8 * surface) == 23
+    assert scaled.dead_ends.interior == 8 * 4
+    assert scaled.dead_ends.total == 23 + 32
+    assert any("scaled by 2" in n and "along x and y" in n for n in scaled.provenance.notes)
+    assert scaled.organisation == template.organisation and scaled.layout == template.layout
+
+
+def test_each_face_keeps_its_own_share_of_endpoints():
+    template = replace(
+        fixture_template(),
+        inlets=(Endpoint("z0", (0.0, 0.5, 0.5)), Endpoint("x0", (0.5, 0.3, 0.0)), Endpoint("interior", (0.5, 0.5, 0.5))),
+    )
+
+    def faces(scaled):
+        return {face: sum(1 for e in scaled.inlets if e.face == face) for face in ("z0", "x0", "interior")}
+
+    # Along x and y the z face grows four times, an x face twice, and an
+    # endpoint inside the box as the surface.
+    assert faces(template.scaled(2.0, "xy")) == {"z0": 4, "x0": 2, "interior": 3}
+    assert faces(template.scaled(2.0)) == {"z0": 4, "x0": 4, "interior": 4}
+    assert faces(template.scaled(0.5, "xy")) == {"z0": 1, "x0": 1, "interior": 1}
+
+
+def test_scale_factors_name_the_axes_grown():
+    assert tpl.scale_factors_zyx(2.0) == (2.0, 2.0, 2.0)
+    assert tpl.scale_factors_zyx(2.0, "xy") == (1.0, 2.0, 2.0)
+    template = fixture_template()
+    assert template.scaled(1.0, "xy") is template
+    with pytest.raises(ValueError, match="scale axes"):
+        fixture_template().scaled(2.0, "z")
+    schema = default_schema()["synthetic_scale_axes"]
+    assert schema.choices == tpl.SCALE_AXES and schema.default == tpl.SCALE_AXES_XYZ
+
+
 def _lognormal_mean_median(mu: float, sigma: float) -> tuple[float, float]:
     return math.exp(mu + sigma**2 / 2.0), math.exp(mu)
 

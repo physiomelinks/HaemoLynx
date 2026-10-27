@@ -149,6 +149,13 @@ DEFAULT_DIAMETER_CV = 0.3
 FACES: tuple[str, ...] = ("z0", "y0", "x0", "z1", "y1", "x1")
 INTERIOR = "interior"
 
+#: The ``synthetic_scale_axes`` choices: the axes ``synthetic_scale`` grows
+#: the box along. ``xy`` keeps the template's depth (a wider field of the same
+#: tissue), ``xyz`` grows all three.
+SCALE_AXES_XYZ = "xyz"
+SCALE_AXES_XY = "xy"
+SCALE_AXES: tuple[str, ...] = (SCALE_AXES_XYZ, SCALE_AXES_XY)
+
 _SIDES = {"arterial": ("large_arteriole", "arteriole"), "venous": ("large_venule", "venule")}
 
 
@@ -405,20 +412,20 @@ class NetworkTemplate:
 
     # -- scaling -----------------------------------------------------------
 
-    def scaled(self, factor: float) -> "NetworkTemplate":
-        """The same network in a box *factor* times as wide: counts and total
-        lengths go as the volume (``factor**3``), inlets and outlets as the
-        faces (``factor**2``, each face keeping at least one it had), every
+    def scaled(self, factor: float, axes: str = SCALE_AXES_XYZ) -> "NetworkTemplate":
+        """The same network in a box *factor* times as wide along *axes*
+        (:data:`SCALE_AXES`): counts and total lengths go as the volume
+        (``factor**3``, or ``factor**2`` along x and y), inlets and outlets as
+        the area of the face each is on (each face keeping at least one it
+        had), dead ends leaving the image as the box's surface, every
         per-vessel figure and density stays."""
-        factor = float(factor)
-        if not math.isfinite(factor) or factor <= 0:
-            raise ValueError(f"scale factor must be positive, got {factor!r}")
-        if factor == 1.0:
+        factors = scale_factors_zyx(factor, axes)
+        if factors == (1.0, 1.0, 1.0):
             return self
-        volume = factor**3
-        area = factor**2
-        extent = tuple(float(e) * factor for e in self.extent_um)
-        shape = tuple(int(round((s - 1) * factor)) + 1 for s in self.image_shape)
+        volume = float(np.prod(factors))
+        surface = _surface_factor(self.extent_um, factors)
+        extent = tuple(float(e) * f for e, f in zip(self.extent_um, factors))
+        shape = tuple(int(round((s - 1) * f)) + 1 for s, f in zip(self.image_shape, factors))
         classes = {
             key: replace(
                 target,
@@ -435,19 +442,21 @@ class NetworkTemplate:
             ),
         )
         parts = {
-            "leaves_image": _scaled_count(self.dead_ends.leaves_image, area),
+            "leaves_image": _scaled_count(self.dead_ends.leaves_image, surface),
             "interior": _scaled_count(self.dead_ends.interior, volume),
             "artefacts": _scaled_count(self.dead_ends.artefacts, volume),
             "island_ends": _scaled_count(self.dead_ends.island_ends, volume),
         }
         dead_ends = replace(self.dead_ends, total=sum(parts.values()), **parts)
-        notes = self.provenance.notes + (f"scaled by {factor:g} from the template's box",)
+        along = "" if axes == SCALE_AXES_XYZ else " along x and y, its depth kept"
+        notes = self.provenance.notes + (f"scaled by {float(factor):g} from the template's box{along}",)
+        faces = _face_factors(factors, surface)
         return replace(
             self,
             extent_um=extent,
             image_shape=shape,
-            inlets=_scaled_endpoints(self.inlets, area),
-            outlets=_scaled_endpoints(self.outlets, area),
+            inlets=_scaled_endpoints(self.inlets, faces),
+            outlets=_scaled_endpoints(self.outlets, faces),
             arteriole_boundary_count=_scaled_count(self.arteriole_boundary_count, volume),
             venule_boundary_count=_scaled_count(self.venule_boundary_count, volume),
             large_arteriole_boundary_count=_scaled_count(self.large_arteriole_boundary_count, volume),
@@ -495,20 +504,56 @@ def _scaled_count(count: int, factor: float) -> int:
     return int(round(int(count) * factor)) if count else 0
 
 
-def _scaled_endpoints(endpoints: Sequence[Endpoint], area: float) -> tuple:
-    """*area* times as many, cycling through the ones there are, never below
-    one per face the template had one on."""
+def scale_factors_zyx(factor: float, axes: str = SCALE_AXES_XYZ) -> tuple[float, float, float]:
+    """The box's growth along z, y and x: *factor* along the axes *axes*
+    names (:data:`SCALE_AXES`), 1 along the others."""
+    factor = float(factor)
+    if not math.isfinite(factor) or factor <= 0:
+        raise ValueError(f"scale factor must be positive, got {factor!r}")
+    if axes not in SCALE_AXES:
+        raise ValueError(f"scale axes must be one of {', '.join(SCALE_AXES)}, not {axes!r}")
+    return tuple(factor if letter in axes else 1.0 for letter in "zyx")
+
+
+def _surface_factor(extent_um: Sequence[float], factors: Sequence[float]) -> float:
+    """How much the box's surface grows: each pair of faces' area weighted
+    by its own growth (a box with no surface grows as a cube's face would)."""
+    fz, fy, fx = (float(f) for f in factors)
+    if fz == fy == fx:
+        return fz**2
+    ez, ey, ex = (float(e) for e in extent_um)
+    areas = np.array([ey * ex, ez * ex, ez * ey])
+    if areas.sum() <= 0:
+        return (fz * fy * fx) ** (2.0 / 3.0)
+    return float((areas * np.array([fy * fx, fz * fx, fz * fy])).sum() / areas.sum())
+
+
+def _face_factors(factors: Sequence[float], surface: float) -> dict[str, float]:
+    """Each face's growth (:data:`FACES`: the product of the other two axes'
+    factors), and an endpoint inside the box's, the surface's."""
+    fz, fy, fx = (float(f) for f in factors)
+    growth = {"z": fy * fx, "y": fz * fx, "x": fz * fy}
+    return {**{face: growth[face[0]] for face in FACES}, INTERIOR: surface}
+
+
+def _scaled_endpoints(endpoints: Sequence[Endpoint], factors: Mapping[str, float]) -> tuple:
+    """Each face's endpoints times its growth (*factors*, by face), never
+    below one on a face the template had one on, cycling through the ones
+    there are."""
     if not endpoints:
         return ()
-    wanted = max(1, int(round(len(endpoints) * area)))
-    by_face: dict[str, list[Endpoint]] = {}
-    for end in endpoints:
-        by_face.setdefault(end.face, []).append(end)
-    wanted = max(wanted, len(by_face))
+    wanted = {
+        face: max(1, int(round(count * factors.get(face, factors[INTERIOR]))))
+        for face, count in Counter(end.face for end in endpoints).items()
+    }
+    total = sum(wanted.values())
     out: list[Endpoint] = []
     i = 0
-    while len(out) < wanted:
-        out.append(endpoints[i % len(endpoints)])
+    while len(out) < total:
+        end = endpoints[i % len(endpoints)]
+        if wanted[end.face]:
+            out.append(end)
+            wanted[end.face] -= 1
         i += 1
     return tuple(out)
 
@@ -1548,6 +1593,9 @@ __all__ = [
     "Provenance",
     "REQUIRED_SECTIONS",
     "ROLES",
+    "SCALE_AXES",
+    "SCALE_AXES_XY",
+    "SCALE_AXES_XYZ",
     "SECTION_TOGGLES",
     "SOURCE_GRAPH",
     "SOURCE_STATISTICS",
@@ -1569,6 +1617,7 @@ __all__ = [
     "read_layout",
     "required_statistics_for",
     "run_diameter_basis_of",
+    "scale_factors_zyx",
     "template_diameter_basis",
     "template_from_graph",
     "template_from_report",

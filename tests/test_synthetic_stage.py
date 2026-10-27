@@ -139,6 +139,18 @@ def test_the_graph_stage_draws_the_network_and_pickles_it(template_run, tmp_path
     )
 
 
+def test_the_graph_stage_scales_the_box_along_the_axes_the_settings_choose(template_run, tmp_path):
+    from haemolynx.synthetic import load_template
+
+    template = load_template(template_run, "statistics")
+    settings = _settings(template_run, tmp_path, synthetic_scale=1.5, synthetic_scale_axes="xy")
+    G = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA).graph
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["options"]["scale"] == 1.5
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["options"]["scale_axes"] == "xy"
+    assert synthetic_box_shape(G) == template.scaled(1.5, "xy").image_shape
+    assert synthetic_box_shape(G)[0] == template.image_shape[0]
+
+
 def test_the_graph_stage_draws_the_bed_model_the_settings_choose(template_run, tmp_path):
     settings = _settings(template_run, tmp_path, synthetic_bed_model="voronoi")
     G = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA).graph
@@ -318,6 +330,7 @@ def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     assert manifest["status"] == "finished"
     assert manifest["network_source"] == "synthetic"
     assert manifest["synthetic"]["seed"] == 3
+    assert manifest["synthetic"]["scale"] == 1.0 and manifest["synthetic"]["scale_axes"] == "xyz"
     assert manifest["synthetic"]["bed_model"] == "delaunay"
     assert manifest["synthetic"]["open_ends"] == "closed"
     assert manifest["synthetic"]["source"] == "statistics"

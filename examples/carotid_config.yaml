@@ -14,8 +14,10 @@ input_and_segmentation:
   synthetic_template_source: statistics
   # Draw the synthetic network from this seed, so a run repeats; another seed draws another network, and null draws a fresh one every run  [needs network_source = synthetic]
   synthetic_seed: 20240917
-  # Size of the synthetic box relative to the template's image, 1 for the same extent; vessel counts scale with the volume, inlets and outlets with the faces  [range 0.1..10.0; needs network_source = synthetic]
+  # Size of the synthetic box relative to the template's image, 1 for the same extent, along the axes synthetic_scale_axes names; vessel counts scale with the volume, inlets and outlets with the faces  [range 0.1..10.0; needs network_source = synthetic]
   synthetic_scale: 1.0
+  # The axes synthetic_scale grows the synthetic box along: xyz all three, xy only x and y, keeping the template's depth (a wider field of the same tissue, so vessel counts scale with the area)  [one of: xyz, xy; needs network_source = synthetic]
+  synthetic_scale_axes: xyz
   # Give the synthetic network the template's number of dead ends inside the tissue; off, its only dead ends are on the faces (in a closed network, its inlets and outlets)  [needs network_source = synthetic]
   synthetic_interior_dead_ends: false
   # Whether vessels of the synthetic network leave its box: closed keeps every vessel inside, so blood enters only at the inlets and leaves only at the outlets; template cuts as many vessels at the faces as the template run had leaving its image, open ends the haemodynamics then treat by open_end_model  [one of: closed, template; needs network_source = synthetic]

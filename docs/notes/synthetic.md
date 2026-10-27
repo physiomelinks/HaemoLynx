@@ -308,3 +308,17 @@ taken for the tissue as often as the template's own render) is met. What is stil
 (7-11% of the box beyond 50 um of a vessel against E14.5's 0.5%, measured but not drawn to), and
 verification 3, a second tissue as the template, which waits on a run with arteriole/venule masks
 or hand-picked boundaries.
+
+## 2026-10-27: the box scaled along x and y, or all three
+
+`synthetic_scale_axes` (`xyz`, the default and what `synthetic_scale` always did, or `xy`) picks
+the axes `synthetic_scale` grows the box along; `xy` keeps the template's depth, a wider field of
+the same tissue. `NetworkTemplate.scaled(factor, axes)`: counts and total lengths go as the volume
+(the factor squared for `xy`), each inlet and outlet as the area of its own face (an x face grows
+as y alone under `xy`; one inside the box as the surface), dead ends leaving the image as the box's
+surface, each pair of faces weighted by its own growth. The organisation's cells are shares of the
+extent, so under `xy` they stretch across the plane and keep their depth. The comparison now scores
+a scaled network against the template scaled the same way (`compare_run` reads the record's
+options); it read the template at its own size, so every box, count and endpoint row of a scaled
+run was outside. At a factor like 1.5 the first tree order can be one vessel short of the scaled
+count (a root grows an odd number of them, `trees.grow_side`'s note), whichever axes.

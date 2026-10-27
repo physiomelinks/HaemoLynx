@@ -389,6 +389,25 @@ def test_scale_grows_the_box_and_the_counts():
     assert len(boundary_nodes(G)["inlet"]) == max(1, round(2 * 1.5**2))
 
 
+def test_scale_along_x_and_y_grows_the_box_but_keeps_its_depth():
+    T = fixture_template()
+    G = generate_network(T, seed=SEED, options=GenerationOptions(scale=1.5, scale_axes="xy"))
+    extent = np.asarray(G.graph["image_extent_um"], float)
+    assert np.allclose(extent, np.asarray(T.extent_um) * (1.0, 1.5, 1.5))
+    positions = np.array([G.nodes[n]["pos"] for n in G.nodes], float)
+    assert positions[:, 0].min() >= 0.0 and positions[:, 0].max() <= T.extent_um[0] + 1e-9
+    assert positions[:, 1:].max() > max(T.extent_um[1:])  # the network fills the wider box
+    record = G.graph[GRAPH_TEMPLATE_RECORD]
+    assert record["options"]["scale_axes"] == "xy"
+    assert record["template"]["extent_um"] == list(extent)
+    assert record["generated"]["capillaries"] == pytest.approx(T.classes["capillary"].count * 1.5**2, rel=0.05)
+    # The inlets' x face grows as y alone.
+    assert len(boundary_nodes(G)["inlet"]) == round(2 * 1.5)
+    validate_synthetic_graph(G)
+    with pytest.raises(ValueError, match="scale axes"):
+        generate_network(T, seed=SEED, options=GenerationOptions(scale=1.5, scale_axes="yz"))
+
+
 # -- the acceptance test: every banded characteristic within tolerance -------
 
 

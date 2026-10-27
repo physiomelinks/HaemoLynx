@@ -33,6 +33,7 @@ from .template import (
     FACES,
     GRAPH_TEMPLATE_RECORD,
     ROLES,
+    SCALE_AXES_XYZ,
     SOURCE_GRAPH,
     NetworkTemplate,
     measure_template,
@@ -569,7 +570,14 @@ def compare_run(
 ) -> list[ComparisonRow]:
     """The rows for the synthetic network *G* (its node *roles*): its own
     statistics report's *sections* read as a template by the template's
-    source's reader, or, without them, the network measured directly."""
+    source's reader, or, without them, the network measured directly.
+    *template* and *members* are scored in the box *G* was drawn in: scaled
+    as its record's options say (``GenerationOptions.scale``)."""
+    record = G.graph.get(GRAPH_TEMPLATE_RECORD) or {}
+    options = record.get("options") or {}
+    scale = (float(options.get("scale") or 1.0), str(options.get("scale_axes") or SCALE_AXES_XYZ))
+    template = template.scaled(*scale)
+    members = [member.scaled(*scale) for member in members]
     if sections is not None and template.provenance.source != SOURCE_GRAPH:
         synthetic = template_from_report(sections, G, boundaries=roles, require=(), source=template.provenance.source)
     else:
@@ -585,7 +593,6 @@ def compare_run(
             voxel_size_zyx=voxel_size_zyx,
             samples=False,
         )
-    record = G.graph.get(GRAPH_TEMPLATE_RECORD) or {}
     rows = compare_templates(template, synthetic, options=record.get("options"))
     if members:
         rows = with_members_range(rows, [compare_templates(m, synthetic, options=record.get("options")) for m in members])

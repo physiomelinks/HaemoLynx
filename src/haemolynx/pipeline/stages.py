@@ -698,15 +698,17 @@ def _build_synthetic_network(
         seed = settings.get("synthetic_seed")
         options = synthetic.GenerationOptions(
             scale=float(settings.get("synthetic_scale") or 1.0),
+            scale_axes=str(settings.get("synthetic_scale_axes") or synthetic.SCALE_AXES_XYZ),
             interior_dead_ends=bool(settings.get("synthetic_interior_dead_ends", False)),
             bed_model=str(settings.get("synthetic_bed_model") or "delaunay"),
             open_ends=str(settings.get("synthetic_open_ends") or synthetic.OPEN_ENDS_CLOSED),
         )
         logger.info(
-            "Drawing a synthetic network to the template (seed %s, scale %g, dead ends inside the tissue %s, "
-            "vessels leaving the box: %s)...",
+            "Drawing a synthetic network to the template (seed %s, scale %g along %s, dead ends inside the "
+            "tissue %s, vessels leaving the box: %s)...",
             "fresh" if seed is None else seed,
             options.scale,
+            options.scale_axes,
             "kept" if options.interior_dead_ends else "none",
             "none, a closed network" if options.open_ends == synthetic.OPEN_ENDS_CLOSED else "the template's",
         )
