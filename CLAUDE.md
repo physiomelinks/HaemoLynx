@@ -120,7 +120,8 @@ haemolynx/
 │   │                       #   capillary_paths (the capillary orders between arteriole
 │   │                       #   and venule: per capillary draining into a venule, the
 │   │                       #   fewest capillaries back to an arteriole, and the
-│   │                       #   shortest such route in microns),
+│   │                       #   shortest such route in microns, beside the straight
+│   │                       #   line between its ends),
 │   │                       #   current_flow, occlusion, loops,
 │   │                       #   strahler, spectral, over _route_graph.py / _flow_system.py;
 │   │                       #   csv_export.py, _sampling.py (one shared seed constant),

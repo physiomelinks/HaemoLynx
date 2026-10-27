@@ -4985,8 +4985,10 @@ SCHEMA = Schema(
                 "and the venules: for every capillary draining into a venule, "
                 "the fewest capillaries on a route to it from an arteriole (the "
                 "nodes the capillary B orders count from), through capillaries "
-                "alone, and the shortest such route's length in microns. "
-                "Reports the mean, median, SD and range of both. Needs "
+                "alone, the shortest such route's length in microns, the "
+                "straight-line distance between its two ends and the length "
+                "over that distance. Reports the mean, median, SD and range "
+                "of each. Needs "
                 "arteriole or venule branch orders (an Art, Ven or Large tier)"
             ),
             section=_NETWORK_ANALYSIS,
