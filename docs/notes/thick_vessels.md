@@ -415,3 +415,15 @@ the 52 wall cases marked on grids P, P2 and E15 would check it. Only 2 V, so not
 joining these to the vessel ahead (`trace_on_dead_ends`, `join_dead_ends_to_vessel_sides` stay
 off). What looked broken in the surface layer was mostly the drawing (vessels leaving a 40 um slab,
 flowless chains drawn grey on the mask) and dead ends Harvey keeps.
+
+**The pair rule's fresh check** (the same day, at Harvey's request;
+`outputs/thick_junction_review/grid_SW/score_pair_rule.py` and `SCORE_PAIR_RULE.md`, main checkout):
+the 52 wall cases Harvey marked on grids P, P2 and E15, each capture replayed at `9a620be2` (E15's
+is `outputs/br/e15_masks_build/` in worktree `plan-bridging-ef14af`), each case matched by position
+to the wall join's pool and its chain measured on the graph the join is handed, as grid SW's were
+again. The pair within the 15 um reach is right 40/52 (E14.5 13/22, E15 27/30), against 43/52 for
+the join as it is (14/22, 29/30) and 37/52 all N; the join with the pair's joins added 42/52 (16/22,
+26/30). The pair gains five Js the join refuses on E14.5 (P01, P02, P32, P34, P36, four of them at
+the loop guards), drops three it joins (P10, P12, P31: chains of 37-44 um) and joins six marked N
+(P03, P04, P39; E01, E17, E26). It fails its fresh check, so nothing changes. Across P, P2 and SW
+the loop guards refused 9 cases marked J and 7 marked N or V.
