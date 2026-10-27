@@ -553,7 +553,9 @@ def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
 
     network = built["network"]
     G = network.graph
-    assert G.number_of_edges() > 100, "the fixture's capillary bed did not build; the test proves nothing"
+    # 128 edges at the defaults, 100 with every short loop broken (2026-10-27: one
+    # fewer since the facing join reads a diagonal step in the mask as mask).
+    assert G.number_of_edges() >= 90, "the fixture's capillary bed did not build; the test proves nothing"
     mask = _to_binary_volume_for_skeletonization(network.volume.image)
     report = diagnose_lumen_artefacts(G, mask, voxel_size_zyx=network.volume.voxel_size_zyx)
     if short_loop_rule == "off":

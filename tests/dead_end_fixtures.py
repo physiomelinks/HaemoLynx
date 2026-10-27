@@ -177,6 +177,29 @@ def at_a_thick_wall(*, recorded: bool = True) -> Case:
                 "it stops within reach of a thick vessel's lumen, off its centreline")
 
 
+#: :func:`thin_diagonal_pair`'s two dead ends, (z, y, x) um: the upper vessel's, the lower's.
+THIN_DIAGONAL_TIPS = ((2.0, 7.0, 14.0), (2.0, 10.0, 10.0))
+
+
+def thin_diagonal_pair() -> tuple[np.ndarray, nx.MultiGraph]:
+    """The Nerve fixture's 3.7 um gap in small: two vessels one voxel thin, each
+    a staircase of voxels touching only at their edges, ending tip to tip
+    across about 2.5 um of background in one plane. The lower vessel's mask
+    runs one voxel past its centreline's end, so the straight line between the
+    tips first passes the edge where two of its voxels meet -- 0.4 um where
+    each point's nearest voxel is background -- and then crosses the gap."""
+    mask = np.zeros((5, 25, 25), dtype=bool)
+    for i in range(8):
+        mask[2, 7 - i, 14 + i] = True  # the upper vessel: (y, x) = (7, 14) up to (0, 21)
+    for i in range(-1, 9):
+        mask[2, 10 + i, 10 - i] = True  # the lower: (9, 11), its tip's voxel (10, 10), down to (18, 2)
+    G = polyline_graph([
+        [(2.0, 0.0, 21.0), THIN_DIAGONAL_TIPS[0]],
+        [(2.0, 18.0, 2.0), THIN_DIAGONAL_TIPS[1]],
+    ])
+    return mask, G
+
+
 CASES = (
     leaves_through_face,
     stops_short_of_face,

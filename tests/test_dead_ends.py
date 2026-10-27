@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dead_end_fixtures import CASES, SHAPE, THICK_RADIUS, VOXEL_SIZE
+from dead_end_fixtures import CASES, SHAPE, THICK_RADIUS, THIN_DIAGONAL_TIPS, VOXEL_SIZE, thin_diagonal_pair
 from haemolynx.graph import dead_ends as de
 from haemolynx.graph import network_review as nr
 from haemolynx.graph.diagnostics import classify_dead_ends as diagnostics_classify
@@ -216,6 +216,18 @@ def test_measures_carry_what_a_grid_key_needs():
     assert row["ahead_um"] == pytest.approx(9.0, abs=0.6)
     assert row["ahead_junctions_away"] is None  # another piece of the network
     assert row["ahead_background_stretches"] == 1
+
+
+def test_the_vessel_ahead_across_a_diagonal_step_is_one_stretch_of_background():
+    """The dead-end kinds read the facing join's rule: a straight line passing
+    where two voxels of a vessel one voxel thin meet crosses no background there."""
+    mask, G = thin_diagonal_pair()
+    ends = de.classify_dead_ends(G, extent_um=de.image_extent_um(mask.shape, VOXEL_SIZE),
+                                 support=MaskSupport(mask, VOXEL_SIZE))
+    for tip in THIN_DIAGONAL_TIPS:
+        assert ends[tip].ahead_um == pytest.approx(5.0)
+        assert ends[tip].ahead_background_stretches == 1
+        assert ends[tip].ahead_background_um == pytest.approx(2.5)
 
 
 def test_a_neighbour_ahead_is_not_a_broken_vessel():

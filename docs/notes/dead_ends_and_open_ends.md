@@ -235,3 +235,24 @@ beside the thick one or away from it, like the wall join's 4 turn refusals on gr
 which Harvey marked N ("not a junction"). 2 stop inside the lumen; 30 have a join point on the graph's thick
 centreline. The record is 2,822 tree points (45 kB), and judging every dead end with it took no
 longer than without.
+
+## The Nerve fixture's default run, and the facing join's stretches (2026-10-27)
+
+The Nerve fixture's run at the defaults stops at the solve: the inlets and outlets
+`edge_percent` picks lie in separate pieces of the graph. They always have since `edge_percent`
+became the default (`a9649822`, 2026-08-08); until the dense solve's guard (`f85b8f60`,
+2026-09-03) the run went on and solved every flow in the unjoined pieces to zero, with a warning.
+The segmentation is 36 separate pieces (26-connected) and nothing in it joins the top face to the
+bottom: the inlets' piece and the outlets' piece join only across jumps of 15.9, 3.7, 14.2 and
+25.2 um of background, through three other pieces, while no vessel the build draws crosses more
+than 6.2 um. The figures and scripts are in `outputs/de_fresh/` (git-ignored).
+
+The 3.7 um jump was the facing join's to make (two dead ends 5.1 um apart, turns of 14 and 28
+degrees) and it refused it as crossing two stretches of background. Both vessels are one voxel
+thin, staircases of voxels touching only at their edges, and the straight line read background
+for 0.4 um where it passed between two of them. `facing_ends._background`, which the `broken` kind
+reads too, now takes background between two mask voxels that touch as no stretch
+(`tests/test_facing_ends.py`, `tests/test_dead_ends.py`, on `dead_end_fixtures.thin_diagonal_pair`).
+Nerve at the defaults: 129 -> 128 edges, 12 -> 11 pieces, 22 -> 20 `unknown` dead ends, the
+inlets and outlets still apart. E14.5 (the thick-bridges capture): the graph identical, digest
+`cfe70e01`, every dead end's kind the same; its 9 pairs within 10 um all turn too far.

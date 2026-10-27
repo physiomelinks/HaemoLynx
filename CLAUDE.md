@@ -749,7 +749,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **`graph/facing_ends.py`** — `join_facing_dead_ends` (after mask recovery,
   `facing_dead_end_max_gap_um`, 0 off): two dead ends heading for each other within
   `FACING_MAX_TURN_DEG`, across one stretch of background only, are joined though the gap is more
-  than a dropout.
+  than a dropout. Background between two mask voxels that touch is no stretch (`_background`,
+  which the `broken` kind reads too).
 - **`graph/lumen_loops.py`** — `remove_loops_inside_one_lumen`, each round of `consolidate_lumen`
   with a mask: a loop whose antipodal chords mostly cross no more than a dropout loses its arc
   nearest the wall; a loop round tissue stays however short. **Short loops**

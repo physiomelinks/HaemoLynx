@@ -58,11 +58,34 @@ def _heading(G: nx.MultiGraph, tip: Any) -> tuple[Optional[np.ndarray], float]:
 
 def _background(path: np.ndarray, support: MaskSupport) -> tuple[int, float]:
     """How many separate stretches of background a path crosses, and their
-    length in microns all told."""
+    length in microns all told.
+
+    A stretch between two mask voxels that touch, face, edge or corner (the
+    26-connectivity the segmentation's pieces are read with), is no
+    background: the line only passed where they meet, as a straight line
+    along a vessel one voxel thin and running diagonally does at every step.
+    Counted, it made one gap two (the Nerve fixture's 3.7 um gap, 2026-10-27).
+    """
     mids, weights = _pieces(path, _sample_step(support.voxel_size_zyx))
     outside = ~np.asarray(support.inside(mids), dtype=bool)
+    if len(outside):
+        outside &= ~_between_touching_voxels(mids, outside, support.voxel_size_zyx)
     stretches = int(np.count_nonzero(outside[1:] & ~outside[:-1]) + int(outside[0])) if len(outside) else 0
     return stretches, float(weights[outside].sum())
+
+
+def _between_touching_voxels(mids: np.ndarray, outside: np.ndarray, voxel_size_zyx) -> np.ndarray:
+    """True on each sample of a background stretch whose mask samples either
+    side lie in voxels that touch. The voxels are the ones ``MaskSupport.inside``
+    reads (each sample's nearest)."""
+    voxels = np.rint(np.asarray(mids, dtype=float) / np.asarray(voxel_size_zyx, dtype=float)).astype(np.intp)
+    edges = np.diff(np.concatenate([[0], outside.astype(np.int8), [0]]))
+    starts, stops = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    between = np.zeros(len(outside), dtype=bool)
+    for start, stop in zip(starts, stops):
+        if start > 0 and stop < len(outside) and np.abs(voxels[start - 1] - voxels[stop]).max() <= 1:
+            between[start:stop] = True
+    return between
 
 
 #: Why :func:`facing_dead_end_pairs` says a pair is not joined, in the order

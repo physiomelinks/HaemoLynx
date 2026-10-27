@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
+import pytest
 
+from dead_end_fixtures import THIN_DIAGONAL_TIPS, thin_diagonal_pair
 from haemolynx.graph.facing_ends import (
     REFUSED_BESIDE_VESSEL,
     REFUSED_GAP_TOO_WIDE,
@@ -94,6 +96,35 @@ def test_a_join_that_would_jump_a_third_vessel_is_refused():
     join_facing_dead_ends(G, _support(mask))
 
     assert _joins(G) == []
+
+
+def test_a_third_vessel_one_voxel_thin_still_splits_the_gap():
+    """Background between voxels that touch is no gap; a vessel one voxel thin
+    touching neither end still stands between two."""
+    G, mask = _broken_vessel()
+    for d in range(-5, 6):
+        mask[7 + d, 7 + d, 23] = True  # one voxel thin, diagonal in (z, y), across the gap
+
+    assert _pair(facing_dead_end_pairs(G, _support(mask)), "left", "right").refused == REFUSED_STRETCHES
+    join_facing_dead_ends(G, _support(mask))
+    assert _joins(G) == []
+
+
+def test_two_vessels_one_voxel_thin_are_joined_across_one_gap():
+    """Regression (the Nerve fixture's 3.7 um gap, 2026-10-27): the straight
+    line passed the edge where two diagonal voxels of one vessel meet, read
+    background there for 0.4 um, counted the gap twice and refused it."""
+    mask, G = thin_diagonal_pair()
+    upper, lower = THIN_DIAGONAL_TIPS
+
+    assert _pair(facing_dead_end_pairs(G, _support(mask)), upper, lower).refused is None
+
+    join_facing_dead_ends(G, _support(mask))
+
+    (join,) = _joins(G)
+    assert {join[0], join[1]} == {upper, lower}
+    assert join[2]["bridge_background_um"] == pytest.approx(2.5)
+    assert nx.is_connected(G)
 
 
 def test_a_gap_longer_than_the_limit_is_left_open():
