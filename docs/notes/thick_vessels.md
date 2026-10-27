@@ -388,3 +388,30 @@ piece (2,589 -> 2,923 um along the tree: the end extension draws more), but the 
 24 bridges (77 -> 53), 11 more pieces stand apart (53 -> 64; the main network 1,171 -> 1,115
 nodes), island ends 94 -> 116, vessel 47,596 -> 47,437 um. Nothing changed in the build. Harness:
 `outputs/nc/run_on_off.py`, `compare_on_off.py`, `on_off_cases.csv` (same worktree).
+
+## Grid SW: the dead ends the wall join leaves in the surface layer (2026-10-27)
+
+Harvey asked why vessels in E14.5's surface layer look broken beside each other. At `9a620be2`
+(a low-RAM capture, `scripts/thick_bridge_review/capture_steps.py`) the thick region is one piece of
+851k voxels in the top 38 um, flagged by the braid guard, so all 57 of the run's `thick_wall` dead
+ends lie in the first 40 um. Each was already a dead end in the first graph built from the
+skeleton: Lee thins only voxels at least 4 um from the fat region, and the thin-arm join draws one
+path per connected piece of thin skeleton (the capillary bed, 49,521 voxels with 434 ends at the
+region's margin, got 9). The split's wall join then refused all 57: 42 turning more than 80 degrees
+onto the nearest point of the graph's thick centreline (on the chord), 4 on the route, 5 closing a
+loop inside one lumen, 2 closing a short loop round a hole under 10 um, 1 across background, and 3
+never tried (no graph thick centreline within its reach). **Grid SW**
+(`scripts/thick_junction_review/surface_wall_grid.py`, replaying the capture as grid P does; key,
+marks and fit in `outputs/thick_junction_review/grid_SW/`, git-ignored; page
+https://claude.ai/artifact/Ab3QA8cHC6sURsq6T3NWYx) shows all 57 with the way the join would draw
+each, marked by Harvey the same day: 40 N, 14 J, 2 V (it should join another vessel), 1 ?. The
+join as it is, joining none, is right 42/56. Raising the 80-degree limit never gains a J without as
+many N or V: nine Js turn 76-102 degrees on the chord, among twenty Ns at 80-104. The loop guards
+refused 3 J, 1 V and 3 N. The best single threshold is right 44/56; the best pair, a chain of at
+most 30 um turning at most 84 degrees on the chord whatever the loop guards say, 47/56 fitted and
+45/56 leave-one-out (it joins 9 J and 4 marked N or V where the join joins none; 9 to 4 on the
+cases they disagree on, p = 0.27). Not implemented: under 90%, and fitted on these cases alone;
+the 52 wall cases marked on grids P, P2 and E15 would check it. Only 2 V, so nothing supports
+joining these to the vessel ahead (`trace_on_dead_ends`, `join_dead_ends_to_vessel_sides` stay
+off). What looked broken in the surface layer was mostly the drawing (vessels leaving a 40 um slab,
+flowless chains drawn grey on the mask) and dead ends Harvey keeps.
