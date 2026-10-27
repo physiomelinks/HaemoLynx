@@ -318,7 +318,7 @@ threshold reaches 90%: 5-8 um gets 45/55, the rule's 10 um 43/55, all V 29/55. L
 (inside one lumen by the mask) are the part the hole cannot reach: 17 pieces, 5 of them V. The
 rule is unchanged; what it leaves is the review list's.
 
-Grid O (sent 2026-10-26, rebuilt 2026-10-27, unmarked): segmentation no skeleton crosses. On E14.5 at `6d5c1bb1`
+Grid O (sent 2026-10-26, rebuilt and marked 2026-10-27): segmentation no skeleton crosses. On E14.5 at `6d5c1bb1`
 (Harvey's Claudin segmentation) the mask no centreline of the skeleton covers by mask recovery's
 own rule (the skeleton as graph building's first step makes it: 1.02 M voxels in 12,004 pieces)
 leaves 723 pieces of at least 200 um^3 whose widest point lies within 2 r + 3 um of the skeleton
@@ -336,6 +336,13 @@ far wall or a bulge of a wide lumen (O-01 spans 29 x 22 x 20 um but holds 524 um
 drawn as a 3 um section through the centreline beside it and its far edge -- the vessel a band
 with its centreline along it, the piece filled red to one side -- instead of in its own plane,
 where the centreline did not show; the graph drawn is today's (pair rewire and rejoin guard on).
+Marked by Harvey 2026-10-27 (`outputs/sc/FIT_O.md`): 24 X, 3 V (O-03, O-20, O-30), 3 left with
+notes only; all X 24/27 (89%), and no measure beats it leave-one-out. The skeleton misses no
+vessel in these pieces: nothing is built, and Phase 2b is closed. His most common note, "centreline
+appears fragmented (unless out of plane)" (16 cases), is mostly the 3 um section: in 3D the
+skeleton there is continuous and the graph reaches 77-100% of it (`o_fragments.py`). Four cases
+are real gaps, the graph reaching 15-48% of the skeleton in view (O-03, O-08, O-23, O-25), and
+each has an item of the "Skeleton the graph does not follow" list within 15 um.
 
 ## graph/smoothing.py
 
