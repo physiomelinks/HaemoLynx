@@ -60,7 +60,7 @@ PACKAGES = ("numpy", "scipy", "matplotlib", "pyvista", "vtk", "networkx")
 DIR, FILE, STDOUT_ONLY = "dir", "file", "stdout"
 
 # The kinds of VTK data array, and the kind vtk_problems' rule is asked about for the points.
-DATA_KINDS = ("point_data", "cell_data", "field_data")
+POINT_DATA, CELL_DATA, FIELD_DATA = DATA_KINDS = ("point_data", "cell_data", "field_data")
 POINTS = "points"
 
 
@@ -336,8 +336,8 @@ def vtk_problems(old_path, new_path, rtol_for=None, kinds=DATA_KINDS,
     of ``kinds`` by name. Stops after ``MAX_LISTED``.
 
     With no ``rtol_for`` (as snapshots compare) every value is exact. ``rtol_for(kind, name)``
-    gives a float array its relative tolerance (``kind`` is one of ``DATA_KINDS``, or ``POINTS``
-    for the points), with ``atol = rtol * max|old array|``; integer and text arrays, the cells
+    gives a float array its relative tolerance (``kind`` is one of ``DATA_KINDS``; the points
+    are asked about as ``rtol_for(POINTS, None)``), with ``atol = rtol * max|old array|``; integer and text arrays, the cells
     and an image grid stay exact, text compared by value whatever its width. Each differing
     array then says how many values moved and by how much. ``sides`` names the two files in
     the details.
@@ -360,7 +360,7 @@ def vtk_problems(old_path, new_path, rtol_for=None, kinds=DATA_KINDS,
                                 f"{new.n_points} in {new_side})")
         else:
             problems += [f"points: {moved}" for moved in
-                         _moved_values(*points, rtol_for(POINTS, POINTS))]
+                         _moved_values(*points, rtol_for(POINTS, None))]
         for attribute in ("verts", "lines", "faces", "strips", "cells", "celltypes"):
             if hasattr(old, attribute) and not _same_values(
                     getattr(old, attribute), getattr(new, attribute)):

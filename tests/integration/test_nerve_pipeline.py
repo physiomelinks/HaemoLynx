@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ImageLynx.batch_outputs import VESSELS_FLOW_VTP_SUFFIX
 from ImageLynx.io import crop_tiff_volume_from_corners
 
 
@@ -91,7 +92,7 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
     )
 
     graph_path = output_dir / f"{cropped_tiff.stem}_graph.pkl"
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX)
     final_graph_projection_path = plot_dir / "final_graph.png"
     assert graph_path.exists()
     assert vessels_flow_path.exists()

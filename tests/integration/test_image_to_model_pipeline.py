@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from ImageLynx.batch_outputs import VESSELS_FLOW_VTP_SUFFIX
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_PATH = REPO_ROOT / "examples" / "resistance_network_pipeline.py"
@@ -76,7 +78,7 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
     skeleton_path = output_dir / f"{input_tiff.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_tiff.stem}_graph.pkl"
     vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX)
     pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
     nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
 
@@ -160,7 +162,7 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
 
     assert n_nodes > 0
     assert n_edges > 0
-    assert vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp").exists()
+    assert vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX).exists()
 
 
 @pytest.mark.integration
@@ -347,7 +349,7 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     skeleton_path = output_dir / f"{input_h5.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_h5.stem}_graph.pkl"
     vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX)
     pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
     nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
 

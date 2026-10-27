@@ -6,7 +6,7 @@
 Each run on both sides is opened through the batch-run reader, then compared part by part:
 graph, diameters, edge table, skeleton, vessel mask and TH mask
 (``ImageLynx.batch_compare`` says what counts as equal). Floats must match exactly unless
-``--rtol`` is given. Exit status: 0 if every run matches, 1 if any differs, 2 for a usage
+``--rtol`` is given (then ``|new - old| <= rtol * |old|``). Exit status: 0 if every run matches, 1 if any differs, 2 for a usage
 error, 3 if a run could not be compared (the reader refused it, or a file could not be read);
 the error's traceback is printed, and no verdict.
 """
@@ -36,7 +36,8 @@ def main(argv=None) -> int:
                         choices=[specimen.specimen_id for specimen in SPECIMENS],
                         help="compare only this specimen (repeatable); default all six")
     parser.add_argument("--rtol", type=_rtol, default=0.0,
-                        help="relative tolerance for float values (default 0, exact)")
+                        help="relative tolerance for float values, scaled by OLD's value "
+                             "(default 0, exact)")
     args = parser.parse_args(argv)
 
     chosen = [specimen for specimen in SPECIMENS

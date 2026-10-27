@@ -468,8 +468,11 @@ def test_a_solve_array_passes_inside_the_network_band_and_fails_outside(tmp_path
 
 def test_a_geometry_array_in_the_flow_network_keeps_the_geometry_band(tmp_path, reference):
     # Diameter 7 against a largest of 9: the geometry band is 16e-9, far inside the network one.
-    moved = np.array([7.0 + 17 * GEOMETRY_RTOL, 8.0, 9.0])
-    detail = _differing(_compare(tmp_path, reference, **_flow(assigned_diameter_um=moved)))
+    inside = np.array([7.0 + 15 * GEOMETRY_RTOL, 8.0, 9.0])
+    assert FLOW_NETWORK not in _differing(
+        _compare(tmp_path / "a", reference, **_flow(assigned_diameter_um=inside)))
+    outside = np.array([7.0 + 17 * GEOMETRY_RTOL, 8.0, 9.0])
+    detail = _differing(_compare(tmp_path / "b", reference, **_flow(assigned_diameter_um=outside)))
     assert detail[FLOW_NETWORK].startswith("cell array 'assigned_diameter_um': 1 of 3 values")
 
 
@@ -592,10 +595,14 @@ def test_a_summary_number_follows_its_sources_rule_with_the_floor_from_its_large
 
 
 def test_a_summary_number_of_the_perfusion_field_uses_the_perfusion_rule(tmp_path, reference):
+    # The max, 85, is its array's largest value: band 2 * PERFUSION_RTOL * 85.
     po2 = np.linspace(50.0, 85.0, 8)
-    po2[-1] = 85.0 * (1 + 1.5e-4)  # inside 2 * PERFUSION_RTOL of the max, outside the network
-    assert SUMMARY not in _differing(_compare(tmp_path, reference,
+    po2[-1] = 85.0 * (1 + 1.9e-4)
+    assert SUMMARY not in _differing(_compare(tmp_path / "a", reference,
                                               perfusion=_perfusion_field(po2=po2)))
+    po2[-1] = 85.0 * (1 + 2.1e-4)
+    detail = _differing(_compare(tmp_path / "b", reference, perfusion=_perfusion_field(po2=po2)))
+    assert detail[SUMMARY].startswith("perfusion field PO2_mmHg: max, max abs 0.0179, max rel 0.00021")
 
 
 def test_every_tag_a_rule_names_is_in_the_committed_reference_run():

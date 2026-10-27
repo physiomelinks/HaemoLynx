@@ -33,7 +33,7 @@ import numpy as np
 
 from .batch_outputs import DIAMETER, open_batch_run
 from .specimens import is_sensitivity_run_name
-from .value_compare import values_equal
+from .value_compare import gap_text, values_equal
 
 GRAPH, DIAMETERS, EDGE_TABLE, SKELETON, VESSEL_MASK, TH_MASK = PARTS = (
     "graph", "diameters", "edge table", "skeleton", "vessel mask", "TH mask")
@@ -256,12 +256,9 @@ def _numbers(old: dict, new: dict, what: str, rtol) -> list[str]:
     shared = [key for key in old if key in new]
     differing = [key for key in shared if not values_equal(old[key], new[key], rtol)]
     if differing:
-        gaps = np.array([abs(new[key] - old[key]) for key in differing])
-        with np.errstate(divide="ignore", invalid="ignore"):
-            relative = gaps / np.array([abs(old[key]) for key in differing])
-        problems.append(f"{len(differing)} of {len(shared)} {what}s differ, max abs "
-                        f"{gaps.max():.3g}, max rel {relative.max():.3g}: "
-                        f"{differing[:MAX_LISTED]}")
+        problems.append(f"{len(differing)} of {len(shared)} {what}s differ"
+                        + gap_text([old[key] for key in differing], [new[key] for key in differing])
+                        + f": {differing[:MAX_LISTED]}")
     return problems
 
 

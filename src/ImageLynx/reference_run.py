@@ -30,8 +30,8 @@ Parts (``PARTS``), how each is stored, and what counts as equal:
   converged flag, the settings it ran with), except the final residual (``PERFUSION_TAG_RTOL``)
   and the Picard iterations, which may move by ``PICARD_ITERATION_STEPS``.
 - **summary**: ``summary.json``, the numbers ``model_results.md`` prints (mean, median, min and
-  max of ``reporting.NETWORK_METRICS`` in the flow network and of every perfusion cell array,
-  NaNs dropped), worked out again at full precision from the two VTK files. Each number
+  max of ``reporting.NETWORK_METRICS`` in the flow network and of the perfusion cell arrays
+  that are ``reporting.PERFUSION_METRICS``, matched without case, NaNs dropped), worked out again at full precision from the two VTK files. Each number
   follows its source array's rule, with ``atol = rtol * max(|min|, |max|)`` of that array.
 
 A tag missing from the rule lists above is compared exactly. A status value or tag on one side
@@ -64,9 +64,8 @@ from .batch_compare import INTEGER_COLUMNS, KEY_COLUMNS, MAX_LISTED, TEXT_COLUMN
 from .batch_outputs import (CACHE_GLOB, EDGE_TABLE_NAME, GRAPH_NAME, PERFUSION_VTI_NAME,
                             SKELETON_NAME, VESSEL_MASK_NAME, VESSELS_FLOW_VTP_NAME, numeric_cells,
                             read_edge_table)
-from .driver_snapshots import POINTS, vtk_problems
+from .driver_snapshots import CELL_DATA, POINT_DATA, vtk_problems
 from .value_compare import close, float_pairs, gap_text, max_scaled_atol, values_equal, within
-from .visualization.reporting import NETWORK_METRICS, distribution_summary
 
 (VESSEL_MASK, SKELETON, GRAPH, EDGE_TABLE, FLOW_NETWORK, PERFUSION_FIELD, RHEOLOGY_STATUS,
  PERFUSION_TAGS, SUMMARY) = PARTS = (
@@ -270,13 +269,25 @@ def _json_value(value):
 
 # --- Comparing parts -----------------------------------------------------------------------
 
-def _missing(reference: Path, new: Path | None) -> list[str]:
+def _missing(reference: Path, *new: Path | None) -> list[str]:
+    """The reference file, then each new file (None for a run with no cache), that is
+    missing."""
     problems = []
     if not reference.exists():
         problems.append(f"missing in {REFERENCE}: {reference.name}")
-    if new is None or not new.exists():
-        problems.append(f"missing in {NEW}: {new.name if new else 'the ' + CACHE_GLOB + ' folder'}")
+    for path in new:
+        if path is None or not path.exists():
+            name = path.name if path else f"the {CACHE_GLOB} folder"
+            problems.append(f"missing in {NEW}: {name}")
     return problems
+
+
+def _on_one_side(reference, new) -> list[tuple[str, object]]:
+    """``(side, key)`` for each key only one side has: the reference's first, each side's in
+    its own order."""
+    return [(side, key) for side, mine, theirs in ((REFERENCE, reference, new),
+                                                   (NEW, new, reference))
+            for key in mine if key not in theirs]
 
 
 def _voxel_part(masks: Path, name: str, new_path: Path | None) -> list[str]:
@@ -338,8 +349,9 @@ def _keyed_items(items: list, key, what: str) -> dict:
 
 def _one_side_only(reference: dict, new: dict, what: str) -> list[str]:
     problems = []
-    for side, mine, theirs in ((REFERENCE, reference, new), (NEW, new, reference)):
-        only = [key for key in mine if key not in theirs]
+    keys = _on_one_side(reference, new)
+    for side in (REFERENCE, NEW):
+        only = [key for key_side, key in keys if key_side == side]
         if only:
             problems.append(f"{len(only)} {what}s only in {side}: {only[:MAX_LISTED]}")
     return problems
@@ -445,7 +457,7 @@ def _edge_table_problems(reference: dict, new: dict, rtol: float) -> list[str]:
 def _flow_network_rtol(kind: str, name: str) -> float:
     """The flow network's rule per array: the solve arrays under the network rule, the points
     and every other float array (lengths, diameters, tortuosity) under the geometry rule."""
-    return NETWORK_RTOL if kind != POINTS and name in NETWORK_SOLVE_ARRAYS else GEOMETRY_RTOL
+    return NETWORK_RTOL if kind == CELL_DATA and name in NETWORK_SOLVE_ARRAYS else GEOMETRY_RTOL
 
 
 def _vtk_part(reference_path: Path, new_path: Path, rtol_for) -> list[str]:
@@ -455,7 +467,7 @@ def _vtk_part(reference_path: Path, new_path: Path, rtol_for) -> list[str]:
     if missing:
         return missing
     return vtk_problems(reference_path, new_path, rtol_for=rtol_for,
-                        kinds=("point_data", "cell_data"), sides=(REFERENCE, NEW))
+                        kinds=(POINT_DATA, CELL_DATA), sides=(REFERENCE, NEW))
 
 
 def _field_data(path: Path) -> dict:
@@ -475,9 +487,7 @@ def _tags_part(reference_path: Path, new_path: Path, rtols: dict, steps=None) ->
         return missing
     steps = steps or {}
     reference, new = _field_data(reference_path), _field_data(new_path)
-    problems = [f"{name} only in {side}"
-                for side, mine, theirs in ((REFERENCE, reference, new), (NEW, new, reference))
-                for name in sorted(mine) if name not in theirs]
+    problems = [f"{name} only in {side}" for side, name in _on_one_side(reference, new)]
     for name in sorted(name for name in reference if name in new):
         ref, other = reference[name], new[name]
         if name in steps:
@@ -494,13 +504,20 @@ def _tags_part(reference_path: Path, new_path: Path, rtols: dict, steps=None) ->
 
 
 def _summary(flow_path: Path, perfusion_path: Path) -> dict:
-    """``model_results.md``'s numbers at full precision: per flow-network metric and per
-    perfusion cell array, its ``distribution_summary`` with NaNs dropped (None when nothing is
-    left, where the dashboard says the array was empty)."""
+    """``model_results.md``'s numbers at full precision, each metric's
+    ``distribution_summary`` with NaNs dropped (None when nothing is left, where the dashboard
+    says the array was empty). Keyed by the files' array names: the perfusion fields are the
+    ``.vti``'s, ``PO2_mmHg`` where the dashboard says ``PO2_mmhg``. A metric the file lacks is
+    left out, so it is a difference against a reference run that has it."""
     import pyvista as pv
+    # Imported here: the dashboard module sets matplotlib's backend when it is imported.
+    from .visualization.reporting import (NETWORK_METRICS, PERFUSION_METRICS,
+                                          distribution_summary)
     flow, perfusion = pv.read(flow_path).cell_data, pv.read(perfusion_path).cell_data
+    perfusion_metrics = {metric.lower() for metric in PERFUSION_METRICS}
     sources = ((FLOW_NETWORK, flow, [name for name in NETWORK_METRICS if name in flow.keys()]),
-               (PERFUSION_FIELD, perfusion, list(perfusion.keys())))
+               (PERFUSION_FIELD, perfusion,
+                [name for name in perfusion.keys() if name.lower() in perfusion_metrics]))
     summary = {}
     for section, arrays, names in sources:
         summary[section] = {}
@@ -514,15 +531,13 @@ def _summary(flow_path: Path, perfusion_path: Path) -> dict:
 def _summary_rtol(section: str, name: str) -> float:
     if section == PERFUSION_FIELD:
         return PERFUSION_RTOL
-    return _flow_network_rtol("cell_data", name)
+    return _flow_network_rtol(CELL_DATA, name)
 
 
 def _summary_part(reference_path: Path, flow_path: Path, perfusion_path: Path) -> list[str]:
     """Each summary number under its source array's rule, the floor scaled by that array's
     largest magnitude, ``max(|min|, |max|)``."""
-    missing = _missing(reference_path, flow_path) + [
-        problem for problem in _missing(reference_path, perfusion_path)
-        if problem.startswith(f"missing in {NEW}")]
+    missing = _missing(reference_path, flow_path, perfusion_path)
     if missing:
         return missing
     reference = json.loads(reference_path.read_text())
@@ -531,9 +546,7 @@ def _summary_part(reference_path: Path, flow_path: Path, perfusion_path: Path) -
     for section in reference:
         ref_metrics, new_metrics = reference[section], new.get(section, {})
         problems += [f"{section} {name} only in {side}"
-                     for side, mine, theirs in ((REFERENCE, ref_metrics, new_metrics),
-                                                (NEW, new_metrics, ref_metrics))
-                     for name in mine if name not in theirs]
+                     for side, name in _on_one_side(ref_metrics, new_metrics)]
         for name in (name for name in ref_metrics if name in new_metrics):
             ref, other = ref_metrics[name], new_metrics[name]
             if ref is None or other is None:

@@ -14,6 +14,9 @@ NETWORK_METRICS = (
     "assigned_diameter_um", "flow_abs", "flow_signed", "hematocrit",
     "pressure_drop", "resistance", "viscosity", "wall_shear_stress_pa",
 )
+# The perfusion fields it summarises. The pipeline hands them over under these names; the
+# perfusion .vti holds the same fields with the unit spelt mmHg.
+PERFUSION_METRICS = ("PO2_mmhg", "PCO2_mmhg", "pH")
 
 
 def generate_model_results_dashboard(vtk_export: dict, perfusion_field: dict, output_dir: Path):
@@ -21,9 +24,6 @@ def generate_model_results_dashboard(vtk_export: dict, perfusion_field: dict, ou
     Extracts 1D network metrics and 3D perfusion metrics, generates static 
     distribution plots (Histogram + KDE), and writes a Markdown dashboard.
     """
-    # 1. Define Target Metrics
-    metrics_1d = NETWORK_METRICS
-    metrics_3d = ["PO2_mmhg", "PCO2_mmhg", "pH"]
     
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -39,7 +39,7 @@ def generate_model_results_dashboard(vtk_export: dict, perfusion_field: dict, ou
     md_content.append("## 1D Hemodynamic Network Metrics\n")
     cell_data = vtk_export.get("cell_data", {})
     
-    for metric in metrics_1d:
+    for metric in NETWORK_METRICS:
         if metric in cell_data:
             data = np.asarray(cell_data[metric], dtype=float)
             data = data[~np.isnan(data)] # Drop NaNs
@@ -53,7 +53,7 @@ def generate_model_results_dashboard(vtk_export: dict, perfusion_field: dict, ou
             
     # 3. Extract and Plot 3D Metrics
     md_content.append("## 3D Tissue Perfusion Metrics\n")
-    for metric in metrics_3d:
+    for metric in PERFUSION_METRICS:
         if perfusion_field and metric in perfusion_field:
             data = np.asarray(perfusion_field[metric], dtype=float)
             # Flatten and drop NaNs or zeros if the space is unperfused background

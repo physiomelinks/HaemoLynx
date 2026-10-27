@@ -7,15 +7,15 @@ arrays, the cells and an image grid stay exact.
 import numpy as np
 import pytest
 
-from ImageLynx.driver_snapshots import vtk_problems
+from ImageLynx.driver_snapshots import POINTS, vtk_problems
 
 pv = pytest.importorskip("pyvista")
 
-RTOL = {"points": 1e-9, "flow": 1e-6}
+RTOL = {POINTS: 1e-9, "flow": 1e-6}
 
 
 def _rule(kind, name):
-    return RTOL.get(name, 0.0)
+    return RTOL[POINTS] if kind == POINTS else RTOL.get(name, 0.0)
 
 
 def _polydata(flow=(10.0, 20.0), points=None, tag=(1, 2, 3)):

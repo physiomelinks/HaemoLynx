@@ -11,6 +11,8 @@ import pytest
 from scipy.ndimage import gaussian_filter
 import tifffile
 
+from ImageLynx.batch_outputs import VESSELS_FLOW_VTP_SUFFIX
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS_DIR = REPO_ROOT / "tests"
@@ -193,7 +195,7 @@ def _run_angled_vessel_smoothness_case(
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     vtk_prefix = output_dir / f"{case_name}_network"
-    flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX)
     nodes_vtp_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
 
     kwargs = _base_pipeline_kwargs(
@@ -550,7 +552,7 @@ def test_resistance_calculation_on_diagonal_branching_network_from_mask(
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_dir.mkdir(parents=True, exist_ok=True)
     vtk_prefix = output_dir / "diag_resistance_mask"
-    flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX)
 
     pipeline.image_to_model_pipeline(
         do_skeletonize=True,
@@ -600,7 +602,7 @@ def test_resistance_calculation_on_diagonal_branching_network_from_raw_tiff(
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_dir.mkdir(parents=True, exist_ok=True)
     vtk_prefix = output_dir / "diag_resistance_raw"
-    flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + VESSELS_FLOW_VTP_SUFFIX)
 
     pipeline.image_to_model_pipeline(
         do_skeletonize=True,
