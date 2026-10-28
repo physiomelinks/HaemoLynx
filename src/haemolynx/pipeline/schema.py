@@ -68,6 +68,7 @@ _PIPELINE_STAGES = "Pipeline stages"
 # Named "Statistics and measurements" rather than "Statistics" so the YAML
 # section heading does not collide with the setting also called `statistics`.
 _STATISTICS = "Statistics and measurements"
+_PERICYTE_MEASUREMENTS = "Pericyte measurements"
 _NETWORK_ANALYSIS = "Connectivity/Network Analysis"
 _VASCULAR_COMMUNITIES = "Vascular communities"
 _CARTWHEEL_GUARD = "Cartwheel hub guard"
@@ -4773,6 +4774,157 @@ SCHEMA = Schema(
             help="Count dark cavities enclosed by tissue on every side as tissue",
             section=_STATISTICS,
             requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Pericyte measurements: see haemolynx.haemodynamics.pericyte_measurements.
+        # Its own box on the Additional measurements tab. The profile's step
+        # and reach are read by the pericyte_measured_constriction
+        # perturbation too, so they warn of nothing while this is off.
+        # ------------------------------------------------------------------
+        Setting(
+            name="measure_pericytes",
+            kind="bool",
+            default=False,
+            help=(
+                "Measure around each pericyte of a pericyte mask, placed on the nearest "
+                "capillary as the pericyte perturbations place it: the vessel's diameter "
+                "along it, and how far it is from the vessel's nearest junction"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+        ),
+        Setting(
+            name="pericyte_measurement_mask_path",
+            kind="path",
+            default=None,
+            help=(
+                "Read the pericytes from this binary or labelled mask, the input image's "
+                "shape: each connected component is one pericyte"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes",),
+            must_exist=True,
+        ),
+        Setting(
+            name="pericyte_measurement_mask_h5_dataset_name",
+            kind="str",
+            default=None,
+            help="Read this dataset from the pericyte measurements' mask when it is an H5 file",
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes",),
+            advanced=True,
+        ),
+        Setting(
+            name="measure_pericyte_diameter_profiles",
+            kind="bool",
+            default=True,
+            help=(
+                "Read the segmentation's diameter at each pericyte's midpoint on its vessel "
+                "and at every step each way along it, as far as the reach or the vessel's "
+                "end, into a CSV per pericyte; and each branch's resistance as a uniform "
+                "tube and with the measured narrowing"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes",),
+        ),
+        Setting(
+            name="pericyte_profile_step_um",
+            kind="float",
+            default=2.0,
+            help=(
+                "Read the diameter every this far along the vessel from a pericyte's "
+                "midpoint; the measured-constriction perturbation reads it too"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.1,
+            unit="um",
+            requires=("measure_pericytes", "measure_pericyte_diameter_profiles"),
+            always_effective=True,
+        ),
+        Setting(
+            name="pericyte_profile_reach_um",
+            kind="float",
+            default=50.0,
+            help=(
+                "Read the diameter this far along the vessel each way from a pericyte's "
+                "midpoint, stopping sooner where the vessel ends; the measured-constriction "
+                "perturbation reads it too"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes", "measure_pericyte_diameter_profiles"),
+            always_effective=True,
+        ),
+        Setting(
+            name="pericyte_profile_reading",
+            kind="choice",
+            default="segmentation",
+            # pericyte_measurements.PROFILE_READINGS, written out so the
+            # schema imports no library code; test_pericyte_measurements pins them.
+            choices=("segmentation", "raw_image_fwhm"),
+            help=(
+                "Read the profile's diameters off the segmentation (each point's "
+                "cross-section) or off the raw image (raw_image_path: a FWHM across the "
+                "vessel at each point, fitted as the Diameters stage fits its samples, for a "
+                "lumen label such as dextran); the branch resistances and the "
+                "measured-constriction perturbation read them the same way"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes", "measure_pericyte_diameter_profiles"),
+            always_effective=True,
+        ),
+        Setting(
+            name="measure_pericyte_junction_distances",
+            kind="bool",
+            default=True,
+            help=(
+                "Measure how far each pericyte's midpoint on its vessel is from the "
+                "vessel's nearest junction, along the vessel and in a straight line"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes",),
+        ),
+        Setting(
+            name="pericyte_measurement_max_distance_um",
+            kind="float",
+            default=3.0,
+            help=(
+                "Measure a pericyte only when its centroid lies within this distance of "
+                "the nearest capillary's centreline"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes",),
+            advanced=True,
+        ),
+        Setting(
+            name="pericyte_measurement_min_diameter_um",
+            kind="float",
+            default=5.0,
+            help=(
+                "Leave out mask components smaller than this equivalent diameter as too "
+                "small to be a pericyte"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes",),
+            advanced=True,
+        ),
+        Setting(
+            name="pericyte_measurement_max_diameter_um",
+            kind="float",
+            default=12.0,
+            help=(
+                "Leave out mask components larger than this equivalent diameter as too "
+                "large to be a pericyte"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes",),
             advanced=True,
         ),
         # ------------------------------------------------------------------

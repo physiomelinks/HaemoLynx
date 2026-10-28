@@ -132,6 +132,13 @@ def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
         ("{stem}_{kind}_review.csv", "haemolynx.gui.post_processing:REVIEW_CSV_COLUMNS", False),
         ("batch_summary.csv", "haemolynx.gui.batch_run:SUMMARY_COLUMNS", True),
         ("{stem}_template_comparison.csv", "haemolynx.synthetic.compare:CSV_COLUMNS", True),
+        ("{stem}_pericytes.csv", "haemolynx.haemodynamics.pericyte_measurements:PERICYTE_COLUMNS", True),
+        ("{stem}_pericyte_branches.csv", "haemolynx.haemodynamics.pericyte_measurements:BRANCH_COLUMNS", True),
+        (
+            "{stem}_pericyte_profiles/pericyte_<NNNN>.csv",
+            "haemolynx.haemodynamics.pericyte_measurements:PROFILE_COLUMNS",
+            True,
+        ),
     ],
 )
 def test_the_documented_columns_are_the_writers_own(file_name, columns, whole):

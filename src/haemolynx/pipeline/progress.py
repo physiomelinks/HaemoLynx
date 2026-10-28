@@ -335,11 +335,12 @@ STAGES: tuple[Stage, ...] = (
         call=None,
         title="9. Additional measurements",
         summary=(
-            "Global vessel statistics, 3D distance to a cell mask, and "
-            "vascular communities for colouring the vessels."
+            "Global vessel statistics, 3D distance to a cell mask, measurements "
+            "around pericytes, and vascular communities for colouring the vessels."
         ),
         sections=(
             "Statistics and measurements",
+            "Pericyte measurements",
             "Connectivity/Network Analysis",
             "Vascular communities",
         ),

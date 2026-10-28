@@ -75,7 +75,7 @@ nearby: from a centreline near its wall, that is the larger vessel.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import numpy as np
 from scipy.ndimage import map_coordinates
@@ -172,8 +172,83 @@ _EDGE_ATTRIBUTES = (
 __all__ = [
     "EDT_DIAMETER_METHODS",
     "MIN_RESOLVABLE_DIAMETER_UM",
+    "mask_diameters_at_points",
     "measure_edge_diameters_from_binary_mask",
 ]
+
+
+def mask_diameters_at_points(
+    binary_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    groups: Sequence[tuple[np.ndarray, np.ndarray]],
+    *,
+    workers: int = 1,
+    memmap_directory=None,
+) -> list[tuple[np.ndarray, list[str]]]:
+    """The mask's width at points of its own choosing rather than an edge's
+    regular samples: *groups* is ``(points_um, tangents)`` pairs, physical
+    ``(z, y, x)`` microns on centrelines running along *tangents*, and each
+    point is read as :func:`measure_edge_diameters_from_binary_mask` reads a
+    sample -- the area-equivalent diameter of its cross-section, else twice
+    the inscribed radius (a point just off its own mask looking for it within
+    :data:`OFF_CENTRELINE_SEARCH_UM`).
+
+    Returns, per group, the diameters (NaN where neither reads) and each
+    point's ``"cross_section"``, ``"inscribed_radius"`` or ``""``. Nothing is
+    dropped as unresolved: the caller decides what a reading under
+    :data:`MIN_RESOLVABLE_DIAMETER_UM` means. The sections are read in
+    *workers* processes as the edges' are (one group a task), with the same
+    answers however many."""
+    from . import sections as sections_module  # it imports this module
+
+    packed = PackedMask.from_mask(binary_mask) if isinstance(binary_mask, np.memmap) else None
+    sample_radius = _pointwise_radius_sampler(binary_mask, voxel_size_zyx, packed=packed)
+    if sample_radius is None:
+        radius_map = inscribed_radius_map(np.asarray(binary_mask, dtype=bool), voxel_size_zyx)
+
+        def sample_radius(idx: np.ndarray) -> np.ndarray:
+            return map_coordinates(radius_map, idx.T, order=1, mode="constant", cval=0.0)
+
+    spacing = tuple(float(x) for x in voxel_size_zyx)
+    shape = tuple(int(n) for n in binary_mask.shape)
+    readable: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    payloads: list[tuple] = []
+    for points_um, tangents in groups:
+        points = np.asarray(points_um, dtype=float).reshape(-1, 3)
+        directions = np.asarray(tangents, dtype=float).reshape(-1, 3)
+        radii = np.zeros(len(points))
+        if len(points):
+            idx = physical_points_to_continuous_indices(points, voxel_size_zyx)
+            radii = np.asarray(sample_radius(idx), dtype=float)
+            off_mask = ~(np.isfinite(radii) & (radii > 0))
+            if np.any(off_mask):
+                radii[off_mask] = _nearby_radius(
+                    sample_radius, idx[off_mask], voxel_size_zyx, OFF_CENTRELINE_SEARCH_UM,
+                    directions[off_mask],
+                )
+        found = np.isfinite(radii) & (radii > 0)
+        readable.append((radii, found, np.flatnonzero(found)))
+        payloads.append((points[found], directions[found], radii[found], spacing, shape))
+
+    in_workers = int(workers) > 1 and len(payloads) >= sections_module.MIN_EDGES_FOR_WORKERS
+    if in_workers and packed is None:
+        packed = PackedMask.from_mask(binary_mask)
+    section_readings = sections_module.run_edge_tasks(
+        _edge_sections, payloads, volume=packed.bits if packed is not None else binary_mask,
+        workers=int(workers), memmap_directory=memmap_directory,
+    )
+
+    results: list[tuple[np.ndarray, list[str]]] = []
+    for (radii, found, rows), sections in zip(readable, section_readings):
+        diameters = np.full(len(radii), np.nan)
+        methods = [""] * len(radii)
+        for row, section in zip(rows, sections):
+            if np.isfinite(section) and section > 0:
+                diameters[row], methods[row] = float(section), "cross_section"
+            else:
+                diameters[row], methods[row] = 2.0 * float(radii[row]), "inscribed_radius"
+        results.append((diameters, methods))
+    return results
 
 
 def measure_edge_diameters_from_binary_mask(

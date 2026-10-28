@@ -51,6 +51,7 @@ __all__ = [
     "PERTURBATION_TYPE_DISPLAY_NAMES",
     "REMOVE_TOOLTIP",
     "SETTING_DISPLAY_LABELS",
+    "TYPE_STARTING_VALUES",
     "TYPE_TOOLTIP",
     "UNCHOSEN",
     "add_entry",
@@ -68,6 +69,7 @@ __all__ = [
     "set_name",
     "set_overrides",
     "set_type",
+    "starting_values_for_type",
     "summary",
     "to_settings",
     "orphaned_tab_settings",
@@ -105,6 +107,7 @@ PERTURBATION_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
     "arteriole_and_pericyte_diameter_change": (
         "arteriole and pericyte constriction/dilation"
     ),
+    "pericyte_measured_constriction": "pericyte constriction as measured",
     "capillary_block": "capillary blocks",
     "capillary_block_mask": "capillary blocks by mask",
 }
@@ -201,6 +204,19 @@ ALWAYS_VISIBLE_TAB_SETTINGS: tuple[str, ...] = (
 def rows_for_type(perturbation_type: Any) -> tuple[str, ...]:
     """The settings an entry of this type shows, in the order it shows them."""
     return settings_for_perturbation_type(perturbation_type)
+
+
+#: What an entry's options are set to when its type is chosen: a type that
+#: works only one way starts that way. The measured constriction reads its
+#: pericytes from a mask and nothing else, so its mask row starts shown.
+TYPE_STARTING_VALUES: Mapping[str, Mapping[str, Any]] = {
+    "pericyte_measured_constriction": {"use_pericyte_mask_constriction": True},
+}
+
+
+def starting_values_for_type(perturbation_type: Any) -> dict[str, Any]:
+    """The options an entry of *perturbation_type* starts with when chosen."""
+    return dict(TYPE_STARTING_VALUES.get(str(perturbation_type), {}))
 
 
 def _editor_settings() -> tuple[str, ...]:

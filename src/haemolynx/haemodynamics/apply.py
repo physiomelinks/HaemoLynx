@@ -5,7 +5,7 @@ import inspect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -407,16 +407,21 @@ def measure_fwhm_diameters(
     vessel_mask: np.ndarray | None = None,
     psf_sigma_zyx: tuple[float, float, float] | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    at_positions: Mapping[tuple[Any, Any, Any], Sequence[float]] | None = None,
 ) -> dict[str, Any]:
     """FWHM widths of *G*'s edges (or of *edges*, measured among all of *G*'s)
     exactly as a run measures them: *config*'s FWHM settings, axis order and
     low-RAM option, the voxel size *G* records, and *vessel_mask* (the
     binarised segmentation) for the lines to stop at the vessel beside.
     The call a run, its decoy check and post processing make, for the FWHM
-    settings optimiser's trials to measure through."""
+    settings optimiser's trials to measure through. *at_positions* reads
+    the edges it names at those arc lengths instead (the pericyte
+    measurements' profiles; see
+    :func:`~haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`)."""
     return _measure_fwhm_diameters(
         G, config, raw_volume=raw_volume, vessel_mask=vessel_mask,
         psf_sigma_zyx=psf_sigma_zyx, **_subset(edges),
+        **({} if at_positions is None else {"at_positions": at_positions}),
     )
 
 
@@ -482,6 +487,7 @@ def _measure_fwhm_diameters(
     vessel_mask: np.ndarray | None = None,
     psf_sigma_zyx: tuple[float, float, float] | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    at_positions: Mapping[tuple[Any, Any, Any], Sequence[float]] | None = None,
 ) -> dict[str, Any]:
     path = _fwhm_raw_path(config)
     if path is None and raw_volume is None:
@@ -506,6 +512,7 @@ def _measure_fwhm_diameters(
             "store_profile_debug": True,
             "profile_psf_sigma_zyx": psf_sigma_zyx,
             **_subset(edges),
+            **({} if at_positions is None else {"at_positions": at_positions}),
         },
     )
 

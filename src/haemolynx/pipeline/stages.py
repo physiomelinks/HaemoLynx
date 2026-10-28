@@ -54,6 +54,7 @@ from haemolynx.haemodynamics.haematocrit_distribution import (
     iterate_flow_and_haematocrit,
 )
 from haemolynx.haemodynamics.perturbations import (
+    MEASURED_CONSTRICTION_TYPE,
     PerturbationSpec,
     is_capillary_block,
     is_sweep_perturbation,
@@ -66,6 +67,7 @@ from haemolynx.haemodynamics.perturbations import (
 from haemolynx.haemodynamics.pericyte_geometry_sweep import (
     run_pericyte_geometry_sweep,
 )
+from haemolynx.haemodynamics import pericyte_measurements as pericyte_measurement
 from haemolynx.haemodynamics.capillary import (
     run_capillary_dilation_pressure_sweep,
 )
@@ -6570,6 +6572,133 @@ def _write_capillary_block_comparison(
     return comparison
 
 
+def _fwhm_profile_reader(
+    settings: Mapping[str, Any],
+    G: nx.MultiGraph,
+    vessel_mask: np.ndarray,
+    voxel_size_zyx: Sequence[float],
+) -> pericyte_measurement.DiameterReader:
+    """The raw image's FWHM at the pericyte profiles' points, fitted as this
+    run's Diameters stage fits its samples: its FWHM settings, its raw image
+    and channel on the graph's grid, *vessel_mask* for the lines to stop at
+    the vessel beside, and the PSF it held the blur at (``fwhm_psf_sigma_zyx``
+    on the graph; estimated from the image as it would be when the run
+    measured no FWHM). Read on a copy of *G*, whose widths it writes."""
+    from haemolynx.haemodynamics.apply import (
+        image_psf_from_settings,
+        load_fwhm_raw_volume_like_graph,
+        measure_fwhm_diameters,
+    )
+    from haemolynx.pipeline.schema import default_schema
+
+    if not raw_image_is_set(settings):
+        raise ValueError(
+            "pericyte_profile_reading is raw_image_fwhm, which reads the raw image, and "
+            "raw_image_path is not set."
+        )
+    if recorded_raw_image_stain(settings, G) == raw_stain.ENDOTHELIAL:
+        logger.warning(
+            "Pericyte profiles: the raw image stains the vessel wall, and a FWHM across a "
+            "wall stain is not the lumen's width; read the segmentation instead "
+            "(pericyte_profile_reading: segmentation)."
+        )
+    voxel = tuple(float(v) for v in G.graph.get("image_voxel_size_zyx", voxel_size_zyx))
+    config = _haemodynamics_apply_config(dict(settings), default_schema(), voxel_size_zyx=voxel)
+    raw = load_fwhm_raw_volume_like_graph(config, G)
+    psf = G.graph.get("fwhm_psf_sigma_zyx")
+    if psf is None:
+        psf, _details = image_psf_from_settings(
+            G, config.fwhm, voxel_size_zyx=voxel, raw_volume=raw, vessel_mask=vessel_mask,
+            memmap_directory=config.memmap_directory,
+        )
+    psf = None if psf is None else tuple(float(v) for v in psf)
+
+    def measure(at_positions):
+        summary = measure_fwhm_diameters(
+            G.copy(), config, raw_volume=raw, vessel_mask=vessel_mask, psf_sigma_zyx=psf,
+            edges=list(at_positions), at_positions=at_positions,
+        )
+        return summary.get("readings_at_positions", {})
+
+    return pericyte_measurement.fwhm_reader(G, measure)
+
+
+def measure_around_pericytes(
+    settings: Mapping[str, Any],
+    G: nx.MultiGraph,
+    image: np.ndarray | None,
+    *,
+    mask_path: Any,
+    h5_dataset_name: str | None,
+    max_assignment_distance_um: float | None,
+    min_pericyte_diameter_um: float | None,
+    max_pericyte_diameter_um: float | None,
+    profiles: bool,
+    junctions: bool,
+) -> pericyte_measurement.PericyteMeasurements:
+    """The pericytes of the mask at *mask_path* placed on *G*, with what the
+    run asks of them: diameter profiles read off *image* (the run's
+    segmentation, binarised here as the Diameters stage binarises it) and
+    their branches' resistances by the run's blood model (*profiles*), and
+    their distances to their vessels' nearest junctions (*junctions*). One
+    reader for ``measure_pericytes`` and the measured-constriction
+    perturbation, so the two place and measure the pericytes alike."""
+    from haemolynx.haemodynamics.pericyte_mask import load_pericyte_mask
+    from haemolynx.haemodynamics.sections import default_worker_count
+
+    if mask_path in (None, ""):
+        raise ValueError("No pericyte mask to measure around.")
+    if profiles and image is None:
+        raise ValueError(
+            "The pericytes' diameter profiles are read off the run's segmented image, and "
+            "this run has none in memory (a synthetic network, or a resumed run without it)."
+        )
+    mask, _voxel_size_xyz, voxel_size_zyx = load_pericyte_mask(
+        mask_path,
+        G,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=io.axis_order_for_run(settings),
+        voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+        voxel_size_policy=settings.get("voxel_size_policy", "auto"),
+    )
+    use_memmap = bool(settings.get("use_memmap_loading"))
+    memmap_directory = settings.get("memmap_directory")
+    vessel_mask = reader = None
+    if profiles:
+        vessel_mask = _to_binary_volume_for_skeletonization(
+            image, use_memmap=use_memmap, memmap_directory=memmap_directory
+        )
+        if settings.get("pericyte_profile_reading") == "raw_image_fwhm":
+            reader = _fwhm_profile_reader(settings, G, vessel_mask, voxel_size_zyx)
+    try:
+        return pericyte_measurement.measure_pericytes(
+            G,
+            mask,
+            voxel_size_zyx,
+            vessel_mask=vessel_mask,
+            reader=reader,
+            profiles=profiles,
+            junctions=junctions,
+            step_um=float(settings.get("pericyte_profile_step_um") or pericyte_measurement.DEFAULT_PROFILE_STEP_UM),
+            reach_um=float(
+                pericyte_measurement.DEFAULT_PROFILE_REACH_UM
+                if settings.get("pericyte_profile_reach_um") is None
+                else settings["pericyte_profile_reach_um"]
+            ),
+            max_assignment_distance_um=max_assignment_distance_um,
+            min_pericyte_diameter_um=min_pericyte_diameter_um,
+            max_pericyte_diameter_um=max_pericyte_diameter_um,
+            model=_poiseuille_model_for(dict(settings)),
+            diameter_by_branch_order=settings.get("diameter_by_branch_order") or {},
+            prefer_edge_fwhm_diameter=bool(settings.get("measure_diameters_from_raw_image")),
+            workers=default_worker_count(),
+            memmap_directory=memmap_directory,
+        )
+    finally:
+        if isinstance(vessel_mask, np.memmap) and vessel_mask is not image:
+            preprocessing.release_memmap_array(vessel_mask)
+
+
 def _perturb_one(
     spec: PerturbationSpec,
     settings: dict,
@@ -6811,6 +6940,66 @@ def _perturb_one(
             # scaled_table it already closed over.
             set_resistances_for_constriction_strategy(G, **constriction_kwargs)
             apply_baseline_overrides(G, perturbed, _poiseuille_model_for(perturbed))
+    elif spec.type == MEASURED_CONSTRICTION_TYPE:
+        if not perturbed.get("use_pericyte_mask_constriction") or perturbed.get("pericyte_mask_path") in (None, ""):
+            raise ValueError(
+                f"perturbation '{spec.name}' narrows the branches a pericyte mask's pericytes "
+                "sit on, but reads no mask: turn on use_pericyte_mask_constriction and set "
+                "pericyte_mask_path"
+            )
+        measured = measure_around_pericytes(
+            perturbed,
+            G,
+            image,
+            mask_path=perturbed["pericyte_mask_path"],
+            h5_dataset_name=perturbed.get("pericyte_mask_h5_dataset_name"),
+            max_assignment_distance_um=perturbed.get("pericyte_max_assignment_distance_um"),
+            min_pericyte_diameter_um=perturbed.get("pericyte_min_diameter_um"),
+            max_pericyte_diameter_um=perturbed.get("pericyte_max_diameter_um"),
+            profiles=True,
+            junctions=False,
+        )
+        measured_model = _poiseuille_model_for(perturbed)
+        # The baseline's resistances, each branch with pericytes scaled by its
+        # measured narrowing (constricted over uniform): whatever else the
+        # baseline did to a vessel's resistance stays.
+        changed = pericyte_measurement.apply_measured_constriction(G, measured.branches)
+        apply_baseline_overrides(G, perturbed, measured_model)
+        pericyte_measurement.record_pericyte_sites(G, measured.pericytes)
+        result.outputs.append(
+            pericyte_measurement.write_branch_csv(
+                measured.branches, result.output_dir / f"{spec.name}_pericyte_branches.csv"
+            )
+        )
+        summary.update(measured.summary())
+        summary["branches_constricted"] = changed
+        logger.info(
+            f"Perturbation '{spec.name}': {measured.summary()['placed']} of the mask's "
+            f"{len(measured.pericytes)} pericyte(s) on capillaries; {changed} branch(es) "
+            "narrowed as measured."
+        )
+        if _distributes_haematocrit(perturbed):
+            measured_config = _haemodynamics_apply_config(
+                perturbed, schema,
+                voxel_size_zyx=tuple(float(v) for v in G.graph.get("image_voxel_size_zyx", voxel_size_zyx)),
+            )
+
+            def recompute_resistances() -> None:
+                # The baseline's own resistance computation from the new
+                # discharge_haematocrit, then each branch's ratio again at
+                # its own haematocrit (the viscosity law reads it).
+                apply_poiseuille_resistances(G, measured_config)
+                pericyte_measurement.apply_measured_constriction(
+                    G,
+                    pericyte_measurement.branch_resistances(
+                        G, measured.profiles, model=measured_model,
+                        diameter_by_branch_order=diameter_table,
+                        prefer_edge_fwhm_diameter=prefer_measured,
+                        step_um=measured.step_um,
+                        reference_diameters=measured.reference_diameters,
+                    ),
+                )
+                apply_baseline_overrides(G, perturbed, measured_model)
     elif is_capillary_block(spec.type):
         block_seeds = _capillary_block_seeds(perturbed, spec.type)
         chosen = None
@@ -7656,6 +7845,40 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         )
     else:
         logger.info("3D cell-mask vessel-distance measurement skipped.")
+
+    # 8b) Optional: around each pericyte of a pericyte mask -- its vessel's
+    # diameter along it and its branch's resistance with that narrowing, and
+    # how far it is from its vessel's nearest junction.
+    if settings.get("measure_pericytes"):
+        if image is None:
+            raise ValueError(
+                "measure_pericytes needs the run's segmented image, and a synthetic network "
+                "has none: switch it off (preflight says so)."
+            )
+        if settings.get("pericyte_measurement_mask_path") in (None, ""):
+            raise ValueError("measure_pericytes=True requires pericyte_measurement_mask_path.")
+        measured = measure_around_pericytes(
+            settings,
+            G,
+            image,
+            mask_path=Path(settings["pericyte_measurement_mask_path"]),
+            h5_dataset_name=settings.get("pericyte_measurement_mask_h5_dataset_name"),
+            max_assignment_distance_um=settings.get("pericyte_measurement_max_distance_um"),
+            min_pericyte_diameter_um=settings.get("pericyte_measurement_min_diameter_um"),
+            max_pericyte_diameter_um=settings.get("pericyte_measurement_max_diameter_um"),
+            profiles=bool(settings.get("measure_pericyte_diameter_profiles", True)),
+            junctions=bool(settings.get("measure_pericyte_junction_distances", True)),
+        )
+        written = pericyte_measurement.write_pericyte_measurements(measured, output_dir, run_stem(settings))
+        found = measured.summary()
+        logger.info(
+            f"Pericyte measurements: {found['placed']} of the mask's {found['pericytes']} "
+            f"pericyte(s) on capillaries; {found['profiles']} diameter profile(s), "
+            f"{found['branches']} branch resistance(s), {found['junction_distances']} junction "
+            f"distance(s). Saved {len(written)} file(s), the summary to: {written[0]}"
+        )
+    else:
+        logger.info("Pericyte measurements skipped.")
 
     # 10) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.

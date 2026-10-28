@@ -144,11 +144,13 @@ def _image_readers(settings: Mapping[str, Any]) -> set[str]:
             for name in ("cell_mask_path", "measurement_3d_vessel_mask_path")
             if _is_set(settings.get(name))
         )
+    if settings.get("measure_pericytes") and _is_set(settings.get("pericyte_measurement_mask_path")):
+        readers.add(_reader(settings.get("pericyte_measurement_mask_path")))
     for kind, perturbed in _perturbation_entries(settings):
         if kind == "capillary_block_mask" and _is_set(perturbed.get("capillary_block_mask_path")):
             readers.add(_reader(perturbed.get("capillary_block_mask_path")))
         if (
-            kind in _PERICYTE_CONSTRICTION_PERTURBATION_TYPES
+            kind in (*_PERICYTE_CONSTRICTION_PERTURBATION_TYPES, "pericyte_measured_constriction")
             and perturbed.get("use_pericyte_mask_constriction")
             and _is_set(perturbed.get("pericyte_mask_path"))
         ):

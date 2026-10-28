@@ -128,11 +128,22 @@ class FileRole(NamedTuple):
     label: str
     #: What the run reads with none ("": an image with none is a problem).
     fallback: str = ""
+    #: Other settings naming the same file, filled with it too.
+    also: tuple[str, ...] = ()
+
+    @property
+    def settings(self) -> tuple[str, ...]:
+        """Every run setting the file fills."""
+        return (self.setting, *self.also)
 
 
 #: The other files a run reads beside its image, a folder each.
 FILE_ROLES = (
-    FileRole("pericyte", "pericyte_mask_path", "pericyte mask"),
+    # The perturbations' pericyte mask and the Pericyte measurements box's.
+    FileRole(
+        "pericyte", "pericyte_mask_path", "pericyte mask",
+        also=("pericyte_measurement_mask_path",),
+    ),
     FileRole("cell", "cell_mask_path", "cell mask"),
     FileRole(
         "vessel_3d", "measurement_3d_vessel_mask_path", "vessel mask for the 3D distances",
@@ -556,7 +567,8 @@ class BatchMatch:
             values[names["venule_mask_path"]] = None
             values.update(found.settings())
         for key, path in self.files.items():
-            values[file_role(key).setting] = path
+            for setting in file_role(key).settings:
+                values[setting] = path
         return values
 
 

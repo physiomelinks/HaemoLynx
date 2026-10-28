@@ -52,7 +52,7 @@ OUTPUT_FOLDERS = {
 #: Single files of one image, read beside it: a batch matches each per image
 #: from a folder of its own (:data:`~haemolynx.io.batch_matching.FILE_ROLES`),
 #: and refuses one file for every image.
-PER_IMAGE_FILES = tuple(role.setting for role in FILE_ROLES)
+PER_IMAGE_FILES = tuple(setting for role in FILE_ROLES for setting in role.settings)
 
 #: Settings nothing reads but a perturbation (an entry of a type reading them).
 READ_BY_PERTURBATIONS_ONLY = frozenset({"capillary_block_mask_path"})
@@ -108,10 +108,20 @@ def _readers(schema: Schema, setting: str, settings: Mapping[str, Any]) -> list[
     return readers
 
 
+def _role_readers(schema: Schema, role: FileRole, settings: Mapping[str, Any]) -> list[tuple[str, str, Any]]:
+    """``(setting, who, value)`` for each reader (:func:`_readers`) of each
+    setting *role*'s file fills."""
+    return [
+        (setting, who, value)
+        for setting in role.settings
+        for who, value in _readers(schema, setting, settings)
+    ]
+
+
 def batch_file_roles(settings: Mapping[str, Any], schema: Schema) -> tuple[str, ...]:
     """The other files (:data:`~haemolynx.io.batch_matching.FILE_ROLES`, by
     key) a run on *settings* reads, so a batch matches them per image."""
-    return tuple(role.key for role in FILE_ROLES if _readers(schema, role.setting, settings))
+    return tuple(role.key for role in FILE_ROLES if _role_readers(schema, role, settings))
 
 
 #: The perturbation type a folder of masks of blocks turns on.
@@ -134,7 +144,7 @@ def settings_reading_folders(
         if role.key not in keys:
             continue
         merged = {**settings, **changes}
-        if _readers(schema, role.setting, merged):
+        if _role_readers(schema, role, merged):
             continue
         if role.setting in READ_BY_PERTURBATIONS_ONLY:
             turned = _block_mask_perturbation(merged)
@@ -203,7 +213,7 @@ def item_settings(
     of a raw image goes in the image's folder too."""
     settings = dict(base)
     settings.update(match.settings())
-    files = {file_role(key).setting: path for key, path in match.files.items()}
+    files = {setting: path for key, path in match.files.items() for setting in file_role(key).settings}
     if files and isinstance(base.get("perturbations"), (list, tuple)):
         settings["perturbations"] = [
             _with_files(entry, files) for entry in base["perturbations"]
@@ -296,20 +306,20 @@ def _check_one_file(
 ) -> None:
     """*role*'s file in a batch: matched per image from *folder*, or refused
     where a run or a perturbation would read one file for every image."""
-    readers = _readers(schema, role.setting, settings)
+    readers = _role_readers(schema, role, settings)
     if folder is not None:
         if not readers:
             report.add_warning(
                 f"The batch has a folder of {role.label}s, {folder}, but nothing in these "
-                f"settings reads {role.setting}: it is not used."
+                f"settings reads {' or '.join(role.settings)}: it is not used."
             )
         return
-    for who, value in readers:
+    for setting, who, value in readers:
         if value in (None, ""):
             continue
         if not who:
             report.add_error(
-                f"{role.setting} names one file, {Path(value).name}, which every image "
+                f"{setting} names one file, {Path(value).name}, which every image "
                 f"in the batch would read. Clear it, turn off what reads it, or give the "
                 f"batch a folder of {role.label}s."
             )
@@ -442,6 +452,11 @@ WRITTEN_WHILE = {
     "_cell_to_vessel_3d_dual_distances_summary.csv": "measurement_3d_to_cell_mask",
     "_tissue_volume.csv": "measure_tissue_volume",
     "_tissue_surface.vtp": "measure_tissue_volume",
+    "_pericytes.csv": "measure_pericytes",
+    # A measured-constriction perturbation's {name}_pericyte_branches.csv
+    # shares the name, and so this gate.
+    "_pericyte_branches.csv": "measure_pericytes",
+    "_pericyte_profiles/pericyte_<NNNN>.csv": "measure_pericytes",
 }
 
 #: Files a run writes only for a synthetic network (refused in a batch).

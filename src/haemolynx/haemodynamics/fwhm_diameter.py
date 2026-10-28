@@ -17,7 +17,7 @@ is anisotropic with coarser ``z``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import numpy as np
 import networkx as nx
@@ -1419,6 +1419,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     memmap_directory: str | Path | None = None,
     raw_channel: int | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    at_positions: Mapping[tuple[Any, Any, Any], Sequence[float]] | None = None,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -1662,6 +1663,16 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         the sampling plane (and at least 1um): narrower, and a one-pixel
         noise dip inside the vessel ends the lobe, so the fit measures one
         spike.
+    at_positions :
+        Read each edge it names (``(u, v, key)``, either way round) at these
+        arc lengths -- microns along the edge's ``voxels`` from their first
+        point -- instead of every *sample_spacing_along_edge_um*, and with no
+        branch-end or junction zone left out: a profile along a vessel reads
+        as far as it goes. ``summary["readings_at_positions"][edge]`` is each
+        position's accepted width, NaN where no fit passed the gates, keyed
+        as the caller named the edge. The edge's own width is aggregated
+        from those readings and written as usual, so a caller reading
+        profiles measures a copy of its graph.
 
     With *store_profile_debug*, each accepted sample records its sampled line
     (``data["fwhm_profile_lines_phys"]``, ~*min_total_extent_multiplier* x
@@ -1853,9 +1864,16 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             # sample along it, so read once here rather than on every pass.
             edge_diameter_guess = _initial_diameter_guess(data)
 
-            n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
-            targets = np.linspace(0.0, total_len, n_samples)
+            asked_as = None
+            if at_positions is not None:
+                asked_as = next((e for e in ((u, v, key), (v, u, key)) if e in at_positions), None)
+            if asked_as is not None:
+                targets = np.clip(np.asarray(at_positions[asked_as], dtype=float).reshape(-1), 0.0, total_len)
+            else:
+                n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
+                targets = np.linspace(0.0, total_len, n_samples)
             pts = _interpolate_centerline(poly, s, targets)
+            readings_here: list[float] = []
             # Exclude profiles too close to bifurcation endpoints, where independent
             # branch diameter is often not well-defined.
             u_is_branch = int(G.degree(u)) > 1
@@ -1916,12 +1934,13 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             measured_lines_phys: list[np.ndarray] = []
             max_out_of_plane_fraction = 0.0
             for s0, center in zip(targets, pts):
-                if u_is_branch and float(s0) < branch_excl_here:
-                    continue
-                if v_is_branch and float(total_len - s0) < branch_excl_here:
-                    continue
-                if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl_here:
-                    continue
+                if asked_as is None:
+                    if u_is_branch and float(s0) < branch_excl_here:
+                        continue
+                    if v_is_branch and float(total_len - s0) < branch_excl_here:
+                        continue
+                    if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl_here:
+                        continue
                 tangent = _tangent_at(poly, s, float(s0))
                 n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
                 sample_out_of_plane_fraction = _out_of_plane_fraction(tangent)
@@ -2159,6 +2178,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 if best_diameter is not None:
                     diameters.append(best_diameter)
                     fit_r2_values.append(best_fit_r2)
+                readings_here.append(float("nan") if best_diameter is None else float(best_diameter))
 
                 if accepted_offsets is not None:
                     max_out_of_plane_fraction = max(
@@ -2181,6 +2201,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             )
                         )
 
+            if asked_as is not None:
+                summary.setdefault("readings_at_positions", {})[asked_as] = readings_here
             if len(diameters) < max(1, int(min_accepted_samples)):
                 reason = "fwhm_failed"
                 if diameters:

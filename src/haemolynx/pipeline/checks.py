@@ -897,6 +897,44 @@ def _tiff_header(path: Any, axis_order: str) -> tuple[tuple[int, ...], tuple, di
     return shape, found[0], found[1]
 
 
+def check_pericyte_measurements(settings: Mapping[str, Any]) -> CheckReport:
+    """``measure_pericytes`` runs in the export stage, so what would stop it
+    there is checked here: a pericyte size range that admits nothing, or
+    nothing for it to measure. Whether the mask is there is check_settings'
+    (it must_exist); a synthetic network is check_synthetic_template's."""
+    report = CheckReport()
+    if not settings.get("measure_pericytes") or network_is_synthetic(settings):
+        return report
+    low = settings.get("pericyte_measurement_min_diameter_um")
+    high = settings.get("pericyte_measurement_max_diameter_um")
+    if low is not None and high is not None and float(low) > float(high):
+        report.add_error(
+            f"pericyte_measurement_min_diameter_um ({low}) is above "
+            f"pericyte_measurement_max_diameter_um ({high}): no pericyte would be measured. "
+            "Fix: lower the first or raise the second."
+        )
+    profiles = bool(settings.get("measure_pericyte_diameter_profiles"))
+    if profiles and settings.get("pericyte_profile_reading") == "raw_image_fwhm":
+        if settings.get("raw_image_path") in (None, ""):
+            report.add_error(
+                "pericyte_profile_reading is raw_image_fwhm, which fits a FWHM across each "
+                "vessel in the raw image, and raw_image_path is not set. Fix: set the raw "
+                "image, or read the profiles off the segmentation."
+            )
+        elif settings.get("raw_image_stain") == "endothelial":
+            report.add_warning(
+                "pericyte_profile_reading is raw_image_fwhm but the raw image stains the vessel "
+                "wall (raw_image_stain: endothelial): a FWHM across a wall stain is not the "
+                "lumen's width."
+            )
+    if not (profiles or settings.get("measure_pericyte_junction_distances")):
+        report.add_warning(
+            "measure_pericytes is on with both its measurements off: the run lists where each "
+            "pericyte sits and measures nothing else."
+        )
+    return report
+
+
 def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
     """``measurement_3d_to_cell_mask`` runs last, in the export stage, so what
     would stop it there is checked here: from the TIFF headers, that the cell
@@ -1085,7 +1123,7 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
             f"width given by hand in Post processing is read as {basis}. Fix: set segmentation_source "
             f"to {template.diameter_basis}."
         )
-    for name in ("measurement_3d_to_cell_mask", "measure_tissue_volume"):
+    for name in ("measurement_3d_to_cell_mask", "measure_tissue_volume", "measure_pericytes"):
         if settings.get(name):
             report.add_error(
                 f"{name} needs the run's image, and a synthetic network has none. Fix: switch it off."
@@ -1144,6 +1182,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_crop_on_import(settings))
     report.extend(check_downsample_on_import(settings))
     report.extend(check_cell_mask_measurement(settings))
+    report.extend(check_pericyte_measurements(settings))
     report.extend(check_output_path_lengths(settings))
     if echo:
         report.print("Preflight")

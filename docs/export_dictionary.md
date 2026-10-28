@@ -224,6 +224,90 @@ Written to the run's output folder (vtk_output_prefix's). Those distances summar
 | `Median Delta (Centroid-Edge) (um)` | `um` | Median of the same. |
 | `Std Delta (Centroid-Edge) (um)` | `um` | Its standard deviation. |
 
+## `{stem}_pericytes.csv`
+
+Written to the run's output folder (vtk_output_prefix's). Each pericyte of the pericyte measurements' mask (measure_pericytes): where it sits, its diameter profile's summary, its distance to its vessel's nearest junction and its branch's resistances. Columns a measurement that is off would fill are blank.
+
+| Column | Unit | Meaning |
+|---|---|---|
+| `pericyte` | `-` | The pericyte's number: its connected component's, counted from 1. |
+| `centroid_z_um` | `um` | Its centroid, z. |
+| `centroid_y_um` | `um` | Its centroid, y. |
+| `centroid_x_um` | `um` | Its centroid, x. |
+| `equivalent_diameter_um` | `um` | The diameter of the sphere of its volume. |
+| `placed` | `flag` | True when it is placed on a capillary: within the assignment distance of the nearest one and of a pericyte's size, as the pericyte perturbations place it. |
+| `reason` | `-` | Why it is not placed, when it is not. |
+| `branch_id` | `-` | Its vessel's branch ID (its place in the graph's edge order, as the panel shows it). |
+| `u` | `-` | Node ID at one end of the vessel (graph node, as in the nodes file's node_id). |
+| `v` | `-` | Node ID at the other end. |
+| `key` | `-` | Which of the vessels between u and v (0 for the first). |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
+| `distance_to_vessel_um` | `um` | Its centroid's distance to the nearest capillary's centreline. |
+| `arc_position_um` | `um` | Its midline: where it projects onto the vessel's centreline, measured along it from u. |
+| `vessel_length_um` | `um` | The vessel's centreline, u to v. |
+| `midline_z_um` | `um` | Its midline, z. |
+| `midline_y_um` | `um` | Its midline, y. |
+| `midline_x_um` | `um` | Its midline, x. |
+| `profile_file` | `-` | Its diameter profile, in {stem}_pericyte_profiles/. |
+| `profile_readings` | `count` | Readings in the profile. |
+| `diameter_at_pericyte_um` | `um` | The diameter read at its midline (pericyte_profile_reading). |
+| `narrowest_diameter_um` | `um` | The narrowest resolved reading of its profile. |
+| `narrowest_offset_um` | `um` | Where that reading is, from the midline (negative toward u). |
+| `nearest_junction_node` | `-` | The vessel's nearest junction: the nearer of its ends that three or more vessels meet at, or where it opens into a thick vessel. Blank when neither end is one. |
+| `junction_end` | `-` | Which end of the vessel it is: u or v. |
+| `junction_vessels` | `vessels` | Vessels meeting there. |
+| `junction_distance_along_vessel_um` | `um` | From the midline to the junction along the vessel. |
+| `junction_straight_line_distance_um` | `um` | From the midline to the junction in a straight line. |
+| `branch_length_um` | `um` | Its branch's length (the one its resistance is solved over). |
+| `branch_diameter_um` | `um` | The diameter its branch is solved with. |
+| `branch_haematocrit` | `fraction` | Its branch's discharge haematocrit. |
+| `branch_pericytes` | `count` | Measured pericytes on its branch. |
+| `branch_uniform_resistance_pa_s_per_m3` | `Pa.s/m^3` | Its branch's resistance as a uniform tube. |
+| `branch_constricted_resistance_pa_s_per_m3` | `Pa.s/m^3` | Its branch's resistance narrowed as its pericytes' profiles measure it. |
+| `branch_resistance_ratio` | `dimensionless` | Constricted over uniform. |
+
+## `{stem}_pericyte_branches.csv`
+
+Written to the run's output folder (vtk_output_prefix's). Each branch with a measured pericyte on it (measure_pericytes with its diameter profiles): its resistance as a uniform tube and with the narrowing its pericytes' profiles measure. The profile scales the branch's own diameter: at each point the diameter times the reading there over reference_diameter_um; where several profiles cover a point the nearest pericyte's is read, and beyond them the diameter is kept.
+
+| Column | Unit | Meaning |
+|---|---|---|
+| `branch_id` | `-` | The branch's ID (its place in the graph's edge order). |
+| `u` | `-` | Node ID at one end of the vessel (graph node, as in the nodes file's node_id). |
+| `v` | `-` | Node ID at the other end. |
+| `key` | `-` | Which of the vessels between u and v (0 for the first). |
+| `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
+| `length_um` | `um` | Its length. |
+| `diameter_um` | `um` | The diameter it is solved with: its uniform diameter. |
+| `haematocrit` | `fraction` | Its discharge haematocrit. |
+| `pericytes` | `count` | Measured pericytes on it. |
+| `pericyte_numbers` | `-` | Their numbers (JSON list), as {stem}_pericytes.csv numbers them. |
+| `resolved_readings` | `count` | Their profiles' readings of a closed cross-section of the segmentation, or of a FWHM that passed its checks (pericyte_profile_reading raw_image_fwhm), at least 2 um wide: what the narrowing is read from. |
+| `reference_diameter_um` | `um` | Its typical width in the segmentation: the median of such readings every pericyte_profile_step_um along its whole length. |
+| `narrowest_diameter_um` | `um` | The narrowest diameter it is given. |
+| `uniform_resistance_pa_s_per_m3` | `Pa.s/m^3` | Its resistance as a uniform tube. |
+| `constricted_resistance_pa_s_per_m3` | `Pa.s/m^3` | Its resistance narrowed as measured. |
+| `resistance_ratio` | `dimensionless` | Constricted over uniform. |
+
+## `{stem}_pericyte_profiles/pericyte_<NNNN>.csv`
+
+Written to the run's output folder (vtk_output_prefix's). One pericyte's diameter profile (measure_pericytes with its diameter profiles): the vessel's width at its midline and every pericyte_profile_step_um each way along it, out to pericyte_profile_reach_um or the vessel's end: the segmentation's, or the raw image's FWHM (pericyte_profile_reading).
+
+| Column | Unit | Meaning |
+|---|---|---|
+| `offset_um` | `um` | From the midline along the vessel: negative toward u, positive toward v. |
+| `toward_node` | `-` | The end of the vessel the offset heads to (blank at the midline). |
+| `arc_position_um` | `um` | Along the vessel's centreline from u. |
+| `z_um` | `um` | The reading's point, z. |
+| `y_um` | `um` | The reading's point, y. |
+| `x_um` | `um` | The reading's point, x. |
+| `diameter_um` | `um` | The vessel's width there: the segmentation's cross-section's area-equivalent diameter, else twice its inscribed radius; or, with pericyte_profile_reading raw_image_fwhm, the raw image's FWHM across it, fitted as the Diameters stage fits its samples. Blank where nothing reads. |
+| `diameter_method` | `-` | cross_section, inscribed_radius, fwhm, or blank. |
+| `resolved` | `flag` | True when the reading is at least 2 um: a width, not a strand of mask. |
+| `diameter_change_um` | `um` | The reading minus the one at the midline. |
+| `diameter_ratio` | `dimensionless` | The reading over the one at the midline. |
+| `distance_to_vessel_end_um` | `um` | Along the vessel to its nearer end. |
+
 ## `{stem}_template_comparison.csv`
 
 Written to the run's output folder (vtk_output_prefix's). A synthetic run only: each characteristic of the template against the synthetic network.
@@ -483,6 +567,12 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 | `vessel_length_um` | `um` | The vessel's length. |
 | `vessel_diameter_um` | `um` | Its diameter (width); blank where it has none. |
 | `vessel_branch_angle_deg` | `degrees` | Its branch angle: how far it turns from its parent where it leaves it (the emergence angle {stem}_branch_statistics.csv averages); blank where its junctions have no unique lower-order parent. |
+
+## `{name}_pericyte_branches.csv`
+
+Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A pericyte_measured_constriction perturbation: each branch it narrowed, one row each. The perturbation re-solves the network with each one's resistance scaled by its resistance_ratio.
+
+Columns as {stem}_pericyte_branches.csv.
 
 ## `{arteriole\|capillary\|pericyte}_dilation_sweep.csv, ..._dilation_pressure_sweep.csv, inlet_pressure_sweep.csv`
 

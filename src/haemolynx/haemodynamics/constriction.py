@@ -331,7 +331,29 @@ def integrated_resistance(
         ],
         dtype=float,
     )
-    diameters = np.clip(diameters, a_min=1e-9, a_max=None)
+    return profile_resistance(
+        positions,
+        diameters,
+        viscosity_law=viscosity_law,
+        haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
+    )
+
+
+def profile_resistance(
+    positions_um: np.ndarray,
+    diameters_um: np.ndarray,
+    *,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
+) -> float:
+    """Resistance (Pa.s/m^3) of a vessel whose diameter is *diameters_um* at
+    *positions_um* along it (increasing, um): the trapezoidal integral of
+    ``128 * mu(d) / (pi * d^4)`` between them, *mu* from the configured law.
+    What :func:`integrated_resistance` integrates its sites' profile with, and
+    a measured profile (``pericyte_measurements``) too."""
+    diameters = np.clip(np.asarray(diameters_um, dtype=float), a_min=1e-9, a_max=None)
     viscosity = _viscosity_profile(
         diameters,
         viscosity_law=viscosity_law,
@@ -341,7 +363,7 @@ def integrated_resistance(
     diameters_m = diameters / UM_PER_M
     resistance_per_length = (128.0 * viscosity) / (np.pi * (diameters_m ** 4))
     integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
-    return float(integ(resistance_per_length, x=positions / UM_PER_M))
+    return float(integ(resistance_per_length, x=np.asarray(positions_um, dtype=float) / UM_PER_M))
 
 
 # --- Applying a set of sites to a graph -------------------------------------

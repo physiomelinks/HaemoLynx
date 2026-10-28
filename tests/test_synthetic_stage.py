@@ -408,13 +408,15 @@ def test_preflight_refuses_what_needs_an_image_and_warns_about_what_is_not_read(
         template_run, tmp_path,
         measurement_3d_to_cell_mask=True, cell_mask_path=tmp_path / "cells.tif",
         measure_tissue_volume=True,
+        measure_pericytes=True, pericyte_measurement_mask_path=tmp_path / "pericytes.tif",
         use_ilastik_segmentation=True, raw_image_path=tmp_path / "raw.tif",
         automated_vessel_assignment=True, do_skeletonize=False,
     )
     report = check_synthetic_template(settings)
-    assert len(report.errors) == 2
+    assert len(report.errors) == 3
     assert any("measurement_3d_to_cell_mask" in e for e in report.errors)
     assert any("measure_tissue_volume" in e for e in report.errors)
+    assert any("measure_pericytes" in e for e in report.errors)
     joined = " ".join(report.warnings)
     assert "use_ilastik_segmentation" in joined and "automated_vessel_assignment" in joined and "do_skeletonize" in joined
 

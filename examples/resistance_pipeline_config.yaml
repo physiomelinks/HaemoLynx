@@ -694,6 +694,33 @@ statistics_and_measurements:
   tissue_fill_holes: true
 
 # ------------------------------------------------------------------------
+# Pericyte measurements
+# ------------------------------------------------------------------------
+pericyte_measurements:
+  # Measure around each pericyte of a pericyte mask, placed on the nearest capillary as the pericyte perturbations place it: the vessel's diameter along it, and how far it is from the vessel's nearest junction
+  measure_pericytes: false
+  # Read the pericytes from this binary or labelled mask, the input image's shape: each connected component is one pericyte  [needs measure_pericytes; must exist]
+  pericyte_measurement_mask_path: null
+  # Read this dataset from the pericyte measurements' mask when it is an H5 file  [needs measure_pericytes]
+  pericyte_measurement_mask_h5_dataset_name: null
+  # Read the segmentation's diameter at each pericyte's midpoint on its vessel and at every step each way along it, as far as the reach or the vessel's end, into a CSV per pericyte; and each branch's resistance as a uniform tube and with the measured narrowing  [needs measure_pericytes]
+  measure_pericyte_diameter_profiles: true
+  # Read the diameter every this far along the vessel from a pericyte's midpoint; the measured-constriction perturbation reads it too  [um; range 0.1..; needs measure_pericytes and measure_pericyte_diameter_profiles]
+  pericyte_profile_step_um: 2.0
+  # Read the diameter this far along the vessel each way from a pericyte's midpoint, stopping sooner where the vessel ends; the measured-constriction perturbation reads it too  [um; range 0.0..; needs measure_pericytes and measure_pericyte_diameter_profiles]
+  pericyte_profile_reach_um: 50.0
+  # Read the profile's diameters off the segmentation (each point's cross-section) or off the raw image (raw_image_path: a FWHM across the vessel at each point, fitted as the Diameters stage fits its samples, for a lumen label such as dextran); the branch resistances and the measured-constriction perturbation read them the same way  [one of: segmentation, raw_image_fwhm; needs measure_pericytes and measure_pericyte_diameter_profiles]
+  pericyte_profile_reading: segmentation
+  # Measure how far each pericyte's midpoint on its vessel is from the vessel's nearest junction, along the vessel and in a straight line  [needs measure_pericytes]
+  measure_pericyte_junction_distances: true
+  # Measure a pericyte only when its centroid lies within this distance of the nearest capillary's centreline  [um; range 0.0..; needs measure_pericytes]
+  pericyte_measurement_max_distance_um: 3.0
+  # Leave out mask components smaller than this equivalent diameter as too small to be a pericyte  [um; range 0.0..; needs measure_pericytes]
+  pericyte_measurement_min_diameter_um: 5.0
+  # Leave out mask components larger than this equivalent diameter as too large to be a pericyte  [um; range 0.0..; needs measure_pericytes]
+  pericyte_measurement_max_diameter_um: 12.0
+
+# ------------------------------------------------------------------------
 # Connectivity/Network Analysis
 # ------------------------------------------------------------------------
 connectivity/network_analysis:

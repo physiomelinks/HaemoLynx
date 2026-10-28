@@ -390,6 +390,108 @@ FILES: tuple[OutputFile, ...] = (
         ),
     ),
     OutputFile(
+        "{stem}_pericytes.csv", _RUN,
+        "Each pericyte of the pericyte measurements' mask (measure_pericytes): where it sits, "
+        "its diameter profile's summary, its distance to its vessel's nearest junction and its "
+        "branch's resistances. Columns a measurement that is off would fill are blank.",
+        (
+            _c("pericyte", "-", "The pericyte's number: its connected component's, counted from 1."),
+            _c("centroid_z_um", "um", "Its centroid, z."),
+            _c("centroid_y_um", "um", "Its centroid, y."),
+            _c("centroid_x_um", "um", "Its centroid, x."),
+            _c("equivalent_diameter_um", "um", "The diameter of the sphere of its volume."),
+            _c("placed", "flag",
+               "True when it is placed on a capillary: within the assignment distance of the "
+               "nearest one and of a pericyte's size, as the pericyte perturbations place it."),
+            _c("reason", "-", "Why it is not placed, when it is not."),
+            _c("branch_id", "-", "Its vessel's branch ID (its place in the graph's edge order, as the panel shows it)."),
+            *_EDGE_ID,
+            _BRANCH_ORDER,
+            _c("distance_to_vessel_um", "um", "Its centroid's distance to the nearest capillary's centreline."),
+            _c("arc_position_um", "um",
+               "Its midline: where it projects onto the vessel's centreline, measured along it from u."),
+            _c("vessel_length_um", "um", "The vessel's centreline, u to v."),
+            _c("midline_z_um", "um", "Its midline, z."),
+            _c("midline_y_um", "um", "Its midline, y."),
+            _c("midline_x_um", "um", "Its midline, x."),
+            _c("profile_file", "-", "Its diameter profile, in {stem}_pericyte_profiles/."),
+            _c("profile_readings", "count", "Readings in the profile."),
+            _c("diameter_at_pericyte_um", "um", "The diameter read at its midline (pericyte_profile_reading)."),
+            _c("narrowest_diameter_um", "um", "The narrowest resolved reading of its profile."),
+            _c("narrowest_offset_um", "um", "Where that reading is, from the midline (negative toward u)."),
+            _c("nearest_junction_node", "-",
+               "The vessel's nearest junction: the nearer of its ends that three or more vessels "
+               "meet at, or where it opens into a thick vessel. Blank when neither end is one."),
+            _c("junction_end", "-", "Which end of the vessel it is: u or v."),
+            _c("junction_vessels", "vessels", "Vessels meeting there."),
+            _c("junction_distance_along_vessel_um", "um", "From the midline to the junction along the vessel."),
+            _c("junction_straight_line_distance_um", "um", "From the midline to the junction in a straight line."),
+            _c("branch_length_um", "um", "Its branch's length (the one its resistance is solved over)."),
+            _c("branch_diameter_um", "um", "The diameter its branch is solved with."),
+            _c("branch_haematocrit", "fraction", "Its branch's discharge haematocrit."),
+            _c("branch_pericytes", "count", "Measured pericytes on its branch."),
+            _c("branch_uniform_resistance_pa_s_per_m3", "Pa.s/m^3",
+               "Its branch's resistance as a uniform tube."),
+            _c("branch_constricted_resistance_pa_s_per_m3", "Pa.s/m^3",
+               "Its branch's resistance narrowed as its pericytes' profiles measure it."),
+            _c("branch_resistance_ratio", "dimensionless", "Constricted over uniform."),
+        ),
+    ),
+    OutputFile(
+        "{stem}_pericyte_branches.csv", _RUN,
+        "Each branch with a measured pericyte on it (measure_pericytes with its diameter "
+        "profiles): its resistance as a uniform tube and with the narrowing its pericytes' "
+        "profiles measure. The profile scales the branch's own diameter: at each point the "
+        "diameter times the reading there over reference_diameter_um; where several profiles "
+        "cover a point the nearest pericyte's is read, and beyond them the diameter is kept.",
+        (
+            _c("branch_id", "-", "The branch's ID (its place in the graph's edge order)."),
+            *_EDGE_ID,
+            _BRANCH_ORDER,
+            _c("length_um", "um", "Its length."),
+            _c("diameter_um", "um", "The diameter it is solved with: its uniform diameter."),
+            _c("haematocrit", "fraction", "Its discharge haematocrit."),
+            _c("pericytes", "count", "Measured pericytes on it."),
+            _c("pericyte_numbers", "-", "Their numbers (JSON list), as {stem}_pericytes.csv numbers them."),
+            _c("resolved_readings", "count",
+               "Their profiles' readings of a closed cross-section of the segmentation, or of a "
+               "FWHM that passed its checks (pericyte_profile_reading raw_image_fwhm), at least "
+               "2 um wide: what the narrowing is read from."),
+            _c("reference_diameter_um", "um",
+               "Its typical width in the segmentation: the median of such readings every "
+               "pericyte_profile_step_um along its whole length."),
+            _c("narrowest_diameter_um", "um", "The narrowest diameter it is given."),
+            _c("uniform_resistance_pa_s_per_m3", "Pa.s/m^3", "Its resistance as a uniform tube."),
+            _c("constricted_resistance_pa_s_per_m3", "Pa.s/m^3", "Its resistance narrowed as measured."),
+            _c("resistance_ratio", "dimensionless", "Constricted over uniform."),
+        ),
+    ),
+    OutputFile(
+        "{stem}_pericyte_profiles/pericyte_<NNNN>.csv", _RUN,
+        "One pericyte's diameter profile (measure_pericytes with its diameter profiles): the "
+        "vessel's width at its midline and every pericyte_profile_step_um each way along it, out "
+        "to pericyte_profile_reach_um or the vessel's end: the segmentation's, or the raw image's "
+        "FWHM (pericyte_profile_reading).",
+        (
+            _c("offset_um", "um", "From the midline along the vessel: negative toward u, positive toward v."),
+            _c("toward_node", "-", "The end of the vessel the offset heads to (blank at the midline)."),
+            _c("arc_position_um", "um", "Along the vessel's centreline from u."),
+            _c("z_um", "um", "The reading's point, z."),
+            _c("y_um", "um", "The reading's point, y."),
+            _c("x_um", "um", "The reading's point, x."),
+            _c("diameter_um", "um",
+               "The vessel's width there: the segmentation's cross-section's area-equivalent "
+               "diameter, else twice its inscribed radius; or, with pericyte_profile_reading "
+               "raw_image_fwhm, the raw image's FWHM across it, fitted as the Diameters stage "
+               "fits its samples. Blank where nothing reads."),
+            _c("diameter_method", "-", "cross_section, inscribed_radius, fwhm, or blank."),
+            _c("resolved", "flag", "True when the reading is at least 2 um: a width, not a strand of mask."),
+            _c("diameter_change_um", "um", "The reading minus the one at the midline."),
+            _c("diameter_ratio", "dimensionless", "The reading over the one at the midline."),
+            _c("distance_to_vessel_end_um", "um", "Along the vessel to its nearer end."),
+        ),
+    ),
+    OutputFile(
         "{stem}_template_comparison.csv", _RUN,
         "A synthetic run only: each characteristic of the template against the synthetic network.",
         (
@@ -681,6 +783,13 @@ FILES: tuple[OutputFile, ...] = (
                "angle {stem}_branch_statistics.csv averages); blank where its junctions have no "
                "unique lower-order parent."),
         ),
+    ),
+    OutputFile(
+        "{name}_pericyte_branches.csv", _PERTURBATION,
+        "A pericyte_measured_constriction perturbation: each branch it narrowed, one row each. "
+        "The perturbation re-solves the network with each one's resistance scaled by its "
+        "resistance_ratio.",
+        columns_note="Columns as {stem}_pericyte_branches.csv.",
     ),
     OutputFile(
         "{arteriole|capillary|pericyte}_dilation_sweep.csv, ..._dilation_pressure_sweep.csv, inlet_pressure_sweep.csv",

@@ -703,7 +703,7 @@ BATCH_ROW_FOLDERS = {
     "large_venule_mask_path": "large",
     "small_arteriole_mask_path": "small",
     "small_venule_mask_path": "small",
-    **{role.setting: role.key for role in FILE_ROLES},
+    **{setting: role.key for role in FILE_ROLES for setting in role.settings},
 }
 BATCH_ROW_TEXT = "Batch run"
 BATCH_BUTTON_TEXT = "Batch run"

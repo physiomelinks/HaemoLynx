@@ -39,6 +39,8 @@ import numpy as np
 
 __all__ = [
     "INCOMPARABLE_OVERRIDES",
+    "MEASURED_CONSTRICTION_SETTINGS",
+    "MEASURED_CONSTRICTION_TYPE",
     "PERTURBATION_TYPES",
     "PERICYTE_PERTURBATION_TYPES",
     "PERICYTE_CONSTRICTION_SETTINGS",
@@ -84,9 +86,15 @@ PERTURBATION_TYPES: tuple[str, ...] = (
     "pericyte_length_sweep",
     "pericyte_diameter_change",
     "arteriole_and_pericyte_diameter_change",
+    "pericyte_measured_constriction",
     "capillary_block",
     "capillary_block_mask",
 )
+
+#: The type that re-solves the network with each branch's pericytes narrowing
+#: it as the segmentation shows them narrowed (pericyte_measurements), rather
+#: than by a constriction factor.
+MEASURED_CONSTRICTION_TYPE = "pericyte_measured_constriction"
 
 #: Length, spacing, probability, base tone and per-order overrides every
 #: pericyte-based perturbation can set on its own entry. Sweeps read these
@@ -139,6 +147,19 @@ PERICYTE_CONSTRICTION_SETTINGS: tuple[str, ...] = (
     "use_probabilistic_pericyte_constriction",
     "pericyte_constriction_probability",
     "pericyte_constriction_seed",
+)
+
+#: What the measured-constriction perturbation reads: the pericyte mask and
+#: which of its components are pericytes on a capillary, as the other pericyte
+#: types read them. The profile's step and reach are the Pericyte measurements
+#: box's (pericyte_profile_step_um, pericyte_profile_reach_um).
+MEASURED_CONSTRICTION_SETTINGS: tuple[str, ...] = (
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
 )
 
 #: Dilation-percent axes for a pericyte dilation sweep.
@@ -286,6 +307,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
         "arteriole_diameter_change_percent",
         *PERICYTE_CONSTRICTION_SETTINGS,
     ),
+    MEASURED_CONSTRICTION_TYPE: MEASURED_CONSTRICTION_SETTINGS,
     "capillary_block": CAPILLARY_BLOCK_SETTINGS,
     "capillary_block_mask": CAPILLARY_BLOCK_MASK_SETTINGS,
 }
@@ -667,6 +689,14 @@ def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) ->
     sweep axis whose max is below its min, or a capillary block that would
     have nothing to block."""
     merged = {**values, **spec.applied_overrides(schema)}
+    if spec.type == MEASURED_CONSTRICTION_TYPE:
+        if not merged.get("use_pericyte_mask_constriction") or merged.get("pericyte_mask_path") in (None, ""):
+            return [
+                f"perturbation '{spec.name}' narrows each branch where a pericyte mask's "
+                "pericytes sit, as the segmentation shows it narrowed, but reads no mask: "
+                "turn on use_pericyte_mask_constriction and set pericyte_mask_path"
+            ]
+        return []
     if spec.type == "capillary_block_mask":
         if merged.get("capillary_block_mask_path") in (None, ""):
             return [

@@ -334,6 +334,7 @@ ADVANCED_TITLES: Mapping[str, str] = {
     "box:network_handling": "Advanced network handling",
     "run_perturbations": "Advanced perturbation settings",
     "measurement_3d_to_cell_mask": "Advanced 3D distance settings",
+    "measure_pericytes": "Advanced pericyte settings",
     "statistics": "Choose statistics",
     "statistics_network_analysis": "Choose network measures",
     "vtk_export": "Advanced VTK settings",

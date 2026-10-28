@@ -152,7 +152,32 @@ def _run(tmp_path: Path, perturbations: list[dict], **extra) -> PerturbationRun:
         _model(),
         _boundaries(),
         SCHEMA,
+        network=_network_for(perturbations),
     )
+
+
+def _network_for(perturbations: list[dict]):
+    """The run's network, for a list holding the measured constriction,
+    which reads its diameters off the run's segmentation; None otherwise, as
+    the other types run without one."""
+    measured = any(entry.get("type") == "pericyte_measured_constriction" for entry in perturbations)
+    return _segmented_network() if measured else None
+
+
+#: The grid of the masks below: the network's centreline runs along x at
+#: y = z = 0, one voxel a micron.
+MASK_SHAPE = (3, 3, len(BRANCH_ORDERS) * int(EDGE_LENGTH_UM) + 1)
+
+
+def _segmented_network():
+    """A run's network as `run_perturbations` reads it: a segmentation of
+    the vessels as a 2 x 2 voxel bar along the centreline (the corner of a
+    tube centred on the volume's edge), one width all along."""
+    from types import SimpleNamespace
+
+    segmentation = np.zeros(MASK_SHAPE, dtype=np.uint8)
+    segmentation[:2, :2, :] = 1
+    return SimpleNamespace(volume=SimpleNamespace(image=segmentation, voxel_size_zyx=(1.0, 1.0, 1.0)))
 
 
 def _resistances(graph: nx.MultiGraph) -> dict[tuple, float]:
@@ -312,7 +337,7 @@ def _capillary_block_mask_file() -> Path:
 
     import tifffile
 
-    mask = np.zeros((1, 1, len(BRANCH_ORDERS) * int(EDGE_LENGTH_UM) + 1), dtype=np.uint8)
+    mask = np.zeros(MASK_SHAPE, dtype=np.uint8)
     mask[0, 0, 600:603] = 1
     path = Path(tempfile.mkdtemp(prefix="haemolynx_block_mask_")) / "blocks.tif"
     tifffile.imwrite(str(path), mask)
@@ -323,6 +348,30 @@ CAPILLARY_BLOCK_MASK = {
     "name": "capillary_stall_mask",
     "type": "capillary_block_mask",
     "overrides": {"capillary_block_mask_path": str(_capillary_block_mask_file())},
+}
+
+
+def _pericyte_mask_file() -> Path:
+    """One pericyte of a pericyte's size on the first B01 vessel, inside
+    `_segmented_network`'s bar, written once like the block mask."""
+    import tempfile
+
+    import tifffile
+
+    mask = np.zeros(MASK_SHAPE, dtype=np.uint8)
+    mask[:2, :2, 592:609] = 1
+    path = Path(tempfile.mkdtemp(prefix="haemolynx_pericyte_mask_")) / "pericytes.tif"
+    tifffile.imwrite(str(path), mask)
+    return path
+
+
+MEASURED_CONSTRICTION = {
+    "name": "pericytes_as_measured",
+    "type": "pericyte_measured_constriction",
+    "overrides": {
+        "use_pericyte_mask_constriction": True,
+        "pericyte_mask_path": str(_pericyte_mask_file()),
+    },
 }
 NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
 
@@ -345,6 +394,7 @@ ENTRY_FOR_TYPE: dict[str, dict] = {
     "pericyte_length_sweep": LENGTH_SWEEP,
     "pericyte_diameter_change": PERICYTE_TONE,
     "arteriole_and_pericyte_diameter_change": ARTERIOLE_AND_PERICYTE,
+    "pericyte_measured_constriction": MEASURED_CONSTRICTION,
     "capillary_block": CAPILLARY_BLOCK,
     "capillary_block_mask": CAPILLARY_BLOCK_MASK,
 }
@@ -721,10 +771,12 @@ def test_the_baseline_graph_is_unchanged_by_the_stage(tmp_path):
     geometry_before = _geometry(model.graph)
     attributes_before = _attribute_names(model.graph)
 
-    run_perturbations(
-        _settings(tmp_path, EVERY_TYPE_ONCE), model, _boundaries(), SCHEMA
+    run = run_perturbations(
+        _settings(tmp_path, EVERY_TYPE_ONCE), model, _boundaries(), SCHEMA,
+        network=_network_for(EVERY_TYPE_ONCE),
     )
 
+    assert not run.failures, [(result.name, result.error) for result in run.failures]
     assert _resistances(model.graph) == before
     assert frozenset(model.graph.edges(keys=True)) == edges_before
     _assert_geometry_unmoved(model.graph, geometry_before)
@@ -754,7 +806,9 @@ def test_no_perturbation_type_edits_the_baselines_geometry(
     model = _model()
     before = _geometry(model.graph)
 
-    run = run_perturbations(_settings(tmp_path, [entry]), model, _boundaries(), SCHEMA)
+    run = run_perturbations(
+        _settings(tmp_path, [entry]), model, _boundaries(), SCHEMA, network=_network_for([entry])
+    )
 
     assert run.results[0].error is None, run.results[0].error
     _assert_geometry_unmoved(model.graph, before)

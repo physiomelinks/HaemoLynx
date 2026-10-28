@@ -537,6 +537,7 @@ def test_exactly_the_perturbations_that_place_pericytes_get_a_pericytes_layer(tm
         "pericyte_length_sweep",
         "pericyte_diameter_change",
         "arteriole_and_pericyte_diameter_change",
+        "pericyte_measured_constriction",
     }
     run = _run(tmp_path, [ENTRY_FOR_TYPE[name] for name in PERTURBATION_TYPES])
     assert not run.failures, [(result.name, result.error) for result in run.failures]

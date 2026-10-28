@@ -122,6 +122,7 @@ H5_DATASET_SETTINGS: dict[str, str] = {
     "cell_mask_h5_dataset_name": "cell_mask_path",
     "measurement_3d_vessel_mask_h5_dataset_name": "measurement_3d_vessel_mask_path",
     "pericyte_mask_h5_dataset_name": "pericyte_mask_path",
+    "pericyte_measurement_mask_h5_dataset_name": "pericyte_measurement_mask_path",
 }
 
 #: What the loaders read as HDF5 (see haemolynx.io.load).

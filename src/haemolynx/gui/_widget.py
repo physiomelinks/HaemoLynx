@@ -22,7 +22,7 @@ from datetime import datetime
 import functools
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -134,6 +134,14 @@ from haemolynx.gui.vessel_mask_search import (
     TRIGGER_SETTINGS as MASK_SEARCH_TRIGGERS,
     fill_vessel_mask_rows,
     roles_to_search,
+)
+from haemolynx.gui.pericyte_mask_search import (
+    MEASUREMENT_FIELD as PERICYTE_MEASUREMENT_FIELD,
+    REFERENCE_SETTINGS as PERICYTE_REFERENCE_SETTINGS,
+    TRIGGER_SETTINGS as PERICYTE_MASK_TRIGGERS,
+    perturbation_field as pericyte_perturbation_field,
+    perturbation_index as pericyte_perturbation_index,
+    update_pericyte_mask_rows,
 )
 from haemolynx.gui.vessel_tubes import (
     DEFAULT_TUBE_DIAMETER,
@@ -9705,6 +9713,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         set_name,
         set_overrides,
         set_type,
+        starting_values_for_type,
         summary,
         to_settings,
         visible_tab_settings,
@@ -9728,7 +9737,16 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             {LIST_SETTING: fields[LIST_SETTING].to_setting_value(_safe_widget_value(widget))}
         )
 
-    def write_row() -> None:
+    #: Called with ``rebuilt`` after the entries change: True when every
+    #: editor was built again (an entry added or removed, a config loaded),
+    #: so an entry's index may name another entry than before.
+    listeners: list[Callable[[bool], None]] = []
+
+    def notify(rebuilt: bool = False) -> None:
+        for listener in list(listeners):
+            listener(rebuilt)
+
+    def write_row(rebuilt: bool = False) -> None:
         """The entries -> the settings row. The only way they leave here."""
         widget = rows.get(LIST_SETTING)
         if widget is None:
@@ -9741,6 +9759,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         finally:
             state.applying = False
         say()
+        notify(rebuilt)
 
     def say() -> None:
         problems = name_problems(state.entries)
@@ -9914,6 +9933,15 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
                 return
             state.entries = set_type(state.entries, index, str(type_box.value))
             show_the_chosen_type(editor)
+            # A type that works one way only starts that way (its mask row
+            # shown); on_override refreshes the rows each value reveals.
+            for name, value in starting_values_for_type(type_box.value).items():
+                if name in editor.editors:
+                    state.applying = True
+                    try:
+                        editor.editors[name].value = display_value_for(schema[name], value)
+                    finally:
+                        state.applying = False
             # After the reveal: the newly shown editors are now this entry's
             # overrides, and the ones just hidden are not.
             state.entries = set_overrides(state.entries, index, overrides_from(editor))
@@ -9963,13 +9991,13 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             return
         state.entries = add_entry(state.entries)
         rebuild()
-        write_row()
+        write_row(rebuilt=True)
 
     def remove_at(index: int) -> None:
         """What pressing entry *index*'s "Remove" button does."""
         state.entries = remove_entry(state.entries, index)
         rebuild()
-        write_row()
+        write_row(rebuilt=True)
 
     def choose_type(index: int, perturbation_type: str) -> None:
         """What choosing a type in entry *index*'s dropdown does."""
@@ -9983,6 +10011,27 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         state.entries = read_row()
         rebuild()
         say()
+        notify(True)
+
+    def pericyte_masks() -> dict[int, Any]:
+        """Each entry whose pericyte mask row is shown: its index -> the mask
+        the row names (None when empty)."""
+        name = "pericyte_mask_path"
+        masks: dict[int, Any] = {}
+        for editor in state.editors:
+            widget = editor.editors.get(name)
+            if widget is None or name not in rows_for_type(editor.type.value):
+                continue
+            if entry_shows(name, entry_values(editor)):
+                masks[editor.index] = fields[name].to_setting_value(_safe_widget_value(widget))
+        return masks
+
+    def set_pericyte_mask(index: int, path: Any) -> None:
+        """Put *path* in entry *index*'s pericyte mask row, as typing it would."""
+        if 0 <= index < len(state.editors):
+            state.editors[index].editors["pericyte_mask_path"].value = display_value_for(
+                schema["pericyte_mask_path"], path
+            )
 
     add_button.changed.connect(on_add)
     if LIST_SETTING in rows:
@@ -10040,6 +10089,9 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         list_setting=LIST_SETTING,
         refresh_entries=refresh_entries,
         disclosures=lambda: dict(getattr(state, "disclosures", {})),
+        on_change=listeners.append,
+        pericyte_masks=pericyte_masks,
+        set_pericyte_mask=set_pericyte_mask,
     )
 
 
@@ -14919,6 +14971,83 @@ def settings_widget(napari_viewer=None):
     for name in MASK_SEARCH_TRIGGERS:
         if name in rows:
             rows[name].changed.connect(search_for_vessel_masks)
+
+    def pericyte_mask_rows() -> dict[str, Any]:
+        """The pericyte mask rows the panel shows -- Pericyte measurements'
+        while it is ticked, and each perturbation entry's revealed one --
+        and what each names."""
+        values = current_values()
+        shown: dict[str, Any] = {}
+        if values.get("measure_pericytes") and PERICYTE_MEASUREMENT_FIELD in rows:
+            shown[PERICYTE_MEASUREMENT_FIELD] = values.get(PERICYTE_MEASUREMENT_FIELD)
+        if perturbations is not None:
+            for index, value in perturbations.pericyte_masks().items():
+                shown[pericyte_perturbation_field(index)] = value
+        return shown
+
+    #: The pericyte mask rows in use as the follower last saw them, the
+    #: images they were looked for beside, and what the panel filled each
+    #: row with (`gui/pericyte_mask_search.py`).
+    pericyte_rows_seen: dict[str, Any] = pericyte_mask_rows()
+    pericyte_references_seen = [
+        tuple(str(current_values().get(name) or "") for name in PERICYTE_REFERENCE_SETTINGS)
+    ]
+    pericyte_rows_filled: dict[str, Any] = {}
+    filling_pericyte_rows = [False]
+
+    def follow_pericyte_masks(*_args, rebuilt: bool = False) -> None:
+        """Fill the pericyte mask rows from the mask beside the input image
+        as each comes into use, and a mask entered into one into the others;
+        never while a config or a saved run fills the rows."""
+        if filling_pericyte_rows[0]:
+            return
+        values = current_values()
+        references = tuple(values.get(name) for name in PERICYTE_REFERENCE_SETTINGS)
+        reference_key = tuple(str(value or "") for value in references)
+        references_changed = reference_key != pericyte_references_seen[0]
+        before = dict(pericyte_rows_seen)
+        after = pericyte_mask_rows()
+        pericyte_rows_seen.clear()
+        pericyte_rows_seen.update(after)
+        pericyte_references_seen[0] = reference_key
+        if rebuilt:
+            # The entries were numbered afresh: what the panel filled an
+            # entry's row with is not known by its index any more.
+            for name in [name for name in pericyte_rows_filled if name != PERICYTE_MEASUREMENT_FIELD]:
+                pericyte_rows_filled.pop(name)
+        if restoring_settings[0] or rebuilt:
+            return
+        fill = update_pericyte_mask_rows(
+            before, after, pericyte_rows_filled,
+            references=references, references_changed=references_changed,
+        )
+        for name in fill.released:
+            pericyte_rows_filled.pop(name, None)
+        filling_pericyte_rows[0] = True
+        try:
+            for name, path in fill.values.items():
+                pericyte_rows_filled[name] = path
+                index = pericyte_perturbation_index(name)
+                if index is not None and perturbations is not None:
+                    perturbations.set_pericyte_mask(index, path)
+                elif name in rows:
+                    rows[name].value = display_value_for(schema[name], path)
+                    loaded_paths.pop(name, None)
+        finally:
+            filling_pericyte_rows[0] = False
+        if fill.values:
+            pericyte_rows_seen.clear()
+            pericyte_rows_seen.update(pericyte_mask_rows())
+        if fill.lines:
+            # After the vessel-mask search's lines when the input image changed.
+            lines = ([report.value] if references_changed and report.value else []) + list(fill.lines)
+            report.value = "\n".join(lines)
+
+    for name in PERICYTE_MASK_TRIGGERS:
+        if name in rows:
+            rows[name].changed.connect(follow_pericyte_masks)
+    if perturbations is not None:
+        perturbations.on_change(lambda rebuilt: follow_pericyte_masks(rebuilt=rebuilt))
 
     #: The trigger settings as the template-basis follower last saw them.
     template_basis_seen = {name: current_values().get(name) for name in TEMPLATE_BASIS_TRIGGERS}
