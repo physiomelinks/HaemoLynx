@@ -384,3 +384,45 @@ box (all of it in a surround), and the inlets and outlets on each face by that f
 dead ends keep the template's density. In a surround the image's arterioles and venules still run on
 as trunks at any density; at 0 they are the only trees reaching the box. At 1, or at the template's
 own size, nothing changes (nine networks digested before and after, identical).
+
+## 2026-10-28: the surround on the cut-out harness (`PLAN_synthetic_surround.md` phase 4)
+
+`scripts/surround_check.py` now solves each stand-in image inside a surround as well (at the
+truth's 1.5x along x and y, its own seed, drawn to the template the truth was drawn to), reads the
+image's pressures back and scores them like the open-end models'. Over 10 runs (5 seeds x both beds),
+medians, against `estimated` (with the trunk fix below):
+
+| | directions right | interior | median flow error | interior | P90 flow error | rank corr. | designated inflow / truth's |
+|---|---|---|---|---|---|---|---|
+| E14.5, `estimated` | 0.76 | 0.82 | 0.77 | 0.69 | 2.68 | 0.72 | 3.5 |
+| E14.5, **surround** | **0.87** | **0.91** | **0.52** | **0.45** | 3.46 | **0.82** | 0.92 |
+| fixture, `estimated` | 0.70 | 0.81 | 0.94 | 0.76 | | 0.52 | 2.1 |
+| fixture, **surround** | **0.84** | **0.92** | **0.53** | **0.29** | | **0.68** | 1.1 |
+
+The kill criterion (beat `estimated` on median flow error and on direction agreement) is met on
+both: on E14.5 the flow error is lower in 9 runs of 10 and the directions better in all 10; on the
+fixture 10 and 9. The tail is not better: E14.5's P90 flow error is 3.5 against 2.7. Through the
+open ends the surround puts 93% of the image's inflow against the truth's 89% (`estimated` 70%).
+Drawn at 2x instead of 1.5x, the fixture's numbers hold (0.50 / 0.85); at 1.25x no surround can be
+drawn (a shell of about 83 capillaries cannot take ~60 joins), and a run it cannot draw counts as
+lost. **A kind test**: the surround is drawn by the generator that drew the truth, to the same
+template, and the truth roots every tree outside the image (D5's trunk is right at 97 of 124 tree
+ends because of it). Real tissue beyond an image is not drawn by the generator, so these numbers
+are a ceiling on what the surround does for a real image, not a measure of it.
+
+Drawn instead to the template a run of the stand-in image measures for itself
+(`surround_check.image_template`: its statistics, its inlets and outlets; every vessel its faces cut
+a dead end, its loops cut short, its tree orders only the pieces the box holds), the surround still
+meets the criterion on E14.5: directions 0.86 (0.91 interior), median flow error 0.54, share error
+0.60, rank correlation 0.81, better than `estimated` in 9 and 10 runs of 10. On the fixture at 1.5x
+three draws of ten fail (the shell too thin for the face-cut ends, joined in pairs on the closed
+outer faces, and the image's joins: no bed, or a trunk left in a piece of its own), which by the
+harness's rule fails the criterion though the seven drawn are all better; at 2x it is met.
+
+Its first run found a bug: two E14.5 draws took 42 and 96 minutes in the bed's junction trades. An
+image's template can hold an order only as the sliver its face cut (one vessel of 0.44 um), and the
+trunk continuing that end was cut into pieces that long: about 400 joints, each wanting a bed
+vessel, piled onto four bed vertices (46-78 vessels each) by the last-resort join, and the trades
+cost the square of a vertex's degree. A trunk's pieces are now never shorter than the bed's minimum
+vertex separation (half its spacing); each draw takes 8-14 s, and networks without joins are
+unchanged.

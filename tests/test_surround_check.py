@@ -93,7 +93,8 @@ def test_the_oracle_gives_the_truth_back(fixture_case):
 
 def test_every_model_is_scored_on_the_same_image(fixture_case):
     models = [r["model"] for r in fixture_case]
-    assert models[0] == sc.ORACLE and "estimated" in models and "closed" in models and len(models) == 7
+    assert models[0] == sc.ORACLE and "estimated" in models and "closed" in models and len(models) == 8
+    assert models[-1] == sc.SURROUND
     for column in ("vessels_in_crop", "open_ends", "vessels", "open_end_inflow_share_truth", "box_lo_um"):
         assert len({r[column] for r in fixture_case}) == 1, column
     first = fixture_case[0]
@@ -126,6 +127,139 @@ def test_the_trunk_rule_is_counted_once_a_case_and_flagged_at_half(fixture_case)
         assert oracle["arterial_ends_upstream_in_truth"] == pytest.approx(
             oracle["arterial_ends_upstream"] / oracle["arterial_ends_judged"]
         )
+
+
+def test_the_surround_is_scored_on_the_image_it_was_drawn_round(fixture_case):
+    row = fixture_case[-1]
+    assert row["model"] == sc.SURROUND
+    assert row["surround_vessels"] > row["vessels_in_crop"] and row["surround_trunks"] > 0
+    # The truth is closed and the box its depth: every end is on a face
+    # the surround grows past, and every one is joined.
+    assert row["surround_left_open"] == 0
+    assert row["surround_trunks"] + row["surround_bed_joins"] == row["open_ends"] + row["inlets"] + row["outlets"]
+    for name in ("direction_agreement", "open_end_direction_agreement", "flow_rank_correlation"):
+        assert 0.0 <= row[name] <= 1.0
+    assert row["open_end_inflow_share_model"] > 0.0  # the surround feeds the image through its open ends
+
+
+def test_the_surrounds_pressures_are_read_back_onto_the_image():
+    """Blood is conserved at every junction of the image, solved as part of
+    the surround: the pressures land on the right nodes, with the right
+    conductances."""
+    from haemolynx.graph import crop_graph_to_box
+    from synthetic_fixtures import fixture_template
+
+    template = fixture_template()
+    truth, _roles = sc.truth_network(template, seed=1, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0)
+    lo = sc.candidate_boxes(truth, template.extent_um, 2, 2)[0]
+    image, inlets, outlets, _ends = sc.stand_in_image(crop_graph_to_box(truth, lo, lo + np.asarray(template.extent_um)), 2, 2)
+    C, S = sc.solve_surrounded(
+        image, template, inlets, outlets, seed=7, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0,
+    )
+    assert set(C.nodes) == set(image.nodes) and all(C.nodes[n]["pressure"] == S.nodes[n]["pressure"] for n in C)
+    largest = max(abs(float(d["conductance"]) * (C.nodes[a]["pressure"] - C.nodes[b]["pressure"])) for a, b, d in C.edges(data=True))
+    for node in C:
+        if C.degree(node) < 2:
+            continue
+        net = sum(float(d["conductance"]) * (C.nodes[node]["pressure"] - C.nodes[other]["pressure"]) for _n, other, d in C.edges(node, data=True))
+        assert abs(net) < 1e-6 * largest, node
+    assert 1000.0 < min(C.nodes[n]["pressure"] for n in C) and max(C.nodes[n]["pressure"] for n in C) < 4500.0
+
+
+@pytest.fixture(scope="module")
+def stand_in():
+    from haemolynx.graph import crop_graph_to_box
+    from synthetic_fixtures import fixture_template
+
+    template = fixture_template()
+    truth, roles = sc.truth_network(template, seed=1, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0)
+    lo = sc.candidate_boxes(truth, template.extent_um, 2, 2)[0]
+    image, inlets, outlets, ends = sc.stand_in_image(crop_graph_to_box(truth, lo, lo + np.asarray(template.extent_um)), 2, 2)
+    return template, roles, image, inlets, outlets, ends
+
+
+def test_a_runs_own_template_is_measured_from_the_stand_in_image(stand_in):
+    from haemolynx.statistics.bifurcation import branch_order_category
+
+    template, roles, image, inlets, outlets, ends = stand_in
+    measured = sc.image_template(image, inlets, outlets, roles)
+    assert measured.extent_um == pytest.approx(template.extent_um)
+    assert measured.inlet_count == len(inlets) and measured.outlet_count == len(outlets)
+    assert {e.face for e in measured.inlets} == {"x0"} and {e.face for e in measured.outlets} == {"x1"}
+    # Every vessel its faces cut is a dead end leaving the image, as in a run.
+    assert measured.dead_ends.leaves_image == len(ends) and measured.dead_ends.interior == 0
+    by_class = {}
+    for *_e, d in image.edges(data=True):
+        category = branch_order_category(str(d["branch_order"]))
+        by_class[category] = by_class.get(category, 0) + 1
+    assert {k: c.count for k, c in measured.classes.items() if c.count} == by_class
+    # The boundary nodes are the truth's within the image: what perfect masks give.
+    assert measured.arteriole_boundary_count == sum(1 for n in roles["arteriole_boundary"] if n in image)
+    assert measured.venule_boundary_count == sum(1 for n in roles["venule_boundary"] if n in image)
+    assert measured.provenance.source == "statistics"
+
+
+def test_a_surround_is_drawn_to_each_template_asked_for(monkeypatch):
+    from synthetic_fixtures import fixture_template
+
+    drawn_to = []
+    real = sc.solve_surrounded
+
+    def spy(image, template, *args, **kwargs):
+        drawn_to.append(template)
+        return real(image, template, *args, **kwargs)
+
+    monkeypatch.setattr(sc, "solve_surrounded", spy)
+    rows = sc.run_case(
+        fixture_template(), seed=1, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0,
+        surround_scale=2.0, surround_templates=(sc.TRUTH_TEMPLATE, sc.IMAGE_TEMPLATE),
+    )
+    truth_row, image_row = rows[-2:]
+    assert (truth_row["model"], image_row["model"]) == (sc.SURROUND, sc.SURROUND_TEMPLATES[sc.IMAGE_TEMPLATE])
+    assert drawn_to[0] is not drawn_to[1] and drawn_to[0] == fixture_template()
+    assert image_row["surround_template_vessels"] == image_row["vessels_in_crop"] == drawn_to[1].vessel_count
+    assert 0.0 <= image_row["direction_agreement"] <= 1.0 and image_row["surround_vessels"] > image_row["vessels_in_crop"]
+    assert sc.kill_criterion(rows, image_row["model"]).startswith(f"Kill criterion ({image_row['model']} beats estimated")
+
+
+def _row(model, bed, seed, error, direction):
+    return {"model": model, "bed": bed, "seed": seed, "flow_error_median": error, "direction_agreement": direction}
+
+
+def test_the_kill_criterion_needs_the_surround_to_beat_estimated_on_both():
+    met = [
+        _row("estimated", "d", 1, 0.8, 0.70), _row(sc.SURROUND, "d", 1, 0.5, 0.80),
+        _row("estimated", "d", 2, 0.6, 0.75), _row(sc.SURROUND, "d", 2, 0.7, 0.85),
+        _row("estimated", "v", 1, 0.9, 0.72), _row(sc.SURROUND, "v", 1, 0.4, 0.70),
+    ]
+    line = sc.kill_criterion(met)
+    assert line.endswith("**met**.")
+    assert "median flow error 0.5 against 0.8 (better in 2 of 3 runs)" in line
+    assert "direction agreement 0.8 against 0.72 (better in 2 of 3 runs)" in line
+    # Better on flows, worse on directions: not met.
+    worse = [_row("estimated", "d", 1, 0.8, 0.9), _row(sc.SURROUND, "d", 1, 0.5, 0.8)]
+    assert "**not met**" in sc.kill_criterion(worse) and "(D9)" in sc.kill_criterion(worse)
+    # A score neither measured fails it; a missing row cannot judge it.
+    assert "not met" in sc.kill_criterion([_row("estimated", "d", 1, None, 0.5), _row(sc.SURROUND, "d", 1, 0.1, 0.9)])
+    assert "no surround or estimated row" in sc.kill_criterion([_row("estimated", "d", 1, 0.8, 0.7)])
+    # A surround that could not be drawn loses its run, however well the rest do.
+    failed = [*met, _row("estimated", "v", 2, 0.9, 0.7), {"model": sc.SURROUND, "bed": "v", "seed": 2, "surround_failed": "no bed"}]
+    line = sc.kill_criterion(failed)
+    assert "not drawn in 1 of 4 runs" in line and "**not met**" in line
+    assert "(better in 2 of 4 runs)" in line
+
+
+def test_a_surround_too_thin_to_draw_loses_its_run_and_keeps_the_models(monkeypatch):
+    from synthetic_fixtures import fixture_template
+
+    def cannot_draw(*_args, **_kwargs):
+        raise ValueError("The template leaves no capillary bed to draw")
+
+    monkeypatch.setattr(sc, "solve_surrounded", cannot_draw)
+    rows = sc.run_case(fixture_template(), seed=1, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0)
+    assert len(rows) == 8 and rows[-1]["model"] == sc.SURROUND
+    assert rows[-1]["surround_failed"].startswith("The template leaves no capillary bed")
+    assert "direction_agreement" not in rows[-1] and rows[-2]["direction_agreement"] is not None
 
 
 def test_the_report_summarises_each_model(tmp_path):

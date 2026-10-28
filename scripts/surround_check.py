@@ -32,10 +32,21 @@ truth (``*_ends_upstream_in_truth``: where the surround's trunk is right); the
 share of the inflow through the open ends, the model's and the truth's; and
 ``designated_inflow_ratio``, the designated inlets' inflow over the truth's.
 
-The report ends with D5's line: over every case, at how many arteriole and
-venule ends the surround's trunk is right, and "revisit D5" at half or fewer
-(Harvey, 2026-10-27: every such end runs on as a trunk, "revisit if the
-harness says otherwise").
+Beside the models, the **surround** (phase 4): the crop inside a network
+drawn round it to the template (``synthetic.surround_network``, at the
+truth's ``--scale`` along ``--axes`` unless ``--surround-scale``, its own
+seed), its outer inlets and outlets at the truth's pressures, any end it
+leaves open under ``estimated``; the image's pressures are read back and
+scored as a model's. It is drawn to the very template the truth was, where
+an image's run would measure its own: a kind start.
+
+The report ends with the plan's kill criterion (:func:`kill_criterion`: the
+surround must beat ``estimated`` on median flow error and on direction
+agreement, medians over the runs, and how many runs it beats it in), and
+D5's line: over every case, at how many arteriole and venule ends the
+surround's trunk is right, and "revisit D5" at half or fewer (Harvey,
+2026-10-27: every such end runs on as a trunk, "revisit if the harness says
+otherwise").
 
 Usage::
 
@@ -69,6 +80,20 @@ BOX_TRIES = 20
 #: its hold on each end is.
 ORACLE = "oracle (true pressures at the ends)"
 ORACLE_STIFFNESS = 1e8
+#: The surround's row, and how far its shell's seed lies from the truth's,
+#: so the two are not drawn from one stream.
+SURROUND = "surround"
+SURROUND_SEED_OFFSET = 1000
+#: The templates a surround is drawn to, and each one's row: the template
+#: the truth was drawn to (kind: the tissue it draws is the truth's kind),
+#: or the one a run of the stand-in image would measure (:func:`image_template`).
+TRUTH_TEMPLATE = "truth"
+IMAGE_TEMPLATE = "image"
+SURROUND_TEMPLATES = {TRUTH_TEMPLATE: SURROUND, IMAGE_TEMPLATE: "surround, image's own template"}
+#: What the kill criterion compares the surround with, and on what: each
+#: score's name and whether higher is better.
+BASELINE = "estimated"
+KILL_SCORES = (("flow_error_median", "median flow error", False), ("direction_agreement", "direction agreement", True))
 SCORED = (
     "direction_agreement",
     "flow_error_median",
@@ -373,13 +398,67 @@ def oracle_conditions(C: nx.MultiGraph, truth: nx.MultiGraph, ends: Sequence[Any
     return OpenEndConditions(model="oracle", to_inlet=to_inlet, to_outlet=to_outlet)
 
 
-def run_case(template, *, seed: int, scale: float, axes: str, bed_model: str, inlet_pa: float, outlet_pa: float) -> list[dict]:
-    """One truth network, its crop, every model's scores."""
+def solve_surrounded(image, template, inlets, outlets, *, seed: int, scale: float, axes: str, bed_model: str,
+                     inlet_pa: float, outlet_pa: float):
+    """``(C, S)``: *image* solved inside a network drawn round it to
+    *template* (*S*, solved, its outer inlets and outlets at *inlet_pa* and
+    *outlet_pa*, an end it leaves open under ``estimated``), and a copy of
+    *image* carrying *S*'s pressures and its own conductances, to score."""
+    from haemolynx import haemodynamics as hd
+    from haemolynx.synthetic import GenerationOptions, boundary_nodes, surround_network
+
+    S = surround_network(
+        image, template, inlets=inlets, outlets=outlets,
+        options=GenerationOptions(scale=scale, scale_axes=axes, bed_model=bed_model), seed=seed,
+    )
+    set_resistances(S)
+    roles = boundary_nodes(S)
+    conductance, node_list = hd.build_conductance_matrix_from_graph(S, solver="sparse")
+    conditions = hd.open_ends.open_end_conditions(
+        "estimated", S, inlet_nodes=roles["inlet"], outlet_nodes=roles["outlet"], inlet_p_bc=inlet_pa,
+        outlet_p_bc=outlet_pa, conductance=conductance, node_list=node_list,
+    )
+    _solve(S, conditions, roles["inlet"], roles["outlet"], inlet_pa, outlet_pa)
+    C = copy.deepcopy(image)
+    set_resistances(C)
+    for node in C:
+        C.nodes[node]["pressure"] = S.nodes[node]["pressure"]
+    return C, S
+
+
+def image_template(image, inlets, outlets, roles: Mapping[str, Sequence[Any]]):
+    """The template a run of *image* would measure for itself: its
+    statistics report's sections (the template source a run takes by
+    default), its designated *inlets* and *outlets*, and the boundary nodes
+    of the truth's *roles* that lie in it, as perfect vessel masks would
+    give them; its box, the image's."""
+    from haemolynx.synthetic.template import SOURCE_STATISTICS, measure_template
+
+    inside = {role: [n for n in nodes if n in image] for role, nodes in roles.items()}
+    return measure_template(
+        image, inlet_nodes=inlets, outlet_nodes=outlets,
+        arteriole_boundary_nodes=inside.get("arteriole_boundary", ()),
+        venule_boundary_nodes=inside.get("venule_boundary", ()),
+        large_arteriole_boundary_nodes=inside.get("large_arteriole_boundary", ()),
+        large_venule_boundary_nodes=inside.get("large_venule_boundary", ()),
+        samples=False, source=SOURCE_STATISTICS,
+    )
+
+
+def run_case(
+    template, *, seed: int, scale: float, axes: str, bed_model: str, inlet_pa: float, outlet_pa: float,
+    surround: bool = True, surround_scale: Optional[float] = None,
+    surround_templates: Sequence[str] = (TRUTH_TEMPLATE,),
+) -> list[dict]:
+    """One truth network, its crop, every model's scores, and with
+    *surround* a surround's for each of *surround_templates*
+    (:data:`SURROUND_TEMPLATES`; :func:`solve_surrounded`, at
+    *surround_scale*, the truth's *scale* without one)."""
     from haemolynx import haemodynamics as hd
 
     from haemolynx.graph import crop_graph_to_box
 
-    truth, _roles = truth_network(
+    truth, roles = truth_network(
         template, seed=seed, scale=scale, axes=axes, bed_model=bed_model, inlet_pa=inlet_pa, outlet_pa=outlet_pa
     )
     own = np.asarray(template.extent_um, dtype=float)
@@ -419,6 +498,30 @@ def run_case(template, *, seed: int, scale: float, axes: str, bed_model: str, in
         _solve(C, conditions, inlets, outlets, inlet_pa, outlet_pa)
         label = model + (f" k={extra['terminal_resistance_multiple']:g}" if extra else "")
         rows.append({"model": label, **case, **score_crop(C, truth, inlets, outlets, ends)})
+    for which in surround_templates if surround else ():
+        from haemolynx.synthetic.surround import SURROUND_RECORD
+
+        label = SURROUND_TEMPLATES[which]
+        start = time.perf_counter()
+        try:
+            drawn_to = template if which == TRUTH_TEMPLATE else image_template(image, inlets, outlets, roles)
+            C, S = solve_surrounded(
+                image, drawn_to, inlets, outlets, seed=seed + SURROUND_SEED_OFFSET,
+                scale=scale if surround_scale is None else surround_scale, axes=axes, bed_model=bed_model,
+                inlet_pa=inlet_pa, outlet_pa=outlet_pa,
+            )
+        except ValueError as failure:
+            # A surround that cannot be drawn (a shell too thin to hold a
+            # join for each open end) is a run it loses, not one left out.
+            rows.append({"model": label, **case, "surround_failed": str(failure)})
+            continue
+        record = S.graph[SURROUND_RECORD]
+        drawn = {
+            "surround_vessels": S.number_of_edges(), "surround_trunks": record["trunks"],
+            "surround_bed_joins": record["bed_joins"], "surround_left_open": len(record["left_open"]),
+            "surround_template_vessels": drawn_to.vessel_count, "surround_seconds": time.perf_counter() - start,
+        }
+        rows.append({"model": label, **case, **score_crop(C, truth, inlets, outlets, ends), **drawn})
     return rows
 
 
@@ -462,6 +565,40 @@ def trunk_rule_line(right: int, judged: int) -> str:
     if right * 2 <= judged:
         line += " **Half or fewer: revisit D5.**"
     return line
+
+
+def kill_criterion(rows: Sequence[Mapping[str, Any]], label: str = SURROUND) -> str:
+    """The plan's go / no-go line: the medians over the runs of the
+    surround row *label* against :data:`BASELINE`'s on each of
+    :data:`KILL_SCORES`, and in how many runs (one bed and seed) it does
+    better; met only where it beats it on both medians and was drawn in
+    every run."""
+    summary = {r["model"]: r for r in summarise(rows, [score for score, _name, _higher in KILL_SCORES])}
+    if label not in summary or BASELINE not in summary:
+        return f"Kill criterion: no {label} or {BASELINE} row to judge it on."
+    runs = {
+        (r["bed"], r["seed"]): r for r in rows if r["model"] == label
+    }
+    paired = [(runs[(r["bed"], r["seed"])], r) for r in rows if r["model"] == BASELINE and (r["bed"], r["seed"]) in runs]
+    failed = sum(1 for r in runs.values() if r.get("surround_failed"))
+    parts, met = [], not failed
+    if failed:
+        parts.append(f"not drawn in {failed} of {len(runs)} runs")
+    for score, name, higher in KILL_SCORES:
+        ours, theirs = summary[label][score], summary[BASELINE][score]
+        if ours is None or theirs is None:
+            parts.append(f"{name}: not measured")
+            met = False
+            continue
+        better = ours > theirs if higher else ours < theirs
+        met = met and better
+        wins = sum(
+            1 for s, b in paired
+            if s.get(score) is not None and b.get(score) is not None and (s[score] > b[score] if higher else s[score] < b[score])
+        )
+        parts.append(f"{name} {ours:.3g} against {theirs:.3g} (better in {wins} of {len(paired)} runs)")
+    verdict = "**met**" if met else "**not met**: the surround ships as a sensitivity tool at most (D9)"
+    return f"Kill criterion ({label} beats {BASELINE} on both): " + "; ".join(parts) + f". {verdict}."
 
 
 def _cell(value: Any) -> str:
@@ -520,6 +657,12 @@ def main(argv=None) -> int:
     parser.add_argument("--beds", nargs="+", default=["delaunay", "voronoi"], choices=("delaunay", "voronoi"))
     parser.add_argument("--inlet-pa", type=float, default=4500.0)
     parser.add_argument("--outlet-pa", type=float, default=1000.0)
+    parser.add_argument("--no-surround", dest="surround", action="store_false", help="score the open-end models alone")
+    parser.add_argument("--surround-scale", type=float, default=None, help="the surround's box (default: --scale)")
+    parser.add_argument(
+        "--surround-templates", nargs="+", default=list(SURROUND_TEMPLATES), choices=tuple(SURROUND_TEMPLATES),
+        help="what each surround is drawn to: the truth's own template, the stand-in image's measured one, or both",
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
 
@@ -534,6 +677,8 @@ def main(argv=None) -> int:
                 case = run_case(
                     template, seed=seed, scale=args.scale, axes=args.axes, bed_model=bed,
                     inlet_pa=args.inlet_pa, outlet_pa=args.outlet_pa,
+                    surround=args.surround, surround_scale=args.surround_scale,
+                    surround_templates=args.surround_templates,
                 )
             except ValueError as failure:
                 print(f"{bed} seed {seed}: skipped, {failure}", flush=True)
@@ -549,16 +694,26 @@ def main(argv=None) -> int:
     summary = summarise(rows, [c for c in columns if c not in ("bed", "seed", "model")])
     shown = ["model", "runs", *REPORTED]
     d5 = trunk_rule_line(*trunk_rule(rows))
+    lines = [d5]
+    if args.surround:
+        surround_scale = args.scale if args.surround_scale is None else args.surround_scale
+        lines[:0] = [kill_criterion(rows, SURROUND_TEMPLATES[which]) for which in args.surround_templates]
+        lines.append(
+            f"Each surround is drawn at {surround_scale:g}x along {args.axes}: `{SURROUND}` to the template the truth "
+            f"was drawn to (kind: it draws the truth's kind of tissue), `{SURROUND_TEMPLATES[IMAGE_TEMPLATE]}` to "
+            "the template a run of the stand-in image measures for itself (its statistics, its inlets and outlets, "
+            "the truth's boundary nodes within it as perfect vessel masks would give them)."
+        )
     report = (
-        f"# Cut-out harness: open-end models\n\n"
+        f"# Cut-out harness: open-end models{' and the surround' if args.surround else ''}\n\n"
         f"Template `{args.template}` ({args.source}), truth at {args.scale:g}x along {args.axes}, closed; "
         f"beds {', '.join(args.beds)}, seeds {', '.join(map(str, args.seeds))}; inlet {args.inlet_pa:g} Pa, "
         f"outlet {args.outlet_pa:g} Pa. Medians over the runs; per-run rows in `surround_check_runs.csv`.\n\n"
-        + markdown_table(summary, shown) + "\n\n" + d5 + "\n"
+        + markdown_table(summary, shown) + "\n\n" + "\n\n".join(lines) + "\n"
     )
     (out / "REPORT.md").write_text(report, encoding="utf-8")
     print(markdown_table(summary, shown))
-    print(d5)
+    print("\n".join(lines))
     return 0
 
 

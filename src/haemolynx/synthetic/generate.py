@@ -231,13 +231,19 @@ def _hole_face_normal(hole: Optional[Hole], point: np.ndarray) -> Optional[np.nd
 
 
 def _draw_trunk(
-    draft: NetworkDraft, join: Join, template: NetworkTemplate, extent: np.ndarray, hole: Optional[Hole]
+    draft: NetworkDraft,
+    join: Join,
+    template: NetworkTemplate,
+    extent: np.ndarray,
+    hole: Optional[Hole],
+    min_step_um: float = 0.0,
 ) -> list[int]:
     """A trunk from *join* out to the box's face: its nodes, the join's
     first and the one on the face last. Straight out along the join's
     heading (turned out of the hole where it lies flatter than
-    :data:`TRUNK_MIN_OUTWARD`), cut into its order's mean chord (two pieces
-    at least), each piece at the join's width and its order's tortuosity."""
+    :data:`TRUNK_MIN_OUTWARD`), cut into its order's mean chord but never
+    shorter than *min_step_um* (two pieces at least), each piece at the
+    join's width and its order's tortuosity."""
     start = np.asarray(join.position_um, dtype=float)
     outward = _hole_face_normal(hole, start)
     heading = outward if join.heading is None else np.asarray(join.heading, dtype=float)
@@ -256,6 +262,10 @@ def _draw_trunk(
 
     tortuosity = max(first(order and order.mean_tortuosity, cls and cls.mean_tortuosity) or 1.0, 1.0)
     step = (first(order and order.mean_length_um, cls and cls.mean_length_um) or FALLBACK_TRUNK_STEP_UM) / tortuosity
+    # An image's own template can hold an order only as the sliver its face
+    # cut (E14.5's harness: one of 0.44 um, a trunk of 400 joints, each
+    # wanting a bed vessel of the few vertices near it).
+    step = max(step, float(min_step_um))
     diameter = first(join.diameter_um, order and order.mean_diameter_um, cls and cls.mean_diameter_um) or 5.0
     # At least two: a joint between hands a vessel to the bed, so every
     # trunk feeds or drains the bed round the image.
@@ -818,7 +828,8 @@ def generate_network(
     trunk_nodes: list[int] = []
     for join in joins:
         if join.kind == JOIN_TRUNK:
-            nodes = _draw_trunk(draft, join, T, extent, hole)
+            # Joints no closer than bed vertices may lie: each hands a vessel to the bed.
+            nodes = _draw_trunk(draft, join, T, extent, hole, min_step_um=min_separation)
             side = sides[0] if join.side == "arterial" else sides[1]
             draft.add_role(nodes[-1], "inlet" if join.side == "arterial" else "outlet")
             for node in nodes[1:-1]:

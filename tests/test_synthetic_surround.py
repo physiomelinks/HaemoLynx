@@ -3,6 +3,8 @@ the network drawn round it and joined to it (``synthetic/surround.py``,
 ``PLAN_synthetic_surround.md`` phases 1 and 3)."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -187,6 +189,28 @@ def test_a_trunk_runs_from_its_join_out_to_the_box_handing_vessels_to_the_bed():
     # The trunk's end is one of the box's inlets, in place of one the
     # template would have grown a tree from.
     assert len(boundary_nodes(G)["inlet"]) == len(fixture_template().scaled(SCALE).inlets)
+
+
+def test_a_trunk_of_an_order_cut_to_a_sliver_keeps_its_joints_a_bed_vertex_apart():
+    """Regression: a template measured from an image can hold an order only
+    as the sliver its face cut (E14.5's harness: one vessel of 0.44 um). Its
+    trunk was cut into pieces that long, 400 joints each wanting a bed
+    vessel, and the few bed vertices near them took 46-78 vessels each: the
+    junction trades over them took 42 and 96 minutes."""
+    T = fixture_template()
+    sliver = replace(T, orders=tuple(
+        replace(o, mean_length_um=0.44, mean_tortuosity=1.0) if o.label == "Art2" else o for o in T.orders
+    ))
+    hole = _hole()
+    start = (float(hole.lo[0] + 40.0), float(hole.lo[1] + 90.0), float(hole.lo[2]))
+    join = Join(start, JOIN_TRUNK, key="a", side="arterial", heading=(0.0, 0.0, -1.0), diameter_um=9.0, category="arteriole", order="Art2")
+    G = generate_network(sliver, seed=3, options=GenerationOptions(scale=SCALE, hole=hole), joins=[join])
+    path = _trunk(G, _join_node(G, "a"))
+    min_separation = 0.5 * G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["spacing_um"]
+    reach = start[2]
+    assert 3 <= len(path) <= round(reach / min_separation) + 1  # not 0.44 um apart: 227 pieces
+    assert all(G.degree(joint) == 3 for joint in path[1:-1])
+    assert max(d for _n, d in G.degree()) <= 4
 
 
 def test_a_trunk_lying_along_the_holes_face_is_turned_out_of_it():
