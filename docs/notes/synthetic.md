@@ -343,3 +343,19 @@ surround's outer face, whichever way its blood ran ("revisit if the harness says
 the harness a trunk is right at 97 of 124 such ends on E14.5 and 46 of 53 on the fixture, a count
 biased toward it: the truth roots every tree outside the image. The report's last line gives the
 count and says "revisit D5" at half or fewer.
+
+## 2026-10-28: a network drawn round a hole (`PLAN_synthetic_surround.md` phase 2)
+
+`GenerationOptions.hole` (`synthetic/hole.py`): a box the network leaves empty, the image's own box
+inside a surround. Its share of the template's counts is not drawn (`NetworkTemplate.around_hole`);
+roots on a face inside its footprint move along the face out of it; the trees end before it; the
+bed lays its vertices outside it and a margin (0.25 bed spacings) round it, and joins none across
+it; a bow is turned off it, or drawn straight; the graph records it and the validation refuses
+anything inside. Without a hole the generator draws what it drew before, bit for bit (nine
+networks, fixture and E14.5, digested before and after; in CI, a hole outside the box draws the
+network drawn without one). Round a centred hole the template's size at 2x, the fixture's 12
+networks and E14.5's at 2x xy (both beds) validate, capillaries within 3 of the target; E14.5 2x xy
+takes 17 s with the hole and 23 s without.
+At 2x xyz on E14.5 (about 8,000 vessels) a network round the hole takes 81-95 s over four draws
+against 43 s without one; the junction trades take 39 s of it, most of them failing near the hole's
+faces.

@@ -33,7 +33,9 @@ and away from other vessels. A child that would leave the box is cut at the
 face and marked as leaving the image -- in a closed network (*closed*) it is
 turned back off the face at its full length (its direction mirrored in it),
 or, where that leaves the box too, shortened to end inside it, the plane
-chosen that keeps most of it.
+chosen that keeps most of it. Given a hole in the box (``synthetic.hole``: an
+image's own box, in a surround), a vessel that would come near it is shortened
+to end before it, never cut there.
 
 **The trees grow where the template's do** (``PLAN_synthetic_physiology.md``,
 Harvey's D5a) when the template carries its layout (``synthetic.organisation``):
@@ -54,6 +56,7 @@ from scipy.ndimage import map_coordinates, maximum_filter
 from scipy.spatial import cKDTree
 
 from .draft import TREE, NetworkDraft
+from .hole import Hole
 from .organisation import Organisation
 from .template import (
     DEFAULT_DAUGHTER_ANGLE_DEG,
@@ -407,6 +410,18 @@ def exit_fraction(start: np.ndarray, end: np.ndarray, extent: np.ndarray) -> flo
     return float(max(fraction, 0.0))
 
 
+def fit_fraction(
+    start: np.ndarray, end: np.ndarray, extent: np.ndarray, hole: Optional[Hole] = None, hole_margin: float = 0.0
+) -> float:
+    """How much of the segment *start* -> *end* fits: before it leaves the
+    box (:func:`exit_fraction`) and, given a *hole*, before it comes within
+    *hole_margin* of that (``Hole.entry_fraction``)."""
+    fraction = exit_fraction(start, end, extent)
+    if hole is None:
+        return fraction
+    return min(fraction, hole.entry_fraction(start, end, hole_margin))
+
+
 def room_ahead_um(point: np.ndarray, direction: np.ndarray, extent: np.ndarray) -> float:
     """How far *point* can go along *direction* before it leaves the box."""
     room = math.inf
@@ -441,14 +456,17 @@ def _aim_into_layer(
     rng: np.random.Generator,
     first: np.ndarray,
     layer: TreeLayer,
+    hole: Optional[Hole] = None,
+    hole_margin: float = 0.0,
 ) -> tuple[np.ndarray, float]:
     """A direction for a root's first vessel within *tilt_deg* of *base*:
     of *first* and :data:`FIRST_VESSEL_AIMS` more, the one whose chord fits
-    the box best and, among those, lies most in the template's tree cells."""
+    the box (and misses the *hole*) best and, among those, lies most in the
+    template's tree cells."""
     best: Optional[tuple[tuple[float, float], np.ndarray, float]] = None
     for k in range(FIRST_VESSEL_AIMS + 1):
         direction = first if k == 0 else _tilted(base, tilt_deg, rng)
-        fraction = exit_fraction(start, start + chord * direction, extent)
+        fraction = fit_fraction(start, start + chord * direction, extent, hole, hole_margin)
         end = start + fraction * chord * direction
         key = (min(fraction, 1.0), layer.at(0.5 * (start + end), end) + min(room_ahead_um(end, direction, extent), chord) / max(chord, 1e-9))
         if best is None or key > best[0]:
@@ -465,15 +483,17 @@ def _aim_first_vessel(
     extent: np.ndarray,
     rng: np.random.Generator,
     first: tuple[np.ndarray, float],
+    hole: Optional[Hole] = None,
+    hole_margin: float = 0.0,
 ) -> tuple[np.ndarray, float]:
     """A direction for a root's first vessel within *tilt_deg* of *base*,
-    and how much of *chord* fits in the box along it (1 when all of it):
-    the best of *first* (the direction drawn, which left the box) and
-    :data:`FIRST_VESSEL_AIMS` more tries, stopping at one that fits."""
+    and how much of *chord* fits in the box (and misses the *hole*) along it
+    (1 when all of it): the best of *first* (the direction drawn, which did
+    not fit) and :data:`FIRST_VESSEL_AIMS` more tries, stopping at one that fits."""
     best_direction, best_fraction = first
     for _ in range(FIRST_VESSEL_AIMS):
         direction = _tilted(base, tilt_deg, rng)
-        fraction = exit_fraction(start, start + chord * direction, extent)
+        fraction = fit_fraction(start, start + chord * direction, extent, hole, hole_margin)
         if fraction > best_fraction:
             best_direction, best_fraction = direction, fraction
         if fraction >= 1.0:
@@ -578,12 +598,16 @@ def _place_children(
     closed: bool = False,
     course: Optional[np.ndarray] = None,
     persistence: float = 0.0,
+    hole: Optional[Hole] = None,
+    hole_margin: float = 0.0,
 ) -> list[tuple[np.ndarray, np.ndarray, float, bool]]:
     """Each child's ``(end, direction, chord, cut at a face)``, the plane
     round the parent chosen by score; children that cannot stay inside the
     box are cut at the face they leave by, or, *closed*, turned back off
     the face or else shortened to end inside it (a plane needing neither
-    chosen first, then the one that keeps the most of them)."""
+    chosen first, then the one that keeps the most of them). A child that
+    would come within *hole_margin* of the *hole* is shortened to end before
+    it, never cut there, the plane needing that least chosen first."""
     start = tip.direction
     n1, n2 = _frame(start)
     parent = np.asarray(tip.position, float)
@@ -624,6 +648,13 @@ def _place_children(
                     cut = False
                 else:
                     end = snap_to_face(parent + fraction * chords[i] * direction, extent)
+            if hole is not None:
+                into = hole.entry_fraction(parent, end, hole_margin)
+                if into < 1.0:
+                    inside = False
+                    kept = min(kept, into)
+                    end = parent + into * (1.0 - FIRST_VESSEL_MARGIN) * (end - parent)
+                    cut = False
             total += _score(end, extent, occupancy, spacing, tip.node, min_sep, layer, parent, direction)
             if course is not None and i == trunk:
                 # The trunk going on keeps to its tree's course from the root.
@@ -648,10 +679,13 @@ def grow_side(
     min_separation_um: float,
     daughter_angle_sd_deg: Optional[float] = None,
     closed: bool = False,
+    hole: Optional[Hole] = None,
+    hole_margin: float = 0.0,
 ) -> SideResult:
     """Grow the ``"arterial"`` or ``"venous"`` trees from *roots*
     (``(node, face)`` pairs already in *draft*); *closed*, none of them
-    leaving the box. See the module."""
+    leaving the box; given a *hole*, every vessel ending at least
+    *hole_margin* off it. See the module."""
     extent = np.asarray(extent_um, dtype=float)
     result = SideResult(side=side)
     large_tier, small_tier = template.orders_on(side)
@@ -717,11 +751,15 @@ def grow_side(
             length = first_lengths.pop()
             tortuosity = draw_tortuosity(first_order, first_class, rng)
             chord = length / tortuosity
-            fraction = exit_fraction(root_position, root_position + chord * direction, extent)
+            fraction = fit_fraction(root_position, root_position + chord * direction, extent, hole, hole_margin)
             if layer is not None:
-                direction, fraction = _aim_into_layer(base, tilt, root_position, chord, extent, rng, direction, layer)
+                direction, fraction = _aim_into_layer(
+                    base, tilt, root_position, chord, extent, rng, direction, layer, hole, hole_margin
+                )
             elif fraction < 1.0:
-                direction, fraction = _aim_first_vessel(base, tilt, root_position, chord, extent, rng, (direction, fraction))
+                direction, fraction = _aim_first_vessel(
+                    base, tilt, root_position, chord, extent, rng, (direction, fraction), hole, hole_margin
+                )
             # A root's first vessel stays in the box: re-aimed above, else
             # shortened to end inside it. Cut at a face, its tree would be
             # that one vessel.
@@ -820,7 +858,7 @@ def grow_side(
                 course = _unit(away) if float(np.linalg.norm(away)) > 0 else None
             children = _place_children(
                 tip, chords, deflections, extent, occupancy, spacing_um, min_separation_um, rng, layer, closed,
-                course, persistence,
+                course, persistence, hole, hole_margin,
             )
             for (end, direction, chord, cut), diameter, tort in zip(children, diameters, tortuosities):
                 node = draft.add_node(end)
@@ -852,6 +890,7 @@ __all__ = [
     "draw_tortuosity",
     "exit_fraction",
     "face_distance_um",
+    "fit_fraction",
     "fit_asymmetry",
     "grow_side",
     "inward_normal",

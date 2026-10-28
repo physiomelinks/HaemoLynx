@@ -40,6 +40,12 @@ same fill prunes them to the template's degree sequence, so the counts stay
 exact; what the Voronoi edges cannot fill the same repairs draw from nearest
 neighbours, and the bed's record counts how many of its vessels are Voronoi
 edges.
+
+Given a hole in the box (``synthetic.hole``: an image's own box, in a
+surround), the bed fills the rest of it: as many vertices are laid as would
+leave the count wanted outside the hole and a margin round it, those inside
+are dropped, and no two vertices are joined across it (:meth:`_Fill.crosses_hole`,
+asked by every way the fill joins two).
 """
 from __future__ import annotations
 
@@ -53,6 +59,7 @@ from scipy.spatial import Delaunay, cKDTree
 from haemolynx.statistics.layout import ACUTE_JUNCTION_DEG
 
 from .draft import BED, NetworkDraft
+from .hole import Hole
 from .organisation import Organisation, cell_index, chord_class, tensor_matrix
 
 #: Candidate edges longer than this many lattice spacings are left out; from
@@ -66,6 +73,10 @@ JITTER = 0.35
 #: No bed vertex this close (in spacings) to a tree node, nor to a face.
 CLEARANCE_SPACINGS = 0.35
 FACE_MARGIN_SPACINGS = 0.25
+#: Round a hole: how many times the vertices are laid again while too few
+#: land outside it, each time this much more than the shortfall asks.
+HOLE_ATTEMPTS = 3
+HOLE_REDRAW = 1.05
 #: How much a candidate's length counts against its angle to the vessels
 #: already at the vertex, in the fill's score (``weight * |angle - target| / 90 deg``
 #: in spacings).
@@ -701,8 +712,12 @@ class _Fill:
         junction_angle_deg: Optional[float] = None,
         acute_share: Optional[float] = None,
         fixed_directions: Optional[Mapping[int, Sequence[np.ndarray]]] = None,
+        hole: Optional[Hole] = None,
     ):
         self.points = points
+        #: No two vertices are joined across it (:meth:`crosses_hole`).
+        self.hole = hole
+        self._crossings: dict[tuple[int, int], bool] = {}
         self._tuples = [tuple(float(c) for c in p) for p in points]
         self.caps = caps.astype(int)
         self.attached = attached.astype(bool)
@@ -740,7 +755,18 @@ class _Fill:
             return True
         if self.attached[i] and self.attached[j]:
             return True
-        return bool(self.caps[i] == 1 and self.caps[j] == 1)
+        return bool(self.caps[i] == 1 and self.caps[j] == 1) or self.crosses_hole(i, j)
+
+    def crosses_hole(self, i: int, j: int) -> bool:
+        """Whether *i*-*j* would run through the hole (``synthetic.hole``);
+        never without one."""
+        if self.hole is None:
+            return False
+        key = (i, j) if i < j else (j, i)
+        found = self._crossings.get(key)
+        if found is None:
+            found = self._crossings[key] = self.hole.crosses(self.points[i], self.points[j])
+        return found
 
     def _spacing(self, v: int) -> float:
         return self.spacing if self.local is None else float(self.local[v])
@@ -1062,7 +1088,7 @@ def join_pieces(fill: "_Fill", live: Sequence[int], linked: Sequence[tuple[int, 
                 for i in order_m:
                     m = members[int(i)]
                     g = hubs_in_giant[int(idx[int(i)])]
-                    if g not in fill.neighbours[m] and m != g and fill.degree[m] < caps[m]:
+                    if g not in fill.neighbours[m] and m != g and fill.degree[m] < caps[m] and not fill.crosses_hole(m, g):
                         best = (float(d[int(i)]), m, g)
                         break
                 if best is not None:
@@ -1108,6 +1134,31 @@ def _junction_join(fill: "_Fill", components: Mapping[int, Sequence[int]], giant
     return best
 
 
+def _out_of_hole(
+    points: np.ndarray,
+    pairs: Optional[list],
+    hole: Hole,
+    margin: float,
+    count: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, Optional[list]]:
+    """*points* not in *hole* nor within *margin* of it, thinned at random to
+    *count* when there are more, and of *pairs* (a Voronoi bed's edges, index
+    pairs; None for a lattice's) those between two kept points not crossing it."""
+    keep = np.flatnonzero(~hole.contains(points, margin))
+    if len(keep) > count:
+        keep = keep[np.sort(rng.choice(len(keep), size=count, replace=False))]
+    if pairs is not None:
+        index = -np.ones(len(points), dtype=int)
+        index[keep] = np.arange(len(keep))
+        pairs = [
+            (int(index[a]), int(index[b]))
+            for a, b in pairs
+            if index[a] >= 0 and index[b] >= 0 and not hole.crosses(points[a], points[b])
+        ]
+    return points[keep], pairs
+
+
 def build_bed(
     draft: NetworkDraft,
     *,
@@ -1128,6 +1179,8 @@ def build_bed(
     at_template_size: bool = True,
     junction_angle_deg: Optional[float] = None,
     acute_share: Optional[float] = None,
+    hole: Optional[Hole] = None,
+    hole_margin: float = 0.0,
 ) -> BedResult:
     """Add the bed to *draft*. *attached* maps the draft nodes the bed joins
     (tree leaves, or the roots themselves) to the bed edges each takes;
@@ -1142,7 +1195,8 @@ def build_bed(
     angles summed over three; None without one: the fill judges the
     daughter angle at one end and nothing spreads it); *acute_share* the
     template's share of junctions with an acute pair (the acute weight's
-    scale, :data:`UNAIDED_ACUTE_SHARE`). See the module."""
+    scale, :data:`UNAIDED_ACUTE_SHARE`). Given a *hole*, no vertex lies in
+    it or within *hole_margin* of it and no edge crosses it. See the module."""
     if model not in BED_MODELS:
         raise ValueError(f"bed model must be one of {BED_MODELS}, got {model!r}")
     extent = np.asarray(extent_um, dtype=float)
@@ -1150,21 +1204,36 @@ def build_bed(
     attached_nodes = list(attached)
     clear = np.stack([draft.position(n) for n in keep_clear]) if keep_clear else None
     voronoi_pairs: Optional[list] = None
-    if model == BED_MODEL_VORONOI:
-        bed_points, voronoi_pairs = voronoi_vertices(
-            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation,
-            at_template_size=at_template_size,
-        )
-    elif drawn_from_template_vertices(organisation, at_template_size):
-        bed_points = template_vertices(
-            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
-        )
-    elif organisation is not None:
-        bed_points = density_vertices(
-            extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
-        )
+
+    def lay(count: int) -> tuple[np.ndarray, Optional[list]]:
+        if model == BED_MODEL_VORONOI:
+            return voronoi_vertices(
+                extent, count, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation,
+                at_template_size=at_template_size,
+            )
+        if drawn_from_template_vertices(organisation, at_template_size):
+            return template_vertices(
+                extent, count, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
+            ), None
+        if organisation is not None:
+            return density_vertices(
+                extent, count, rng=rng, keep_clear=clear, spacing_um=spacing_um, organisation=organisation
+            ), None
+        return lattice_vertices(extent, count, rng=rng, keep_clear=clear, spacing_um=spacing_um), None
+
+    if hole is None:
+        bed_points, voronoi_pairs = lay(targets.vertices)
     else:
-        bed_points = lattice_vertices(extent, targets.vertices, rng=rng, keep_clear=clear, spacing_um=spacing_um)
+        # Laid over the whole box: as many more as the hole and the margin
+        # round it take, and more again while too few land outside them.
+        laid = int(math.ceil(targets.vertices / max(1.0 - hole.grown(hole_margin).share_of(extent), 0.05)))
+        for attempt in range(HOLE_ATTEMPTS):
+            bed_points, voronoi_pairs = lay(laid)
+            outside = int(np.sum(~hole.contains(bed_points, hole_margin)))
+            if outside >= targets.vertices or attempt == HOLE_ATTEMPTS - 1:
+                break
+            laid = int(math.ceil(laid * HOLE_REDRAW * targets.vertices / max(outside, 1)))
+        bed_points, voronoi_pairs = _out_of_hole(bed_points, voronoi_pairs, hole, hole_margin, targets.vertices, rng)
     if len(bed_points) < targets.vertices:
         draft.note(f"the bed has {len(bed_points)} vertices of the {targets.vertices} wanted (no room beside the trees)")
     bed_nodes = [draft.add_node(p) for p in bed_points]
@@ -1236,7 +1305,7 @@ def build_bed(
                         fixed.setdefault(attached_nodes.index(here), []).append(step / norm)
     fill = _Fill(
         points, caps, is_attached, rng, daughter_angle_deg, spacing_um, target_chord_um, local, tensors, class_chords,
-        junction_angle_deg=junction_angle_deg, acute_share=acute_share, fixed_directions=fixed,
+        junction_angle_deg=junction_angle_deg, acute_share=acute_share, fixed_directions=fixed, hole=hole,
     )
 
     candidates: dict[int, list[tuple[int, float]]] = {i: [] for i in range(len(all_nodes))}
@@ -1350,7 +1419,7 @@ def build_bed(
             _d, idx = hub_tree.query(points[v], k=k)
             for i in np.atleast_1d(idx):
                 u = hubs_index[int(i)]
-                if u in fill.neighbours[v] or fill.degree[u] >= max_degree:
+                if u in fill.neighbours[v] or fill.degree[u] >= max_degree or fill.crosses_hole(v, u):
                     continue
                 fill.connect(v, u)
                 if fill.degree[v] >= caps[v]:
@@ -1362,7 +1431,7 @@ def build_bed(
             best = None
             for a_i, b_i in pairs:
                 a, b = short_attached[int(a_i)], short_attached[int(b_i)]
-                if b in fill.neighbours[a] or caps[a] == 1 or caps[b] == 1:
+                if b in fill.neighbours[a] or caps[a] == 1 or caps[b] == 1 or fill.crosses_hole(a, b):
                     continue
                 d = float(np.linalg.norm(points[a] - points[b]))
                 if best is None or d < best[0]:
@@ -1377,7 +1446,7 @@ def build_bed(
             _d, idx = hub_tree.query(points[v], k=k)
             for i in np.atleast_1d(idx):
                 u = hubs_index[int(i)]
-                if u in fill.neighbours[v]:
+                if u in fill.neighbours[v] or fill.crosses_hole(v, u):
                     continue
                 fill.connect(v, u)
                 result.phases["overfull_hubs"] = result.phases.get("overfull_hubs", 0) + 1
@@ -1395,7 +1464,7 @@ def build_bed(
             _d, idx = everything.query(points[v], k=min(len(points), 32))
             for i in np.atleast_1d(idx):
                 u = int(i)
-                if u == v or u in fill.neighbours[v] or is_attached[u] or caps[u] < 2:
+                if u == v or u in fill.neighbours[v] or is_attached[u] or caps[u] < 2 or fill.crosses_hole(v, u):
                     continue
                 if fill.degree[u] == 0 or fill.degree[u] >= max_degree:
                     continue
@@ -1445,7 +1514,10 @@ def build_bed(
         if a == b or a == v or b == v:
             # Both edges to one neighbour: merging would be a self-loop, so
             # the vertex takes a third edge to the nearest junction instead.
-            hub_candidates = [u for u in hubs_index if u != v and u != a and all(u not in (e[0], e[1]) for e in incident[v])]
+            hub_candidates = [
+                u for u in hubs_index
+                if u != v and u != a and all(u not in (e[0], e[1]) for e in incident[v]) and not fill.crosses_hole(v, u)
+            ]
             if hub_candidates:
                 nearest = min(hub_candidates, key=lambda u: float(np.linalg.norm(points[u] - points[v])))
                 extra = [v, nearest, []]

@@ -39,6 +39,7 @@ from .generate import (
     generate_network,
     validate_synthetic_graph,
 )
+from .hole import Hole, centred_hole
 from .surround import ImageOpenEnd, read_open_ends
 from .template import (
     DEFAULT_DAUGHTER_ANGLE_DEG,
@@ -105,6 +106,7 @@ __all__ = [
     "DeadEndTarget",
     "Endpoint",
     "GenerationOptions",
+    "Hole",
     "ImageOpenEnd",
     "LayoutTarget",
     "LoopTarget",
@@ -117,6 +119,7 @@ __all__ = [
     "Samples",
     "TemplateError",
     "boundary_nodes",
+    "centred_hole",
     "clear_template_cache",
     "diameter_basis_of_run",
     "compare_run",

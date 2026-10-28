@@ -426,6 +426,31 @@ class NetworkTemplate:
         surface = _surface_factor(self.extent_um, factors)
         extent = tuple(float(e) * f for e, f in zip(self.extent_um, factors))
         shape = tuple(int(round((s - 1) * f)) + 1 for s, f in zip(self.image_shape, factors))
+        along = "" if axes == SCALE_AXES_XYZ else " along x and y, its depth kept"
+        faces = _face_factors(factors, surface)
+        return replace(
+            self._with_volume(volume, surface, f"scaled by {float(factor):g} from the template's box{along}"),
+            extent_um=extent,
+            image_shape=shape,
+            inlets=_scaled_endpoints(self.inlets, faces),
+            outlets=_scaled_endpoints(self.outlets, faces),
+        )
+
+    def around_hole(self, share: float) -> "NetworkTemplate":
+        """The same network with *share* of its box a hole it does not fill
+        (``synthetic.hole``: the image's own box, in a surround): counts and
+        total lengths go as the volume left, its inlets, outlets and the dead
+        ends at its faces stay, every per-vessel figure and density stays."""
+        share = float(share)
+        if not (math.isfinite(share) and 0.0 <= share < 1.0):
+            raise ValueError(f"a hole's share of the box must be from 0 to under 1, got {share!r}")
+        if share == 0.0:
+            return self
+        return self._with_volume(1.0 - share, 1.0, f"{share:.0%} of the box left to a hole")
+
+    def _with_volume(self, volume: float, surface: float, note: str) -> "NetworkTemplate":
+        """Counts and total lengths times *volume*, the dead ends leaving the
+        image times *surface*, and *note* added to the provenance."""
         classes = {
             key: replace(
                 target,
@@ -448,15 +473,8 @@ class NetworkTemplate:
             "island_ends": _scaled_count(self.dead_ends.island_ends, volume),
         }
         dead_ends = replace(self.dead_ends, total=sum(parts.values()), **parts)
-        along = "" if axes == SCALE_AXES_XYZ else " along x and y, its depth kept"
-        notes = self.provenance.notes + (f"scaled by {float(factor):g} from the template's box{along}",)
-        faces = _face_factors(factors, surface)
         return replace(
             self,
-            extent_um=extent,
-            image_shape=shape,
-            inlets=_scaled_endpoints(self.inlets, faces),
-            outlets=_scaled_endpoints(self.outlets, faces),
             arteriole_boundary_count=_scaled_count(self.arteriole_boundary_count, volume),
             venule_boundary_count=_scaled_count(self.venule_boundary_count, volume),
             large_arteriole_boundary_count=_scaled_count(self.large_arteriole_boundary_count, volume),
@@ -472,7 +490,7 @@ class NetworkTemplate:
             loops=loops,
             dead_ends=dead_ends,
             tissue_volume_um3=None if self.tissue_volume_um3 is None else self.tissue_volume_um3 * volume,
-            provenance=replace(self.provenance, notes=notes),
+            provenance=replace(self.provenance, notes=self.provenance.notes + (note,)),
         )
 
     # -- JSON --------------------------------------------------------------

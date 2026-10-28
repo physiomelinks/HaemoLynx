@@ -30,6 +30,15 @@ the capillaries' total length kept (:func:`dead_end_pairs_joined`). Kept at
 the template's count instead, a bed without dead ends needs every vertex a
 junction: on E14.5 that drew 422 loops against its 231.
 
+**A hole** (``GenerationOptions.hole``, ``synthetic.hole``) is a box the
+network leaves empty: an image's own box, inside a surround drawn round it
+(``PLAN_synthetic_surround.md``). Its share of the template's counts is not
+drawn (``NetworkTemplate.around_hole``); the trees end before it, the bed lays
+no vertex in it and joins none across it, every bow is kept out of it (else
+drawn straight), and the graph records it (:data:`hole.GRAPH_HOLE`), which
+:func:`validate_synthetic_graph` checks. Without one, nothing here asks a hole
+anything.
+
 Every draw goes through one ``numpy`` generator, so a seed repeats a network
 exactly. :func:`validate_synthetic_graph` checks the contract.
 """
@@ -53,8 +62,15 @@ from haemolynx.graph.dead_ends import (
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC, EDGE_DIAMETER_BASIS
 
-from .bed import BED_MODEL_DELAUNAY, build_bed, degree_sequence_targets, drawn_from_template_vertices
+from .bed import (
+    BED_MODEL_DELAUNAY,
+    FACE_MARGIN_SPACINGS,
+    build_bed,
+    degree_sequence_targets,
+    drawn_from_template_vertices,
+)
 from .draft import BED, TREE, NetworkDraft
+from .hole import GRAPH_HOLE, Hole
 from .polylines import DEFAULT_POINTS, bend_path, bend_to_lengths, densify_paths
 from .template import (
     DEFAULT_DAUGHTER_ANGLE_DEG,
@@ -153,6 +169,10 @@ class GenerationOptions:
     #: :data:`OPEN_ENDS`: a closed network, or the template's vessels
     #: leaving the image (the ``synthetic_open_ends`` setting).
     open_ends: str = OPEN_ENDS_CLOSED
+    #: A box the network leaves empty (``synthetic.hole``: an image's own
+    #: box, in a surround), its share of the template's counts not drawn;
+    #: None fills the whole box.
+    hole: Optional[Hole] = None
 
 
 @dataclass
@@ -174,9 +194,18 @@ class _Side:
         self.face = []
 
 
-def _place_roots(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray, rng: np.random.Generator) -> dict:
+def _place_roots(
+    draft: NetworkDraft,
+    template: NetworkTemplate,
+    extent: np.ndarray,
+    rng: np.random.Generator,
+    hole: Optional[Hole] = None,
+    hole_margin: float = 0.0,
+) -> dict:
     """One node per template inlet and outlet at its relative position,
-    exactly on its face; duplicates (a scaled template's) spread apart."""
+    exactly on its face; duplicates (a scaled template's) spread apart. One
+    that would lie in a *hole* or within *hole_margin* of it is moved along
+    its face out of it."""
     placed: list[np.ndarray] = []
     minimum = ROOT_SEPARATION_FRACTION * float(np.min(extent))
     roots: dict[str, list] = {"inlet": [], "outlet": []}
@@ -195,6 +224,9 @@ def _place_roots(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndar
                 position = snap_to_face(position, extent)
                 axis = int(np.argmax(np.abs(normal)))
                 position[axis] = 0.0 if normal[axis] > 0 else extent[axis]
+            if hole is not None:
+                along = [a for a in range(3) if normal is None or a != int(np.argmax(np.abs(normal)))]
+                position = hole.push_out(position, along, hole_margin, extent)
             placed.append(position)
             node = draft.add_node(position, role)
             roots[role].append((node, endpoint.face))
@@ -519,6 +551,11 @@ def generate_network(
     rng = rng if rng is not None else np.random.default_rng(seed)
     T = template.scaled(options.scale, options.scale_axes)
     extent = np.asarray(T.extent_um, dtype=float)
+    hole = options.hole
+    if hole is not None:
+        # Tissue the network leaves to an image's own graph: its share of
+        # the template's counts is not drawn.
+        T = T.around_hole(hole.share_of(extent))
     if not T.inlets or not T.outlets:
         raise ValueError("the template has no inlets or no outlets to draw from")
     capillaries = T.class_target("capillary")
@@ -527,8 +564,9 @@ def generate_network(
         raise ValueError("the template has no capillaries to draw a bed from")
 
     draft = NetworkDraft()
-    roots = _place_roots(draft, T, extent, rng)
-    root_count = len(roots["inlet"]) + len(roots["outlet"])
+    # One root per inlet and outlet (_place_roots), placed once the spacing
+    # says how far off a hole they keep.
+    root_count = len(T.inlets) + len(T.outlets)
 
     # The bed's arithmetic first: its spacing is what the trees fill space to.
     loops = T.loops.independent_loops
@@ -545,9 +583,13 @@ def generate_network(
     bed_vertices = max(capillary_count - loops - root_count + 1, 1)
     # The mean spacing; a bed laid out to the template's organisation has
     # its own spacing cell by cell (bed.density_vertices).
-    spacing = float((np.prod(extent) / bed_vertices) ** (1.0 / 3.0))
+    volume = np.prod(extent) if hole is None else np.prod(extent) - hole.volume_in(extent)
+    spacing = float((volume / bed_vertices) ** (1.0 / 3.0))
     min_separation = options.min_separation_um if options.min_separation_um is not None else 0.5 * spacing
     daughter_angle = T.daughter_angle_deg if T.daughter_angle_deg else DEFAULT_DAUGHTER_ANGLE_DEG
+    # Off a hole's faces as the bed keeps off the box's.
+    hole_margin = FACE_MARGIN_SPACINGS * spacing
+    roots = _place_roots(draft, T, extent, rng, hole, hole_margin)
 
     sides = [
         _Side("arterial", roots["inlet"], boundary_role="arteriole_boundary", large_role="large_arteriole_boundary", boundary_count=T.arteriole_boundary_count),
@@ -570,7 +612,7 @@ def generate_network(
         side.result = _grow_side_to_reach(
             draft, T, side.name, side.roots, rng,
             spacing_um=spacing, extent_um=extent, min_separation_um=min_separation,
-            daughter_angle_sd_deg=options.daughter_angle_sd_deg, closed=closed,
+            daughter_angle_sd_deg=options.daughter_angle_sd_deg, closed=closed, hole=hole, hole_margin=hole_margin,
         )
         tree_nodes.extend(side.result.nodes)
         for node in side.result.large_boundary:
@@ -630,6 +672,8 @@ def generate_network(
         at_template_size=options.scale == 1.0,
         junction_angle_deg=_junction_angle(T),
         acute_share=None if T.layout is None else T.layout.acute_junction_share,
+        hole=hole,
+        hole_margin=hole_margin,
     )
 
     if bed.edges == 0:
@@ -692,6 +736,8 @@ def generate_network(
             "notes": list(draft.notes),
         },
     }
+    if hole is not None:
+        G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["hole_share"] = hole.share_of(extent)
     if validate:
         validate_synthetic_graph(G, T)
     return G
@@ -818,7 +864,7 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
             curvature = np.array([_curvature_target(template, e.category, rng) for e in simple])
         paths = list(bend_to_lengths(
             starts, ends, targets, rng, points=options.bend_points, extent_um=extent, curvature_deg=curvature,
-            cross_wave=np.array([_cross_wave(template, e.category) for e in simple]),
+            cross_wave=np.array([_cross_wave(template, e.category) for e in simple]), hole=options.hole,
         ))
     with_via = [e for e in edges if e.via]
     for edge in with_via:
@@ -826,7 +872,7 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
             [draft.position(edge.u), *edge.via, draft.position(edge.v)], float(edge.length_um or 0.0), rng,
             bend_points=options.bend_points, extent_um=extent,
             curvature_deg=None if template.organisation is None else _curvature_target(template, edge.category, rng),
-            cross_wave=_cross_wave(template, edge.category),
+            cross_wave=_cross_wave(template, edge.category), hole=options.hole,
         ))
 
     def rebend(index: int, target: float) -> np.ndarray:
@@ -836,17 +882,17 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
             return bend_to_lengths(
                 starts[index:index + 1], ends[index:index + 1], np.array([target]), rng, points=options.bend_points,
                 extent_um=extent, curvature_deg=None if curvature is None else curvature[index:index + 1],
-                cross_wave=np.array([_cross_wave(template, edge.category)]),
+                cross_wave=np.array([_cross_wave(template, edge.category)]), hole=options.hole,
             )[0]
         edge = with_via[index - len(simple)]
         return bend_path(
             [draft.position(edge.u), *edge.via, draft.position(edge.v)], target, rng, bend_points=options.bend_points,
             extent_um=extent,
             curvature_deg=None if template.organisation is None else _curvature_target(template, edge.category, rng),
-            cross_wave=_cross_wave(template, edge.category),
+            cross_wave=_cross_wave(template, edge.category), hole=options.hole,
         )
 
-    paths = _with_fine_wobble(template, simple + with_via, paths, rng, rebend)
+    paths = _with_fine_wobble(template, simple + with_via, paths, rng, rebend, options.hole)
     voxels, lengths = densify_paths(paths, step_um=options.voxel_step_um)
     for edge, edge_voxels, length in zip(simple + with_via, voxels, lengths):
         _add_edge(G, new_id, edge, edge_voxels, float(length), template.diameter_basis)
@@ -863,6 +909,8 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
     # from a run has both agree, a hand-set one may not, and the faces the
     # dead ends were set on are the extent's.
     G.graph["image_extent_um"] = tuple(float(v) for v in extent)
+    if options.hole is not None:
+        G.graph[GRAPH_HOLE] = options.hole.to_record()
     return G
 
 
@@ -893,14 +941,20 @@ def _cross_wave(template: NetworkTemplate, category: str) -> float:
 
 
 def _with_fine_wobble(
-    template: NetworkTemplate, edges: Sequence, paths: list, rng: np.random.Generator, rebend: Any = None
+    template: NetworkTemplate,
+    edges: Sequence,
+    paths: list,
+    rng: np.random.Generator,
+    rebend: Any = None,
+    hole: Optional[Hole] = None,
 ) -> list:
     """*paths* with the tree vessels' fine wobble: their median vessel's turn
     read at ``organisation.FINE_CURVATURE_STEP_UM`` steps brought to the
     template's (Harvey, grid D1f: E14.5's trees turn 88 degrees per 10 um
     read every 2 um, the drawn ones' smooth curves 72-75), by one amplitude
     for every tree vessel (:func:`polylines.fine_wobble`), found by
-    bisection; none when they already turn as much. The wobble lengthens a
+    bisection; none when they already turn as much, nor on a vessel it would
+    take into the *hole*. The wobble lengthens a
     vessel, so with *rebend* (``rebend(index, target_um)``: the vessel bent
     again to that length) each tree vessel's bow is drawn again to its
     length less what the wobble adds, and wobbled: the template's trees owe
@@ -950,6 +1004,8 @@ def _with_fine_wobble(
                 total = _path_length(again)
                 fresh = rng.normal(0.0, 1.0, size=(len(wobble_stations(total, step)), 2))
                 wobbled = fine_wobble(again, amplitude, fresh, step)
+        if hole is not None and hole.entered_by(np.asarray(wobbled, dtype=float)[None])[0]:
+            wobbled = paths[i]
         out[i] = wobbled
     return out
 
@@ -1065,6 +1121,14 @@ def validate_synthetic_graph(G: nx.Graph, template: Optional[NetworkTemplate] = 
             problems.append(f"edge {u}-{v}'s diameter basis is not the template's ({template.diameter_basis})")
         if data.get("branch_order") is not None:
             problems.append(f"edge {u}-{v} already has a branch order")
+    hole = Hole.from_record(G.graph.get(GRAPH_HOLE))
+    if hole is not None:
+        for node, data in G.nodes(data=True):
+            if data.get("pos") is not None and bool(hole.contains(data["pos"])):
+                problems.append(f"node {node} lies in the hole")
+        for u, v, data in G.edges(data=True):
+            if data.get("voxels") and bool(hole.contains(np.asarray(data["voxels"], float)).any()):
+                problems.append(f"edge {u}-{v}'s polyline enters the hole")
     if G.number_of_nodes() and not nx.is_connected(G):
         problems.append("the network is not connected")
     roles = boundary_nodes(G)

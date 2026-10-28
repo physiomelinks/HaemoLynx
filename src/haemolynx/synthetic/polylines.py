@@ -11,7 +11,8 @@ amplitude ``A`` found by bisection; ``sin^2`` has zero slope at both ends.
 :func:`bend_to_lengths` does every edge at once (the batch form of
 ``visualization/secomb_io._fit_length``). Given the box, a bow that would
 leave it is turned about its chord until it stays inside (or leaves it
-least): the turn keeps its length exactly. Given a curvature to reach (the
+least): the turn keeps its length exactly; given a hole in it
+(``synthetic.hole``), likewise kept out of that, or drawn straight. Given a curvature to reach (the
 template's, ``synthetic.organisation``), a vessel is drawn with as many lobes
 (:func:`lobes`, 1 to :data:`MAX_LOBES`) as bring its turn per 10 um nearest
 it, at the same length: a curve of several lobes turns more than one bow of
@@ -25,6 +26,7 @@ import numpy as np
 
 from haemolynx.graph._helpers import calculate_path_length, densify_polyline
 
+from .hole import Hole
 from .organisation import CURVATURE_STEP_UM, _curvature
 
 #: Vertices per bent edge before densifying: the arc length is the polyline's
@@ -64,12 +66,15 @@ def bend_to_lengths(
     extent_um: Optional[np.ndarray] = None,
     curvature_deg: Optional[np.ndarray] = None,
     cross_wave: Optional[np.ndarray] = None,
+    hole: Optional[Hole] = None,
 ) -> list[np.ndarray]:
     """One polyline per edge from ``starts[i]`` to ``ends[i]`` whose length is
     ``targets[i]``; a target no longer than the chord gives the straight
     line (two points). Every random phase is drawn from *rng*. With
     *extent_um*, a bow leaving the box is turned about its chord to stay in
-    it (no draw: the turns are fixed). With *curvature_deg* (per edge, NaN
+    it (no draw: the turns are fixed); with a *hole* too
+    (``synthetic.hole``), to stay out of that, and a bow no turn keeps out of
+    it is drawn straight, short of its target. With *curvature_deg* (per edge, NaN
     for none), an edge long enough to read it on takes the number of lobes,
     1 to :data:`MAX_LOBES`, whose curve turns nearest that many degrees per
     10 um (see :func:`lobes`). *cross_wave* (per edge, 1 without it) scales
@@ -148,7 +153,13 @@ def bend_to_lengths(
                 error[better] = k_error[better]
     if extent_um is not None:
         extent = np.asarray(extent_um, dtype=float)
-        excursion = _excursion(final, extent)
+
+        def stray(paths: np.ndarray) -> np.ndarray:
+            if hole is None:
+                return _excursion(paths, extent)
+            return np.maximum(_excursion(paths, extent), hole.depth(paths))
+
+        excursion = stray(final)
         for turn in range(1, BOW_TURNS):
             outside = np.flatnonzero(excursion > 1e-9)
             if not len(outside):
@@ -159,9 +170,13 @@ def bend_to_lengths(
             turned = base[outside] + amplitude[outside, None, None] * (
                 lobe_shape[outside][:, :, None] * r1[:, None, :] + wobble[outside][:, :, None] * r2[:, None, :]
             )
-            better = _excursion(turned, extent) < excursion[outside]
+            better = stray(turned) < excursion[outside]
             final[outside[better]] = turned[better]
-            excursion[outside[better]] = _excursion(turned[better], extent)
+            excursion[outside[better]] = stray(turned[better])
+        if hole is not None:
+            # A bow no turn keeps out of the hole runs along its chord.
+            within = hole.entered_by(final)
+            final[within] = base[within]
     for j, i in enumerate(bent):
         out[i] = final[j]
     return out  # type: ignore[return-value]
@@ -233,10 +248,11 @@ def bend_path(
     extent_um: Optional[np.ndarray] = None,
     curvature_deg: Optional[float] = None,
     cross_wave: float = 1.0,
+    hole: Optional[Hole] = None,
 ) -> np.ndarray:
     """A polyline through *points* (two or more; the interior ones are kept)
     of length *target*: each leg bent to its share of the target by chord
-    (inside the box *extent_um*, toward *curvature_deg*, as
+    (inside the box *extent_um* and out of *hole*, toward *curvature_deg*, as
     :func:`bend_to_lengths` draws them)."""
     pts = [np.asarray(p, dtype=float) for p in points]
     if len(pts) < 2:
@@ -247,7 +263,7 @@ def bend_path(
     curvature = None if curvature_deg is None else np.full(len(shares), float(curvature_deg))
     legs = bend_to_lengths(
         np.stack(pts[:-1]), np.stack(pts[1:]), shares, rng, points=bend_points, extent_um=extent_um, curvature_deg=curvature,
-        cross_wave=np.full(len(shares), float(cross_wave)),
+        cross_wave=np.full(len(shares), float(cross_wave)), hole=hole,
     )
     path = [legs[0]]
     for leg in legs[1:]:
