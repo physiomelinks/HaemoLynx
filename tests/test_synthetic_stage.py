@@ -151,6 +151,22 @@ def test_the_graph_stage_scales_the_box_along_the_axes_the_settings_choose(templ
     assert synthetic_box_shape(G)[0] == template.image_shape[0]
 
 
+def test_the_graph_stage_draws_the_densities_the_settings_choose_beyond_the_template(template_run, tmp_path):
+    from haemolynx.synthetic import drawn_template, load_template
+
+    template = load_template(template_run, "statistics")
+    settings = _settings(
+        template_run, tmp_path, synthetic_scale=2.0,
+        synthetic_extension_arteriole_density=0.0, synthetic_extension_venule_density=2.0,
+    )
+    G = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA).graph
+    options = G.graph[GRAPH_TEMPLATE_RECORD]["options"]
+    assert options["arteriole_density"] == 0.0 and options["venule_density"] == 2.0
+    drawn = drawn_template(template, options)
+    assert len(boundary_nodes(G)["inlet"]) == len(drawn.inlets) == len(template.inlets)
+    assert len(boundary_nodes(G)["outlet"]) == len(drawn.outlets) > len(template.scaled(2.0).outlets)
+
+
 def test_the_graph_stage_draws_the_bed_model_the_settings_choose(template_run, tmp_path):
     settings = _settings(template_run, tmp_path, synthetic_bed_model="voronoi")
     G = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA).graph
@@ -331,6 +347,8 @@ def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     assert manifest["network_source"] == "synthetic"
     assert manifest["synthetic"]["seed"] == 3
     assert manifest["synthetic"]["scale"] == 1.0 and manifest["synthetic"]["scale_axes"] == "xyz"
+    assert manifest["synthetic"]["extension_arteriole_density"] == 1.0
+    assert manifest["synthetic"]["extension_venule_density"] == 1.0
     assert manifest["synthetic"]["bed_model"] == "delaunay"
     assert manifest["synthetic"]["open_ends"] == "closed"
     assert manifest["synthetic"]["source"] == "statistics"

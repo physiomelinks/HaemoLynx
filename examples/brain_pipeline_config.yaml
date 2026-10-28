@@ -18,6 +18,10 @@ input_and_segmentation:
   synthetic_scale: 1.0
   # The axes synthetic_scale grows the synthetic box along: xyz all three, xy only x and y, keeping the template's depth (a wider field of the same tissue, so vessel counts scale with the area)  [one of: xyz, xy; needs network_source = synthetic]
   synthetic_scale_axes: xyz
+  # Arterial trees in the part of the synthetic box beyond the template's own size, as a share of the template's density: 1 as many, 0 none beyond the template's own (an image framed round its large vessels has more of them than the tissue round it)  [range 0.0..10.0; needs network_source = synthetic]
+  synthetic_extension_arteriole_density: 1.0
+  # Venous trees in the part of the synthetic box beyond the template's own size, as a share of the template's density: 1 as many, 0 none beyond the template's own  [range 0.0..10.0; needs network_source = synthetic]
+  synthetic_extension_venule_density: 1.0
   # Give the synthetic network the template's number of dead ends inside the tissue; off, its only dead ends are on the faces (in a closed network, its inlets and outlets)  [needs network_source = synthetic]
   synthetic_interior_dead_ends: false
   # Whether vessels of the synthetic network leave its box: closed keeps every vessel inside, so blood enters only at the inlets and leaves only at the outlets; template cuts as many vessels at the faces as the template run had leaving its image, open ends the haemodynamics then treat by open_end_model  [one of: closed, template; needs network_source = synthetic]

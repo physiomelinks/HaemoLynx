@@ -359,3 +359,28 @@ takes 17 s with the hole and 23 s without.
 At 2x xyz on E14.5 (about 8,000 vessels) a network round the hole takes 81-95 s over four draws
 against 43 s without one; the junction trades take 39 s of it, most of them failing near the hole's
 faces.
+
+## 2026-10-28: the image's network joined to one drawn round it (`PLAN_synthetic_surround.md` phase 3)
+
+`synthetic.surround_network(image_graph, template, options=)`: the image's graph moved, unchanged,
+into the middle of a box `synthetic_scale` times its own, and a network drawn round it to its own
+template (`generate_network(joins=)`, the image's box the hole) joined at each open end. A capillary
+end is joined by the bed with one capillary. Every arteriole and venule end, and each designated
+inlet and outlet, runs on as a trunk (D5): straight out along its heading to the outer face, at its
+measured width, in pieces of its order's mean chord, each joint handing a capillary to the bed; its
+end there is a new inlet or outlet, in place of one of the scaled template's. A tip short of the
+hole's face is drawn on to it by a connector of the same vessel. Under `xy`, ends on the z faces stay
+open. On E14.5 (91 open ends, 4 of them trunks) a 1.5x xy surround is 2,852 vessels (44 s), 1.5x xyz
+4,186 (13 s), 2x xy 4,860 (63 s); its tips lie 2.9 um short of the face at the median, 8.8 at most.
+Not yet in the pipeline, and not yet scored on the cut-out harness.
+
+**Densities beyond the template's box** (Harvey's request, 2026-10-28):
+`synthetic_extension_arteriole_density` and `_venule_density` draw the arterial and venous trees in
+the part of a scaled box beyond the template's own at that share of the template's density, since an
+image framed round its large vessels need not be typical of the tissue round it. The tree classes,
+orders and boundary nodes go as 1 + s(d - 1), s the share of the drawn volume beyond the template's
+box (all of it in a surround), and the inlets and outlets on each face by that face's own share
+(`generate.drawn_template`, read by the generator and the comparison alike). Capillaries, loops and
+dead ends keep the template's density. In a surround the image's arterioles and venules still run on
+as trunks at any density; at 0 they are the only trees reaching the box. At 1, or at the template's
+own size, nothing changes (nine networks digested before and after, identical).

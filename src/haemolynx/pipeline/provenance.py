@@ -812,6 +812,8 @@ class RunRecorder:
                 "seed": recorded.get("synthetic_seed"),
                 "scale": recorded.get("synthetic_scale"),
                 "scale_axes": recorded.get("synthetic_scale_axes"),
+                "extension_arteriole_density": recorded.get("synthetic_extension_arteriole_density"),
+                "extension_venule_density": recorded.get("synthetic_extension_venule_density"),
                 "interior_dead_ends": recorded.get("synthetic_interior_dead_ends"),
                 "open_ends": recorded.get("synthetic_open_ends"),
                 "bed_model": recorded.get("synthetic_bed_model"),

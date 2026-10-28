@@ -45,7 +45,7 @@ exactly. :func:`validate_synthetic_graph` checks the contract.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping, Optional, Sequence
 
 import networkx as nx
@@ -69,12 +69,13 @@ from .bed import (
     degree_sequence_targets,
     drawn_from_template_vertices,
 )
-from .draft import BED, TREE, NetworkDraft
-from .hole import GRAPH_HOLE, Hole
+from .draft import BED, TREE, TRUNK, NetworkDraft
+from .hole import FACE_TOLERANCE_UM, GRAPH_HOLE, Hole
 from .polylines import DEFAULT_POINTS, bend_path, bend_to_lengths, densify_paths
 from .template import (
     DEFAULT_DAUGHTER_ANGLE_DEG,
     GRAPH_NETWORK_SOURCE,
+    FACES,
     GRAPH_TEMPLATE_RECORD,
     INTERIOR,
     ROLES,
@@ -90,6 +91,7 @@ from .trees import (
     face_distance_um,
     grow_side,
     inward_normal,
+    room_ahead_um,
     snap_to_face,
 )
 
@@ -173,6 +175,102 @@ class GenerationOptions:
     #: box, in a surround), its share of the template's counts not drawn;
     #: None fills the whole box.
     hole: Optional[Hole] = None
+    #: The arterial and venous trees' density in the part of the box beyond
+    #: the template's own, as a share of the template's (the
+    #: ``synthetic_extension_*_density`` settings; :func:`drawn_template`):
+    #: an image framed round its large vessels has more of them than the
+    #: tissue round it.
+    arteriole_density: float = 1.0
+    venule_density: float = 1.0
+
+
+#: What a :class:`Join` is drawn as: a node the bed joins with one vessel
+#: (a capillary's open end), or a trunk to the box's face (an arteriole's or
+#: a venule's: ``PLAN_synthetic_surround.md``'s D5).
+JOIN_BED = "bed"
+JOIN_TRUNK = "trunk"
+#: Node attribute: the caller's key of the join a node is (an image's own node).
+SURROUND_JOIN = "surround_join"
+#: A trunk leaves the hole at least this steeply (the cosine of its angle to
+#: the face's outward normal); a heading lying flatter is turned out.
+TRUNK_MIN_OUTWARD = 0.5
+#: A trunk's step when the template gives its order and class no length (um).
+FALLBACK_TRUNK_STEP_UM = 40.0
+
+
+@dataclass(frozen=True)
+class Join:
+    """A node of a network outside the one drawn that the drawn one joins:
+    an image's open end, on its hole's face. A :data:`JOIN_BED` join is
+    joined by the bed with one capillary; a :data:`JOIN_TRUNK` join by a
+    trunk of its own vessel's class and width out to the box's face, a new
+    inlet (arterial) or outlet (venous) there, handing a vessel to the bed
+    at each joint between. *heading*: the vessel's direction out of the
+    hole; *key*: the caller's name for it, kept on the node
+    (:data:`SURROUND_JOIN`)."""
+
+    position_um: tuple
+    kind: str
+    key: Any = None
+    side: Optional[str] = None
+    heading: Optional[tuple] = None
+    diameter_um: Optional[float] = None
+    category: Optional[str] = None
+    order: Optional[str] = None
+
+
+def _hole_face_normal(hole: Optional[Hole], point: np.ndarray) -> Optional[np.ndarray]:
+    """The outward normal of the face of *hole* nearest *point*."""
+    if hole is None:
+        return None
+    gaps = np.concatenate([np.abs(point - hole.lo), np.abs(point - hole.hi)])
+    nearest = int(np.argmin(gaps))
+    normal = np.zeros(3)
+    normal[nearest % 3] = -1.0 if nearest < 3 else 1.0
+    return normal
+
+
+def _draw_trunk(
+    draft: NetworkDraft, join: Join, template: NetworkTemplate, extent: np.ndarray, hole: Optional[Hole]
+) -> list[int]:
+    """A trunk from *join* out to the box's face: its nodes, the join's
+    first and the one on the face last. Straight out along the join's
+    heading (turned out of the hole where it lies flatter than
+    :data:`TRUNK_MIN_OUTWARD`), cut into its order's mean chord (two pieces
+    at least), each piece at the join's width and its order's tortuosity."""
+    start = np.asarray(join.position_um, dtype=float)
+    outward = _hole_face_normal(hole, start)
+    heading = outward if join.heading is None else np.asarray(join.heading, dtype=float)
+    heading = heading / max(float(np.linalg.norm(heading)), 1e-12)
+    if outward is not None and float(heading @ outward) < TRUNK_MIN_OUTWARD:
+        heading = heading + outward
+        heading = heading / max(float(np.linalg.norm(heading)), 1e-12)
+        if float(heading @ outward) < TRUNK_MIN_OUTWARD:
+            heading = outward
+    reach = room_ahead_um(start, heading, extent)
+    order = next((o for o in template.orders if o.label == join.order), None)
+    cls = template.class_target(join.category) if join.category else None
+
+    def first(*values: Any) -> Optional[float]:
+        return next((float(v) for v in values if v), None)
+
+    tortuosity = max(first(order and order.mean_tortuosity, cls and cls.mean_tortuosity) or 1.0, 1.0)
+    step = (first(order and order.mean_length_um, cls and cls.mean_length_um) or FALLBACK_TRUNK_STEP_UM) / tortuosity
+    diameter = first(join.diameter_um, order and order.mean_diameter_um, cls and cls.mean_diameter_um) or 5.0
+    # At least two: a joint between hands a vessel to the bed, so every
+    # trunk feeds or drains the bed round the image.
+    pieces = max(2, int(round(reach / step)))
+    nodes = [draft.add_node(start)]
+    draft.marks[nodes[0]] = {SURROUND_JOIN: join.key}
+    for k in range(1, pieces + 1):
+        point = start + heading * reach * k / pieces
+        nodes.append(draft.add_node(snap_to_face(point, extent) if k == pieces else point))
+    for a, b in zip(nodes[:-1], nodes[1:]):
+        chord = float(np.linalg.norm(draft.position(b) - draft.position(a)))
+        draft.add_edge(
+            a, b, category=join.category, order=join.order, length_um=chord * tortuosity, diameter_um=diameter, part=TRUNK
+        )
+    return nodes
 
 
 @dataclass
@@ -516,6 +614,82 @@ def _grow_side_to_reach(
     return grow_side(draft, template, side, roots, rng=np.random.default_rng(chosen), **kwargs)
 
 
+def extension_share(
+    template_extent_um: Sequence[float], extent_um: Sequence[float], hole: Optional[Hole] = None
+) -> float:
+    """The share of what a network in a box of *extent_um* draws that lies
+    beyond the template's own box (*template_extent_um*): round a hole the
+    template's size or larger (an image's own, which its graph fills), all
+    of it; without one, the box's volume past the template's."""
+    box = float(np.prod(np.asarray(extent_um, dtype=float)))
+    left = hole.volume_in(extent_um) if hole is not None else 0.0
+    drawn = box - left
+    if drawn <= 0.0:
+        return 0.0
+    own = max(float(np.prod(np.asarray(template_extent_um, dtype=float))) - left, 0.0)
+    return max(drawn - own, 0.0) / drawn
+
+
+def face_extension_shares(
+    template_extent_um: Sequence[float], extent_um: Sequence[float], hole: Optional[Hole] = None
+) -> dict[str, float]:
+    """Each face's share beyond the template's own (:data:`FACES`), where an
+    extension's inlets and outlets lie: the face's area less what the hole
+    covers of it, or with no hole the template's face; and
+    :func:`extension_share` for an endpoint inside the box."""
+    extent = np.asarray(extent_um, dtype=float)
+    own = np.asarray(template_extent_um, dtype=float)
+    shares = {INTERIOR: extension_share(own, extent, hole)}
+    for face in FACES:
+        axis = "zyx".index(face[0])
+        across = [a for a in range(3) if a != axis]
+        area = float(np.prod(extent[across]))
+        if hole is None:
+            covered = float(np.prod(np.minimum(own[across], extent[across])))
+        elif (hole.lo[axis] if face[1] == "0" else extent[axis] - hole.hi[axis]) <= FACE_TOLERANCE_UM:
+            sides = np.minimum(hole.hi[across], extent[across]) - np.maximum(hole.lo[across], 0.0)
+            covered = float(np.prod(np.clip(sides, 0.0, None)))
+        else:
+            covered = 0.0
+        shares[face] = max(area - covered, 0.0) / area if area > 0 else 0.0
+    return shares
+
+
+def drawn_template(template: NetworkTemplate, options: Any = None) -> NetworkTemplate:
+    """The template a network drawn with *options* (:class:`GenerationOptions`,
+    or its record's dict) is drawn to: *template* scaled to the box, the
+    hole's share left out (``NetworkTemplate.around_hole``), and the arterial
+    and venous trees in the part beyond the template's own box
+    (:func:`extension_share`) at their densities, the rest at the
+    template's (``NetworkTemplate.with_side_factors``), their inlets and
+    outlets so on each face (:func:`face_extension_shares`). The comparison
+    scores a network against the same."""
+    def read(name: str, default: Any) -> Any:
+        if options is None:
+            return default
+        value = options.get(name, default) if isinstance(options, Mapping) else getattr(options, name, default)
+        return default if value is None else value
+
+    T = template.scaled(float(read("scale", 1.0)), str(read("scale_axes", SCALE_AXES_XYZ)))
+    extent = np.asarray(T.extent_um, dtype=float)
+    hole = read("hole", None)
+    if isinstance(hole, Mapping):
+        hole = Hole.from_record(hole)
+    if hole is not None:
+        # Tissue the network leaves to an image's own graph: its share of
+        # the template's counts is not drawn.
+        T = T.around_hole(hole.share_of(extent))
+    shares = face_extension_shares(template.extent_um, extent, hole)
+    arteriole_density = float(read("arteriole_density", 1.0))
+    venule_density = float(read("venule_density", 1.0))
+    return T.with_side_factors(
+        1.0 + shares[INTERIOR] * (arteriole_density - 1.0),
+        1.0 + shares[INTERIOR] * (venule_density - 1.0),
+        inlet_factors={face: 1.0 + share * (arteriole_density - 1.0) for face, share in shares.items()},
+        outlet_factors={face: 1.0 + share * (venule_density - 1.0) for face, share in shares.items()},
+    )
+
+
 def _template_record(template: NetworkTemplate) -> dict:
     """The template as a plain dict without its per-vessel samples."""
     data = template.to_dict()
@@ -537,26 +711,32 @@ def generate_network(
     rng: Optional[np.random.Generator] = None,
     options: Optional[GenerationOptions] = None,
     validate: bool = True,
+    joins: Sequence[Join] = (),
 ) -> nx.MultiGraph:
     """A synthetic network drawn to *template*. See the module.
 
     *rng* wins over *seed*; ``seed=None`` draws from fresh entropy. Raises
     ``ValueError`` for a template with no capillaries or no inlets, and,
-    with *validate*, for a network that breaks the contract.
+    with *validate*, for a network that breaks the contract. *joins*
+    (:class:`Join`) are nodes of another network the one drawn joins, its
+    trunks taking the place of as many of the template's inlets and outlets.
     """
     options = options or GenerationOptions()
     if options.open_ends not in OPEN_ENDS:
         raise ValueError(f"open_ends must be one of {', '.join(OPEN_ENDS)}, not {options.open_ends!r}")
     closed = options.open_ends == OPEN_ENDS_CLOSED
     rng = rng if rng is not None else np.random.default_rng(seed)
-    T = template.scaled(options.scale, options.scale_axes)
+    T = drawn_template(template, options)
     extent = np.asarray(T.extent_um, dtype=float)
     hole = options.hole
-    if hole is not None:
-        # Tissue the network leaves to an image's own graph: its share of
-        # the template's counts is not drawn.
-        T = T.around_hole(hole.share_of(extent))
-    if not T.inlets or not T.outlets:
+    trunks = {side: sum(1 for j in joins if j.kind == JOIN_TRUNK and j.side == side) for side in ("arterial", "venous")}
+    if joins:
+        T = replace(
+            T,
+            inlets=T.inlets[: max(len(T.inlets) - trunks["arterial"], 0)],
+            outlets=T.outlets[: max(len(T.outlets) - trunks["venous"], 0)],
+        )
+    if (not T.inlets and not trunks["arterial"]) or (not T.outlets and not trunks["venous"]):
         raise ValueError("the template has no inlets or no outlets to draw from")
     capillaries = T.class_target("capillary")
     capillary_count = int(capillaries.count) if capillaries is not None else 0
@@ -565,8 +745,9 @@ def generate_network(
 
     draft = NetworkDraft()
     # One root per inlet and outlet (_place_roots), placed once the spacing
-    # says how far off a hole they keep.
-    root_count = len(T.inlets) + len(T.outlets)
+    # says how far off a hole they keep; a join is one more (a trunk's root
+    # is its end on the face).
+    root_count = len(T.inlets) + len(T.outlets) + len(joins)
 
     # The bed's arithmetic first: its spacing is what the trees fill space to.
     loops = T.loops.independent_loops
@@ -634,6 +815,23 @@ def generate_network(
         for root, nodes in side.result.trees.items():
             tree_groups.append([root] + list(nodes))
 
+    trunk_nodes: list[int] = []
+    for join in joins:
+        if join.kind == JOIN_TRUNK:
+            nodes = _draw_trunk(draft, join, T, extent, hole)
+            side = sides[0] if join.side == "arterial" else sides[1]
+            draft.add_role(nodes[-1], "inlet" if join.side == "arterial" else "outlet")
+            for node in nodes[1:-1]:
+                draft.add_role(node, side.large_role if str(join.category).startswith("large_") else side.boundary_role)
+                attached[node] = HANDOFF_BED_EDGES
+            tree_groups.append(nodes)
+            trunk_nodes.extend(nodes)
+        else:
+            node = draft.add_node(join.position_um)
+            draft.marks[node] = {SURROUND_JOIN: join.key}
+            attached[node] = ROOT_BED_EDGES
+            tree_groups.append([node])
+
     face_ends_on_trees = sum(len(side.face) for side in sides)
     blind_on_trees = sum(len(side.blind) for side in sides)
     roots_on_faces = sum(1 for side in sides for _node, face in side.roots if face != INTERIOR)
@@ -654,6 +852,7 @@ def generate_network(
     # their leaves: a leaf needs junctions beside it to join the bed.
     parents = {e.u for e in draft.edges if e.part == TREE}
     keep_clear = [n for n in tree_nodes if n in parents] + [node for node, _f in roots["inlet"] + roots["outlet"]]
+    keep_clear += trunk_nodes
     bed = build_bed(
         draft,
         extent_um=extent,
@@ -738,6 +937,12 @@ def generate_network(
     }
     if hole is not None:
         G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["hole_share"] = hole.share_of(extent)
+    if joins:
+        G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["joins"] = {
+            "bed": sum(1 for j in joins if j.kind != JOIN_TRUNK),
+            "trunks": dict(trunks),
+            "trunk_edges": sum(1 for e in draft.edges if e.part == TRUNK),
+        }
     if validate:
         validate_synthetic_graph(G, T)
     return G
@@ -852,6 +1057,7 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
         roles = draft.roles.get(old)
         if roles:
             G.nodes[new_id[old]][SYNTHETIC_ROLES] = tuple(roles)
+        G.nodes[new_id[old]].update(draft.marks.get(old, {}))
     edges = [e for e in draft.edges if e.u not in draft.removed and e.v not in draft.removed]
     simple = [e for e in edges if not e.via]
     paths: list = []
@@ -1151,6 +1357,13 @@ __all__ = [
     "SYNTHETIC_ROLES",
     "boundary_nodes",
     "dead_end_pairs_joined",
+    "drawn_template",
+    "extension_share",
+    "face_extension_shares",
     "generate_network",
+    "JOIN_BED",
+    "JOIN_TRUNK",
+    "Join",
+    "SURROUND_JOIN",
     "validate_synthetic_graph",
 ]

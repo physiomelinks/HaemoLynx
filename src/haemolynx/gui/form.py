@@ -520,6 +520,8 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "synthetic_seed": "Synthetic network seed",
     "synthetic_scale": "Synthetic box scale",
     "synthetic_scale_axes": "Scale the box along",
+    "synthetic_extension_arteriole_density": "Arterial tree density beyond the template's box",
+    "synthetic_extension_venule_density": "Venous tree density beyond the template's box",
     "synthetic_interior_dead_ends": "Reproduce dead ends inside the tissue",
     "synthetic_bed_model": "Capillary bed model",
     "synthetic_open_ends": "Vessels leaving the box",

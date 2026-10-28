@@ -27,13 +27,12 @@ from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
 from haemolynx.statistics.csv_export import _numeric_csv_text
 from haemolynx.statistics.vessel_classes import VESSEL_CLASS_TITLES
 
-from .generate import dead_end_pairs_joined
+from .generate import dead_end_pairs_joined, drawn_template
 from .organisation import Organisation, correlation, profile, share_inside
 from .template import (
     FACES,
     GRAPH_TEMPLATE_RECORD,
     ROLES,
-    SCALE_AXES_XYZ,
     SOURCE_GRAPH,
     NetworkTemplate,
     measure_template,
@@ -571,13 +570,13 @@ def compare_run(
     """The rows for the synthetic network *G* (its node *roles*): its own
     statistics report's *sections* read as a template by the template's
     source's reader, or, without them, the network measured directly.
-    *template* and *members* are scored in the box *G* was drawn in: scaled
-    as its record's options say (``GenerationOptions.scale``)."""
+    *template* and *members* are scored as *G* was drawn to them: scaled, a
+    hole left out and the trees beyond the template's box at their
+    densities, as its record's options say (``generate.drawn_template``)."""
     record = G.graph.get(GRAPH_TEMPLATE_RECORD) or {}
     options = record.get("options") or {}
-    scale = (float(options.get("scale") or 1.0), str(options.get("scale_axes") or SCALE_AXES_XYZ))
-    template = template.scaled(*scale)
-    members = [member.scaled(*scale) for member in members]
+    template = drawn_template(template, options)
+    members = [drawn_template(member, options) for member in members]
     if sections is not None and template.provenance.source != SOURCE_GRAPH:
         synthetic = template_from_report(sections, G, boundaries=roles, require=(), source=template.provenance.source)
     else:

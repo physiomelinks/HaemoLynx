@@ -162,6 +162,23 @@ def test_a_scaled_network_is_scored_against_the_template_in_its_box(axes):
     assert ranged.within_members is True
 
 
+def test_a_network_with_other_densities_beyond_the_template_is_scored_against_them():
+    T = fixture_template()
+    options = GenerationOptions(scale=2.0, scale_axes="xy", arteriole_density=0.5, venule_density=2.0)
+    G = generate_network(T, seed=5, options=options)
+    roles = boundary_nodes(G)
+    from haemolynx.graph.branch_order import assign_vessel_branch_orders
+
+    assign_vessel_branch_orders(G, roles["inlet"], outlet_nodes=roles["outlet"], arteriole_boundary_nodes=roles["arteriole_boundary"], venule_boundary_nodes=roles["venule_boundary"])
+    by_name = {(r.section, r.characteristic): r for r in compare_run(T, G, roles=roles)}
+    assert int(by_name[("endpoints", "inlets")].template) == 3 and by_name[("endpoints", "inlets")].within
+    assert int(by_name[("endpoints", "outlets")].template) == 6 and by_name[("endpoints", "outlets")].within
+    assert int(by_name[("class Small Arterioles", "vessels")].template) == 30
+    assert int(by_name[("class Small Venules", "vessels")].template) == 42
+    counts = [row for (section, name), row in by_name.items() if name == "vessels" and section.startswith(("class", "order"))]
+    assert counts and all(row.within is not False for row in counts), [row for row in counts if row.within is False]
+
+
 def test_the_diameter_basis_row_compares_the_names():
     T = replace(fixture_template(), diameter_basis="endothelial")
 

@@ -84,7 +84,8 @@ def test_the_advanced_synthetic_rows_sit_behind_their_own_button(panel):
     widget._haemolynx_expand_advanced()
     _process()
     for name in (
-        "synthetic_seed", "synthetic_scale", "synthetic_scale_axes", "synthetic_interior_dead_ends",
+        "synthetic_seed", "synthetic_scale", "synthetic_scale_axes", "synthetic_extension_arteriole_density",
+        "synthetic_extension_venule_density", "synthetic_interior_dead_ends",
         "synthetic_open_ends", "synthetic_bed_model",
     ):
         assert rows[name].visible, name

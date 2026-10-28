@@ -30,10 +30,15 @@ from haemolynx.synthetic.generate import (
     SYNTHETIC_ROLES,
     GenerationOptions,
     boundary_nodes,
+    drawn_template,
+    extension_share,
+    face_extension_shares,
     generate_network,
     validate_synthetic_graph,
 )
+from haemolynx.synthetic.hole import centred_hole
 from haemolynx.synthetic.template import (
+    FACES,
     GRAPH_NETWORK_SOURCE,
     GRAPH_TEMPLATE_RECORD,
     Endpoint,
@@ -406,6 +411,76 @@ def test_scale_along_x_and_y_grows_the_box_but_keeps_its_depth():
     validate_synthetic_graph(G)
     with pytest.raises(ValueError, match="scale axes"):
         generate_network(T, seed=SEED, options=GenerationOptions(scale=1.5, scale_axes="yz"))
+
+
+def test_the_extension_is_the_box_beyond_the_templates_own():
+    own = (100.0, 200.0, 200.0)
+    # Twice as wide every way: 7/8 of the volume, 3/4 of each face.
+    shares = face_extension_shares(own, (200.0, 400.0, 400.0))
+    assert shares["interior"] == pytest.approx(0.875) == extension_share(own, (200.0, 400.0, 400.0))
+    assert all(shares[face] == pytest.approx(0.75) for face in FACES)
+    # Along x and y: the z faces grow four times, the others twice.
+    shares = face_extension_shares(own, (100.0, 400.0, 400.0))
+    assert shares["interior"] == pytest.approx(0.75)
+    assert shares["z0"] == shares["z1"] == pytest.approx(0.75)
+    assert all(shares[face] == pytest.approx(0.5) for face in ("y0", "y1", "x0", "x1"))
+    assert set(face_extension_shares(own, own).values()) == {0.0}
+
+
+def test_round_a_hole_the_templates_size_all_of_the_box_drawn_is_extension():
+    own = (100.0, 200.0, 200.0)
+    hole = centred_hole((200.0, 400.0, 400.0), own)
+    assert set(face_extension_shares(own, (200.0, 400.0, 400.0), hole).values()) == {1.0}
+    # Along x and y the hole runs the box's depth: the z faces are the
+    # template's where the hole meets them.
+    hole = centred_hole((100.0, 400.0, 400.0), own)
+    shares = face_extension_shares(own, (100.0, 400.0, 400.0), hole)
+    assert shares["interior"] == 1.0
+    assert shares["z0"] == shares["z1"] == pytest.approx(0.75)
+    assert all(shares[face] == 1.0 for face in ("y0", "y1", "x0", "x1"))
+
+
+def test_the_densities_scale_the_trees_beyond_the_templates_box():
+    T = fixture_template()
+    options = GenerationOptions(scale=2.0, scale_axes="xy", arteriole_density=0.5, venule_density=2.0)
+    drawn = drawn_template(T, options)
+    scaled = T.scaled(2.0, "xy")
+    # Three quarters of the box is beyond the template's: 1 + 0.75 (d - 1).
+    assert drawn.classes["arteriole"].count == round(scaled.classes["arteriole"].count * 0.625) == 30
+    assert drawn.classes["venule"].count == round(scaled.classes["venule"].count * 1.75) == 42
+    assert drawn.classes["capillary"] == scaled.classes["capillary"]
+    # The inlets' and outlets' x faces are half beyond: 1 + 0.5 (d - 1).
+    assert len(drawn.inlets) == round(4 * 0.75) == 3 and len(drawn.outlets) == round(4 * 1.5) == 6
+    # The record's options (a dict) read the same.
+    assert drawn_template(T, {"scale": 2.0, "scale_axes": "xy", "arteriole_density": 0.5, "venule_density": 2.0}) == drawn
+    assert drawn_template(T, GenerationOptions(scale=2.0, scale_axes="xy")) == scaled
+    assert drawn_template(T, None) is T
+
+    G = generate_network(T, seed=SEED, options=options)
+    classes = Counter(d[SYNTHETIC_CLASS] for *_e, d in G.edges(data=True))
+    assert classes["arteriole"] == 30 and classes["venule"] == 42
+    assert len(boundary_nodes(G)["inlet"]) == 3 and len(boundary_nodes(G)["outlet"]) == 6
+    assert G.graph[GRAPH_TEMPLATE_RECORD]["options"]["arteriole_density"] == 0.5
+    validate_synthetic_graph(G)
+
+
+def test_no_trees_beyond_the_templates_box_leaves_the_templates_own():
+    T = fixture_template()
+    G = generate_network(T, seed=SEED, options=GenerationOptions(scale=2.0, arteriole_density=0.0, venule_density=0.0))
+    classes = Counter(d[SYNTHETIC_CLASS] for *_e, d in G.edges(data=True))
+    assert classes["arteriole"] == T.classes["arteriole"].count and classes["venule"] == T.classes["venule"].count
+    assert len(boundary_nodes(G)["inlet"]) == len(T.inlets) and len(boundary_nodes(G)["outlet"]) == len(T.outlets)
+    assert classes["capillary"] == pytest.approx(T.scaled(2.0).classes["capillary"].count, rel=0.05)
+    validate_synthetic_graph(G)
+
+
+def test_at_the_templates_size_the_densities_change_nothing():
+    T = fixture_template()
+    plain = generate_network(T, seed=SEED)
+    dense = generate_network(T, seed=SEED, options=GenerationOptions(arteriole_density=3.0, venule_density=0.0))
+    assert drawn_template(T, GenerationOptions(arteriole_density=3.0, venule_density=0.0)) is T
+    assert sorted(plain.edges(keys=True)) == sorted(dense.edges(keys=True))
+    assert all(np.array_equal(plain.nodes[n]["pos"], dense.nodes[n]["pos"]) for n in plain.nodes)
 
 
 # -- the acceptance test: every banded characteristic within tolerance -------

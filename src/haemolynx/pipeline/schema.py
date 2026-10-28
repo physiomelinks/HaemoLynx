@@ -270,6 +270,37 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="synthetic_extension_arteriole_density",
+            kind="float",
+            default=1.0,
+            help=(
+                "Arterial trees in the part of the synthetic box beyond the template's "
+                "own size, as a share of the template's density: 1 as many, 0 none "
+                "beyond the template's own (an image framed round its large vessels has "
+                "more of them than the tissue round it)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=10.0,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_extension_venule_density",
+            kind="float",
+            default=1.0,
+            help=(
+                "Venous trees in the part of the synthetic box beyond the template's "
+                "own size, as a share of the template's density: 1 as many, 0 none "
+                "beyond the template's own"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=10.0,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
+        Setting(
             name="synthetic_interior_dead_ends",
             kind="bool",
             # Off (Harvey, 2026-10-25: D3a): the image runs' interior dead

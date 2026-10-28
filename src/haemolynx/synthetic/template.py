@@ -448,6 +448,63 @@ class NetworkTemplate:
             return self
         return self._with_volume(1.0 - share, 1.0, f"{share:.0%} of the box left to a hole")
 
+    def with_side_factors(
+        self,
+        arterial: float,
+        venous: float,
+        *,
+        inlet_factors: Optional[Mapping[str, float]] = None,
+        outlet_factors: Optional[Mapping[str, float]] = None,
+    ) -> "NetworkTemplate":
+        """The same network with *arterial* times its arterial trees and
+        *venous* times its venous ones: their classes' counts and total
+        lengths, their orders' vessels and their boundary nodes; and its
+        inlets and outlets on each face times that face's factor
+        (*inlet_factors* / *outlet_factors*, by face and :data:`INTERIOR`;
+        the side's own without them), each face keeping at least one it had.
+        Capillaries, loops and dead ends stay. What an extension's densities
+        (``generate.drawn_template``) come to."""
+        arterial, venous = float(arterial), float(venous)
+        for factor in (arterial, venous, *(inlet_factors or {}).values(), *(outlet_factors or {}).values()):
+            if not (math.isfinite(factor) and factor >= 0.0):
+                raise ValueError(f"a side's factor must be 0 or more, got {factor!r}")
+        unchanged = all(f == 1.0 for f in (*(inlet_factors or {}).values(), *(outlet_factors or {}).values()))
+        if arterial == 1.0 and venous == 1.0 and unchanged:
+            return self
+        side_of = {"large_arteriole": arterial, "arteriole": arterial, "venule": venous, "large_venule": venous}
+        classes = {
+            key: replace(
+                target,
+                count=_scaled_count(target.count, side_of[key]),
+                total_length_um=target.total_length_um * side_of[key],
+            )
+            if key in side_of
+            else target
+            for key, target in self.classes.items()
+        }
+        orders = tuple(
+            replace(o, edge_count=_scaled_count(o.edge_count, side_of[o.category])) if o.category in side_of else o
+            for o in self.orders
+        )
+        vessels = sum(c.count for c in classes.values()) - self.vessel_count
+        length = sum(c.total_length_um for c in classes.values()) - sum(c.total_length_um for c in self.classes.values())
+        note = f"arterial trees {arterial:g} times, venous {venous:g} times the template's"
+        return replace(
+            self,
+            inlets=_scaled_endpoints(self.inlets, inlet_factors or {face: arterial for face in (*FACES, INTERIOR)}),
+            outlets=_scaled_endpoints(self.outlets, outlet_factors or {face: venous for face in (*FACES, INTERIOR)}),
+            arteriole_boundary_count=_scaled_count(self.arteriole_boundary_count, arterial),
+            large_arteriole_boundary_count=_scaled_count(self.large_arteriole_boundary_count, arterial),
+            venule_boundary_count=_scaled_count(self.venule_boundary_count, venous),
+            large_venule_boundary_count=_scaled_count(self.large_venule_boundary_count, venous),
+            classes=classes,
+            orders=orders,
+            total_length_um=self.total_length_um + length,
+            node_count=None if self.node_count is None else max(self.node_count + vessels, 0),
+            edge_count=None if self.edge_count is None else max(self.edge_count + vessels, 0),
+            provenance=replace(self.provenance, notes=self.provenance.notes + (note,)),
+        )
+
     def _with_volume(self, volume: float, surface: float, note: str) -> "NetworkTemplate":
         """Counts and total lengths times *volume*, the dead ends leaving the
         image times *surface*, and *note* added to the provenance."""

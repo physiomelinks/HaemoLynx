@@ -36,11 +36,12 @@ from .generate import (
     SYNTHETIC_ROLES,
     GenerationOptions,
     boundary_nodes,
+    drawn_template,
     generate_network,
     validate_synthetic_graph,
 )
 from .hole import Hole, centred_hole
-from .surround import ImageOpenEnd, read_open_ends
+from .surround import ImageOpenEnd, read_open_ends, surround_network, validate_surrounded_graph
 from .template import (
     DEFAULT_DAUGHTER_ANGLE_DEG,
     DEFAULT_MURRAY_EXPONENT,
@@ -126,11 +127,14 @@ __all__ = [
     "compare_templates",
     "comparison_section",
     "comparison_summary",
+    "drawn_template",
     "generate_network",
     "load_template",
     "measure_template",
     "read_open_ends",
     "required_statistics_for",
+    "surround_network",
+    "validate_surrounded_graph",
     "template_from_graph",
     "template_from_report",
     "template_from_statistics",

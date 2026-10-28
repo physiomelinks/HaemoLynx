@@ -14,6 +14,9 @@ import numpy as np
 #: What an edge was drawn as: the vessel class the generator meant it to be.
 TREE = "tree"
 BED = "bed"
+#: A vessel continuing an image's own out to the box (``generate.Join``):
+#: drawn at that vessel's width, never rescaled to the template's totals.
+TRUNK = "trunk"
 
 
 @dataclass
@@ -41,6 +44,8 @@ class NetworkDraft:
     #: Nodes taken out again (merged degree-2 vertices, isolated ones): left
     #: out of the graph, their ids never reused.
     removed: set = field(default_factory=set)
+    #: Node attributes the graph carries over as they are (a join's key).
+    marks: dict = field(default_factory=dict)
 
     def add_node(self, position: Any, *roles: str) -> int:
         node = len(self.positions)
@@ -74,4 +79,4 @@ class NetworkDraft:
             self.notes.append(text)
 
 
-__all__ = ["BED", "TREE", "EdgeDraft", "NetworkDraft"]
+__all__ = ["BED", "TREE", "TRUNK", "EdgeDraft", "NetworkDraft"]

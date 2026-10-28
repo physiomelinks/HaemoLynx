@@ -638,6 +638,46 @@ def test_each_face_keeps_its_own_share_of_endpoints():
     assert faces(template.scaled(0.5, "xy")) == {"z0": 1, "x0": 1, "interior": 1}
 
 
+def test_side_factors_scale_one_side_s_trees_and_leave_the_bed():
+    template = fixture_template()
+    sided = template.with_side_factors(0.5, 2.0)
+    assert sided.classes["arteriole"].count == 6
+    assert sided.classes["arteriole"].total_length_um == pytest.approx(6 * 34.0)
+    assert sided.classes["arteriole"].mean_length_um == 34.0
+    assert sided.classes["venule"].count == 12
+    assert sided.classes["capillary"] == template.classes["capillary"]
+    assert [o.edge_count for o in sided.orders] == [1, 2, 3, 4, 8]
+    assert sided.arteriole_boundary_count == 3 and sided.venule_boundary_count == 8
+    assert len(sided.inlets) == 1 and len(sided.outlets) == 4
+    assert sided.edge_count == 178 - 6 + 6
+    assert sided.total_length_um == pytest.approx(template.total_length_um - 6 * 34.0 + 6 * 35.0)
+    assert sided.loops == template.loops and sided.dead_ends == template.dead_ends
+    assert any("arterial trees 0.5 times, venous 2 times" in n for n in sided.provenance.notes)
+    assert template.with_side_factors(1.0, 1.0) is template
+
+
+def test_side_factors_set_each_face_s_endpoints_apart_and_keep_one():
+    template = replace(
+        fixture_template(),
+        inlets=(Endpoint("z0", (0.0, 0.5, 0.5)), Endpoint("x0", (0.5, 0.3, 0.0)), Endpoint("x0", (0.5, 0.7, 0.0))),
+    )
+    sided = template.with_side_factors(1.0, 1.0, inlet_factors={"z0": 3.0, "x0": 0.0, "interior": 1.0})
+    assert [e.face for e in sided.inlets].count("z0") == 3
+    # A face keeps one of the endpoints it had, however few it is given.
+    assert [e.face for e in sided.inlets].count("x0") == 1
+    assert sided.outlets == template.outlets
+    assert sided.classes == template.classes
+
+
+@pytest.mark.parametrize("bad", [-1.0, math.nan, math.inf])
+def test_a_bad_side_factor_raises(bad):
+    for arguments in ({"arterial": bad, "venous": 1.0}, {"arterial": 1.0, "venous": bad}):
+        with pytest.raises(ValueError, match="0 or more"):
+            fixture_template().with_side_factors(**arguments)
+    with pytest.raises(ValueError, match="0 or more"):
+        fixture_template().with_side_factors(1.0, 1.0, outlet_factors={"x1": bad})
+
+
 def test_scale_factors_name_the_axes_grown():
     assert tpl.scale_factors_zyx(2.0) == (2.0, 2.0, 2.0)
     assert tpl.scale_factors_zyx(2.0, "xy") == (1.0, 2.0, 2.0)
