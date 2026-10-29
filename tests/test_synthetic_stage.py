@@ -647,6 +647,35 @@ def test_preflight_refuses_a_surround_it_cannot_draw(template_run, image_run_wit
     assert check_synthetic_surround(_settings(template_run, tmp_path)).ok
 
 
+def test_preflight_says_when_the_shell_is_too_thin_for_the_images_open_ends(image_run_with_open_ends, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from haemolynx.pipeline.checks import check_synthetic_surround
+    from haemolynx.synthetic import surround
+
+    def check(**overrides):
+        return check_synthetic_surround(
+            _settings(image_run_with_open_ends, tmp_path, network_source="synthetic_surround", synthetic_scale_axes="xy", **overrides)
+        )
+
+    # At 1.05x the shell's bed plans fewer than one vertex (the generator's own arithmetic).
+    thin = check(synthetic_scale=1.05)
+    assert any("no bed can be drawn" in error for error in thin.errors), thin.errors
+    roomy = check(synthetic_scale=2.0)
+    assert roomy.ok and not any("thin" in warning for warning in roomy.warnings)
+    # Fewer vertices than joins: a warning, not a refusal.
+    real = surround.planned_surround_bed
+
+    def scarce(*args, **kwargs):
+        plan, joins = real(*args, **kwargs)
+        return replace(plan, vertices=len(joins) - 1), joins
+
+    monkeypatch.setattr(surround, "planned_surround_bed", scarce)
+    doubtful = check(synthetic_scale=2.0)
+    assert doubtful.ok
+    assert any("a shell that thin was not drawn in 13 of 28" in warning for warning in doubtful.warnings)
+
+
 def test_a_surrounded_run_is_no_template(tmp_path):
     from haemolynx.synthetic import TemplateError, load_template
 

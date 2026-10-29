@@ -639,6 +639,7 @@ Written to the run's output folder (vtk_output_prefix's). Post processing's conn
 | `To node ID` | `-` | Its downstream node. |
 | `Branch order` | `-` | Its class. |
 | `Size class` | `-` | Under a size convention (classify_vessels_by_size): wide, mid or narrow by its measured width; empty otherwise. |
+| `Network part` | `-` | A surround (network_source=synthetic_surround) only: image, a vessel of the template run's own network, or synthetic, one drawn round it; empty otherwise. |
 | `Length (um)` | `um` | Its length. |
 | `Diameter (um)` | `um` | Its diameter. |
 | `Notes` | `-` | Bridge, unsolved, inlet/outlet and so on. |

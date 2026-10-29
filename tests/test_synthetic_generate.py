@@ -34,6 +34,7 @@ from haemolynx.synthetic.generate import (
     extension_share,
     face_extension_shares,
     generate_network,
+    planned_bed,
     validate_synthetic_graph,
 )
 from haemolynx.synthetic.hole import centred_hole
@@ -411,6 +412,22 @@ def test_scale_along_x_and_y_grows_the_box_but_keeps_its_depth():
     validate_synthetic_graph(G)
     with pytest.raises(ValueError, match="scale axes"):
         generate_network(T, seed=SEED, options=GenerationOptions(scale=1.5, scale_axes="yz"))
+
+
+def test_the_bed_is_planned_by_the_templates_own_arithmetic():
+    """The fixture's docstring counts it by hand: 160 capillaries less 51
+    loops less 4 roots, plus one; closed and without interior dead ends, 6
+    pairs of its dead ends are joined instead (a capillary fewer, a loop
+    more each)."""
+    T = fixture_template()
+    plan = planned_bed(T, GenerationOptions(open_ends="template", interior_dead_ends=True))
+    assert (plan.capillaries, plan.loops, plan.roots, plan.joined, plan.vertices) == (160, 51, 4, 0, 106)
+    plan = planned_bed(T)
+    assert (plan.capillaries, plan.loops, plan.joined, plan.vertices) == (154, 57, 6, 94)
+    # The network drawn is spaced by it.
+    G = generate_network(T, seed=SEED)
+    spacing = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["spacing_um"]
+    assert spacing == pytest.approx((np.prod(T.extent_um) / 94) ** (1.0 / 3.0))
 
 
 def test_the_extension_is_the_box_beyond_the_templates_own():

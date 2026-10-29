@@ -665,6 +665,64 @@ def face_extension_shares(
     return shares
 
 
+@dataclass(frozen=True)
+class BedPlan:
+    """The capillary bed a network is planned with before anything is drawn
+    (:func:`planned_bed`): the template as drawn, its inlets and outlets less
+    the trunks that take their place, and the bed's arithmetic."""
+
+    template: NetworkTemplate
+    trunks: Mapping[str, int]
+    #: The drawn template's capillaries, and as many fewer as dead-end pairs
+    #: are joined instead of drawn (each a loop more).
+    template_capillaries: int
+    capillaries: int
+    loops: int
+    joined: int
+    #: One per inlet and outlet, and one per join (a trunk's is its end on the face).
+    roots: int
+    #: The bed's vertices: capillaries less loops less roots, plus one. Below
+    #: 1 no bed can be drawn (the generator lays one and fails to join it).
+    vertices: int
+
+
+def planned_bed(template: NetworkTemplate, options: Any = None, joins: Sequence[Join] = ()) -> BedPlan:
+    """The bed :func:`generate_network` plans for *template* drawn with
+    *options* and *joins*: its own arithmetic, so a check can ask it before
+    drawing (a surround's shell too thin for the image's open ends)."""
+    T = drawn_template(template, options)
+    trunks = {side: sum(1 for j in joins if j.kind == JOIN_TRUNK and j.side == side) for side in ("arterial", "venous")}
+    if joins:
+        T = replace(
+            T,
+            inlets=T.inlets[: max(len(T.inlets) - trunks["arterial"], 0)],
+            outlets=T.outlets[: max(len(T.outlets) - trunks["venous"], 0)],
+        )
+    capillaries = T.class_target("capillary")
+    template_capillaries = int(capillaries.count) if capillaries is not None else 0
+    count = template_capillaries
+    # One root per inlet and outlet (_place_roots), placed once the spacing
+    # says how far off a hole they keep; a join is one more.
+    roots = len(T.inlets) + len(T.outlets) + len(joins)
+    loops = T.loops.independent_loops
+    if loops is None:
+        loops = int(round(count / 3.0))
+    joined = dead_end_pairs_joined(T, GenerationOptions() if options is None else options)
+    if joined:
+        count = max(count - joined, 1)
+        loops += joined
+    return BedPlan(
+        template=T,
+        trunks=trunks,
+        template_capillaries=template_capillaries,
+        capillaries=count,
+        loops=int(loops),
+        joined=joined,
+        roots=roots,
+        vertices=count - int(loops) - roots + 1,
+    )
+
+
 def drawn_template(template: NetworkTemplate, options: Any = None) -> NetworkTemplate:
     """The template a network drawn with *options* (:class:`GenerationOptions`,
     or its record's dict) is drawn to: *template* scaled to the box, the
@@ -736,42 +794,24 @@ def generate_network(
         raise ValueError(f"open_ends must be one of {', '.join(OPEN_ENDS)}, not {options.open_ends!r}")
     closed = options.open_ends == OPEN_ENDS_CLOSED
     rng = rng if rng is not None else np.random.default_rng(seed)
-    T = drawn_template(template, options)
+    plan = planned_bed(template, options, joins)
+    T, trunks = plan.template, dict(plan.trunks)
     extent = np.asarray(T.extent_um, dtype=float)
     hole = options.hole
-    trunks = {side: sum(1 for j in joins if j.kind == JOIN_TRUNK and j.side == side) for side in ("arterial", "venous")}
-    if joins:
-        T = replace(
-            T,
-            inlets=T.inlets[: max(len(T.inlets) - trunks["arterial"], 0)],
-            outlets=T.outlets[: max(len(T.outlets) - trunks["venous"], 0)],
-        )
     if (not T.inlets and not trunks["arterial"]) or (not T.outlets and not trunks["venous"]):
         raise ValueError("the template has no inlets or no outlets to draw from")
-    capillaries = T.class_target("capillary")
-    capillary_count = int(capillaries.count) if capillaries is not None else 0
-    if capillary_count < 1:
+    if plan.template_capillaries < 1:
         raise ValueError("the template has no capillaries to draw a bed from")
 
     draft = NetworkDraft()
-    # One root per inlet and outlet (_place_roots), placed once the spacing
-    # says how far off a hole they keep; a join is one more (a trunk's root
-    # is its end on the face).
-    root_count = len(T.inlets) + len(T.outlets) + len(joins)
-
     # The bed's arithmetic first: its spacing is what the trees fill space to.
-    loops = T.loops.independent_loops
-    if loops is None:
-        loops = int(round(capillary_count / 3.0))
-    joined = dead_end_pairs_joined(T, options)
+    capillary_count, loops, joined, root_count = plan.capillaries, plan.loops, plan.joined, plan.roots
     if joined:
-        capillary_count = max(capillary_count - joined, 1)
-        loops += joined
         draft.note(
             f"{2 * joined} of the template's dead ends are not drawn: joined in pairs, "
             f"{joined} capillaries fewer and {joined} loops more"
         )
-    bed_vertices = max(capillary_count - loops - root_count + 1, 1)
+    bed_vertices = max(plan.vertices, 1)
     # The mean spacing; a bed laid out to the template's organisation has
     # its own spacing cell by cell (bed.density_vertices).
     volume = np.prod(extent) if hole is None else np.prod(extent) - hole.volume_in(extent)
@@ -1366,12 +1406,14 @@ __all__ = [
     "SYNTHETIC",
     "SYNTHETIC_CLASS",
     "SYNTHETIC_ROLES",
+    "BedPlan",
     "boundary_nodes",
     "dead_end_pairs_joined",
     "drawn_template",
     "extension_share",
     "face_extension_shares",
     "generate_network",
+    "planned_bed",
     "JOIN_BED",
     "JOIN_TRUNK",
     "Join",

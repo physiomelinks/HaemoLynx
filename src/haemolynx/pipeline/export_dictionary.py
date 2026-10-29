@@ -850,6 +850,9 @@ FILES: tuple[OutputFile, ...] = (
             _c("Size class", "-",
                "Under a size convention (classify_vessels_by_size): wide, mid or narrow by its "
                "measured width; empty otherwise."),
+            _c("Network part", "-",
+               "A surround (network_source=synthetic_surround) only: image, a vessel of the template "
+               "run's own network, or synthetic, one drawn round it; empty otherwise."),
             _c("Length (um)", "um", "Its length."),
             _c("Diameter (um)", "um", "Its diameter."),
             _c("Notes", "-", "Bridge, unsolved, inlet/outlet and so on."),

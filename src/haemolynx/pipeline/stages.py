@@ -690,6 +690,23 @@ def synthetic_box_shape(G: nx.Graph) -> tuple[int, int, int]:
     return tuple(int(round(float(e) / float(v))) + 1 for e, v in zip(extent, voxel))
 
 
+def synthetic_generation_options(settings: Mapping[str, Any]):
+    """The ``synthetic.GenerationOptions`` a synthetic run draws with, from
+    its settings: the one reading, for the Graph stage and preflight's plan
+    of a surround's bed."""
+    from haemolynx import synthetic
+
+    return synthetic.GenerationOptions(
+        scale=float(settings.get("synthetic_scale") or 1.0),
+        scale_axes=str(settings.get("synthetic_scale_axes") or synthetic.SCALE_AXES_XYZ),
+        arteriole_density=float(settings.get("synthetic_extension_arteriole_density", 1.0)),
+        venule_density=float(settings.get("synthetic_extension_venule_density", 1.0)),
+        interior_dead_ends=bool(settings.get("synthetic_interior_dead_ends", False)),
+        bed_model=str(settings.get("synthetic_bed_model") or "delaunay"),
+        open_ends=str(settings.get("synthetic_open_ends") or synthetic.OPEN_ENDS_CLOSED),
+    )
+
+
 def _build_synthetic_network(
     settings: dict,
     volume: SkeletonisedVolume,
@@ -709,15 +726,7 @@ def _build_synthetic_network(
             settings["synthetic_template_path"], settings.get("synthetic_template_source", "statistics")
         )
         seed = settings.get("synthetic_seed")
-        options = synthetic.GenerationOptions(
-            scale=float(settings.get("synthetic_scale") or 1.0),
-            scale_axes=str(settings.get("synthetic_scale_axes") or synthetic.SCALE_AXES_XYZ),
-            arteriole_density=float(settings.get("synthetic_extension_arteriole_density", 1.0)),
-            venule_density=float(settings.get("synthetic_extension_venule_density", 1.0)),
-            interior_dead_ends=bool(settings.get("synthetic_interior_dead_ends", False)),
-            bed_model=str(settings.get("synthetic_bed_model") or "delaunay"),
-            open_ends=str(settings.get("synthetic_open_ends") or synthetic.OPEN_ENDS_CLOSED),
-        )
+        options = synthetic_generation_options(settings)
         logger.info(
             "Drawing a synthetic network to the template (seed %s, scale %g along %s, arterial and venous "
             "trees beyond the template's box at %g and %g of its density, dead ends inside the "

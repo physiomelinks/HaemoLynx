@@ -50,6 +50,15 @@ def test_rows_follow_the_network_from_inlet_to_outlet():
     assert rows[0]["Diameter (um)"] == "5" and rows[0]["Branch order"] == "arteriole"
 
 
+def test_a_surrounds_rows_say_which_network_each_vessel_is():
+    G = _example()
+    assert {r["Network part"] for r in connectivity_rows(G, [0], [8])} == {""}
+    for u, v, data in G.edges(data=True):
+        data["network_part"] = "image" if {u, v} & {2, 5, 6, 7} else "synthetic"
+    rows = _by_id(connectivity_rows(G, [0], [8]))
+    assert [rows[i]["Network part"] for i in range(7)] == ["synthetic", "image", "image", "image", "image", "image", "image"]
+
+
 def test_a_split_lists_both_daughters_and_a_merge_both_parents():
     rows = _by_id(connectivity_rows(_example(), [0], [8]))
     assert rows[1]["Downstream branch IDs"] == "2, 3"   # 1 -> 2 diverges

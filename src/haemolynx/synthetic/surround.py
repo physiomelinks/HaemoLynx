@@ -66,6 +66,7 @@ from haemolynx.statistics.bifurcation import branch_order_category
 
 from .generate import (
     DEFAULT_SEED,
+    BedPlan,
     JOIN_BED,
     JOIN_TRUNK,
     SURROUND_JOIN,
@@ -74,6 +75,7 @@ from .generate import (
     GenerationOptions,
     Join,
     generate_network,
+    planned_bed,
 )
 from .hole import GRAPH_HOLE, Hole, centred_hole
 from .polylines import voxels_and_length
@@ -269,6 +271,57 @@ def flow_along(G: nx.Graph, a: Any, b: Any, data: Mapping[str, Any]) -> Optional
     return float(flow) if abs(float(p_a) - float(p_u)) <= abs(float(p_b) - float(p_u)) else -float(flow)
 
 
+def surround_joins(
+    image_graph: nx.MultiGraph,
+    template: NetworkTemplate,
+    *,
+    inlets: Sequence[Any] = (),
+    outlets: Sequence[Any] = (),
+    options: Optional[GenerationOptions] = None,
+) -> tuple[np.ndarray, Hole, list[Join], list]:
+    """``(image extent, hole, joins, ends left open)`` of a surround of
+    *image_graph* (:func:`surround_network`'s own): the image's box centred
+    in the scaled one, and each open end joined on its face of the hole, or
+    left open on a face the box does not grow past (D3)."""
+    options = options or GenerationOptions()
+    own = graph_image_extent_um(image_graph)
+    image_extent = np.asarray(template.extent_um if own is None else own, dtype=float)
+    outer = np.asarray(template.scaled(options.scale, options.scale_axes).extent_um, dtype=float)
+    hole = centred_hole(outer, image_extent)
+    joins: list[Join] = []
+    left_open: list = []
+    for end in read_open_ends(image_graph, inlets=inlets, outlets=outlets, extent_um=image_extent):
+        axis = "zyx".index(end.face[0])
+        if outer[axis] <= image_extent[axis] * (1.0 + 1e-9):
+            left_open.append(end.node)  # the box does not grow past this face (D3)
+        else:
+            joins.append(_join_for(end, hole.lo, hole))
+    return image_extent, hole, joins, left_open
+
+
+#: A shell planned with fewer bed vertices than this per join to the image
+#: may not be drawn: on the cut-out harness 13 of the 28 surrounds below it
+#: were not (no bed, or a trunk and its joins left in a piece of their
+#: own), every one above it was (fixture and E14.5, 2026-10-29,
+#: ``outputs/surround_check/shell_room``). Below 1 vertex none can be.
+ROOMY_VERTICES_PER_JOIN = 1.0
+
+
+def planned_surround_bed(
+    image_graph: nx.MultiGraph,
+    template: NetworkTemplate,
+    *,
+    inlets: Sequence[Any] = (),
+    outlets: Sequence[Any] = (),
+    options: Optional[GenerationOptions] = None,
+) -> tuple[BedPlan, list[Join]]:
+    """The bed the shell of a surround would be drawn with
+    (``generate.planned_bed``), and its joins, without drawing it."""
+    options = options or GenerationOptions()
+    _extent, hole, joins, _left = surround_joins(image_graph, template, inlets=inlets, outlets=outlets, options=options)
+    return planned_bed(template, replace(options, hole=hole), joins), joins
+
+
 def _translated(voxels: Any, offset: np.ndarray) -> Any:
     if voxels is None:
         return None
@@ -302,21 +355,8 @@ def surround_network(
         )
     if any(not isinstance(n, (int, np.integer)) for n in image_graph.nodes):
         raise ValueError("the image graph's nodes must be ints")
-    own = graph_image_extent_um(image_graph)
-    image_extent = np.asarray(template.extent_um if own is None else own, dtype=float)
-    outer = np.asarray(template.scaled(options.scale, options.scale_axes).extent_um, dtype=float)
-    hole = centred_hole(outer, image_extent)
+    image_extent, hole, joins, left_open = surround_joins(image_graph, template, inlets=inlets, outlets=outlets, options=options)
     offset = hole.lo
-
-    ends = read_open_ends(image_graph, inlets=inlets, outlets=outlets, extent_um=image_extent)
-    joins: list[Join] = []
-    left_open: list = []
-    for end in ends:
-        axis = "zyx".index(end.face[0])
-        if outer[axis] <= image_extent[axis] * (1.0 + 1e-9):
-            left_open.append(end.node)  # the box does not grow past this face (D3)
-        else:
-            joins.append(_join_for(end, offset, hole))
     shell = generate_network(
         template, seed=seed, rng=rng, options=replace(options, hole=hole), validate=validate, joins=joins
     )
@@ -603,6 +643,7 @@ __all__ = [
     "IMAGE_PART",
     "IMAGE_RUN_FLOW",
     "IMAGE_RUN_FLOW_FROM",
+    "ROOMY_VERTICES_PER_JOIN",
     "ImageOpenEnd",
     "NETWORK_PART",
     "SURROUNDED",
@@ -615,7 +656,9 @@ __all__ = [
     "flow_along",
     "image_flow_rows",
     "load_image_run",
+    "planned_surround_bed",
     "read_open_ends",
+    "surround_joins",
     "surround_network",
     "validate_surrounded_graph",
     "vessel_side",

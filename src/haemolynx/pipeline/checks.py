@@ -1200,6 +1200,43 @@ def check_synthetic_surround(settings: Mapping[str, Any]) -> CheckReport:
             "The template run was saved before its haemodynamics solved: the image flows CSV has no "
             "template-run flow to compare each vessel's with."
         )
+    if scale > 1.0:
+        report.extend(_check_surround_shell_room(settings, image, boundaries))
+    return report
+
+
+def _check_surround_shell_room(settings: Mapping[str, Any], image, boundaries) -> CheckReport:
+    """Whether the shell round the image has room for a bed joining all its
+    open ends (``surround.planned_surround_bed``, the generator's own
+    arithmetic): none below one vertex, and doubtful below
+    ``surround.ROOMY_VERTICES_PER_JOIN`` vertices per join."""
+    from haemolynx.pipeline.stages import synthetic_generation_options
+    from haemolynx.synthetic import TemplateError, load_template
+    from haemolynx.synthetic.surround import ROOMY_VERTICES_PER_JOIN, planned_surround_bed
+
+    report = CheckReport()
+    try:
+        template = load_template(settings["synthetic_template_path"], settings.get("synthetic_template_source", "statistics"))
+    except (TemplateError, ValueError):
+        return report  # check_synthetic_template has said why
+    plan, joins = planned_surround_bed(
+        image, template, inlets=boundaries.get("inlet", ()), outlets=boundaries.get("outlet", ()),
+        options=synthetic_generation_options(settings),
+    )
+    scale = float(settings.get("synthetic_scale") or 1.0)
+    if plan.vertices < 1:
+        report.add_error(
+            f"At synthetic_scale {scale:g} the shell round the template run's network leaves its capillary bed "
+            f"{plan.vertices} vertices ({plan.capillaries} capillaries, {plan.loops} loops, {plan.roots} roots: "
+            f"{len(joins)} joins to the image among them): no bed can be drawn. Fix: raise synthetic_scale."
+        )
+    elif plan.vertices < ROOMY_VERTICES_PER_JOIN * len(joins):
+        report.add_warning(
+            f"At synthetic_scale {scale:g} the shell's capillary bed is planned with {plan.vertices} vertices for "
+            f"{len(joins)} joins to the template run's network: a shell that thin was not drawn in 13 of 28 "
+            "cut-out harness surrounds (no bed, or a trunk left apart). Fix: raise synthetic_scale if the "
+            "Graph stage fails."
+        )
     return report
 
 

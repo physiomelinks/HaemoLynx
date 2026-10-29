@@ -481,3 +481,14 @@ richer the supply, the further the image's directions move from `estimated`'s (7
 way at densities 1, 2, 3) and from `closed`'s (83, 78, 79%), while one seed against another stays
 at 88-90%: the density beyond the faces moves the answer about as much as the draw does. Driver:
 `outputs/surround_e14p5/run_surround.py --density` (git-ignored, with each seed's run).
+
+**Shell room in preflight** (2026-10-29). A surround's shell can be too thin to join every open end
+of the image (the fixture at 1.25x and 1.5x). `generate.planned_bed` is now the generator's own bed
+arithmetic (capillaries less loops less roots, the dead-end pairs joined), which
+`surround.planned_surround_bed` asks for a surround without drawing it. Over the cut-out harness's
+70 surrounds (fixture at 1.25, 1.5, 2x, both templates; E14.5 at 1.5x, both templates;
+`outputs/surround_check/shell_room/plans.csv`): every one planned below 1 vertex failed (9 of 9), and
+every failure was planned with fewer bed vertices than joins (13 of 13, against 15 such drawn).
+`check_synthetic_surround` refuses the first and warns of the second
+(`surround.ROOMY_VERTICES_PER_JOIN`). The connectivity CSV now says which network each vessel is
+(`Network part`).
