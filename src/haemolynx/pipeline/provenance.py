@@ -55,6 +55,7 @@ from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any, Iterator, Mapping, Optional
 
+from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
 from haemolynx.parsers.schema import Schema, is_active, section_key
 from haemolynx.pipeline.naming import run_input_path, run_stem
 from haemolynx.pipeline.progress import (
@@ -804,10 +805,12 @@ class RunRecorder:
             inputs = [{"error": f"{type(failure).__name__}: {failure}"}]
         recorded = self.recorded_settings if isinstance(self.recorded_settings, Mapping) else {}
         synthetic = None
-        if run_stem(recorded) is not None and recorded.get("network_source") == "synthetic":
+        if run_stem(recorded) is not None and network_is_synthetic(recorded):
             template = recorded.get("synthetic_template_path")
             synthetic = {
                 "template": None if template is None else PurePath(str(template)).as_posix(),
+                # Drawn round the template run's own network, not instead of it.
+                "surrounds_template_run": network_surrounds_image(recorded),
                 "source": recorded.get("synthetic_template_source"),
                 "seed": recorded.get("synthetic_seed"),
                 "scale": recorded.get("synthetic_scale"),

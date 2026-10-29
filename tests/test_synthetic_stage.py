@@ -37,6 +37,7 @@ from haemolynx.pipeline.stages import (
 )
 from haemolynx.synthetic import COMPARISON_SECTION, GRAPH_TEMPLATE_RECORD, boundary_nodes, clear_template_cache
 from haemolynx.synthetic.compare import CSV_COLUMNS
+from haemolynx.synthetic.template import GRAPH_NETWORK_SOURCE
 from synthetic_fixtures import fixture_template, write_fixture_run, write_generated_run
 
 SCHEMA = default_schema()
@@ -512,3 +513,144 @@ def test_preflight_refuses_a_haemobatch_that_is_not_one(tmp_path):
     bad.write_bytes(b"not a batch template")
     report = check_synthetic_template(_settings(bad, tmp_path))
     assert not report.ok and "is not a batch template" in report.errors[0]
+
+
+# -- the template run's own network inside a synthetic one (network_source=synthetic_surround) ----------
+
+
+def test_a_surround_is_a_synthetic_network_round_its_template_runs_own():
+    from haemolynx.graph import network_is_synthetic, network_surrounds_image
+
+    assert network_is_synthetic({"network_source": "synthetic_surround"})
+    assert network_surrounds_image({"network_source": "synthetic_surround"})
+    assert network_is_synthetic({"network_source": "synthetic"}) and not network_surrounds_image({"network_source": "synthetic"})
+    assert not network_is_synthetic({}) and not network_surrounds_image({"network_source": "segmented_image"})
+    assert "synthetic_surround" in SCHEMA["network_source"].choices
+
+
+@pytest.fixture(scope="module")
+def image_run_with_open_ends(tmp_path_factory) -> Path:
+    """A template run whose faces cut its vessels, solved: what a surround joins."""
+    return write_generated_run(tmp_path_factory.mktemp("image"), open_ends=True, solve=True)
+
+
+@pytest.fixture(scope="module")
+def surround_run(image_run_with_open_ends, tmp_path_factory):
+    out = tmp_path_factory.mktemp("surround")
+    settings = _settings(
+        image_run_with_open_ends, out, network_source="synthetic_surround", synthetic_scale=2.0,
+        synthetic_scale_axes="xy",
+    )
+    report = preflight(settings, SCHEMA)
+    G = run_pipeline_stages(settings, SCHEMA)
+    return settings, report, G, out
+
+
+def test_a_surround_run_is_named_and_checked_as_one(surround_run):
+    _settings_, report, G, out = surround_run
+    assert report.ok, report.errors
+    passed = dict(report.passed)
+    assert "8 open end(s) to join" in passed["synthetic surround"]
+    # The box keeps its depth along xy: the run's ends on its z faces stay open.
+    assert any("z faces" in warning and "stay open ends" in warning for warning in report.warnings)
+    names = {path.name for path in (out / "out").iterdir()}
+    for suffix in ("_graph.pkl", "_image_flows.csv", "_template_comparison.csv", "_run_manifest.json"):
+        assert f"e14_5_surrounded{suffix}" in names, (suffix, names)
+    from haemolynx.synthetic.surround import SURROUNDED
+
+    assert G.graph[GRAPH_NETWORK_SOURCE] == SURROUNDED
+
+
+def test_the_template_runs_vessels_keep_their_widths_and_labels(surround_run, image_run_with_open_ends):
+    from haemolynx.synthetic.surround import IMAGE_BRANCH_ORDER, IMAGE_DIAMETER_SOURCE, NETWORK_PART, load_image_run
+
+    _settings_, _report, G, _out = surround_run
+    image, _boundaries = load_image_run(image_run_with_open_ends)
+    for u, v, key, data in image.edges(keys=True, data=True):
+        drawn = G.edges[u, v, key]
+        assert drawn[NETWORK_PART] == "image"
+        # Its width as its run gave it, whatever this run's diameter chain would say.
+        assert drawn["diameter_um"] == data["diameter_um"]
+        assert (drawn["diameter_source"], drawn[IMAGE_DIAMETER_SOURCE]) == ("image_run", "measured")
+        # D7: branch orders over the whole network, the run's own kept beside them.
+        assert drawn[IMAGE_BRANCH_ORDER] == data["branch_order"]
+        assert drawn.get("branch_order") is not None
+    parts = {data[NETWORK_PART] for *_e, data in G.edges(data=True)}
+    assert parts == {"image", "synthetic"}
+
+
+def test_each_image_vessels_flow_is_set_beside_its_runs(surround_run, image_run_with_open_ends):
+    from haemolynx.synthetic.surround import load_image_run
+
+    _settings_, _report, G, out = surround_run
+    image, _boundaries = load_image_run(image_run_with_open_ends)
+    with (out / "out" / "e14_5_surrounded_image_flows.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == image.number_of_edges()
+    compared = [row for row in rows if row["flow_ratio"]]
+    assert len(compared) > 0.8 * len(rows)
+    for row in compared:
+        before, after = float(row["flow_template_run_m3_s"]), float(row["flow_surrounded_m3_s"])
+        assert float(row["flow_ratio"]) == pytest.approx(after / before, rel=1e-5)  # six figures written
+        assert row["direction_flipped"] == ("yes" if (before > 0) != (after > 0) else "no")
+    # The flows are read from the same node in both runs: a vessel that kept
+    # its direction keeps its sign.
+    assert any(row["direction_flipped"] == "no" for row in compared)
+    assert {row["cut_by_image_face"] for row in rows} == {"yes", "no"}
+
+
+def test_the_whole_surround_is_solved_from_its_outer_faces(surround_run):
+    settings, _report, G, _out = surround_run
+    extent = np.asarray(G.graph["image_extent_um"], dtype=float)
+    for node in [*settings["inlet_nodes"], *settings["outlet_nodes"]]:
+        position = np.asarray(G.nodes[node]["pos"], dtype=float)
+        assert np.min(np.concatenate([position, extent - position])) <= 1e-6
+    solved = [data for *_e, data in G.edges(data=True) if data.get("flow_abs") is not None]
+    assert len(solved) == G.number_of_edges()
+
+
+def test_a_surrounds_manifest_and_vtk_say_what_it_is(surround_run):
+    pv = pytest.importorskip("pyvista")
+    _settings_, _report, _G, out = surround_run
+    manifest = json.loads((out / "out" / "e14_5_surrounded_run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["network_source"] == "synthetic_surround"
+    assert manifest["synthetic"]["surrounds_template_run"] is True and manifest["synthetic"]["scale"] == 2.0
+    vessels = pv.read(str(out / "out" / "run_vessels.vtp"))
+    assert set(vessels.cell_data["network_part"]) == {"image", "synthetic"}
+    image_orders = [o for part, o in zip(vessels.cell_data["network_part"], vessels.cell_data["image_branch_order"]) if part == "image"]
+    assert image_orders and all(image_orders)
+
+
+def test_preflight_refuses_a_surround_it_cannot_draw(template_run, image_run_with_open_ends, tmp_path, monkeypatch):
+    from haemolynx.pipeline.checks import check_synthetic_surround
+    from haemolynx.synthetic import surround
+
+    def check(template, **overrides):
+        settings = _settings(template, tmp_path, network_source="synthetic_surround", **{"synthetic_scale": 2.0, **overrides})
+        return check_synthetic_surround(settings)
+
+    def errors(template, **overrides):
+        return " ".join(check(template, **overrides).errors)
+
+    assert errors(image_run_with_open_ends) == ""
+    assert "synthetic_scale above 1" in errors(image_run_with_open_ends, synthetic_scale=1.0)
+    # A closed run's own inlets and outlets are open ends: each runs on as a trunk.
+    assert "4 open end(s) to join" in dict(check(template_run).passed)["synthetic surround"]
+    # A network with none has nothing to join a surround to.
+    monkeypatch.setattr(surround, "read_open_ends", lambda *_a, **_k: [])
+    assert "no open end" in errors(template_run)
+    monkeypatch.undo()
+    batch = tmp_path / "wt.haemobatch"
+    batch.write_bytes(b"")
+    assert "is a batch's .haemobatch" in errors(batch)
+    # A synthetic network is not asked any of this.
+    assert check_synthetic_surround(_settings(template_run, tmp_path)).ok
+
+
+def test_a_surrounded_run_is_no_template(tmp_path):
+    from haemolynx.synthetic import TemplateError, load_template
+
+    path = write_fixture_run(tmp_path, settings={"network_source": "synthetic_surround"})
+    with pytest.raises(TemplateError) as raised:
+        load_template(path)
+    assert raised.value.reason == "synthetic_run"

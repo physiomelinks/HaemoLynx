@@ -46,6 +46,7 @@ from haemolynx.synthetic.template import GRAPH_NETWORK_SOURCE
 
 #: ``G.graph[GRAPH_NETWORK_SOURCE]`` on a network drawn by ``haemolynx.synthetic``.
 NETWORK_SOURCE_SYNTHETIC = "synthetic"
+NETWORK_SOURCE_SYNTHETIC_SURROUND = "synthetic_surround"
 from haemolynx.visualization._helpers import create_color_mapping
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
 from haemolynx.visualization.geometry import edge_polyline
@@ -521,6 +522,9 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     # The size convention's class (classify_vessels_by_size): wide, mid or
     # narrow; text, so a categorical colouring. Absent without the box.
     "vessel_size_class": "assign_diameters",
+    # A surround's: which network a vessel is (the template run's own, or
+    # drawn round it); text, so a categorical colouring. Absent otherwise.
+    "network_part": "build_network",
     "fwhm_edt_disagreement_ratio": "assign_diameters",
     "fwhm_low_confidence_vs_edt": "assign_diameters",
     # Only present when haematocrit_model is distributed_iterative --
@@ -834,6 +838,7 @@ TEXT_COLUMNS = frozenset(
         "capillary_block",
         "flow_state",
         "vessel_size_class",
+        "network_part",
     }
 )
 
@@ -2069,7 +2074,9 @@ class ResultLayers:
             # the matching NODES comment above). A synthetic network's are
             # shown: its inlets and outlets are where all its flow goes in
             # and out (Harvey, 2026-10-25), and nothing else marks them.
-            synthetic = self._graph.graph.get(GRAPH_NETWORK_SOURCE) == NETWORK_SOURCE_SYNTHETIC
+            synthetic = self._graph.graph.get(GRAPH_NETWORK_SOURCE) in (
+                NETWORK_SOURCE_SYNTHETIC, NETWORK_SOURCE_SYNTHETIC_SURROUND,
+            )
             layers.extend(self._boundary_nodes_layer(roles, visible=synthetic))
 
         # The large masks as cleaned and the small masks as boundary labelling

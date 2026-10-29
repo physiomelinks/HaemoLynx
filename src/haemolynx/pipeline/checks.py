@@ -20,7 +20,7 @@ from haemolynx.graph.boundaries import (
     vessel_masks_in_use,
 )
 from haemolynx.graph.vessel_size_classes import check_size_thresholds, size_class_range
-from haemolynx.graph.boundaries import network_is_synthetic
+from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
 from haemolynx.haemodynamics.viscosity import run_diameter_basis
 from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
@@ -1145,6 +1145,64 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def check_synthetic_surround(settings: Mapping[str, Any]) -> CheckReport:
+    """A surround (``network_source=synthetic_surround``): drawn round one
+    run's own network (a ``.haemorun``, not a batch's ``.haemobatch``) in a
+    box larger than its image (``synthetic_scale`` above 1), joined at the
+    vessels its image faces cut, so the run must have some; which are left
+    open, and whether there is a solve to compare the image's flows with."""
+    report = CheckReport()
+    if not network_surrounds_image(settings):
+        return report
+    scale = float(settings.get("synthetic_scale") or 1.0)
+    if scale <= 1.0:
+        report.add_error(
+            f"synthetic_scale is {scale:g}: a surround is drawn in a box larger than the template run's "
+            "image. Fix: set synthetic_scale above 1 (1.5 or 2)."
+        )
+    path = settings.get("synthetic_template_path")
+    if path in (None, "") or not Path(path).exists() or Path(path).suffix.lower() != ".haemorun":
+        if path not in (None, "") and Path(path).suffix.lower() == ".haemobatch":
+            report.add_error(
+                "synthetic_template_path is a batch's .haemobatch: a surround is drawn round one run's own "
+                "network. Fix: choose that run's .haemorun."
+            )
+        return report  # check_synthetic_template reports the rest
+    from haemolynx.gui.run_snapshot import RunSnapshotError
+    from haemolynx.synthetic import TemplateError
+    from haemolynx.synthetic.surround import load_image_run, read_open_ends
+
+    try:
+        image, boundaries = load_image_run(path)
+    except (RunSnapshotError, TemplateError):
+        return report  # check_synthetic_template has said why
+    ends = read_open_ends(image, inlets=boundaries.get("inlet", ()), outlets=boundaries.get("outlet", ()))
+    if not ends:
+        report.add_error(
+            "The template run's network has no open end (no vessel its image faces cut): there is nothing "
+            "to join a surround to. Fix: choose network_source=synthetic for a network drawn to it instead."
+        )
+        return report
+    axes = settings.get("synthetic_scale_axes") or "xyz"
+    left = [e for e in ends if axes == "xy" and e.face[0] == "z"]
+    report.add_pass(
+        "synthetic surround",
+        f"the template run's {image.number_of_edges()} vessels, {len(ends)} open end(s) to join"
+        + (f", {len(left)} on its z faces left open (the box keeps its depth along xy)" if left else ""),
+    )
+    if left:
+        report.add_warning(
+            f"{len(left)} of the template run's open ends lie on its z faces, which a box scaled along xy does "
+            "not grow past: they stay open ends, treated by open_end_model."
+        )
+    if not any(data.get("flow_signed") is not None for *_e, data in image.edges(data=True)):
+        report.add_warning(
+            "The template run was saved before its haemodynamics solved: the image flows CSV has no "
+            "template-run flow to compare each vessel's with."
+        )
+    return report
+
+
 def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True) -> CheckReport:
     """Every pre-run check, printed as a checklist (unless *echo* is False:
     a batch checks every image and reports them itself).
@@ -1163,6 +1221,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
         )
     report = check_settings(schema, settings, skip=skip)
     report.extend(check_synthetic_template(settings))
+    report.extend(check_synthetic_surround(settings))
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
     report.extend(check_ilastik_vessel_labels(settings))

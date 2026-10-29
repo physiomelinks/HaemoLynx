@@ -65,6 +65,19 @@ def test_the_input_tab_swaps_its_rows_and_greys_the_role_tabs(panel):
     assert all(tabs.isTabEnabled(i) for i in manual)
 
 
+def test_the_template_runs_network_inside_a_synthetic_one_shows_the_synthetic_rows(panel):
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget._haemolynx_boundaries.state.tabs
+    rows["network_source"].value = "synthetic_surround"
+    _process()
+    assert rows["synthetic_template_path"].visible and rows["synthetic_template_source"].visible
+    assert not rows["input_path"].visible and not rows["raw_image_path"].visible
+    assert not any(tabs.isTabEnabled(i) for i in range(tabs.count()))
+    assert widget._haemolynx_values()["network_source"] == "synthetic_surround"
+
+
 def test_the_template_row_is_a_haemorun_file_picker(panel):
     widget, _viewer = panel
     rows = widget._haemolynx_rows()

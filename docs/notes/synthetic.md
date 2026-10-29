@@ -426,3 +426,23 @@ vessel, piled onto four bed vertices (46-78 vessels each) by the last-resort joi
 cost the square of a vertex's degree. A trunk's pieces are now never shorter than the bed's minimum
 vertex separation (half its spacing); each draw takes 8-14 s, and networks without joins are
 unchanged.
+
+## 2026-10-28: the surround in the pipeline (`PLAN_synthetic_surround.md` phase 5)
+
+`network_source=synthetic_surround` ("The template run's network inside a synthetic one") runs a
+surround as a run of its own off the template run's `.haemorun` (D1). It takes the synthetic path
+(`network_is_synthetic` answers yes; `network_surrounds_image` says where it differs, and the
+synthetic rows' prerequisite is now `network_source!=segmented_image`): the Input stage reads the
+template and the run's own graph (`surround.load_image_run`, refusing a `.haemobatch`), the Graph
+stage draws `surround_network` round it, the Boundaries stage takes the roles it marked. The image's
+vessels keep their run's widths (`diameter_source="image_run"`, ahead of any reading the run left on
+them; the run's own source as `image_diameter_source`) and labels as `image_branch_order`, while
+branch orders run over the whole network (D7). The template comparison scores the whole network
+against the template scaled to the box (the hole not left out). Outputs: `{template stem}_surrounded`,
+the VTK's `network_part` and `image_branch_order`, `{stem}_image_flows.csv` (each image vessel's flow
+in the template run and inside the surround, from the same node, their ratio, whether it flipped),
+the manifest's `surrounds_template_run`, and `network_part` as a colour in the viewer. Preflight
+(`check_synthetic_surround`) refuses a scale of 1 or less, a `.haemobatch` and a run with no open
+end, and says which open ends stay open under xy and when the run has no solve to compare with. A
+closed template run is surroundable: its own inlets and outlets are open ends, each a trunk. Not yet:
+D6's mirrored layout (the shell takes the template's stretched over the box), and a run on E14.5.

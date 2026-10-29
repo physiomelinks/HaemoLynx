@@ -83,8 +83,10 @@ def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
             **{FLOW_SOLVED: True, FLOW_STATE: "solved"},
         )
     # A size convention adds its class to every vessel, and its thresholds
-    # to the field data.
+    # to the field data; a surround says which network each vessel is.
     tag_vessels_by_size(G, 6.0, 15.0)
+    G.edges[0, 1, 0].update(network_part="image", image_branch_order="Art2")
+    G.edges[1, 2, 0].update(network_part="synthetic")
     out = graph_to_vtk(G, tmp_path / "run")
     surface = surface_mesh_to_vtk(np.eye(3), np.array([[0, 1, 2]]), tmp_path / "run_tissue_surface.vtp")
 
@@ -112,6 +114,8 @@ def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
     assert list(vessels.cell_data["vessel_size_class"]) == ["narrow", "narrow"]
     assert float(vessels.field_data["vessel_size_mid_min_um"][0]) == 6.0
     assert float(vessels.field_data["vessel_size_wide_min_um"][0]) == 15.0
+    assert list(vessels.cell_data["network_part"]) == ["image", "synthetic"]
+    assert list(vessels.cell_data["image_branch_order"]) == ["Art2", ""]
 
 
 @pytest.mark.parametrize(
@@ -132,6 +136,7 @@ def test_every_vtk_array_is_documented_and_its_unit_is_in_the_file(tmp_path):
         ("{stem}_{kind}_review.csv", "haemolynx.gui.post_processing:REVIEW_CSV_COLUMNS", False),
         ("batch_summary.csv", "haemolynx.gui.batch_run:SUMMARY_COLUMNS", True),
         ("{stem}_template_comparison.csv", "haemolynx.synthetic.compare:CSV_COLUMNS", True),
+        ("{stem}_image_flows.csv", "haemolynx.synthetic.surround:IMAGE_FLOW_COLUMNS", True),
         ("{stem}_pericytes.csv", "haemolynx.haemodynamics.pericyte_measurements:PERICYTE_COLUMNS", True),
         ("{stem}_pericyte_branches.csv", "haemolynx.haemodynamics.pericyte_measurements:BRANCH_COLUMNS", True),
         (

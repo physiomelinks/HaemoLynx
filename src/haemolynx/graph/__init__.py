@@ -172,7 +172,9 @@ from .boundaries import (
     NETWORK_SOURCE_SETTING,
     NETWORK_SOURCE_SEGMENTED_IMAGE,
     NETWORK_SOURCE_SYNTHETIC,
+    NETWORK_SOURCE_SYNTHETIC_SURROUND,
     network_is_synthetic,
+    network_surrounds_image,
 )
 from . import vessel_size_classes
 from .vessel_size_classes import (
@@ -434,7 +436,9 @@ __all__ = [
     "NETWORK_SOURCE_SETTING",
     "NETWORK_SOURCE_SEGMENTED_IMAGE",
     "NETWORK_SOURCE_SYNTHETIC",
+    "NETWORK_SOURCE_SYNTHETIC_SURROUND",
     "network_is_synthetic",
+    "network_surrounds_image",
     "assigns_large_vessel_branch_orders",
     "select_nodes_by_id",
     "compute_overlapping_terminal_assignment_metrics",

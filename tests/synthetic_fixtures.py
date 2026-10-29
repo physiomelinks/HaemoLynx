@@ -321,16 +321,23 @@ def write_generated_run(
     seed: int = 11,
     name: str = "e14_5.haemorun",
     settings: Mapping[str, Any] | None = None,
+    open_ends: bool = False,
+    solve: bool = False,
 ) -> Path:
     """A ``.haemorun`` of a network drawn to :func:`fixture_template`, saved as
     if it had come from an image: labelled, measured, its generator marks
     taken off. What the stage tests use as their template, so a run is
-    matched to a network of a few hundred vessels rather than the tiny one."""
+    matched to a network of a few hundred vessels rather than the tiny one.
+    With *open_ends*, vessels cut at its faces as an image's are (what a
+    surround joins); with *solve*, flows from its inlets at 4500 Pa to its
+    outlets at 1000 Pa, its open ends closed."""
     from haemolynx.graph.branch_order import assign_vessel_branch_orders
     from haemolynx.synthetic.generate import GRAPH_NETWORK_SOURCE, SYNTHETIC_CLASS, SYNTHETIC_ROLES, boundary_nodes, generate_network
     from haemolynx.synthetic.template import GRAPH_TEMPLATE_RECORD
 
-    G = generate_network(fixture_template(), seed=seed)
+    from haemolynx.synthetic.generate import GenerationOptions
+
+    G = generate_network(fixture_template(), seed=seed, options=GenerationOptions(open_ends="template" if open_ends else "closed"))
     roles = boundary_nodes(G)
     assign_vessel_branch_orders(
         G,
@@ -346,6 +353,19 @@ def write_generated_run(
     for *_e, data in G.edges(data=True):
         data.pop(SYNTHETIC_CLASS, None)
         data["diameter_source"] = "measured"
+    if solve:
+        from haemolynx import haemodynamics as hd
+        from haemolynx.haemodynamics.poiseuille import PoiseuilleModel, set_edge_resistance
+
+        model = PoiseuilleModel(40.0, 100.0)
+        for *_e, data in G.edges(data=True):
+            set_edge_resistance(data, model.resistance_of_uniform_segment(float(data["length"]), float(data["diameter_um"])))
+        conductance, nodes = hd.build_conductance_matrix_from_graph(G, solver="sparse")
+        flow = hd.solve_flow_from_conductance_matrix(
+            conductance, nodes, inlet_p_bc=4500.0, outlet_p_bc=1000.0,
+            inlet_nodes=list(roles["inlet"]), outlet_nodes=list(roles["outlet"]),
+        )
+        hd.set_edge_flows(G, nodes, flow["pressure"])
     extent = np.asarray(G.graph["image_extent_um"], dtype=float)
     voxel = np.asarray(G.graph["image_voxel_size_zyx"], dtype=float)
     shape = tuple(int(round(e / v)) + 1 for e, v in zip(extent, voxel))

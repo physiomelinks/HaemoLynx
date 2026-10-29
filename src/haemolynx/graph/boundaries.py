@@ -484,22 +484,41 @@ def select_boundary_nodes_by_method(
     return [node for node in sort_nodes(selected) if node not in excluded]
 
 
-#: The Input tab's ``network_source`` choice: analyse a segmented image, or
+#: The Input tab's ``network_source`` choice: analyse a segmented image,
 #: generate a synthetic network matched to a previous run's ``.haemorun``
-#: (``haemolynx.synthetic``). The literals are repeated in
+#: (``haemolynx.synthetic``), or draw one round that run's own network
+#: (``synthetic.surround``). The literals are repeated in
 #: ``pipeline/schema.py`` (which stays importable without numpy);
 #: ``tests/test_parsers_schema.py`` pins them equal.
 NETWORK_SOURCE_SETTING = "network_source"
 NETWORK_SOURCE_SEGMENTED_IMAGE = "segmented_image"
 NETWORK_SOURCE_SYNTHETIC = "synthetic"
-NETWORK_SOURCES: tuple[str, ...] = (NETWORK_SOURCE_SEGMENTED_IMAGE, NETWORK_SOURCE_SYNTHETIC)
+NETWORK_SOURCE_SYNTHETIC_SURROUND = "synthetic_surround"
+NETWORK_SOURCES: tuple[str, ...] = (
+    NETWORK_SOURCE_SEGMENTED_IMAGE,
+    NETWORK_SOURCE_SYNTHETIC,
+    NETWORK_SOURCE_SYNTHETIC_SURROUND,
+)
 
 
 def network_is_synthetic(settings: Mapping[str, Any]) -> bool:
     """Whether the run generates its network instead of reading an image
-    (``network_source`` holding ``"synthetic"``). The one place this is
-    decided: the stages, preflight, the citations and the panel all ask here."""
-    return settings.get(NETWORK_SOURCE_SETTING, NETWORK_SOURCE_SEGMENTED_IMAGE) == NETWORK_SOURCE_SYNTHETIC
+    (``network_source`` holding ``"synthetic"``, or ``"synthetic_surround"``:
+    the template run's own network inside a drawn one, which reads no image
+    either). The one place this is decided: the stages, preflight, the
+    citations and the panel all ask here."""
+    return settings.get(NETWORK_SOURCE_SETTING, NETWORK_SOURCE_SEGMENTED_IMAGE) in (
+        NETWORK_SOURCE_SYNTHETIC,
+        NETWORK_SOURCE_SYNTHETIC_SURROUND,
+    )
+
+
+def network_surrounds_image(settings: Mapping[str, Any]) -> bool:
+    """Whether the synthetic network is drawn round the template run's own
+    (``network_source`` holding ``"synthetic_surround"``,
+    ``synthetic.surround_network``): where a surround's stages, checks and
+    outputs differ from a synthetic network's, they ask here."""
+    return settings.get(NETWORK_SOURCE_SETTING) == NETWORK_SOURCE_SYNTHETIC_SURROUND
 
 
 #: Each mask role's own switch, under ``automated_vessel_assignment``.

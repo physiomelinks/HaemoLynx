@@ -6,27 +6,27 @@
 # Input and segmentation
 # ------------------------------------------------------------------------
 input_and_segmentation:
-  # Analyse a segmented image, or generate a synthetic vascular network matched to a previous run's .haemorun file and start at the Boundaries stage; the Skeletonise and Graph tabs' settings are then not read  [one of: segmented_image, synthetic]
+  # Analyse a segmented image; generate a synthetic vascular network matched to a previous run's .haemorun file; or draw one round that run's own network, joined at the vessels its image faces cut (synthetic_surround). A synthetic network starts at the Boundaries stage; the Skeletonise and Graph tabs' settings are then not read  [one of: segmented_image, synthetic, synthetic_surround]
   network_source: segmented_image
-  # The .haemorun file of a finished microscopy-image run the synthetic network is matched to: not itself synthetic, saved with Statistics on, with inlets and outlets and arteriole/venule branch orders assigned; or a batch run's .haemobatch, its condition's runs averaged  [needs network_source = synthetic; must exist]
+  # The .haemorun file of a finished microscopy-image run the synthetic network is matched to: not itself synthetic, saved with Statistics on, with inlets and outlets and arteriole/venule branch orders assigned; or a batch run's .haemobatch, its condition's runs averaged  [needs network_source not segmented_image; must exist]
   synthetic_template_path: null
-  # Where the template's characteristics come from: statistics reads the run's saved statistics report (each section it needs must have been switched on), graph reads per-vessel distributions off the template graph in the file  [one of: statistics, graph; needs network_source = synthetic]
+  # Where the template's characteristics come from: statistics reads the run's saved statistics report (each section it needs must have been switched on), graph reads per-vessel distributions off the template graph in the file  [one of: statistics, graph; needs network_source not segmented_image]
   synthetic_template_source: statistics
-  # Draw the synthetic network from this seed, so a run repeats; another seed draws another network, and null draws a fresh one every run  [needs network_source = synthetic]
+  # Draw the synthetic network from this seed, so a run repeats; another seed draws another network, and null draws a fresh one every run  [needs network_source not segmented_image]
   synthetic_seed: 20240917
-  # Size of the synthetic box relative to the template's image, 1 for the same extent, along the axes synthetic_scale_axes names; vessel counts scale with the volume, inlets and outlets with the faces  [range 0.1..10.0; needs network_source = synthetic]
+  # Size of the synthetic box relative to the template's image, 1 for the same extent, along the axes synthetic_scale_axes names; vessel counts scale with the volume, inlets and outlets with the faces. A surround (synthetic_surround) needs it above 1  [range 0.1..10.0; needs network_source not segmented_image]
   synthetic_scale: 1.0
-  # The axes synthetic_scale grows the synthetic box along: xyz all three, xy only x and y, keeping the template's depth (a wider field of the same tissue, so vessel counts scale with the area)  [one of: xyz, xy; needs network_source = synthetic]
+  # The axes synthetic_scale grows the synthetic box along: xyz all three, xy only x and y, keeping the template's depth (a wider field of the same tissue, so vessel counts scale with the area)  [one of: xyz, xy; needs network_source not segmented_image]
   synthetic_scale_axes: xyz
-  # Arterial trees in the part of the synthetic box beyond the template's own size, as a share of the template's density: 1 as many, 0 none beyond the template's own (an image framed round its large vessels has more of them than the tissue round it)  [range 0.0..10.0; needs network_source = synthetic]
+  # Arterial trees in the part of the synthetic box beyond the template's own size, as a share of the template's density: 1 as many, 0 none beyond the template's own (an image framed round its large vessels has more of them than the tissue round it)  [range 0.0..10.0; needs network_source not segmented_image]
   synthetic_extension_arteriole_density: 1.0
-  # Venous trees in the part of the synthetic box beyond the template's own size, as a share of the template's density: 1 as many, 0 none beyond the template's own  [range 0.0..10.0; needs network_source = synthetic]
+  # Venous trees in the part of the synthetic box beyond the template's own size, as a share of the template's density: 1 as many, 0 none beyond the template's own  [range 0.0..10.0; needs network_source not segmented_image]
   synthetic_extension_venule_density: 1.0
-  # Give the synthetic network the template's number of dead ends inside the tissue; off, its only dead ends are on the faces (in a closed network, its inlets and outlets)  [needs network_source = synthetic]
+  # Give the synthetic network the template's number of dead ends inside the tissue; off, its only dead ends are on the faces (in a closed network, its inlets and outlets)  [needs network_source not segmented_image]
   synthetic_interior_dead_ends: false
-  # Whether vessels of the synthetic network leave its box: closed keeps every vessel inside, so blood enters only at the inlets and leaves only at the outlets; template cuts as many vessels at the faces as the template run had leaving its image, open ends the haemodynamics then treat by open_end_model  [one of: closed, template; needs network_source = synthetic]
+  # Whether vessels of the synthetic network leave its box: closed keeps every vessel inside, so blood enters only at the inlets and leaves only at the outlets; template cuts as many vessels at the faces as the template run had leaving its image, open ends the haemodynamics then treat by open_end_model  [one of: closed, template; needs network_source not segmented_image]
   synthetic_open_ends: closed
-  # How the synthetic capillary bed is drawn: delaunay joins jittered lattice points along Delaunay edges, voronoi runs the capillaries along the edges of a Voronoi tessellation of random points; both are pruned to the template's capillary count, loops and dead ends  [one of: delaunay, voronoi; needs network_source = synthetic]
+  # How the synthetic capillary bed is drawn: delaunay joins jittered lattice points along Delaunay edges, voronoi runs the capillaries along the edges of a Voronoi tessellation of random points; both are pruned to the template's capillary count, loops and dead ends  [one of: delaunay, voronoi; needs network_source not segmented_image]
   synthetic_bed_model: delaunay
   # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off and network_source = segmented_image; must exist]
   input_path: examples/images/brain_microvessels.tiff

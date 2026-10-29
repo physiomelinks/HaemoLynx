@@ -1481,6 +1481,9 @@ def test_the_input_tab_swaps_its_rows_on_the_network_source():
     assert "segmentation_source" in image and "segmentation_source" in synthetic
     assert "mid_run_postprocessing" in image and "mid_run_postprocessing" in synthetic
     assert unsaid == image
+    # The template run's network inside a synthetic one shows the same rows.
+    surround = visible_input_segmentation_settings(SCHEMA, {"network_source": "synthetic_surround"})
+    assert surround == synthetic
 
 
 def test_the_diameter_rows_reading_the_raw_image_hide_under_a_synthetic_network():

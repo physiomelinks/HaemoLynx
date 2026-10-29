@@ -36,7 +36,11 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 import networkx as nx
 import numpy as np
 
-from haemolynx.graph.boundaries import NETWORK_SOURCE_SETTING, NETWORK_SOURCE_SYNTHETIC
+from haemolynx.graph.boundaries import (
+    NETWORK_SOURCE_SYNTHETIC,
+    NETWORK_SOURCE_SYNTHETIC_SURROUND,
+    network_is_synthetic,
+)
 from haemolynx.graph.branch_order import (
     BRANCH_ORDER_CATEGORY_SEQUENCE,
     UNKNOWN_VESSEL_CLASSES,
@@ -918,12 +922,12 @@ def check_template_run(snapshot: Any, G: Optional[nx.Graph], boundaries: Mapping
         )
     settings = _run_settings(snapshot)
     if (
-        G.graph.get(GRAPH_NETWORK_SOURCE) == NETWORK_SOURCE_SYNTHETIC
-        or settings.get(NETWORK_SOURCE_SETTING) == NETWORK_SOURCE_SYNTHETIC
+        G.graph.get(GRAPH_NETWORK_SOURCE) in (NETWORK_SOURCE_SYNTHETIC, NETWORK_SOURCE_SYNTHETIC_SURROUND)
+        or network_is_synthetic(settings)
     ):
         raise TemplateError(
-            "The template run is itself a synthetic network: choose the "
-            "microscopy-image run it was generated from.",
+            "The template run is itself a synthetic network (or an image's inside one): "
+            "choose the microscopy-image run it was generated from.",
             reason="synthetic_run",
         )
     labels = [d.get("branch_order") for *_e, d in G.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)]

@@ -562,6 +562,7 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
     "network_source": {
         "segmented_image": "Segmented image",
         "synthetic": "Synthetic network from a template run",
+        "synthetic_surround": "The template run's network inside a synthetic one",
     },
     "synthetic_template_source": {
         "statistics": "The template run's statistics report",

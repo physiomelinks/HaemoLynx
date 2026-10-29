@@ -1106,6 +1106,14 @@ def test_edge_columns_includes_vascular_community_as_a_text_column():
     assert "vascular_community" in edge_columns_for_settings()
 
 
+def test_a_surrounds_vessels_can_be_coloured_by_which_network_they_are():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    assert OPTIONAL_EDGE_COLUMNS["network_part"] == "build_network"
+    assert TEXT_COLUMNS >= {"network_part"}
+    assert "network_part" in edge_columns_for_settings()
+
+
 def test_edge_columns_excludes_flow_dir_axis_components_when_colouring_is_off():
     """Regression: flow_direction_colouring was declared but never read --
     unchecking it had no effect on the declared columns. flow_dir_rgb/

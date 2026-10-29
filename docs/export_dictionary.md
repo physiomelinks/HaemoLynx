@@ -56,12 +56,14 @@ Written to the run's output folder (vtk_output_prefix's). Every vessel as a poly
 | `conductance` | `m^3/(Pa.s)` | 1 / resistance. |
 | `length_um` | `um` | The vessel's length along its (smoothed) centreline. |
 | `diameter_um` | `um` | The vessel's diameter, as the haemodynamics used it. |
-| `diameter_source` | `-` | Where the diameter came from: fwhm, raw_section, endothelial, edt, class_median, table, bridge, synthetic, ... |
+| `diameter_source` | `-` | Where the diameter came from: fwhm, raw_section, endothelial, edt, class_median, table, bridge, synthetic, image_run (a surround's image vessel: its width in the template run), ... |
 | `is_zero_resistance` | `flag` | 1 for a thick-vessel bridge (a join drawn inside a lumen, given negligible resistance). |
 | `flow_solved` | `flag` | 1 where the solve gave the vessel a flow; 0 where it did not (see flow_state). |
 | `flow_state` | `-` | solved, blind_end (behind a dead end inside the tissue: flow exactly 0), closed_end (behind a face end with no condition: flow exactly 0) or no_boundary (no inlet and outlet reach it: flows blank). |
 | `cut_by_image_face` | `flag` | 1 for a vessel on the chain of a dead end that leaves the image: the image faces cut it, so its length is censored. |
 | `vessel_size_class` | `-` | Under a size convention (classify_vessels_by_size) only: wide, mid or narrow, the vessel's measured width against the thresholds in the field data (vessel_size_mid_min_um, vessel_size_wide_min_um); empty on a bridge. |
+| `network_part` | `-` | A surround (network_source=synthetic_surround) only: image, a vessel of the template run's own network, or synthetic, one drawn round it (a connector from an image vessel's tip to where it is joined among them). |
+| `image_branch_order` | `-` | A surround only: an image vessel's branch order in the template run (branch_order is assigned again over the whole network); empty for a synthetic vessel. |
 | `discharge_haematocrit` | `fraction` | The red-cell volume fraction of the blood the vessel carries (with a distributed haematocrit model only); blank where no inlet and outlet reach it, as the flows are. |
 | `pressure_u` | `Pa` | Pressure at the edge_u end. |
 | `pressure_v` | `Pa` | Pressure at the edge_v end. |
@@ -310,7 +312,7 @@ Written to the run's output folder (vtk_output_prefix's). One pericyte's diamete
 
 ## `{stem}_template_comparison.csv`
 
-Written to the run's output folder (vtk_output_prefix's). A synthetic run only: each characteristic of the template against the synthetic network.
+Written to the run's output folder (vtk_output_prefix's). A synthetic run only: each characteristic of the template against the synthetic network (a surround's whole network, the template run's own vessels among it, against the template scaled to its box).
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -324,6 +326,26 @@ Written to the run's output folder (vtk_output_prefix's). A synthetic run only: 
 | `Members low` | `-` | A batch template only: the lowest of its runs' own values, each at the average's box, in the characteristic's unit. |
 | `Members high` | `-` | The highest of the same. |
 | `Within members` | `-` | yes or no: whether the synthetic value lies between them; empty for a one-run template, a correlation, or where the synthetic network has no value. |
+
+## `{stem}_image_flows.csv`
+
+Written to the run's output folder (vtk_output_prefix's). A surround (network_source=synthetic_surround) only: one row per vessel of the template run's own network, its flow in that run and inside the surround, both from the same end.
+
+| Column | Unit | Meaning |
+|---|---|---|
+| `image_from_node` | `-` | The node (the template run's ID) both flows are measured from. |
+| `image_to_node` | `-` | The node they run to when positive. |
+| `edge_key` | `-` | Which of the vessels between the two nodes. |
+| `image_branch_order` | `-` | The vessel's branch order in the template run. |
+| `branch_order` | `-` | Its branch order in the surround (assigned over the whole network). |
+| `length_um` | `um` | The vessel's length. |
+| `diameter_um` | `um` | Its width, the template run's (kept). |
+| `image_diameter_source` | `-` | Where the template run took that width from (fwhm, edt, ...). |
+| `flow_template_run_m3_s` | `m^3/s` | Its flow in the template run, from image_from_node; blank where that run did not solve it. |
+| `flow_surrounded_m3_s` | `m^3/s` | Its flow inside the surround, from the same node; blank where unsolved. |
+| `flow_ratio` | `dimensionless` | flow_surrounded_m3_s over flow_template_run_m3_s; blank where either is blank or 0. |
+| `direction_flipped` | `-` | yes where the blood runs the other way inside the surround, no where it does not; blank as flow_ratio. |
+| `cut_by_image_face` | `-` | yes for a vessel on the chain of an open end of the template run's image: its length there was censored. |
 
 ## `{stem}_run_manifest.json`
 

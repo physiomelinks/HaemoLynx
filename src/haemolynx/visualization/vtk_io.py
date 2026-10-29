@@ -29,6 +29,8 @@ ARRAY_UNITS: Dict[str, str] = {
     "flow_state": "-",
     "cut_by_image_face": "flag",
     "vessel_size_class": "-",
+    "network_part": "-",
+    "image_branch_order": "-",
     "discharge_haematocrit": "fraction",
     "pressure_u": "Pa",
     "pressure_v": "Pa",
@@ -219,6 +221,10 @@ def graph_to_vtk(
     flow_states: List[str] = []
     cut_flags: List[int] = []
     size_classes: List[str] = []
+    #: A surround's (``synthetic.surround``): which network each vessel is,
+    #: and an image vessel's branch order in its own run.
+    network_parts: List[str] = []
+    image_orders: List[str] = []
     from haemolynx.graph.dead_ends import vessels_cut_by_image_faces
     from haemolynx.graph.vessel_size_classes import VESSEL_SIZE_CLASS, size_convention_of
     from haemolynx.graph._helpers import edge_id
@@ -280,6 +286,8 @@ def graph_to_vtk(
         flow_states.append(str(data.get(FLOW_STATE) or ""))
         cut_flags.append(int(edge_id(u, v, k) in cut))
         size_classes.append(str(data.get(VESSEL_SIZE_CLASS) or ""))
+        network_parts.append(str(data.get("network_part") or ""))
+        image_orders.append(str(data.get("image_branch_order") or ""))
         undefined = flow_is_undefined(data)
         for name, values in flow_fields.items():
             values.append(np.nan if undefined else _number(data.get(name)))
@@ -303,6 +311,9 @@ def graph_to_vtk(
         vessel_mesh.cell_data["cut_by_image_face"] = np.asarray(cut_flags, dtype=np.uint8)
         if size_convention_of(graph) is not None:
             vessel_mesh.cell_data["vessel_size_class"] = np.asarray(size_classes)
+        if any(network_parts):
+            vessel_mesh.cell_data["network_part"] = np.asarray(network_parts)
+            vessel_mesh.cell_data["image_branch_order"] = np.asarray(image_orders)
         for name, values in flow_fields.items():
             array = np.asarray(values, dtype=float)
             if np.any(np.isfinite(array)):

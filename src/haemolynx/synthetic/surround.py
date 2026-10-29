@@ -25,10 +25,21 @@ vessel where its tip lies short of it (:data:`SURROUND_CONNECTOR`). An open end 
 a face the box does not grow past (a z face, scaled along x and y) is left
 open. Every edge says which network it is (:data:`NETWORK_PART`), and
 :func:`validate_surrounded_graph` checks the join.
+
+Each of the image's vessels keeps what its run made of it: its width
+(:data:`DIAMETER_SOURCE_IMAGE_RUN`, its own source in
+:data:`IMAGE_DIAMETER_SOURCE`), its branch order as :data:`IMAGE_BRANCH_ORDER`
+(the run's orders are assigned again over the whole network, D7), its solved
+flow (:data:`IMAGE_RUN_FLOW`, from :data:`IMAGE_RUN_FLOW_FROM`) and whether
+the image's faces cut it (:data:`IMAGE_CUT_BY_FACE`), for
+:func:`image_flow_rows`. :func:`load_image_run` reads the template run's graph.
 """
 from __future__ import annotations
 
+import csv
+import os
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 import networkx as nx
@@ -43,9 +54,14 @@ from haemolynx.graph.dead_ends import (
     graph_image_extent_um,
     open_end_nodes,
     tip_heading,
+    vessels_cut_by_image_faces,
 )
 from haemolynx.haemodynamics.open_ends import open_end_directions
-from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
+from haemolynx.graph._helpers import edge_id
+from haemolynx.graph.boundaries import NETWORK_SOURCE_SYNTHETIC_SURROUND
+from haemolynx.graph.prune import flow_is_undefined
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_IMAGE_RUN, DIAMETER_SOURCE_SYNTHETIC
 from haemolynx.statistics.bifurcation import branch_order_category
 
 from .generate import (
@@ -64,7 +80,7 @@ from .polylines import voxels_and_length
 from .template import FACES, GRAPH_NETWORK_SOURCE, NetworkTemplate
 
 #: What ``G.graph[GRAPH_NETWORK_SOURCE]`` holds on a surrounded network.
-SURROUNDED = "synthetic_surround"
+SURROUNDED = NETWORK_SOURCE_SYNTHETIC_SURROUND
 #: Graph keys: where the image's box lies in the surround's frame (its
 #: ``lo`` corner), and what was joined (:func:`surround_network`).
 IMAGE_OFFSET = "image_offset_um"
@@ -79,6 +95,15 @@ SYNTHETIC_PART = "synthetic"
 SURROUND_CONNECTOR = "surround_connector"
 #: Node attribute: an image node's own id.
 IMAGE_NODE_ID = "image_node_id"
+#: Edge attributes an image vessel carries from its run (see the module):
+#: its branch order there, its width's source there, its solved flow there
+#: (m^3/s, from the node :data:`IMAGE_RUN_FLOW_FROM` to the other), and
+#: whether the image's faces cut it.
+IMAGE_BRANCH_ORDER = "image_branch_order"
+IMAGE_DIAMETER_SOURCE = "image_diameter_source"
+IMAGE_RUN_FLOW = "image_run_flow_m3_s"
+IMAGE_RUN_FLOW_FROM = "image_run_flow_from"
+IMAGE_CUT_BY_FACE = "image_cut_by_face"
 #: A tip this near its face point is joined there, with no connector (um).
 JOIN_TOLERANCE_UM = 1e-6
 
@@ -230,6 +255,20 @@ def _join_for(end: ImageOpenEnd, offset: np.ndarray, hole: Hole) -> Join:
     )
 
 
+def flow_along(G: nx.Graph, a: Any, b: Any, data: Mapping[str, Any]) -> Optional[float]:
+    """The solved flow of the vessel *data* between *a* and *b*, from *a* to
+    *b* (m^3/s), or None where the solve gave it none
+    (``graph.flow_is_undefined``). ``flow_signed`` runs from the end whose
+    pressure is ``pressure_u``, which is either; the nodes' pressures say which."""
+    flow, p_u = data.get("flow_signed"), data.get("pressure_u")
+    if flow is None or p_u is None or flow_is_undefined(data):
+        return None
+    p_a, p_b = G.nodes[a].get("pressure"), G.nodes[b].get("pressure")
+    if p_a is None or p_b is None:
+        return None
+    return float(flow) if abs(float(p_a) - float(p_u)) <= abs(float(p_b) - float(p_u)) else -float(flow)
+
+
 def _translated(voxels: Any, offset: np.ndarray) -> Any:
     if voxels is None:
         return None
@@ -291,11 +330,23 @@ def surround_network(
         kept["pos"] = np.asarray(data["pos"], dtype=float)[:3] + offset
         kept[IMAGE_NODE_ID] = node
         G.add_node(node, **kept)
+    cut = vessels_cut_by_image_faces(image_graph, extent_um=image_extent)
     for u, v, key, data in image_graph.edges(keys=True, data=True):
         kept = {k: val for k, val in data.items() if k not in SOLVE_EDGE_ATTRIBUTES}
         if data.get("voxels") is not None:
             kept["voxels"] = _translated(data["voxels"], offset)
         kept[NETWORK_PART] = IMAGE_PART
+        flow = flow_along(image_graph, u, v, data)
+        if flow is not None:
+            kept[IMAGE_RUN_FLOW] = flow
+            kept[IMAGE_RUN_FLOW_FROM] = u
+        if data.get("branch_order") is not None:
+            kept[IMAGE_BRANCH_ORDER] = data["branch_order"]
+        if data.get("diameter_um") is not None and not data.get(IS_ZERO_RESISTANCE):
+            # Kept as the run gave it, whatever this run's diameter settings.
+            kept[IMAGE_DIAMETER_SOURCE] = data.get("diameter_source")
+            kept["diameter_source"] = DIAMETER_SOURCE_IMAGE_RUN
+        kept[IMAGE_CUT_BY_FACE] = edge_id(u, v, key) in cut
         G.add_edge(u, v, key=key, **kept)
     base = max((int(n) for n in image_graph.nodes), default=-1) + 1
     for node, data in shell.nodes(data=True):
@@ -356,6 +407,112 @@ def surround_network(
     return G
 
 
+#: The columns of ``{stem}_image_flows.csv`` (:func:`image_flow_rows`).
+IMAGE_FLOW_COLUMNS: tuple[str, ...] = (
+    "image_from_node",
+    "image_to_node",
+    "edge_key",
+    "image_branch_order",
+    "branch_order",
+    "length_um",
+    "diameter_um",
+    "image_diameter_source",
+    "flow_template_run_m3_s",
+    "flow_surrounded_m3_s",
+    "flow_ratio",
+    "direction_flipped",
+    "cut_by_image_face",
+)
+
+_IMAGE_RUNS: dict = {}
+
+
+def load_image_run(path: Path | str) -> tuple[nx.MultiGraph, dict[str, tuple]]:
+    """The template run's own network and its boundary lists (role ->
+    nodes) from its ``.haemorun``: the graph a template is read from
+    (``template.template_graph``), checked as a template run is. A batch's
+    ``.haemobatch`` holds no one network to surround and is refused. Read
+    once per file identity; each call gets its own copy of the graph."""
+    from haemolynx.gui.run_snapshot import read_run_snapshot
+
+    from .batch_template import is_batch_template
+    from .template import TemplateError, boundary_nodes_of, check_template_run, template_graph
+
+    file = Path(path)
+    if is_batch_template(file):
+        raise TemplateError(
+            "A surround is drawn round one run's own network: choose that run's .haemorun, "
+            "not a batch's .haemobatch.",
+            reason="batch_template",
+        )
+    stat = os.stat(file)
+    key = (str(file.resolve()), stat.st_size, stat.st_mtime_ns)
+    if key not in _IMAGE_RUNS:
+        snapshot = read_run_snapshot(file)
+        G, checkpoint = template_graph(snapshot)
+        boundaries = boundary_nodes_of(snapshot, checkpoint)
+        check_template_run(snapshot, G, boundaries)
+        _IMAGE_RUNS.clear()
+        _IMAGE_RUNS[key] = (G, {role: tuple(nodes) for role, nodes in boundaries.items()})
+    G, boundaries = _IMAGE_RUNS[key]
+    return G.copy(), dict(boundaries)
+
+
+def image_flow_rows(G: nx.MultiGraph) -> list[dict]:
+    """One row per vessel of the image in the solved surround *G*
+    (:data:`IMAGE_FLOW_COLUMNS`): its flow in the template run and here,
+    both from the same end, their ratio, and whether it runs the other way
+    now (None where either is unsolved or exactly 0)."""
+    rows = []
+    for a, b, key, data in G.edges(keys=True, data=True):
+        if data.get(NETWORK_PART) != IMAGE_PART:
+            continue
+        start = data.get(IMAGE_RUN_FLOW_FROM, a)
+        end = b if start == a else a
+        before = data.get(IMAGE_RUN_FLOW)
+        after = flow_along(G, start, end, data)
+        both = before is not None and after is not None and before != 0 and after != 0
+        rows.append({
+            "image_from_node": G.nodes[start].get(IMAGE_NODE_ID, start),
+            "image_to_node": G.nodes[end].get(IMAGE_NODE_ID, end),
+            "edge_key": key,
+            "image_branch_order": data.get(IMAGE_BRANCH_ORDER),
+            "branch_order": data.get("branch_order"),
+            "length_um": data.get("length"),
+            "diameter_um": data.get("diameter_um"),
+            "image_diameter_source": data.get(IMAGE_DIAMETER_SOURCE, data.get("diameter_source")),
+            "flow_template_run_m3_s": before,
+            "flow_surrounded_m3_s": after,
+            "flow_ratio": after / before if both else None,
+            "direction_flipped": ((before > 0) != (after > 0)) if both else None,
+            "cut_by_image_face": bool(data.get(IMAGE_CUT_BY_FACE)),
+        })
+    return rows
+
+
+def write_image_flows_csv(G: nx.MultiGraph, path: Path | str) -> Path:
+    """:func:`image_flow_rows` as ``{stem}_image_flows.csv``."""
+    from haemolynx.statistics.csv_export import _numeric_csv_text
+
+    def text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, float):
+            return _numeric_csv_text(value)
+        return str(value)
+
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(IMAGE_FLOW_COLUMNS)
+        for row in image_flow_rows(G):
+            writer.writerow([text(row[column]) for column in IMAGE_FLOW_COLUMNS])
+    return dest
+
+
 def _same(a: Any, b: Any) -> bool:
     """Equal values, arrays element for element, NaN equal to NaN."""
     if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
@@ -402,6 +559,9 @@ def validate_surrounded_graph(G: nx.MultiGraph, image_graph: nx.MultiGraph) -> N
                     np.asarray(drawn["voxels"]), np.asarray(value, dtype=float).reshape(-1, 3) + offset
                 ):
                     problems.append(f"image vessel {u}-{v}'s centreline moved")
+            elif name == "diameter_source" and IMAGE_DIAMETER_SOURCE in drawn:
+                if not _same(drawn[IMAGE_DIAMETER_SOURCE], value) or drawn.get(name) != DIAMETER_SOURCE_IMAGE_RUN:
+                    problems.append(f"image vessel {u}-{v}'s diameter source is not kept")
             elif not _same(drawn.get(name), value):
                 problems.append(f"image vessel {u}-{v}'s {name} changed")
     if hole is None:
@@ -434,9 +594,15 @@ __all__ = [
     "BED",
     "CAPILLARY",
     "CONTINUATIONS",
+    "IMAGE_BRANCH_ORDER",
+    "IMAGE_CUT_BY_FACE",
+    "IMAGE_DIAMETER_SOURCE",
+    "IMAGE_FLOW_COLUMNS",
     "IMAGE_NODE_ID",
     "IMAGE_OFFSET",
     "IMAGE_PART",
+    "IMAGE_RUN_FLOW",
+    "IMAGE_RUN_FLOW_FROM",
     "ImageOpenEnd",
     "NETWORK_PART",
     "SURROUNDED",
@@ -446,8 +612,12 @@ __all__ = [
     "TRUNK",
     "UNKNOWN",
     "VENOUS",
+    "flow_along",
+    "image_flow_rows",
+    "load_image_run",
     "read_open_ends",
     "surround_network",
     "validate_surrounded_graph",
     "vessel_side",
+    "write_image_flows_csv",
 ]

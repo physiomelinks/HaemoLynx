@@ -135,6 +135,10 @@ DIAMETER_SOURCE_OVERRIDE = "override"
 #: A width a synthetic network was drawn with (``haemolynx.synthetic``): the
 #: vessel's own, kept like a measurement.
 DIAMETER_SOURCE_SYNTHETIC = "synthetic"
+#: A width the template run gave its own vessel, kept on that vessel inside
+#: a synthetic network drawn round it (``synthetic.surround``): the run's own
+#: source is on the edge as ``image_diameter_source``.
+DIAMETER_SOURCE_IMAGE_RUN = "image_run"
 DIAMETER_SOURCES = frozenset(
     {
         DIAMETER_SOURCE_MEASURED,
@@ -145,6 +149,7 @@ DIAMETER_SOURCES = frozenset(
         DIAMETER_SOURCE_TABLE,
         DIAMETER_SOURCE_OVERRIDE,
         DIAMETER_SOURCE_SYNTHETIC,
+        DIAMETER_SOURCE_IMAGE_RUN,
     }
 )
 
@@ -157,6 +162,7 @@ _MEASURED_DIAMETER_SOURCES = frozenset(
         DIAMETER_SOURCE_ENDOTHELIAL,
         DIAMETER_SOURCE_EDT,
         DIAMETER_SOURCE_SYNTHETIC,
+        DIAMETER_SOURCE_IMAGE_RUN,
     }
 )
 
@@ -172,6 +178,7 @@ _KEPT_DIAMETER_SOURCES = frozenset(
         DIAMETER_SOURCE_EDT,
         DIAMETER_SOURCE_OVERRIDE,
         DIAMETER_SOURCE_SYNTHETIC,
+        DIAMETER_SOURCE_IMAGE_RUN,
     }
 )
 
@@ -467,7 +474,7 @@ def stamp_edge_diameters(
     table = diameter_by_branch_order or {}
     counts = {
         "measured": 0, "raw_section": 0, "endothelial": 0, "edt_mask": 0,
-        "class_median": 0, "table": 0, "override": 0, "synthetic": 0, "unset": 0,
+        "class_median": 0, "table": 0, "override": 0, "synthetic": 0, "image_run": 0, "unset": 0,
     }
 
     def stamp(data: dict, diameter: float, source: str, *, basis: str | None = None) -> None:
@@ -502,6 +509,14 @@ def stamp_edge_diameters(
                 stamp(data, measured, DIAMETER_SOURCE_MEASURED)
                 continue
 
+        # The template run's own vessels inside a surround keep the widths that
+        # run gave them, ahead of the readings it left on them: this run's
+        # chain would read them by its own settings, not that run's.
+        if source == DIAMETER_SOURCE_IMAGE_RUN:
+            kept = positive_diameter_um(data.get("diameter_um"))
+            if kept is not None:
+                counts["image_run"] += 1
+                continue
         if use_endothelial:
             endothelial = positive_diameter_um(data.get("endothelial_diameter_um"))
             if endothelial is not None:

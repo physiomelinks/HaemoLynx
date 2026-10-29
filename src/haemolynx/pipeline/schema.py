@@ -191,12 +191,14 @@ SCHEMA = Schema(
             kind="choice",
             default="segmented_image",
             help=(
-                "Analyse a segmented image, or generate a synthetic vascular network "
-                "matched to a previous run's .haemorun file and start at the Boundaries "
+                "Analyse a segmented image; generate a synthetic vascular network "
+                "matched to a previous run's .haemorun file; or draw one round that "
+                "run's own network, joined at the vessels its image faces cut "
+                "(synthetic_surround). A synthetic network starts at the Boundaries "
                 "stage; the Skeletonise and Graph tabs' settings are then not read"
             ),
             section=_INPUT_AND_SEGMENTATION,
-            choices=("segmented_image", "synthetic"),
+            choices=("segmented_image", "synthetic", "synthetic_surround"),
         ),
         Setting(
             name="synthetic_template_path",
@@ -210,7 +212,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
         ),
         Setting(
             name="synthetic_template_source",
@@ -224,7 +226,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             choices=("statistics", "graph"),
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
         ),
         Setting(
             name="synthetic_seed",
@@ -236,7 +238,7 @@ SCHEMA = Schema(
                 "seed draws another network, and null draws a fresh one every run"
             ),
             section=_INPUT_AND_SEGMENTATION,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -246,12 +248,13 @@ SCHEMA = Schema(
             help=(
                 "Size of the synthetic box relative to the template's image, 1 for the "
                 "same extent, along the axes synthetic_scale_axes names; vessel counts "
-                "scale with the volume, inlets and outlets with the faces"
+                "scale with the volume, inlets and outlets with the faces. A surround "
+                "(synthetic_surround) needs it above 1"
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.1,
             maximum=10.0,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -266,7 +269,7 @@ SCHEMA = Schema(
                 "same tissue, so vessel counts scale with the area)"
             ),
             section=_INPUT_AND_SEGMENTATION,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -282,7 +285,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=10.0,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -297,7 +300,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=10.0,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -312,7 +315,7 @@ SCHEMA = Schema(
                 "network, its inlets and outlets)"
             ),
             section=_INPUT_AND_SEGMENTATION,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -329,7 +332,7 @@ SCHEMA = Schema(
                 "treat by open_end_model"
             ),
             section=_INPUT_AND_SEGMENTATION,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -345,7 +348,7 @@ SCHEMA = Schema(
                 "to the template's capillary count, loops and dead ends"
             ),
             section=_INPUT_AND_SEGMENTATION,
-            requires=("network_source=synthetic",),
+            requires=("network_source!=segmented_image",),
             advanced=True,
         ),
         Setting(

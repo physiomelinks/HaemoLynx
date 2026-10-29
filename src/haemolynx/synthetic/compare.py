@@ -24,6 +24,7 @@ import networkx as nx
 import numpy as np
 
 from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
+from haemolynx.graph.boundaries import NETWORK_SOURCE_SYNTHETIC_SURROUND
 from haemolynx.statistics.csv_export import _numeric_csv_text
 from haemolynx.statistics.vessel_classes import VESSEL_CLASS_TITLES
 
@@ -31,6 +32,7 @@ from .generate import dead_end_pairs_joined, drawn_template
 from .organisation import Organisation, correlation, profile, share_inside
 from .template import (
     FACES,
+    GRAPH_NETWORK_SOURCE,
     GRAPH_TEMPLATE_RECORD,
     ROLES,
     SOURCE_GRAPH,
@@ -572,9 +574,13 @@ def compare_run(
     source's reader, or, without them, the network measured directly.
     *template* and *members* are scored as *G* was drawn to them: scaled, a
     hole left out and the trees beyond the template's box at their
-    densities, as its record's options say (``generate.drawn_template``)."""
+    densities, as its record's options say (``generate.drawn_template``).
+    A surround (``synthetic.surround``) is scored whole, the template run's
+    own vessels filling its hole: the hole is not left out."""
     record = G.graph.get(GRAPH_TEMPLATE_RECORD) or {}
     options = record.get("options") or {}
+    if G.graph.get(GRAPH_NETWORK_SOURCE) == NETWORK_SOURCE_SYNTHETIC_SURROUND:
+        options = {**options, "hole": None}
     template = drawn_template(template, options)
     members = [drawn_template(member, options) for member in members]
     if sections is not None and template.provenance.source != SOURCE_GRAPH:

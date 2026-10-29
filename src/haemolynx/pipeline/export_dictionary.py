@@ -213,7 +213,7 @@ VESSEL_ARRAYS: dict[str, str] = {
     "conductance": "1 / resistance.",
     "length_um": "The vessel's length along its (smoothed) centreline.",
     "diameter_um": "The vessel's diameter, as the haemodynamics used it.",
-    "diameter_source": "Where the diameter came from: fwhm, raw_section, endothelial, edt, class_median, table, bridge, synthetic, ...",
+    "diameter_source": "Where the diameter came from: fwhm, raw_section, endothelial, edt, class_median, table, bridge, synthetic, image_run (a surround's image vessel: its width in the template run), ...",
     "is_zero_resistance": "1 for a thick-vessel bridge (a join drawn inside a lumen, given negligible resistance).",
     "flow_solved": "1 where the solve gave the vessel a flow; 0 where it did not (see flow_state).",
     "flow_state": "solved, blind_end (behind a dead end inside the tissue: flow exactly 0), closed_end (behind a face end with no condition: flow exactly 0) or no_boundary (no inlet and outlet reach it: flows blank).",
@@ -222,6 +222,15 @@ VESSEL_ARRAYS: dict[str, str] = {
         "Under a size convention (classify_vessels_by_size) only: wide, mid or narrow, the "
         "vessel's measured width against the thresholds in the field data "
         "(vessel_size_mid_min_um, vessel_size_wide_min_um); empty on a bridge."
+    ),
+    "network_part": (
+        "A surround (network_source=synthetic_surround) only: image, a vessel of the template run's "
+        "own network, or synthetic, one drawn round it (a connector from an image vessel's tip to "
+        "where it is joined among them)."
+    ),
+    "image_branch_order": (
+        "A surround only: an image vessel's branch order in the template run (branch_order is "
+        "assigned again over the whole network); empty for a synthetic vessel."
     ),
     "discharge_haematocrit": "The red-cell volume fraction of the blood the vessel carries (with a distributed haematocrit model only); blank where no inlet and outlet reach it, as the flows are.",
     "pressure_u": "Pressure at the edge_u end.",
@@ -493,7 +502,9 @@ FILES: tuple[OutputFile, ...] = (
     ),
     OutputFile(
         "{stem}_template_comparison.csv", _RUN,
-        "A synthetic run only: each characteristic of the template against the synthetic network.",
+        "A synthetic run only: each characteristic of the template against the synthetic network "
+        "(a surround's whole network, the template run's own vessels among it, against the template "
+        "scaled to its box).",
         (
             _c("Section", "-", "box, endpoints, counts, lengths, diameters, ..."),
             _c("Characteristic", "-", "What is compared; its unit is in its name, e.g. extent z (um)."),
@@ -513,6 +524,26 @@ FILES: tuple[OutputFile, ...] = (
                 "yes or no: whether the synthetic value lies between them; empty for a one-run "
                 "template, a correlation, or where the synthetic network has no value.",
             ),
+        ),
+    ),
+    OutputFile(
+        "{stem}_image_flows.csv", _RUN,
+        "A surround (network_source=synthetic_surround) only: one row per vessel of the template "
+        "run's own network, its flow in that run and inside the surround, both from the same end.",
+        (
+            _c("image_from_node", "-", "The node (the template run's ID) both flows are measured from."),
+            _c("image_to_node", "-", "The node they run to when positive."),
+            _c("edge_key", "-", "Which of the vessels between the two nodes."),
+            _c("image_branch_order", "-", "The vessel's branch order in the template run."),
+            _c("branch_order", "-", "Its branch order in the surround (assigned over the whole network)."),
+            _c("length_um", "um", "The vessel's length."),
+            _c("diameter_um", "um", "Its width, the template run's (kept)."),
+            _c("image_diameter_source", "-", "Where the template run took that width from (fwhm, edt, ...)."),
+            _c("flow_template_run_m3_s", "m^3/s", "Its flow in the template run, from image_from_node; blank where that run did not solve it."),
+            _c("flow_surrounded_m3_s", "m^3/s", "Its flow inside the surround, from the same node; blank where unsolved."),
+            _c("flow_ratio", "dimensionless", "flow_surrounded_m3_s over flow_template_run_m3_s; blank where either is blank or 0."),
+            _c("direction_flipped", "-", "yes where the blood runs the other way inside the surround, no where it does not; blank as flow_ratio."),
+            _c("cut_by_image_face", "-", "yes for a vessel on the chain of an open end of the template run's image: its length there was censored."),
         ),
     ),
     # -- the run's record ----------------------------------------------------

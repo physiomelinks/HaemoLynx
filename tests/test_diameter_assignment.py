@@ -553,6 +553,25 @@ def test_stamping_keeps_a_synthetic_networks_drawn_widths_and_their_basis(keep_e
     )
 
 
+@pytest.mark.parametrize("keep_existing", [False, True])
+def test_stamping_keeps_the_template_runs_own_widths_inside_a_surround(keep_existing):
+    """An image vessel inside a surround keeps the width its run gave it --
+    from FWHM, the mask, a class median or the table there -- whatever this
+    run's chain would take: its fwhm reading here is not read again."""
+    from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_IMAGE_RUN, EDGE_DIAMETER_BASIS
+
+    graph = nx.MultiGraph()
+    for index, width in enumerate((6.0, 7.0, 9.0)):
+        graph.add_edge(index, index + 10, key=0, branch_order="B01", length=EDGE_LENGTH_UM,
+                       diameter_um=width, diameter_source=DIAMETER_SOURCE_IMAGE_RUN, fwhm_diameter_um=4.0,
+                       image_diameter_source="class_median", **{EDGE_DIAMETER_BASIS: "plasma_column"})
+    counts = stamp_edge_diameters(graph, DIAMETERS, keep_existing=keep_existing, use_edt_fallback=True)
+    assert counts["image_run"] == 3 and counts["measured"] == 0 and counts["table"] == 0
+    for index, width in enumerate((6.0, 7.0, 9.0)):
+        data = graph[index][index + 10][0]
+        assert (data["diameter_um"], data["diameter_source"]) == (width, DIAMETER_SOURCE_IMAGE_RUN)
+
+
 def test_a_synthetic_vessel_without_a_width_falls_to_the_table():
     from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_SYNTHETIC
 

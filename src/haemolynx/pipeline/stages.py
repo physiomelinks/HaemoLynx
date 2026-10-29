@@ -638,6 +638,17 @@ def _segment_synthetic(settings: dict) -> SegmentedInputs:
     )
     for note in template.provenance.notes:
         logger.warning("Synthetic template: %s", note)
+    if graph.network_surrounds_image(settings):
+        from haemolynx.synthetic.surround import load_image_run, read_open_ends
+
+        image, boundaries = load_image_run(template_path)
+        ends = read_open_ends(image, inlets=boundaries.get("inlet", ()), outlets=boundaries.get("outlet", ()))
+        logger.info(
+            "Surround: the template run's own network (%d vessels, %d open end(s) its image faces cut) "
+            "is drawn round, %gx along %s.",
+            image.number_of_edges(), len(ends), float(settings.get("synthetic_scale") or 1.0),
+            settings.get("synthetic_scale_axes") or "xyz",
+        )
     return SegmentedInputs(
         image_path=template_path,
         output_dir=output_dir,
@@ -719,7 +730,26 @@ def _build_synthetic_network(
             "kept" if options.interior_dead_ends else "none",
             "none, a closed network" if options.open_ends == synthetic.OPEN_ENDS_CLOSED else "the template's",
         )
-        G = synthetic.generate_network(template, seed=None if seed is None else int(seed), options=options)
+        if graph.network_surrounds_image(settings):
+            from haemolynx.synthetic.surround import SURROUND_RECORD, load_image_run
+
+            image, boundaries = load_image_run(settings["synthetic_template_path"])
+            G = synthetic.surround_network(
+                image, template,
+                inlets=boundaries.get("inlet", ()), outlets=boundaries.get("outlet", ()),
+                roles={role: nodes for role, nodes in boundaries.items() if role not in ("inlet", "outlet")},
+                options=options, seed=None if seed is None else int(seed),
+            )
+            joined = G.graph[SURROUND_RECORD]
+            logger.info(
+                "Surround: the template run's %d vessels joined at %d open end(s): %d run on as trunks to "
+                "new inlets and outlets, %d join the capillary bed, %d by a connector; %d left open "
+                "(on faces the box does not grow past).",
+                image.number_of_edges(), len(joined["joined"]), joined["trunks"], joined["bed_joins"],
+                joined["connectors"], len(joined["left_open"]),
+            )
+        else:
+            G = synthetic.generate_network(template, seed=None if seed is None else int(seed), options=options)
         if progress is not None:
             progress.step("generate_network", total=1)
         if G.number_of_edges() == 0:
@@ -7912,7 +7942,19 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             "Set vtk_export: true in the config to enable."
         )
     if settings["run_haemodynamics"] and not settings["visualize_vtk"]:
-        logger.info("VTK visualization skipped.") 
+        logger.info("VTK visualization skipped.")
+    if settings["run_haemodynamics"] and graph.network_surrounds_image(settings) and run_stem(settings) is not None:
+        # Each of the image's vessels: its flow in the template run and inside the surround.
+        from haemolynx.synthetic.surround import image_flow_rows, write_image_flows_csv
+
+        flows_path = write_image_flows_csv(G, output_dir / f"{run_stem(settings)}_image_flows.csv")
+        rows = image_flow_rows(G)
+        flipped = sum(1 for row in rows if row["direction_flipped"])
+        compared = sum(1 for row in rows if row["direction_flipped"] is not None)
+        logger.info(
+            "Surround: %d of the image's %d vessels compared with the template run's flow, %d running the "
+            "other way now; saved to %s", compared, len(rows), flipped, flows_path,
+        )
     # 11) Optional matplotlib visualization.
     if settings["visualize_results"] and image is None:
         logger.info("Plots skipped: a synthetic network has no image to overlay on.")
