@@ -1,7 +1,7 @@
 # Coding standards
 
 Rules for code review that no test can fully check. A reviewer checks every change against
-each rule below, as well as against `CLAUDE.md`'s "Rules for this repo".
+each rule below.
 
 ## 1. A value that can't be parsed raises
 
@@ -35,17 +35,16 @@ it can't see:
 A finding is not "acceptable" or "for later" without a reason. Either fix it in the change
 under review, or decline it with a written reason in the review.
 
-Each numbered finding's outcome (fixed, declined, or not a finding) is written as in `docs/agents/issue-tracker.md` § "Closing a ticket".
+Each numbered finding gets one written outcome: fixed, declined (with the reason), or not a
+finding (with what was checked).
 
 A small mechanical fix inside a file the change already touches (a rename, a stale comment,
 a literal that should be imported) is fixed in the same change.
-
-A finding goes to a row in the current `pipeline_rerun_*_notes.md` package table only when
-fixing it changes behaviour or output, or needs a re-run. Say so in the review.
 
 ## 4. A claim in a new test comment is backed by a printed value
 
 A test comment that states a position, count or value is written only after that value is
 printed in the session.
 
-Ticket 15: "the cell farthest below the capillary" was a tied corner, and "sits on cell faces" was only partly true.
+Example: "the cell farthest below the capillary" was a tied corner, and "sits on cell faces"
+was only partly true.
