@@ -335,6 +335,33 @@ def test_a_tip_short_of_its_face_is_drawn_on_to_it(image_run):
     assert connector[2]["diameter_um"] == image.edges[u, v, k]["diameter_um"]
 
 
+def test_a_connector_carries_its_vessels_mask_tags_so_the_large_tier_runs_on_across_it(image_run):
+    """Regression: the connector from an image vessel's tip to its face took
+    the vessel's class but not its large-mask tag. The large tier is followed
+    along tagged vessels from the trunk's inlet, so it stopped there, and on
+    E14.5 every one of the image's 86 large vessels lost its Large_ label."""
+    from haemolynx.graph.branch_order import LARGE_MASK_VESSEL_TYPE
+
+    T, image, roles = image_run
+    image = image.copy()
+    inlet = roles["inlet"][0]
+    (u, v, k), = image.edges(inlet, keys=True)
+    image.edges[u, v, k][LARGE_MASK_VESSEL_TYPE] = "arteriole"
+    end = next(e for e in read_open_ends(image, inlets=roles["inlet"], outlets=roles["outlet"]) if e.node == inlet)
+    axis = "zyx".index(end.face[0])
+    inward = np.zeros(3)
+    inward[axis] = 3.0 if end.face.endswith("0") else -3.0
+    voxels = np.asarray(image.edges[u, v, k]["voxels"], float)
+    position = image.nodes[inlet]["pos"]
+    voxels[0 if np.linalg.norm(voxels[0] - position) < np.linalg.norm(voxels[-1] - position) else -1] += inward
+    image.edges[u, v, k]["voxels"] = voxels.tolist()
+    image.nodes[inlet]["pos"] = position + inward
+    G = _surround((T, image, roles), scale_axes="xyz")
+    (connector,) = [d for _a, _b, d in G.edges(inlet, data=True) if d.get(SURROUND_CONNECTOR)]
+    assert connector[LARGE_MASK_VESSEL_TYPE] == "arteriole"
+    assert connector[SYNTHETIC_CLASS] == image.edges[u, v, k][SYNTHETIC_CLASS]
+
+
 def test_with_no_trees_of_their_own_beyond_the_image_only_the_trunks_reach_the_box(image_run):
     G = _surround(image_run, arteriole_density=0.0, venule_density=0.0)
     trunks = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]["joins"]["trunks"]

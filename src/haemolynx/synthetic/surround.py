@@ -59,6 +59,7 @@ from haemolynx.graph.dead_ends import (
 from haemolynx.haemodynamics.open_ends import open_end_directions
 from haemolynx.graph._helpers import edge_id
 from haemolynx.graph.boundaries import NETWORK_SOURCE_SYNTHETIC_SURROUND
+from haemolynx.graph.branch_order import LARGE_MASK_VESSEL_TYPE, SMALL_MASK_VESSEL_TYPE
 from haemolynx.graph.prune import flow_is_undefined
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_IMAGE_RUN, DIAMETER_SOURCE_SYNTHETIC
@@ -108,6 +109,13 @@ IMAGE_RUN_FLOW_FROM = "image_run_flow_from"
 IMAGE_CUT_BY_FACE = "image_cut_by_face"
 #: A tip this near its face point is joined there, with no connector (um).
 JOIN_TOLERANCE_UM = 1e-6
+#: What a connector takes from the image vessel it draws on: its class and,
+#: so the tiers run on across it from the trunk beyond, its mask tags (the
+#: large tier is followed along vessels tagged in a large mask; untagged, a
+#: connector cut the image's large vessels off it).
+CONNECTOR_KEEPS: tuple[str, ...] = (
+    SYNTHETIC_CLASS, "branch_order", "diameter_basis", LARGE_MASK_VESSEL_TYPE, SMALL_MASK_VESSEL_TYPE,
+)
 
 #: The vessel sides an open end can be on.
 ARTERIAL = "arterial"
@@ -409,9 +417,7 @@ def surround_network(
             continue
         (_t, _o, vessel), = G.edges(tip, data=True)
         voxels, length = voxels_and_length(np.stack([start, end]))
-        attributes = {
-            k: vessel[k] for k in (SYNTHETIC_CLASS, "branch_order", "diameter_basis") if vessel.get(k) is not None
-        }
+        attributes = {k: vessel[k] for k in CONNECTOR_KEEPS if vessel.get(k) is not None}
         G.add_edge(
             tip, at_face, voxels=voxels, length=length, diameter_um=float(vessel.get("diameter_um") or join.diameter_um or 5.0),
             diameter_source=DIAMETER_SOURCE_SYNTHETIC, **attributes, **{NETWORK_PART: SYNTHETIC_PART, SURROUND_CONNECTOR: True},
@@ -633,6 +639,7 @@ __all__ = [
     "ARTERIAL",
     "BED",
     "CAPILLARY",
+    "CONNECTOR_KEEPS",
     "CONTINUATIONS",
     "IMAGE_BRANCH_ORDER",
     "IMAGE_CUT_BY_FACE",

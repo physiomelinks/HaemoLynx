@@ -469,18 +469,16 @@ of its blood through its open ends than `estimated` puts there, and its flows li
 than any other model's; one draw of the surrounding network against another still turns 1 vessel
 in 9 (xy) to 7 (xyz) the other way, about half the surround's difference from `estimated`. The whole
 network against the template scaled to its box (xy, seed 1): 75 of 150 banded characteristics
-within; its large tier is half the scaled template's (30 large arterioles against 61, 84 large
-venules against 133), since the surrounding network grows trees of its own only from its outer
-inlets and outlets less the trunks (E14.5 has 1 inlet and 2 outlets) and a trunk does not branch.
+within. (Its large tier read half the scaled template's, 30 large arterioles against 61, 84 large
+venules against 133; that was a labelling bug, corrected below, not the trunks.)
 
-That thin supply is not why the open ends carry less. With both extension densities at 2 (xy,
-seeds 1-3) the network has 4 inlets and 6 outlets and the scaled template's large arterioles (59
-against 61; large venules 160 against 133), and the open ends take 36-39% of the image's inflow, as
-at 1 (38%); at 3 (6 inlets, 9 outlets, 88 and 236) 42-50%, still short of `estimated`'s 54%. The
-richer the supply, the further the image's directions move from `estimated`'s (79, 75, 72% the same
-way at densities 1, 2, 3) and from `closed`'s (83, 78, 79%), while one seed against another stays
-at 88-90%: the density beyond the faces moves the answer about as much as the draw does. Driver:
-`outputs/surround_e14p5/run_surround.py --density` (git-ignored, with each seed's run).
+With both extension densities at 2 (xy, seeds 1-3) the network has 4 inlets and 6 outlets, and the
+open ends take 36-39% of the image's inflow, as at 1 (38%); at 3 (6 inlets, 9 outlets) 42-50%,
+still short of `estimated`'s 54%: a richer supply beyond the faces is not what the open ends lack.
+The richer the supply, the further the image's directions move from `estimated`'s (79, 75, 72% the
+same way at densities 1, 2, 3) and from `closed`'s (83, 78, 79%), while one seed against another
+stays at 88-90%: the density beyond the faces moves the answer about as much as the draw does.
+Driver: `outputs/surround_e14p5/run_surround.py --density` (git-ignored, with each seed's run).
 
 **Shell room in preflight** (2026-10-29). A surround's shell can be too thin to join every open end
 of the image (the fixture at 1.25x and 1.5x). `generate.planned_bed` is now the generator's own bed
@@ -508,3 +506,14 @@ along x the template's capillaries are even (the comparison holds no layout ther
 correlation is noise. The image's flows barely move (the same way as `estimated` at 77.5%, against
 77%; seed against seed 90% against 88.5%), the open ends carry 24-40% of its inflow, and a whole run
 takes 25-30 s against 11. Networks without a hole are unchanged (the nine digests).
+
+**The large tier was mislabelled, not short** (2026-10-29). The connector drawn from an image
+vessel's tip to its face took the vessel's class but not its large-mask tag, and the large tier is
+followed along tagged vessels from the inlets (`branch_order`'s `large_tier` mode), so it stopped at
+every trunk's connector: the image's own 86 large vessels lost their `Large_` labels, and only the
+shell's were counted. A connector now takes its vessel's mask tags too (`surround.CONNECTOR_KEEPS`).
+E14.5's surround at 1.5x along x and y has 58 large arterioles against the scaled template's 61 and
+145 large venules against 133 (with D6, seeds 1-5); at extension densities 2 and 3, 87 and 221, 116
+and 297. The shell's own trees were never short: they drew 30 and 84 of their 34 and 74. Branch orders
+enter no resistance, so the flows above stand. At density 3 one draw (seed 2) put all of the image's
+inflow through its open ends, its own inlet running out, and seed against seed fell to 68%.
