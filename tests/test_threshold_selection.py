@@ -87,8 +87,8 @@ def test_a_single_evaluation_reports_calibre_and_both_topologies():
 def test_calibre_is_the_objective_and_picks_the_capillary_scale_threshold():
     """The handover's own validation table expects a 4-7 um capillary diameter mode.
 
-    A capillary-scale tube: radius 1.5 voxels, ~5.6 um across. It was radius 4 (~15 um) until
-    open item 15, which only reached the window through the voxel-weighted median.
+    A capillary-scale tube: radius 1.5 voxels, ~5.6 um across. It used to be radius 4 (~15 um),
+    which only reached the window through the voxel-weighted median.
     """
     prob = _tube(radius_vox=1.5)
     samples = sweep_thresholds(prob, np.arange(0.1, 1.0, 0.1), VOXEL)
@@ -260,8 +260,8 @@ def test_the_above_floor_component_count_is_computed_but_never_shown():
     """MIN_COMPONENT_VOXELS feeds a field format_table does not print and nothing reads.
 
     The 'maskcmp' column is the unfiltered total. Guarding it so the discrepancy is noticed
-    rather than rediscovered: if the column is ever switched to the filtered count, the
-    section 2.2 note about it saying so must change too.
+    rather than rediscovered: if the column is ever switched to the filtered count, every
+    description of it as unfiltered must change too.
     """
     sample = _sample(0.90, 5.27, 5.17)  # 100 components, 10 of them above the floor
 
@@ -277,11 +277,11 @@ def _quantised(**kw):
 
 
 def test_the_cut_keeps_the_level_on_the_threshold():
-    """The cut is inclusive (open item 17), as the pipeline's hysteresis is.
+    """The cut is inclusive, as the pipeline's hysteresis is.
 
     The Ilastik export is quantised to hundredths - 101 distinct values on every real ROI -
     and every threshold in the sweep grid is a whole number of hundredths, so each lands
-    exactly on an occupied level. The strict `>` used until item 17 dropped that level
+    exactly on an occupied level. The strict `>` used before dropped that level
     entire: (p > t) == (p >= t + 0.01), and p > 0.99 was exactly p == 1.0. On the six
     specimens the dropped mass ran 0.5% of the ROI at 0.30 to 4.2-5.9% at 0.99.
     """
@@ -302,11 +302,11 @@ def test_the_cut_keeps_the_level_on_the_threshold():
 
 
 def test_calibre_is_read_on_the_centreline_not_over_every_voxel():
-    """Open item 15: the window is a capillary diameter, which is a centreline quantity.
+    """The window is a capillary diameter, which is a centreline quantity.
 
     For a solid tube of radius R the centreline EDT is ~R everywhere, while the median over
     every foreground voxel sits near R(1 - 1/sqrt(2)), because half a disc's area lies in its
-    outer ring. The selector used the latter until item 15 and read 0.63-1.00x the centreline
+    outer ring. The selector used to use the latter and read 0.63-1.00x the centreline
     median on the real masks.
     """
     radius_vox = 6.0
@@ -341,7 +341,7 @@ def test_a_recorded_only_field_never_moves_the_selection(field, moves):
     selection must never turn on it: it is empirically flat until the network has already
     shattered (module docstring). ``mask_components_above_floor`` is computed and never shown.
     ``median_network_diameter_um`` (d_net) shows the calibre the network would read at each
-    threshold (open item 41). It is a diagnostic: the window is still tested on the plain-cut
+    threshold. It is a diagnostic: the window is still tested on the plain-cut
     centreline median, because every candidate replacement moves calibre by about the window's
     width and so would choose the threshold by itself.
 
@@ -407,7 +407,7 @@ def test_a_different_calibre_moves_the_window():
 
 
 def test_the_network_check_takes_one_mean_voxel_off_d_net():
-    """d_net less one voxel (the EDT half-step bias) re-enters the window (open item 41)."""
+    """d_net less one voxel (the EDT half-step bias) re-enters the window."""
     check = select_on_network_calibre(_NETWORK_SWEEP, VOXEL)
     pitch = float(np.mean(VOXEL))
     expected = tuple(s.threshold for s in _NETWORK_SWEEP

@@ -406,8 +406,8 @@ def test_the_vtk_resistance_array_is_refreshed_after_the_rheology_solve():
     """The exported mesh must not carry a resistance and a viscosity from different models.
 
     ``graph_to_vtk`` runs before the solver. It used to write a ``resistance`` cell array from
-    ``set_poiseuille_resistances``' power-law values (since package AB, with no resistance on
-    the graph yet, it writes none, so this pass is the only writer). The post-solve pass adds
+    ``set_poiseuille_resistances``' power-law values (now, with no resistance on the graph
+    yet, it writes none, so this pass is the only writer). The post-solve pass adds
     ``hematocrit``, ``viscosity`` and ``wall_shear_stress_pa`` from the converged graph. It
     used not to touch ``resistance``, so a reader of the file had a resistance and a
     viscosity that do not satisfy R = 128 mu L / (pi d^4) together, and no way to tell.
@@ -670,7 +670,7 @@ def test_stop_reason_is_flow_cycle_when_the_dag_cannot_be_sorted(monkeypatch):
 
 @pytest.mark.parametrize("unusable", ["absent", "zero"])
 def test_an_edge_without_a_diameter_is_refused_not_solved_at_five_microns(unusable):
-    """Open item 9: initialisation and update used to substitute 5.0 um silently.
+    """Initialisation and update used to substitute 5.0 um silently.
 
     A zero diameter is as unusable as an absent one.
     """

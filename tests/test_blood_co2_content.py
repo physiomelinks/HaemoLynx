@@ -1,4 +1,4 @@
-"""Open item 19 (a, b): the Tier 3 CO2 curve is McHardy's, in mmol/L, as its source defines it.
+"""The Tier 3 CO2 curve is McHardy's, in mmol/L, as its source defines it.
 
 The code used to take McHardy's whole-blood curve, which is in vol%, call it mmol/L, multiply it
 by haematocrit and add dissolved CO2 a second time. Its Haldane term had no source and was about

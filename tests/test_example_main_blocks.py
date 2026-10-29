@@ -1,11 +1,11 @@
 """The ``__main__`` block of an example driver must only call functions defined above it.
 
 ``cb_h2_error_propagation.py`` called ``boundary_sensitivity()`` from a main block placed above
-the function's ``def``, so every run printed S10-S13 and then stopped with a NameError. The
-AST check covers every driver in ``examples/``; the other two tests pin the S20 line that now
+the function's ``def``, so every run printed its first results and then stopped with a NameError.
+The AST check covers every driver in ``examples/``; the other two tests pin the line that now
 prints the within-specimen ratio ``main`` measured instead of a hard-coded 6.3%, and check that
 every solve ``main`` makes uses the face rule's inlets and outlets (the 25% band rule it replaced,
-package C, under any name, fails it).
+under any name, fails it).
 """
 import ast
 from pathlib import Path

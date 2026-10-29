@@ -1,6 +1,6 @@
-"""The network pipeline crops the placed ROI, and says which box it cut (open item 27).
+"""The network pipeline crops the placed ROI, and says which box it cut.
 
-Until item 27, ``cb_h1_batch.py --stage run`` passed ``--roi-voxels`` and no offsets, so every
+``cb_h1_batch.py --stage run`` used to pass ``--roi-voxels`` and no offsets, so every
 network was built on the array-centre box while the threshold stage, the TH metrics and the
 H2 overlay used ``place_roi``'s box, 85-210 um away. The pipeline now places the ROI itself,
 writes ``roi_placement.json``, and every driver that reads a batch output checks it.
@@ -83,7 +83,7 @@ def test_roi_centred_is_the_array_centre_and_is_recorded(monkeypatch):
     cut = crop_roi(_Probe(specimen.shape_zyx), offset_z=config.sub_volume_offset_z,
                    offset_y=config.sub_volume_offset_y, offset_x=config.sub_volume_offset_x,
                    size_zyx=SIZE)
-    # The same box crop_roi cut with zero offsets, which is what the batch ran until item 27.
+    # The same box crop_roi cut with zero offsets, which is what the batch used to run.
     zero = crop_roi(_Probe(specimen.shape_zyx), size_zyx=SIZE)
     assert cut.slices == zero.slices == centred_placement(specimen, SIZE).bounds
 
@@ -143,7 +143,7 @@ def test_a_centred_output_is_refused(tmp_path):
 
 
 def test_an_output_from_another_placement_is_refused(tmp_path):
-    """E.g. a run from before item 13 moved the lateral centroid."""
+    """E.g. a run from before the lateral centroid moved to the ROI's own slices."""
     specimen = _fake_specimen()
     old = _placement("WKY-A", (230, 240, 188), specimen.shape_zyx)
     new = _placement("WKY-A", (230, 250, 180), specimen.shape_zyx)

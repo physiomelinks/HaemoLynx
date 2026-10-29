@@ -104,7 +104,7 @@ def test_every_specimen_gets_a_placement_that_fits(tmp_path, shape, peak, tissue
 
 
 def test_the_lateral_centroid_is_measured_over_the_rois_own_slices(tmp_path):
-    """Open item 13: tissue the box will never contain must not vote on where it goes.
+    """Tissue the box will never contain must not vote on where it goes.
 
     Bright tissue sits outside the ROI's z-band at one (y, x), and inside it at another. A
     whole-stack projection lands between the two; the band projection lands on the tissue

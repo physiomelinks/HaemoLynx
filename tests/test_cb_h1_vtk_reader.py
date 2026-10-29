@@ -1,8 +1,8 @@
 """cb_h1_vtk.py reads through the batch-run reader and joins rows onto cells strictly.
 
-Batch-run reader ticket 04. A ``.vtp`` cell with no edge-table row used to be written as
+A ``.vtp`` cell with no edge-table row used to be written as
 NaN, 0 or "", so a missing row looked like a measurement. It now raises, and so does a blank
-or non-finite number in a matched row (package Z), since every number is read through
+or non-finite number in a matched row, since every number is read through
 ``BatchRun.numeric_column``. The placed ROI is checked by opening the run, before the edge
 table is read.
 """
@@ -114,7 +114,7 @@ def test_the_run_is_opened_before_the_edge_table_is_read(monkeypatch, stub_h1_vt
     events = []
 
     # A spy, not a stand-in run: it records when the edge table is read relative to opening,
-    # which a factory run cannot report (package AD).
+    # which a factory run cannot report.
     class _Run:
         def edge_table(self):
             events.append("edge_table")
@@ -156,7 +156,7 @@ def test_a_tag_the_export_does_not_know_raises_rather_than_being_coded(make_batc
         _enrich(_run(make_batch_run, EDGES, edges))
 
 
-# --- nodes (package AA) ----------------------------------------------------------------------
+# --- nodes -----------------------------------------------------------------------------------
 # A node's degree is counted from the edge table. A node in the pipeline's nodes .vtp with no
 # edge used to be written as degree 0 (neither branch point nor endpoint); it now raises, and so
 # does an edge-table node the .vtp lacks. No current run has either (all 18 checked 2026-10-24).
@@ -202,7 +202,7 @@ def test_a_node_listed_twice_in_the_nodes_vtp_raises(make_batch_run):
         _nodes(run)
 
 
-# --- missing source files (package AC) -------------------------------------------------------
+# --- missing source files --------------------------------------------------------------------
 # A builder whose pipeline export was missing used to return None, and main left that part of
 # the specimen out of the export without a word. Every batch run holds all three, so it raises.
 

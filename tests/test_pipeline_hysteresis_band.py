@@ -1,4 +1,4 @@
-"""The pipeline's hysteresis band is the frozen one, and nothing fills it in silently (open item 1).
+"""The pipeline's hysteresis band is the frozen one, and nothing fills it in silently.
 
 Every H1 run passed ``--hysteresis-low 0.90`` and got a 0.95 seed, while ``PreprocessingConfig``
 declared 0.65 / 0.75 and the mask step fell back to 0.2 / 0.4 for a missing key. The config now

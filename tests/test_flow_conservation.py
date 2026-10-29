@@ -4,7 +4,7 @@ map_vessels_to_grid recorded the whole edge flow against every cell the edge pas
 so an edge crossing five cells injected five times its own oxygen. Refining the grid makes an
 edge cross more cells, so the total source grew with resolution: measured on WKY-C, the summed
 s_incoming went 8.87e6, 1.20e7, 1.54e7, 1.80e7 at 10, 6, 4 and 3 um, in exact proportion to the
-mean cells crossed per edge. That is the reason section 2.3's PO2 rose with refinement.
+mean cells crossed per edge. That is the reason the H2 tissue PO2 rose with refinement.
 """
 import networkx as nx
 import numpy as np
@@ -66,7 +66,7 @@ def test_an_edge_wholly_inside_one_cell_keeps_its_whole_share():
 
 
 def test_the_oxygen_source_is_grid_independent_end_to_end():
-    """What section 2.3 actually consumes."""
+    """What the H2 tissue solve actually consumes."""
     from ImageLynx.haemodynamics.perfusion import build_adr_matrix
 
     class Cfg:

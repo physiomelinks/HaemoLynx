@@ -1,4 +1,4 @@
-"""Open item 20: the Tier 2 and Tier 3 march divides by edge flow in um^3/s.
+"""The Tier 2 and Tier 3 march divides by edge flow in um^3/s.
 
 ``c -= flux / q`` has flux in mmol/L um^3/s, so q has to be in um^3/s. The march read edge
 ``flow_abs`` raw, in the flow solve's mmHg um^3 / cP, so q was 1.33e5 times too small and the
@@ -79,7 +79,7 @@ def _chain(q_um3_s, flow_abs="solver units"):
 def _tier3_expected(q, c):
     """Tissue PO2 and PCO2 in both cells, stepping the march by hand in the solver's order.
 
-    The step is implicit (open item 21): each cell's wall flux is taken at the blood's outlet
+    The step is implicit: each cell's wall flux is taken at the blood's outlet
     pressure, so tissue sits M V / k below (O2) or M V RQ / k above (CO2) the blood leaving the
     cell. The O2 inversion uses the cell's tissue pH, which depends on the outlet PCO2, so each
     cell is a small fixed point, iterated here.
@@ -90,7 +90,7 @@ def _tier3_expected(q, c):
     mv_co2 = mv_o2 * c.respiratory_quotient
 
     # Blood enters cell 1 at arterial pressures, at the Henderson-Hasselbalch pH of the
-    # arterial PCO2 (open item 25).
+    # arterial PCO2.
     po2_b, pco2_b = c.po2_arterial_mmHg, c.pco2_arterial
     ph_art = calculate_ph_from_pco2(pco2_b, c.hco3_tissue)
     c_o2 = calculate_blood_oxygen_content(po2_b, _H, pco2_b, ph_art)
@@ -118,7 +118,7 @@ def _tier3_expected(q, c):
 
 
 def _tier2_expected(q, c):
-    """Tier 2's wall flux is P A alpha dPO2, as Tier 3's (open item 22), taken at the inlet."""
+    """Tier 2's wall flux is P A alpha dPO2, as Tier 3's, taken at the inlet."""
     k_o2 = c.permeability_o2_cm_s * 1e4 * _AREA * _ALPHA_O2
     mv = c.M_max * _V_CELL
     po2_t1 = c.po2_arterial_mmHg - mv / k_o2
@@ -150,7 +150,8 @@ def test_tier3_blood_side_drop_matches_the_hand_calculation(q):
 
 
 # Tier 2's march is still explicit (flux at the cell's inlet PO2), so it can overshoot where
-# P A alpha exceeds q C' (as Tier 3 did until item 21). These flows are above that.
+# P A alpha exceeds q C' (as Tier 3 did before its step became implicit). These flows are
+# above that.
 @pytest.mark.parametrize("q", [300.0, 1000.0])
 def test_tier2_blood_side_drop_matches_the_hand_calculation(q):
     po2 = _run_tier2(q)

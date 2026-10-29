@@ -136,7 +136,7 @@ def test_vessel_export_carries_the_quantities_h1_reports(tmp_path):
     """The geometry was exported without the morphometry measured on it.
 
     vessels.vtp carried an assigned diameter and a branch order, so the network could not be
-    coloured by tortuosity, by the EDT diameter section 1.2 actually reports, or by which
+    coloured by tortuosity, by the EDT diameter H1 actually reports, or by which
     edges retained a known-biased radius. All of it is already on the graph at export time.
     """
     result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
@@ -167,8 +167,8 @@ def test_provenance_tags_are_exported_with_numeric_codes(tmp_path):
             != mesh.cell_data["diameter_provenance_code"][order.index((1, 2))])
 
 
-def test_nodes_carry_degree_which_is_the_section_1_1_readout(tmp_path):
-    """Section 1.1 counts branch points; nodes.vtp carried only an id."""
+def test_nodes_carry_degree_which_is_the_branch_point_readout(tmp_path):
+    """H1 counts branch points; nodes.vtp carried only an id."""
     result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
     nodes = pv.read(result["nodes_path"])
 
@@ -179,7 +179,7 @@ def test_nodes_carry_degree_which_is_the_section_1_1_readout(tmp_path):
 
 
 def test_smoothing_tag_codes_keep_their_meaning():
-    """raw_unchanged was added after .vtp files and the ParaView guide fixed codes 0-3.
+    """raw_unchanged was added after .vtp files had been written with codes 0-3.
 
     Appending it as code 4 keeps every older rendering readable; the batch VTK driver must
     use the same list as the package exporter.
@@ -194,7 +194,7 @@ def test_smoothing_tag_codes_keep_their_meaning():
     assert list(levels) == CODES["centreline_smoothing"]
 
 
-# --- An array is written for every edge or for none (package AB) ---------------------------
+# --- An array is written for every edge or for none ----------------------------------------
 
 def _two_edges(**per_edge):
     """Two edges in a line; ``per_edge[attr] = (first, second)``, None leaving it off."""

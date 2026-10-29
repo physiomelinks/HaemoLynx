@@ -1,4 +1,4 @@
-"""Open item 25: Tier 3 arterial blood enters at the Henderson-Hasselbalch pH.
+"""Tier 3 arterial blood enters at the Henderson-Hasselbalch pH.
 
 Tissue pH is Henderson-Hasselbalch on tissue PCO2 and ``hco3_tissue``, and inside each cell the
 blood's O2 is read at the tissue pH. Arterial blood was seeded at a literal pH 7.4, while the same

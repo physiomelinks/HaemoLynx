@@ -11,7 +11,7 @@ def create_straight_vessel_graph(length=10, radius=3.0):
     return G
 
 def test_volumetric_reconstruction_perfect_match():
-    """Phase 2: Core Metric - Volumetric Redilation"""
+    """Core metric: volumetric redilation."""
     G = create_straight_vessel_graph(length=20, radius=3.0)
     shape = (20, 20, 20)
     voxel_size = (1.0, 1.0, 1.0)
@@ -27,7 +27,7 @@ def test_volumetric_reconstruction_perfect_match():
     assert results["reconstructed_volume_fraction"] == 1.0
 
 def test_centerline_centricity_perfect_alignment():
-    """Phase 2: Core Metric - Distance Transform Centricity"""
+    """Core metric: distance-transform centricity."""
     G = create_straight_vessel_graph(length=20, radius=4.0)
     shape = (20, 20, 20)
     voxel_size = (1.0, 1.0, 1.0)
@@ -47,7 +47,7 @@ def test_centerline_centricity_perfect_alignment():
     assert off_axis["mean_centricity_error_um"] > centred + 0.5
 
 def test_topological_preservation_components_and_loops():
-    """Phase 2: Core Metric - Euler/Betti Topologies"""
+    """Core metric: Euler/Betti topology."""
     # 1. Straight Tube: 1 component, 0 holes
     G_line = create_straight_vessel_graph(length=10)
     mask_line = bench.redilate_skeleton_to_volume(G_line, (20, 20, 20), (1.0, 1.0, 1.0))
@@ -75,7 +75,7 @@ def test_topological_preservation_components_and_loops():
     assert res_loop["binary_mask_connected_components"] == 1
 
 def test_completeness_and_overpruning_detection():
-    """Phase 2: Core Metric - Orphaned Volume Detection"""
+    """Core metric: orphaned-volume detection."""
     G_full = create_straight_vessel_graph(length=20, radius=2.0)
     # Generate the ground truth representing the entire biological vessel
     mask_full = bench.redilate_skeleton_to_volume(G_full, (20, 20, 20), (1.0, 1.0, 1.0))
@@ -96,7 +96,7 @@ def test_completeness_and_overpruning_detection():
     assert 0.30 < orphaned_fraction < 0.60, f"Expected ~0.40-0.50, got {orphaned_fraction}"
 
 def test_empty_or_missing_keys():
-    """Phase 3: Graceful Degradation - Missing pts or diameter keys"""
+    """Degradation: missing pts or diameter keys."""
     G = nx.MultiGraph()
     # Missing 'pts', using 'voxels'. Missing 'fwhm_diameter_um', relying on 'assigned_diameter_um'
     G.add_edge(0, 1, key=0, voxels=[(5, 5, 5)], assigned_diameter_um=4.0)
@@ -110,7 +110,7 @@ def test_empty_or_missing_keys():
     assert res_comp["orphaned_volume_fraction"] == 0.0
 
 def test_empty_binary_mask():
-    """Phase 3: Graceful Degradation - Total Anoxia / Empty Volumes"""
+    """Degradation: total anoxia / empty volumes."""
     G = nx.MultiGraph()
     mask = np.zeros((10, 10, 10), dtype=bool)
     voxel_size = (1.0, 1.0, 1.0)
@@ -264,7 +264,7 @@ def test_run_all_benchmarks_raises_on_an_unknown_metric_name():
         bench.run_all_benchmarks(G, mask, (1.0, 1.0, 1.0), metrics=("volumetric", "dice"))
 
 
-# --- Redilation reads a measured diameter or raises (package AJ) ---------------------------
+# --- Redilation reads a measured diameter or raises ----------------------------------------
 
 def _single_edge(**attrs):
     G = nx.MultiGraph()
@@ -331,7 +331,7 @@ def test_redilation_raises_on_a_point_outside_the_volume():
         bench.redilate_skeleton_to_volume(G, (20, 20, 20), (1.0, 1.0, 1.0))
 
 
-# --- Preprocessing suite: no catch, and no perfect score on an empty mask (package AJ) -----
+# --- Preprocessing suite: no catch, and no perfect score on an empty mask ------------------
 
 EMPTY = np.zeros((10, 10, 10), dtype=bool)
 

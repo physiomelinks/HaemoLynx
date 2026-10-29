@@ -1,6 +1,6 @@
-"""The pipeline picks pressure boundaries by the face rule, as the H2 drivers do (open item 2).
+"""The pipeline picks pressure boundaries by the face rule, as the H2 drivers do.
 
-Until item 2 the pipeline took every degree-1 node in a 25% band of axis 0 as an inlet or
+The pipeline used to take every degree-1 node in a 25% band of axis 0 as an inlet or
 outlet, while the H2 drivers took only the terminals on the two faces of
 ``cb_settings.BOUNDARY_AXIS``. Most degree-1 nodes are interior dead ends, so the two runs put
 pressure on different nodes of the same graph.
@@ -73,7 +73,7 @@ def test_pipeline_boundaries_are_the_h2_face_rule_boundaries(monkeypatch):
 
 
 def test_a_placeholder_shape_is_refused(monkeypatch):
-    """The .h5 cache path used to hand over np.zeros((1, 1, 1)) (open item 28)."""
+    """The .h5 cache path used to hand over np.zeros((1, 1, 1))."""
     monkeypatch.setattr(C, "VOXEL_SIZE_UM", (1.0, 1.0, 1.0))
     with pytest.raises(ValueError, match="does not fit the volume"):
         C._setup_boundary_conditions_and_haemodynamics(

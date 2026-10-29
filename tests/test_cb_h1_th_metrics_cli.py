@@ -1,6 +1,6 @@
 """cb_h1_th_metrics.py output paths: --all must not overwrite the WKY-only table.
 
-Re-run notes 2026-10-01, item 7 (package P). ``--out`` used to default to the WKY-only file
+``--out`` used to default to the WKY-only file
 with or without ``--all``, so the six-specimen run silently replaced it.
 """
 import json
@@ -61,11 +61,11 @@ def test_explicit_out_overrides_the_default(stubbed, tmp_path):
 
 
 def test_analyse_takes_every_part_from_the_opened_run_and_passes_the_th_threshold(monkeypatch):
-    """Batch-run reader ticket 04: --th-threshold is the TH mask's override, not a crop here."""
+    """--th-threshold is passed to the run's TH mask as its cut; analyse crops nothing itself."""
     asked = {}
 
     # A spy, not a stand-in run: sentinel parts show analyse hands on exactly what the run gave,
-    # and it records the threshold th_mask was asked for (package AD).
+    # and it records the threshold th_mask was asked for.
     class _Run:
         def graph(self):
             return "graph"

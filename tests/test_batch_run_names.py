@@ -1,4 +1,4 @@
-"""The pipeline writes the file and folder names the batch-run reader opens (package AC).
+"""The pipeline writes the file and folder names the batch-run reader opens.
 
 The writer used to build each name from pieces of its own (the ``resistance_network`` prefix,
 the ``_vessels.vtp`` / ``_nodes.vtp`` / ``_vessel_mask.vti`` suffixes, the ``_cache`` folder

@@ -430,7 +430,7 @@ def test_uncommitted_edits_and_deletions_reach_the_worktree_and_the_checkout_is_
 
 
 def test_a_realdata_test_reads_the_gitignored_data_linked_in_and_its_break_is_caught(toy):
-    # Ticket 10's realdata break, in miniature: the test reads a gitignored file under
+    # A realdata break, in miniature: the test reads a gitignored file under
     # examples/images and skips where it is missing, as it did in the script's worktree.
     (toy / ".gitignore").write_text("__pycache__/\nexamples/images/sum.txt\nexamples/outputs/\n")
     (toy / "examples" / "images").mkdir(parents=True)
@@ -608,7 +608,7 @@ def test_ran_line_counts_a_statement_overlapping_the_old_text_whose_line_ran(sou
 
 
 @pytest.mark.parametrize("old, new, executed, ran", [
-    # Ticket 12's miss: the unchanged `if` line ran, the changed body line did not.
+    # A miss once seen: the unchanged `if` line ran, the changed body line did not.
     ("if a:\n    b = 1\n", "if a:\n    b = 9\n", {1, 4}, False),
     ("if a:\n    b = 1\n", "if a:\n    b = 9\n", {1, 2}, True),
     ("if a:\n    b = 1\n", "", {1}, True),  # deleted outright: every old line is changed

@@ -1,4 +1,4 @@
-"""`build_vessel_mask` must be the mask the CB pipeline builds (open item 41).
+"""`build_vessel_mask` must be the mask the CB pipeline builds.
 
 It is a copy of the recipe in `carotid_image_to_model.py` (`_apply_preprocessing_filters` then
 `_preprocess_local_mask`), not a refactor of it, so this test is what stops the two drifting.

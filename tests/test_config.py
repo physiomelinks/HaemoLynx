@@ -62,7 +62,7 @@ def test_variable_constriction_is_disabled_and_cannot_be_re_enabled_silently():
 
 
 def test_config_loader_runs_the_checks_setattr_skips():
-    """Open item 35: --config sets fields with setattr after construction, which skipped
+    """--config sets fields with setattr after construction, which skipped
     __post_init__, so both example YAMLs could set constrict_at_pericytes: true unnoticed."""
     import pytest
     from carotid_image_to_model import update_dataclass_from_dict

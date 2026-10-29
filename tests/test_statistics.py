@@ -49,7 +49,7 @@ def test_branching_points_are_counted_on_the_multigraph_not_its_simple_copy():
     """A node joined twice to one neighbour and once to another meets three vessels.
 
     Merging the parallel pair drops it to degree 2. The per-edge CSV, Figure 3 and
-    cb_h1_vtk.py count it as a junction, so the printed stats must too (open item 40).
+    cb_h1_vtk.py count it as a junction, so the printed stats must too.
     """
     G = nx.MultiGraph()
     pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (0.0, 10.0, 0.0)}
@@ -159,7 +159,7 @@ def test_per_edge_export_keeps_provenance_with_each_measurement():
 
 
 def test_per_edge_export_separates_the_smoothing_provenances():
-    """section 1.4's numerator mixes operators; the tortuosity column has to be stratifiable."""
+    """Tortuosity's numerator mixes operators, so the tortuosity column has to be stratifiable."""
     rows = export_per_edge_morphometry(_morphometry_graph())
     by_tag = {r["centreline_smoothing"]: r for r in rows}
 
@@ -214,8 +214,8 @@ def test_per_edge_export_carries_the_junction_trim_provenance():
 
     Segments shorter than twice the exclusion keep their untrimmed median rather than being
     discarded, because dropping them would delete the short inter-junction capillaries that
-    section 1.2 is a claim about. That trade only holds if the affected rows can be told
-    apart in the exported distribution - otherwise a known-biased radius is pooled with
+    H1's calibre distribution is a claim about. That trade only holds if the affected rows can
+    be told apart in the exported distribution - otherwise a known-biased radius is pooled with
     corrected ones and nothing downstream can see it.
     """
     rows = export_per_edge_morphometry(_morphometry_graph())
@@ -229,7 +229,7 @@ def test_per_edge_export_carries_the_junction_trim_provenance():
 
 
 def test_image_volume_applies_the_voxel_size(simple_graph):
-    """Re-run notes item 10: the image volume ignored the voxel size, 6.5x too small on CB."""
+    """The image volume used to ignore the voxel size, 6.5x too small on CB."""
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_vessel_density(simple_graph, pos, (2.0, 1.0, 0.5), (10, 10, 10), False)
     assert s["Total Image Volume (micron³)"] == pytest.approx(1000.0)

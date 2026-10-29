@@ -1,7 +1,7 @@
-"""H1 sections 1.3 and 1.5: the TH-dependent morphometrics.
+"""H1's TH-dependent morphometrics: vessel length within TH, and distance from TH to a vessel.
 
-Section 1.3's length is the batch network's own edge polylines (open item 40), and section
-1.5's distance is to the pipeline skeleton. The synthetic cases below are chosen so the right
+The length is the batch network's own edge polylines, and the distance is to the pipeline
+skeleton. The synthetic cases below are chosen so the right
 answer is a number rather than a plausible shape.
 """
 import networkx as nx
@@ -52,7 +52,7 @@ def test_the_length_is_the_sum_of_the_edge_polylines():
 
 
 def test_an_l_shaped_corner_is_counted_once():
-    """The item 17 regression: a corner is two legs, not the three links a voxel-pair sum sees.
+    """A corner is two legs, not the three links a voxel-pair sum sees.
 
     Summing every 26-adjacent pair of skeleton voxels counted the diagonal between the two
     voxels either side of a corner as well as both legs, 9 to 28% over the path length.

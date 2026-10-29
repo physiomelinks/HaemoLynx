@@ -211,7 +211,7 @@ def _load(tmp_path, n_classes, entropy_on):
 
 
 def test_entropy_is_off_by_default_and_a_two_class_field_loads_plainly(tmp_path):
-    """Open item 11: the default no longer describes a path that cannot run on CB data."""
+    """The default no longer describes a path that cannot run on CB data."""
     import carotid_image_to_model as C
 
     assert not C.PreprocessingConfig().enable_shannon_entropy

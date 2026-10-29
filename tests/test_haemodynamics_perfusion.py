@@ -21,7 +21,7 @@ class MockPerfusionConfig:
     k_reduce: float = 0.1
     po2_arterial_mmHg: float = 100.0
     systemic_hematocrit: float = 0.45
-    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    #: Solver stop settings the tiers now read, at Tier 1's old hard-coded values.
     picard_max_iterations: int = 50
     picard_tolerance: float = 1e-5
 
@@ -238,7 +238,7 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
 
     matrix = build_adr_matrix(grid, {}, _Config())[0]
     res = grid.res
-    # D alpha: the conductance takes a PO2 difference to an O2 flux (open item 22).
+    # D alpha: the conductance takes a PO2 difference to an O2 flux.
     sigma = _Config.sigma_diff * 1e12 * ALPHA_O2_MMOL_PER_L_MMHG
     expected = {
         "z": sigma * (res[1] * res[2]) / res[0],
@@ -269,7 +269,7 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
     assert matrix[linear_index(0, 0, 0)].nnz == 4
 
 
-# --- Grid extent: padding past the vasculature (S28, T2.6) ---
+# --- Grid extent: padding past the vasculature ---
 
 def _two_node_graph():
     G = nx.MultiGraph()
@@ -279,7 +279,7 @@ def _two_node_graph():
 
 
 def test_requested_bounds_extend_the_grid_to_cover_them():
-    """What S28 needs: a grid that reaches the segmented tissue, not just the vessels."""
+    """A grid that reaches the segmented tissue, not just the vessels."""
     grid = PerfusionGrid(_two_node_graph(), (4.0, 4.0, 4.0),
                          bounds_zyx=((-10.0, 0.0, 0.0), (40.0, 30.0, 22.0)))
 

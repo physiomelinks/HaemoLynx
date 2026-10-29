@@ -1,4 +1,4 @@
-"""Open item 23: Tier 3's Picard loop reaches its fixed point at capillary flow.
+"""Tier 3's Picard loop reaches its fixed point at capillary flow.
 
 The loop lagged the tissue behind the blood: each iteration moved it C' / (C' + P A alpha / q)
 of the way, which at the measured wall permeability meant hundreds to thousands of iterations
@@ -68,9 +68,9 @@ def test_the_default_settings_converge_and_land_on_the_fixed_point(name, grid, G
                                                                    config):
     """Before: 378 and 97 iterations on the Y network at 1e3 and 1e4 (plain Picard); the
     plasma-skimmed and merging cases took 75-243 with Anderson alone. The cases built on
-    _MEASURED carry its 1e-4; each runs at the pipeline default here (1e-5 since open item 6).
+    _MEASURED carry its 1e-4; each runs at the pipeline default here (1e-5, was 1e-4).
 
-    The Y cases use the default M_max, 0.05 since open item 8 (was 0.005): 30 / 23 / 12
+    The Y cases use the default M_max, 0.05 (was 0.005): 30 / 23 / 12
     iterations at 1e3 / 1e4 / 1e5 (were 14 / 14 / 10). At 1e3 the tissue is nearly anoxic
     (mean PO2 5 mmHg), the hardest case for the linearised blood response."""
     default = PerfusionConfig()

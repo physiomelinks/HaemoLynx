@@ -1,4 +1,4 @@
-"""The pipeline's perfusion .vti says which solver and inputs made it (open item T).
+"""The pipeline's perfusion .vti says which solver and inputs made it.
 
 The pipeline defaults to Tier 3, but the published H2 hypoxia numbers come from Tier 1 run
 directly by the H2 drivers with cb_settings inputs. Without a tag the two fields look alike.
@@ -45,7 +45,7 @@ def test_tier_3_records_its_solver_rate_pressures_and_tolerance():
     assert tags["perfusion_solver"] == "solve_multi_species_perfusion"
     assert tags["perfusion_M_max"] == perf.M_max
     assert tags["perfusion_picard_tolerance"] == perf.picard_tolerance
-    # Config pressures are in mPa; the tag is in mmHg. The defaults are the frozen pair (open item 10).
+    # Config pressures are in mPa; the tag is in mmHg. The defaults are the frozen pair.
     assert tags["perfusion_inlet_pressure_mmHg"] == pytest.approx(cb_settings.INLET_PRESSURE_MMHG)
     assert tags["perfusion_outlet_pressure_mmHg"] == pytest.approx(cb_settings.OUTLET_PRESSURE_MMHG)
     assert tags["perfusion_inlet_pressure_mmHg"] * _MPA_PER_MMHG == pytest.approx(hemo.input_p_bc)
@@ -54,7 +54,7 @@ def test_tier_3_records_its_solver_rate_pressures_and_tolerance():
 
 @pytest.mark.parametrize("tier", [1, 2, 3])
 def test_every_tier_records_the_config_tolerance_it_now_reads(tier):
-    """Tiers 1 and 2 hard-coded theirs and were left untagged until open item 6.
+    """Tiers 1 and 2 used to hard-code theirs, and were left untagged.
 
     Run on a tolerance other than the default, so a tag typed in as the default value fails.
     """
@@ -82,7 +82,7 @@ def test_a_config_missing_M_max_is_refused_not_defaulted():
 
 
 def test_tier_3_records_whether_its_loop_converged():
-    """Open item 23: an unconverged Tier 3 field must say so in the file."""
+    """An unconverged Tier 3 field must say so in the file."""
     tags = _provenance(3)
     assert tags["perfusion_converged"] == 1
     assert tags["perfusion_picard_iterations"] == 11
@@ -100,7 +100,7 @@ def test_tier_3_without_its_convergence_info_is_refused():
 
 @pytest.mark.parametrize("tier", [1, 2, 3])
 def test_every_tier_records_the_flow_factor(tier):
-    """Open item 31: the pipeline's flow is already um^3/s, so the factor is 1.0, not 1.33e5."""
+    """The pipeline's flow is already um^3/s, so the factor is 1.0, not 1.33e5."""
     assert _provenance(tier)["perfusion_flow_to_um3_per_s"] == pytest.approx(1.0, rel=1e-12)
 
 

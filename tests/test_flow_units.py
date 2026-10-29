@@ -1,4 +1,4 @@
-"""T1.5: the flow solve's units, and what makes them commensurable with the tissue sink.
+"""The flow solve's units, and what makes them commensurable with the tissue sink.
 
 The flow solve computes Q = dP / R with R = 128 mu L / (pi d^4), taking pressure in mmHg,
 viscosity in cP and lengths in um. That mixture is not an SI-derived system, so Q is not in

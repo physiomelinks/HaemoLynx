@@ -48,8 +48,8 @@ def _export(G, tmp_path):
 
 def test_a_file_written_before_any_resistance_is_refused_not_turned_into_nan_flow(tmp_path):
     # The graph has resistances (so the matrix and pressures are fine); the file was written
-    # before they existed, which is the carotid body order that broke. Since package AB the
-    # export leaves the array out rather than writing it as NaN.
+    # before they existed, which is the carotid body order that broke. The export
+    # now leaves the array out rather than writing it as NaN.
     G = _chain([None, None, None])
     vtk_export = graph_to_vtk(G, tmp_path / "net")
     for _, _, d in G.edges(data=True):

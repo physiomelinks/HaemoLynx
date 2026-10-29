@@ -1,4 +1,4 @@
-"""Open item 30: ``map_vessels_to_grid(..., vessel_mapping="cross_section")``.
+"""``map_vessels_to_grid(..., vessel_mapping="cross_section")``.
 
 The centreline mapping puts a vessel only in the cells its centreline crosses. The cross-section
 mapping sweeps each centreline point over a disc of the vessel's radius, perpendicular to the
@@ -171,12 +171,12 @@ def test_the_centreline_default_is_unchanged():
 
 
 def test_the_h2_drivers_map_by_cross_section_at_the_converged_grid():
-    """§2.3 and its VTK export use the mapping and grid chosen in open item 30, and agree."""
+    """The hypoxia driver and its VTK export use the converged mapping and grid, and agree."""
     import cb_h2_hypoxic_fraction
     import cb_h2_vtk
     from ImageLynx import cb_settings
 
     assert cb_h2_hypoxic_fraction.VESSEL_MAPPING == "cross_section"
     assert cb_h2_vtk.VESSEL_MAPPING == cb_h2_hypoxic_fraction.VESSEL_MAPPING
-    # The coarsest grid within 0.5 mmHg of the next refinement (reference section 6.8).
+    # The coarsest grid within 0.5 mmHg of the next refinement.
     assert cb_settings.GRID_UM == 3.0

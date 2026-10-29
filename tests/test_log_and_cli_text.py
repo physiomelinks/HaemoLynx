@@ -1,4 +1,4 @@
-"""Log and CLI text from the 2026-09-29 re-run (package I: items 5, 11, 15, 19, 20, 26).
+"""Log and CLI text fixed after the 2026-09-29 re-run.
 
 None of these change a number. Each one made a run's output say something that was not true,
 or hid a fallback in a stats dict, so the text is pinned here.
@@ -11,7 +11,7 @@ import pytest
 
 
 def test_hysteresis_log_prints_the_seed_unrounded(caplog):
-    """The 0.999 seed printed as 'high=1.00', which reads as a cut at p >= 1 (item 5)."""
+    """The 0.999 seed printed as 'high=1.00', which reads as a cut at p >= 1."""
     from ImageLynx.preprocessing.image import hysteresis_threshold
 
     with caplog.at_level(logging.INFO, logger="ImageLynx.preprocessing.image"):
@@ -23,7 +23,7 @@ def test_hysteresis_log_prints_the_seed_unrounded(caplog):
 @pytest.mark.parametrize("name", ["compute_communities_summary",
                                   "compute_weighted_communities_summary"])
 def test_community_fallback_is_logged(caplog, name):
-    """Above max_nodes_exact the community count is a component count; say so (item 11)."""
+    """Above max_nodes_exact the community count is a component count; say so."""
     from ImageLynx.statistics import stats
 
     G = nx.path_graph(6)
@@ -49,7 +49,7 @@ _COMPONENT_KEYS = ("Connected Component Count", "Largest Component Size", "Mean 
 @pytest.mark.parametrize("name", ["compute_communities_summary",
                                   "compute_weighted_communities_summary"])
 def test_community_fallback_reports_components_not_communities(name):
-    """The fallback counts components, so it must not label them communities (package S)."""
+    """The fallback counts components, so it must not label them communities."""
     from ImageLynx.statistics import stats
 
     G = nx.disjoint_union(nx.path_graph(4), nx.path_graph(2))
@@ -77,7 +77,7 @@ def _edge_graph(voxels):
 
 
 def test_centreline_fallback_is_logged(caplog):
-    """A raw-centreline fallback was visible only in the stats (item 11)."""
+    """A raw-centreline fallback was visible only in the stats."""
     from ImageLynx.graph._helpers import smooth_graph_edge_centerlines_continuous
 
     wobble = [[0.0, float(i), 2.0 * ((i % 2) - 0.5)] for i in range(20)]
@@ -105,7 +105,7 @@ def test_no_fallback_no_warning(caplog):
 
 
 def test_tier3_first_iteration_diagnostics_are_debug_level(caplog):
-    """They were logger.info with a 'DEBUG' prefix, so they filled every pipeline.log (item 11).
+    """They were logger.info with a 'DEBUG' prefix, so they filled every pipeline.log.
 
     Runs a Tier 3 solve on the plasma-skimmed junction network.
     """
@@ -124,7 +124,7 @@ def test_tier3_first_iteration_diagnostics_are_debug_level(caplog):
     assert all(r.levelno == logging.DEBUG for r in first_iteration)
 
 
-# --- cb_h1_vtk.py (items 19, 20) ---------------------------------------------------------
+# --- cb_h1_vtk.py ------------------------------------------------------------------------
 
 pv = pytest.importorskip("pyvista")
 
@@ -160,7 +160,7 @@ def stub_export(monkeypatch, tmp_path, make_batch_run, stub_h1_vtk_builders):
 
 
 def test_h1_verify_writes_nothing(monkeypatch, capsys, stub_export):
-    """Same contract as cb_h2_vtk.py --verify: check, print, write no file (item 19)."""
+    """Same contract as cb_h2_vtk.py --verify: check, print, write no file."""
     cb_h1_vtk, out = stub_export
     monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py", "--verify"])
     cb_h1_vtk.main()
@@ -179,7 +179,7 @@ def test_h1_export_still_writes_without_verify(monkeypatch, stub_export):
     assert (out / "export_summary.json").exists()
 
 
-# --- cb_h2_vtk.py (item 26) ---------------------------------------------------------------
+# --- cb_h2_vtk.py -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("outside_pct, noted", [(0.0, False), (2.5, True)])
 def test_h2_outside_grid_note_only_when_some_glomus_is_outside(monkeypatch, capsys,

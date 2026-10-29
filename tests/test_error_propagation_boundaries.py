@@ -1,4 +1,4 @@
-"""``cb_h2_error_propagation.py`` must place pressure where the pipeline does (package C).
+"""``cb_h2_error_propagation.py`` must place pressure where the pipeline does.
 
 It used to pick inlets and outlets with its own 25% band on another axis, so the calibre error
 floors it reports were measured on pressure nodes no H2 flow uses. It also counted edges on a

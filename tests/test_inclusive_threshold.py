@@ -1,4 +1,4 @@
-"""Every CB vessel cut keeps the probability level that sits on its threshold (open item 17).
+"""Every CB vessel cut keeps the probability level that sits on its threshold.
 
 The Ilastik export is quantised to hundredths and every CB threshold is a whole number of
 hundredths, so a strict `>` dropped a whole level: `p > 0.90` was `p >= 0.91`. The selector's

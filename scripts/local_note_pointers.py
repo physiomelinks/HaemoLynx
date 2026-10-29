@@ -1,0 +1,75 @@
+"""Lines in tracked files that point at a local note.
+
+A local note is a markdown file kept on disk beside the code but never tracked, such as a
+plan or a ticket. A clone does not have them, so a tracked file that cites one points at
+nothing; code, tests and comments state the reason in words instead.
+``tests/test_tracked_files_name_no_local_note.py`` runs this on the repo.
+
+``pointers(root)`` returns ``path:line: text`` for every line of a file git tracks in `root`
+that does one of three things:
+
+1. names a markdown file that git does not track, by the path as written or by its file name;
+2. holds ``OPEN_ITEM`` in any case (how the notes number unresolved items);
+3. holds a path into the scratch folder, where tickets and plans are kept.
+
+Names the tests and the pipeline write themselves (``TOY_NOTES``) are not local notes. Not read
+at all: binary files, ``.gitignore`` (it names the local notes on purpose), ``tests/data/``, and
+the markdown notes still tracked, that is every tracked ``.md`` file but ``KEPT_DOCS``.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from _worktree import git
+
+# Built from pieces, so this file does not match its own rules.
+OPEN_ITEM = "open" + " item"
+SCRATCH = "." + "scratch/"
+#: The markdown files that stay tracked. Every other .md file is a local note: while one is
+#: still tracked it is not read here, since its links to other notes lead somewhere on disk.
+KEPT_DOCS = {"README.md", "GLOSSARY.md", "CODING_STANDARDS.md"}
+#: .md files the tests and the pipeline write themselves. model_results.md is also spelled in
+#: ImageLynx.visualization.reporting, but this script runs on toy repos without the package and
+#: must not import it, so the name is written out here.
+TOY_NOTES = {"notes.md", "model_results.md"}
+# A file name ending in .md. A glob such as *.md is not a name, so "*" is left out.
+MD_NAME = re.compile(r"[\w./-]+\.md\b")
+
+
+def pointers(root: Path) -> list[str]:
+    """``path:line: text`` for each line of a tracked file in `root` that points at a local note."""
+    tracked = [rel for rel in git(root, "ls-files", "-z").split("\0") if rel]
+    names = set(tracked) | {Path(rel).name for rel in tracked} | TOY_NOTES
+    found = []
+    for rel in tracked:
+        if _not_read(rel) or not (root / rel).is_file():
+            continue  # a tracked file deleted on disk has no lines to read
+        data = (root / rel).read_bytes()
+        if b"\0" in data:
+            continue  # binary
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue  # binary
+        found += [f"{rel}:{number}: {line.strip()}"
+                  for number, line in enumerate(text.splitlines(), 1)
+                  if _points_at_a_note(line, names)]
+    return found
+
+
+def _points_at_a_note(line: str, known_names: set[str]) -> bool:
+    # Rule 1. The regex backtracks over long runs of name characters (base64 in a notebook),
+    # so it only runs on lines that could hold a name.
+    if ".md" in line and any(name not in known_names and Path(name).name not in known_names
+                             for name in MD_NAME.findall(line)):
+        return True
+    if OPEN_ITEM in line.lower():  # rule 2
+        return True
+    return SCRATCH in line  # rule 3
+
+
+def _not_read(rel: str) -> bool:
+    if rel == ".gitignore" or rel.startswith("tests/data/"):
+        return True
+    return rel.endswith(".md") and rel not in KEPT_DOCS

@@ -2,7 +2,7 @@
 
 ``--config`` hands each top-level section to ``update_dataclass_from_dict``, which drops a key
 the dataclass does not have with only a warning, and a section the loader does not read is
-skipped without one. Open item 33: the WKY YAML kept its whole perfusion block under
+skipped without one. The WKY YAML once kept its whole perfusion block under
 ``PipelineConfig``, so a ``--config`` run used the ``PerfusionConfig`` defaults instead. The
 older YAML tests searched for keys at any depth and did not notice.
 """
@@ -85,9 +85,9 @@ DIFFERS_FROM_DEFAULT = {("SkeletonConfig", "sub_volume_percentage")}
 def test_every_yaml_value_equals_its_config_default(name):
     """A YAML value that drifts from the config default overrides it in a --config run.
 
-    Open item 32: a YAML still at 50 Picard passes would stop Tier 3 short (WKY-C needs 80).
-    Open item 34: both YAMLs kept a Picard tolerance of 1e-4 after item 6 moved the config to
-    1e-5, so a --config run stopped Tier 3 early.
+    A YAML still at 50 Picard passes would stop Tier 3 short (WKY-C needs 80). Both YAMLs once
+    kept a Picard tolerance of 1e-4 after the config moved to 1e-5, so a --config run stopped
+    Tier 3 early.
     """
     drifted = []
     for section, keys in _load(name).items():
@@ -106,16 +106,16 @@ def test_every_yaml_value_equals_its_config_default(name):
 
 
 def test_the_two_yamls_carry_the_same_settings():
-    """A setting that differs by group would confound the WKY-vs-SHR comparison. Open item 34:
-    the SHR YAML set arterial PCO2 35 mmHg against WKY's 40. Open item 35: SHR set both
-    constriction ratios to 0.95 against WKY's 1.0, and only WKY turned on benchmarking."""
+    """A setting that differs by group would confound the WKY-vs-SHR comparison. The SHR
+    YAML once set arterial PCO2 35 mmHg against WKY's 40 and both constriction ratios to 0.95
+    against WKY's 1.0, and only WKY turned on benchmarking."""
     wky, shr = (_load(name) for name in YAMLS)
     assert wky == shr
 
 
-#: Keys the frozen method never reads: constriction is disabled (reference §10.6) and the
-#: constant radius only applies outside edt_radius (§10.5). rheology_tolerance gave way to the
-#: four cb_settings rheology stop settings (open item 37).
+#: Keys the frozen method never reads: constriction is disabled and the constant radius only
+#: applies outside edt_radius. rheology_tolerance gave way to the four cb_settings rheology
+#: stop settings.
 RETIRED_HAEMODYNAMICS_KEYS = {
     "rheology_tolerance",
     "constrict_at_pericytes",
@@ -130,7 +130,7 @@ RETIRED_HAEMODYNAMICS_KEYS = {
 
 @pytest.mark.parametrize("name", YAMLS)
 def test_the_yamls_use_the_frozen_radius_estimator(name):
-    """Open item 35: both YAMLs set constant_radius (every edge 10 um across) and turned
+    """Both YAMLs once set constant_radius (every edge 10 um across) and turned
     constriction on, so a --config run replaced every measured calibre."""
     section = _load(name)["HaemodynamicsConfig"]
     assert section["radius_assignment_mode"] == "edt_radius"

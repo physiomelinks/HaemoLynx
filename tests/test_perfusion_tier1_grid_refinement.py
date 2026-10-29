@@ -1,4 +1,4 @@
-"""Open item 30: Tier 1 does not converge under grid refinement, because each vessel is a line.
+"""Tier 1 does not converge under grid refinement, because each vessel is a line.
 
 ``map_vessels_to_grid`` deposits a vessel only in the cells its centreline crosses, whatever its
 diameter. Refining the grid therefore shrinks the vessel with the cell: in the limit it is a line
@@ -30,7 +30,8 @@ from ImageLynx.haemodynamics.perfusion import (
 from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
 
 # 10.7 s, 10.1 s of it the 1/3 um level. A coarser last level changes the drift bound the
-# line test asserts, and the file is open item 30's evidence, so it stays whole and slow.
+# line test asserts, and the file is the evidence for the cross-section mapping, so it stays
+# whole and slow.
 pytestmark = pytest.mark.slow
 
 _WIDTH = 81.0            # um, square cross-section

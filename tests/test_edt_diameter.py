@@ -82,7 +82,7 @@ def test_fwhm_radius_does_not_raise_when_nothing_was_measured():
 def test_diameter_provenance_distinguishes_measured_from_synthetic():
     """assigned_diameter_um recorded measured and fabricated diameters identically.
 
-    Section 1.2 is a distributional claim, so a mixed distribution has to be separable.
+    H1's calibre claim is distributional, so a mixed distribution has to be separable.
 
     ``max_synthetic_fraction=1.0`` is required to construct the mixture at all.
     ``set_poiseuille_resistances`` now calls ``check_diameter_provenance``, which refuses any
@@ -114,7 +114,7 @@ def test_diameter_provenance_distinguishes_measured_from_synthetic():
 # Re-measured on the repaired pipeline over the same 1330 edges: EDT covered 100.0% with a
 # median diameter of 6.37 um, FWHM covered 76.5% with a median of 8.20 um and a maximum of
 # 39.16 um. Pearson r = +0.245, Spearman rho = +0.284, median FWHM/EDT ratio 1.359. The
-# assessment's r = 0.079 / rho = 0.141 was measured on a bridge_gaps-inflated mask and is
+# earlier r = 0.079 / rho = 0.141 was measured on a bridge_gaps-inflated mask and is
 # superseded; repairing it roughly tripled the correlation, but the two still disagree.
 
 def test_default_radius_mode_yields_measured_not_synthetic_provenance():
@@ -271,7 +271,7 @@ def test_free_ends_are_not_trimmed():
 
 
 def test_an_edge_shorter_than_the_exclusion_is_tagged_rather_than_discarded():
-    """Discarding them would delete the capillary population section 1.2 is about.
+    """Discarding them would delete the capillary population H1's calibre claim is about.
 
     A segment running between two bifurcations can be shorter than twice the exclusion, in
     which case no sample survives. Dropping the edge would bias the reported distribution

@@ -1,4 +1,4 @@
-"""``cb_h2_boundary_selection.py`` must measure on the batch graph with the pipeline's rules (package O).
+"""``cb_h2_boundary_selection.py`` must measure on the batch graph with the pipeline's rules.
 
 It used to read the H1 ParaView export through ``cb_h2_error_propagation.load``: the VTK frame, the
 ParaView edge list, no ROI check, and its own hand-written band and face cuts. These pin the batch

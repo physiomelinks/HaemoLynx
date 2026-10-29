@@ -1,4 +1,4 @@
-"""A graph attribute becomes a number only when it is there and finite (package AB).
+"""A graph attribute becomes a number only when it is there and finite.
 
 The H2 drivers used to read ``data.get("flow_abs", nan)`` and friends, so an edge the solver
 never reached would have been written into the tables and the VTK as NaN (or as length 0)

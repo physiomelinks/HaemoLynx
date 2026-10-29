@@ -1,4 +1,4 @@
-"""Loose end A3: the post-solve VTK rheology arrays must not carry invented values.
+"""The post-solve VTK rheology arrays must not carry invented values.
 
 A cell that matched no graph edge used to keep pre-filled values of haematocrit 0.45,
 viscosity 1.2 cP and wall shear stress 0, and a matched edge missing an attribute got the

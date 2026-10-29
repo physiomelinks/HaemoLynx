@@ -229,7 +229,7 @@ def test_absolute_roi_handles_a_trailing_channel_axis():
 
 #: Every extent the offsets are checked at: the odd and even ones next to the ROI size, and
 #: every axis extent of the six specimens (which include 435, 315, 495 and 456, the extents
-#: open item 14 was first found on).
+#: the one-voxel-low box was first found on).
 OFFSET_EXTENTS = sorted(
     {160, 161, 200, 201, 377, 520, 521}
     | {extent for specimen in SPECIMENS for extent in specimen.shape_zyx}
@@ -238,7 +238,7 @@ OFFSET_EXTENTS = sorted(
 
 @pytest.mark.parametrize("extent", OFFSET_EXTENTS)
 def test_offsets_reproduce_the_placement_bounds_exactly(extent):
-    """Open item 14: crop_roi from centre_to_offsets lands on RoiPlacement.bounds.
+    """crop_roi from centre_to_offsets lands on RoiPlacement.bounds.
 
     Truncating the offset and the start separately put the box one voxel low on odd extents
     with the centre above the midpoint - always low, never high, so it did not average out.

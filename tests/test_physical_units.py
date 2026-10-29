@@ -202,7 +202,7 @@ def test_configured_voxel_size_tracks_the_raw_acquisition_metadata():
     )
 
 
-# --- Terminal-reconnection thresholds are microns, not voxels (item 17/(e)) ----------------
+# --- Terminal-reconnection thresholds are microns, not voxels (#98) ------------------------
 #
 # The converse of the usual calibration bug: 2705b38 did not change these literals, it changed
 # what they mean. At the old (1, 1, 1) spacing a threshold of 3.0 was both 3 voxels and 3
@@ -283,7 +283,7 @@ def test_reconnection_threshold_is_compared_against_physical_positions():
         "a 4 um gap was bridged by a 2.8 um cap"
 
 
-# --- Mask calibre: the one classifier-independent diagnostic (Phase 1.5) -------------------
+# --- Mask calibre: the one classifier-independent diagnostic (#98) -------------------------
 #
 # Every other preprocessing benchmark scores the mask against the probability field, so all of
 # them inherit the classifier's miscalibration. This one measures how thick the segmented
@@ -362,7 +362,7 @@ def test_mask_calibre_is_reported_but_never_optimised_against():
             f"{key} moved the loss; the diagnostic has leaked into the objective"
 
 
-# --- The default thresholds must be reachable by the tuner (Phase 1.5) --------------------
+# --- The default thresholds must be reachable by the tuner (#98) --------------------------
 
 def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
     """A default outside the searched range cannot be reproduced or refined by tuning."""
@@ -598,7 +598,7 @@ def test_pipeline_configures_the_stub_threshold_explicitly(monkeypatch):
 
 # --- Centreline smoothing provenance (#98 Tier 1 item 7) ----------------------------------
 #
-# `length` is only rewritten for edges that smooth successfully, so the section 1.4 tortuosity
+# `length` is only rewritten for edges that smooth successfully, so the H1 tortuosity
 # numerator mixes two operators: a B-spline arc length for some edges and a raw 26-connected
 # staircase for the rest. Measured on the reference subvolume, 967 edges smoothed, 4 relaxed,
 # 214 fell back and 149 were too short - 27.2% keeping the staircase - and the staircase runs
@@ -639,7 +639,7 @@ def test_two_point_edges_are_tagged_as_structurally_unsplinable():
     """These are terminal reconnections. Their tortuosity is 1.0 by construction, not anatomy.
 
     They must be distinguishable from edges where smoothing was tried and rejected, because the
-    two need different treatment in a section 1.4 distribution.
+    two need different treatment in a tortuosity distribution.
     """
     from ImageLynx.graph._helpers import smooth_graph_edge_centerlines_continuous
 
@@ -652,7 +652,7 @@ def test_two_point_edges_are_tagged_as_structurally_unsplinable():
 
 
 def test_edges_the_spline_returns_unchanged_are_not_corridor_fallbacks(caplog):
-    """A 3-point edge cannot be splined, so it comes back as it went in (package T).
+    """A 3-point edge cannot be splined, so it comes back as it went in.
 
     It was tagged raw_fallback and warned about as if it had left the skeleton corridor. It
     did not: smoothing was a no-op, and it needs its own tag so the warning stays true.

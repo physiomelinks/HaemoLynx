@@ -33,7 +33,7 @@ def _get_dummy_fixed_trial():
     })
 
 def test_objective_perfect_scores_yield_zero_loss():
-    """Phase 2: Ensures a perfect pipeline result computes to exactly 0.0 loss."""
+    """Ensures a perfect pipeline result computes to exactly 0.0 loss."""
     def perfect_pipeline(kwargs):
         return {
             "volumetric": {"dice_coefficient": 1.0},
@@ -52,11 +52,11 @@ def test_objective_perfect_scores_yield_zero_loss():
     assert loss == 0.0, f"Expected 0.0 loss for perfect scores, got {loss}"
 
 def test_objective_penalizes_over_pruning():
-    """Phase 2: Ensures the weighted loss function scales penalties correctly.
+    """Ensures the weighted loss function scales penalties correctly.
 
     Contract change (#98, Tier 2 item 14): this previously expected 635.0, which included
     graph_fundamental_loops * 0.1 = 5.0 for the 50 loops below. The loop term has been
-    removed - it is the first Betti number, i.e. the readout H1 section 1.1 depends on - so
+    removed - it is the first Betti number, i.e. the loop count H1 reports - so
     the expected total is now 630.0 and the loop count no longer contributes at all. The test
     was renamed accordingly: "spiderwebs" is no longer a thing this objective penalises.
 
@@ -171,7 +171,7 @@ def test_preprocessing_loss_raises_on_a_missing_key(key):
 
 def test_run_optuna_skeleton_optimization_finds_minimum(tmp_path: Path):
     """
-    Phase 3: Tests the full end-to-end Optuna TPE engine. 
+    Tests the full end-to-end Optuna TPE engine.
     We rig the mock pipeline so that 'min_branch_length = 15' is the absolute global minimum.
     """
     def mock_eval(kwargs):
@@ -201,7 +201,7 @@ def test_run_optuna_skeleton_optimization_finds_minimum(tmp_path: Path):
         f"Optimizer failed to converge near 15, got {best_params['min_branch_length']}"
 
 def test_optuna_generates_yaml_and_html_plots(tmp_path: Path):
-    """Phase 4: Ensures the visual dashboards and YAML exports are written to disk."""
+    """Ensures the visual dashboards and YAML exports are written to disk."""
     def simple_eval(kwargs):
         # Add artificial variance based on kwargs so the param_importances model doesn't crash from zero variance
         var = kwargs.get("min_branch_length", 0) * 0.01
@@ -240,7 +240,7 @@ def test_skeleton_objective_loss_ignores_loop_count():
     """beta-1 must not enter the loss at all.
 
     graph_fundamental_loops is E - V + C, the first Betti number, which is exactly what
-    H1 section 1.1 reads out. Any weight on it lets the tuner improve its score by deleting
+    H1 reports as the loop count. Any weight on it lets the tuner improve its score by deleting
     real anastomoses, and does so harder on denser networks.
     """
     objective = SkeletonObjective(lambda kwargs: None)
@@ -284,7 +284,7 @@ def test_preprocessing_objective_loss_ignores_euler_characteristic():
     assert objective._calculate_loss(positive_euler) == objective._calculate_loss(very_negative_euler)
 
 
-# --- Sampler seeding (item 18) -------------------------------------------------------------
+# --- Sampler seeding (#98 item 18) ---------------------------------------------------------
 #
 # Both studies previously ran on Optuna's default unseeded TPESampler, so two runs explored
 # different trial sequences. That makes any change to the objective's weights inseparable
@@ -401,7 +401,7 @@ def test_tuning_provenance_records_the_seed_beside_the_parameters(tmp_path, runn
     assert provenance["n_trials_run"] == 4
 
 
-# --- Preprocessing objective reduced to its measurable terms (item 15) ---------------------
+# --- Preprocessing objective reduced to its measurable terms (#98 item 15) -----------------
 #
 # Measured over 25 seeded TPE trials on the WKY subvolume z 60:110, y 120:280, x 120:280:
 # confidence 89.5% of loss, fragmentation 7.4%, surface_area_ratio 3.1%, and crispness, the
@@ -469,7 +469,7 @@ def test_preprocessing_objective_cannot_be_improved_by_merging_vessels():
     assert objective._calculate_loss(resolved) == objective._calculate_loss(merged_blob)
 
 
-# --- Skeleton objective reduced to its fidelity terms (item 15) ----------------------------
+# --- Skeleton objective reduced to its fidelity terms (#98 item 15) ------------------------
 #
 # Measured over 12 seeded TPE trials on the WKY subvolume z 60:110, y 120:280, x 120:280 at
 # the calibrated voxel size: dice 42.2% of loss, terminal cliff 37.8%, orphaned 19.3%,
@@ -538,7 +538,7 @@ def test_skeleton_objective_cannot_be_improved_by_pruning_real_branches():
     assert objective._calculate_loss(faithful) < objective._calculate_loss(over_pruned)
 
 
-# --- Dead search dimensions removed (item 17) ---------------------------------------------
+# --- Dead search dimensions removed (#98 item 17) -----------------------------------------
 
 def _suggested_dimensions(objective):
     """Names the objective actually asks the sampler for, recorded from a real trial."""
@@ -569,8 +569,8 @@ def test_dead_skeleton_search_dimensions_are_no_longer_suggested(dimension):
     """Both were suggested every trial, saved to the YAML, and read by nothing.
 
     prune_by_tortuosity has no implementation at all. smoothing_alpha is now wired to
-    bspline_smoothness but must stay frozen: it sets the curvature H1 section 1.4 measures
-    tortuosity from, and this objective is Dice plus orphaned volume, neither of which can
+    bspline_smoothness but must stay frozen: it sets the curvature H1 measures tortuosity
+    from, and this objective is Dice plus orphaned volume, neither of which can
     see it.
     """
     assert dimension not in _suggested_dimensions(SkeletonObjective(lambda kwargs: None))
@@ -608,7 +608,7 @@ def test_consolidation_threshold_is_gone_from_the_topology_optimiser():
     assert "consolidation_threshold" not in inspect.signature(optimise_graph_topology_fixed).parameters
 
 
-# --- Hysteresis search ranges reach the plausible region (Phase 1.5) ----------------------
+# --- Hysteresis search ranges reach the plausible region (#98) ----------------------------
 #
 # Swept on the reference subvolume: at the old low range of [0.25, 0.5] the mask floods,
 # because 83.4% of voxels exceed p = 0.2 and 53.8% exceed 0.4, so the superlevel set is one
@@ -662,7 +662,7 @@ def test_hysteresis_high_range_stays_above_the_low_range():
     assert high_lo >= low_lo, "the high range starts below the low range"
 
 
-# --- The objective must not override the configured filter chain (Phase 1.5) --------------
+# --- The objective must not override the configured filter chain (#98) --------------------
 
 def _kwargs_passed_to_eval(objective_cls):
     """The dict the objective hands to the pipeline, which is merged over the config."""
@@ -718,7 +718,7 @@ def test_filter_chain_is_not_a_search_dimension():
     assert "morphological_opening_radius" not in suggested
 
 
-# --- Entropy dimensions only when the entropy path can run (loose end A1) -----------------
+# --- Entropy dimensions only when the entropy path can run --------------------------------
 
 SHANNON_KEYS = {"shannon_entropy_threshold", "shannon_entropy_core"}
 
@@ -778,7 +778,7 @@ def test_skeleton_loss_reads_nothing_outside_its_named_metrics():
     assert objective._calculate_loss(named_only) == pytest.approx(90.0)
 
 
-# --- The skeleton tuner measures its diameters (package AJ) --------------------------------
+# --- The skeleton tuner measures its diameters ---------------------------------------------
 
 def test_tuner_diameters_come_from_the_pipelines_edt_estimator():
     """Redilation raises without a diameter; the tuner measures one as the pipeline would."""

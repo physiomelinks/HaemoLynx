@@ -1,6 +1,6 @@
 """Tests for preprocess_th.py.
 
-Each test encodes one of the defects found in th_glomus_preprocessing_review.md,
+Each test encodes one of the defects a review of the TH preprocessing found,
 so that reintroducing it fails here rather than silently in a cohort run.
 
 Run with:  python3 -m pytest test_preprocess_th.py -v

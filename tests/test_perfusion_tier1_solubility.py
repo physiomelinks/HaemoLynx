@@ -1,4 +1,4 @@
-"""Open item 22: Tier 1 diffusion carries O2 solubility, and its Newton solve reaches the fixed point.
+"""Tier 1 diffusion carries O2 solubility, and its Newton solve reaches the fixed point.
 
 Every term of Tier 1's balance is an O2 flux in mmol/L um^3/s except diffusion, which was
 sigma * face / spacing * dPO2 in mmHg um^3/s: about 1/alpha = 750 times too strong. The slab
@@ -45,7 +45,7 @@ class _Config:
     po2_arterial_mmHg: float = _P0
     #: Plasma, so blood content is alpha P and the end cells are held by a linear term.
     systemic_hematocrit: float = 0.0
-    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    #: Solver stop settings the tiers now read, at Tier 1's old hard-coded values.
     picard_max_iterations: int = 50
     picard_tolerance: float = 1e-5
 
@@ -105,7 +105,7 @@ class _NetworkConfig:
     k_reduce: float = 0.1
     po2_arterial_mmHg: float = 100.0
     systemic_hematocrit: float = 0.45
-    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    #: Solver stop settings the tiers now read, at Tier 1's old hard-coded values.
     picard_max_iterations: int = 50
     picard_tolerance: float = 1e-5
 

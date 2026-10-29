@@ -1,9 +1,9 @@
-"""Open item 29: Tier 1's washout uses each cell's own haematocrit, the same as its source.
+"""Tier 1's washout uses each cell's own haematocrit, the same as its source.
 
 The source was evaluated at each edge's haematocrit and the washout at ``systemic_hematocrit``.
 A cell fed by an edge above 0.45 then received more O2 at arterial PO2 than it could wash out at
 any PO2 short of hundreds of mmHg, carried by dissolved O2 alone. On WKY-A that phantom source
-was 55 times the tissue's whole demand, and with solubility in the diffusion (item 22) the field
+was 55 times the tissue's whole demand, and with solubility in the diffusion the field
 went hyperoxic. Content is affine in H, so washing out at the cell's flow-weighted H is exact.
 """
 from dataclasses import dataclass
@@ -31,7 +31,7 @@ class _Config:
     k_reduce: float = 1000.0
     po2_arterial_mmHg: float = 100.0
     systemic_hematocrit: float = 0.45
-    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    #: Solver stop settings the tiers now read, at Tier 1's old hard-coded values.
     picard_max_iterations: int = 50
     picard_tolerance: float = 1e-5
 

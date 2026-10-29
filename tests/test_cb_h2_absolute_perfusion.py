@@ -1,4 +1,4 @@
-"""The absolute-perfusion summary behind reference §13.5 and S27 (open item 12).
+"""The absolute-perfusion summary: flow and velocity at 60/20 mmHg, against physiology.
 
 Those numbers were quoted for a month with no script behind them, and were computed on a
 rheology loop that inflated every resistance about 200-540x. So the summary is checked against

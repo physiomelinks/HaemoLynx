@@ -46,7 +46,7 @@ def test_cg_converges_on_a_production_like_ill_conditioned_system():
     relative residual of 19 after 1000 iterations, where the initial residual is 1 by
     construction, and the resulting PO2 field was 4e-4 mmHg everywhere against an arterial 100.
     Unpreconditioned and Jacobi-preconditioned CG both reached 8.8e-7 in 0.05 s on the same
-    system. The measurement is recorded in S24; what is pinned here is that the preconditioner
+    system. That measurement is not repeated; what is pinned here is that the preconditioner
     this module returns does not stand in the way of convergence on that shape of problem.
     """
     A = _diffusion_matrix(2000, coupling=1.5e4, extra_diag=1e-6)

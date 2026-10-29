@@ -1,19 +1,17 @@
 """The analysis settings have one owner, and the known disagreements cannot grow.
 
-``ImageLynx.cb_settings`` exists because four of the open items in
-``cb_modelling_reference.md`` were the same defect: a constant written out separately in a
-driver had drifted from the ``carotid_image_to_model.py`` config default it was meant to
-match, and nothing noticed.
+``ImageLynx.cb_settings`` exists because the same defect kept turning up: a constant
+written out separately in a driver had drifted from the ``carotid_image_to_model.py`` config
+default it was meant to match, and nothing noticed.
 
 Two things are tested here.
 
 1. No driver defines those constants as literals any more. A shared module only helps if
    nobody reintroduces a local copy.
 2. The pipeline config agrees with the settings on each value that used to disagree: the
-   hysteresis band (open item 1), the boundary rule (item 2), the metabolic rate (item 8),
-   the pressures (item 10), the perfusion stop settings (item 6) and the rheology solve
-   settings (item 37). Each was resolved in favour of the settings, because
-   every published H1 and H2 number was produced at the settings values.
+   hysteresis band, the boundary rule, the metabolic rate, the pressures, the perfusion stop
+   settings and the rheology solve settings. Each was resolved in favour of the settings,
+   because every published H1 and H2 number was produced at the settings values.
 """
 import ast
 from pathlib import Path
@@ -61,8 +59,8 @@ def test_no_driver_redefines_an_owned_constant_as_a_literal(path):
             offenders.append(f"{name} = {ast.unparse(value)}")
     assert not offenders, (
         f"{path.name} defines analysis settings locally: {offenders}. "
-        f"Import them from ImageLynx.cb_settings instead - a second copy is how open "
-        f"items 1, 2, 8 and 10 came about."
+        f"Import them from ImageLynx.cb_settings instead - a second copy is how the "
+        f"hysteresis band, boundary rule, M_max and pressures drifted apart."
     )
 
 
@@ -72,12 +70,12 @@ def test_frozen_threshold_lies_on_the_sweep_grid():
 
 
 def test_roi_volume_is_the_figure_the_document_quotes():
-    """160^3 at the processing voxel is 0.0266 mm^3 - section 1.1 and section 2.1."""
+    """160^3 at the processing voxel is 0.0266 mm^3, the ROI volume H1 and H2 quote."""
     assert cb_settings.ROI_MM3 == pytest.approx(0.0266, abs=5e-5)
 
 
 def test_metabolic_mean_is_held_across_the_contrast_sweep():
-    """A contrast of c scales the split, not the total. Section 6.5.
+    """A contrast of c scales the split, not the total.
 
     Runs the hypoxic-fraction driver's own split, then blends it per cell as the driver does.
     """
@@ -85,7 +83,7 @@ def test_metabolic_mean_is_held_across_the_contrast_sweep():
     from cb_h2_hypoxic_fraction import contrast_rates
     from ImageLynx.haemodynamics.tissue_regions import blend_per_cell_rate
 
-    # Mixed cells with a mean TH fraction of 0.235, a representative value (section 13.7).
+    # Mixed cells with a mean TH fraction of 0.235, a representative value.
     th_fraction = np.array([0.0, 0.0, 0.05, 0.1, 0.3, 0.5, 0.0, 0.93])
     assert th_fraction.mean() == pytest.approx(0.235)
     for contrast in cb_settings.METABOLIC_CONTRASTS:
@@ -122,9 +120,10 @@ def test_contrast_rates_match_the_old_inline_lines():
 
 
 def test_pipeline_and_h1_share_the_hysteresis_band():
-    """Open item 1: the pipeline config said 0.65/0.75 while every H1 run used 0.90/0.95.
+    """The pipeline config once said 0.65/0.75 while every H1 run used 0.90/0.95.
 
-    The band is 0.95 / 0.999 since the 2026-09-28 re-selection (items 27, 15, 17, 13).
+    The band is 0.95 / 0.999 since the 2026-09-28 re-selection, which followed the fixes to
+    ROI placement, the calibre the selector reads and the inclusive cut.
     """
     from carotid_image_to_model import PreprocessingConfig
 
@@ -135,9 +134,9 @@ def test_pipeline_and_h1_share_the_hysteresis_band():
 
 
 def test_pipeline_and_h2_share_the_perfusion_stop_settings():
-    """Open item 6: the pipeline config said 1e-4 while Tier 1 hard-coded 1e-5 for H2.
+    """The pipeline config once said 1e-4 while Tier 1 hard-coded 1e-5 for H2.
     Tier 1 used 50 and 1e-5 for every published H2 number; moving them must not move one.
-    Open item 32: the cap went 50 -> 200 in both; the pipeline's Tier 3 needs up to 80 passes.
+    The cap later went 50 -> 200 in both; the pipeline's Tier 3 needs up to 80 passes.
     Tier 1 stops after 9-11 steps on every H2 run, so the cap change moved no H2 field."""
     from carotid_image_to_model import PerfusionConfig
 
@@ -151,7 +150,7 @@ _MPA_PER_MMHG = 133.322387415e3
 
 
 def test_pipeline_and_h2_share_the_pressure_boundaries():
-    """Open item 10: the pipeline config said 100/2 mmHg while the H2 drivers ran at 60/20."""
+    """The pipeline config once said 100/2 mmHg while the H2 drivers ran at 60/20."""
     from carotid_image_to_model import HaemodynamicsConfig
 
     config = HaemodynamicsConfig()
@@ -161,7 +160,7 @@ def test_pipeline_and_h2_share_the_pressure_boundaries():
 
 
 def test_pipeline_and_h2_share_the_boundary_rule():
-    """Open item 2: the pipeline used the band rule on axis 0; H2 the face rule on axis 1."""
+    """The pipeline once used the band rule on axis 0; H2 the face rule on axis 1."""
     from carotid_image_to_model import GraphConfig
 
     config = GraphConfig()
@@ -170,7 +169,7 @@ def test_pipeline_and_h2_share_the_boundary_rule():
 
 
 def test_pipeline_and_h2_share_the_metabolic_rate():
-    """Open item 8: the pipeline config said 0.005 while the H2 drivers ran at 0.05."""
+    """The pipeline config once said 0.005 while the H2 drivers ran at 0.05."""
     from carotid_image_to_model import PerfusionConfig
 
     config, settings = PerfusionConfig(), cb_settings.PerfusionSettings()
@@ -178,7 +177,7 @@ def test_pipeline_and_h2_share_the_metabolic_rate():
 
 
 def test_dead_arterial_concentration_is_gone_everywhere():
-    """Open item 5: ``C_arterial`` was declared three times and read nowhere.
+    """``C_arterial`` was declared three times and read nowhere.
 
     Leaving it in a config invited someone to set it and expect an effect. One analytical
     test did exactly that, setting it to the arterial PO2 it meant to test, and passed only
@@ -203,7 +202,7 @@ def test_h2_drivers_take_their_perfusion_config_from_settings(name):
 
 
 def test_pipeline_and_h2_share_the_rheology_settings():
-    """Open item 37: the pipeline and the H2 drivers run the same rheology solve."""
+    """The pipeline and the H2 drivers run the same rheology solve."""
     from carotid_image_to_model import HaemodynamicsConfig
 
     config = HaemodynamicsConfig()

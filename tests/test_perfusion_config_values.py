@@ -1,4 +1,4 @@
-"""Open items 3 and 4: arterial PO2 and systemic haematocrit come from the config.
+"""Arterial PO2 and systemic haematocrit come from the config.
 
 Both used to be written out inside the solver bodies as well as declared in the config, so
 changing the config value changed nothing in some solvers. Each test below changes the
@@ -32,7 +32,7 @@ class _Config:
     po2_arterial_mmHg: float = 100.0
     systemic_hematocrit: float = 0.45
     permeability_o2_cm_s: float = 1.0e-4
-    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    #: Solver stop settings the tiers now read, at Tier 1's old hard-coded values.
     picard_max_iterations: int = 50
     picard_tolerance: float = 1e-5
 
@@ -64,7 +64,7 @@ def test_the_tier1_source_uses_the_configured_arterial_po2():
 
 
 def test_the_tier1_washout_follows_the_edge_haematocrit_not_the_systemic_one():
-    """Open item 4 moved the washout's 0.45 into the config; open item 29 took it out of Tier 1.
+    """The washout's 0.45 first moved into the config, then out of Tier 1 altogether.
 
     The washout is at each cell's own haematocrit, as the source is, so the systemic value no
     longer moves Tier 1 and the edge's does.
@@ -83,7 +83,7 @@ def _coupled(config):
 
 
 def test_the_coupled_solver_uses_the_configured_arterial_po2():
-    # With O2 solubility in its wall flux (open item 22), the wall at 1e-4 cm/s passes too little
+    # With O2 solubility in its wall flux, the wall at 1e-4 cm/s passes too little
     # O2 for 0.05 mmol/L/s, and the tissue is anoxic at either arterial PO2. A lower rate keeps
     # it off zero, so the arterial value can show.
     assert not np.allclose(_coupled(_Config(M_max=1e-4)),
@@ -115,9 +115,9 @@ def test_the_multi_species_solver_uses_the_configured_arterial_po2():
 
 @pytest.mark.parametrize("field", [
     # systemic_hematocrit is not here: Tier 3 read it only for the arterial blood it gave a
-    # node with no inflow, which now raises instead (open item 24).
+    # node with no inflow, which now raises instead.
     "po2_arterial_mmHg",
-    # Loose end A2: the rest of Tier 3's fields were getattr fallbacks too.
+    # The rest of Tier 3's fields were getattr fallbacks too.
     "M_max", "k_reduce", "respiratory_quotient", "hco3_tissue", "permeability_o2_cm_s",
     "permeability_co2_cm_s", "pco2_arterial", "picard_max_iterations", "picard_tolerance",
     "sigma_diff_co2",
@@ -126,7 +126,7 @@ def test_a_config_without_the_field_is_refused_not_defaulted(field):
     """The multi-species solver read every one of these through getattr with a default.
 
     The sharpest case was M_max, whose fallback of 0.05 was then 10x PerfusionConfig's 0.005
-    (open item 8 has since set PerfusionConfig to 0.05 as well).
+    (PerfusionConfig has since moved to 0.05 as well).
     """
 
     class Partial:
@@ -161,7 +161,7 @@ def test_the_h2_settings_match_the_values_that_were_hard_coded():
     np.testing.assert_array_equal(po2_settings, po2_default)
 
 
-# Open item 18. Tier 3 multiplies each gas's diffusivity and wall permeability by its solubility,
+# Tier 3 multiplies each gas's diffusivity and wall permeability by its solubility,
 # and alpha_CO2 is already ~22x alpha_O2. A second ~20x in D_CO2 and P_CO2 made CO2 move ~450x
 # faster than O2; the measured Krogh ratio (D * alpha) in rat muscle is ~21 (Kawashiro 1975).
 # These are the solver's own solubilities (perfusion.py, solve_multi_species_perfusion).
@@ -186,7 +186,7 @@ def test_the_default_wall_permeability_is_one_value_for_both_gases():
     assert config.permeability_co2_cm_s == config.permeability_o2_cm_s
 
 
-# Open item 19 (c). The wall permeability was 1e-4 cm/s with no source, 10^2-10^4x below a D/delta
+# The wall permeability was 1e-4 cm/s with no source, 10^2-10^4x below a D/delta
 # estimate, and Tier 3 ran wall-limited. Liu, Eskin & Hellums (1994) measured the O2 mass-transfer
 # coefficient of a human umbilical vein endothelial monolayer: k = 1.22e-10 mol/(cm^2 s mmHg).
 # The solver's wall flux is P * A * alpha_O2 * dPO2, so P = k / alpha_O2 reproduces k.
@@ -201,6 +201,6 @@ def test_the_default_o2_wall_permeability_is_liu_1994_measured_value():
 
 
 def test_the_default_arterial_pco2_is_40_mmhg():
-    """Open item 34: the SHR YAML set 35 mmHg against 40 for WKY. The example YAMLs must equal
+    """The SHR YAML once set 35 mmHg against 40 for WKY. The example YAMLs must equal
     this default (``test_example_yaml_sections.py``), so this pins them too."""
     assert _pipeline_perfusion_config().pco2_arterial == 40.0

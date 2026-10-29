@@ -1,4 +1,4 @@
-"""The cache path hands boundary selection the cached mask's shape (open item 28).
+"""The cache path hands boundary selection the cached mask's shape.
 
 ``--use-cache-dir`` used to set the image to ``np.zeros((1, 1, 1))`` for an .h5 input and to a
 fixed, uncropped raw TIFF for a .tif input. Boundary selection and the statistics read that

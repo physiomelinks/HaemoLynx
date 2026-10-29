@@ -1,4 +1,4 @@
-"""The render slab pins its surface-extraction algorithm (re-run package R)."""
+"""The render slab pins its surface-extraction algorithm."""
 import warnings
 
 import pyvista as pv

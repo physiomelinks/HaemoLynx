@@ -1,4 +1,4 @@
-"""Open item 24: Tier 3 carries blood across a node as pressures, not as content per litre.
+"""Tier 3 carries blood across a node as pressures, not as content per litre.
 
 The march mixed content per litre of blood at each node and inverted it for each daughter at
 PCO2 40 and pH 7.4, with that daughter's haematocrit; a failed inversion fell back to arterial
@@ -167,13 +167,13 @@ def test_a_plasma_skimmed_daughter_keeps_tissue_co2_above_arterial():
 
 
 def test_the_stagnant_log_counts_exact_zeros(caplog):
-    """Package K: the log left out exact zeros, so Tier 3 reported 136 stagnant edges on WKY-A
+    """The log used to leave out exact zeros, so Tier 3 reported 136 stagnant edges on WKY-A
     where the rheology loop reported 867. They were the same edges.
 
     The network is SHR-A's, 2026-09-28: node 748 heads a dead-end side branch. Its two branch
     edges carry exactly zero flow and its entry edge 1.7e-12 of the largest flow, outward -
-    above the old 1e-12 cutoff, so the march saw a node sending blood it never received (open
-    item 36). It is stagnant now, and the march runs through.
+    above the old 1e-12 cutoff, so the march saw a node sending blood it never received. It
+    is stagnant now, and the march runs through.
     """
     grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 1e3, 0.45),
                                (4, 3, 1e3 * 1.7e-12, 0.45), (4, 5, 0.0, 0.45),

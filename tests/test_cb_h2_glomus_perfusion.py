@@ -1,4 +1,4 @@
-"""The per-edge rows behind the §2.1 / §2.4 glomus-perfusion table (package AB)."""
+"""The per-edge rows behind the glomus-perfusion table (shunting and transit time)."""
 import networkx as nx
 import pytest
 

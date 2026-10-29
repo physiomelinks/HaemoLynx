@@ -1,4 +1,4 @@
-"""T2.1 to T2.3: three fallbacks that produced a number instead of an error.
+"""Fallbacks that produced a number instead of an error.
 
 Each substitutes a fabricated value for a missing measurement and carries on. The pattern is
 the one this pipeline keeps finding: the output is plausible, nothing raises, and the
@@ -19,7 +19,7 @@ from ImageLynx.haemodynamics.perfusion import (
 from ImageLynx.haemodynamics.resistance import build_conductance_matrix_from_graph
 
 
-# --- T2.2: the 5.0 um diameter default in map_vessels_to_grid ------------------------------
+# --- The 5.0 um diameter default in map_vessels_to_grid ------------------------------------
 
 def _grid_graph(diameters):
     """A star of short edges, each with a polyline, some with a diameter attribute."""
@@ -95,7 +95,7 @@ def test_the_edge_haematocrit_is_carried_into_the_mapping():
     assert carried[("hub", "n1", 0)] == 0.45
 
 
-# --- Package AE: the 0.0 flow and length defaults on the Tier 1 path -----------------------
+# --- The 0.0 flow and length defaults on the Tier 1 path -----------------------------------
 
 _ABSENT = object()
 
@@ -145,7 +145,7 @@ def test_edges_missing_flow_are_counted():
         map_vessels_to_grid(G, grid)
 
 
-# --- Package AH: edges with no centreline skipped by Tier 1 --------------------------------
+# --- Edges with no centreline skipped by Tier 1 --------------------------------------------
 
 @pytest.mark.parametrize(
     "value",
@@ -193,7 +193,7 @@ def test_a_vessel_entry_without_a_length_share_is_refused_by_both_readers():
         cell_discharge_hematocrit(cells, grid.n_cells)
 
 
-# --- T2.3: edges dropped from the conductance matrix ---------------------------------------
+# --- Edges dropped from the conductance matrix ---------------------------------------------
 
 def _resistance_graph(resistances):
     G = nx.MultiGraph()
@@ -241,7 +241,7 @@ def test_dropping_edges_logs_a_warning():
     assert any(r.levelno >= logging.WARNING and "2" in r.getMessage() for r in records)
 
 
-# --- T2.1: the whole-graph guard against a per-edge fallback -------------------------------
+# --- The whole-graph guard against a per-edge fallback -------------------------------------
 
 from ImageLynx.haemodynamics.poiseuille import (                      # noqa: E402
     _raise_if_measurement_mode_measured_nothing,

@@ -129,7 +129,7 @@ def test_feeding_diameter_at_a_merge_is_the_flow_weighted_mean():
 
 
 def test_feeding_diameter_with_no_parent_is_the_murray_parent():
-    """Open item 37: the stand-in was the larger daughter; it is now (d1^3 + d2^3)^(1/3)."""
+    """The stand-in was the larger daughter; it is now (d1^3 + d2^3)^(1/3)."""
     murray = (5.0**3 + 7.0**3) ** (1.0 / 3.0)
     d, fell_back = feeding_vessel_diameter(_dag([]), 1, 5.0, 7.0)
     assert fell_back and d == pytest.approx(murray, rel=1e-12)

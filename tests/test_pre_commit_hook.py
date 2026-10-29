@@ -1,12 +1,12 @@
 """The pre-commit hook runs the committing checkout's own copy, whatever `core.hooksPath` says.
 
 Claude Code's worktree setup rewrites a relative `core.hooksPath` to the main checkout's
-absolute `scripts/git-hooks` (ticket retro-14-19-followups/04); this checkout now sets it
-absolute itself. Git then runs the main checkout's `pre-commit` from every worktree, which
-used to source that worktree's own `_stamp.sh`: two versions mixed. Each test builds a toy
-repo with a worktree, never this checkout. All but the last stage only a `.md` file, so the
-real hook stops at its "only .md files staged" exit without running pyflakes or pytest; the
-last stages a toy test and runs it through the hook's pytest step.
+absolute `scripts/git-hooks`; this checkout now sets it absolute itself. Git then runs the main
+checkout's `pre-commit` from every worktree, which used to source that worktree's own
+`_stamp.sh`: two versions mixed. Each test builds a toy repo with a worktree, never this
+checkout. All but the last stage only a `.md` file, so the real hook stops at its "only .md
+files staged" exit without running pyflakes or pytest; the last stages a toy test and runs it
+through the hook's pytest step.
 """
 import shutil
 import subprocess
@@ -97,7 +97,7 @@ def test_a_worktree_without_its_own_hook_commits_with_one_line_saying_so(tmp_pat
 
 def test_the_hook_runs_the_fast_tests_without_git_variables(tmp_path):
     """In a worktree git hands the hook GIT_DIR and GIT_INDEX_FILE; a test that runs `git` in a
-    temp folder would then write into the committing repo (ticket worktree-hygiene/01)."""
+    temp folder would then write into the committing repo."""
     main, wt = _toy(tmp_path)
     shutil.copytree(main / "scripts", wt / "scripts")
     _absolute_hooks_path(main)

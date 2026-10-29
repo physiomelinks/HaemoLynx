@@ -633,8 +633,8 @@ def test_balanced_labelling_produces_no_balance_warnings(tmp_path):
 def test_the_pooled_classifier_in_use_is_the_measured_baseline():
     """The recorded measurements describe the classifier the study actually runs.
 
-    Package U re-measured calibration and foreground on the relabelled project and moved the
-    hash to it. If the project is retrained this fails, which is the point: the numbers in
+    Calibration and foreground were re-measured on the relabelled project, and the hash
+    moved to it. If the project is retrained this fails, which is the point: the numbers in
     specimens.py then need measuring again.
     """
     from ImageLynx.specimens import is_measured_baseline, verify_classifier

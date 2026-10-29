@@ -54,7 +54,7 @@ def test_the_first_pass_already_uses_the_rescaled_resistance():
 
 
 def test_an_edge_without_resistance_gets_plain_poiseuille_at_the_apparent_viscosity():
-    """E21: 128 mu_app L / (pi D^4), with no leftover D^1.647 factor."""
+    """Resistance is 128 mu_app L / (pi D^4), with no leftover D^1.647 factor."""
     G = _solve(_chain(), max_iterations=5)
     expected = 128.0 * calculate_pries_secomb_viscosity(8.0, 0.45) * 20.0 / (np.pi * 8.0 ** 4)
     assert G[0][1][0]["resistance"] == pytest.approx(expected, rel=1e-12)

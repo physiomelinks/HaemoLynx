@@ -1,4 +1,4 @@
-"""Open item 31: the pipeline's perfusion step converted flow to um^3/s twice.
+"""The pipeline's perfusion step converted flow to um^3/s twice.
 
 ``carotid_image_to_model.py`` gives the flow solve its pressures in mPa, so with viscosity in cP
 (mPa s) and lengths in um its edge flow is already in um^3/s. The perfusion library's default

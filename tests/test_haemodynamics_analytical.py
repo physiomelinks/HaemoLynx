@@ -227,7 +227,7 @@ def test_multi_species_0d_fick_mass_balance():
     m_max = 0.05
     rq = 0.82
     hco3 = 24.0
-    # Arterial blood enters at the Henderson-Hasselbalch pH of its PCO2, 7.401 (open item 25).
+    # Arterial blood enters at the Henderson-Hasselbalch pH of its PCO2, 7.401.
     ph_art = calculate_ph_from_pco2(pco2_art, hco3)
     m_co2 = m_max * rq
     
@@ -245,7 +245,7 @@ def test_multi_species_0d_fick_mass_balance():
     # Because Q is massive, blood content doesn't drop.
     # Steady State: Flux_into_tissue = Metabolism_at_sink
     # P_perm * Area * alpha * (PO2_blood - PO2_tissue) = M_max * V_cell
-    # The wall flux is taken at the blood's outlet pressure (open item 21), read off the O2 curve
+    # The wall flux is taken at the blood's outlet pressure, read off the O2 curve
     # at the cell's tissue pH (Bohr) and the CO2 curve at that PO2 (Haldane). The content is
     # arterial, but the acidic cell puts blood PO2 about 1 mmHg above 100, so iterate on pH.
     from scipy.optimize import brentq

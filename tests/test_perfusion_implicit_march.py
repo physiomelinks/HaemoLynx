@@ -1,4 +1,4 @@
-"""Open item 21: Tier 3's per-cell exchange step is implicit.
+"""Tier 3's per-cell exchange step is implicit.
 
 The step took each cell's wall flux at the blood pressure on entry and subtracted flux / q from
 the content. Once P A alpha exceeded q dC/dP (the measured wall permeability, capillary flow,
@@ -64,7 +64,7 @@ def test_no_bracket_raises_instead_of_keeping_an_old_value():
 def test_tier3_reaches_the_hand_calculated_answer_at_the_measured_permeability(q, caplog):
     """The old step never settled here; tissue PCO2 came out below arterial.
 
-    Within the default 50 iterations and the real solver (open item 23). This test used to
+    Within the default 50 iterations and the real solver. This test used to
     need 5000 iterations and a tissue CG tightened to rtol 1e-13 by monkeypatch: the loop moved
     slowly at this permeability, and at the hard-coded rtol 1e-5, warm-started, the CG handed
     back the last field once a step was smaller than that, so the loop stopped 0.03-0.25 mmHg

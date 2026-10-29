@@ -1,4 +1,4 @@
-"""`cb_h1_batch.py --stage sensitivity` moves the flood threshold and nothing else (open item 41).
+"""`cb_h1_batch.py --stage sensitivity` moves the flood threshold and nothing else.
 
 Given ``--hysteresis-low`` alone the pipeline seeds at low + 0.05, so the 0.93 run used to seed at
 0.98 while the frozen run seeds at 0.999. The stage now passes the frozen seed explicitly.
@@ -107,7 +107,7 @@ def threshold_stage(monkeypatch, tmp_path):
 
 
 def test_the_network_calibre_check_is_recorded_but_never_frozen(threshold_stage):
-    """--stage threshold freezes on the plain cut; the d_net check sits beside it (open item 41)."""
+    """--stage threshold freezes on the plain cut; the d_net check sits beside it."""
     def sample(threshold, d_med, d_net):
         return ThresholdSample(
             threshold=threshold, foreground_fraction=0.3, median_diameter_um=d_med,

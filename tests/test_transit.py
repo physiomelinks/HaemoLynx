@@ -1,7 +1,7 @@
-"""Transit time along flow-directed paths, for H2 §2.4.
+"""Transit time along flow-directed paths, for H2.
 
 Reported as a within-specimen ratio rather than an absolute. The absolute sits under the
-±45% calibre floor of S15, and the pressure, viscosity and length units in this pipeline are
+±45% calibre error floor, and the pressure, viscosity and length units in this pipeline are
 not reconciled to a single system, so the magnitude is in arbitrary units. A ratio of two
 transit times computed the same way is both dimensionless and free of the shared error.
 """

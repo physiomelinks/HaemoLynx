@@ -1,4 +1,4 @@
-"""`cb_h1_figures.py` draws every number from the batch and sensitivity outputs (re-run package D).
+"""`cb_h1_figures.py` draws every number from the batch and sensitivity outputs.
 
 Figure 1 used to draw its junction and length panels from a table copied out of an old run's
 logs, and kept showing SHR +34% / +27% after the data had moved to +6% / +2%. Figure 2's gap,

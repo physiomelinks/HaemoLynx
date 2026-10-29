@@ -1,6 +1,6 @@
-"""The rheology loop converges, and says so (open item 37).
+"""The rheology loop converges, and says so.
 
-Until item 37 the loop stopped on its 15-pass cap in every CB specimen, still wandering, and
+The loop used to stop on its 15-pass cap in every CB specimen, still wandering, and
 every flow and haematocrit downstream came from whichever pass it stopped on. Three changes
 fixed it, and each is tested here:
 
@@ -47,7 +47,7 @@ def _solve(G, scale=1.0, outlets=(2, 3), **overrides):
 
 @pytest.mark.parametrize("diameters", [(12.0, 8.0, 4.0), (15.0, 10.0, 5.0)])
 def test_asymmetric_y_converges_at_the_settings(diameters):
-    """Both Y-junctions the reference used to call non-convergent now converge."""
+    """Both Y-junctions once recorded as non-convergent now converge."""
     G, _ = _solve(_y(*diameters))
     status = rheology_status(G)
     assert status["rheology_stop_reason"] == "converged"

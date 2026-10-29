@@ -1,4 +1,4 @@
-"""Open item 6: every perfusion tier takes its step cap and tolerance from the config.
+"""Every perfusion tier takes its step cap and tolerance from the config.
 
 Tier 1 hard-coded 50 Newton steps and 1e-5, Tier 2 50 passes and 1e-4, while
 ``PerfusionConfig.picard_tolerance`` said 1e-4 and only Tier 3 read it. Now all three read

@@ -273,7 +273,7 @@ def stub_h1_vtk_builders(monkeypatch):
     Returns ``stub(vessels=None, nodes=None, skeleton=None, surface=None, grid=None,
     events=None)``. Each builder returns what it is given (``build_surface`` returns
     ``(surface, grid)``), or a placeholder mesh for a part left as None: a builder never
-    returns None, since a missing source file raises (package AC). The placeholder grid is a
+    returns None, since a missing source file raises. The placeholder grid is a
     2x2x2 all-vessel mask, so ``verify`` runs on the placeholders. With ``events`` a list, each builder also appends its name
     (``"vessels"``, ``"nodes"``, ``"skeleton"``, ``"surface"``) when it is called. The one
     specimen is ``WKY-A``; ``stamp`` returns the mesh it is given. The test still sets

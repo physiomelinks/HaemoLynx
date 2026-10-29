@@ -1,10 +1,10 @@
 """Joining a segmented tissue mask to the perfusion grid.
 
-H2 §2.3 asks for "a higher metabolic rate for TH-positive voxels, and a lower rate for the
-surrounding stroma". The ADR solver takes a single scalar ``M_max``, so the mask has to become
-a per-cell array first. The grid is coarse relative to the segmentation, roughly 154 mask
-voxels to a 10 µm cell, so a cell is rarely all tissue or all stroma and sampling the mask at
-the cell centre would discard almost all of it.
+H2's hypoxic-fraction analysis asks for "a higher metabolic rate for TH-positive voxels, and a
+lower rate for the surrounding stroma". The ADR solver takes a single scalar ``M_max``, so the
+mask has to become a per-cell array first. The grid is coarse relative to the segmentation,
+roughly 154 mask voxels to a 10 µm cell, so a cell is rarely all tissue or all stroma and
+sampling the mask at the cell centre would discard almost all of it.
 """
 import warnings
 from dataclasses import replace
@@ -140,7 +140,7 @@ def test_origin_um_places_the_mask_in_physical_space():
     assert shifted.any(), "origin_um did not move the mask into the grid"
 
 
-# --- Exact overlap: volume is conserved and never clipped (open item 38) -----------------
+# --- Exact overlap: volume is conserved and never clipped --------------------------------
 
 def _grid_from_bounds(lo_um, hi_um, res_um):
     G = nx.MultiGraph()
@@ -269,7 +269,7 @@ def test_the_whole_centreline_is_sampled_not_just_the_endpoints():
     """An edge whose ends are in stroma but whose middle runs through tissue.
 
     Sampling endpoints alone would call this edge entirely extra-glomus, which is exactly the
-    penetrating capillary section 2.1 is about.
+    penetrating capillary the shunting question is about.
     """
     mask = np.zeros((60, 60, 60), bool)
     mask[:, 25:35, :] = True                     # a slab in the middle
@@ -338,7 +338,7 @@ def test_a_mask_that_fits_the_grid_warns_about_nothing():
         mask_fraction_per_cell(mask, grid, (1.0, 1.0, 1.0))
 
 
-# --- deriving grid bounds from a mask (T2.6) ---
+# --- deriving grid bounds from a mask ---
 
 def test_mask_bounds_are_the_outer_corners_not_the_corner_voxel_centres():
     """Half a voxel matters: the centre convention would leave the outermost half-voxel of
@@ -346,7 +346,7 @@ def test_mask_bounds_are_the_outer_corners_not_the_corner_voxel_centres():
     voxel = np.array([1.8639, 1.866, 1.866])
     lo, hi = mask_bounds_um((160, 160, 160), voxel)
 
-    # Voxel k is centred on k x voxel, as in the graph (open item 40), so the outer corners
+    # Voxel k is centred on k x voxel, as in the graph, so the outer corners
     # sit half a voxel outside the first and last centres.
     assert np.allclose(lo, -0.5 * voxel)
     assert np.allclose(hi, 159.5 * voxel)
@@ -389,7 +389,7 @@ def test_malformed_mask_bounds_raise(shape, voxel):
         mask_bounds_um(shape, voxel)
 
 
-# --- Voxel k is centred on k x voxel, as the graph puts it (open item 40) ----------------
+# --- Voxel k is centred on k x voxel, as the graph puts it -------------------------------
 
 def _one_voxel_mask(index, shape=(20, 20, 20)):
     mask = np.zeros(shape, bool)
