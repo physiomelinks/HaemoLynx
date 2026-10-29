@@ -782,7 +782,8 @@ def test_thick_vessel_fields_on_skeletonise_declare_hide_when_unmet():
 
 
 def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
-    """The cartwheel hub guard's own knobs hide until its toggle is on."""
+    """The cartwheel hub guard's own knob hides until its toggle is on; the two
+    direction-aware merging reads too stay on the Graph tab either way."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     fields = {field.name: field for field in tabs["3. Graph"].fields}
 
@@ -792,15 +793,13 @@ def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
 
     off = {"detect_cartwheel_hub_artifacts": False}
     on = {"detect_cartwheel_hub_artifacts": True}
-    for name in (
-        "cartwheel_hub_min_degree",
-        "cartwheel_hub_max_radial_dispersion",
-        "cartwheel_hub_tangent_length_um",
-    ):
-        assert fields[name].hide_when_unmet, name
-        assert SCHEMA[name].requires == ("detect_cartwheel_hub_artifacts",), name
-        assert not fields[name].is_visible(off), name
-        assert fields[name].is_visible(on), name
+    guard_only = fields["cartwheel_hub_max_radial_dispersion"]
+    assert guard_only.hide_when_unmet
+    assert not guard_only.is_visible(off)
+    assert guard_only.is_visible(on)
+    for name in ("cartwheel_hub_min_degree", "cartwheel_hub_tangent_length_um"):
+        assert SCHEMA[name].requires == (), name
+        assert fields[name].is_visible(off) and fields[name].is_visible(on), name
 
 
 def test_perturbation_output_dir_field_on_perturbations_declares_hide_when_unmet():

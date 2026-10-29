@@ -8,48 +8,45 @@ from __future__ import annotations
 
 #: Boundaries tab — shared picture controls.
 SHOW_BOUNDARIES_TOOLTIP = (
-    "Draw or refresh the BC coordinate and region layers from the current "
-    "boundary settings"
+    "Draw or refresh the boundary points and regions in the viewer from the "
+    "current boundary settings"
 )
 SNAP_BOUNDARIES_TOOLTIP = (
-    "Move each selected BC coordinate to the nearest degree-1 terminal node"
+    "Move each selected boundary point onto the nearest vessel end"
 )
 
 #: Boundaries tab — per-role pick/draw controls (when enabled).
 ACTION_TOOLTIPS: dict[str, str] = {
     "pick": (
-        "Enter add mode on the BC coordinates layer and click to place "
-        "points for this role"
+        "Click in the viewer to place boundary points for this role"
     ),
     "draw": (
-        "Add volume regions for this role: in 2D draw rectangles (each "
-        "extruded by the region depth), in 3D drag a box across the view"
+        "Draw regions for this role: rectangles in 2D, each given the region "
+        "depth, or drag a box across the view in 3D"
     ),
     "depth": (
-        "Z extent of the next region drawn for this role, in microns"
+        "How deep in z the next region drawn for this role is, in um"
     ),
     "move": (
-        "Select the BC layer so you can drag or delete points and regions "
-        "already placed for this role"
+        "Select the boundary layer so you can drag or delete this role's "
+        "points and regions"
     ),
     "assign": (
-        "Give the currently selected coordinates or regions this boundary "
-        "role"
+        "Give the selected points or regions this boundary role"
     ),
     "clear": (
-        "Remove every volume region belonging to this role from the BC "
-        "shapes layer"
+        "Remove every region drawn for this role"
     ),
     "pick_nodes": (
-        "Click nodes of the run's graph to list their IDs for this role; "
-        "clicking a listed node again takes it off. Needs '3. Graph' run first"
+        "Click nodes in the viewer to add them to this role's list; click a "
+        "listed node again to remove it. Run \"3. Graph\" first"
     ),
     "clear_nodes": (
         "Empty this role's node ID list"
     ),
     "insert_box": (
-        "Put a box of the size below in the middle of the view, then move and "
-        "resize it to take in the vessel end you want"
+        "Add a box of the size below in the middle of the view; move and "
+        "resize it round the vessel end you want"
     ),
     "box_choice": (
         "Which of this role's boxes the size, arrows and node list act on"
@@ -66,24 +63,21 @@ ACTION_TOOLTIPS: dict[str, str] = {
         "How far, in microns, one press of an arrow moves the box"
     ),
     "box_move": (
-        "Move the box by the step above, as the view shows it: left/right and "
-        "up/down across the screen; back/forward through the slices in 2D, "
-        "towards or away from you in 3D however the view is turned"
+        "Move the box by the step above: across the screen, or back and "
+        "forward through the slices in 2D and towards or away from you in 3D"
     ),
     "box_scan": (
-        "List and mark the nodes inside the chosen box. Moving or resizing "
-        "the box does not scan, so it stays quick to steer; scan once it is "
-        "where you want it"
+        "List and mark the nodes inside the chosen box. Moving the box does "
+        "not rescan, so press this once the box is in place"
     ),
     "box_nodes": (
-        "Every node inside the chosen box, open ends (vessel ends) first; they "
-        "are drawn yellow in the viewer, open ends larger with a red rim. "
-        "Click one to mark it; double-click to use it"
+        "The nodes inside the chosen box, vessel ends first, drawn yellow in "
+        "the viewer (ends larger, with a red rim). Click one to mark it; "
+        "double-click to use it"
     ),
     "use_node": (
-        "Make the node selected in the list one of this role's nodes: it is "
-        "added to the role's node IDs and the role switches to node_ids, so a "
-        "run takes exactly that node"
+        "Add the node selected in the list to this role's nodes and switch "
+        "the role to node_ids, so a run uses exactly that node"
     ),
     "remove_box": (
         "Delete the chosen box"
@@ -105,11 +99,11 @@ BOX_MOVE_TOOLTIPS: dict[str, str] = {
     "down": "Move the box down the screen by the move step",
     "back": (
         "Move the box back by the move step: back through the slices in 2D, "
-        "towards you in 3D however the view is turned"
+        "towards you in 3D"
     ),
     "forward": (
         "Move the box forward by the move step: on through the slices in 2D, "
-        "away from you in 3D however the view is turned"
+        "away from you in 3D"
     ),
 }
 
@@ -120,30 +114,24 @@ STOP_PICKING_NODES_TOOLTIP = (
 
 #: Panel chrome below the stage tabs.
 LOAD_CONFIG_TOOLTIP = (
-    "Open a YAML config into these form rows without loading the image "
-    "paths it names"
+    "Fill the settings from a YAML config file; nothing it names is opened, "
+    "and an image layer already open stays the input"
 )
 PRESET_TOOLTIP = (
-    "Load a standard set of settings to start from: a preset sets the rows "
-    "it names and leaves the rest, so a config loaded afterwards or a row "
-    "changed by hand replaces what it set; None loads nothing"
+    "Start from a standard set of settings: a preset changes only the rows "
+    "it names, and None changes nothing"
 )
 EDIT_GRAPH_TOOLTIP = (
-    "Open the graph editor: add a branch by clicking along the segmented "
-    "image, or delete a vessel by clicking it, then Regenerate to catch "
-    "diameters, haemodynamics, perturbations, measurements and export up "
-    "to the edit"
+    "Open the graph editor to add or delete vessels by clicking in the "
+    "viewer; Regenerate then brings diameters, flows and outputs up to date"
 )
 REOPEN_VIEW_TOOLTIP = (
-    "Reopen the left-hand panel: whichever of its HaemoLynx view (Z-depth, "
-    "vessel draw mode and colouring, scale bar and snapshot), Statistics, "
-    "Layer list and Layer controls tabs have been closed, with the HaemoLynx "
-    "view in front"
+    "Reopen any closed tabs of the left-hand panel: the HaemoLynx view, "
+    "Statistics, Layer list and Layer controls"
 )
 #: A Statistics tab button with no entry in STATISTICS_SECTION_TOOLTIPS.
 STATISTICS_SECTION_TOOLTIP = (
-    "Show or hide what this measure found in the last run's statistics; a "
-    "rerun of the statistics replaces it, keeping open what was open"
+    "Show or hide this measure's results from the last run's statistics"
 )
 #: The Statistics tab's buttons, one per section of the report
 #: (``gui.statistics_view``): what the statistic behind each one measures
@@ -151,301 +139,251 @@ STATISTICS_SECTION_TOOLTIP = (
 #: (``statistics.STATISTIC_MEASURES``), then ``statistics_view.OTHER_SECTIONS``.
 STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
     "basic": (
-        "The size of the network: how many nodes (junctions and ends) and "
-        "vessels it has, their total and average length in microns, and the "
-        "average number of vessels meeting at a node"
+        "Size of the network: how many nodes and vessels it has, their total "
+        "and mean length, and how many vessels meet at a node on average"
     ),
     "tortuosity": (
-        "How winding the vessels are. The tortuosity index is a vessel's "
-        "centreline length over the straight line between its ends (1 is "
-        "straight); curvature is the share of its length beyond that straight "
-        "line. Both are averaged over every vessel"
+        "How winding the vessels are: the tortuosity index (centreline length "
+        "over the straight line between the ends, 1 is straight) and "
+        "curvature, averaged over vessels"
     ),
     "branching": (
         "How many branch points the network has: nodes where three or more "
         "vessels meet"
     ),
     "tree_asymmetry": (
-        "How unevenly the network divides: at each branch point, the "
-        "difference in size between its largest and smallest sub-tree, summed "
-        "and divided by the number of nodes. 0 is a perfectly balanced tree; "
-        "a network with loops is read along its shortest spanning tree"
+        "How unevenly the network divides: at each branch point, the size "
+        "difference between its largest and smallest sub-tree, summed and "
+        "scaled by node count. 0 is perfectly balanced"
     ),
     "fractal_dimension": (
         "How completely the vessels fill space, by box counting: about 1 for "
-        "a single line, rising towards 3 for vessels filling the volume. "
-        "Measured on the node positions and on the centrelines; R^2 says how "
-        "well the box counts fit a straight line"
+        "a single line, rising towards 3 for vessels filling the volume. R^2 "
+        "is the fit's quality"
     ),
     "vessel_density": (
-        "Vessel length per unit volume (microns of vessel per cubic micron): "
-        "divided by the tissue measured from the raw image when the tissue "
-        "volume was measured, else by the box the network spans, and also by "
-        "the whole image; with measured tissue, also the share of it that is "
-        "vessel"
+        "Vessel length per unit volume: of the measured tissue if there is "
+        "one, else of the box the network spans, and of the whole image"
     ),
     "vessel_classes": (
-        "The same measures for each class of vessel, side by side: large and "
-        "small arterioles, capillaries, small and large venules -- or, with "
-        "global vessel masks, large vessels, small vessels and capillaries. "
-        "For each: how many vessels, their length and share of the network's, "
-        "length, volume and surface per unit volume, diameter and tortuosity, "
-        "and once the flow is solved, the flow, velocity, wall shear stress "
-        "and pressure in its vessels carrying flow"
+        "The main measures for each vessel class side by side (arterioles, "
+        "capillaries and venules, or vessels by size), including flow, "
+        "velocity and wall shear stress once solved"
     ),
     "murray_law": (
-        "Whether diameters at junctions follow Murray's law, parent^3 = the "
-        "sum of daughters^3. The Murray ratio is the daughters' sum over the "
-        "parent's (1 is a perfect fit); the fitted exponent is the power that "
-        "would make each junction fit exactly, 3 being Murray's"
+        "Whether junction diameters follow Murray's law (parent^3 = sum of "
+        "daughters^3): the Murray ratio (1 is a perfect fit) and the fitted "
+        "exponent (3 is Murray's)"
     ),
     "daughter_angles": (
-        "The angle between sibling daughter vessels leaving a junction, read "
-        "along their centrelines and averaged over every junction, in degrees"
+        "The angle between sibling vessels leaving a junction, averaged over "
+        "every junction, in degrees"
     ),
     "intercapillary_distance": (
-        "How far apart neighbouring vessels lie: for each vessel, the median "
-        "distance along it to the nearest vessel not joined to it, then the "
-        "mean and median over vessels, in microns. How far oxygen must "
-        "diffuse into the tissue between them. With a solved flow, the same "
-        "over the vessels carrying flow alone, and the ratio of the two "
-        "medians: how the spacing opens up where vessels carry no flow"
+        "How far apart neighbouring vessels lie, which sets how far oxygen "
+        "must diffuse; once the flow is solved, also for the vessels carrying "
+        "flow alone"
     ),
     "junction_shape": (
-        "The angles between the three vessels of each junction, read along "
-        "their centrelines: the smallest and largest, the share of junctions "
-        "with two vessels within 45 degrees of each other, and the three "
-        "angles summed (360 when the junction lies in one plane)"
+        "The angles between the three vessels at each junction: smallest and "
+        "largest, the share of junctions with two vessels within 45 degrees, "
+        "and their sum (360 in one plane)"
     ),
     "tissue_coverage": (
-        "How far the tissue lies from a vessel, read at points through the "
-        "image box: the share within 20 microns of a vessel, the share beyond "
-        "50 microns (the holes), and the median and 90th percentile distance"
+        "How far tissue lies from the nearest vessel: the share within 20 um, "
+        "the share beyond 50 um (holes), and the median and 90th percentile "
+        "distance"
     ),
     "vessel_columns": (
         "Vessels running along the stack axis (within 30 degrees of z): their "
-        "share of the network's length, how many per square millimetre of the "
-        "image plane, and how evenly they are spread across it (the "
-        "Clark-Evans ratio: 1 at random, above 1 even, below 1 bunched)"
+        "share of length, count per square mm, and how evenly they are spread "
+        "(Clark-Evans ratio, 1 at random)"
     ),
     "dead_ends": (
-        "Vessels that end without joining another, by kind: leaving the "
-        "image, at a thick vessel's wall but not joined to it, stopped short of "
-        "the segmented vessel, broken by the segmentation, artefacts, blind "
-        "(marked by hand), unknown, or ends of "
-        "pieces with no junction. Also the interior ones per mm of vessel, "
-        "their length, and how much of the network the image faces cut"
+        "Vessels that end without joining another, counted by kind (leaving "
+        "the image, broken, blind and so on), per mm of vessel, with their "
+        "lengths"
     ),
     "network_robustness": (
-        "How much of the network hangs on single connections: bridge "
-        "vessels, whose loss alone splits the network, and articulation "
-        "points, junctions whose loss splits it. With inlets and outlets, the "
-        "critical ones are those whose loss cuts an outlet off from an inlet"
+        "How much the network hangs on single links: vessels and junctions "
+        "whose loss alone splits it, and those whose loss cuts an outlet off "
+        "from an inlet"
     ),
     "bottlenecks": (
-        "Where inlet-to-outlet flow is most constrained: the minimum cut (the "
-        "fewest vessels, or least conductance, whose blocking separates every "
-        "inlet from every outlet) and each vessel's share of the shortest "
-        "inlet-to-outlet routes; a share of 1 means every route runs through it"
+        "Where inlet-to-outlet flow is most constrained: the fewest vessels "
+        "(or least conductance) whose blocking separates inlets from outlets, "
+        "and each vessel's share of the shortest routes"
     ),
     "shunts": (
-        "Vessels on inlet-to-outlet routes much shorter than the network's "
-        "median route, which carry blood past most of the bed: how many, on "
-        "how many pathways, and the share of the outflow they carry"
+        "Vessels on inlet-to-outlet routes much shorter than the median route, "
+        "carrying blood past most of the bed: how many, and the share of "
+        "outflow they carry"
     ),
     "occlusion_impact": (
-        "What blocking one vessel does, vessel by vessel: the fraction of "
-        "inlet-to-outlet flow lost, and the length of other vessels left "
-        "below the hypoperfusion threshold of their flow, summarised for the "
-        "network, by vessel type and by branch order. Conductances stay fixed "
-        "after the block"
+        "What blocking each vessel in turn does: the share of inlet-to-outlet "
+        "flow lost and the length of other vessels left underperfused, for the "
+        "network, by vessel type and branch order"
     ),
     "occlusion_curves": (
-        "How flow falls as vessels are blocked one after another, in three "
-        "orders: at random, busiest first and narrowest first. Each curve's "
-        "robustness index is the area under its remaining-flow curve (1 if "
-        "flow never drops), with the fraction blocked when flow halves"
+        "How flow falls as vessels are blocked one after another (at random, "
+        "busiest first, narrowest first): the area under each curve, 1 if flow "
+        "never drops, and the share blocked when flow halves"
     ),
     "current_flow": (
-        "How the inlet-to-outlet flow divides between parallel routes, as "
-        "current does in a resistor network: each vessel's share of it, the "
-        "equivalent inlet-to-outlet resistance, and in full mode on small "
-        "networks the Kirchhoff index, the summed resistance between every "
-        "pair of nodes"
+        "How inlet-to-outlet flow divides between parallel routes, as current "
+        "does in a resistor network: each vessel's share and the equivalent "
+        "resistance; in full mode, the Kirchhoff index"
     ),
     "perfusion_territories": (
         "Which inlet supplies and which outlet drains each part of the "
-        "network, by the nearest route: the number and size of the arteriolar "
-        "(inlet) and venular (outlet) territories, and the watershed vessels "
-        "on the borders between them"
+        "network: the number and size of the territories, and the watershed "
+        "vessels on their borders"
     ),
     "capillary_bed_joins": (
-        "Where the capillary beds of different arteriolar feeds first meet. "
-        "Each capillary belongs to the bed of the feed that reaches it first; "
-        "a bed's join order is the lowest capillary B order at which it "
-        "touches another bed. The Kaplan-Meier median join order and "
-        "distance, the beds joining within or between arteriolar trees, and "
-        "those that never join, by why"
+        "Where the capillary beds of different arteriolar feeds first meet: "
+        "the median capillary order and distance at which beds join "
+        "(Kaplan-Meier), and how many never join"
     ),
     "capillary_path_orders": (
-        "How many capillary branch orders lie between the arterioles and the "
-        "venules. For every capillary draining into a venule, the fewest "
-        "capillaries on a route to it from an arteriole, through capillaries "
-        "alone, the length in microns of the shortest such route, the "
-        "straight-line distance between its two ends and the length over "
-        "that distance: the mean, median, SD and range of each, and the "
-        "capillaries draining into a venule that no arteriole reaches"
+        "How many capillary orders lie between arterioles and venules: for "
+        "each capillary draining into a venule, the fewest capillaries back to "
+        "an arteriole and that route's length"
     ),
     "transit_time": (
-        "How long blood takes to cross the network: each vessel's volume "
-        "over its flow, added up along inlet-to-outlet routes, as a mean and "
-        "spread (SD, CV), and the capillaries' transit-time heterogeneity "
-        "(CTH). Plug flow at the solved mean flow, not red-cell speed"
+        "How long blood takes to cross the network: vessel volume over flow, "
+        "summed along inlet-to-outlet routes, with its spread and the capillary "
+        "transit-time heterogeneity (CTH). Assumes plug flow"
     ),
     "flux_heterogeneity": (
-        "How unevenly the network is perfused: the coefficient of variation "
-        "(SD over mean) of flow and of mean velocity across the vessels "
-        "carrying flow, for the capillaries and for every vessel, and the "
-        "share of the network carrying flow by vessel count, length and "
-        "volume. A vessel carries flow when the solve reached it and its flow "
-        "is above a floor far below the network's largest"
+        "How unevenly the network is perfused: the coefficient of variation of "
+        "flow and velocity across vessels carrying flow, and the share of the "
+        "network carrying flow"
     ),
     "loop_hierarchy": (
-        "The scale of the network's redundancy: the shortest loop through "
-        "each vessel, as a distribution of loop lengths in microns overall and "
-        "by vessel type, the vessels on no loop at all, and the independent "
+        "The scale of the network's redundancy: the shortest loop through each "
+        "vessel as a distribution of loop lengths, the vessels on no loop, and "
         "loops per mm^3"
     ),
     "strahler": (
-        "Horton-Strahler orders of the arterial and venous trees: tips are "
-        "order 1, and two vessels of one order meeting make the next. Horton's "
-        "bifurcation, length and diameter ratios say how count, length and "
-        "diameter change from one order to the next; capillaries are unordered"
+        "Strahler orders of the arterial and venous trees (tips are order 1; "
+        "two vessels of one order meet to make the next), with Horton's ratios "
+        "between orders. Capillaries are unordered"
     ),
     "algebraic_connectivity": (
-        "How easily the network splits in two: the second-smallest eigenvalue "
-        "of its Laplacian (the Fiedler value), near 0 when a few vessels hold "
-        "two halves together. Also the two halves the Fiedler vector divides "
-        "it into and the vessels between them"
+        "How easily the network splits in two: the Fiedler value, near 0 when "
+        "a few vessels hold two halves together, and the two halves and the "
+        "vessels between them"
     ),
     "cyclomatic_number": (
         "The number of independent loops (anastomoses): vessels minus nodes "
-        "plus separate pieces. 0 is a pure tree, where every vessel is the "
-        "only supply to everything beyond it"
+        "plus separate pieces. 0 is a pure tree with no alternative routes"
     ),
     "degree_assortativity": (
-        "Whether nodes where many vessels meet connect to others like them "
-        "(positive, up to 1) or to nodes with few vessels (negative, down to "
-        "-1). Branching vascular trees usually read negative"
+        "Whether nodes where many vessels meet link to similar nodes (positive, "
+        "up to 1) or to nodes with few (negative, down to -1). Vascular trees "
+        "usually read negative"
     ),
     "rich_club": (
-        "Whether the best-connected nodes link to each other: of the vessels "
-        "that could join the nodes with more than the threshold number of "
-        "vessels, the fraction that do. Near 1, they form a backbone of their "
-        "own"
+        "Whether the best-connected nodes link to each other: of the possible "
+        "links among nodes with more than the threshold number of vessels, the "
+        "share that exist. Near 1, a backbone"
     ),
     "k_core": (
-        "How layered the network is. A node's core number is the largest k "
-        "for which it sits in a sub-network where every node has at least k "
-        "vessels; a tree's is 1, and a high core holding many nodes is a "
-        "redundant, looped core inside a shell"
+        "How layered the network is: a node's core number is the largest k "
+        "for which it sits in a part where every node has at least k vessels. "
+        "A tree's is 1"
     ),
     "flow_hierarchy": (
-        "The fraction of vessels whose solved flow does not run round a "
-        "directed loop. Flow cannot circulate in a resistive network at steady "
-        "state, so a value below 1 points to a modelling problem, such as "
-        "boundary conditions fighting each other"
+        "The share of vessels whose solved flow does not run round a loop. "
+        "Steady flow cannot circulate, so below 1 points to a modelling "
+        "problem such as conflicting boundary conditions"
     ),
     "path_efficiency": (
-        "The inverse of the mean shortest path length through the network "
-        "between pairs of nodes (1/microns), with that mean length itself; "
-        "higher means nodes are fewer microns apart. Sampled pairs in fast "
-        "mode, every pair in full"
+        "The inverse of the mean shortest path length between pairs of nodes, "
+        "with that mean length; higher means nodes are closer. Sampled pairs in "
+        "fast mode, all in full"
     ),
     "community": (
-        "Groups of nodes more densely connected among themselves than to the "
-        "rest of the network (modularity communities, from its topology): "
-        "their number and sizes in fast mode, every group's nodes in full"
+        "Groups of nodes more densely connected to each other than to the rest "
+        "of the network: their number and sizes in fast mode, every group's "
+        "nodes in full"
     ),
     "betweenness": (
         "How often each node lies on the shortest paths between other nodes, "
-        "counting vessels rather than microns, from 0 to 1: the mean, highest "
-        "and top nodes in fast mode, every node in full"
+        "counting vessels, from 0 to 1: the mean, highest and top nodes in "
+        "fast mode, every node in full"
     ),
     "haemodynamics": (
-        "The network's resistance to flow, in Pa.s/m^3: between the first "
-        "inlet and the first outlet, or the two nodes Post processing chose "
-        "(two-point), and for the whole network, "
-        "the pressure drop over the total inflow through every inlet"
+        "The network's resistance to flow: between two nodes (the first inlet "
+        "and outlet, or those chosen in Post processing), and for the whole "
+        "network, pressure drop over total inflow"
     ),
     "branch_orders": (
-        "The vessels of each branch order (arterioles, capillary orders, "
-        "venules): how many, their mean length, diameter and its variation, "
-        "tortuosity, the angle at which they leave their parent, and the "
-        "pressure drop across them"
+        "The vessels of each branch order: how many, their mean length, "
+        "diameter and its spread, tortuosity, the angle they leave their "
+        "parent at, and the pressure drop across them"
     ),
     "weighted_betweenness_communities": (
-        "Betweenness and communities with the vessels weighted three ways: "
-        "by resistance (the easiest paths for flow), length (the shortest in "
-        "microns) and 1/|flow| (the busiest). The mean and highest "
-        "betweenness, the most central nodes, and the communities' number and "
-        "sizes"
+        "Betweenness and communities with vessels weighted by resistance "
+        "(easiest paths for flow), length (shortest) and 1/|flow| (busiest): "
+        "the most central nodes and the communities' number and sizes"
     ),
     "zero_resistance_bridges": (
-        "The joins drawn inside a thick vessel's lumen, from where a vessel "
-        "opens into it to its centreline: how many and how long. They carry "
-        "no resistance, and no other statistic counts them as vessels"
+        "The joins drawn inside thick vessels to link the vessels opening "
+        "into them to their centreline: how many and how long. They carry no "
+        "resistance"
     ),
     "tissue_volume": (
-        "The tissue's volume and surface area from the raw image, which "
-        "vessel density divides by: the share of the image it fills, how much "
-        "of its surface the image faces cut, the vessels inside it, and the "
-        "intensities its threshold split"
+        "The tissue's volume and surface area, measured from the raw image, "
+        "which vessel density divides by, with the share of the image it fills "
+        "and the vessels inside it"
     ),
     # synthetic.compare.COMPARISON_SECTION: a synthetic network's run only.
     "synthetic_comparison": (
-        "How close the synthetic network came to the template run it was drawn "
-        "to, characteristic by characteristic: the template's value, the "
-        "synthetic network's and their ratio, and whether it lies within the "
-        "band the generator is held to (OUTSIDE when not). The same rows as "
-        "the run's template comparison CSV"
+        "How close the synthetic network came to its template run, "
+        "characteristic by characteristic: both values, their ratio, and "
+        "OUTSIDE where it misses the allowed band"
     ),
 }
 SAVE_CONFIG_TOOLTIP = (
-    "Write the current form values to a YAML config file; relative "
-    "paths stay relative when saving beside the file they came from"
+    "Save the current settings to a YAML config file; relative paths stay "
+    "relative when saved beside the file they came from"
 )
 RUN_CHECKS_TOOLTIP = (
-    "Run preflight checks on the current settings without starting a pipeline"
+    "Check the current settings for problems, such as missing files, "
+    "without starting a run"
 )
 RUN_PIPELINE_TOOLTIP = (
     "Run the full pipeline from the first stage with the current settings"
 )
 CLEAR_LAYERS_TOOLTIP = (
-    "Remove HaemoLynx-drawn result and boundary layers from the viewer, "
-    "stop a run in progress, forget in-memory checkpoints, restore skip "
-    "toggles, and discard this session's resume/checkpoint pickles on disk"
+    "Remove HaemoLynx's layers from the viewer, stop any run in progress and "
+    "forget this session's saved stages, deleting their checkpoint files "
+    "after asking"
 )
 SHOW_RESULTS_TOOLTIP = (
     "After each stage finishes, add its graph or mask layers to the viewer"
 )
 SHOW_STEPS_TOOLTIP = (
-    "During graph build, also show each topology step as its own layer set"
+    "While the graph is built, also show the network after each build step "
+    "as its own layers"
 )
 HELP_TOOLTIP = (
     "Open the help menu on the tab that is currently open"
 )
 #: The box under the buttons where the panel says what it last did.
 REPORT_TOOLTIP = (
-    "What the panel last said: a run's progress or why it stopped, what the "
-    "checks found, and what a button did; the run's full narration is in the "
-    "log window"
+    "The panel's latest message: a run's progress or why it stopped, what the "
+    "checks found, or what a button did; the log window has everything"
 )
-#: The "9. Additional measurements" tab, which has no stage function: every
-#: other stage tab's hover text names the function it runs.
-MEASURED_ON_EXPORT_TAB_TOOLTIP = (
-    "Measured by export_results(settings, ...): this tab has no stage of its own"
-)
+
+
+def stage_tab_tooltip(stage) -> str:
+    """A stage tab's hover text: the summary its page opens with, without the
+    full stop, so a tab says what it is for before it is opened."""
+    return stage.summary.rstrip(".")
+
+
 #: The log window's text.
 LOG_VIEW_TOOLTIP = (
     "What the run says as it goes, newest at the bottom: Log level sets how "
@@ -458,39 +396,38 @@ ABOUT_TOOLTIP = (
 )
 OPEN_LAYER_TOOLTIP = (
     "The image layers open in the viewer: choosing one, or dropping an image "
-    "into the viewer, points the run at it"
+    "into the viewer, makes it the run's input"
 )
 USE_LAYER_TOOLTIP = (
-    "Point the run at the image layer chosen above (its path, or an export "
-    "of its array)"
+    "Make the image layer chosen above the run's input: its own file, or a "
+    "saved copy of its data if it has none"
 )
 OPTIMISE_SETTINGS_TOOLTIP = (
-    "Empirically choose Skeletonise and Graph tab settings from the "
-    "segmented input image, write a config file beside it, and show what "
-    "would change for you to Apply or Discard"
+    "Search for good Skeletonise and Graph settings on the segmented image, "
+    "save them as a config beside it, and show the changes to Apply or Discard"
 )
 #: Both settings optimisers while the run draws a synthetic network, greyed:
 #: there is no image for their trials to read. Also what each says if pressed.
 OPTIMISE_SYNTHETIC_TOOLTIP = (
-    "The run draws a synthetic network, so there is no image to optimise "
-    "settings on: set the Input tab's Input to Segmented image to use this"
+    "Unavailable for a synthetic network, which has no image to optimise on. "
+    "Set \"Input\" on the Input tab to Segmented image to use it"
 )
 CHECK_SEGMENTED_IMAGE_TOOLTIP = (
-    "Score the segmented input image out of 10 -- fragmentation, "
-    "connectivity, vessels leaving the image, surface noise and resolution "
-    "-- and print the breakdown to the log below"
+    "Score the segmented image out of 10 on fragmentation, connectivity, "
+    "vessels leaving the image, surface noise and resolution, with the "
+    "breakdown in the log"
 )
 #: The Batch run button and its window.
 BATCH_RUN_TOOLTIPS = {
     "button": (
         "Run every segmented image in a folder with these settings, each "
-        "matched to its raw image and vessel masks by file name, saving a "
-        ".haemorun and the run's outputs in a folder named after the image"
+        "matched to its raw image and masks by file name and saved in its "
+        "own folder"
     ),
     #: The button, greyed, under a synthetic network and while a run goes.
     "button_synthetic": (
-        "A batch runs segmented images, and this run draws a synthetic network: "
-        "set the Input tab's Input to Segmented image to use Batch run"
+        "Unavailable for a synthetic network: a batch runs segmented images. "
+        "Set \"Input\" on the Input tab to Segmented image to use it"
     ),
     "button_running": (
         "A run is going: Batch run opens once it ends, or press Cancel to stop it"
@@ -501,78 +438,70 @@ BATCH_RUN_TOOLTIPS = {
     ),
     "raw": (
         "The folder of raw images; left blank, they are looked for in the segmented "
-        "folder. While ilastik segments (Input tab), each raw image here is one run"
+        "folder. When ilastik segments, each raw image here is one run"
     ),
     "pericyte": (
-        "The folder of pericyte masks: every file in it is the pericyte mask of the "
-        "image sharing its name. A folder here turns on pericytes placed from a mask, "
-        "which each pericyte perturbation reads"
+        "The folder of pericyte masks, each matched to its image by name. Setting it "
+        "turns on placing pericytes from a mask for the pericyte perturbations"
     ),
     "cell": (
-        "The folder of cell masks: every file in it is the cell mask of the image "
-        "sharing its name. A folder here turns on the 3D cell distances"
+        "The folder of cell masks, each matched to its image by name. Setting it "
+        "turns on the 3D cell distances"
     ),
     "vessel_3d": (
-        "The folder of vessel masks for the 3D cell distances, one per image by name; "
-        "left blank, each image's own segmentation. A folder here turns on the 3D "
-        "cell distances"
+        "The folder of vessel masks for the 3D cell distances, matched by name; left "
+        "blank, each image's own segmentation. Setting it turns on the 3D cell "
+        "distances"
     ),
     "tissue": (
-        "The folder of tissue images: every file in it is the tissue image of the image "
-        "sharing its name; left blank, each image's raw image. A folder here turns on "
-        "the tissue volume"
+        "The folder of tissue images, matched by name; left blank, each image's raw "
+        "image. Setting it turns on the tissue volume"
     ),
     "capillary_block": (
-        "The folder of masks of blocks: every file in it is the mask of blocks of the "
-        "image sharing its name, read by each capillary block from a mask. A folder "
-        "here turns on the perturbations, adding a capillary block from a mask if "
-        "there is none"
+        "The folder of capillary block masks, matched by name. Setting it turns on "
+        "perturbations, adding a capillary block from a mask if there is none"
     ),
     "large": (
-        "The folder of large vessel masks; given on its own, every file in it is "
-        "a large mask of the image sharing its name. Left blank, the segmented "
-        "folder, read by name"
+        "The folder of large vessel masks, matched to images by name; left blank, "
+        "they are looked for in the segmented folder"
     ),
     "small": (
-        "The folder of small vessel masks; given on its own, every file in it is "
-        "a small mask of the image sharing its name. Left blank, the segmented "
-        "folder, read by name"
+        "The folder of small vessel masks, matched to images by name; left blank, "
+        "they are looked for in the segmented folder"
     ),
     "output": "Each image's outputs and .haemorun go in a folder of its own in here",
     "browse": "Choose the folder",
     "images_tab": (
-        "The folders, the conditions and the images matched in them, with what "
-        "each image came to"
+        "The folders, conditions and matched images, with how each image's run "
+        "went"
     ),
     "comparison_tab": (
-        "The two conditions compared statistic by statistic, as the output "
-        "folder's batch_condition_comparison.csv has them"
+        "The two conditions compared statistic by statistic, as written to the "
+        "output folder's comparison CSV"
     ),
     "skip_done": (
         "Leave out images whose folder already has a .haemorun, so a batch "
         "stopped part way picks up where it ended"
     ),
     "table": (
-        "Each segmented image, what was matched to it and what it came to; untick "
-        "an image to leave it out, choose a file where several tie, double-click a "
-        "finished image to open it, right-click for what else can be done to it, "
-        "and click a heading to sort by it"
+        "Each segmented image, its matched files and its result. Untick to leave "
+        "one out, pick a file where several tie, double-click to open a finished "
+        "run, right-click for more"
     ),
     "match": (
-        "Read the folders again and match every image (done by itself when a folder "
-        "is typed or chosen)"
+        "Read the folders again and match every image; this happens by itself when "
+        "a folder is chosen"
     ),
     "last_batch": (
-        "The output folder holds a batch's batch_settings.yaml: fill this window "
-        "from it (folders, conditions, comparison, sections) and put the settings "
-        "it ran with in the panel"
+        "Fill this window from the batch saved in the output folder (folders, "
+        "conditions, comparison, sections) and load the settings it ran with into "
+        "the panel"
     ),
     "settings_line": "How many of the panel's settings, which every image runs with, differ from their defaults",
     "show_settings": "List the settings every image runs with that differ from their defaults",
     "peak_ram": (
-        "The image's peak memory: the largest of its stages' peaks in its run "
-        "manifest (where a stage did not raise the process's peak, its peak was "
-        "read every 0.2 s, so it may be a little low)"
+        "The image's peak memory use during its run. It may read a little low, "
+        "as some stages' memory is sampled rather than measured exactly"
     ),
     "tick_all": "Tick every image",
     "tick_none": "Untick every image",
@@ -583,67 +512,63 @@ BATCH_RUN_TOOLTIPS = {
     "run_again": "Run the selected image again now, whether or not it was done before",
     "details": "What Check, Show error and Show said",
     "comparison_table": (
-        "The two conditions tested statistic by statistic, smallest q (most "
-        "significant) first: each condition's N and median, the difference, the "
-        "test's P and the Benjamini-Hochberg q"
+        "The two conditions tested statistic by statistic, most significant first: "
+        "each condition's N and median, the difference, P and the "
+        "Benjamini-Hochberg q"
     ),
-    "refresh_comparison": "Read the output folder's batch_condition_comparison.csv again",
-    "open_comparison": "Open batch_condition_comparison.csv with the system's program for it",
+    "refresh_comparison": "Read the comparison CSV in the output folder again",
+    "open_comparison": "Open the comparison CSV in the system's program for it",
     "open_batch_folder": "Open the batch's output folder",
     "stop": (
-        "Let the image running finish and be saved, then stop: the images after it "
-        "are not run (Cancel stops the image itself)"
+        "Stop after the image now running finishes and is saved; later images are "
+        "not run. Cancel stops the current image itself"
     ),
     "run": "Use this batch and run it now, keeping this window open to follow it",
     "check": "Run every ticked image's pre-run checks and show what they say",
     "condition_a": (
-        "One condition's images: a phrase their file names hold (ignoring case; "
-        "several, comma-separated, for either). Each condition, and all images, "
-        "is summarised once the batch is done"
+        "Text in the file names of one condition's images (any case; several, "
+        "comma-separated, for either). Each condition, and all images, is "
+        "summarised after the batch"
     ),
     "condition_b": (
-        "The other condition's phrase: with both set, every statistic is tested "
-        "between the two (Mann-Whitney U, Benjamini-Hochberg q-values) into "
-        "batch_condition_comparison.csv"
+        "The other condition's text: with both set, every statistic is compared "
+        "between the two (Mann-Whitney U, Benjamini-Hochberg q-values)"
     ),
     "design": (
-        "Independent images: every image one sample (Mann-Whitney U, Welch t). "
-        "Paired by subject: each image against the image of the other condition "
-        "whose name is most alike once the condition phrase is taken out "
-        "(Wilcoxon signed-rank, paired t); images with no partner, or a tie, are "
-        "left out and listed in batch_condition_pairs.csv"
+        "Independent images: each image is one sample (Mann-Whitney U, Welch t). "
+        "Paired by subject: each image is paired with the other condition's most "
+        "similarly named image (Wilcoxon, paired t)"
     ),
     "subject_pattern": (
         "Paired only: a regular expression whose first group (or whole match) is "
-        "an image's subject ID. Blank: the part of the file name before its "
-        "condition phrase, so 28_3_d_contra_FITC is subject 28_3_d"
+        "the subject ID. Blank uses the part of the file name before the "
+        "condition text"
     ),
     "aggregate": (
-        "Paired only: a subject with more than one image in a condition is left "
-        "out, or its images there are combined, statistic by statistic, by their "
-        "median or mean, and those are paired. batch_condition_pairs.csv lists "
-        "the images in each subject's value"
+        "Paired only: a subject with several images in one condition is left out, "
+        "or its images are combined by their median or mean"
     ),
     "exclude_sections": (
-        "Statistics sections, comma-separated, left out of the batch statistics and "
-        "the comparison (with their subsections, ignoring case), so the "
-        "Benjamini-Hochberg q-values are over the statistics left; e.g. Dead Ends"
+        "Statistics sections to leave out of the batch statistics and comparison, "
+        "comma-separated (e.g. Dead Ends), so the q-values cover only the "
+        "statistics left"
     ),
     "compare": (
-        "Write the batch statistics from the ticked images already run in the "
-        "output folder, by the conditions as they are now, without running anything"
+        "Write the batch statistics for the ticked images already run, using the "
+        "current conditions, without running anything"
     ),
     "use": "Close this window and let Run pipeline run the batch later",
     "leave": "Go back to running the one image the Input tab names",
 }
 REVERT_STAGE_TOOLTIP = (
-    "Clear this tab and later layers and checkpoints, then rerun the "
-    "pipeline from this stage using the previous tab's saved work"
+    "Rerun the pipeline from this stage, using the previous stage's saved "
+    "results and clearing this and later stages' layers"
 )
 
 #: View dock — display-only; never written into pipeline settings.
 Z_DEPTH_TOOLTIP = (
-    "Clip every displayed layer to this physical Z window; full range is the identity and does not crop the pipeline"
+    "Show only this range of z in every layer; display only, the pipeline "
+    "still uses the whole image"
 )
 #: The Z window's two ends, one slider each.
 Z_DEPTH_TOOLTIPS = {
@@ -656,20 +581,17 @@ ARROW_LENGTH_TOOLTIP = (
     "are unchanged"
 )
 VESSEL_DRAW_TOOLTIP = (
-    "Tubes: each centreline step as a 3D prism that stays visible from every "
-    "camera angle. Lines: napari vector ribbons (faster, can vanish edge-on). "
-    "Zero-resistance bridges, artificial joins inside a thick vessel's lumen, "
-    "are dashed in both"
+    "Tubes: 3D tubes visible from every angle. Lines: faster flat ribbons that "
+    "can vanish edge-on. The joins inside thick vessels are dashed in both"
 )
 LAYER_SET_TOOLTIP = (
-    "Which network the vessels, nodes and flow-direction layers show: the "
-    "baseline, or one perturbation. Swapping keeps the same kinds of layer on, "
-    "so flipping back and forth compares like with like"
+    "Which network the vessel, node and flow-direction layers show: the "
+    "baseline or one perturbation. Switching keeps the same layers on, for a "
+    "like-with-like comparison"
 )
 COLOUR_BY_TOOLTIP = (
-    "What the vessels on screen are coloured by, drawn as tubes or as lines: "
-    "the same choice as Colour by on the vessels layer's own controls, for "
-    "the network chosen under Showing"
+    "What the vessels are coloured by, as tubes or lines, for the network "
+    "chosen under Showing; the same as the vessel layer's own Colour by"
 )
 #: What HaemoLynx adds to a vessel or node layer's own controls on the left:
 #: Colour by and Colour map (its colour range takes COLOUR_RANGE_TOOLTIPS).
@@ -685,9 +607,8 @@ LAYER_COLOUR_MAP_TOOLTIP = (
 #: (``gui.branch_hover.BRANCH_HOVER_METRICS``).
 BRANCH_HOVER_TOOLTIPS: dict[str, str] = {
     "flow_solution": (
-        "Show on hover whether the flow solve reached the vessel, and if not, "
-        "why: behind a dead end, behind a closed image-face end, or no inlet "
-        "and outlet"
+        "Show on hover whether the flow was solved in the vessel, and if not "
+        "why: behind a dead end, behind a closed end, or no inlet and outlet"
     ),
     "flow": "Show on hover the size of the vessel's flow, in m^3/s",
     "order": "Show on hover the vessel's branch order",
@@ -712,20 +633,20 @@ BRANCH_HOVER_TOOLTIPS: dict[str, str] = {
 #: The view panel's Colour range row, one entry per control.
 COLOUR_RANGE_TOOLTIPS = {
     "range": (
-        "The range the vessel colours span, for the network chosen under "
-        "Showing, drawn as tubes or as lines; each network keeps its own"
+        "The range of values the vessel colours span for the network chosen "
+        "under Showing; each network keeps its own"
     ),
     "low": "The value drawn at the bottom of the colour map; type a number to change it",
     "high": "The value drawn at the top of the colour map; type a number to change it",
     "fit_all": "Span the smallest and largest value of the vessels on screen",
     "fit_trim": "Ignore the extreme 1% at each end, so the bulk of the vessels spreads",
     "canvas": (
-        "Draw the colour scale in the canvas, on the tubes or the lines "
-        "showing, for the network chosen under Showing"
+        "Show the colour scale on the canvas for the network chosen under Showing"
     ),
 }
 SCALE_BAR_TOOLTIP = (
-    "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
+    "Show a scale bar in the bottom-right of the canvas, in microns when the "
+    "voxel size is known"
 )
 #: The view panel's "Show" checkboxes, by the role each one toggles
 #: (``gui.layer_sets.VIEW_TOGGLES``). Greyed out while the run has no such
@@ -777,9 +698,8 @@ VIEW_SNAP_TOOLTIPS = {
     "YZ": "Centre the view and look along x at the YZ plane, z increasing downwards",
 }
 SWEEP_TOOLTIP = (
-    "Step through the chosen perturbation's sweep: each grid point's flows, "
-    "recoloured in place. Shown for a sweep perturbation chosen under Showing; "
-    "each sweep keeps its own position while another is shown"
+    "Step through the sweep perturbation chosen under Showing, recolouring "
+    "the vessels with each grid point's flows"
 )
 #: One slider per axis of a sweep's grid, in the Sweep box.
 SWEEP_SLIDER_TOOLTIP = (
@@ -787,82 +707,71 @@ SWEEP_SLIDER_TOOLTIP = (
     "with the flows solved at that point, whose value is shown below"
 )
 TUBE_QUALITY_TOOLTIP = (
-    "How round the vessel tubes are drawn: one smooth tube per vessel, with "
-    "more sides round it each step right -- slower to build on a large "
-    "network"
+    "How round the vessel tubes are drawn: further right gives more sides and "
+    "smoother tubes, but is slower on a large network"
 )
 TUBE_DIAMETER_TOOLTIP = (
-    "How wide the vessel tubes are drawn. Per vessel: each at its own "
-    "diameter, measured or assigned. Uniform: every vessel at the width in "
-    "the µm box beside it, 4 µm to start, so wide vessels do not hide the "
-    "narrow ones. Display only -- the network keeps its diameters"
+    "How wide the tubes are drawn, for display only. Per vessel: each at its "
+    "own diameter. Uniform: all at the width beside it, 4 µm to start, so "
+    "narrow vessels stay visible"
 )
 TUBE_UNIFORM_WIDTH_TOOLTIP = (
-    "The width every vessel tube is drawn at while Tube diameter is Uniform, "
-    "in microns; applied on Enter, on leaving the box or on each arrow step. "
-    "Display only -- the network keeps its diameters"
+    "The width every tube is drawn at while \"Tube diameter\" is Uniform, "
+    "applied on Enter or each arrow step. Display only: the network keeps its "
+    "diameters"
 )
 SNAPSHOT_TOOLTIP = (
-    "Write a TIFF of the current napari view into the pipeline "
-    "output folder (cosmetic export only; does not feed the run)"
+    "Save a TIFF image of the current view into the output folder; it does "
+    "not affect the run"
 )
 #: The view window's Rotation movie box.
 ROTATION_TOOLTIPS = {
     "tilt": (
-        "How far the movie looks down on the stack while it turns about the "
-        "z axis, in degrees: 0 side on, z down the screen as in the XZ view; "
-        "90 straight down onto the top slice; negative looks up from below"
+        "How far the movie looks down on the stack as it turns, in degrees: 0 "
+        "is side on, 90 straight down from the top, negative from below"
     ),
     "speed": (
         "How fast the stack turns in the movie, in degrees a second: 30 takes "
-        "12 s for the full turn, played at 30 frames a second"
+        "12 s for a full turn"
     ),
     "rotate": (
-        "Turn what is on the canvas about the z axis at this tilt and speed, "
-        "round and round, to see the movie before recording it; the tilt and "
-        "speed can be changed while it turns, and nothing is written. Press "
-        "again to stop: the view turns back, keeping any zoom or pan made "
-        "meanwhile"
+        "Preview the movie: turn the view about z at this tilt and speed, "
+        "writing nothing. Press again to stop; the view turns back, keeping any "
+        "zoom or pan"
     ),
     "record": (
-        "Turn what is on the canvas one full circle and write it as a movie "
-        "into the pipeline output folder (MP4, or GIF without imageio-ffmpeg); "
-        "the view is put back afterwards. Press again to stop without writing"
+        "Turn the view one full circle and save it as a movie (MP4, or GIF if "
+        "MP4 support is not installed) in the output folder. Press again to "
+        "stop without saving"
     ),
 }
 SAVE_RUN_TOOLTIP = (
-    "Write this pipeline run to a .haemorun file: settings, graph, "
-    "checkpoints, and viewer layers, so it can be opened again later"
+    "Save this run to a .haemorun file (settings, network, saved stages and "
+    "layers) to open again later"
 )
 LOAD_RUN_TOOLTIP = (
-    "Clear the current HaemoLynx layers and state, then restore a saved "
-    "pipeline run so the viewer looks as it did when that run finished"
+    "Open a saved .haemorun run, replacing the current HaemoLynx layers and "
+    "state, so the viewer looks as it did when that run finished"
 )
 #: "7. Post processing" tab.
 POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "scan": (
-        "Take the last run's network into this tab to edit it, and make the "
-        "list chosen under Review -- only that one, so a scan does no more "
-        "work than it needs"
+        "Bring the last run's network into this tab for editing and make the "
+        "list chosen under Review"
     ),
     "review_choice": (
-        "Which list Scan network makes: junctions where four or more vessels "
-        "meet, short loops, or one of the checks on the network's geometry, "
-        "segmentation, flow, boundaries and diameters, the terminal nodes "
-        "to make inlets and outlets or take the role from, or the two nodes "
-        "the two-point resistance is found between, to find and change. None "
-        "lists nothing and leaves the network to edit by clicking"
+        "Which list Scan network makes: 4+ vessel junctions, short loops, a "
+        "check on the network (geometry, segmentation, flow, inlets and "
+        "outlets, diameters), or None to edit by clicking alone"
     ),
     "region": (
-        "Make the list only round the middle of the view, within this many "
-        "microns of it; 0 lists the whole network. A check against the "
-        "segmented image then reads only that part of it, which is faster "
-        "on a large stack"
+        "List only within this many um of the middle of the view; 0 lists the "
+        "whole network. Faster on a large stack"
     ),
     "review_items": (
-        "What the chosen check found, in the order it ranks them; click one "
-        "to zoom to it and list its vessels below, or click its ring in the "
-        "viewer. Kept items are not listed again"
+        "What the chosen check found, ranked. Click one, or its ring in the "
+        "viewer, to zoom to it and list its vessels below; kept items are not "
+        "listed again"
     ),
     "dead_end_show": (
         "List every kind of dead end the scan found, or only one kind; "
@@ -870,19 +779,18 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "ends"
     ),
     "remove_pieces": (
-        "Remove every piece with no junction the list shows, each as Delete "
-        "all its vessels would; a piece with a boundary node on it, or one "
-        "a vessel was drawn onto since the scan, stays. Each is recorded in "
-        "{stem}_dead_ends_review.csv"
+        "Remove every piece with no junction in the list, except those holding "
+        "a boundary node or with a vessel drawn onto them since the scan. Each "
+        "removal is recorded in the review CSV"
     ),
     "review_table": (
         "The chosen item's vessels; click or shift/ctrl-click rows to select "
         "vessels, drawn yellow in the viewer"
     ),
     "review_delete_selected": (
-        "Remove the vessels selected in the table; a junction left joining "
-        "just two vessels is merged into one, and inlets, outlets and "
-        "boundary nodes are never removed"
+        "Remove the vessels selected in the table. A junction left with two "
+        "vessels merges them; inlets, outlets and boundary nodes are never "
+        "removed"
     ),
     "review_delete_item": (
         "Remove every vessel of the chosen item -- a dead end back to its "
@@ -890,55 +798,48 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "nodes are never removed"
     ),
     "review_merge": (
-        "Take out the short vessel between the two junctions and make them "
-        "one node, between the two (or where a boundary node is); the "
-        "vessels at both now meet there"
+        "Remove the short vessel between the two junctions and merge them into "
+        "one node, so the vessels of both meet there"
     ),
     "review_trace_on": (
         "Start Add vessel at the chosen dead end's tip: click along the "
         "vessel it should go on to, and on a node or vessel to finish it"
     ),
     "review_join_ahead": (
-        "Join the chosen dead end to the vessel straight ahead of it (at a "
-        "thick vessel, to its centreline), with a vessel traced from its tip "
-        "to where it meets that vessel through the image Add vessel uses; that "
-        "vessel is split there"
+        "Join the chosen dead end to the vessel straight ahead (or a thick "
+        "vessel's centreline), tracing a new vessel from its tip through the "
+        "image Add vessel uses"
     ),
     "review_mark_blind": (
-        "Say the chosen dead end is a real blind end (a sprout, or a vessel "
-        "that ends there). It stays; the mark is kept on its node and in the "
-        "decisions CSV, and later scans and the statistics read it"
+        "Mark the chosen dead end as a real blind end, such as a sprout. It "
+        "stays, and later scans and the statistics treat it as blind"
     ),
     "review_mark_open": (
-        "Say the chosen dead end is a vessel leaving the image. It becomes an "
-        "open end: with an open_end_model other than closed, the next solve "
-        "gives it a boundary condition"
+        "Mark the chosen dead end as a vessel leaving the image. Unless \"Open "
+        "end model\" is closed, the next solve gives it a boundary condition"
     ),
     "review_make_inlet": (
-        "Make the chosen terminal node an inlet (an outlet no longer, if it "
-        "was one). Regenerate graph solves the network with it, and the "
-        "decision is written to the decisions CSV"
+        "Make the chosen terminal node an inlet (no longer an outlet). "
+        "Regenerate graph solves the network with it"
     ),
     "review_make_outlet": (
-        "Make the chosen terminal node an outlet (an inlet no longer, if it "
-        "was one). Regenerate graph solves the network with it, and the "
-        "decision is written to the decisions CSV"
+        "Make the chosen terminal node an outlet (no longer an inlet). "
+        "Regenerate graph solves the network with it"
     ),
     "review_remove_terminal": (
-        "Take the chosen node off the inlets or outlets; a dead end leaving "
-        "the image is then an open end in the solve (open_end_model). The "
-        "last inlet or outlet cannot be removed: make another one first"
+        "Take the chosen node off the inlets or outlets; a vessel leaving the "
+        "image there becomes an open end. The last inlet or outlet cannot be "
+        "removed"
     ),
     "review_resistance_start": (
-        "Find the two-point resistance from the chosen node instead (the "
-        "first inlet until changed); chosen while it is the end, the two "
-        "swap. Regenerate graph solves it, and every regenerate after keeps "
-        "the pair"
+        "Measure the two-point resistance from the chosen node (the first "
+        "inlet by default); choosing the current end swaps the two. Regenerate "
+        "graph solves it"
     ),
     "review_resistance_end": (
-        "Find the two-point resistance to the chosen node instead (the first "
-        "outlet until changed); chosen while it is the start, the two swap. "
-        "Regenerate graph solves it, and every regenerate after keeps the pair"
+        "Measure the two-point resistance to the chosen node (the first outlet "
+        "by default); choosing the current start swaps the two. Regenerate "
+        "graph solves it"
     ),
     "review_join": (
         "Join the chosen pair of dead ends with a vessel traced between "
@@ -946,21 +847,19 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "at its ends"
     ),
     "review_draw_along": (
-        "Add a vessel along the chosen piece of skeleton, from the vessel it "
-        "meets at one end to the one it meets at the other, each split there, "
-        "as the skeleton re-trace would draw it; for a piece meeting the "
-        "network once, trace it with Add vessel"
+        "Add a vessel along the chosen piece of skeleton, joining the vessels "
+        "it meets at each end. For a piece meeting the network once, trace it "
+        "with Add vessel"
     ),
     "review_set_diameter": (
-        "Give the vessels selected in the table -- or the chosen item's one "
-        "vessel -- the diameter beside this button; Regenerate graph keeps "
-        "it and solves the network again with it"
+        "Give the vessels selected in the table, or the chosen item's one "
+        "vessel, the diameter beside this button; Regenerate graph keeps it "
+        "and re-solves"
     ),
     "review_diameter": "The diameter Set diameter gives, in microns",
     "review_keep": (
-        "Keep the chosen item as it is, take it off the list and move on to "
-        "the next one; every decision is kept with the run and written to "
-        "{stem}_{list}_review.csv beside the run's output"
+        "Keep the chosen item as it is and move on to the next. Every decision "
+        "is saved with the run and in a review CSV beside its outputs"
     ),
     "junctions": (
         "Junctions where four or more vessels meet; click one to zoom to it "
@@ -971,14 +870,13 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "rows to select vessels, drawn thick and yellow in the viewer"
     ),
     "delete": (
-        "Remove the selected vessels; a junction left joining just two "
-        "vessels is merged into one, and inlets, outlets and boundary nodes "
-        "are never removed"
+        "Remove the selected vessels. A junction left with two vessels merges "
+        "them; inlets, outlets and boundary nodes are never removed"
     ),
     "split": (
-        "Turn the chosen junction into bifurcations: the two vessels leaving "
-        "in the most similar directions move to a new node joined back by a "
-        "connector vessel of the length beside this button"
+        "Split the chosen junction into bifurcations: the two vessels leaving "
+        "in the most similar directions move to a new node, joined back by a "
+        "connector vessel"
     ),
     "connector": (
         "Length of the connector vessel a split inserts between the two new "
@@ -990,25 +888,24 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "it, in its own plane in a 3D view, and list its sides below"
     ),
     "loop_table": (
-        "The chosen loop's sides: the runs of vessels between the places "
-        "other vessels, or a boundary node, meet it. Click a row to select "
-        "that side, drawn yellow in the viewer"
+        "The chosen loop's sides: the runs of vessels between where other "
+        "vessels or a boundary node meet it. Click a row to select that side"
     ),
     "loop_delete": (
-        "Remove the side selected in the table, opening the loop; a junction "
-        "left joining just two vessels is merged into one, and inlets, "
-        "outlets and boundary nodes are never removed"
+        "Remove the side selected in the table, opening the loop. A junction "
+        "left with two vessels merges them; inlets, outlets and boundary nodes "
+        "are never removed"
     ),
     "loop_keep": "Keep the chosen loop as it is, take it off the list and move on to the next one",
     "raw_panel": (
-        "Draw the chosen loop or item in its own plane and in the plane across "
-        "it, the segmentation beside the raw image on the Input tab, as the "
-        "marked grids draw them. The raw image is read the first time"
+        "Draw the chosen loop or item in its own plane and the plane across "
+        "it, the segmentation beside the raw image. The first time is slower "
+        "while the raw image is read"
     ),
     "raw_picture": (
-        "A slab 3 µm either side of the plane: the segmentation's voxels "
-        "anywhere in it, or the raw image's mean through it. The chosen item "
-        "is cyan, the other centrelines grey, and the orange bar 5 µm"
+        "A slab 3 um either side of the plane: segmentation voxels anywhere in "
+        "it, or the raw image's mean through it. Chosen item cyan, other "
+        "centrelines grey, orange bar 5 um"
     ),
     "click_delete": (
         "Then click vessels in the viewer to remove them, one per click; "
@@ -1016,11 +913,9 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "to stop"
     ),
     "add": (
-        "Then click a node, or a point on a vessel where a new node should "
-        "form, and click along the new vessel: each click is traced from the "
-        "last through the image chosen beside this button, and a click on "
-        "another node or vessel finishes it. It takes the mean diameter of the "
-        "vessels at its ends; press it again to cancel"
+        "Draw a new vessel: click a node or vessel to start, click along its "
+        "course, and click another node or vessel to finish. Each leg is traced "
+        "through the chosen image. Press again to cancel"
     ),
     "trace_source": (
         "What Add vessel traces each leg through: the segmented mask, or the "
@@ -1035,45 +930,39 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "inlets, outlets and boundary nodes are never cut off"
     ),
     "prune": (
-        "Remove every vessel no inlet-to-outlet path runs along: each piece "
-        "of the network that no longer has both an inlet and an outlet, such "
-        "as a branch whose only link to the rest was deleted, and each "
-        "dead-end branch, tree or loop that reaches no outlet. The same rule "
-        "as Network handling's remove_disconnected"
+        "Remove every vessel no inlet-to-outlet path runs along: pieces cut off "
+        "from an inlet or outlet, and dead-end branches, trees or loops that "
+        "reach no outlet"
     ),
     "connectivity_choice": (
-        "Which vessels the connectivity CSV lists: every vessel of the network "
-        "in the viewer, or only those some inlet-to-outlet path runs through "
-        "(no dead ends, loops off a single node or pieces without both an "
-        "inlet and an outlet)"
+        "Which vessels the connectivity CSV lists: every vessel in the viewer, "
+        "or only those on some inlet-to-outlet path (no dead ends or pieces cut "
+        "off)"
     ),
     "connectivity_map": (
-        "Draw the connectivity CSV exported last (or one you pick) as a 2D map "
-        "in the browser: inlets on the left, outlets on the right, every "
-        "vessel a line you can hover for its IDs, length and diameter"
+        "Draw the last exported connectivity CSV (or one you pick) as a 2D map "
+        "in the browser: inlets left, outlets right, each vessel hoverable for "
+        "its details"
     ),
     "export_connectivity": (
-        "Save a CSV of how the network is connected: one row per vessel, from "
-        "node to node oriented away from the inlets, with its branch order, "
-        "length, diameter, upstream and downstream vessels, and the IDs the "
-        "VTK and .pkl exports use"
+        "Save a CSV of how the network is connected: one row per vessel, "
+        "oriented away from the inlets, with its branch order, length, diameter "
+        "and upstream and downstream vessels"
     ),
     "log": (
-        "Every change made in this tab, oldest first, with the branchIDs as "
-        "they were when it was made; the same lines go to the napari log"
+        "Every change made in this tab, oldest first, with branchIDs as they "
+        "were at the time; also written to the napari log"
     ),
     "regenerate_graph": (
-        "Bring the edits in line with the rest of the network -- branch orders "
-        "assigned again, each edited vessel's length measured along its path and "
-        "its diameter by the run's own methods, and a zero-resistance bridge "
-        "where it opens into a thick vessel -- and rerun Haemodynamics on it. "
-        "While a run is paused here it stays paused; after a finished run, "
-        "Perturbations and Export are run again too"
+        "Update the edited vessels to match the rest (branch orders, lengths, "
+        "diameters, thick-vessel joins) and rerun Haemodynamics; after a "
+        "finished run, Perturbations and Export rerun too. A paused run stays "
+        "paused"
     ),
     "continue": (
-        "Carry on the run paused here: bring any edits in line and rerun "
-        "Haemodynamics on them, then run Perturbations and Export. A run pauses "
-        "here, after Haemodynamics, when Mid-run postprocessing (1. Input) is on"
+        "Resume the run paused here: update any edits, rerun Haemodynamics, "
+        "then Perturbations and Export. A run pauses here when \"Mid-run "
+        "postprocessing\" is on"
     ),
 }
 
@@ -1095,8 +984,8 @@ OPTIMISE_TOOLTIPS = {
     "discard": "Leave the panel as it is and drop the proposed settings",
     "passes": (
         "Run the whole search this many times, each pass starting where the "
-        "last one ended, to catch settings that only help together; stops "
-        "early once a pass changes nothing"
+        "last ended, to catch settings that only help together. Stops early if "
+        "a pass changes nothing"
     ),
     "fwhm_options": "Show or hide the FWHM optimiser's own options",
     "fwhm_choose_groups": (
@@ -1113,51 +1002,50 @@ OPTIMISE_TOOLTIPS = {
 #: types": what each group tries. Keyed by ``optimisation.GROUP_NAMES``.
 OPTIMISE_GROUP_TOOLTIPS: dict[str, str] = {
     "segmentation_cleanup": (
-        "Try the clean-up of the mask before it is skeletonised -- filling "
-        "cavities, removing whiskers, splitting narrow necks, closing and "
-        "reconnecting gaps, smoothing, removing small pieces -- and their "
-        "sizes, each scored as Check segmented image scores the mask"
+        "Try the mask clean-up steps before skeletonising (filling holes, "
+        "removing whiskers and small pieces, closing gaps, smoothing) and their "
+        "sizes, scored as Check segmented image scores"
     ),
     "thick_vessel_gating": (
         "Try the alternate skeletonisation of thick vessels on and off, the "
-        "radius above which a vessel counts as thick, and how the thick region "
-        "is refined and thin vessels are joined onto its centreline"
+        "radius above which a vessel counts as thick, and how thin vessels "
+        "join its centreline"
     ),
     "min_branch_length": (
-        "Try the shortest piece of skeleton kept when it is cleaned (Skeleton "
-        "min branch length)"
+        "Try the shortest piece of skeleton kept when it is cleaned (\"Skeleton "
+        "min branch length\")"
     ),
     "bundle_refinement": (
-        "Try the four settings that find dense tangles of skeleton and "
-        "collapse each into a hub: the scan window, how dense a window must "
-        "be, the links kept per hub and the spacing between hubs"
+        "Try the settings that find dense tangles of skeleton and collapse each "
+        "into a hub: scan window, density, links kept per hub and spacing "
+        "between hubs"
     ),
     "closing_radius": (
         "Try the radius of the closing that fills small gaps in the mask "
-        "before it is skeletonised (Skeleton closing radius)"
+        "before it is skeletonised (\"Skeleton closing radius\")"
     ),
     "gap_bridging": (
-        "Try how large a gap in the skeleton is bridged (Skeleton bridge gap "
-        "size) and how far a broken branch end reaches for another piece "
-        "(Skeleton max bridge distance)"
+        "Try how large a gap in the skeleton is bridged (\"Skeleton bridge gap "
+        "size\") and how far a broken branch end reaches for another piece "
+        "(\"Skeleton max bridge distance\")"
     ),
     "connectivity_and_component_filter": (
         "Try the voxel connectivity skeleton pieces are counted by, and the "
-        "smallest piece kept as a percentage of the skeleton (Skeleton min "
-        "component percent)"
+        "smallest piece kept as a percentage of the skeleton (\"Skeleton min "
+        "component percent\")"
     ),
     "reconnect_thresholds": (
-        "Try how far apart pieces of the graph may be and still be joined: "
-        "the Graph reconnect threshold and the Final orphan reconnect threshold"
+        "Try how far apart pieces of the graph may be and still be joined "
+        "(\"Graph reconnect threshold\" and \"Final orphan reconnect threshold\")"
     ),
     "cluster_collapse_distance": (
-        "Try how nodes lying close together are merged into one: the Cluster "
-        "collapse distance and method, and the method's own setting"
+        "Try how nodes lying close together are merged into one: \"Cluster "
+        "collapse distance\", the method, and the method's own setting"
     ),
     "min_stub_length": (
-        "Try the shortest dead-end stub the graph keeps: Min stub length, or "
-        "Min stub length radius multiple when stubs are judged by the radius "
-        "of the vessel they leave"
+        "Try the shortest dead-end stub the graph keeps: \"Min stub length\", "
+        "or \"Min stub length radius multiple\" when stubs are judged by their "
+        "vessel's radius"
     ),
     "centreline_smoothing": (
         "Try smoothing the vessel centrelines on and off, the smoothing "
@@ -1169,21 +1057,18 @@ OPTIMISE_GROUP_TOOLTIPS: dict[str, str] = {
 #: ``optimisation.FWHM_GROUP_NAMES``.
 FWHM_OPTIMISE_GROUP_TOOLTIPS: dict[str, str] = {
     "measurement_model": (
-        "Try how each profile is sampled and fitted -- in the slice plane or "
-        "across the vessel's 3D direction, as a blurred lumen or a Gaussian, "
-        "averaged along the vessel, how far apart -- and how many accepted "
-        "profiles a vessel needs and how they are combined. Judged on vessels "
-        "of known width planted beside the network's own, so it needs the "
-        "run's segmentation"
+        "Try how each profile is sampled and fitted (slice plane or 3D, blurred "
+        "lumen or Gaussian, averaging, spacing) and how many a vessel needs, "
+        "scored on added vessels of known width"
     ),
     "exclusion_zones": (
         "Try how far from a branch end, and from a junction, profiles are "
         "left unsampled"
     ),
     "extent_and_widening": (
-        "Try how far either side of the centreline each profile reaches, how "
-        "much wider than the fitted width it must span, and how many times it "
-        "may widen to make room"
+        "Try how far each profile reaches either side of the centreline, how "
+        "much wider than the fitted width it must span, and how often it may "
+        "widen"
     ),
     "central_lobe_clipping": (
         "Try clipping each profile to its central lobe, so a neighbouring "
@@ -1202,12 +1087,11 @@ FWHM_OPTIMISE_GROUP_TOOLTIPS: dict[str, str] = {
     ),
     "diameter_guess": (
         "Try where each vessel's fit starts: one diameter guess for every "
-        "vessel, or each vessel's own from a graph attribute"
+        "vessel, or each vessel's own, such as its width in the mask"
     ),
     "rejection_gates": (
-        "Try the gates that throw out poor profiles -- a fitted centre too far "
-        "off the centreline, a poor fit (low R^2), a flat-topped plateau -- "
-        "and the threshold of each"
+        "Try the gates that reject poor profiles (fitted centre off the "
+        "centreline, low R^2, flat top) and the threshold of each"
     ),
 }
 
@@ -1217,13 +1101,9 @@ FWHM_OPTIMISE_GROUP_TOOLTIPS: dict[str, str] = {
 #: ``optimisation.endothelial_search.ENDOTHELIAL_GROUP_NAMES``.
 ENDOTHELIAL_OPTIMISE_TOOLTIPS = {
     "button": (
-        "Choose the endothelial ring fit's settings -- its blur and wall, "
-        "estimated from the image or fixed, and how strong a ring must be to "
-        "be read -- by running the real ring fit on a sample of the current "
-        "network's vessels in the raw image, judged on vessels of known lumen "
-        "drawn into a copy of it and on decoys in vessel-free tissue. "
-        "Proposes the winners for this tab; the current network's diameters "
-        "are not changed"
+        "Find the endothelial ring fit's best settings (blur, wall, ring "
+        "strength) by testing them on a sample of vessels, vessels of known "
+        "lumen and decoys, and propose them"
     ),
     "options": "Show or hide the endothelial optimiser's own options",
     "choose_groups": (
@@ -1231,17 +1111,17 @@ ENDOTHELIAL_OPTIMISE_TOOLTIPS = {
         "below, instead of every ring-fit setting"
     ),
     "blur_and_wall": (
-        "Where the image's wide vessels cannot estimate the blur or the wall, "
-        "or you have fixed them, try their estimate fixed and the ends of its "
-        "95% interval; otherwise they stay estimated from the image"
+        "Where the image cannot estimate the blur or wall, or you fixed them, "
+        "try their estimate and the ends of its 95% interval; otherwise they "
+        "are estimated from the image"
     ),
     "ring_gate": (
         "Try half to twice the weakest ring a reading is kept for "
-        "(endothelial_min_ring_contrast), and the ring fit's own default"
+        "(\"Endothelial min ring contrast\"), and the ring fit's own default"
     ),
     "sample": (
         "How many of the network's vessels each trial reads; Auto times one "
-        "reading and picks a count to keep the trials near ten minutes, "
-        "with the blur and wall calibrations on top"
+        "reading and picks a count to keep the trials near ten minutes, plus "
+        "calibration"
     ),
 }

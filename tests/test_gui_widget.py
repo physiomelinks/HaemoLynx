@@ -1207,10 +1207,12 @@ def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):
 
 
 def test_cartwheel_hub_guard_knobs_nest_under_its_own_toggle(panel):
-    """The cartwheel hub guard's three knobs hide with their own toggle, on
-    the "3. Graph" tab -- same live-Qt check as
+    """The cartwheel hub guard's own knob hides with its toggle, on the
+    "3. Graph" tab -- same live-Qt check as
     test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest
-    above, for a group that used to only grey out instead of hide.
+    above, for a group that used to only grey out instead of hide. The hub
+    size and tangent length, which direction-aware merging reads too, stay
+    shown and editable with the guard off.
 
     While the Graph tab is not current, magicgui may keep ``visible`` False
     regardless of prerequisite state, so the tab must be selected before
@@ -1230,23 +1232,37 @@ def test_cartwheel_hub_guard_knobs_nest_under_its_own_toggle(panel):
     else:
         raise AssertionError("no tab containing 'Graph'")
 
-    children = [
-        rows["cartwheel_hub_min_degree"],
-        rows["cartwheel_hub_max_radial_dispersion"],
-        rows["cartwheel_hub_tangent_length_um"],
-    ]
+    guard_only = rows["cartwheel_hub_max_radial_dispersion"]
+    shared = [rows["cartwheel_hub_min_degree"], rows["cartwheel_hub_tangent_length_um"]]
 
     # The guard is one of the Graph tab's Checks, behind its Advanced button.
     widget._haemolynx_advanced["build_network:box:pipeline_stages"].toggle(True)
     rows["detect_cartwheel_hub_artifacts"].value = False
+    rows["cluster_collapse_method"].value = "direction_aware"
     QApplication.processEvents()
-    for child in children:
-        assert child.visible is False
+    assert guard_only.visible is False
+    for row in shared:
+        assert row.visible is True and row.enabled is True
 
     rows["detect_cartwheel_hub_artifacts"].value = True
     QApplication.processEvents()
-    for child in children:
-        assert child.visible is True
+    for row in (guard_only, *shared):
+        assert row.visible is True
+
+
+def test_the_fwhm_same_edge_window_box_can_be_emptied(panel):
+    """Empty, the window is sized by each vessel's width; a spin box could
+    not be emptied, so the panel could never choose that."""
+    widget, _viewer = panel
+    rows = widget._haemolynx_rows()
+    row = rows["fwhm_same_edge_arc_window_um"]
+    assert row.native.placeholderText() == "by vessel width"
+    assert widget._haemolynx_values()["fwhm_same_edge_arc_window_um"] == 3.0
+
+    row.value = ""
+    assert widget._haemolynx_values()["fwhm_same_edge_arc_window_um"] is None
+    row.value = "4.5"
+    assert widget._haemolynx_values()["fwhm_same_edge_arc_window_um"] == 4.5
 
 
 def test_perturbation_output_dir_nests_under_run_perturbations(panel):
@@ -1447,7 +1463,7 @@ def test_the_raw_image_rows_grey_out_on_every_tab_while_no_raw_image_is_entered(
     for name in raw_rows:
         assert shown(name) is True, name
         assert rows[name].enabled is False, name
-        assert "'raw_image_path' is not set" in rows[name].tooltip, name
+        assert 'Not used while "Raw image path" is not set' in rows[name].tooltip, name
     assert shown("input_path") is True
     assert rows["input_path"].enabled is True
 

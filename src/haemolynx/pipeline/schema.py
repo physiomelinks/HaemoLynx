@@ -638,17 +638,15 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Load the input image, and any vessel/pericyte/cell masks, "
-                "into a disk-backed array instead of RAM, and write the "
-                "largest full-volume working buffers (connected-component "
-                "labels, distance transforms) to disk too, instead of a "
-                "fresh in-RAM array each time. Same result, much less peak "
-                "RAM, at the cost of disk space (as large as the volume "
-                "itself) and slower reads -- turn on for a volume too large "
-                "to hold in memory outright. Does not cover "
-                "use_thick_vessel_skeletonisation's own centreline-tree "
-                "computation, which still allocates full-volume buffers "
-                "regardless of this setting"
+                "Load the input image, and any vessel/pericyte/cell masks, into a disk-backed "
+                "array instead of RAM, and write the largest full-volume working buffers "
+                "(connected-component labels, distance transforms) to disk too, instead of a "
+                "fresh in-RAM array each time. Same result, much less peak RAM, at the cost of "
+                "disk space (as large as the volume itself) and slower reads -- turn on for a "
+                "volume too large to hold in memory outright. Covers "
+                "use_thick_vessel_skeletonisation too, with the same skeleton; one very large "
+                "thick component can still need much memory, which "
+                "skeleton_thick_vessel_large_stack_tree avoids"
             ),
             section=_INPUT_AND_SEGMENTATION,
             requires=("network_source=segmented_image",),
@@ -1467,13 +1465,12 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "At load time, remove arteriole/venule overlap voxels from the "
-                "smaller overlapping connected component; the rest of that component "
-                "keeps its class (large_vessel_swap_minority_components relabels "
-                "it). Assignment-time cleanup "
-                "is controlled separately by "
-                "automated_vessel_assignment_enable_overlap_cleanup / fast_mode "
-                "(large) and small_vessel_boundary_assignment_* (small)"
+                "At load time, remove large arteriole/venule overlap voxels from the smaller "
+                "overlapping connected component; the rest of that component keeps its class "
+                "(large_vessel_swap_minority_components relabels it). The small masks have no "
+                "load-time equivalent. Assignment-time cleanup is controlled separately by "
+                "automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and "
+                "small_vessel_boundary_assignment_* (small)"
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
@@ -1516,8 +1513,11 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "When fast mode is off, still apply overlap cleanup inside each "
-                "progressive assignment step (requires overlap cleanup enabled)"
+                "When fast mode is off, still clean the large masks' arteriole/venule overlap "
+                "once, inside the legacy inlet/outlet selection only: the masks the cut and the "
+                "rest of the run read keep their overlap, and the confidence-based selection "
+                "(automated_vessel_assignment_use_legacy_mode off) ignores this (requires overlap"
+                " cleanup enabled)"
             ),
             section=_VESSEL_MASKS,
             requires=(
@@ -1807,22 +1807,19 @@ SCHEMA = Schema(
             default="off",
             choices=("off", "large", "small", "both"),
             help=(
-                "Classify every voxel inside the chosen mask(s) as fat/"
-                "thick directly -- skeleton_thick_vessel_min_radius_um does "
-                "not gate it there, only its own local radius does "
-                "elsewhere. Off (the default), local radius alone decides, "
-                "which can sweep dense, complex vasculature into one large "
-                "connected 'fat' region purely because it locally measures "
-                "wide, or -- the opposite failure -- miss a real large "
-                "vessel entirely when it never reaches the radius "
-                "threshold anywhere (an artery imaged before full "
-                "muscularisation can measure narrower everywhere than its "
-                "paired vein, for instance). 'large' needs "
+                "Take the fat/thick region from the chosen mask(s) instead of from width: every "
+                "segmented voxel inside them is fat, and the radius test runs nowhere "
+                "(skeleton_thick_vessel_min_radius_um still sizes the wall margin by default), so"
+                " outside the mask only that margin is fat. Off (the default), local radius alone"
+                " decides, which can sweep dense, complex vasculature into one large connected "
+                "'fat' region purely because it locally measures wide, or -- the opposite failure"
+                " -- miss a real large vessel entirely when it never reaches the radius threshold"
+                " anywhere (an artery imaged before full muscularisation can measure narrower "
+                "everywhere than its paired vein, for instance). 'large' needs "
                 "use_large_vessel_masks; 'small' needs "
-                "use_small_vessel_masks_for_boundary_assignment; 'both' "
-                "needs both. If the mask has no overlap with the segmented "
-                "image at all, skeletonisation falls back to plain Lee on "
-                "the whole mask, same as when no fat trunk is present today"
+                "use_small_vessel_masks_for_boundary_assignment; 'both' needs both. If the mask "
+                "has no overlap with the segmented image at all, skeletonisation falls back to "
+                "plain Lee on the whole mask, same as when no fat trunk is present"
             ),
             section=_VESSEL_MASKS,
             requires=("use_thick_vessel_skeletonisation",),
@@ -2098,8 +2095,9 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "When small-vessel fast mode is off, still apply overlap cleanup "
-                "inside each progressive labelling step (requires cleanup enabled)"
+                "When small-vessel fast mode is off, still clean the small masks' "
+                "arteriole/venule overlap once before labelling -- the same clean-up fast mode "
+                "makes (requires cleanup enabled)"
             ),
             section=_VESSEL_MASKS,
             requires=(
@@ -2697,7 +2695,11 @@ SCHEMA = Schema(
             name="arteriole_boundary_selection_method",
             kind="choice",
             default="coordinates",
-            help="Choose how manual arteriole boundary nodes are picked from the graph",
+            help=(
+                "Choose how manual arteriole boundary nodes are picked from the graph: only "
+                "coordinates, volume and node_ids set any, from that method's list; any other "
+                "method, or an empty list, sets none"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
         ),
@@ -2705,7 +2707,11 @@ SCHEMA = Schema(
             name="venule_boundary_selection_method",
             kind="choice",
             default="coordinates",
-            help="Choose how manual venule boundary nodes are picked from the graph",
+            help=(
+                "Choose how manual venule boundary nodes are picked from the graph: only "
+                "coordinates, volume and node_ids set any, from that method's list; any other "
+                "method, or an empty list, sets none"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
         ),
@@ -3274,7 +3280,11 @@ SCHEMA = Schema(
             name="vtk_output_prefix",
             kind="path",
             default=f"{_OUTPUTS}/resistance_network",
-            help="Prefix every VTK artifact and cached stage file with this output path",
+            help=(
+                "Output path for the run: its folder receives the run's output files and cached "
+                "stages, and the VTK files are named after its last part (outputs/run writes "
+                "outputs/run_vessels.vtp); plots go under base_plot_dir"
+            ),
             section=_PIPELINE_STAGES,
         ),
         Setting(
@@ -3282,9 +3292,11 @@ SCHEMA = Schema(
             kind="int",
             default=2,
             help=(
-                "Close gaps in the mask with a structuring element of this radius before "
-                "skeletonizing, in voxels of the finest axis: a physical radius of this many "
-                "times the smallest voxel size, so it reaches fewer voxels along a coarser z"
+                "Close gaps in the skeleton itself, after its small pieces are dropped and its "
+                "tangles collapsed, with a structuring element of this radius, then thin it again"
+                " -- held within a voxel of the segmented mask while bridge_require_mask_support "
+                "is on. In voxels of the finest axis: a physical radius of this many times the "
+                "smallest voxel size, so it reaches fewer voxels along a coarser z"
             ),
             section=_PIPELINE_STAGES,
             unit="voxels",
@@ -3296,9 +3308,11 @@ SCHEMA = Schema(
             kind="int",
             default=3,
             help=(
-                "Bridge skeleton gaps no larger than this many voxels of the finest axis: a "
-                "physical distance of this many times the smallest voxel size, so fewer "
-                "voxels along a coarser z"
+                "Fill gaps in the skeleton itself by growing it this many voxels, then thin it "
+                "again -- held within a voxel of the segmented mask while "
+                "bridge_require_mask_support is on. In voxels of the finest axis: a physical "
+                "distance of this many times the smallest voxel size, so fewer voxels along a "
+                "coarser z"
             ),
             section=_PIPELINE_STAGES,
             unit="voxels",
@@ -3311,8 +3325,8 @@ SCHEMA = Schema(
             default=3,
             help=(
                 "Drop skeleton pieces shorter than this many voxels of the finest axis during "
-                "cleaning, each voxel counting for its physical length -- one along a coarser "
-                "z counts for more"
+                "cleaning, unless a bridge can join them to a larger piece; each voxel counts for"
+                " its physical length -- one along a coarser z counts for more"
             ),
             section=_PIPELINE_STAGES,
             unit="voxels",
@@ -4027,12 +4041,10 @@ SCHEMA = Schema(
             default=False,
             help=(
                 "Give fat plasma-labelled vessels (inscribed radius above "
-                "skeleton_thick_vessel_min_radius_um, 6 um by default) a "
-                "centreline tree of every arm instead of Lee thinning; "
-                "capillaries stay on Lee. Not covered by use_memmap_loading "
-                "-- this path always allocates full-volume buffers, so it "
-                "can still run out of memory on a volume large enough that "
-                "the plain-Lee path would otherwise handle it fine"
+                "skeleton_thick_vessel_min_radius_um, 6 um by default) a centreline tree of every"
+                " arm instead of Lee thinning; capillaries stay on Lee. use_memmap_loading covers"
+                " this path, with the same skeleton; for a thick component too large for memory "
+                "even so, skeleton_thick_vessel_large_stack_tree draws its tree with far less"
             ),
             section=_PIPELINE_STAGES,
         ),
@@ -4346,7 +4358,10 @@ SCHEMA = Schema(
             name="centreline_smoothing_method",
             kind="choice",
             default="taubin",
-            help="How to smooth a centreline: taubin recovers true length, chaikin changes it least",
+            help=(
+                "How to smooth a centreline: taubin recovers true length; chaikin cuts corners "
+                "more gently, keeping closer to the raw centreline and shortening it least"
+            ),
             section=_PIPELINE_STAGES,
             choices=("taubin", "chaikin"),
             requires=("smooth_centrelines",),
@@ -4402,14 +4417,21 @@ SCHEMA = Schema(
             section=_CARTWHEEL_GUARD,
             advanced=True,
         ),
+        # This and cartwheel_hub_tangent_length_um are read by the guard and by
+        # cluster_collapse_method=direction_aware alike. A `requires` holds all
+        # of its entries and can name only one of the two, so they carry none:
+        # gated on the guard, the panel hid them from a direction-aware run.
         Setting(
             name="cartwheel_hub_min_degree",
             kind="int",
             default=6,
-            help="Only warn about a node with at least this many incident edges",
+            help=(
+                "Only warn about a node with at least this many incident edges; "
+                "cluster_collapse_method=direction_aware judges merges into such "
+                "nodes by the same count"
+            ),
             section=_CARTWHEEL_GUARD,
             minimum=2,
-            requires=("detect_cartwheel_hub_artifacts",),
             advanced=True,
         ),
         Setting(
@@ -4431,7 +4453,11 @@ SCHEMA = Schema(
             name="cartwheel_hub_tangent_length_um",
             kind="float",
             default=10.0,
-            help="How far along each incident edge's own centreline to measure the direction it leaves the node",
+            help=(
+                "How far along each incident edge's own centreline to measure the "
+                "direction it leaves the node, for the guard and for "
+                "cluster_collapse_method=direction_aware alike"
+            ),
             section=_CARTWHEEL_GUARD,
             unit="um",
             # A sample distance of exactly 0 always lands back on the node
@@ -4439,7 +4465,6 @@ SCHEMA = Schema(
             # would then find no usable direction on any edge, silently
             # turning the guard into a no-op. Strictly positive.
             minimum=0.1,
-            requires=("detect_cartwheel_hub_artifacts",),
             advanced=True,
         ),
         # ------------------------------------------------------------------
@@ -4534,7 +4559,7 @@ SCHEMA = Schema(
             name="statistics_branching",
             kind="bool",
             default=True,
-            help="Branch-point counts and per-node branching-factor statistics",
+            help="The number of branch points: nodes where three or more vessels meet",
             section=_STATISTICS,
             requires=("statistics",),
             advanced=True,
@@ -4983,11 +5008,11 @@ SCHEMA = Schema(
             kind="choice",
             default="fast",
             help=(
-                "fast computes sampled/capped path efficiency, community and "
-                "betweenness measures; full computes them exactly over the "
-                "whole graph, which is far slower on a large network. Every "
-                "other connectivity/network-analysis measure below is "
-                "unaffected by this choice"
+                "fast samples or caps the slower network analyses -- path efficiency, "
+                "betweenness, bottlenecks, occlusion impact, occlusion curves and loop hierarchy "
+                "-- reports communities as a count and sizes, and leaves out current flow's "
+                "Kirchhoff index; full computes them all exactly over the whole graph, which is "
+                "far slower on a large network. Every other measure is unaffected by this choice"
             ),
             section=_NETWORK_ANALYSIS,
             choices=("fast", "full"),
@@ -5329,7 +5354,11 @@ SCHEMA = Schema(
             name="statistics_community",
             kind="bool",
             default=True,
-            help="Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode",
+            help=(
+                "Community/module detection over the network's topology: fast reports the "
+                "communities' count and sizes, with connected components standing in for them "
+                "above 1500 nodes; full lists every community's nodes (statistics_mode)"
+            ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
             advanced=True,
@@ -5688,7 +5717,10 @@ SCHEMA = Schema(
             name="manual_arteriole_diameter_by_branch_order",
             kind="mapping",
             default={},
-            help="Override arteriole diameters per branch-order label, e.g. Art1",
+            help=(
+                "Override arteriole diameters per branch-order label, e.g. Art1; an order not "
+                "listed takes the B01 capillary diameter"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             unit="um",
             requires=("!all_diams_const",),
@@ -5697,7 +5729,10 @@ SCHEMA = Schema(
             name="manual_venule_diameter_by_branch_order",
             kind="mapping",
             default={},
-            help="Override venule diameters per branch-order label, e.g. Ven1",
+            help=(
+                "Override venule diameters per branch-order label, e.g. Ven1; an order not listed"
+                " takes the B01 capillary diameter"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             unit="um",
             requires=("!all_diams_const",),
@@ -5783,9 +5818,9 @@ SCHEMA = Schema(
             kind="path",
             default=None,
             help=(
-                "Read pericyte centroids from this binary or labelled mask "
-                "when mask-based placement is on; leave unset to keep the "
-                "path from the Diameters tab"
+                "Read pericyte centroids from this binary or labelled mask when mask-based "
+                "placement is on; it must then be set, with no fallback. The panel fills it from "
+                "a mask named for pericytes beside the input image"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_pericyte_mask_constriction",),
@@ -5940,7 +5975,11 @@ SCHEMA = Schema(
             name="default_diameter",
             kind="float",
             default=4.0,
-            help="Use this vessel diameter where no branch-order override applies",
+            help=(
+                "Use this vessel diameter where no branch-order override applies, for capillary "
+                "and large-vessel orders (every order with all_diams_const on); arteriole, venule"
+                " and unknown small vessel orders not listed take the B01 diameter instead"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
@@ -6247,7 +6286,11 @@ SCHEMA = Schema(
             name="fwhm_same_edge_arc_window_um",
             kind="float",
             default=3.0,
-            help="Use this absolute arc window when checking same-edge locality",
+            help=(
+                "Use this absolute arc window when checking same-edge locality; leave it "
+                "unset (null; an empty box in the panel) to size each vessel's window by "
+                "fwhm_same_edge_arc_window_multiplier and fwhm_same_edge_arc_window_min_um"
+            ),
             section=_FWHM,
             minimum=0.0,
             unit="um",
@@ -6258,7 +6301,10 @@ SCHEMA = Schema(
             name="fwhm_same_edge_arc_window_multiplier",
             kind="float",
             default=1.0,
-            help="Scale the same-edge arc window by this factor",
+            help=(
+                "Scale the same-edge arc window to this many times each vessel's width, "
+                "while fwhm_same_edge_arc_window_um is unset"
+            ),
             section=_FWHM,
             minimum=0.0,
             requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_enforce_same_edge_locality"),
@@ -6268,7 +6314,10 @@ SCHEMA = Schema(
             name="fwhm_same_edge_arc_window_min_um",
             kind="float",
             default=1.0,
-            help="Never shrink the same-edge arc window below this size",
+            help=(
+                "Never shrink the same-edge arc window below this size, while "
+                "fwhm_same_edge_arc_window_um is unset"
+            ),
             section=_FWHM,
             minimum=0.0,
             unit="um",
@@ -6584,8 +6633,9 @@ SCHEMA = Schema(
             kind="float",
             default=None,
             help=(
-                "The image's blur across the y-x plane, as a Gaussian sigma. Leave unset to "
-                "estimate it from the image's own wide vessels"
+                "The image's blur across the y-x plane, as a Gaussian sigma. Read only with "
+                "raw_section_psf_sigma_z_um set too: leave both unset, or set one alone, and both"
+                " are estimated from the image's own wide vessels"
             ),
             section=_FWHM,
             unit="um",
@@ -6599,8 +6649,9 @@ SCHEMA = Schema(
             kind="float",
             default=None,
             help=(
-                "The image's blur along z, as a Gaussian sigma. Leave unset to estimate it from "
-                "the image's own wide vessels"
+                "The image's blur along z, as a Gaussian sigma. Read only with "
+                "raw_section_psf_sigma_xy_um set too: leave both unset, or set one alone, and "
+                "both are estimated from the image's own wide vessels"
             ),
             section=_FWHM,
             unit="um",
@@ -6660,7 +6711,11 @@ SCHEMA = Schema(
             name="endothelial_psf_sigma_xy_um",
             kind="float",
             default=None,
-            help="The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels",
+            help=(
+                "The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Read "
+                "only with endothelial_psf_sigma_z_um set too: leave both unset, or set one "
+                "alone, and both are estimated from the image's wide vessels"
+            ),
             section=_ENDOTHELIAL,
             unit="um",
             minimum=0.0,
@@ -6672,7 +6727,11 @@ SCHEMA = Schema(
             name="endothelial_psf_sigma_z_um",
             kind="float",
             default=None,
-            help="The endothelial channel's blur along z, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels",
+            help=(
+                "The endothelial channel's blur along z, as a Gaussian sigma. Read only with "
+                "endothelial_psf_sigma_xy_um set too: leave both unset, or set one alone, and "
+                "both are estimated from the image's wide vessels"
+            ),
             section=_ENDOTHELIAL,
             unit="um",
             minimum=0.0,

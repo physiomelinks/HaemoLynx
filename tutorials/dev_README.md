@@ -106,6 +106,13 @@ some in microns, 10 is a reasonable value for either, and picking the wrong one
 is silent. `tests/test_setting_units.py` fails on a new length-like setting that
 declares neither a unit nor a reason it has none.
 
+Its `help` is the config file's comment and may say everything. The panel's
+hover text is shorter, written for someone new to HaemoLynx: give a pipeline
+setting an entry in `src/haemolynx/gui/setting_tooltips.py` of a sentence or
+two saying what it does and which way to set it, with no setting names, code
+or history. `tests/test_gui_tooltips.py` fails on a setting with none, and on
+one that runs past 35 words.
+
 After editing a schema, regenerate the config files:
 
 ```bash

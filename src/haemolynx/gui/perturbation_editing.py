@@ -146,22 +146,21 @@ SETTING_DISPLAY_LABELS: Mapping[str, str] = {
 }
 
 #: Hover / focus text for controls that are not schema settings. Setting-row
-#: tooltips come from ``Setting.help`` (plus unit) via :func:`haemolynx.gui.form.field_for`.
+#: tooltips come from :mod:`haemolynx.gui.setting_tooltips` (plus unit) via
+#: :func:`haemolynx.gui.form.field_for`.
 NAME_TOOLTIP = (
-    "Used with the type to name the output folder ({name}_{type}), so it "
-    "has to be unique and usable as a directory name"
+    "Name for this perturbation. With its type it names its output "
+    "directory, so keep it unique"
 )
 TYPE_TOOLTIP = (
-    "What to change before re-solving (diameter types use constriction/"
-    "dilation wording). Choosing one shows its options"
+    "What to change before re-solving the flow, such as a constriction or "
+    "dilation of vessels. Choosing one shows its options"
 )
 ADD_TOOLTIP = (
-    "Add another perturbation that re-solves from the same baseline; "
-    "pick its type to reveal the settings it overrides"
+    "Add another perturbation, re-solved from the same baseline network"
 )
 REMOVE_TOOLTIP = (
-    "Remove this perturbation from the list; later entries keep their "
-    "settings and shift up"
+    "Remove this perturbation from the list"
 )
 
 

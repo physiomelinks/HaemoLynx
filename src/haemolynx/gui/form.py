@@ -25,6 +25,7 @@ from haemolynx.parsers.schema import (
     parse_prerequisite,
     prerequisite_name,
 )
+from haemolynx.gui.setting_tooltips import tooltip_for
 
 #: Schema kind -> the magicgui widget that edits it. `any`, `mapping` and the
 #: list kinds have no dedicated widget, so they are edited as Python literals:
@@ -286,24 +287,30 @@ class Field:
         return True
 
     def why_disabled(self, values: Mapping[str, Any]) -> str:
-        """A sentence saying which prerequisite is unmet, for the tooltip."""
+        """A sentence saying which prerequisite is unmet, for the tooltip.
+
+        Each gate is named by its row's label and a choice by what its
+        dropdown shows, as the panel shows them, not as the config spells them.
+        """
         unmet = [rule for rule in self.enabled_by if not self.rule_holds(rule, values)]
         if not unmet:
             return ""
         parts = []
         for rule in unmet:
             name, test, expected = parse_prerequisite(rule)
+            row = f'"{label_for(name)}"'
+            shown = CHOICE_VALUE_LABELS.get(name, {}).get(expected, expected)
             if test == PREREQUISITE_EQUALS:
-                parts.append(f"'{name}' is not '{expected}'")
+                parts.append(f"{row} is not {shown}")
             elif test == PREREQUISITE_NOT_EQUALS:
-                parts.append(f"'{name}' is '{expected}'")
+                parts.append(f"{row} is {shown}")
             elif name in self.path_gates:
-                parts.append(f"'{name}' is {'set' if test == PREREQUISITE_OFF else 'not set'}")
+                parts.append(f"{row} is {'set' if test == PREREQUISITE_OFF else 'not set'}")
             elif test == PREREQUISITE_OFF:
-                parts.append(f"'{name}' is on")
+                parts.append(f"{row} is on")
             else:
-                parts.append(f"'{name}' is off")
-        return f"Not used while {' and '.join(parts)}."
+                parts.append(f"{row} is off")
+        return f"Not used while {' and '.join(parts)}"
 
 
 def hidden_by(field: Field, unmet: Sequence[str]) -> tuple[str, ...]:
@@ -753,13 +760,26 @@ def channel_choices(channels, current: int | None = None) -> list[tuple[str, int
 #: setting is set while the feature reading it is off.
 NUMERIC_WIDGETS = {"SpinBox", "FloatSpinBox"}
 
+#: Numbers with a default whose unset value is a choice of its own, and what
+#: an empty box means. A spin box cannot be emptied, so the panel could never
+#: choose it: the FWHM same-edge window unset is sized by each vessel's width,
+#: the only way its multiplier and minimum rows take effect.
+EMPTYABLE_NUMBERS: Mapping[str, str] = {
+    "fwhm_same_edge_arc_window_um": "by vessel width",
+}
+
+
+def can_be_left_empty(setting: Setting) -> bool:
+    """Whether the panel lets *setting*'s box be emptied, meaning unset."""
+    return setting.default is None or setting.name in EMPTYABLE_NUMBERS
+
 
 def widget_type_for(setting: Setting) -> str:
     """The widget that can express this setting, including its unset state."""
     if setting.name in CHANNEL_SETTINGS:
         return "ComboBox"
     widget = WIDGET_TYPES[setting.kind]
-    if setting.default is None and widget in NUMERIC_WIDGETS:
+    if can_be_left_empty(setting) and widget in NUMERIC_WIDGETS:
         return "LineEdit"
     return widget
 
@@ -819,13 +839,13 @@ def field_for(
         options=_options_for(
             setting, widget_type, setting.default if value is None else value
         ),
-        help=setting.help + (f" ({setting.unit})" if setting.unit else ""),
+        help=tooltip_for(setting) + (f" ({setting.unit})" if setting.unit else ""),
         section=setting.section,
         advanced=setting.advanced,
         enabled_by=tuple(setting.requires or ()),
         kind=setting.kind,
-        nullable=setting.default is None,
-        placeholder=setting.placeholder,
+        nullable=can_be_left_empty(setting),
+        placeholder=setting.placeholder or EMPTYABLE_NUMBERS.get(setting.name),
         path_gates=path_gates,
         gate_defaults=dict(gate_defaults or {}),
     )

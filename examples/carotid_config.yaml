@@ -66,7 +66,7 @@ input_and_segmentation:
   image_axis_order: zyx
   # Pause a napari panel run after Haemodynamics, on the Post processing tab, to fix the solved network by hand; the tab's Continue button brings the edits in line, solves the haemodynamics again and runs the rest. A command-line run does not pause
   mid_run_postprocessing: false
-  # Load the input image, and any vessel/pericyte/cell masks, into a disk-backed array instead of RAM, and write the largest full-volume working buffers (connected-component labels, distance transforms) to disk too, instead of a fresh in-RAM array each time. Same result, much less peak RAM, at the cost of disk space (as large as the volume itself) and slower reads -- turn on for a volume too large to hold in memory outright. Does not cover use_thick_vessel_skeletonisation's own centreline-tree computation, which still allocates full-volume buffers regardless of this setting  [needs network_source = segmented_image]
+  # Load the input image, and any vessel/pericyte/cell masks, into a disk-backed array instead of RAM, and write the largest full-volume working buffers (connected-component labels, distance transforms) to disk too, instead of a fresh in-RAM array each time. Same result, much less peak RAM, at the cost of disk space (as large as the volume itself) and slower reads -- turn on for a volume too large to hold in memory outright. Covers use_thick_vessel_skeletonisation too, with the same skeleton; one very large thick component can still need much memory, which skeleton_thick_vessel_large_stack_tree avoids  [needs network_source = segmented_image]
   use_memmap_loading: false
   # Write use_memmap_loading's disk-backed arrays here instead of the OS temp directory -- point this at a drive with enough free space for a volume-sized file (or a faster disk than the default temp drive) when the default location cannot take it. Setting this also lets a later run reuse the raw input image already decompressed here instead of reloading it, as long as the input file and image_axis_order have not changed (skeletonisation and everything after it are always rebuilt fresh either way). Created if it does not already exist; leave unset to use the OS default with no reuse between runs  [needs use_memmap_loading]
   memmap_directory: null
@@ -181,13 +181,13 @@ vessel_masks:
   large_vessel_opposite_attached_max_component_volume_um3: 250.0
   # Maximum distance from the opposite large-vessel mask for a tiny component to count as opposite-attached and be removed  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_remove_small_opposite_attached_components]
   large_vessel_opposite_attached_max_distance_microns: 3.0
-  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component; the rest of that component keeps its class (large_vessel_swap_minority_components relabels it). Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small)  [needs use_large_vessel_masks and automated_vessel_assignment]
+  # At load time, remove large arteriole/venule overlap voxels from the smaller overlapping connected component; the rest of that component keeps its class (large_vessel_swap_minority_components relabels it). The small masks have no load-time equivalent. Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small)  [needs use_large_vessel_masks and automated_vessel_assignment]
   exclude_smaller_overlapping_volumes: false
   # Master switch for large-vessel overlap cleanup at assignment time. If False, cleanup is skipped even when fast mode is on  [needs use_large_vessel_masks and automated_vessel_assignment]
   automated_vessel_assignment_enable_overlap_cleanup: true
   # Pre-clean large arteriole/venule overlap voxels from the smaller component once before progressive terminal assignment (when overlap cleanup is enabled)  [needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_enable_overlap_cleanup]
   automated_vessel_assignment_fast_mode: true
-  # When fast mode is off, still apply overlap cleanup inside each progressive assignment step (requires overlap cleanup enabled)  [needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_enable_overlap_cleanup and automated_vessel_assignment_fast_mode off]
+  # When fast mode is off, still clean the large masks' arteriole/venule overlap once, inside the legacy inlet/outlet selection only: the masks the cut and the rest of the run read keep their overlap, and the confidence-based selection (automated_vessel_assignment_use_legacy_mode off) ignores this (requires overlap cleanup enabled)  [needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_enable_overlap_cleanup and automated_vessel_assignment_fast_mode off]
   automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode: false
   # Use legacy progressive large-vessel terminal assignment. Set False for confidence-based robust assignment with unresolved-node QC  [needs use_large_vessel_masks and automated_vessel_assignment]
   automated_vessel_assignment_use_legacy_mode: true
@@ -221,7 +221,7 @@ vessel_masks:
   large_vessel_mask_min_overlap_fraction: 0.5
   # A large-vessel mask component gives a stump (an inlet or outlet where the field of view cut the vessel off, the mask_stump method) only when it holds at least this fraction of the voxels of the mask's largest component. The specks a classifier leaves at the image faces each used to seed an inlet of their own: on E14.5 MCA, 468 arteriole components, of which the vessel is one and the next largest 0.5% of it. 0 keeps every component  [fraction; range 0.0..1.0; needs use_large_vessel_masks and automated_vessel_assignment and cut_network_at_large_vessel_volumes off and assign_large_vessel_branch_orders]
   large_vessel_stump_min_component_fraction: 0.05
-  # Classify every voxel inside the chosen mask(s) as fat/thick directly -- skeleton_thick_vessel_min_radius_um does not gate it there, only its own local radius does elsewhere. Off (the default), local radius alone decides, which can sweep dense, complex vasculature into one large connected 'fat' region purely because it locally measures wide, or -- the opposite failure -- miss a real large vessel entirely when it never reaches the radius threshold anywhere (an artery imaged before full muscularisation can measure narrower everywhere than its paired vein, for instance). 'large' needs use_large_vessel_masks; 'small' needs use_small_vessel_masks_for_boundary_assignment; 'both' needs both. If the mask has no overlap with the segmented image at all, skeletonisation falls back to plain Lee on the whole mask, same as when no fat trunk is present today  [one of: off, large, small, both; needs use_thick_vessel_skeletonisation]
+  # Take the fat/thick region from the chosen mask(s) instead of from width: every segmented voxel inside them is fat, and the radius test runs nowhere (skeleton_thick_vessel_min_radius_um still sizes the wall margin by default), so outside the mask only that margin is fat. Off (the default), local radius alone decides, which can sweep dense, complex vasculature into one large connected 'fat' region purely because it locally measures wide, or -- the opposite failure -- miss a real large vessel entirely when it never reaches the radius threshold anywhere (an artery imaged before full muscularisation can measure narrower everywhere than its paired vein, for instance). 'large' needs use_large_vessel_masks; 'small' needs use_small_vessel_masks_for_boundary_assignment; 'both' needs both. If the mask has no overlap with the segmented image at all, skeletonisation falls back to plain Lee on the whole mask, same as when no fat trunk is present  [one of: off, large, small, both; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_restrict_to_mask: 'off'
   # Log a warning instead of an info line when fewer than this fraction of a large/small vessel mask's own voxels fall on the segmented image, while skeleton_thick_vessel_restrict_to_mask is using it -- see preprocessing.thick_vessels.diagnose_mask_restriction_alignment. A low fraction usually means that mask is misaligned with, or a different shape than, the vessel as it actually appears in the segmented image, so much of it contributes nothing to the fat catchment regardless of wall absorption. Reported per mask (large arteriole and venule counted separately), not blended  [range 0.0..1.0; needs use_thick_vessel_skeletonisation and skeleton_thick_vessel_restrict_to_mask not off]
   skeleton_thick_vessel_restrict_to_mask_warn_below: 0.5
@@ -253,7 +253,7 @@ vessel_masks:
   small_vessel_boundary_assignment_enable_overlap_cleanup: true
   # Pre-clean small arteriole/venule overlap voxels from the smaller component once before progressive boundary labelling (when overlap cleanup is enabled)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_boundary_assignment_enable_overlap_cleanup]
   small_vessel_boundary_assignment_fast_mode: true
-  # When small-vessel fast mode is off, still apply overlap cleanup inside each progressive labelling step (requires cleanup enabled)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_boundary_assignment_enable_overlap_cleanup and small_vessel_boundary_assignment_fast_mode off]
+  # When small-vessel fast mode is off, still clean the small masks' arteriole/venule overlap once before labelling -- the same clean-up fast mode makes (requires cleanup enabled)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_boundary_assignment_enable_overlap_cleanup and small_vessel_boundary_assignment_fast_mode off]
   small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode: false
   # Bridge gaps in small-vessel masks with type-locked cylinder links (same-type small↔small / small↔large) before boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_continuity_enable: false
@@ -332,9 +332,9 @@ boundary_assignment:
   inlet_node_selection_method: edge_percent
   # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   outlet_node_selection_method: edge_percent
-  # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
+  # Choose how manual arteriole boundary nodes are picked from the graph: only coordinates, volume and node_ids set any, from that method's list; any other method, or an empty list, sets none  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   arteriole_boundary_selection_method: coordinates
-  # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
+  # Choose how manual venule boundary nodes are picked from the graph: only coordinates, volume and node_ids set any, from that method's list; any other method, or an empty list, sets none  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   venule_boundary_selection_method: coordinates
   # Choose how the large-vessel network's inlet node(s) are picked. mask_stump reads them from the large arteriole mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids, mask_stump; needs assign_large_vessel_branch_orders]
   large_vessel_inlet_node_selection_method: mask_stump
@@ -456,13 +456,13 @@ pipeline_stages:
   haemodynamics_solver: dense
   # How the two-point equivalent resistance (first inlet to first outlet, unless Post processing chose two other nodes) is found. eigendecomposition computes every eigenvalue and eigenvector of the network's Laplacian: minutes at 5,000 nodes, hours at 20,000, and about 49 N^2 bytes at its peak (20 GB at 20,000 nodes); the run warns when it would take more than half the free memory. sparse is one sparse solve, a unit current in at one node and the other grounded: the same resistance to rounding, and infinite rather than a finite number when no conductive path joins the two nodes  [one of: eigendecomposition, sparse; needs do_equiv_resistance_calculation]
   equivalent_resistance_solver: eigendecomposition
-  # Prefix every VTK artifact and cached stage file with this output path
+  # Output path for the run: its folder receives the run's output files and cached stages, and the VTK files are named after its last part (outputs/run writes outputs/run_vessels.vtp); plots go under base_plot_dir
   vtk_output_prefix: examples/outputs/carotid/carotid_network
-  # Close gaps in the mask with a structuring element of this radius before skeletonizing, in voxels of the finest axis: a physical radius of this many times the smallest voxel size, so it reaches fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
+  # Close gaps in the skeleton itself, after its small pieces are dropped and its tangles collapsed, with a structuring element of this radius, then thin it again -- held within a voxel of the segmented mask while bridge_require_mask_support is on. In voxels of the finest axis: a physical radius of this many times the smallest voxel size, so it reaches fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
   skeleton_closing_radius: 2
-  # Bridge skeleton gaps no larger than this many voxels of the finest axis: a physical distance of this many times the smallest voxel size, so fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
+  # Fill gaps in the skeleton itself by growing it this many voxels, then thin it again -- held within a voxel of the segmented mask while bridge_require_mask_support is on. In voxels of the finest axis: a physical distance of this many times the smallest voxel size, so fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
   skeleton_bridge_gap_size: 3
-  # Drop skeleton pieces shorter than this many voxels of the finest axis during cleaning, each voxel counting for its physical length -- one along a coarser z counts for more  [voxels; range 0..; needs do_skeletonize]
+  # Drop skeleton pieces shorter than this many voxels of the finest axis during cleaning, unless a bridge can join them to a larger piece; each voxel counts for its physical length -- one along a coarser z counts for more  [voxels; range 0..; needs do_skeletonize]
   skeleton_min_branch_length: 3
   # Reconnect a skeleton fragment's branch end to another fragment no further away than this, counted in voxels of the finest axis and measured physically, so a gap along a coarse z axis counts for its real length  [voxels; range 0..; needs do_skeletonize]
   skeleton_max_bridge_distance: 0
@@ -554,7 +554,7 @@ pipeline_stages:
   skeleton_missing_vessel_warn_below: 1.0
   # Log a warning instead of an info line when fewer than this fraction of the segmented image's genuine vessels (see missing_vessel_min_voxels) have any graph edge at all -- the inverse of graph_mask_consistency_warn_below's per-voxel coverage: this catches a whole vessel a topology-repair pass dropped, not just imprecisely traced. See graph.diagnostics.diagnose_vessels_missing_from_graph. Checked whether the graph was just built or loaded from cache, so this is not gated on do_graph_building  [range 0.0..1.0]
   graph_missing_vessel_warn_below: 1.0
-  # Give fat plasma-labelled vessels (inscribed radius above skeleton_thick_vessel_min_radius_um, 6 um by default) a centreline tree of every arm instead of Lee thinning; capillaries stay on Lee. Not covered by use_memmap_loading -- this path always allocates full-volume buffers, so it can still run out of memory on a volume large enough that the plain-Lee path would otherwise handle it fine
+  # Give fat plasma-labelled vessels (inscribed radius above skeleton_thick_vessel_min_radius_um, 6 um by default) a centreline tree of every arm instead of Lee thinning; capillaries stay on Lee. use_memmap_loading covers this path, with the same skeleton; for a thick component too large for memory even so, skeleton_thick_vessel_large_stack_tree draws its tree with far less
   use_thick_vessel_skeletonisation: false
   # Inscribed radius above which a region is treated as fat rather than Lee-thinned  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_min_radius_um: 6.0
@@ -592,7 +592,7 @@ pipeline_stages:
   skeletonize_tile_halo_um: 30.0
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
-  # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]
+  # How to smooth a centreline: taubin recovers true length; chaikin cuts corners more gently, keeping closer to the raw centreline and shortening it least  [one of: taubin, chaikin; needs smooth_centrelines]
   centreline_smoothing_method: taubin
   # How many smoothing passes; accuracy plateaus around 15, and past that the filter slowly starts inflating a centreline instead  [range 0..50; needs smooth_centrelines]
   centreline_smoothing_iterations: 10
@@ -605,11 +605,11 @@ pipeline_stages:
 cartwheel_hub_guard:
   # After building the graph, warn about any node whose incident edges radiate in too many directions to be a real vessel junction -- a known side effect of collapsing nearby nodes together. Diagnostic only: never changes the graph
   detect_cartwheel_hub_artifacts: false
-  # Only warn about a node with at least this many incident edges  [range 2..; needs detect_cartwheel_hub_artifacts]
+  # Only warn about a node with at least this many incident edges; cluster_collapse_method=direction_aware judges merges into such nodes by the same count  [range 2..]
   cartwheel_hub_min_degree: 6
   # Only warn about a node whose incident edges' outgoing directions cancel out to at most this much (0 = spread evenly in every direction, 1 = all leave the same way)  [range 0.0..1.0; needs detect_cartwheel_hub_artifacts]
   cartwheel_hub_max_radial_dispersion: 0.5
-  # How far along each incident edge's own centreline to measure the direction it leaves the node  [um; range 0.1..; needs detect_cartwheel_hub_artifacts]
+  # How far along each incident edge's own centreline to measure the direction it leaves the node, for the guard and for cluster_collapse_method=direction_aware alike  [um; range 0.1..]
   cartwheel_hub_tangent_length_um: 10.0
 
 # ------------------------------------------------------------------------
@@ -632,7 +632,7 @@ statistics_and_measurements:
   statistics_basic: true
   # How much each vessel's centreline deviates from a straight line  [needs statistics]
   statistics_tortuosity: true
-  # Branch-point counts and per-node branching-factor statistics  [needs statistics]
+  # The number of branch points: nodes where three or more vessels meet  [needs statistics]
   statistics_branching: true
   # Asymmetry between sibling sub-tree sizes at each branch point  [needs statistics]
   statistics_tree_asymmetry: true
@@ -710,7 +710,7 @@ pericyte_measurements:
 connectivity/network_analysis:
   # Compute the connectivity/network-analysis measures below (bridges, loops, centrality, community structure)  [needs statistics]
   statistics_network_analysis: true
-  # fast computes sampled/capped path efficiency, community and betweenness measures; full computes them exactly over the whole graph, which is far slower on a large network. Every other connectivity/network-analysis measure below is unaffected by this choice  [one of: fast, full; needs statistics and statistics_network_analysis]
+  # fast samples or caps the slower network analyses -- path efficiency, betweenness, bottlenecks, occlusion impact, occlusion curves and loop hierarchy -- reports communities as a count and sizes, and leaves out current flow's Kirchhoff index; full computes them all exactly over the whole graph, which is far slower on a large network. Every other measure is unaffected by this choice  [one of: fast, full; needs statistics and statistics_network_analysis]
   statistics_mode: fast
   # Bridge-edge and articulation-point counts -- how much of the network depends on a single connection -- and, when inlet/outlet boundaries are known, which of them are perfusion-critical  [needs statistics and statistics_network_analysis]
   statistics_network_robustness: true
@@ -760,7 +760,7 @@ connectivity/network_analysis:
   statistics_flow_hierarchy: true
   # How close shortest network paths are to straight-line distance, sampled (fast) or exact (full) per statistics_mode  [needs statistics and statistics_network_analysis]
   statistics_path_efficiency: true
-  # Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode  [needs statistics and statistics_network_analysis]
+  # Community/module detection over the network's topology: fast reports the communities' count and sizes, with connected components standing in for them above 1500 nodes; full lists every community's nodes (statistics_mode)  [needs statistics and statistics_network_analysis]
   statistics_community: true
   # Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode  [needs statistics and statistics_network_analysis]
   statistics_betweenness: true
@@ -804,9 +804,9 @@ diameters_and_pericytes:
     B02: 4.0
     B03: 5.0
     B04: 5.0
-  # Override arteriole diameters per branch-order label, e.g. Art1  [um; needs all_diams_const off]
+  # Override arteriole diameters per branch-order label, e.g. Art1; an order not listed takes the B01 capillary diameter  [um; needs all_diams_const off]
   manual_arteriole_diameter_by_branch_order: {}
-  # Override venule diameters per branch-order label, e.g. Ven1  [um; needs all_diams_const off]
+  # Override venule diameters per branch-order label, e.g. Ven1; an order not listed takes the B01 capillary diameter  [um; needs all_diams_const off]
   manual_venule_diameter_by_branch_order: {}
   # Override large-arteriole diameters per branch-order label, e.g. Large_Art1  [um; needs all_diams_const off]
   manual_large_arteriole_diameter_by_branch_order: {}
@@ -822,7 +822,7 @@ diameters_and_pericytes:
   constriction_spacing_um: 100.0
   # Place focal constrictions/dilations at pericyte centroids from a mask instead of at regular spacing along vessels  [needs run_haemodynamics]
   use_pericyte_mask_constriction: false
-  # Read pericyte centroids from this binary or labelled mask when mask-based placement is on; leave unset to keep the path from the Diameters tab  [needs use_pericyte_mask_constriction; must exist]
+  # Read pericyte centroids from this binary or labelled mask when mask-based placement is on; it must then be set, with no fallback. The panel fills it from a mask named for pericytes beside the input image  [needs use_pericyte_mask_constriction; must exist]
   pericyte_mask_path: null
   # H5 dataset name inside the pericyte mask file; ignored for TIFF masks  [needs use_pericyte_mask_constriction]
   pericyte_mask_h5_dataset_name: null
@@ -848,7 +848,7 @@ diameters_and_pericytes:
   reuse_comparison_pericyte_cohort_for_main_run: false
   # Build the diameter and constriction tables up to this branch-order index  [range 1..]
   max_branch_order: 51
-  # Use this vessel diameter where no branch-order override applies  [um; range 0.0..]
+  # Use this vessel diameter where no branch-order override applies, for capillary and large-vessel orders (every order with all_diams_const on); arteriole, venule and unknown small vessel orders not listed take the B01 diameter instead  [um; range 0.0..]
   default_diameter: 4.0
   # Give a vessel no method measured the median measured diameter of this run's vessels with the same branch-order label, when at least this many of them were measured, before falling back to the branch-order table (which has no entry for a large arteriole or venule, so it takes default_diameter). 0 goes straight to the table  [range 0..]
   diameter_class_median_min_edges: 3
@@ -926,11 +926,11 @@ fwhm_diameter_measurement:
   fwhm_junction_proximity_exclusion_um: 10.0
   # Require profile samples to stay within a local arc window of the same edge  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_enforce_same_edge_locality: true
-  # Use this absolute arc window when checking same-edge locality  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
+  # Use this absolute arc window when checking same-edge locality; leave it unset (null; an empty box in the panel) to size each vessel's window by fwhm_same_edge_arc_window_multiplier and fwhm_same_edge_arc_window_min_um  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
   fwhm_same_edge_arc_window_um: 3.0
-  # Scale the same-edge arc window by this factor  [range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
+  # Scale the same-edge arc window to this many times each vessel's width, while fwhm_same_edge_arc_window_um is unset  [range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
   fwhm_same_edge_arc_window_multiplier: 1.0
-  # Never shrink the same-edge arc window below this size  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
+  # Never shrink the same-edge arc window below this size, while fwhm_same_edge_arc_window_um is unset  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
   fwhm_same_edge_arc_window_min_um: 1.0
   # Shorten the profile half-extent when a distant part of the same edge comes close  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_cap_half_extent_by_nonlocal_same_edge_distance: true
@@ -980,9 +980,9 @@ fwhm_diameter_measurement:
   use_raw_section_fallback: false
   # Keep a cross-section's reading only when its fitted lumen stands this many standard deviations of the section's texture above the background; a vessel needs two such readings  [range 0.0..; needs use_raw_section_fallback]
   raw_section_min_lumen_contrast: 3.0
-  # The image's blur across the y-x plane, as a Gaussian sigma. Leave unset to estimate it from the image's own wide vessels  [um; range 0.0..; needs use_raw_section_fallback]
+  # The image's blur across the y-x plane, as a Gaussian sigma. Read only with raw_section_psf_sigma_z_um set too: leave both unset, or set one alone, and both are estimated from the image's own wide vessels  [um; range 0.0..; needs use_raw_section_fallback]
   raw_section_psf_sigma_xy_um: null
-  # The image's blur along z, as a Gaussian sigma. Leave unset to estimate it from the image's own wide vessels  [um; range 0.0..; needs use_raw_section_fallback]
+  # The image's blur along z, as a Gaussian sigma. Read only with raw_section_psf_sigma_xy_um set too: leave both unset, or set one alone, and both are estimated from the image's own wide vessels  [um; range 0.0..; needs use_raw_section_fallback]
   raw_section_psf_sigma_z_um: null
 
 # ------------------------------------------------------------------------
@@ -995,9 +995,9 @@ endothelial_diameter:
   endothelial_wall_thickness_um: null
   # Processes to measure vessels in at once; 0 picks up to 8, leaving a core free. The widths are the same however many  [range 0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_workers: 0
-  # The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
+  # The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Read only with endothelial_psf_sigma_z_um set too: leave both unset, or set one alone, and both are estimated from the image's wide vessels  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_psf_sigma_xy_um: null
-  # The endothelial channel's blur along z, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
+  # The endothelial channel's blur along z, as a Gaussian sigma. Read only with endothelial_psf_sigma_xy_um set too: leave both unset, or set one alone, and both are estimated from the image's wide vessels  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_psf_sigma_z_um: null
 
 # ------------------------------------------------------------------------

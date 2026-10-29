@@ -13,6 +13,7 @@ import pytest
 from pathlib import Path
 
 from haemolynx.gui.form import (
+    CHANNEL_SETTINGS,
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
     H5_DATASET_SETTINGS,
@@ -233,10 +234,10 @@ def test_a_disabled_row_says_which_setting_disabled_it():
     fields = {field.name: field for field in fields_for(_gated_schema())}
 
     assert fields["classifier"].why_disabled({"use_ilastik": False}) == (
-        "Not used while 'use_ilastik' is off."
+        'Not used while "Use ilastik" is off'
     )
     assert fields["mask"].why_disabled({"use_ilastik": True}) == (
-        "Not used while 'use_ilastik' is on."
+        'Not used while "Use ilastik" is on'
     )
 
 
@@ -574,7 +575,11 @@ def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
     same as use_thick_vessel_skeletonisation nests the thickness-gate
     knobs above -- its own small "Cartwheel hub guard" section is too
     small a slice of "3. Graph" to add to HIDE_WHEN_UNMET_SECTIONS, so it
-    is listed by name in HIDE_WHEN_UNMET_PARENTS instead."""
+    is listed by name in HIDE_WHEN_UNMET_PARENTS instead.
+
+    The hub size and tangent length are read by direction-aware merging too,
+    and a `requires` cannot say "either": they carry none, so a direction-aware
+    run with the guard off still shows them, where it used to hide them."""
     assert "detect_cartwheel_hub_artifacts" in HIDE_WHEN_UNMET_PARENTS
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
@@ -583,19 +588,20 @@ def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
     assert parent.widget_type == "CheckBox"
     assert parent.value is False
 
-    children = (
-        "cartwheel_hub_min_degree",
-        "cartwheel_hub_max_radial_dispersion",
-        "cartwheel_hub_tangent_length_um",
-    )
     off = {"detect_cartwheel_hub_artifacts": False}
     on = {"detect_cartwheel_hub_artifacts": True}
-    for name in children:
-        child = fields[name]
-        assert child.hide_when_unmet, name
-        assert SCHEMA[name].requires == ("detect_cartwheel_hub_artifacts",), name
-        assert not child.is_visible(off), name
-        assert child.is_visible(on), name
+    guard_only = fields["cartwheel_hub_max_radial_dispersion"]
+    assert guard_only.hide_when_unmet
+    assert SCHEMA["cartwheel_hub_max_radial_dispersion"].requires == ("detect_cartwheel_hub_artifacts",)
+    assert not guard_only.is_visible(off)
+    assert guard_only.is_visible(on)
+
+    direction_aware = {**off, "do_graph_building": True, "cluster_collapse_method": "direction_aware"}
+    for name in ("cartwheel_hub_min_degree", "cartwheel_hub_tangent_length_um"):
+        shared = fields[name]
+        assert SCHEMA[name].requires == (), name
+        for values in (off, on, direction_aware):
+            assert shared.is_visible(values) and shared.is_enabled(values), (name, values)
 
 
 def test_perturbation_output_dir_hides_when_run_perturbations_is_off():
@@ -1276,7 +1282,41 @@ def test_a_row_read_by_every_choice_but_one_says_which_choice_turns_it_off():
     assert field.is_visible({"voxel_size_policy": "override"})
     assert not field.is_visible({"voxel_size_policy": "metadata_only"})
     assert field.why_disabled({"voxel_size_policy": "metadata_only"}) == (
-        "Not used while 'voxel_size_policy' is 'metadata_only'."
+        'Not used while "Voxel size policy" is metadata_only'
+    )
+
+
+def test_the_fwhm_same_edge_window_can_be_left_empty():
+    """Unset, the window is sized by each vessel's width, the only way its
+    multiplier and minimum rows act. A spin box cannot be emptied, so the
+    panel could never choose that, nor take the optimiser's proposal of it."""
+    setting = SCHEMA["fwhm_same_edge_arc_window_um"]
+    assert setting.default == 3.0
+    field = field_for(setting)
+    assert field.widget_type == "LineEdit"
+    assert field.nullable
+    assert field.placeholder == "by vessel width"
+    assert field.value == 3.0
+    assert field.to_setting_value("") is None
+    assert field.to_setting_value("4.5") == 4.5
+    assert SCHEMA.validate({"fwhm_same_edge_arc_window_um": None})["fwhm_same_edge_arc_window_um"] is None
+    # Every other number with a default keeps its spin box.
+    spin_boxes = [
+        s.name
+        for s in SCHEMA
+        if s.kind in ("int", "float") and s.default is not None and s.name not in CHANNEL_SETTINGS
+    ]
+    assert [name for name in spin_boxes if field_for(SCHEMA[name]).widget_type == "LineEdit"] == [
+        "fwhm_same_edge_arc_window_um"
+    ]
+
+
+def test_a_disabled_row_names_its_gate_as_the_panel_shows_it():
+    """By its row's label and its dropdown's text, never the config's spelling."""
+    field = {f.name: f for f in fields_for(SCHEMA)}["synthetic_seed"]
+    assert field.enabled_by == ("network_source!=segmented_image",)
+    assert field.why_disabled({"network_source": "segmented_image"}) == (
+        'Not used while "Input" is Segmented image'
     )
 
 
@@ -1371,7 +1411,7 @@ def test_a_row_gated_on_a_path_is_greyed_not_hidden_while_the_path_is_unset():
     assert not toggle.hide_when_unmet
     assert toggle.is_visible(unset)
     assert not toggle.is_enabled(unset)
-    assert toggle.why_disabled(unset) == "Not used while 'raw' is not set."
+    assert toggle.why_disabled(unset) == 'Not used while "Raw" is not set'
     assert fields["stain"].is_visible(unset) and not fields["stain"].is_enabled(unset)
 
     given = {"raw": "stack.tif", "use_ilastik": False}
@@ -1444,7 +1484,7 @@ def test_every_setting_that_reads_the_raw_image_names_it_as_a_gate():
     for name in ("raw_image_channel", "raw_image_stain", "use_ilastik_segmentation"):
         assert fields[name].is_visible(unset, unmet_chain(SCHEMA, name, unset)), name
         assert not fields[name].is_enabled(unset), name
-        assert fields[name].why_disabled(unset) == "Not used while 'raw_image_path' is not set."
+        assert fields[name].why_disabled(unset) == 'Not used while "Raw image path" is not set'
     measure = fields["measure_diameters_from_raw_image"]
     assert measure.is_visible(unset, unmet_chain(SCHEMA, "measure_diameters_from_raw_image", unset))
     assert not measure.is_enabled(unset)

@@ -4265,8 +4265,8 @@ def _attach_thick_thin_skeleton_toggle(viewer, layer) -> bool:
         return False
     checkbox = QCheckBox("Thick/thin skeleton (debug)")
     checkbox.setToolTip(
-        "Colour skeleton voxels by whether thickness-gated skeletonisation "
-        "treated them as fat (thick) or ridge (thin)"
+        "Colour the skeleton by whether each part was treated as a thick or "
+        "a thin vessel"
     )
     checkbox.setEnabled(available)
     # Captured once, before this ever recolours the layer: napari 0.9 Labels
@@ -4451,8 +4451,8 @@ def _attach_segmentation_cleanup_toggle(viewer, layer) -> bool:
         return False
     checkbox = QCheckBox("Segmentation cleanup: show changes (debug)")
     checkbox.setToolTip(
-        "Colour mask voxels by whether pre-skeletonisation cleanup "
-        "(reconnect / smooth / remove-small) changed them"
+        "Colour the mask by which voxels the clean-up before skeletonising "
+        "added or removed"
     )
     checkbox.setEnabled(available)
     # Captured once, before this ever recolours the layer.
@@ -5137,7 +5137,7 @@ class _ColourScale:
 
         self.heading = QLabel("no colouring")
         self.heading.setToolTip(
-            "The range the colours span. Type a number, or let it fit the data."
+            "The range of values the colours span. Type its ends, or fit it to the data"
         )
         outer.addWidget(self.heading)
 
@@ -5176,7 +5176,7 @@ class _ColourScale:
         self.full_button.clicked.connect(lambda: self.fit(0.0, 100.0))
         self.trim_button = QPushButton("Fit 1-99%")
         self.trim_button.setToolTip(
-            "Ignore the extreme 1% at each end, so the bulk of the data spreads"
+            "Ignore the extreme 1% at each end, so most values spread across the colours"
         )
         self.trim_button.clicked.connect(lambda: self.fit(1.0, 99.0))
         buttons.addWidget(self.full_button)
@@ -5186,7 +5186,7 @@ class _ColourScale:
 
         self.in_viewer = QCheckBox("Show colour bar in the viewer")
         self.in_viewer.setToolTip(
-            "Draw the scale in the canvas, beside the data it describes"
+            "Show the colour scale in the viewer, beside the data"
         )
         self.in_viewer.toggled.connect(self._show_in_viewer)
         outer.addWidget(self.in_viewer)
@@ -6108,8 +6108,7 @@ class _BranchHoverPanel:
         self._layout.setSpacing(2)
         self._heading = QLabel("branch tooltip metrics")
         self._heading.setToolTip(
-            "What to show when hovering a branch. "
-            "The graph edge index (branchID) is always included."
+            "Values to show when hovering over a vessel. Its branch ID is always shown"
         )
         self._layout.addWidget(self._heading)
         self._box_host = QWidget()
@@ -11252,7 +11251,7 @@ class _BatchRunWindow:
                     choice = QComboBox()
                     choice.addItems(["choose..."] + [path.name for path in tied])
                     choice.setToolTip(
-                        "Several files could be this one; choosing one chooses alike for every image"
+                        "Several files match. Pick one; the same choice is made for every image"
                     )
                     choice.currentIndexChanged.connect(
                         lambda index, m=match, r=role, t=tied: self._choose(m, r, t, index)
@@ -11325,24 +11324,18 @@ class _GraphEditorWindow:
 
         add_button = QPushButton("Add edge")
         add_button.setToolTip(
-            "Click an existing node or edge to start a new branch, then click "
-            "along the segmented volume to extend it -- A* routed, preferring "
-            "the segmented mask but able to cross a real gap in it. Ends when "
-            "a click lands on existing structure, or when Finish is pressed."
+            "Click a node or vessel to start a new branch, then click along the "
+            "segmentation to draw it. It ends when you click the network or "
+            "press Finish"
         )
         finish_button = QPushButton("Finish")
-        finish_button.setToolTip("End the branch being drawn as a new dangling terminal.")
+        finish_button.setToolTip("End the branch being drawn here, as a dead end")
         delete_button = QPushButton("Delete edge")
-        delete_button.setToolTip(
-            "Click an edge to remove it. A node left at degree 2 by the "
-            "removal is collapsed into one continuous edge; a node left with "
-            "no edges at all is removed too."
-        )
+        delete_button.setToolTip("Click a vessel to delete it")
         regenerate_button = QPushButton("Regenerate")
         regenerate_button.setToolTip(
-            "Re-run diameters, haemodynamics, perturbations, additional "
-            "measurements and export from the edited graph, and refresh "
-            "every dependent layer."
+            "Rerun diameters, haemodynamics, perturbations, measurements and "
+            "export on the edited network, and refresh the layers"
         )
 
         add_button.clicked.connect(lambda: self._run(on_add, "add-armed"))
@@ -14440,7 +14433,7 @@ def settings_widget(napari_viewer=None):
     #: are, and replaced when a new run that shows layers starts.
     checkpoints = StageCheckpoints()
     revert_buttons: dict[str, Any] = {}
-    from haemolynx.gui.chrome_tooltips import MEASURED_ON_EXPORT_TAB_TOOLTIP, REVERT_STAGE_TOOLTIP
+    from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP, stage_tab_tooltip
 
     #: The batch set up in the Batch run window, while there is one (None:
     #: Run pipeline runs the one image the Input tab names), and the "Batch
@@ -14546,10 +14539,7 @@ def settings_widget(napari_viewer=None):
         scroller = _fitting_scroll_area()
         scroller.setWidget(page)
         tab_widget.addTab(scroller, tab.stage.title)
-        tab_widget.setTabToolTip(
-            tab_widget.count() - 1,
-            f"{tab.stage.call}(settings, ...)" if tab.stage.call else MEASURED_ON_EXPORT_TAB_TOOLTIP,
-        )
+        tab_widget.setTabToolTip(tab_widget.count() - 1, stage_tab_tooltip(tab.stage))
 
     # The pages that lay themselves out keep their own Advanced buttons and
     # boxes; the panel refreshes them with everything else.
@@ -15231,11 +15221,9 @@ def settings_widget(napari_viewer=None):
         value="Auto",
     )
     downsample_dropdown.tooltip = (
-        "How coarse a copy of the image to search on for speed -- applies "
-        "only to Optimise settings, never to the pipeline run itself. Auto "
-        "never goes so coarse that a typical vessel is under three voxels "
-        "across, and goes finer only while its timing of this image says the "
-        "search stays under about five minutes"
+        "Search a coarser copy of the image to make Optimise settings faster; "
+        "it only affects the optimiser, never the run. Auto keeps a typical "
+        "vessel at least three voxels across"
     )
     behind_check_advanced(downsample_dropdown)
 
@@ -15258,8 +15246,8 @@ def settings_widget(napari_viewer=None):
 
     choose_groups_checkbox = CheckBox(text="Choose optimisation types", value=False)
     choose_groups_checkbox.tooltip = (
-        "Restrict Optimise settings to only the ticked group(s) below, "
-        "instead of every Skeletonise/Graph setting"
+        "Optimise only the groups ticked below, instead of every Skeletonise "
+        "and Graph setting"
     )
     behind_check_advanced(choose_groups_checkbox)
 
@@ -15291,13 +15279,9 @@ def settings_widget(napari_viewer=None):
     #: nothing to search until FWHM measurement itself is turned on.
     optimise_fwhm_button = PushButton(text="Optimise FWHM settings")
     optimise_fwhm_button.tooltip = (
-        "Empirically choose the FWHM profile model and sampling, exclusion, "
-        "extent, clipping, same-edge-geometry, baseline and rejection-gate "
-        "settings by running the real measurement on a sample of the current "
-        "graph's own edges against its raw image -- judged, once the pipeline "
-        "has segmented the image, on vessels of known width planted beside "
-        "them. Proposes the winners for this tab; the current network's "
-        "diameters are not changed"
+        "Try FWHM settings on a sample of this network's vessels in the raw "
+        "image and propose the best for this tab. The current diameters are "
+        "not changed"
     )
     #: Its options -- which groups, how many vessels, how many passes -- behind
     #: a toggle, and its review box: one box under the button, shown with it.

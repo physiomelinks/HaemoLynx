@@ -168,7 +168,10 @@ class Setting:
         ``required=True`` to force the user to supply one.
     help:
         One sentence, imperative, no trailing full stop. Becomes the YAML
-        comment and the GUI tooltip, so it must read well out of context.
+        comment and the command-line help, so it must read well out of
+        context. The panel's hover text is a shorter entry of its own, in
+        :mod:`haemolynx.gui.setting_tooltips`; a setting without one there
+        shows this.
     section:
         Grouping for both the YAML file and the GUI form.
     choices:

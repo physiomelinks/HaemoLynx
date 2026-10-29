@@ -116,20 +116,20 @@ class LogView:
         self.follow_box = QCheckBox("Follow")
         self.follow_box.setChecked(True)
         self.follow_box.setToolTip(
-            "Keep the newest line in view. Turn it off, or just scroll up, to"
-            " read something without being pulled back to the bottom."
+            "Keep the newest line in view. Untick it, or scroll up, to read"
+            " earlier lines without jumping back to the bottom"
         )
 
         self.copy_button = QPushButton("Copy")
-        self.copy_button.setToolTip("Copy the whole log to the clipboard.")
+        self.copy_button.setToolTip("Copy the whole log to the clipboard")
         self.copy_button.clicked.connect(self.copy)
 
         self.save_button = QPushButton("Save...")
-        self.save_button.setToolTip("Write the whole log to a text file.")
+        self.save_button.setToolTip("Save the whole log to a text file")
         self.save_button.clicked.connect(self.save)
 
         self.clear_button = QPushButton("Clear")
-        self.clear_button.setToolTip("Empty the window and the buffer behind it.")
+        self.clear_button.setToolTip("Empty the log window")
         self.clear_button.clicked.connect(self.reset)
 
         controls = QWidget()

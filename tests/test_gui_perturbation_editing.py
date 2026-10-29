@@ -118,7 +118,7 @@ def test_every_editor_is_a_declared_setting():
 
 
 def test_every_perturbation_setting_has_descriptive_help():
-    """Schema help is the GUI tooltip (plus unit) for every SETTINGS_FOR_TYPE row."""
+    """Every SETTINGS_FOR_TYPE row has schema help and a GUI tooltip (plus unit)."""
     for name in EDITOR_SETTINGS:
         setting = SCHEMA[name]
         help_text = setting.help.strip()

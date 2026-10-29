@@ -153,12 +153,9 @@ __all__ = [
 #: manual role controls. Kept here so tests can assert the exact wording
 #: without importing Qt.
 AUTOMATED_OVERRIDES_MANUAL_NOTE = (
-    "While automated vessel assignment, 'Use large vessel masks' and 'Inlets "
-    "outlets from vessel masks' are all on, the masks choose the inlets and "
-    "outlets and override the "
-    "manual Inlet and Outlet tabs below. Turn 'Inlets outlets from vessel "
-    "masks' off to set them by hand; the masks still drive the large-vessel "
-    "treatment."
+    "While \"Inlets outlets from vessel masks\" is on, the masks choose the "
+    "inlets and outlets and override the manual Inlet and Outlet tabs below. "
+    "Untick it to set them by hand"
 )
 
 #: The boundary roles, in the order a run assigns them. Taken from the
@@ -209,12 +206,12 @@ def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
 #: Same wording _widget.py used inline for the small-vessel-mask case, now
 #: shared so a third disabled reason does not need adding to two call sites.
 SMALL_VESSEL_OVERRIDES_MANUAL_NOTE = (
-    "Small-vessel mask assignment overrides manual arteriole/venule "
-    "boundary selection."
+    "The small vessel masks choose the arteriole and venule boundaries, "
+    "overriding manual selection"
 )
 LARGE_VESSEL_NETWORK_MODE_OFF_NOTE = (
-    "Only used when assign_large_vessel_branch_orders is on, with the "
-    "large-vessel masks in use and the network not cut at them."
+    "Only used when \"Assign large vessel branch orders\" is on, with the "
+    "large vessel masks in use and the network not cut at them"
 )
 
 #: Why a role's sub-tab/actions are greyed, keyed by role. One lookup instead
@@ -229,8 +226,7 @@ DISABLED_ROLE_TOOLTIP: dict[str, str] = {
 }
 
 SYNTHETIC_CHOOSES_NOTE = (
-    "A synthetic network's inlets, outlets and boundary nodes are the "
-    "generator's (the Input tab's Input is a synthetic network)."
+    "A synthetic network chooses its own inlets, outlets and boundary nodes"
 )
 
 

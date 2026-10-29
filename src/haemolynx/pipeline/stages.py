@@ -3300,7 +3300,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         elif apply_overlap_cleanup_prepass:
             logger.info(
                 "Automated large-vessel assignment: overlap cleanup will run "
-                "inside each progressive step (normal mode)."
+                "once, inside the legacy inlet/outlet selection (normal mode)."
             )
         # Cut uses post-filter masks (load-time filters + assignment-time overlap
         # cleanup above). Progressive dilation is assignment-only and does not
