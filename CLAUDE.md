@@ -389,7 +389,13 @@ one test, and `network_is_synthetic` answers yes for both): the run's graph (`su
 in the middle of a box `synthetic_scale` (above 1) times its own, joined at its open ends, its
 vessels keeping the run's widths (`diameter_source="image_run"`) and labels (`image_branch_order`;
 branch orders run over the whole network). Outputs are named `{template stem}_surrounded`, carry
-`network_part`, and add `{stem}_image_flows.csv`; preflight: `check_synthetic_surround`.
+`network_part`, and add `{stem}_image_flows.csv`; preflight: `check_synthetic_surround`. Round the
+image the template's layout is mirrored across its faces, not stretched over the box
+(`Organisation.mirrored_to`, applied by `generate.drawn_template` wherever a hole is given: D6).
+Preflight plans the shell's bed with the generator's own arithmetic (`generate.planned_bed`,
+`surround.planned_surround_bed`): no bed vertex refuses the run, fewer than one per join warns. A
+connector from an image vessel's tip to its face keeps the vessel's mask tags
+(`surround.CONNECTOR_KEEPS`), or the large tier stops at it.
 
 The production-style entry point is `examples/resistance_network_pipeline.py` (`image_to_model_pipeline`). The tutorial (`tutorials/pipeline_tutorial.ipynb`) documents segmentation as a prerequisite stage and runs on pre-segmented fixture data by default.
 
