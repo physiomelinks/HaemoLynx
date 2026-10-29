@@ -1,16 +1,16 @@
-"""Transit time along flow-directed paths, for H2 §2.4.
+"""Transit time along flow-directed paths, for H2's transit-time test.
 
-§2.4 asks for the transit time of blood from the arterial inlet to the distal ends of the
+H2 asks for the transit time of blood from the arterial inlet to the distal ends of the
 capillaries lying within the TH-positive glomus boundaries, and for the PO2 depletion along
 those paths.
 
-**Reported as a ratio, not an absolute.** Two reasons, and they compound. S15 puts an absolute
-flow quantity under a ±45% floor from calibre alone, and S22 changed apparent viscosity by a
-factor of three or four without moving any within-specimen ratio. Separately, the pressure,
-viscosity and length units in this pipeline are not reconciled to one system, so the magnitude
-returned here is in arbitrary units and only ratios of it mean anything. Both problems have the
-same answer: compare transit time to one set of terminals against transit time to another,
-computed identically, and the shared error divides out.
+**Reported as a ratio, not an absolute.** Two reasons, and they compound. Calibre error alone
+puts an absolute flow quantity under a ±45% floor, and correcting the viscosity law changed
+apparent viscosity by a factor of three or four without moving any within-specimen ratio.
+Separately, the pressure, viscosity and length units in this pipeline are not reconciled to one
+system, so the magnitude returned here is in arbitrary units and only ratios of it mean
+anything. Both problems have the same answer: compare transit time to one set of terminals
+against transit time to another, computed identically, and the shared error divides out.
 """
 from __future__ import annotations
 

@@ -61,9 +61,9 @@ def export_per_edge_morphometry(
     node_positions: Optional[dict] = None,
     is_multigraph: Optional[bool] = None,
 ) -> list:
-    """One row per edge, carrying every quantity H1 sections 1.2 and 1.4 are claims about.
+    """One row per edge, carrying every quantity H1's diameter and tortuosity claims are about.
 
-    Both sections are distributional - a difference in the spread or shape of vessel diameters
+    Both claims are distributional - a difference in the spread or shape of vessel diameters
     and tortuosities between groups - and this pipeline previously reduced each to a single
     mean before anything could look at it. A mean cannot support a distributional claim, and
     with n = 3 specimens per group the per-edge distribution is the only place there is enough
@@ -79,14 +79,15 @@ def export_per_edge_morphometry(
       numerator mixes a B-spline arc length with the raw skeleton polyline. ``raw_too_short``
       edges are 2-point reconnections whose tortuosity is 1.0 by construction rather than by
       anatomy (610da99). ``raw_unchanged`` edges are ones the spline returned as they were
-      (mostly 3-point edges); package T measured that no smoothing could shorten them.
+      (mostly 3-point edges); measured on the six batch networks, no smoothing could shorten
+      them.
       ``raw_fallback`` marks a real corridor failure, where every smoothed candidate left the
       skeleton support.
     - ``edt_junction_trim``     trimmed / untrimmed_too_short / no_junction / not_applied.
       Within about one radius of a bifurcation the EDT returns the junction's inscribed
       sphere, so segments too short to survive the exclusion keep a radius known to be
       inflated. They are retained rather than discarded - dropping them would delete the
-      short inter-junction capillaries section 1.2 is about and bias the distribution
+      short inter-junction capillaries the diameter claim is about and bias the distribution
       towards long vessels - which only works if the affected rows stay identifiable.
     - ``reconnected``           whether terminal reconnection invented this edge.
 
@@ -185,11 +186,11 @@ def compute_branching_statistics(
 ) -> Dict[str, Any]:
     """Compute average branching angle and the number of branching points.
 
-    ``count_graph`` is the graph the branching points are counted on, ``G`` by default. Pass
-    the original MultiGraph when ``G`` is its simple-graph copy: merging parallel edges drops
-    a node joined twice to one neighbour below degree 3, although both are real vessels. On
-    WKY-A that counted 4,475 junctions where the CSV, Figure 3 and cb_h1_vtk.py count 4,631
-    (open item 40).
+    ``count_graph`` is the graph the branching points are counted on, ``G`` by default. Pass the
+    original MultiGraph when ``G`` is its simple-graph copy: merging parallel edges drops a node
+    joined twice to one neighbour below degree 3, although both are real vessels. On WKY-A that
+    counted 4,475 junctions where the CSV, cb_h1_figures.py's Figure 3 and cb_h1_vtk.py count
+    4,631.
     """
     counted = G if count_graph is None else count_graph
     if node_positions is None:
@@ -375,9 +376,10 @@ def compute_vessel_density(
       (already in microns). It is a graph-extent volume, not a tissue volume.
     - Total image volume: ``image_dimensions`` times ``voxel_size``. ``voxel_size``
       must be given with ``image_dimensions``; without it the "micron³" would be a
-      voxel count (re-run notes item 10).
+      voxel count.
 
-    Neither is the parenchymal density H1 §1.3 asks for (reference §7.2).
+    Neither is the parenchymal density H1 asks for, the length within the TH-positive glomus
+    volume (``th_morphometry``).
     """
     if image_dimensions is not None and voxel_size is None:
         raise ValueError(
@@ -434,7 +436,7 @@ def _component_fallback_summary(G: nx.Graph, max_nodes_exact: int) -> Dict[str, 
 
     The keys name components, not communities: a component count is not a modularity
     result, and every CB network is a single component, so a "Community Count" of 1
-    read as a finding when it was not one (re-run notes 2026-10-01, item 5).
+    read as a finding when it was not one.
     """
     logger.warning(
         "Community statistics: %d nodes > max_nodes_exact=%d, so communities are not "

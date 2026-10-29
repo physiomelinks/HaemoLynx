@@ -20,7 +20,7 @@ def prune_vascular_stubs(
     callers should pass an explicit, physically justified value rather than rely on it.
 
     This cannot change beta-1. Only degree-1 nodes are removed, and a degree-1 node lies on no
-    cycle, so vascular loop topology - the H1 section 1.1 readout - is untouched at any
+    cycle, so vascular loop topology - an H1 readout - is untouched at any
     threshold. It does change the per-edge length and tortuosity distributions, since it removes
     the shortest terminal segments first.
     """

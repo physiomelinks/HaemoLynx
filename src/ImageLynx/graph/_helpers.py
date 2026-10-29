@@ -864,7 +864,7 @@ def _smooth_single_edge_centerline(
     if accepted is not None:
         # The spline returned the polyline as it was: under 4 points ``bspline_smooth_polyline``
         # returns its input, and on short edges at this smoothness the fit passes through every
-        # point. Smoothing was a no-op, not a corridor failure (package T).
+        # point. Smoothing was a no-op, not a corridor failure.
         return id_tuple, {"status": "unchanged", "provenance": "raw_unchanged"}
     return id_tuple, {"status": "fallback", "provenance": "raw_fallback"}
 
@@ -960,9 +960,9 @@ def smooth_graph_edge_centerlines_continuous(
 
         # Every edge is tagged, including the untouched ones. `length` is only rewritten for
         # edges that smooth; the rest keep the skeleton polyline, so consumers must be able to
-        # stratify the section 1.4 tortuosity numerator by operator. `raw_too_short` (under 3
-        # points) and `raw_unchanged` (the spline returned the input) are edges the spline cannot
-        # change; package T measured that no smoothing could shorten them. `raw_fallback` is
+        # stratify the tortuosity numerator by operator. `raw_too_short` (under 3 points) and
+        # `raw_unchanged` (the spline returned the input) are edges the spline cannot change;
+        # measured on the six batch networks, no smoothing could shorten them. `raw_fallback` is
         # reserved for a real corridor failure, where every candidate left the skeleton support
         # (none in the six 0.95 batch networks).
         data["centreline_smoothing"] = res.get("provenance", "raw_fallback")

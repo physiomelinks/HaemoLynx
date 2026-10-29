@@ -122,7 +122,7 @@ def test_no_explicit_size_leaves_the_percentage_crop_alone():
 def test_an_output_without_a_sidecar_is_refused(tmp_path):
     specimen = _fake_specimen()
     placed = _placement("WKY-A", (230, 240, 188), specimen.shape_zyx)
-    with pytest.raises(FileNotFoundError, match="predate open item 27"):
+    with pytest.raises(FileNotFoundError, match="predate the pipeline placing its ROI"):
         check_output_roi(tmp_path, specimen, SIZE, placed)
 
 

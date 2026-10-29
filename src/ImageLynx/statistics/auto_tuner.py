@@ -52,10 +52,10 @@ class SkeletonObjective:
             # "bundle_hub_min_spacing": trial.suggest_int("bundle_hub_min_spacing", 0, 10),
             "bundle_hub_min_spacing": 0,
             # NO smoothing_alpha dimension. It is now wired to bspline_smoothness rather than
-            # being ignored, but it must not be tuned: centreline smoothness is what H1 section
-            # 1.4 reads tortuosity off, and this objective is only Dice plus orphaned volume,
+            # being ignored, but it must not be tuned: centreline smoothness is what H1 reads
+            # tortuosity off, and this objective is only Dice plus orphaned volume,
             # neither of which can see it. Searching it would set a hypothesis readout by noise.
-            # It is a frozen, recorded constant and belongs in the item 25 sensitivity scope.
+            # It is a frozen, recorded constant and belongs in the #98 item 25 sensitivity scope.
             #
             # NO prune_by_tortuosity dimension. It was suggested every trial, written into
             # best_skeleton_params.yaml and read by nothing at all - no implementation exists.
@@ -87,7 +87,7 @@ class SkeletonObjective:
             edge_length_std   0.6%                 (raw 21.9 - 35.5 um)
             degree3           0.2%                 (raw 0.960 - 1.000)
 
-        Every surviving weight enters the item 25 sensitivity scope. Neither surviving weight
+        Every surviving weight enters the #98 item 25 sensitivity scope. Neither surviving weight
         was changed; both were already 100.
 
         CAVEAT on the two survivors: both are currently dominated by the mask rather than by
@@ -110,7 +110,7 @@ class SkeletonObjective:
 
         # NO loop penalty. This used to be `loss += loops * 0.1`, where `loops` is
         # graph_fundamental_loops = E - V + C, i.e. the first Betti number. That is precisely
-        # the quantity H1 section 1.1 reads out as vascular loop topology, so the tuner's
+        # the quantity H1 reads out as vascular loop topology, so the tuner's
         # dominant objective was to minimise the hypothesis' own signal. Measured, it was
         # 70-86% of total loss and single-handedly overturned better Dice, better
         # completeness and a better terminal ratio. It is also group-dependent: a denser
@@ -286,7 +286,7 @@ class PreprocessingObjective:
             # correct scale for a capillary. Bounds are set wide enough that the plausible band
             # of roughly 0.60-0.80 is interior rather than pressed against an edge.
             #
-            # The upper bounds were 0.85 / 0.95 until open item 1. The pipeline default is now the
+            # The upper bounds used to be 0.85 / 0.95. The pipeline default is now the
             # frozen CB band from cb_settings, 0.95 / 0.999 since 2026-09-28 (the median of the
             # six per-specimen selections; 0.90 / 0.95 before), so both are raised far enough to
             # keep that band reachable. The CB batch never runs the tuner; this only keeps the
@@ -418,7 +418,7 @@ class PreprocessingObjective:
         # measured at 83% of total loss. The intent was to punish "swiss cheese" cavities, but
         # chi = beta0 - beta1 + beta2 and a capillary bed legitimately has large beta1 and so
         # a strongly negative chi. Penalising chi < 1 therefore drives vascular loop topology
-        # toward zero - the same H1 section 1.1 readout the skeleton objective was attacking -
+        # toward zero - the same H1 readout the skeleton objective was attacking -
         # and does so proportionally harder on denser networks.
         #
         # Cavities are the beta2 term and are already handled directly by fill_holes_3d in the

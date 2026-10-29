@@ -307,7 +307,7 @@ def skeletonize_voxel_bundles_into_paths(
     window" - it destroyed 68% of beta-1 on the reference subvolume.
 
     Because each hub merges everything passing through its window into one node, this operator
-    removes vascular loops, which is exactly what H1 section 1.1 measures. It is disabled by
+    removes vascular loops, which is exactly what H1 measures. It is disabled by
     default in the pipeline (``density_fraction >= 1.0``) and should not be re-enabled without
     the hand-counted validation that #98 Tier 1 item 5 asks for.
     """

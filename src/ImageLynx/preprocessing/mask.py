@@ -4,7 +4,7 @@
 (pad, hysteresis, hole filling, unpad) and `_preprocess_local_mask` (closing, keep the largest
 component). The threshold selector reads its calibre on a plain ``p >= t`` cut, 5.27 um at 0.95
 where the network reads a median of 6.70 um; it prints the same statistic on this mask (d_net)
-so the gap is visible at every threshold (open item 41).
+so the gap is visible at every threshold.
 
 This is a copy of that recipe at the CB defaults, not a refactor of the pipeline, so the batch
 outputs stay byte-identical. ``tests/test_vessel_mask.py`` checks the two agree.

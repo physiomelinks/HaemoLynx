@@ -452,7 +452,7 @@ GROUPS: Tuple[str, str] = ("WKY", "SHR")
 WEAKEST_SPECIMEN_ID = "WKY-C"
 
 #: The trained project every measured number in this module was taken on: the relabelled
-#: pooled classifier the study runs. Measured 2026-10-02 (re-run package U), below. The
+#: pooled classifier the study runs. Measured 2026-10-02, below. The
 #: 2026-08-10 record after it describes the earlier, lopsided project (sha256 79a5f6ac...),
 #: kept as the baseline the relabel had to beat. Its acceptance was withdrawn and it is no
 #: longer run.

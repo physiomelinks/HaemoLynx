@@ -170,7 +170,7 @@ def calculate_phase_separation_hematocrit(
 
 
 def _pries_red_cell_fraction(fq1, d1, d2, h_in, d_parent):
-    """FQ_E1, the share of red-cell flux entering branch 1, from the Pries law (E16-E19).
+    """FQ_E1, the share of red-cell flux entering branch 1, from the Pries law.
 
     Branch 2 is everything else leaving the junction. Needs X0 < 0.5.
     """
@@ -203,7 +203,7 @@ def calculate_multiway_phase_separation_hematocrit(
     This replaces proportional mixing (every daughter got H_in) at these junctions. That rule
     switched on and off whenever a small daughter reversed and turned a bifurcation into a
     trifurcation or back, and the switch kept the rheology loop from converging on the CB
-    networks (open item 37). The one-vs-rest form is continuous there: a daughter whose flow
+    networks. The one-vs-rest form is continuous there: a daughter whose flow
     falls to zero drops below X0 and gets no red cells, and with two daughters left it reduces
     exactly to ``calculate_phase_separation_hematocrit``, whose FQ_E1 + FQ_E2 = 1 already. It
     does not depend on how the daughters are ordered.
@@ -239,7 +239,7 @@ def _edge_diameter_um(data, default_diameter_um=None):
     """The edge's measured diameter, or the caller's deliberate stand-in.
 
     This used to substitute 5.0 um silently whenever the attribute was absent or
-    non-positive - open item 9 in ``cb_modelling_reference.md``. Resistance goes as the
+    non-positive. Resistance goes as the
     fourth power of diameter, so a cached graph carrying no calibre solved at a uniform
     5 um for every edge and produced a flow field that was arithmetically fine and meant
     nothing. ``map_vessels_to_grid`` and ``edge_transit_times`` already raised on exactly
@@ -299,8 +299,8 @@ def feeding_vessel_diameter(
     second return value is True so callers can count these nodes.
 
     The rule used to be the larger daughter, logged at INFO only. It fired 15-29 times per
-    pass on the CB networks, every time at an interior node fed only by rounding-level flow
-    (open item 37). The rheology loop now leaves those edges out of the transport, so on the
+    pass on the CB networks, every time at an interior node fed only by rounding-level flow.
+    The rheology loop now leaves those edges out of the transport, so on the
     CB networks the rule no longer fires; it stays for a bifurcation fed by nothing.
     """
     q_sum = 0.0
@@ -386,7 +386,7 @@ def solve_coupled_flow_and_hematocrit(
     are left out of the haematocrit transport, keep the haematocrit they had (systemic, from
     initialisation), and are not counted by the haematocrit test. Their sign is noise and
     flipped on 60-120 edges per pass on the CB networks, which switched junctions between
-    skimming and proportional mixing and kept the loop from ever converging (open item 37).
+    skimming and proportional mixing and kept the loop from ever converging.
 
     Why the loop stopped is written to ``G.graph``, since a cycle or iteration-limit exit
     otherwise returns a graph indistinguishable from a converged one. ``rheology_status(G)``
@@ -594,7 +594,8 @@ def solve_coupled_flow_and_hematocrit(
                 node_h_in[e2[1]] += h2 * q2
                 node_q_in[e2[1]] += q2
             else:
-                # Trifurcation+ -> one-vs-rest phase separation (open item 37)
+                # Trifurcation+ -> one-vs-rest phase separation, continuous as a daughter's
+                # flow falls to zero, so the loop can converge
                 flows = [e[3]["flow_abs"] for e in out_edges]
                 diams = [_edge_diameter_um(e[3], default_diameter_um) for e in out_edges]
                 d_parent, fell_back = feeding_vessel_diameter(

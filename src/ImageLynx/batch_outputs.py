@@ -236,7 +236,7 @@ class BatchRun:
     def th_mask(self, threshold=None) -> np.ndarray:
         """Glomus voxels of the placed ROI: ``p > threshold``, default ``TH_THRESHOLD``."""
         threshold = cb_settings.TH_THRESHOLD if threshold is None else threshold
-        # Strict on purpose. Open item 17 made the vessel cuts inclusive because the vessel
+        # Strict on purpose. The vessel cuts were made inclusive because the vessel
         # sweep's thresholds land exactly on the map's hundredths levels; TH_THRESHOLD was not
         # chosen on that sweep, so the TH cut kept '>' and every published TH number uses it.
         return self.th_probabilities() > threshold

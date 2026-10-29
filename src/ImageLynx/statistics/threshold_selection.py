@@ -25,17 +25,16 @@ of 4-7 um, and its half-voxel arithmetic gives the same window independently. So
 objective without anything being fitted.
 
 It is read on the *centreline* - 2 x EDT at the skeleton voxels - the same quantity the
-pipeline's calibre assignment samples (section 2.6), which is what a capillary diameter
-means. Until open item 15 it was a median over every foreground voxel, which the surface
-shell drags down: 0.63-1.00x the centreline median on the same masks. That voxel median is
-still printed (d_vox) and never read. The EDT on this grid can only take values
-pitch*sqrt(k), so the median is atomic either way and the selection turns on which level it
-lands on, not on a smooth approach to the target.
+pipeline's calibre assignment samples, which is what a capillary diameter means. It used to be a
+median over every foreground voxel, which the surface shell drags down: 0.63-1.00x the
+centreline median on the same masks. That voxel median is still printed (d_vox) and never read.
+The EDT on this grid can only take values pitch*sqrt(k), so the median is atomic either way and
+the selection turns on which level it lands on, not on a smooth approach to the target.
 
 It is also read on a plain ``p >= t`` cut, not on the mask the network is built from. That
 mask - hysteresis from the frozen seed, hole filling, closing, largest component - reads
 wider: at 0.95 the network's median calibre is 5.87-7.46 um against 5.27 here. The same
-statistic on the network's mask is printed as d_net and never read (open item 41). Neither
+statistic on the network's mask is printed as d_net and never read. Neither
 fault is fixed here, because every candidate estimator moves calibre by about as much as the
 window is wide: supersampling the field 2x or 3x before the cut puts WKY-A at 0.95 at 5.60
 or 5.28 um, the network's own estimator at 7.46 (outside the window), and the EDT's
@@ -115,7 +114,7 @@ class ThresholdSample:
     #: 2 x EDT on the centreline (skeleton voxels): the calibre the window is compared with.
     median_diameter_um: float
     p90_diameter_um: float
-    #: 2 x EDT over every foreground voxel - the statistic that selected until open item 15.
+    #: 2 x EDT over every foreground voxel - the statistic that used to select.
     #: Printed for comparison, never read by the selection.
     median_voxel_diameter_um: float
     mask_components: int
@@ -126,7 +125,7 @@ class ThresholdSample:
     endpoint_density_per_mm: float
     skeleton_components: int
     #: 2 x EDT on the centreline of the network's mask (`build_vessel_mask`, fixed seed) - the
-    #: estimator the pipeline's per-edge calibre uses. Printed, never read (open item 41).
+    #: estimator the pipeline's per-edge calibre uses. Printed, never read.
     median_network_diameter_um: float = float("nan")
 
     @property
@@ -195,7 +194,7 @@ def evaluate_threshold(
     Returns ``None`` when the mask is empty, which is a legitimate outcome at the top of a
     sweep rather than an error.
 
-    Calibre is read on the centreline (open item 15), so the skeleton is always built; there
+    Calibre is read on the centreline, so the skeleton is always built; there
     is no calibre-only pass any more.
 
     ``seed`` is the hysteresis seed for the network-mask calibre (d_net) only. It is held
@@ -209,9 +208,9 @@ def evaluate_threshold(
     # Inclusive, as the pipeline's hysteresis is. The Ilastik export is quantised to
     # hundredths - 101 distinct values, zero deviation from k/100 - and every threshold in
     # the sweep grid is a whole number of hundredths, so each one lands exactly on an
-    # occupied level. The strict `>` used until open item 17 discarded that whole level:
+    # occupied level. The strict `>` used before discarded that whole level:
     # (p > t) == (p >= t + 0.01), and (p > 0.99) == (p == 1.0), 0.5% of the ROI at 0.30
-    # rising to 4.2-5.9% at 0.99. See section 2.2.
+    # rising to 4.2-5.9% at 0.99.
     from ..preprocessing.image import at_or_above
 
     from ..preprocessing.mask import build_vessel_mask
@@ -225,10 +224,10 @@ def evaluate_threshold(
         return None
 
     edt = distance_transform_edt(binary, sampling=spacing)
-    # Calibre on the centreline, the statistic section 2.6 reports and the 4-7 um capillary
+    # Calibre on the centreline, the statistic the pipeline reports and the 4-7 um capillary
     # window describes. The median over every foreground voxel (kept below for comparison)
     # is dragged down by the surface shell, most of a thin mask, and read 0.63-1.00x the
-    # centreline median on the same masks (open item 15).
+    # centreline median on the same masks.
     skeleton = skeletonize(binary).astype(bool)
     n_skeleton = int(skeleton.sum())
     if not n_skeleton:
@@ -361,7 +360,7 @@ def select_threshold(
 def select_on_network_calibre(
     samples: Sequence[ThresholdSample], voxel_size_zyx
 ) -> ThresholdSelection:
-    """The selection re-run on the network's mask, less the EDT's half-step bias (open item 41).
+    """The selection re-run on the network's mask, less the EDT's half-step bias.
 
     The EDT measures to the nearest *background voxel centre*, so it overstates a radius by
     about half a grid step and a diameter by about one voxel. d_net is read on the mask the

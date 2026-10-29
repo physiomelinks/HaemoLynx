@@ -1,22 +1,22 @@
-"""H1 sections 1.3 and 1.5: morphometrics that need both channels at once.
+"""H1's morphometrics that need both channels at once.
 
-Section 1.3 asks for the parenchymal volume of the TH-positive glomus clusters and the
-centreline length density *within* those clusters. Section 1.5 asks for the distance from
+H1 asks for the parenchymal volume of the TH-positive glomus clusters and the centreline
+length density *within* those clusters, and for the distance from
 every TH-positive voxel to the nearest lectin-positive centreline. Both are joins between the
 two channels of one acquisition, which is only sound because they are two channels of one
 acquisition: identical grid, co-registered by construction, no registration step involved.
 
 The vessel side is the batch network itself (``examples/cb_h1_batch.py --stage run``), not a
-mask recomputed here: its graph for the §1.3 length, its skeleton for the §1.5 distance and
+mask recomputed here: its graph for the length, its skeleton for the distance and
 its mask for the vessel volume. The TH channel is cropped to the same placed ROI, and the
 driver refuses a batch output whose box differs (``roi_placement.check_output_roi``).
 
-**One definition of vessel length** (open item 40). Until then this module thresholded the
+**One definition of vessel length.** This module used to threshold the
 probability map plainly at the frozen cut and skeletonised that, while the network uses the
 hysteresis band plus its own cleanup, and it measured length by summing every 26-adjacent
 voxel pair, which counts all three links where three skeleton voxels touch at a corner. The
-two together put WKY-A's §1.3 length at 199 mm against the network's 97 mm. The length is
-now the network's edge polylines, classified against TH by the same sampling H2 §2.1 uses.
+two together put WKY-A's length at 199 mm against the network's 97 mm. The length is now
+the network's edge polylines, classified against TH by the same sampling H2 uses.
 """
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ def tissue_to_vessel_distance_um(
 ) -> np.ndarray:
     """Distance from every tissue voxel to the nearest centreline voxel, in micrometres.
 
-    To the centreline rather than to the vessel surface, which is what H1 section 1.5 asks
-    for. The two differ by the local radius, so they are not interchangeable: on a 3 um
-    capillary the surface is 1.5 um closer everywhere, and that offset would be absorbed
-    into any group difference rather than showing up as one.
+    To the centreline rather than to the vessel surface, which is what H1 asks for. The two
+    differ by the local radius, so they are not interchangeable: on a 3 um capillary the surface
+    is 1.5 um closer everywhere, and that offset would be absorbed into any group difference
+    rather than showing up as one.
 
     ``sampling`` puts the result in micrometres directly and carries the 1.0011 axial to
     lateral ratio, so nothing downstream needs a second conversion.
@@ -64,7 +64,7 @@ def tissue_to_vessel_distance_um(
 
 @dataclass(frozen=True)
 class ThMorphometry:
-    """One specimen's section 1.3 and 1.5 results, at one pair of thresholds."""
+    """One specimen's two-channel results, at one pair of thresholds."""
 
     specimen_id: str
     group: str
@@ -72,7 +72,7 @@ class ThMorphometry:
     th_threshold: float
     vessel_threshold: float
 
-    # Section 1.3
+    # Glomus volume and vessel length within it
     th_volume_um3: float
     th_volume_fraction: float
     vessel_volume_um3: float
@@ -81,7 +81,7 @@ class ThMorphometry:
     centreline_length_within_th_um: float
     length_density_mm_per_mm3: float
 
-    # Section 1.5
+    # Tissue-to-vessel distance
     tvd_n: int
     tvd_median_um: float
     tvd_p25_um: float
@@ -104,9 +104,9 @@ def summarise(
     th_threshold: float,
     vessel_threshold: float,
 ) -> ThMorphometry:
-    """Assemble both sections from the batch network and masks on its grid.
+    """Assemble both measurements from the batch network and masks on its grid.
 
-    ``graph`` gives the §1.3 lengths, ``skeleton`` the §1.5 distances; both come from the
+    ``graph`` gives the lengths, ``skeleton`` the distances; both come from the
     same pipeline run, so they describe one vessel set.
     """
     th_mask = np.asarray(th_mask, dtype=bool)

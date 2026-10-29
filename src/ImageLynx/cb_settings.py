@@ -1,25 +1,21 @@
 """The frozen analysis settings for the carotid body study, in one place.
 
 Every constant here was previously written out separately in each driver under
-``examples/``. Four of the open items in ``cb_modelling_reference.md`` were the
-same defect in different clothes: a driver constant that had silently drifted from the
-``carotid_image_to_model.py`` config default it was supposed to match.
-
-    open item 1   two segmentation thresholds: config 0.65/0.75 against the frozen 0.90 (closed:
-                  PreprocessingConfig now reads HYSTERESIS_LOW/HIGH from here)
-    open item 2   two boundary rules: band on axis 0 in H1, face on axis 1 in H2
-    open item 8   ``M_max`` 10x apart: PerfusionConfig 0.005 against the driver's 0.05 (closed:
-                  PerfusionConfig now declares 0.05 too)
-    open item 10  pressures: config 100/2 mmHg against the drivers' 60/20 mmHg (closed:
-                  HaemodynamicsConfig now reads 60/20 from here)
+``examples/``, and a constant written out in two places drifted apart four times: a driver
+value silently moved away from the ``carotid_image_to_model.py`` config default it was
+supposed to match. The segmentation threshold (config 0.65/0.75 against the frozen 0.90),
+the boundary rule (band on axis 0 in H1, face on axis 1 in H2), ``M_max``
+(``PerfusionConfig`` 0.005 against the drivers' 0.05) and the pressures (config 100/2 mmHg
+against the drivers' 60/20 mmHg) each had two values. Each constant now has one owner, this
+module, and each config either reads it or is tested to match it.
 
 A shared module does not by itself decide which value is right. What it does is make the
 disagreement impossible to reintroduce silently: there is now exactly one place to change,
 and ``tests/test_cb_settings.py`` asserts that the pipeline defaults agree with it.
 
 **These are the values every published H1 and H2 number was produced with.** Changing one
-invalidates the results in ``cb_modelling_reference.md`` sections 7 and 13. Each is
-annotated with what fixed it, and with the measurement that justifies it where one exists.
+invalidates the published H1 and H2 numbers. Each is annotated with what fixed it, and
+with the measurement that justifies it where one exists.
 """
 from __future__ import annotations
 
@@ -65,9 +61,10 @@ THRESHOLD_GRID: Tuple[float, ...] = (
 #: group stays visible.
 #:
 #: 0.95 since the 2026-09-28 re-selection, when all six chose 0.95. It was 0.90 (four chose
-#: 0.90, two 0.85) until open items 27, 15, 17 and 13 changed what the selector measures: the
-#: placed ROI's lateral centre over its own slices (13), calibre on the centreline rather than
-#: over every foreground voxel (15, the change that moved it), and an inclusive cut (17).
+#: 0.90, two 0.85) until four fixes changed what the selector measures: masks cropped at the
+#: placed ROI rather than the array centre, the ROI's lateral centre taken over its own
+#: slices, calibre on the centreline rather than over every foreground voxel (the change that
+#: moved it), and an inclusive cut.
 FROZEN_THRESHOLD: float = 0.95
 
 #: The pipeline receives ``FROZEN_THRESHOLD`` as ``--hysteresis-low`` only, and a low given
@@ -82,7 +79,7 @@ HYSTERESIS_HIGH_OFFSET: float = 0.05
 HYSTERESIS_SEED_CAP: float = 0.999
 
 #: The pair the H1 masks were built with. ``PreprocessingConfig`` reads both as its defaults
-#: (it said 0.65 / 0.75 until open item 1), so a direct run builds the same mask.
+#: (it used to say 0.65 / 0.75), so a direct run builds the same mask.
 HYSTERESIS_LOW: float = FROZEN_THRESHOLD
 HYSTERESIS_HIGH: float = min(HYSTERESIS_SEED_CAP, FROZEN_THRESHOLD + HYSTERESIS_HIGH_OFFSET)
 
@@ -95,7 +92,7 @@ HYSTERESIS_HIGH: float = min(HYSTERESIS_SEED_CAP, FROZEN_THRESHOLD + HYSTERESIS_
 #: Chosen by availability, not anatomy: it is the only axis solvable in all six specimens.
 #: Axis 0 has no outlet terminal in SHR-A and axis 2 has no inlet terminal in SHR-C, and
 #: the face rule refuses rather than falling back. That is a property of these six graphs
-#: rather than a general rule, and it is stated as such in section 2.8.
+#: rather than a general rule.
 BOUNDARY_AXIS: int = 1
 
 #: How close to a face a degree-1 node has to be to count as crossing it.
@@ -104,13 +101,13 @@ BOUNDARY_AXIS: int = 1
 #: show the answer does not depend on this one: varying each rule's own free parameter
 #: over its plausible range gives a shunt-ratio spread of 8.9% for the face rule against
 #: 73.9% for the band rule on the placed boxes (13.3% against 75.8% on the centred boxes) -
-#: an 8.3-fold reduction, and section 13.4's reason for calling boundary selection the
-#: largest single lever in the model.
+#: an 8.3-fold reduction. The choice of rule outweighs calibre error, which is why boundary
+#: selection is the largest single lever in the model.
 BOUNDARY_FACE_TOLERANCE_VOXELS: float = 1.0
 
 #: Arteriolar to venular, in mmHg. Every published H2 number used this pair.
 #:
-#: ``HaemodynamicsConfig`` declared 100/2 mmHg until open item 10, which assumes the entire
+#: ``HaemodynamicsConfig`` used to declare 100/2 mmHg, which assumes the entire
 #: systemic arterial-to-venous drop falls across ~1 mm of tissue. It does not; most of it
 #: falls across the arterial tree upstream and the venous tree downstream. The config now
 #: takes its defaults from these two values.
@@ -122,16 +119,16 @@ INLET_PRESSURE_MMHG: float = 60.0
 OUTLET_PRESSURE_MMHG: float = 20.0
 
 #: The coupled flow-haematocrit solve (``solve_coupled_flow_and_hematocrit``), shared by the
-#: pipeline and every H2 driver (open item 37).
+#: pipeline and every H2 driver.
 #:
-#: Until item 37 the loop ran at most 15 passes with relaxation 0.5 and an absolute flow
-#: tolerance of 1e-4, and it stopped on the cap in every specimen, still wandering. Two
-#: switches drove it: rounding-level edges flipping direction, and junctions switching
-#: between skimming and proportional mixing. With both removed, relaxation 0.5 still does
-#: not converge, and 0.3 and 0.4 leave SHR-C on a periodic cycle. At 0.2 all six converge,
-#: in 173 (SHR-B) to 457 (WKY-B) passes, and the pipeline (mPa) and the H2 drivers (mmHg)
-#: land on the same haematocrit to 1e-10. The cap is 2.2x the slowest at 0.95, and 1.4x the
-#: slowest sensitivity run (WKY-B at 0.93, 726 passes).
+#: Until the convergence fix the loop ran at most 15 passes with relaxation 0.5 and an absolute
+#: flow tolerance of 1e-4, and it stopped on the cap in every specimen, still wandering. Two
+#: switches drove it: rounding-level edges flipping direction, and junctions switching between
+#: skimming and proportional mixing. With both removed, relaxation 0.5 still does not converge,
+#: and 0.3 and 0.4 leave SHR-C on a periodic cycle. At 0.2 all six converge, in 173 (SHR-B) to
+#: 457 (WKY-B) passes, and the pipeline (mPa) and the H2 drivers (mmHg) land on the same
+#: haematocrit to 1e-10. The cap is 2.2x the slowest at 0.95, and 1.4x the slowest sensitivity
+#: run (WKY-B at 0.93, 726 passes).
 #:
 #: The stop is scale-free: the largest per-pass flow change, as a fraction of the largest
 #: flow, and the largest gap between skimmed and current haematocrit on a flowing edge.
@@ -162,19 +159,19 @@ TH_THRESHOLD: float = 0.5
 #:
 #: Sampled along the whole polyline rather than at the endpoints: a capillary penetrating a
 #: cluster usually begins and ends in stroma, so an endpoint test would classify exactly
-#: the vessels H2 section 2.1 is about as extra-glomus.
+#: the penetrating vessels as extra-glomus.
 PENETRATION_FRACTION: float = 0.5
 
 # ---------------------------------------------------------------------------------------
 # Tissue transport
 # ---------------------------------------------------------------------------------------
 
-#: Perfusion grid pitch, isotropic, in um. Chosen on convergence (open item 30).
+#: Perfusion grid pitch, isotropic, in um. Chosen on grid convergence.
 #:
 #: With vessels mapped over their cross-section (``vessel_mapping="cross_section"``), Tier 1
 #: median PO2 and TH-weighted PO2 on WKY-C and SHR-C move at most 0.21 mmHg from 3 to 2 um,
-#: but up to 0.78 mmHg from 4 to 3 um (reference section 6.8). 3 um is the coarsest grid
-#: within 0.5 mmHg of the next refinement. It was 4 um until open item 30; with the centreline
+#: but up to 0.78 mmHg from 4 to 3 um. 3 um is the coarsest grid within 0.5 mmHg of the
+#: next refinement. It was 4 um before the cross-section mapping; with the centreline
 #: mapping no grid converged, because a finer grid drew each vessel thinner.
 #:
 #: Measured tissue-to-vessel distance has a median of 5.28-7.92 um across the three WKY
@@ -184,9 +181,9 @@ GRID_UM: float = 3.0
 #: Volume-weighted mean maximum metabolic rate, mmol/L/s.
 #:
 #: 0.05 mmol/L/s is 0.067 mL O2 per mL per minute, against roughly 0.040 for brain - the
-#: right order for a metabolically active organ. Every published H2 section 2.3 result used
-#: the value here. ``PerfusionConfig.M_max`` declared 0.005, ten times lower, until open item 8
-#: set it to this value; ``tests/test_cb_settings.py`` keeps the two equal.
+#: right order for a metabolically active organ. Every published H2 hypoxia result used
+#: the value here. ``PerfusionConfig.M_max`` used to declare 0.005, ten times lower; it now
+#: declares this value, and ``tests/test_cb_settings.py`` keeps the two equal.
 BASE_M_MAX: float = 0.05
 
 #: Glomus-to-stroma metabolic contrasts swept by the hypoxic-fraction driver.
@@ -214,15 +211,15 @@ class PerfusionSettings:
     #: Rate constant of the saturating metabolic sink, per mmol.
     k_reduce: float = 0.1
     #: Arterial PO2 of the blood entering the network, mmHg. It used to be written out as
-    #: 100.0 inside the solver bodies (open item 3); the value is unchanged.
+    #: 100.0 inside the solver bodies; the value is unchanged.
     po2_arterial_mmHg: float = 100.0
     #: Systemic haematocrit. Tier 1 no longer reads it: its washout is at each cell's own
-    #: haematocrit, as its source is (open item 29). Until then the washout was evaluated at this
-    #: value, first written out as 0.45 in the solver (open item 4). The value is unchanged.
+    #: haematocrit, as its source is. Before that the washout was evaluated at this value,
+    #: first written out as 0.45 in the solver. The value is unchanged.
     systemic_hematocrit: float = 0.45
     #: Newton step cap and stop tolerance for Tier 1 (the tolerance is the largest cell residual
     #: in mmHg over the largest PO2, ``_relative_residual``). They were hard-coded in the solver
-    #: at 50 and 1e-5 (open item 6). The cap went 50 -> 200 with ``PerfusionConfig``'s (open
-    #: item 32): Tier 1 stops after 9-11 steps on every H2 run, so no H2 number moved.
+    #: at 50 and 1e-5. The cap went 50 -> 200 with ``PerfusionConfig``'s, which Tier 3 outgrew
+    #: on WKY-A: Tier 1 stops after 9-11 steps on every H2 run, so no H2 number moved.
     picard_max_iterations: int = 200
     picard_tolerance: float = 1e-5

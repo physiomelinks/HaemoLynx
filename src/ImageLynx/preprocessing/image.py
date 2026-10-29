@@ -21,7 +21,7 @@ def at_or_above(values: np.ndarray, threshold: float) -> np.ndarray:
 
     The Ilastik export is quantised to hundredths and every CB threshold is a whole number of
     hundredths, so voxels sit exactly on the threshold. A strict ``>`` drops that whole level
-    (open item 17: ``p > 0.90`` is ``p >= 0.91``, and ``p > 0.99`` is ``p == 1.0``). The cast
+    (``p > 0.90`` is ``p >= 0.91``, and ``p > 0.99`` is ``p == 1.0``). The cast
     makes a float32 level k/100 compare equal to the threshold k/100, whatever the promotion
     rules of the installed numpy.
     """
@@ -162,7 +162,7 @@ def hysteresis_threshold(
     Voxels at or above 'high' are seeds. Any voxel at or above 'low' that is face-connected
     to a seed is kept.
 
-    Inclusive at both bounds (open item 17), unlike ``skimage.filters.
+    Inclusive at both bounds, unlike ``skimage.filters.
     apply_hysteresis_threshold``, which this replaced and which cuts ``>`` at both. Otherwise
     identical: ``scipy.ndimage.label`` with its default (face) connectivity, and ``low``
     clipped to ``high``.

@@ -6,10 +6,10 @@ import networkx as nx
 
 logger = logging.getLogger(__name__)
 
-#: How much fabricated calibre an EDT run may carry before it is refused. EDT has no
-#: legitimate per-edge failure mode on a mask that covers the vessel, and S5 measured 100%
-#: measured_edt provenance across 34,900 edges, so any fallback is a defect rather than an
-#: expected shortfall. FWHM is different and is exempted below.
+#: How much fabricated calibre an EDT run may carry before it is refused. EDT has no legitimate
+#: per-edge failure mode on a mask that covers the vessel, and a check of all six CB specimens
+#: found 100% measured_edt provenance across 34,900 edges, so any fallback is a defect rather
+#: than an expected shortfall. FWHM is different and is exempted below.
 MAX_SYNTHETIC_FRACTION_EDT = 0.0
 
 

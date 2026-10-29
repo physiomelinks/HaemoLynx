@@ -383,7 +383,7 @@ def evaluate_mask_calibre(
 
     That independence is why it is worth having. With hand annotation infeasible (#98 item 23)
     this is the only evidence about the segmentation that does not come from the classifier
-    being assessed, and it belongs in item 25's sensitivity scope.
+    being assessed, and it belongs in #98 item 25's sensitivity scope.
 
     Measured on the reference subvolume, median radius falls from 20.09 um at a low threshold
     of 0.2 - a solid block of tissue, not a vessel - to 2.64 um from 0.6 onward, which is the

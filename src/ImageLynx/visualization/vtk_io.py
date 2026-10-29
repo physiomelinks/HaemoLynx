@@ -249,7 +249,7 @@ def _attach_morphometry(mesh, graph, cell_keys) -> None:
 
     The exported geometry previously carried an assigned diameter and a branch order and
     nothing else, so the network could not be coloured by tortuosity, by the EDT diameter
-    section 1.2 reports, or by which edges retained a radius known to be biased.
+    H1 reports, or by which edges retained a radius known to be biased.
 
     Values come from ``export_per_edge_morphometry`` rather than being recomputed here, so
     the definition of tortuosity in a rendering cannot drift from the definition in the
@@ -398,7 +398,7 @@ def graph_to_vtk(
         np.asarray(node_points, dtype=float) if node_points else np.empty((0, 3), dtype=float)
     )
     node_mesh.point_data["node_id"] = np.asarray(node_ids, dtype=np.int64)
-    # Section 1.1 counts branch points - nodes joining three or more distinct segments - so
+    # H1 counts branch points - nodes joining three or more distinct segments - so
     # degree is the readout, and a node file carrying only an identifier cannot show it.
     degrees = np.asarray([int(graph.degree(n)) for n in node_ids], dtype=np.int32)
     node_mesh.point_data["degree"] = degrees

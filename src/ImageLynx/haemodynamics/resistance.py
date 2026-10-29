@@ -41,8 +41,8 @@ POISEUILLE_FLOW_TO_UM3_PER_S = PASCALS_PER_MMHG * 1e3
 #: network's largest as stagnant: rounding, not blood. It was 1e-12, set from WKY-A's 0.90 network, where the flow
 #: solve conserved mass to ~3e-14 of the largest flow. On the 2026-09-28 networks (placed ROI,
 #: threshold 0.95, 6-8k edges) rounding flow reached 1.7e-12 in SHR-A, on the entry edge of a
-#: dead-end side branch, which then sent blood it never received and the march raised (open
-#: item 36). Across all six, rounding flows stay at or below 1.7e-12 and real ones start at
+#: dead-end side branch, which then sent blood it never received and the march raised.
+#: Across all six, rounding flows stay at or below 1.7e-12 and real ones start at
 #: 2.1e-8 (WKY-C), with no edge in between; 1e-10 sits 59x above the one and 210x below the
 #: other.
 STAGNANT_FLOW_FRACTION = 1e-10
@@ -54,7 +54,7 @@ def stagnant_edges(G, fraction: float | None = None) -> set:
     Exact zeros count: an edge with no flow is as stagnant as one with rounding flow. The
     rheology loop and Tier 3 both take their stagnant set from here, so they agree by
     construction. Tier 3's log used to count only the nonzero ones, 136 on WKY-A against the
-    loop's 867, which read as two different sets (re-run package K).
+    loop's 867, which read as two different sets.
     """
     if fraction is None:
         fraction = STAGNANT_FLOW_FRACTION

@@ -15,8 +15,7 @@ from .resistance import (  # noqa: E402
 #: Solubility of O2 in plasma and tissue, mmol/L per mmHg. One value for the blood's dissolved
 #: O2 and for every tier's tissue transport. Diffusion and wall flux are driven by PO2 but move
 #: amount of O2, so each conductance is D alpha or P alpha; ``sigma_diff`` is D, not D alpha.
-#: Tier 1 and Tier 2 left alpha out and ran their tissue transport about 750x too strong
-#: (open item 22).
+#: Tier 1 and Tier 2 left alpha out and ran their tissue transport about 750x too strong.
 ALPHA_O2_MMOL_PER_L_MMHG = 1.34e-3
 
 def calculate_blood_oxygen_content(po2_mmHg: float, hematocrit: float, pco2_mmHg: float = 40.0, ph: float = 7.4) -> float:
@@ -52,8 +51,9 @@ def calculate_blood_co2_content(pco2_mmHg: float, hematocrit: float, po2_mmHg: f
     it. Its Hb term gives the haematocrit dependence; its saturation term is the Haldane effect
     (deoxygenated blood carries more CO2).
 
-    Saturation uses a fixed P50 of 26 mmHg, not the Bohr-shifted P50 of the oxygen curve
-    (reference §11 row 19). At H near 0 the Hb term makes content peak near PCO2 135 mmHg, far
+    Saturation uses a fixed P50 of 26 mmHg, not the Bohr-shifted P50 of the oxygen curve, an
+    assumption that underestimates CO2 carriage in acidotic tissue by at most 1.5% over pH
+    7.2-7.4 and PCO2 40-60 mmHg. At H near 0 the Hb term makes content peak near PCO2 135 mmHg, far
     above any tissue PCO2; below that the curve rises with PCO2 for every H.
 
     The saturation term is scaled by Hb / 15 g/dL. McHardy fitted blood at normal Hb, where the
@@ -104,7 +104,7 @@ class PerfusionGrid:
     vasculature stops. Where a segmented tissue volume reaches past that, the tissue in the gap
     is not represented at all: ``mask_fraction_per_cell`` drops it, and the solve describes less
     tissue than was handed in. Two of the six carotid body specimens lose 4.35% and 7.54% of
-    their glomus volume that way (S28).
+    their glomus volume that way.
 
     ``bounds_zyx`` extends the grid to cover a requested region, given as ``(min_zyx, max_zyx)``
     in micrometres. It is a **union** with the node bounding box and never a replacement: a
@@ -115,14 +115,15 @@ class PerfusionGrid:
     no vessels, because the vessels supplying them were cut off by the region crop rather than
     absent from the organ, so they consume without a local source.
 
-    That was expected to drive the padded faces towards anoxia. Measured before open items 22
-    and 29 it did not (-0.77 and -0.66 mmHg within TH on SHR-A and SHR-C, hypoxia still zero),
-    but that solve had 750 times too much diffusion. Re-measured after them (contrast 2), padding
-    moves mean PO2 within TH by -3.9 and -4.9 mmHg and TH hypoxia below 10 mmHg from 2.0% to
-    5.6% and from 5.0% to 6.8%: the added cells do go short of oxygen.
+    That was expected to drive the padded faces towards anoxia. Measured before the solubility
+    and washout-haematocrit fixes it did not (-0.77 and -0.66 mmHg within TH on SHR-A and SHR-C,
+    hypoxia still zero), but that solve had 750 times too much diffusion. Re-measured after them
+    (glomus-to-stroma metabolic contrast 2), padding moves mean PO2 within TH by -3.9 and -4.9
+    mmHg and TH hypoxia below 10 mmHg from 2.0% to 5.6% and from 5.0% to 6.8%: the added cells
+    do go short of oxygen.
 
     Read a padded solve as tissue-complete and supply-incomplete at its edges; the default is
-    the reverse. Which is the better model of the cropped tissue needs review (S29).
+    the reverse. Which is the better model of the cropped tissue needs review.
     """
     def __init__(self, G: nx.MultiGraph, grid_resolution_xyz: Tuple[float, float, float],
                  bounds_zyx: Tuple[Sequence[float], Sequence[float]] | None = None):
@@ -308,7 +309,7 @@ def _raise_on_non_finite_flow(G) -> None:
 
 
 # STAGNANT_FLOW_FRACTION lives in resistance.py, beside the flow solve, because the rheology
-# loop uses the same cut (open item 37). Both take the set from resistance.stagnant_edges.
+# loop uses the same cut. Both take the set from resistance.stagnant_edges.
 
 
 def _raise_on_direction_size_mismatch(G) -> None:
@@ -388,7 +389,7 @@ def _implicit_cell_outlet_pressure(content_of_p, c_in: float, g: float, p_tissue
     ``P_perm * A * alpha / q``. The wall flux is taken at the outlet pressure, so blood can at
     most come to equilibrium with the tissue, and ``q * (c_in - c_out)`` equals the flux.
 
-    The step used to take the flux at the inlet pressure (open item 21). Once
+    The step used to take the flux at the inlet pressure. Once
     ``P_perm * A * alpha`` exceeded ``q * dC/dP``, one step went past equilibrium; at the
     measured wall permeability that happens at capillary flow, and the Picard loop stalled.
 
@@ -502,8 +503,8 @@ def map_vessels_to_grid(
     everywhere.
 
     With pressure in mPa (``carotid_image_to_model.py``) flow is already in um^3/s, and the
-    caller must pass ``flow_to_um3_per_s=1.0``. The pipeline took the default until open item
-    31, so its perfusion saw flow 1.33e5 times too high. ``1.0`` also leaves flow in solver
+    caller must pass ``flow_to_um3_per_s=1.0``. The pipeline once took the default, so its
+    perfusion saw flow 1.33e5 times too high. ``1.0`` also leaves flow in solver
     units, for a caller comparing against output produced before the conversion existed.
 
     Raises if any edge lacks a usable diameter, unless ``default_diameter_um`` is given.
@@ -517,7 +518,7 @@ def map_vessels_to_grid(
     Also raises if any edge's ``voxels`` polyline is absent or has fewer than two points. Such
     an edge used to be skipped, so its flow reached no tissue cell and nothing said so.
 
-    ``vessel_mapping`` says which cells a vessel occupies (open item 30):
+    ``vessel_mapping`` says which cells a vessel occupies:
 
     - ``"centreline"`` (default): only the cells its centreline crosses, whatever its diameter.
       Below a vessel diameter a finer grid draws a thinner vessel, a line source in the limit,
@@ -675,7 +676,7 @@ def map_vessels_to_grid(
     # an edge crossing five cells injects five times its own oxygen. Refining the grid makes
     # edges cross more cells, so the total source grew with resolution: on WKY-C the summed
     # s_incoming went 8.87e6, 1.20e7, 1.54e7, 1.80e7 at 10, 6, 4 and 3 um, in exact proportion
-    # to the mean cells crossed per edge. Section 2.3's PO2 rose with refinement for that
+    # to the mean cells crossed per edge. The H2 hypoxia PO2 rose with refinement for that
     # reason and not a physical one.
     #
     # Normalised against the accumulated length rather than the edge's own `length` attribute,
@@ -734,7 +735,7 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     term in the balance: each face conductance is ``sigma_diff * alpha * face / spacing``. It
     used to leave out alpha, so diffusion came out in mmHg um^3/s and was added to fluxes in
     mmol/L um^3/s as if they were the same unit: about 1/alpha = 750 times too strong, with a
-    diffusion length 27 times the sqrt(D alpha PO2 / M) of the reference (open item 22).
+    diffusion length 27 times the physical sqrt(D alpha PO2 / M).
 
     Returns:
         A: scipy.sparse.csr_matrix (Constant LHS matrix for Diffusion ONLY)
@@ -752,7 +753,7 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     res = grid.res
     
     # Convert diffusion coefficient from m^2/s to µm^2/s, and multiply by solubility so the
-    # conductance takes a PO2 difference to an O2 flux (open item 22).
+    # conductance takes a PO2 difference to an O2 flux.
     sigma_alpha = perf_config.sigma_diff * 1e12 * ALPHA_O2_MMOL_PER_L_MMHG
 
     # Diffusive conductance between cells (µm^3/s x mmol/L per mmHg)
@@ -844,7 +845,7 @@ def cell_discharge_hematocrit(cell_to_vessels: Dict[int, List[Dict[str, Any]]], 
 
     O2 content is affine in H (dissolved plus H times bound), so the washout of the cell's
     vessels summed one by one equals its total flow times the content at this one H. Tier 1's
-    washout uses it, so a cell's source and washout sit on the same curve (open item 29).
+    washout uses it, so a cell's source and washout sit on the same curve.
     Cells with no vessel get 0; they have no washout.
     """
     h = np.zeros(n_cells, dtype=np.float64)
@@ -893,7 +894,7 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     tolerance relative to the field (``_relative_residual``, as in Tier 3).
 
     This replaced a Picard loop with a fixed slope of 0.5 mmol/L per mmHg for q C'(P) that
-    stopped on the relative change between iterates (open item 22). With O2 solubility in the
+    stopped on the relative change between iterates. With O2 solubility in the
     diffusion the tissue is no longer tied to its neighbours strongly enough to hide the gap
     between 0.5 and the real slope, which is near alpha on both flat ends of the curve: the loop
     hit max_iter on WKY-A. Plain Newton overshoots there for the same reason (steps of 1000 mmHg
@@ -903,13 +904,13 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     haematocrit the source was built with, not at ``systemic_hematocrit``. The two used to
     differ: a cell fed above 0.45 received more O2 at arterial PO2 than it could wash out below
     hundreds of mmHg, a phantom source 55 times the whole tissue's demand on WKY-A, and one fed
-    below 0.45 was drained (open item 29). ``cell_hematocrit`` is required and checked, not
+    below 0.45 was drained. ``cell_hematocrit`` is required and checked, not
     defaulted.
 
     The step cap and tolerance are ``perf_config.picard_max_iterations`` and
     ``perf_config.picard_tolerance``, read without a default. The names are shared with Tier 3,
-    although the steps here are Newton steps; they used to be hard-coded at 50 and 1e-5 (open
-    item 6). The inner CG settings stay hard-coded: they set the direction, not the stop.
+    although the steps here are Newton steps; they used to be hard-coded at 50 and 1e-5. The
+    inner CG settings stay hard-coded: they set the direction, not the stop.
     With ``return_info`` it also returns a dict with ``converged``, ``iterations`` (Newton
     steps taken) and ``residual`` of the returned field.
     """
@@ -922,8 +923,8 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     k_reduce = perf_config.k_reduce
     V_cell = grid.cell_volume
 
-    # The washout is evaluated at each cell's own haematocrit, the one its source used (open
-    # item 29). It was systemic_hematocrit, which made a phantom source or sink of every cell
+    # The washout is evaluated at each cell's own haematocrit, the one its source used. It
+    # was systemic_hematocrit, which made a phantom source or sink of every cell
     # whose vessels were not at 0.45.
     cell_hematocrit = np.asarray(cell_hematocrit, dtype=np.float64)
     if cell_hematocrit.shape != (N,):
@@ -991,7 +992,7 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
         return PO2, {"converged": converged, "iterations": int(iteration), "residual": float(residual)}
     return PO2
 
-#: Past iterates the Tier 3 Anderson step combines (open item 23).
+#: Past iterates the Tier 3 Anderson step combines.
 ANDERSON_DEPTH = 5
 
 
@@ -1070,7 +1071,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     at the blood's outlet pressure, which lies between the tissue's and the inlet's, so one cell
     can at most bring blood to equilibrium with its tissue.
 
-    The Picard loop (open item 23) linearises the wall flux through the blood's actual response
+    The Picard loop linearises the wall flux through the blood's actual response
     (``_blood_response_conductance``) and consumption through its slope, solves each tissue
     update exactly with a sparse LU, and speeds up with guarded Anderson acceleration
     (``_AndersonMixer``). It stops when the
@@ -1128,7 +1129,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     # receives (7 such nodes on WKY-A, net outflow ~1e-14 of the largest flow). Such edges
     # carry no blood in the march, the same as an exact zero. The set is the rheology loop's
     # (stagnant_edges), and the count includes exact zeros. It used to leave them out, so the
-    # log showed 136 on WKY-A against the loop's 867 for the same edges (re-run package K).
+    # log showed 136 on WKY-A against the loop's 867 for the same edges.
     stagnant = stagnant_edges(G)
     n_zero = 0
     DAG = nx.MultiDiGraph()
@@ -1155,7 +1156,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     q_by_edge = _edge_flows_um3_per_s(DAG, cell_to_vessels, flow_to_um3_per_s)
 
     starting_set = set(starting_nodes)
-    # Arterial blood at the Henderson-Hasselbalch pH of its own PCO2 (open item 25). In each
+    # Arterial blood at the Henderson-Hasselbalch pH of its own PCO2. In each
     # cell the blood's O2 is read at the tissue pH, from the same formula and bicarbonate, so
     # blood and tissue at the arterial PCO2 share one pH. A literal 7.4 (the formula gives
     # 7.401 at PCO2 40, HCO3 24) shifted the blood's pH at the first cell with no exchange
@@ -1211,7 +1212,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         # Sparse LU with a symmetric ordering (the matrix is symmetric): exact, and about 1 s
         # on a 30k-cell grid against 3 s with the default ordering. The CG used before had a
         # hard-coded rtol of 1e-5 and was warm-started, so a Picard step smaller than that came
-        # back as no change and the loop reported convergence short of the answer (item 23).
+        # back as no change and the loop reported convergence short of the answer.
         A = (A_diff + sp.diags(diagonal)).tocsc()
         lu = splinalg.splu(A, permc_spec="MMD_AT_PLUS_A", options={"SymmetricMode": True})
         return lu.solve(b)
@@ -1231,7 +1232,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         # Henderson-Hasselbalch
         pH_tissue = calculate_ph_from_pco2(PCO2_clamped, hco3_tissue)
 
-        # Blood state at each node, as pressures (open item 24). Content per litre of blood is
+        # Blood state at each node, as pressures. Content per litre of blood is
         # not carried across a node, because phase separation gives each daughter a different
         # haematocrit: arterial content at H 0.45 can exceed anything a plasma-skimmed daughter
         # can hold at any PCO2. Pressures are shared, and each daughter's content is evaluated
@@ -1279,8 +1280,9 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                     k_co2 = P_perm_co2 * area * alpha_co2
 
                     if q > 0:
-                        # Implicit step: flux at the outlet pressure (open item 21). O2 first at
-                        # the inlet PCO2 (Bohr), then CO2 at the new PO2 (Haldane).
+                        # Implicit step: flux at the outlet pressure, so one cell cannot carry
+                        # blood past equilibrium with its tissue. O2 first at the inlet PCO2
+                        # (Bohr), then CO2 at the new PO2 (Haldane).
                         pco2_in_cell = pco2_curr
                         po2_curr = _implicit_cell_outlet_pressure(
                             lambda p: calculate_blood_oxygen_content(p, h, pco2_in_cell, ph_local),
@@ -1333,7 +1335,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         # be the full conductance P A alpha (a pseudo-washout, gamma 1). At low flow the blood
         # follows the tissue, the true slope is only q C', and each iteration moved the tissue
         # C' / (C' + P A alpha / q) of the way: thousands of iterations in plasma-skimmed or
-        # slow vessels (open item 23).
+        # slow vessels.
         diag_o2 = response_o2 + metabolic_slope
         diag_co2 = response_co2
         b_o2 = transmural_o2 - (M_o2_red * V_cell) + diag_o2 * PO2_clamped
@@ -1375,12 +1377,12 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
 
     Edge flow is converted to um^3/s as in ``solve_multi_species_perfusion``. The wall flux
     (P S alpha dPO2) and the diffusion matrix carry O2 solubility, as Tier 3's do; both used to
-    leave it out, so this tier's wall and diffusion were about 750 times Tier 3's (open item 22).
+    leave it out, so this tier's wall and diffusion were about 750 times Tier 3's.
 
     The loop runs at most ``perf_config.picard_max_iterations`` passes and stops when the relative
     L2 change between iterates is below ``perf_config.picard_tolerance``. Unlike Tiers 1 and 3,
-    that bounds the step, not the residual. Both used to be hard-coded at 50 and 1e-4 (open
-    item 6). It warns if it hits the cap.
+    that bounds the step, not the residual. Both used to be hard-coded at 50 and 1e-4. It
+    warns if it hits the cap.
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg

@@ -18,8 +18,8 @@ Placement here is computed from the data rather than chosen by hand:
   it as the argmax of a per-slice 99th-percentile brightness profile, smoothed along z by a
   moving average of max(3, n // 20) slices.
 - **y and x** from the centroid of the grayscale channel's z-projection, thresholded at its
-  99th percentile. The projection covers only the slices the box occupies (open item 13),
-  not the whole stack. See tissue_centroid_yx.
+  99th percentile. The projection covers only the slices the box occupies, not the whole
+  stack. See tissue_centroid_yx.
 
 **The trade this makes.** Centring on signal samples the middle of the organ, which is
 denser than its periphery, so the absolute densities reported are not representative of the
@@ -88,7 +88,7 @@ def tissue_centroid_yx(volume: np.ndarray, percentile: float = 99.0) -> Tuple[in
     The weighting is not always inert. preprocess_cb.py clips the top 0.02% of voxels to
     1.0 and the projection takes a max over z, so over the *whole* stack 1.33-1.52% of the
     projection is saturated, the 99th percentile lands exactly on 1.0, and every survivor
-    weighs the same. place_roi now projects only the ROI's own 160 slices (open item 13),
+    weighs the same. place_roi now projects only the ROI's own 160 slices,
     where fewer columns saturate and the cutoff can fall below 1.0 (0.899 in WKY-A), so the
     intensity weighting takes effect there.
     """
@@ -133,7 +133,7 @@ def place_roi(
         sources.append("z=volume_centre")
 
     # Clamp z before reading: the lateral centroid is measured over the slices the box will
-    # actually occupy (open item 13). Projecting the whole stack let tissue that never enters
+    # actually occupy. Projecting the whole stack let tissue that never enters
     # the box vote on where it goes laterally, which moved the centre 7-45 um.
     centre_z = clamp_centre((centre_z, 0, 0), (size_zyx[0], 1, 1), (shape[0], 1, 1))[0]
     z0 = centre_z - size_zyx[0] // 2
@@ -176,7 +176,8 @@ def place_roi(
 
 #: Sidecar the network pipeline writes next to its outputs, naming the box it cropped. Every
 #: driver that reads a batch graph or ``per_edge_morphometry.csv`` checks it against
-#: ``place_roi`` before using the output (open item 27).
+#: ``place_roi`` before using the output, since a run that cropped the array centre instead
+#: looks the same on disk.
 ROI_RECORD_NAME = "roi_placement.json"
 
 #: The keys ``roi_record`` writes, in its order. A placed-input sidecar must hold all of them.
@@ -239,9 +240,10 @@ def check_output_roi(directory, specimen, size_zyx: Sequence[int],
                      placement: Optional[RoiPlacement] = None) -> dict:
     """Refuse a pipeline output that was not cropped at this specimen's placed ROI.
 
-    Raises when the sidecar is missing (outputs from before open item 27, all centre-cropped),
-    when the run asked for the array centre, or when its box differs from what ``place_roi``
-    gives now (the placement rule has changed since the run). Returns the record otherwise.
+    Raises when the sidecar is missing (outputs from before the pipeline placed its ROI, all
+    centre-cropped), when the run asked for the array centre, or when its box differs from what
+    ``place_roi`` gives now (the placement rule has changed since the run). Returns the record
+    otherwise.
     """
     import json
     from pathlib import Path
@@ -250,8 +252,8 @@ def check_output_roi(directory, specimen, size_zyx: Sequence[int],
     if not path.exists():
         raise FileNotFoundError(
             f"{specimen.specimen_id}: no {ROI_RECORD_NAME} in {directory}. Pipeline outputs "
-            f"without it predate open item 27 and were cropped at the array centre, not the "
-            f"placed ROI. Re-run cb_h1_batch.py --stage run."
+            f"without it predate the pipeline placing its ROI and were cropped at the array "
+            f"centre, not the placed ROI. Re-run cb_h1_batch.py --stage run."
         )
     record = json.loads(path.read_text())
     if record.get("specimen_id") != specimen.specimen_id:
