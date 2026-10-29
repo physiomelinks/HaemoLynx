@@ -526,3 +526,19 @@ of 10 on both. The fixture with the truth's template is unchanged (the hand-set 
 layout to mirror); with the image's own at 2x it still meets it (flow error 0.60 to 0.54, better in
 all 10 runs), and at 1.5x still fails it (8 of 10 drawn, the shell too thin). An E14.5 case takes
 55-77 s against about 30.
+
+**Why E14.5's open ends carry less inside the surround** (2026-10-29). By kind of end
+(`outputs/surround_e14p5/inflow_by_end.py`, `outputs/surround_check/truth_inflow_by_end.py`,
+`capillary_exchange.py`). E14.5's image has 91 open ends: its designated inlet and two outlets, one
+other arteriole or venule end, and 87 capillary ends. The designated inlet brings in about the same
+blood in every solve (1.3-1.8e-12 m^3/s); the difference is all at the capillary ends. Under
+`estimated` they are a strong net source (in 54% of the image's inflow, out 20%, net +33%); inside
+the surround they let blood in and out about evenly (xy: in 0.95e-12, out 1.05e-12) or drain (xyz: in
+0.61e-12, out 1.13e-12). On the harness's E14.5 crops, where the truth is known, the capillary ends
+exchange a great deal both ways and nearly balance (in 57%, out 60%, net -2%, medians of 10); the
+surround reproduces the exchange (in 56%, net +11%), `estimated` carries half of it (in 26%). So the
+surround's capillary ends behave as the truths' do, and it is `estimated`'s net feeding on E14.5 that
+stands out; with no truth for E14.5 that is consistent, not proven. The harness's 89% through the
+open ends is no benchmark for E14.5: a harness crop cuts some 12 arteriole and venule ends besides
+its designated ones, and its designated inlet brings in only 8% of its blood, where E14.5's image is
+framed round its main arteriole, whose inlet brings in 46% of it even under `estimated`.
