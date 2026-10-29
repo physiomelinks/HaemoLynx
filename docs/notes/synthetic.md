@@ -446,3 +446,38 @@ the manifest's `surrounds_template_run`, and `network_part` as a colour in the v
 end, and says which open ends stay open under xy and when the run has no solve to compare with. A
 closed template run is surroundable: its own inlets and outlets are open ends, each a trunk. Not yet:
 D6's mirrored layout (the shell takes the template's stretched over the box), and a run on E14.5.
+
+## 2026-10-29: E14.5's own run surrounded (`PLAN_synthetic_surround.md` phase 6)
+
+E14.5's run (`e14p5.haemorun`: 1,406 vessels, solved under `estimated`, 91 open ends, endothelial
+widths) run again as `network_source=synthetic_surround` from its own settings, at 1.5x along x and
+y (five seeds) and along all three (three seeds); the image's flows compared with the run solved
+again under each `open_end_model` on its own conductances (`estimated` gives the run's flows back to
+1e-7), over the 1,104 vessels it solved above the carrying floor. No truth: this measures how far
+the surround moves the answer, and how far one draw of the surrounding network moves it from another.
+
+| median over seeds | xy (5 seeds; 30 z-face ends left open) | xyz (3 seeds; all joined) |
+|---|---|---|
+| whole network, vessels; one run's time | 2,973; 17-56 s | 4,428; 26-220 s |
+| image inflow through its open ends (run under `estimated`: 54%) | 34-38% | 22-27% |
+| vessels the same way as `closed` / `estimated` / `terminal_resistance` k=100 / `outlet` | 83 / 77 / 74 / 71% | 83 / 79 / 78 / 76% |
+| median abs log10 flow ratio to `closed` / `estimated` / `outlet` | 0.16 / 0.20 / 0.45 | 0.19 / 0.24 / 0.43 |
+| one seed's surround against another's: same way, median abs log10 ratio | 88.5% (84-93), 0.13 | 85% (85-89), 0.12 |
+
+The image's resistances are the run's own (median ratio 1.00). Inside the surround E14.5 takes less
+of its blood through its open ends than `estimated` puts there, and its flows lie nearer `closed`'s
+than any other model's; one draw of the surrounding network against another still turns 1 vessel
+in 9 (xy) to 7 (xyz) the other way, about half the surround's difference from `estimated`. The whole
+network against the template scaled to its box (xy, seed 1): 75 of 150 banded characteristics
+within; its large tier is half the scaled template's (30 large arterioles against 61, 84 large
+venules against 133), since the surrounding network grows trees of its own only from its outer
+inlets and outlets less the trunks (E14.5 has 1 inlet and 2 outlets) and a trunk does not branch.
+
+That thin supply is not why the open ends carry less. With both extension densities at 2 (xy,
+seeds 1-3) the network has 4 inlets and 6 outlets and the scaled template's large arterioles (59
+against 61; large venules 160 against 133), and the open ends take 36-39% of the image's inflow, as
+at 1 (38%); at 3 (6 inlets, 9 outlets, 88 and 236) 42-50%, still short of `estimated`'s 54%. The
+richer the supply, the further the image's directions move from `estimated`'s (79, 75, 72% the same
+way at densities 1, 2, 3) and from `closed`'s (83, 78, 79%), while one seed against another stays
+at 88-90%: the density beyond the faces moves the answer about as much as the draw does. Driver:
+`outputs/surround_e14p5/run_surround.py --density` (git-ignored, with each seed's run).
