@@ -723,15 +723,19 @@ def planned_bed(template: NetworkTemplate, options: Any = None, joins: Sequence[
     )
 
 
-def drawn_template(template: NetworkTemplate, options: Any = None) -> NetworkTemplate:
+def drawn_template(template: NetworkTemplate, options: Any = None, *, whole: bool = False) -> NetworkTemplate:
     """The template a network drawn with *options* (:class:`GenerationOptions`,
     or its record's dict) is drawn to: *template* scaled to the box, the
     hole's share left out (``NetworkTemplate.around_hole``), and the arterial
     and venous trees in the part beyond the template's own box
     (:func:`extension_share`) at their densities, the rest at the
     template's (``NetworkTemplate.with_side_factors``), their inlets and
-    outlets so on each face (:func:`face_extension_shares`). The comparison
-    scores a network against the same."""
+    outlets so on each face (:func:`face_extension_shares`). Round a hole
+    its layout is mirrored across the hole's faces
+    (``Organisation.mirrored_to``, D6): the tissue beyond a face of an
+    image is the tissue at it. The comparison scores a network against the
+    same; with *whole*, a surround's network with the image filling its
+    hole, whose share is then not left out."""
     def read(name: str, default: Any) -> Any:
         if options is None:
             return default
@@ -743,19 +747,23 @@ def drawn_template(template: NetworkTemplate, options: Any = None) -> NetworkTem
     hole = read("hole", None)
     if isinstance(hole, Mapping):
         hole = Hole.from_record(hole)
-    if hole is not None:
+    counted = None if whole else hole
+    if counted is not None:
         # Tissue the network leaves to an image's own graph: its share of
         # the template's counts is not drawn.
-        T = T.around_hole(hole.share_of(extent))
-    shares = face_extension_shares(template.extent_um, extent, hole)
+        T = T.around_hole(counted.share_of(extent))
+    shares = face_extension_shares(template.extent_um, extent, counted)
     arteriole_density = float(read("arteriole_density", 1.0))
     venule_density = float(read("venule_density", 1.0))
-    return T.with_side_factors(
+    T = T.with_side_factors(
         1.0 + shares[INTERIOR] * (arteriole_density - 1.0),
         1.0 + shares[INTERIOR] * (venule_density - 1.0),
         inlet_factors={face: 1.0 + share * (arteriole_density - 1.0) for face, share in shares.items()},
         outlet_factors={face: 1.0 + share * (venule_density - 1.0) for face, share in shares.items()},
     )
+    if hole is not None and T.organisation is not None:
+        T = replace(T, organisation=T.organisation.mirrored_to(extent, hole.lo, hole.hi - hole.lo))
+    return T
 
 
 def _template_record(template: NetworkTemplate) -> dict:

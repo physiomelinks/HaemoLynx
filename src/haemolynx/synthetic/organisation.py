@@ -146,6 +146,80 @@ class Organisation:
         """The flat cell index of each of *points* ((n, 3) um) in a box of *extent_um*."""
         return cell_index(points, extent_um, self.shape)
 
+    def mirrored_to(
+        self,
+        extent_um: Sequence[float],
+        inner_lo_um: Sequence[float],
+        inner_extent_um: Sequence[float],
+        *,
+        samples: int = 4,
+    ) -> "Organisation":
+        """This layout, read over a box of *inner_extent_um*, carried onto a
+        larger box of *extent_um* round it (the inner box starting at
+        *inner_lo_um*: a surround's image, ``PLAN_synthetic_surround.md``'s
+        D6). Each place takes what lies at its mirror image across the inner
+        box's faces, folded again past its far side (:func:`mirror_into`),
+        so the tissue beyond a face is the tissue at it. The per-cell fields
+        are on the larger box's own grid (:func:`grid_shape`), each cell
+        read at *samples* cubed points: its counts and lengths at the inner
+        box's density, its orientation tensor length-weighted, components
+        across a flipped axis negated. The capillary junctions' depths are
+        carried the same way; the whole-network measures are kept; the
+        capillary vertices' own positions go (they lay a bed at the
+        template's own size only)."""
+        from dataclasses import replace
+
+        outer = np.asarray(extent_um, dtype=float)
+        inner = np.asarray(inner_extent_um, dtype=float)
+        lo = np.asarray(inner_lo_um, dtype=float)
+        shape = grid_shape(outer)
+        cells = int(np.prod(shape))
+        size = outer / np.asarray(shape, dtype=float)
+        offsets = (np.arange(samples) + 0.5) / samples
+        sub = np.stack(np.meshgrid(offsets, offsets, offsets, indexing="ij"), axis=-1).reshape(-1, 3)
+        points = (cell_centres(outer, shape) - size / 2.0)[:, None, :] + sub[None, :, :] * size
+        folded, flipped = mirror_into(points.reshape(-1, 3), lo, inner)
+        source = cell_index(folded, inner, self.shape)
+        per = len(sub)
+        # A count per cell is a density times the cell's volume.
+        ratio = float(np.prod(size)) / float(np.prod(inner / np.asarray(self.shape, dtype=float)))
+
+        def carried(values: Sequence[float]) -> tuple[float, ...]:
+            sampled = np.asarray(values, dtype=float)[source].reshape(cells, per)
+            return tuple(float(v) for v in sampled.mean(axis=1) * ratio)
+
+        weights = np.asarray(self.capillary_length_um, dtype=float)[source].reshape(cells, per)
+        total = weights.sum(axis=1)
+        signs = np.ones((len(source), 6))
+        for column, (a, b) in zip(range(3, 6), ((0, 1), (0, 2), (1, 2))):
+            signs[:, column] = np.where(flipped[:, a] ^ flipped[:, b], -1.0, 1.0)
+        tensors = (np.asarray(self.orientation, dtype=float)[source] * signs).reshape(cells, per, 6)
+        weighted = (tensors * weights[..., None]).sum(axis=1)
+        orientation = tuple(
+            tuple(float(v) for v in (weighted[c] / total[c] if total[c] > 0 else self.global_orientation))
+            for c in range(cells)
+        )
+        chord_shares = None
+        if self.chord_axis_share_by_cell is not None:
+            shares = np.asarray(self.chord_axis_share_by_cell, dtype=float)[source].reshape(cells, per, 3)
+            mean = (shares * weights[..., None]).sum(axis=1)
+            fallback = self.chord_axis_share or (0.0, 0.0, 0.0)
+            chord_shares = tuple(
+                tuple(float(v) for v in (mean[c] / total[c] if total[c] > 0 else fallback)) for c in range(cells)
+            )
+        return replace(
+            self,
+            shape=shape,
+            capillary_nodes=carried(self.capillary_nodes),
+            capillary_length_um=carried(self.capillary_length_um),
+            arterial_length_um=carried(self.arterial_length_um),
+            venous_length_um=carried(self.venous_length_um),
+            orientation=orientation,
+            chord_axis_share_by_cell=chord_shares,
+            capillary_node_positions_rel=None,
+            capillary_junction_depths_rel=_mirrored_depths(self.capillary_junction_depths_rel, outer, lo, inner),
+        )
+
     def to_dict(self) -> dict:
         return {
             "shape": list(self.shape),
@@ -248,6 +322,47 @@ class Organisation:
                 else tuple(float(v) for v in data["capillary_junction_depths_rel"])
             ),
         )
+
+
+def mirror_into(points: np.ndarray, lo_um: Sequence[float], extent_um: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
+    """Each of *points* ((n, 3) um) folded into the box from *lo_um* to
+    *lo_um* + *extent_um* by reflection in its faces, again and again as a
+    mirror tiling: ``(positions in the box's own frame, 0 to its extent;
+    per axis, whether an odd number of reflections reversed it)``."""
+    extent = np.maximum(np.asarray(extent_um, dtype=float), 1e-9)
+    rel = np.asarray(points, dtype=float).reshape(-1, 3) - np.asarray(lo_um, dtype=float)
+    folded = np.mod(rel, 2.0 * extent)
+    flipped = folded > extent
+    return np.where(flipped, 2.0 * extent - folded, folded), flipped
+
+
+def _mirrored_depths(
+    depths_rel: Optional[Sequence[float]], outer: np.ndarray, lo: np.ndarray, inner: np.ndarray
+) -> Optional[tuple[float, ...]]:
+    """The capillary junctions' depths (shares of the inner box's) carried
+    onto the outer box as :meth:`Organisation.mirrored_to` carries the
+    cells: every depth's mirror images in it, each weighted by the area of
+    the outer box at that depth outside the inner one, read back at as many
+    evenly spaced quantiles. A box no deeper than the inner one keeps them."""
+    if not depths_rel:
+        return None if depths_rel is None else tuple(depths_rel)
+    if lo[0] <= 1e-9 and lo[0] + inner[0] >= outer[0] - 1e-9:
+        return tuple(float(v) for v in depths_rel)
+    d = np.asarray(depths_rel, dtype=float) * inner[0]
+    period = 2.0 * inner[0]
+    reach = int(np.ceil(outer[0] / period)) + 1
+    images = np.concatenate([lo[0] + m * period + sign * d for m in range(-reach, reach + 1) for sign in (1.0, -1.0)])
+    images = images[(images >= 0.0) & (images <= outer[0])]
+    full = float(outer[1] * outer[2])
+    beside = full - float(min(inner[1], outer[1]) * min(inner[2], outer[2]))
+    weights = np.where((images >= lo[0]) & (images <= lo[0] + inner[0]), beside, full)
+    if not len(images) or weights.sum() <= 0:
+        return tuple(float(v) for v in depths_rel)
+    order = np.argsort(images, kind="stable")
+    images, weights = images[order], weights[order]
+    cumulative = np.cumsum(weights) / weights.sum()
+    picks = images[np.minimum(np.searchsorted(cumulative, (np.arange(len(d)) + 0.5) / len(d)), len(images) - 1)]
+    return tuple(float(v) for v in picks / outer[0])
 
 
 def grid_shape(extent_um: Sequence[float]) -> tuple[int, int, int]:
@@ -634,6 +749,7 @@ __all__ = [
     "grid_shape",
     "long_runs",
     "measure_organisation",
+    "mirror_into",
     "tree_shape",
     "profile",
     "share_inside",

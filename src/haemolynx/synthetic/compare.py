@@ -576,13 +576,13 @@ def compare_run(
     hole left out and the trees beyond the template's box at their
     densities, as its record's options say (``generate.drawn_template``).
     A surround (``synthetic.surround``) is scored whole, the template run's
-    own vessels filling its hole: the hole is not left out."""
+    own vessels filling its hole: the hole is not left out, and its layout
+    is the template's mirrored round it."""
     record = G.graph.get(GRAPH_TEMPLATE_RECORD) or {}
     options = record.get("options") or {}
-    if G.graph.get(GRAPH_NETWORK_SOURCE) == NETWORK_SOURCE_SYNTHETIC_SURROUND:
-        options = {**options, "hole": None}
-    template = drawn_template(template, options)
-    members = [drawn_template(member, options) for member in members]
+    whole = G.graph.get(GRAPH_NETWORK_SOURCE) == NETWORK_SOURCE_SYNTHETIC_SURROUND
+    template = drawn_template(template, options, whole=whole)
+    members = [drawn_template(member, options, whole=whole) for member in members]
     if sections is not None and template.provenance.source != SOURCE_GRAPH:
         synthetic = template_from_report(sections, G, boundaries=roles, require=(), source=template.provenance.source)
     else:

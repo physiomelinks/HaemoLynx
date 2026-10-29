@@ -12,11 +12,13 @@ import pytest
 
 from haemolynx.synthetic.compare import organisation_rows
 from haemolynx.synthetic.organisation import (
+    ISOTROPIC,
     Organisation,
     cell_index,
     correlation,
     grid_shape,
     measure_organisation,
+    mirror_into,
     profile,
 )
 from haemolynx.synthetic.template import NetworkTemplate
@@ -317,6 +319,95 @@ def test_organisation_rows_score_a_network_against_its_template():
     rows = {r.characteristic: r for r in organisation_rows(slab, other)}
     assert rows["capillary length by cell (correlation)"].within is None
     assert organisation_rows(None, None) == []
+
+
+def _layout(shape, nodes, *, orientation=None, depths=None):
+    """A hand-set layout over *shape* cells: *nodes* per cell, the same
+    capillary and arterial length, an isotropic tensor unless given."""
+    cells = int(np.prod(shape))
+    return Organisation(
+        shape=tuple(shape),
+        capillary_nodes=tuple(float(v) for v in nodes),
+        capillary_length_um=tuple(10.0 * float(v) for v in nodes),
+        arterial_length_um=tuple(float(v) for v in nodes),
+        venous_length_um=(0.0,) * cells,
+        orientation=tuple(orientation or [ISOTROPIC] * cells),
+        global_orientation=ISOTROPIC,
+        axis_share=(0.3, 0.3, 0.3),
+        within_near=0.5,
+        beyond_far=0.1,
+        trunk_turn_deg=10.0,
+        capillary_curvature_deg=20.0,
+        tree_curvature_deg=25.0,
+        capillary_node_positions_rel=((0.5, 0.5, 0.5),),
+        capillary_junction_depths_rel=depths,
+    )
+
+
+def test_a_point_is_folded_into_the_box_by_its_mirror_images():
+    lo, extent = (0.0, 0.0, 50.0), (50.0, 50.0, 200.0)
+    points = np.array([
+        [10.0, 10.0, 60.0],   # inside: 10 um in from x0
+        [10.0, 10.0, 40.0],   # 10 um beyond x0: its mirror 10 um in
+        [10.0, 10.0, 260.0],  # 10 um beyond x1: 10 um in from it
+        [10.0, 10.0, 460.0],  # past both reflections: as itself less two widths
+        [-5.0, 10.0, 60.0],   # 5 um beyond z0
+    ])
+    folded, flipped = mirror_into(points, lo, extent)
+    assert folded[:, 2] == pytest.approx([10.0, 10.0, 190.0, 10.0, 10.0])
+    assert folded[4, 0] == pytest.approx(5.0)
+    assert flipped[:, 2].tolist() == [False, True, True, False, False]
+    assert flipped[:, 0].tolist() == [False, False, False, False, True]
+
+
+def test_a_mirrored_layout_puts_beside_each_face_what_lies_at_it():
+    """Four 50 um cells along x, densest at x1, inside a box 50 um wider on
+    each side: each new cell beside a face holds the cell at that face."""
+    xz = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0, 0.1, 0.2)
+    inner = _layout((1, 1, 4), [1, 2, 3, 4], orientation=[xz, ISOTROPIC, ISOTROPIC, xz], depths=(0.1, 0.5))
+    outer = inner.mirrored_to((50.0, 50.0, 300.0), (0.0, 0.0, 50.0), (50.0, 50.0, 200.0))
+    assert outer.shape == grid_shape((50.0, 50.0, 300.0)) == (1, 1, 6)
+    assert outer.capillary_nodes == pytest.approx((1, 1, 2, 3, 4, 4))
+    assert outer.capillary_length_um == pytest.approx((10, 10, 20, 30, 40, 40))
+    assert outer.arterial_length_um == pytest.approx((1, 1, 2, 3, 4, 4))
+    # Reflected across an x face, a tensor's zx and yx components turn over.
+    assert outer.orientation[0] == pytest.approx((1 / 3, 1 / 3, 1 / 3, 0.0, -0.1, -0.2))
+    assert outer.orientation[1] == pytest.approx(xz) and outer.orientation[5] == pytest.approx((1 / 3, 1 / 3, 1 / 3, 0.0, -0.1, -0.2))
+    # The box keeps its depth: the junctions keep theirs, and the whole-network measures stay.
+    assert outer.capillary_junction_depths_rel == (0.1, 0.5)
+    assert (outer.trunk_turn_deg, outer.axis_share, outer.within_near) == (10.0, (0.3, 0.3, 0.3), 0.5)
+    assert outer.capillary_node_positions_rel is None
+    # A count is a density times the volume: an outer cell over eight inner ones holds their eight.
+    fine = _layout((2, 2, 8), [1] * 32)
+    coarse = fine.mirrored_to((50.0, 50.0, 300.0), (0.0, 0.0, 50.0), (50.0, 50.0, 200.0))
+    assert coarse.shape == (1, 1, 6) and coarse.capillary_nodes == pytest.approx((8,) * 6)
+
+
+def test_mirrored_junction_depths_fold_into_the_slabs_above_and_below():
+    """A plexus 5 and 10 um above the floor of a box 100 um deep, in one
+    200 um deep with the box in its middle and no wider: the slabs below
+    and above hold its mirror images, 40 and 45 um up, and 160."""
+    inner = _layout((2, 1, 1), [1, 1], depths=(0.05, 0.1, 0.9))
+    outer = inner.mirrored_to((200.0, 50.0, 50.0), (50.0, 0.0, 0.0), (100.0, 50.0, 50.0))
+    assert outer.capillary_junction_depths_rel == pytest.approx((0.2, 0.225, 0.8))
+
+
+def test_a_template_is_drawn_to_its_layout_mirrored_round_a_hole():
+    from haemolynx.synthetic import GenerationOptions
+    from haemolynx.synthetic.generate import drawn_template
+    from haemolynx.synthetic.hole import centred_hole
+
+    T = replace(fixture_template(), organisation=_layout(grid_shape(fixture_template().extent_um), range(1, 33)))
+    plain = drawn_template(T, GenerationOptions(scale=1.5, scale_axes="xy"))
+    assert plain.organisation == T.organisation  # stretched over the box, as before
+    outer = T.scaled(1.5, "xy").extent_um
+    hole = centred_hole(outer, T.extent_um)
+    round_hole = drawn_template(T, GenerationOptions(scale=1.5, scale_axes="xy", hole=hole))
+    assert round_hole.organisation == T.organisation.mirrored_to(outer, hole.lo, hole.hi - hole.lo)
+    # Scored whole (a surround with its image), the counts are the box's and the layout still mirrored.
+    whole = drawn_template(T, GenerationOptions(scale=1.5, scale_axes="xy", hole=hole), whole=True)
+    assert whole.classes["capillary"].count == plain.classes["capillary"].count > round_hole.classes["capillary"].count
+    assert whole.organisation == round_hole.organisation
 
 
 def test_correlation_is_none_for_a_flat_field():

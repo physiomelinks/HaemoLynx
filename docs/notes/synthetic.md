@@ -492,3 +492,19 @@ every failure was planned with fewer bed vertices than joins (13 of 13, against 
 `check_synthetic_surround` refuses the first and warns of the second
 (`surround.ROOMY_VERTICES_PER_JOIN`). The connectivity CSV now says which network each vessel is
 (`Network part`).
+
+**D6: the shell's layout mirrored** (2026-10-29; Harvey's D6, the recommended answer). Round a hole
+the template's layout is no longer stretched over the whole box: `Organisation.mirrored_to` puts on
+the box's own grid, beside each face of the image, what lies at that face inside it (a mirror tiling,
+`organisation.mirror_into`, folded again past the far side), counts and lengths at the image's own
+density, orientation tensors turned over across a flipped axis, the junctions' depths folded the
+same way (left alone while the box keeps the image's depth). `drawn_template` applies it to every
+network drawn round a hole, and the comparison to a surround scored whole, on the grid its layout is
+measured on, so a surround's per-cell layout is scored at last. On E14.5 at 1.5x along x and y (seeds
+1-5 against the run before, seed 1, both measured against the mirrored layout): capillary vertices by
+cell correlate 0.93-0.94 against 0.86, capillary length 0.85-0.89 against 0.81, its profile along y
+0.94-0.98 against 0.59, and the tree length lies in the template's tree cells 0.78-0.87 against 0.76;
+along x the template's capillaries are even (the comparison holds no layout there) and the
+correlation is noise. The image's flows barely move (the same way as `estimated` at 77.5%, against
+77%; seed against seed 90% against 88.5%), the open ends carry 24-40% of its inflow, and a whole run
+takes 25-30 s against 11. Networks without a hole are unchanged (the nine digests).
