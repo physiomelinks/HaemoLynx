@@ -17,7 +17,7 @@ HDF5 writing, and stay comparable downstream.
       -> multi-channel HDF5 with ilastik axistags       preprocess_cb
 
 What this deliberately does NOT do, and why. Each was measured on
-CB3-WKY-CB-{A,B,C}; see th_glomus_preprocessing_review.md for the numbers.
+CB3-WKY-CB-{A,B,C}.
 
   * No histogram-matching bleach correction. On WKY-C it multiplies slice 0 by
     26.9x and raises the TH-positive fraction in the near-empty top of the
@@ -88,7 +88,7 @@ TH_CHANNEL = 1
 # Rolling-ball radius in pixels. 12 px is a 22.4 um ball radius, comfortably
 # above the 15 um maximum glomus soma diameter (8 px), so somas ride on top of
 # the ball and survive while the diffuse haze trapped inside cell nests does
-# not. Note this is a radius: the guide compared it against a cell diameter.
+# not. Note this is a radius; do not read it as a diameter.
 DEF_ROLLING_BALL = 12.0
 
 # Difference-of-Gaussians scales in pixels. The small scale resolves the

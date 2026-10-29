@@ -142,8 +142,7 @@ def figure_measured(path, specimen_id="SHR-B", size=(1560, 810), *, vtk_dir=VTK)
 def figure_skeleton_detail(path, specimen_id="WKY-A", size=(1560, 800), *, vtk_dir=VTK):
     """Raw skeleton against the centrelines actually measured.
 
-    The difference is stub pruning and B-spline smoothing - the operators section 4
-    describes - and is easier to see than to read.
+    The difference is stub pruning and B-spline smoothing, and is easier to see than to read.
     """
     skeleton = pv.read(vtk_dir / f"{specimen_id}_skeleton.vtp")
     vessels = pv.read(vtk_dir / f"{specimen_id}_vessels.vtp")

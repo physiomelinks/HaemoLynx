@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""H2 §2.1 shunting, §2.2 spatial haematocrit and §2.4 transit time, at the glomus cell level.
+"""H2 functional shunting, spatial haematocrit and transit time, at the glomus cell level.
 
     python3 examples/cb_h2_glomus_perfusion.py
 
-Both ask the same question about edges. §2.1: does steady-state flow shunt through
-thoroughfare channels that bypass the capillaries penetrating the TH-positive clusters?
-§2.2: do the vessels supplying those clusters carry a lower discharge haematocrit than the
+The first two ask the same question about edges. Shunting: does steady-state flow shunt
+through thoroughfare channels that bypass the capillaries penetrating the TH-positive clusters?
+Haematocrit: do the vessels supplying those clusters carry a lower discharge haematocrit than the
 rest, which would mean a dense capillary bed largely filled with cell-free plasma?
 
 Edges are classified by the fraction of their centreline lying inside the TH mask, sampled
 along the whole polyline rather than at the endpoints: a capillary penetrating a cluster
 usually starts and ends in stroma, so an endpoint test would classify exactly the vessels
-§2.1 is about as extra-glomus.
+the shunting question is about as extra-glomus.
 
-Boundary conditions use the face-crossing rule on axis 1 (S21), pinned in
+Boundary conditions use the face-crossing rule on axis 1, pinned in
 ``cb_settings.BOUNDARY_AXIS``, which cuts the residual boundary sensitivity from 73.9% to 8.9%
 (75.8% to 13.3% on the centred boxes, where axis 1 was the only axis with terminals on both faces
 in all six specimens). The band rule this replaces put arterial pressure mostly on interior
@@ -91,7 +91,7 @@ def analyse(specimen):
     report_unconverged(rheology, specimen.specimen_id)
 
     frac = edge_tissue_fraction(G, run.th_mask(), PROCESSING_VOXEL_UM)
-    # §2.4: accumulated transit time from the arterial inlets to every node, along the solved
+    # Transit time: accumulated from the arterial inlets to every node, along the solved
     # flow directions. Absolute values are in arbitrary units, so only the ratio is reported.
     arrival = transit_time_from_inlets(G, inlets)
 
@@ -124,11 +124,11 @@ def _summarise(result):
     total = sum(r["flow"] for r in rows) or float("nan")
     flow_share = sum(r["flow"] for r in pen) / total
     edge_share = len(pen) / len(rows)
-    # The shunt index is what §2.1 actually asks. A flow share equal to the edge share means
-    # flow is indifferent to the clusters; below 1 means it is being carried preferentially by
-    # the vessels that bypass them, which is the shunting the method proposes to detect. The
-    # flow share on its own cannot show this, because it tracks how many edges penetrate,
-    # which is itself downstream of the parenchymal volume difference H1 §1.3 reports.
+    # The shunt index is what the shunting question actually asks. A flow share equal to the
+    # edge share means flow is indifferent to the clusters; below 1 means it is being carried
+    # preferentially by the vessels that bypass them, which is the shunting the method proposes
+    # to detect. The flow share on its own cannot show this, because it tracks how many edges
+    # penetrate, which is itself downstream of the parenchymal volume difference H1 reports.
     return {
         "specimen_id": result["specimen_id"], "group": result["group"],
         "n_penetrating": len(pen), "n_bypass": len(byp),

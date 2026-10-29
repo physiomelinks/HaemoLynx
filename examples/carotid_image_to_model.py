@@ -38,7 +38,7 @@ def _perfusion_flow_to_um3_per_s():
     ``Q = dP / R`` already comes out in um^3/s. The perfusion library's default factor,
     ``POISEUILLE_FLOW_TO_UM3_PER_S``, assumes pressures in mmHg, as the H2 drivers pass them.
     Divided by the mPa-per-mmHg of this pipeline's pressures it leaves 1.0. The pipeline used
-    the library default until open item 31, so its perfusion saw flow 1.33e5 times too high
+    the library default until the unit fix, so its perfusion saw flow 1.33e5 times too high
     and its blood hardly gave up any oxygen.
     """
     return POISEUILLE_FLOW_TO_UM3_PER_S / _MPA_PER_MMHG
@@ -121,15 +121,16 @@ class PreprocessingConfig:
     morphological_closing_radius: int = 0
     enable_hysteresis_threshold: bool = True
     # cb_settings owns the band: low is the frozen threshold (the median of the six per-specimen
-    # selections on the placed ROIs, snapped to the sweep grid; reference section 2.2) and high
-    # is low + HYSTERESIS_HIGH_OFFSET, capped at HYSTERESIS_SEED_CAP. The batch passes the frozen
-    # value as --hysteresis-low and gets the same seed, so a direct run builds the same mask
-    # without the flag. 0.95 / 0.999 since 2026-09-28; 0.90 / 0.95 before.
+    # selections on the placed ROIs, snapped to the sweep grid) and high is low +
+    # HYSTERESIS_HIGH_OFFSET, capped at HYSTERESIS_SEED_CAP. The batch passes the frozen value as
+    # --hysteresis-low and gets the same seed, so a direct run builds the same mask without the
+    # flag. 0.95 / 0.999 since 2026-09-28; 0.90 / 0.95 before.
     #
-    # Until open item 1 this read 0.65 / 0.75, set by hand from calibre and connectivity on an
-    # earlier reference subvolume (r_p90 4.17 um, component count stable over 0.60-0.73). The
-    # tuner cannot choose the band: its objective, 1 - mean probability inside the mask, falls
-    # monotonically with the threshold, so its argmin is the top of whatever range it searches.
+    # Until cb_settings owned it this read 0.65 / 0.75, set by hand from calibre and
+    # connectivity on an earlier reference subvolume (r_p90 4.17 um, component count stable over
+    # 0.60-0.73), while every H1 run used 0.90 / 0.95. The tuner cannot choose the band: its
+    # objective, 1 - mean probability inside the mask, falls monotonically with the threshold,
+    # so its argmin is the top of whatever range it searches.
     hysteresis_threshold_low: float = cb_settings.HYSTERESIS_LOW
     hysteresis_threshold_high: float = cb_settings.HYSTERESIS_HIGH
     enable_hole_filling: bool = True
@@ -138,7 +139,7 @@ class PreprocessingConfig:
     # three or more classes: at two, entropy is a folded function of the vessel probability and
     # the joint criterion carves wall voxels out of every vessel. The pooled CB classifier has
     # two, so turning this on for CB data raises rather than silently running plain hysteresis
-    # under a config that says otherwise (open item 11).
+    # under a config that says otherwise.
     enable_shannon_entropy: bool = False
     shannon_entropy_core: float = 0.6
     shannon_entropy_threshold: float = 0.95
@@ -153,7 +154,7 @@ class SkeletonConfig:
     # Radius is not additive across calls: set this to 2 rather than reaching for a
     # second field. Mask gap repair is a closing and not the bridge_gaps dilation, which
     # inflates every vessel unconditionally and biases the EDT calibre the wall is measured
-    # against - see close_binary_mask and section 2.4.
+    # against - see close_binary_mask.
     closing_radius: int = 1
     min_branch_length: int = 3
     max_bridge_distance: int = 0
@@ -193,7 +194,7 @@ class SkeletonConfig:
     #     0.0500                        6805  1007   1318      312
     #     disabled                      6789   991   1297      307
     #
-    # It was destroying 208 of 307 fundamental loops - 68% of beta-1, which IS the H1 section 1.1
+    # It was destroying 208 of 307 fundamental loops - 68% of beta-1, which IS the H1 topology
     # readout - and 29% of the skeleton along with them. Worse, it is group-dependent in the
     # false-negative direction: a denser network exceeds the threshold in more places, fires more
     # hubs, and loses proportionally more loops, so it actively suppresses the SHR/WKY difference.
@@ -202,12 +203,12 @@ class SkeletonConfig:
     # has no gap - it runs smoothly from 0.02 to 0.06 - so no threshold separates "pathological
     # bundle" from "capillary bed". Anything >= 0.05 is already inert here, and the function's
     # own docstring default of 0.35 is six times the densest point in the entire volume, i.e. a
-    # no-op. Re-enabling it needs the hand-counted validation Tier 1 item 5 asked for.
+    # no-op. Re-enabling it needs bundle sites counted by hand to validate a threshold (#98).
     bundle_density_fraction: float = 1.0
     bundle_max_connections: int = 5
     bundle_hub_min_spacing: int = 0
     # B-spline smoothing factor for edge centrelines. Frozen, not tuned: it determines the
-    # curvature H1 section 1.4 reads tortuosity off, and no Optuna objective can see tortuosity.
+    # curvature H1's tortuosity is read off, and no Optuna objective can see tortuosity.
     smoothing_alpha: float = 0.75
     core_dead_end_resolution_mode: str = "none"
     core_safe_zone_percent: float = 5.0
@@ -219,8 +220,8 @@ class GraphConfig:
     """Configuration for mathematical graph generation and boundary node selection."""
     keep_largest_component_only: bool = True
     # Pressure boundaries are the terminals that cross the two faces of this axis (the face
-    # rule, reference section 2.8). cb_settings owns both values and the H2 drivers read the
-    # same ones. Until open item 2 the pipeline took every degree-1 node in a 25% band of
+    # rule). cb_settings owns both values and the H2 drivers read the same ones. Until the
+    # pipeline moved to the face rule it took every degree-1 node in a 25% band of
     # axis 0, so most of its inlets were interior dead ends, not vessels entering the region.
     boundary_axis: int = cb_settings.BOUNDARY_AXIS
     face_tolerance_voxels: float = cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
@@ -239,8 +240,8 @@ class GraphConfig:
     #
     # This CANNOT affect beta-1: pruning removes only degree-1 nodes, which by construction lie
     # on no cycle. Verified - beta-1 was 307 at every threshold from 0 to 30 um. It does move
-    # the section 1.2 and 1.4 per-edge distributions, by removing the shortest terminal
-    # segments, so it is in item 25's sensitivity scope.
+    # the per-edge calibre and tortuosity distributions, by removing the shortest terminal
+    # segments, so it is one of the frozen parameters a sensitivity analysis has to vary.
     #
     #     min_stub_length_um     V      E   beta1   nodes removed
     #                    0.0  1041   1347     307         0  (0.0%)
@@ -262,14 +263,14 @@ class HaemodynamicsConfig:
     # To match dimensions of viscosity (mPa*s) and lengths (um) yielding flow (Q) in um^3/s:
     # Pressure must be provided in milliPascals (mPa).
     # Arteriolar 60 mmHg in, venular 20 mmHg out, the pair every published H2 number used.
-    # cb_settings owns both; this was MAP to CVP (100/2 mmHg) until open item 10.
+    # cb_settings owns both; this was MAP to CVP (100/2 mmHg) until cb_settings owned them.
     input_p_bc: float = cb_settings.INLET_PRESSURE_MMHG * _MPA_PER_MMHG ### mPa (60 mmHg = 7.999e6 mPa)
     output_p_bc: float = cb_settings.OUTLET_PRESSURE_MMHG * _MPA_PER_MMHG ### mPa (20 mmHg = 2.666e6 mPa)
     diameter_by_branch_order: dict = field(default_factory=dict)
     
     # --- Baseline Radius Assignment ---
-    # Options: "edt_radius", "fwhm_radius" or "constant_radius". EDT is the estimator H1
-    # section 1.2 specifies, and the default now matches that rather than contradicting it.
+    # Options: "edt_radius", "fwhm_radius" or "constant_radius". EDT is the estimator the H1
+    # calibre method specifies, and the default now matches that rather than contradicting it.
     #
     # Re-measured on the repaired pipeline, both estimators run over the same 1330 edges:
     #
@@ -278,7 +279,7 @@ class HaemodynamicsConfig:
     #     FWHM     1017  ( 76.5%)   8.20 um   16.78    39.16
     #
     # They still disagree: Pearson r = +0.245, Spearman rho = +0.284, median FWHM/EDT ratio
-    # 1.359. The assessment's r = 0.079 / rho = 0.141 is superseded - that was measured on an
+    # 1.359. The earlier r = 0.079 / rho = 0.141 is superseded - that was measured on an
     # uncalibrated graph whose mask had been inflated by the bridge_gaps dilation, which adds a
     # uniform foreground shell, precisely the wall EDT measures the distance to. Repairing the
     # mask roughly tripled the correlation, which confirms the old figure was contaminated, but
@@ -313,8 +314,8 @@ class HaemodynamicsConfig:
     # and it removes nothing, too large and most segments become untrimmable and keep the
     # full bias. 3.73 um is kept anyway because it is specified externally and corresponds to
     # about one capillary inscribed radius, whereas 2.80 um would be a value tuned to this
-    # subvolume - and the difference between them is 0.3% on resistance. The exclusion joins
-    # item 25's sensitivity scope.
+    # subvolume - and the difference between them is 0.3% on resistance. The exclusion is one
+    # of the frozen parameters a sensitivity analysis has to vary.
     #
     # Two things this measurement corrects. First, the effect at the population level is
     # ~8% on resistance, not the 3.2x the synthetic fixture in tests/test_edt_diameter.py
@@ -342,7 +343,7 @@ class HaemodynamicsConfig:
     fwhm_transverse_half_extent_um: float = 15.0
     
     # --- Rheology Solver Parameters ---
-    # cb_settings owns all four (open item 37); the H2 drivers read the same values.
+    # cb_settings owns all four; the H2 drivers read the same values.
     rheology_max_iterations: int = cb_settings.RHEOLOGY_MAX_ITERATIONS
     rheology_relaxation: float = cb_settings.RHEOLOGY_RELAXATION
     rheology_flow_rtol: float = cb_settings.RHEOLOGY_FLOW_RTOL
@@ -424,17 +425,19 @@ class PerfusionConfig:
     pco2_arterial: float = 40.0 # Arterial PCO2 (mmHg)
     hco3_tissue: float = 24.0 # Tissue bicarbonate buffer (mmol/L)
     
-    # Solver stop settings, read by every tier (open item 6): Newton steps in Tier 1, Picard
-    # passes in Tiers 2 and 3. Tiers 1 and 3 stop on the relative residual, Tier 2 on the
-    # relative step. 1e-5 is what Tier 1 hard-coded for the H2 runs; it was 1e-4 here.
-    # The cap was 50 until open item 32: at the face-rule flows Tier 3 needs 40-80 passes on the
-    # six specimens (WKY-C 80). A slow-flow cell swings from pass to pass, so the Anderson guard
-    # keeps dropping its history. 200 leaves 2.5x headroom on the slowest.
+    # Solver stop settings, read by every tier (Tiers 1 and 2 used to hard-code their own):
+    # Newton steps in Tier 1, Picard passes in Tiers 2 and 3. Tiers 1 and 3 stop on the
+    # relative residual, Tier 2 on the relative step. 1e-5 is what Tier 1 hard-coded for the H2
+    # runs; it was 1e-4 here.
+    # The cap was 50 until the face rule made Tier 3 hit it: at the face-rule flows Tier 3
+    # needs 40-80 passes on the six specimens (WKY-C 80). A slow-flow cell swings from pass to
+    # pass, so the Anderson guard keeps dropping its history. 200 leaves 2.5x headroom on the
+    # slowest.
     picard_max_iterations: int = 200
     picard_tolerance: float = 1e-5
     
     # M_max: Maximum metabolic consumption rate (mmol / L / s). Matches cb_settings.BASE_M_MAX,
-    # the value behind the published H2 section 2.3 runs; it was 0.005 here (open item 8).
+    # the value behind the published H2 hypoxic-fraction runs; it was 0.005 here, 10x lower.
     M_max: float = 0.05
 
     # k_reduce: Metabolic reduction constant for hypoxic zones (per mmol)
@@ -1087,11 +1090,10 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
 def _check_graph_fits_frame(G, image_shape, voxel_size, slack_voxels=1.0):
     """Raise if a node lies outside the volume *image_shape* describes.
 
-    The face rule measures each terminal against the region's faces, so the shape has to be
-    the one the graph was built in. The cache path used to pass a (1, 1, 1) placeholder for
-    an .h5 input (open item 28); under that shape the high face sits at 0 um and every
-    terminal reads as crossing it. That path now passes the cached mask; this stays as a
-    backstop for any shape too small to hold the graph.
+    The face rule measures each terminal against the region's faces, so the shape has to be the one
+    the graph was built in. The cache path used to pass a (1, 1, 1) placeholder for an .h5 input;
+    under that shape the high face sits at 0 um and every terminal reads as crossing it. That path
+    now passes the cached mask; this stays as a backstop for any shape too small to hold the graph.
     """
     node_pos = nx.get_node_attributes(G, "pos")
     if not node_pos:
@@ -1108,7 +1110,7 @@ def _check_graph_fits_frame(G, image_shape, voxel_size, slack_voxels=1.0):
                 f"The graph does not fit the volume passed for boundary selection: shape "
                 f"{tuple(image_shape)} spans 0-{(size - 1) * spacing:.2f} um on axis {axis}, but "
                 f"nodes lie at {worst_low:.2f}-{worst_high:.2f} um. The shape must be the region "
-                f"the graph was built in (a cache-path placeholder is not; open item 28).")
+                f"the graph was built in, not a placeholder shape.")
 
 
 def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format, binary=None):
@@ -1122,15 +1124,15 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
     # compare them; without it the apparent volume shrinks and interior dead-ends reach a face.
     voxel_size = _resolve_voxel_size(image_path, input_format)
     # The graph was built in the mask's frame. A larger shape would pass the fit check below
-    # but put the high face beyond every terminal (open item 28).
+    # but put the high face beyond every terminal, so no terminal would read as an outlet.
     if binary is not None and tuple(image.shape) != tuple(binary.shape):
         raise ValueError(
             f"The image passed for boundary selection has shape {tuple(image.shape)}, but the "
             f"vessel mask the graph was built from has shape {tuple(binary.shape)}. The face "
-            f"rule needs the mask's frame (open item 28).")
+            f"rule measures terminals against the faces of the mask's frame.")
     _check_graph_fits_frame(G, image.shape, voxel_size)
     # Inlets are the terminals on the low face of the boundary axis, outlets those on the high
-    # face; a dead end inside the volume gets no pressure (the face rule, open item 2).
+    # face; a dead end inside the volume gets no pressure (the face rule).
     start_nodes, out_nodes = graph.select_boundary_terminal_nodes_by_face(
         G,
         image.shape,
@@ -1246,7 +1248,7 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         elif hemo_config.radius_assignment_mode == "edt_radius":
             # measure_edge_diameters_edt_from_binary_mask was implemented, correct, and never
             # called from anywhere; edt_radius passed validation and then silently produced
-            # synthetic branch-order diameters. It is the estimator H1 section 1.2 specifies:
+            # synthetic branch-order diameters. It is the estimator H1's calibre method specifies:
             # a 3D EDT in physical units, sampled at every centreline voxel, per-edge median.
             if binary is None:
                 raise ValueError(
@@ -1376,7 +1378,8 @@ def _rheology_cell_arrays(G, vessels):
 
 # The pipeline's own perfusion field is not the one the H2 hypoxia numbers come from: those run
 # Tier 1 directly (cb_h2_hypoxic_fraction.py, cb_h2_vtk.py) with cb_settings inputs, while the
-# pipeline defaults to Tier 3 with PerfusionConfig's. Item T in cb_modelling_reference.md.
+# pipeline defaults to Tier 3 with PerfusionConfig's. The note goes into the .vti, so the file
+# cannot pass for an H2 field.
 _PERFUSION_VTI_NOTE = (
     "Pipeline perfusion field, not the H2 field. H2 hypoxia uses Tier 1 "
     "(solve_perfusion_steady_state) with cb_settings inputs; see cb_modelling_reference.md."
@@ -1387,16 +1390,16 @@ def _perfusion_provenance(tier, solver_name, perf_config, hemo_config, solver_in
                           flow_to_um3_per_s):
     """Field-data tags naming the solver and inputs behind a perfusion .vti.
 
-    The tolerance is recorded for every tier, since every tier now reads it from the config (open
-    item 6; Tiers 1 and 2 used to hard-code their own, and were not tagged). For Tiers 1 and 3 it
-    is a relative residual (open items 22, 23), for Tier 2 a relative step.
+    The tolerance is recorded for every tier, since every tier now reads it from the config
+    (Tiers 1 and 2 used to hard-code their own, and were not tagged). For Tiers 1 and 3 it is a
+    relative residual, for Tier 2 a relative step.
 
     Tier 3 also records whether its loop converged, how many iterations it took and the final
     residual (``solver_info``, from ``solve_multi_species_perfusion(..., return_info=True)``), so
     an unconverged field cannot pass for a converged one. It is required for Tier 3.
 
-    Every tier records the factor its edge flows were taken to um^3/s by (open item 31), so a
-    field made before the fix, at 1.33e5, has no such tag and can be told apart.
+    Every tier records the factor its edge flows were taken to um^3/s by, so a field made before
+    the fix, at 1.33e5, has no such tag and can be told apart.
     """
     provenance = {
         "perfusion_tier": int(tier),
@@ -1506,7 +1509,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     node_positions = nx.get_node_attributes(G, "pos")
     # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
     # voxel_size is the spacing the graph was built with. Without it the image volume was
-    # a voxel count labelled micron³, 6.5x too small (re-run notes item 10).
+    # a voxel count labelled micron³, 6.5x too small.
     stats = statistics.compute_comprehensive_vessel_statistics(
         G,
         node_positions=node_positions,
@@ -1520,7 +1523,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
-    # Per-edge morphometry (#98 Tier 1 item 13). Sections 1.2 and 1.4 are distributional
+    # Per-edge morphometry (#98 Tier 1 item 13). H1's calibre and tortuosity are distributional
     # claims, and the summary above reduces each to a single mean. With n = 3 specimens per
     # group the per-edge table is the only place with enough data to describe a distribution
     # at all, and every provenance tag has to travel with its measurement - the diameter,
@@ -1567,7 +1570,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     rheology_arrays = _rheology_cell_arrays(G, vessels)
     # graph_to_vtk ran before the rheology solve. Its resistance array used to hold
     # set_poiseuille_resistances' power-law values, and since aecc53d (no provisional
-    # resistance on this path) it held NaN; since package AB it is left out, as no edge has a
+    # resistance on this path) it held NaN; now it is left out, as no edge has a
     # resistance yet. solve_flow_from_conductance_matrix computes each cell's flow as pressure
     # drop / this array, so writing it has to come first. It used to
     # come after, and every exported flow was NaN, and so was every flow_abs copied back into
@@ -1630,7 +1633,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         # 2. Map the 1D vessels to the 3D grid
         # This identifies which tissue blocks are perfused by which vessels. Flow is already in
         # um^3/s here (pressures in mPa), so every perfusion call gets the same factor, 1.0, not
-        # the library's mmHg default (open item 31).
+        # the library's mmHg default, which would make every flow 1.33e5 times too high.
         flow_to_um3_per_s = _perfusion_flow_to_um3_per_s()
         cell_mapping = haemodynamics.map_vessels_to_grid(G, grid, flow_to_um3_per_s=flow_to_um3_per_s)
         
@@ -1812,7 +1815,7 @@ def carotid_image_to_model(image_path: Path | str,
             G = pickle.load(f)
 
         # The cached mask is the region the graph was built in, so its shape is the one boundary
-        # selection and the statistics need (open item 28). Past this point the image's content
+        # selection and the statistics need. Past this point the image's content
         # only feeds plots. It used to be a (1, 1, 1) placeholder for .h5 inputs and a fixed,
         # uncropped raw TIFF for .tif inputs.
         image = binary
@@ -2210,7 +2213,7 @@ def update_dataclass_from_dict(obj, config_dict):
     """Updates a dataclass instance with values from a dictionary, then re-runs its checks.
 
     setattr bypasses __post_init__, so a YAML could set a value the constructor forbids
-    (open item 35: both example YAMLs set constrict_at_pericytes: true). The checks run
+    (both example YAMLs once set constrict_at_pericytes: true). The checks run
     again once every key is set.
     """
     if not config_dict:
@@ -2228,11 +2231,11 @@ def _apply_roi_placement(skel_config, specimen, centred=False):
     """Point the ROI crop at the specimen's placed box; return the record the sidecar holds.
 
     Only an explicit size (--roi-voxels) is placed: a percentage crop is the nerve pipeline's
-    rule and has no placement. Until open item 27 the CB batch passed the size and no
-    offsets, so every network was built on the array-centre box while the threshold, the TH
-    metrics and the H2 overlay used place_roi's box, 85-210 um away. ``centred`` keeps the
-    array centre, and is recorded, so downstream drivers can refuse it. Returns None when no
-    explicit size is set.
+    rule and has no placement. Until the pipeline placed its own ROI the CB batch passed the
+    size and no offsets, so every network was built on the array-centre box while the
+    threshold, the TH metrics and the H2 overlay used place_roi's box, 85-210 um away.
+    ``centred`` keeps the array centre, and is recorded, so downstream drivers can refuse it.
+    Returns None when no explicit size is set.
     """
     from ImageLynx.roi_placement import (
         centred_placement, placement_fell_back, place_roi, roi_record,
@@ -2257,7 +2260,8 @@ def _apply_roi_placement(skel_config, specimen, centred=False):
         if placement_fell_back(placement):
             raise ValueError(
                 f"{specimen.specimen_id}: ROI placement fell back to the volume centre "
-                f"({placement.source}). That silently reproduces open item 27; make the QC "
+                f"({placement.source}), so the network would be cut from a different box than "
+                f"the threshold, TH metrics and H2 overlay use. Make the QC "
                 f"record and the Ilastik input HDF5 reachable, or pass --roi-centred."
             )
     (skel_config.sub_volume_offset_z, skel_config.sub_volume_offset_y,
@@ -2534,7 +2538,7 @@ if __name__ == "__main__":
     # 'masked' is the registry mask (prob_to_mask.py), not this run's cached mask.
     print(f"  registry artefacts before this run: {active_specimen.stage_status()}")
 
-    # Crop at this specimen's placed ROI (open item 27). The sidecar names the box, so the
+    # Crop at this specimen's placed ROI, not the array centre. The sidecar names the box, so the
     # H1/H2 drivers can refuse an output cut anywhere else.
     if PLACED_RECORD is not None:
         ROI_RECORD = PLACED_RECORD

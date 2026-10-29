@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""H1 sections 1.3 and 1.5 across the cohort, from both channels at the H1 ROI.
+"""H1 TH-cluster volume, vessel density and tissue-to-vessel distance, from both channels.
 
     python3 examples/cb_h1_th_metrics.py                  # WKY only, the defensible half
     python3 examples/cb_h1_th_metrics.py --all            # both groups, SHR caveated
@@ -9,16 +9,16 @@ The WKY-only run writes ``examples/outputs/cb_h1_th_metrics.json``; ``--all`` wr
 ``cb_h1_th_metrics_all.json`` beside it, so neither table overwrites the other. ``--out``
 overrides both.
 
-Section 1.3 is the parenchymal volume of the TH-positive clusters and the centreline length
-density within them. Section 1.5 is the distance from every TH-positive voxel to the nearest
+At the H1 ROI, it measures the parenchymal volume of the TH-positive clusters, the centreline
+length density within them, and the distance from every TH-positive voxel to the nearest
 lectin-positive centreline.
 
 The vessel side is the batch network, read through ``batch_outputs.open_batch_run``: its
 graph gives the length (the same edges as per_edge_morphometry.csv), its cached skeleton the
 distance, and its cached mask the vessel volume. All three were built with the frozen
-hysteresis band (cb_settings.HYSTERESIS_LOW / HYSTERESIS_HIGH). Until open item 40 this script
-cut the probability map plainly and skeletonised that itself, which measured a different
-vessel set from the network, with a length estimator that over-counted corners. Run
+hysteresis band (cb_settings.HYSTERESIS_LOW / HYSTERESIS_HIGH). Until it read the batch
+this script cut the probability map plainly and skeletonised that itself, which measured a
+different vessel set from the network, with a length estimator that over-counted corners. Run
 ``cb_h1_batch.py --stage run`` first. Opening the run refuses a batch output cut anywhere but
 the placed ROI, and the TH mask comes from the same run, cropped to that box and cut strictly
 (``p > t``, see ``BatchRun.th_mask``) at each ``--th-threshold``.
@@ -47,8 +47,7 @@ from ImageLynx import cb_settings                                      # noqa: E
 #: the batch network was built from the hysteresis band with this as its low end.
 FROZEN_VESSEL_THRESHOLD = cb_settings.FROZEN_THRESHOLD
 ROI = cb_settings.ROI_VOXELS
-#: Default outputs. Separate files, so an --all run cannot replace the WKY-only table
-#: (re-run notes 2026-10-01, item 7).
+#: Default outputs. Separate files, so an --all run cannot replace the WKY-only table.
 WKY_OUT = Path("examples/outputs/cb_h1_th_metrics.json")
 ALL_OUT = Path("examples/outputs/cb_h1_th_metrics_all.json")
 

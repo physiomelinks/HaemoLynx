@@ -77,12 +77,12 @@ from ImageLynx.haemodynamics.tissue_regions import (                     # noqa:
 from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
 from ImageLynx import cb_settings                                        # noqa: E402
-# The §2.3 driver owns the vessel mapping, so the exported field is the one §2.3 reports.
+# The hypoxic-fraction driver owns the vessel mapping, so the exported field is the one it reports.
 from cb_h2_hypoxic_fraction import VESSEL_MAPPING                        # noqa: E402
 
 OUT = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h2_paraview"
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
-# They used to be written out here; four open items were drivers drifting from the config.
+# They used to be written out here, and four times a driver drifted from the config.
 ROI = cb_settings.ROI_VOXELS
 BOUNDARY_AXIS = cb_settings.BOUNDARY_AXIS
 TH_THRESHOLD = cb_settings.TH_THRESHOLD
@@ -324,12 +324,13 @@ def main():
                     help="Extend the perfusion grid to the segmented volume rather than "
                          "stopping at the vascular bounding box. Represents glomus tissue the "
                          "default drops, at the cost of solving cells that contain tissue and "
-                         "no vessels. Measured on this cohort after open items 22 and 29: "
-                         "about 4-5 mmHg of mean PO2 within TH on SHR-A and SHR-C and a few "
-                         "points of TH hypoxic fraction. See the H2 guide.")
+                         "no vessels. Measured on this cohort, after the O2 solubility and "
+                         "local-haematocrit washout fixes: about 4-5 mmHg of mean PO2 within "
+                         "TH on SHR-A and SHR-C and a few points of TH hypoxic fraction.")
     ap.add_argument("--vessel-mapping", choices=VESSEL_MAPPINGS, default=VESSEL_MAPPING,
                     help="Cells a vessel occupies: those its centreline crosses, or all those "
-                         "its lumen covers (open item 30). Defaults to what §2.3 uses.")
+                         "its lumen covers. Defaults to what cb_h2_hypoxic_fraction.py "
+                         "uses.")
     ap.add_argument("--specimen", nargs="*", default=None)
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args()

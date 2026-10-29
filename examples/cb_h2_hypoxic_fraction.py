@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""H2 §2.3: glomus-specific 3D hypoxic fraction on a heterogeneous ADR grid.
+"""H2 glomus-specific 3D hypoxic fraction on a heterogeneous ADR grid.
 
     python3 examples/cb_h2_hypoxic_fraction.py
 
-§2.3 asks for the segmented TH volume to assign distinct metabolic rates, a higher one for
+The method asks for the segmented TH volume to assign distinct metabolic rates, a higher one for
 TH-positive voxels and a lower one for the surrounding stroma, and then for the hypoxic
 fraction strictly within the TH-positive volume.
 
-Three defects had to be cleared before this could produce anything (S24, S25, S26). The
-conjugate gradient solve was diverging under a non-SPD preconditioner; flow was coupled to the
-tissue in the flow solve's own units rather than µm³/s, so the sink exceeded the source by
-2.2e4; and each edge's whole flow was recorded against every cell it crossed, so the source
-grew with grid resolution and the answer was not grid-convergent.
+Three defects had to be cleared before this could produce anything. The conjugate gradient solve
+was diverging under a non-SPD preconditioner; flow was coupled to the tissue in the flow solve's
+own units rather than µm³/s, so the sink exceeded the source by 2.2e4; and each edge's whole flow
+was recorded against every cell it crossed, so the source grew with grid resolution and the answer
+was not grid-convergent.
 
 **Resolution.** 3 µm, not the native 1.866 µm. With the conservation defect fixed the solution
 converged: median PO2 moved 27.34, 27.92, 28.21 at 10, 6 and 4 µm, halving its increment each
-time. After open items 22 (O2 solubility in the diffusion) and 29 (washout at the cell's own
+time. After two fixes (O2 solubility in the diffusion, and washout at the cell's own
 haematocrit) it no longer did: each vessel was mapped to the cells its centreline crosses, so a
-finer grid drew it thinner and PO2 kept falling, 1.5-1.9 mmHg per halving (open item 30). Vessels
+finer grid drew it thinner and PO2 kept falling, 1.5-1.9 mmHg per halving. Vessels
 are now mapped over their cross-section. WKY-C median PO2 then runs 92.99, 92.79, 92.69, 92.87,
 92.78 at 10, 6, 4, 3, 2 µm; every measure moves at most 0.21 mmHg from 3 to 2 µm, but up to 0.78
-from 4 to 3 µm, so the grid is 3 µm (H2 whitepaper §10.3).
+from 4 to 3 µm, so the grid is 3 µm.
 
 **The metabolic contrast is an assumption, not a measurement.** Nothing in this study measures
 the ratio of glomus to stromal oxygen consumption, so it is a parameter here and the answer is
@@ -66,7 +66,7 @@ GRID_UM = cb_settings.GRID_UM
 INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
 BASE_M_MAX = cb_settings.BASE_M_MAX
 HYPOXIC_THRESHOLDS = (5.0, 10.0, 20.0)
-# Which cells a vessel occupies (open item 30). cb_h2_vtk.py reads it from here. The centreline
+# Which cells a vessel occupies. cb_h2_vtk.py reads it from here. The centreline
 # mapping has no grid-converged limit; the cross-section one settles by 3 um.
 VESSEL_MAPPING = "cross_section"
 PerfConfig = cb_settings.PerfusionSettings
@@ -100,7 +100,7 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=
     report_unconverged(rheology, specimen.specimen_id)
 
     mask = run.th_mask()
-    # Default: the grid stops at the vasculature, and glomus tissue beyond it is dropped (S28).
+    # Default: the grid stops at the vasculature, and glomus tissue beyond it is dropped.
     # --pad-grid extends it to the segmented volume, which represents that tissue at the cost
     # of solving it with no vessels in it. Neither is free; see the flag's help.
     bounds = mask_bounds_um(mask.shape, PROCESSING_VOXEL_UM) if pad_grid else None
@@ -154,12 +154,14 @@ def main():
                          "stopping at the vascular bounding box. This represents glomus "
                          "tissue the default drops (4.35%% of SHR-A, 7.54%% of SHR-C), at the "
                          "cost of solving the added cells with no local oxygen source. "
-                         "Measured on this cohort after open items 22 and 29 (contrast 2) it "
-                         "costs 3.9 and 4.9 mmHg of mean PO2 within TH on SHR-A and SHR-C and "
-                         "raises TH hypoxia below 10 mmHg by 3.6 and 1.8 points.")
+                         "Measured on this cohort, after the O2 solubility and local-"
+                         "haematocrit washout fixes (contrast 2), it costs 3.9 and 4.9 mmHg "
+                         "of mean PO2 within TH on SHR-A and SHR-C and raises TH hypoxia "
+                         "below 10 mmHg by 3.6 and 1.8 points.")
     ap.add_argument("--vessel-mapping", choices=VESSEL_MAPPINGS, default=VESSEL_MAPPING,
                     help="Cells a vessel occupies: those its centreline crosses, or all those "
-                         "its lumen covers (open item 30).")
+                         "its lumen covers. The centreline mapping has no grid-converged "
+                         "limit.")
     ap.add_argument("--out", default="examples/outputs/cb_h2_hypoxic_fraction.json")
     args = ap.parse_args()
 

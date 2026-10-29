@@ -1,10 +1,11 @@
 """How far the threshold moves measured calibre, which sets the size of the correlated error.
 
-Assessment finding S12 established that independent calibre error averages down across a network
-solve while correlated error does not. The threshold is the dominant correlated term: every edge in
-a specimen is measured from one mask produced at one threshold, so moving it moves every diameter
-together. This measures by how much, so that the noise floor in S15 rests on the real perturbation
-rather than on a round number.
+Independent calibre error averages down across a network solve while correlated error does not
+(``cb_h2_error_propagation.py`` measures both). The threshold is the dominant correlated term:
+every edge in a specimen is measured from one mask produced at one threshold, so moving it moves
+every diameter together. This measures by how much, so that the noise floor
+``cb_h2_error_propagation.py`` reports rests on the real perturbation rather than on a round
+number.
 
 The three runs are the frozen threshold's batch run and the H1 sensitivity runs at its two grid
 neighbours, so this reads them rather than recomputing anything. Since the 2026-09-28
@@ -12,9 +13,9 @@ re-selection the frozen value is 0.95 and the neighbours are 0.93 and 0.97. The 
 the lower one, 0.93 to 0.95: 0.97 is the fragmentation onset in four of the six specimens, which
 contaminates that column. (Until then it was 0.85 / 0.90 / 0.95, on centre-cropped runs.)
 
-The neighbours come from ``cb_h1_batch.py --stage sensitivity``, which holds the seed at the
-frozen ``HYSTERESIS_HIGH`` so only the flood threshold moves (open item 41). Runs made before
-that seeded the 0.93 neighbour at 0.98, so its shift mixed two parameters.
+The neighbours come from ``cb_h1_batch.py --stage sensitivity``, which holds the seed at the frozen
+``HYSTERESIS_HIGH`` so only the flood threshold moves. Runs made before that seeded the 0.93
+neighbour at 0.98, so its shift mixed two parameters.
 
 Run with::
 

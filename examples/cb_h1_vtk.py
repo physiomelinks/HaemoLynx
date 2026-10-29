@@ -4,8 +4,8 @@ The pipeline already writes the reconstruction (``*_vessel_mask.vti``) and the a
 centrelines (``*_vessels.vtp``) in physical micrometres, so both open in ParaView at true
 scale as they stand. What it does not write is the morphometry *onto* that geometry: the
 centrelines carry an assigned diameter and a branch order, and nothing else. Colouring the
-network by tortuosity, by the EDT diameter that H1 section 1.2 actually reports, or by which
-edges retained a known-biased radius, is not possible from the pipeline's own output.
+network by tortuosity, by the EDT diameter that H1's calibre method actually reports, or by
+which edges retained a known-biased radius, is not possible from the pipeline's own output.
 
 All of it can be recovered without re-running anything. ``per_edge_morphometry.csv`` and
 ``*_vessels.vtp`` both carry ``(u, v, key)`` for every edge, and the join is exact - 4512 of
@@ -19,7 +19,7 @@ Writes, per specimen, into one shared directory so all six load into a single Pa
 session:
 
     <SPEC>_vessels.vtp    analysed centrelines + the full per-edge morphometry
-    <SPEC>_nodes.vtp      graph nodes carrying degree - the readout of section 1.1
+    <SPEC>_nodes.vtp      graph nodes carrying degree - the H1 topology readout
     <SPEC>_mask.vti       binary reconstruction (copied through, already correct)
     <SPEC>_surface.vtp    pre-extracted smoothed surface of that mask
     <SPEC>_skeleton.vtp   the raw skeleton, before pruning and smoothing
@@ -98,7 +98,7 @@ def _check_tags(run, keys, edges, column, known):
 def _pipeline_export(run, name):
     """A pipeline export in the run folder. A missing one raises: the pipeline writes all three
     into every batch run, so a specimen without one would otherwise leave the export short
-    without saying so (package AC)."""
+    without saying so."""
     src = run.run_dir / name
     if not src.exists():
         raise FileNotFoundError(
@@ -163,7 +163,7 @@ def build_nodes(run, edges, report):
     The match is strict both ways: a node with no edge in the table raises rather than being
     written as degree 0 (neither branch point nor endpoint), and so does an edge-table node the
     nodes file lacks. No current run has either kind (all 18 batch and sensitivity runs
-    checked, package AA).
+    checked).
     """
     src = _pipeline_export(run, NODES_VTP_NAME)
     mesh = pv.read(src)
@@ -189,7 +189,7 @@ def build_nodes(run, edges, report):
             f"table are not in {src}: {absent[:10]}.")
     values = np.array([degree[i] for i in ids], dtype=np.int32)
     mesh.point_data["degree"] = values
-    # Section 1.1 counts branch points: nodes joining three or more distinct segments.
+    # H1 counts branch points: nodes joining three or more distinct segments.
     mesh.point_data["is_branch_node"] = (values >= 3).astype(np.int8)
     mesh.point_data["is_endpoint"] = (values == 1).astype(np.int8)
     report["nodes"] = mesh.n_points
@@ -268,7 +268,7 @@ def main(argv=None):
         out.mkdir(parents=True, exist_ok=True)
     summary = {}
     for specimen in SPECIMENS:
-        # Opening refuses morphometry cut anywhere but the placed ROI (open item 27), before
+        # Opening refuses morphometry cut anywhere but the placed ROI, before
         # the edge table is read.
         run = open_batch_run(specimen)
         edges = run.edge_table()

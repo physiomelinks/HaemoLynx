@@ -1,4 +1,4 @@
-"""Measurements behind Part 1 of the H2 capability assessment.
+"""How far calibre error and the boundary choice reach the H2 flow ratios.
 
 Four questions, answered from the batch outputs (``examples/outputs/cb_h1_batch/``) rather than
 from a fresh pipeline run: the cached network graph for topology and ``per_edge_morphometry.csv``
@@ -7,8 +7,8 @@ for calibre and length. Every graph is checked against the placed ROI before it 
 **Pressure boundaries are the pipeline's own.** Inlets and outlets come from
 ``select_boundary_terminal_nodes_by_face`` on ``cb_settings.BOUNDARY_AXIS`` at
 ``cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS``, the call the pipeline and every other H2 driver
-make. Until package C of the 2026-09-29 re-run notes this script placed pressure with its own 25%
-band on another axis, so its floors were measured on different pressure nodes.
+make. This script once placed pressure with its own 25% band on another axis, so its floors
+were measured on different pressure nodes.
 
 **The solve is plain Poiseuille, not the Pries flow.** Viscosity is taken as uniform and folds
 out, since only relative changes are read. That isolates how calibre error propagates through the
@@ -16,7 +16,7 @@ network from every other term in the chain, but it is not the H2 flow field: Få
 viscosity also depends on calibre and would move these numbers somewhat.
 
 **Two perturbation sizes, and why both are reported.** One voxel, 1.866 um, is the scale at which a
-diameter difference stops being physically resolved: H1 section 8.2 disqualifies calibre as a
+diameter difference stops being physically resolved: the H1 results set calibre aside as a
 finding because the between-group gap sits at one twentieth of that step. It is the conservative
 bound. The threshold-calibrated size is the empirical one: the median calibre shift over the clean
 threshold interval below the frozen value, measured by ``cb_h2_threshold_calibre.py``. Resistance
@@ -66,7 +66,7 @@ FACE_TOLERANCE = cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
 VOXEL_UM = PROCESSING_VOXEL_UM[1]
 # Median calibre shift over the clean threshold interval below the frozen value, averaged over
 # the six specimens. Measured by cb_h2_threshold_calibre.py, not assumed: 0.740 um over 0.93 to
-# 0.95 on the placed ROI, with the sensitivity runs holding the frozen seed (open item 41). It was
+# 0.95 on the placed ROI, with the sensitivity runs holding the frozen seed. It was
 # 0.690 while the 0.93 run seeded at 0.98, and 0.922 over 0.85 to 0.90 on centre crops.
 THRESHOLD_SHIFT_UM = 0.740
 DRAWS = 24
@@ -114,7 +114,7 @@ def network_arrays(G, lengths):
 
 def load_network(specimen_id):
     """The batch run's MultiGraph and its per-edge arrays, for the placed ROI only."""
-    # Opening the run refuses a graph cut anywhere but the placed ROI (item 27).
+    # Opening the run refuses a graph cut anywhere but the placed ROI.
     run = open_batch_run(get_specimen(specimen_id))
     G = run.graph()
     return (G, *network_arrays(G, run.numeric_column("length_um")))
@@ -257,12 +257,12 @@ def main(perturbation_um=VOXEL_UM):
 
 
 def boundary_sensitivity(calibre_ratio_pct):
-    """S20: how much does the shunt ratio move when the boundary choice moves?
+    """How much does the shunt ratio move when the boundary choice moves?
 
     ``calibre_ratio_pct`` is the within-specimen ratio error ``main`` just measured, so the
     comparison line below matches the perturbation that was run.
 
-    S13 established that a within-specimen ratio cancels calibre error. That is only half the
+    ``main`` shows that a within-specimen ratio cancels calibre error. That is only half the
     picture: if the ratio moves when the boundary choice moves, being a ratio does not save it.
     Under the face rule the choice has two parts. The axis has no anatomical basis in a mid-organ
     ROI, so its term is irreducible without new information; it is pinned by

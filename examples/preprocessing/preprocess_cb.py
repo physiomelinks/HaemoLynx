@@ -3,20 +3,19 @@
 End-to-end Python preprocessing for LCFM carotid body Z-stacks.
 
 Takes raw multi-channel TIFFs straight to Ilastik-ready HDF5, replacing
-phases 1-6 of the Fiji protocol:
+the manual preprocessing steps of the Fiji protocol:
 
     raw ZCYX TIFF
-      -> extract vessel channel                        (protocol section 1)
-      -> z-profile diagnosis                           (section 2)
-      -> rolling-ball background subtraction           (section 3)
-      -> [optional] impulse-noise removal              (section 4)
-      -> global percentile normalisation               (section 5)
-      -> multiscale vesselness, fine + coarse          (section 6)
-      -> multi-channel HDF5 with ilastik axistags      (section 8)
+      -> extract vessel channel
+      -> z-profile diagnosis
+      -> rolling-ball background subtraction
+      -> [optional] impulse-noise removal
+      -> global percentile normalisation
+      -> multiscale vesselness, fine + coarse
+      -> multi-channel HDF5 with ilastik axistags
 
 Deliberately does NOT denoise by default and does NOT tile: at 1.866 um a
 capillary is 2-4 voxels wide, so both operations cost more than they give.
-See protocol sections 0 and 4.
 
 Typical use
 -----------
@@ -48,8 +47,8 @@ from scipy import ndimage as ndi
 VOXEL_ZYX = (1.8639, 1.8660, 1.8660)  # binned 2x2x2 acquisition, micrometres
 
 # Defaults are in PIXELS and assume the 1.866 um binned data. For the unbinned
-# 0.933 um acquisition every pixel-valued default below doubles -- see protocol
-# section 0.2, or just pass --voxel 0.932 0.933 0.933 and the doubled values.
+# 0.933 um acquisition every pixel-valued default below doubles: pass
+# --voxel 0.932 0.933 0.933 and the doubled values.
 DEF_ROLLING_BALL = 30.0
 DEF_SIGMAS_FINE = (1.0, 1.4, 2.0)     # capillary scales:  1.9 - 3.7 um radius
 DEF_SIGMAS_COARSE = (4.0, 8.0)        # arteriole scales:  7.5 - 14.9 um radius

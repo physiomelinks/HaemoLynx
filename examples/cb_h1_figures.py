@@ -10,11 +10,11 @@ the group mean is a rule behind them, never a bar.
     Figure 7  node degree distribution
     Figure 8  segment length distribution
 
-Every number drawn or printed on a figure is read from the batch and sensitivity outputs
-(re-run package D). Figure 1 once drew its junction and length panels from a table copied
-out of an old run's logs, and went on showing SHR +34% / +27% after the data had moved to
-+6% / +2%; nothing here is copied by hand any more. Group comparisons use the exact
-permutation p of `assess_cohort_split`, whose floor at n = 3 is 0.10.
+Every number drawn or printed on a figure is read from the batch and sensitivity outputs. Figure 1
+once drew its junction and length panels from a table copied out of an old run's logs, and went on
+showing SHR +34% / +27% after the data had moved to +6% / +2%; nothing here is copied by hand any
+more. Group comparisons use the exact permutation p of `assess_cohort_split`, whose floor at n = 3
+is 0.10.
 
 Figure 2 draws the quantisation grid deliberately, so that a group gap can be read against
 the EDT step it has to be resolved by.
@@ -78,7 +78,7 @@ def _run(run_dir, specimen_id):
     """One specimen's opened batch run.
 
     ``run_dir`` is a sensitivity threshold's folder holding one run per specimen, or None for
-    the batch. Opening the run checks its placed ROI (open item 27). Cached, because an open
+    the batch. Opening the run checks it was cut at the placed ROI. Cached, because an open
     places the ROI and the figures read each run several times.
     """
     specimen = get_specimen(specimen_id)
@@ -98,7 +98,11 @@ def _column(run_dir, specimen_id, column):
 
 
 def _degrees(rows):
-    """Node degree on the MultiGraph: a parallel edge counts at both its ends (open item 40)."""
+    """Node degree on the MultiGraph: a parallel edge counts at both its ends.
+
+    A simple graph would merge parallel edges and undercount the junctions the edge table and
+    the H1 VTK export report.
+    """
     degree = collections.Counter()
     for row in rows:
         degree[row["u"]] += 1
@@ -468,7 +472,7 @@ def _degree_and_length():
 
 
 def figure_degree(path):
-    """Section 1.1 asks for the degree distribution, not only the node count."""
+    """H1's topology method asks for the degree distribution, not only the node count."""
     degrees, _ = _degree_and_length()
     fig, ax = plt.subplots(figsize=(8.0, 4.6), facecolor=SURFACE)
     _style(ax)

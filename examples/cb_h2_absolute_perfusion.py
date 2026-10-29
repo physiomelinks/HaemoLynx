@@ -5,9 +5,9 @@
 
 H2 reports every flow quantity as a within-specimen ratio. This measures the absolute scale those
 ratios sit on: how much blood each network carries at the frozen 60/20 mmHg, how fast it moves,
-and what pressure drop would bring it to a physiological capillary velocity. Reference §13.5 and
-S27 of `h2_pipeline_capability_assessment.md` quote these numbers; open item 12 re-derived them
-after the rheology resistance fix (`7ea1b36`), which is why this script exists.
+and what pressure drop would bring it to a physiological capillary velocity. Before the
+rheology resistance fix (`7ea1b36`) every resistance was inflated 200-540x, so these numbers had
+to be measured again; that is why this script exists.
 
 Each specimen is solved twice, under the face rule the H2 drivers use and under the band rule
 (25% of the axis at each end) it replaced, so the cost of the boundary choice in throughput is
@@ -59,7 +59,7 @@ FACE_TOLERANCE = cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
 INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
 
 #: Band width of the comparison rule, percent of the axis at each end. It is the band the
-#: face rule replaced (S21), measured here only for its throughput.
+#: face rule replaced, measured here only for its throughput.
 BAND_PERCENT = 25.0
 #: Physiological capillary velocity range, um/s, and the value the pressure is scaled to.
 PHYSIOLOGICAL_VELOCITY_UM_S = (200.0, 1000.0)

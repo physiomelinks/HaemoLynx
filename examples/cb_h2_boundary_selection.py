@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""T0.2: settling the boundary conditions, by measuring the alternatives.
+"""Settling the boundary conditions, by measuring the alternatives.
 
     python3 examples/cb_h2_boundary_selection.py
 
-S10 established that about 86% of degree-1 nodes in these graphs are interior skeletonisation
-spurs rather than vessels crossing a region face, so the band rule assigns arterial pressure
-mostly to mask defects. S20 established that the resulting boundary choice moves a
-within-specimen shunt ratio by more than calibre error does.
+``cb_h2_error_propagation.py`` measured two things that make this necessary. About 86% of
+degree-1 nodes in these graphs are interior skeletonisation spurs rather than vessels crossing a
+region face, so the band rule assigns arterial pressure mostly to mask defects. And the
+resulting boundary choice moves a within-specimen shunt ratio by more than calibre error does.
 
 This compares the band rule against a face-crossing rule on the six CB graphs. The quantity is
 the shunt ratio, flow through the widest decile of edges over total inlet throughput, and the
@@ -14,9 +14,9 @@ comparison is the spread of that ratio as each rule's free parameters move.
 
 **Inputs are the batch outputs**, opened through ``batch_outputs.open_batch_run``: the cached
 MultiGraph for topology and ``per_edge_morphometry.csv`` for calibre and length, checked against
-the placed ROI before either is read. Until package O of the 2026-10-01 re-run notes
-this script read the H1 ParaView export instead, in the VTK frame, with no ROI check. Axes are now
-graph axes (z, y, x): axis 1 is y in both frames, while 0 and 2 swap relative to the older logs.
+the placed ROI before either is read. Until it moved to the reader this script read the H1
+ParaView export instead, in the VTK frame, with no ROI check. Axes are now graph axes
+(z, y, x): axis 1 is y in both frames, while 0 and 2 swap relative to the older logs.
 
 **Inlets and outlets come from the package's own rules**, ``select_boundary_terminal_nodes`` (band)
 and ``select_boundary_terminal_nodes_by_face`` (face), so the face rule measured here is the one
@@ -34,8 +34,7 @@ used the other axis's extent and spacing. Node coordinates sit on voxel planes, 
 the plane one voxel in from the axis-0 outlet face and the axis-2 inlet face (WKY-A, axis 2: 16
 inlets against 31).
 
-Reproduces the numbers quoted in `select_boundary_terminal_nodes_by_face` and in S21 of
-`h2_pipeline_capability_assessment.md`.
+Reproduces the numbers quoted in `select_boundary_terminal_nodes_by_face`.
 """
 import sys
 from pathlib import Path

@@ -3,12 +3,13 @@
 Build a multi-channel HDF5 for Ilastik Pixel Classification from LCFM carotid
 body Z-stacks.
 
-Replaces the non-existent `convert_tiles_to_hdf5.py` referenced by v4 of the
-protocol, and performs the two steps that are impractical in the Fiji GUI:
+Replaces the `convert_tiles_to_hdf5.py` an earlier version of the Fiji protocol
+named but never shipped, and performs the two steps that are impractical in the
+Fiji GUI:
 
   * per-scale normalisation followed by a voxelwise max across tubeness maps
     (Fiji's Tubeness is not gamma-normalised, so a raw max is dominated by the
-    largest sigma -- see protocol section 6.1)
+    largest sigma)
   * writing correct lowercase ilastik axistags ('zyxc')
 
 Usage
@@ -45,8 +46,7 @@ VOXEL_Y = 1.8660
 VOXEL_X = 1.8660
 
 # Sigmas in pixels for --compute-vesselness. Geometric spacing of ~1.4x across
-# the capillary range (1.0-2.0 px) and 2x across the arteriole range, matching
-# the sigma table in section 6.2 of the protocol.
+# the capillary range (1.0-2.0 px) and 2x across the arteriole range.
 FINE_SIGMAS = (1.0, 1.4, 2.0)
 COARSE_SIGMAS = (4.0, 8.0)
 
@@ -164,7 +164,7 @@ def main():
     ap.add_argument(
         "--gray",
         required=True,
-        help="Background-subtracted, globally normalised grayscale TIFF (protocol phase 5).",
+        help="Background-subtracted, globally normalised grayscale TIFF.",
     )
     ap.add_argument(
         "--vess",
@@ -201,7 +201,7 @@ def main():
         default=1,
         choices=(1, 2),
         help="Cubic upsampling factor. 2 halves the radius quantisation error "
-        "on 2-4 voxel capillaries at 8x the memory cost (protocol section 0.1).",
+        "on 2-4 voxel capillaries at 8x the memory cost.",
     )
     ap.add_argument(
         "--saturated",

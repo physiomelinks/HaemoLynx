@@ -3,8 +3,8 @@ It never edits the main checkout: every mutation is made in a throwaway git work
 
     venv/bin/python scripts/mutation_check.py SPEC.toml [--only NAME ...] [--timeout SECONDS]
 
-SPEC.toml holds one ``[[mutation]]`` table per check (a ticket keeps its spec next to it, as
-``.scratch/<feature>/issues/NN-mutations.toml``):
+SPEC.toml holds one ``[[mutation]]`` table per check. Keep it beside the notes for the change it
+checks:
 
     [[mutation]]
     name = "crop_roi: offset ignored"               # short label, unique in the file

@@ -1,9 +1,9 @@
 """Prove a driver refactor left its outputs unchanged: snapshot driver outputs, then compare.
 
-    python examples/cb_driver_snapshots.py snapshot .scratch/snapshots/before
+    python examples/cb_driver_snapshots.py snapshot BEFORE_DIR
     # ... refactor ...
-    python examples/cb_driver_snapshots.py snapshot .scratch/snapshots/after
-    python examples/cb_driver_snapshots.py compare .scratch/snapshots/before .scratch/snapshots/after
+    python examples/cb_driver_snapshots.py snapshot AFTER_DIR
+    python examples/cb_driver_snapshots.py compare BEFORE_DIR AFTER_DIR
 
 ``snapshot DIR`` runs the fast ``examples/cb_*.py`` drivers, each into ``DIR/<driver>/``
 (``--slow`` adds cb_h2_hypoxic_fraction and cb_h2_vtk; ``--driver NAME`` picks drivers, and a

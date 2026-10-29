@@ -3,7 +3,7 @@
 Turn an Ilastik probability map into a clean binary vessel mask plus a
 calibrated Euclidean distance map, ready to hand to a skeletonisation pipeline.
 
-This is the Fiji-free replacement for section 10 of the protocol. It stops at
+This is the Fiji-free replacement for the protocol's mask step. It stops at
 the mask/EDT boundary on the assumption that skeletonisation and graph
 assembly happen downstream in an existing pipeline.
 
@@ -173,7 +173,7 @@ def main():
     ap.add_argument("--refine-radii", action="store_true",
                     help="Upsample the probability map 2x (cubic) before "
                          "thresholding, halving the radius quantisation step. "
-                         "8x memory and time. See protocol section 0.1.")
+                         "8x memory and time.")
     ap.add_argument("--voxel", nargs=3, type=float, default=list(VOXEL_ZYX),
                     metavar=("Z", "Y", "X"),
                     help="Voxel size in um (default: binned acquisition).")

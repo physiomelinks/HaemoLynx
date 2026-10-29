@@ -1,7 +1,7 @@
 # WKY (normotensive) pipeline configuration
 # The frozen settings shared by all six specimens. Nothing here differs by group: the WKY and
 # SHR files are identical apart from their first line, and exist only so a run can be
-# launched by group name (open item 35).
+# launched by group name.
 
 SkeletonConfig:
   # Image analysis boundary
@@ -12,7 +12,7 @@ HaemodynamicsConfig:
   # Blood Flow Physics & Boundary Conditions
   # ------------------------------------------------------------------
   # Arteriolar inlet pressure (60 mmHg), the same for all six specimens
-  # (cb_settings.INLET_PRESSURE_MMHG, open item 10)
+  # (cb_settings.INLET_PRESSURE_MMHG)
   input_p_bc: 7.999343e6 # mPa
   # Venular outlet pressure (20 mmHg; cb_settings.OUTLET_PRESSURE_MMHG)
   output_p_bc: 2.666448e6 # mPa
@@ -20,15 +20,15 @@ HaemodynamicsConfig:
   # ------------------------------------------------------------------
   # Baseline Radius Assignment
   # ------------------------------------------------------------------
-  # The frozen estimator: the mask's Euclidean distance transform (reference §10.5).
-  # Pericyte constriction is disabled for the CB pipeline (§10.6), so no keys for it here.
+  # The frozen estimator: the mask's Euclidean distance transform.
+  # Pericyte constriction is disabled for the CB pipeline, so no keys for it here.
   radius_assignment_mode: "edt_radius"
 
   # ------------------------------------------------------------------
   # Non-Newtonian Rheology Solver (Fåhræus–Lindqvist effect)
   # ------------------------------------------------------------------
   blood_plasma_viscosity_cP: 1.2
-  # cb_settings owns these four (open item 37)
+  # cb_settings owns these four
   rheology_max_iterations: 1000
   rheology_relaxation: 0.2
   rheology_flow_rtol: 1.0e-6
@@ -51,7 +51,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   systemic_hematocrit: 0.45
   po2_arterial_mmHg: 100.0
-  pco2_arterial: 40.0 # Normal physiological baseline, the same for both groups (open item 34)
+  pco2_arterial: 40.0 # Normal physiological baseline, the same for both groups
   hco3_tissue: 24.0 # Standard bicarbonate buffer (mmol/L)
   
   # ------------------------------------------------------------------
@@ -68,7 +68,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)
   # ------------------------------------------------------------------
-  # Same as cb_settings.BASE_M_MAX, the rate behind the published H2 runs (open item 8)
+  # Same as cb_settings.BASE_M_MAX, the rate behind the published H2 runs
   M_max: 0.05 # Maximum O2 consumption rate (mmol / L / s)
   k_reduce: 0.1 # Exponential decay constant under hypoxia
   respiratory_quotient: 0.82 # Ratio of CO2 produced to O2 consumed
@@ -77,4 +77,4 @@ PerfusionConfig:
   # Non-Linear Picard Matrix Solver Parameters
   # ------------------------------------------------------------------
   picard_max_iterations: 200
-  picard_tolerance: 1.0e-5 # = PerfusionConfig and cb_settings.PerfusionSettings (open items 6, 34)
+  picard_tolerance: 1.0e-5 # = PerfusionConfig and cb_settings.PerfusionSettings

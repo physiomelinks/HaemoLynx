@@ -30,8 +30,8 @@ Usage
 **The sensitivity runs move one parameter.** They pass the frozen seed
 (``cb_settings.HYSTERESIS_HIGH``) as ``--hysteresis-high`` alongside each neighbour's
 ``--hysteresis-low``. Given the low bound alone the pipeline derives the seed as low + 0.05, so
-until package F the 0.93 run seeded at 0.98 while the frozen run seeds at 0.999, and the lower
-neighbour differed in two parameters (open item 41).
+before the seed was passed the 0.93 run seeded at 0.98 while the frozen run seeds at 0.999, and
+the lower neighbour differed in two parameters.
 """
 import argparse
 import json
@@ -102,9 +102,9 @@ def stage_threshold(roi, grid):
         print(selection.format_table())
         if selection.threshold is not None:
             chosen[specimen.specimen_id] = selection.threshold
-        # Saved so Figure 3 can shade where each specimen fragments (re-run package D).
+        # Saved so Figure 3 can shade where each specimen fragments.
         onset[specimen.specimen_id] = selection.fragmentation_onset
-        # Reported, never frozen (open item 41): the same rule on d_net less one voxel.
+        # Reported, never frozen: the same rule on d_net less one voxel, the EDT's bias.
         network = select_on_network_calibre(samples, PROCESSING_VOXEL_UM)
         print(f"check, network calibre less one voxel: {network.reason}")
         if network.threshold is not None:
@@ -162,7 +162,7 @@ def _snapped_median(chosen):
 def _network_calibre_check(check):
     """Report what the selection gives on the network's calibre, less the EDT bias.
 
-    Printed and recorded only; the frozen value comes from the plain-cut choices (open item 41).
+    Printed and recorded only; the frozen value comes from the plain-cut choices.
     """
     print("\nCheck: the same rule on the network-mask calibre less one voxel "
           "(EDT half-step bias):")
@@ -196,7 +196,7 @@ def _run_pipeline(specimen, roi, out, low, high=None):
     with log.open("w") as handle:
         code = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT).returncode
     if code == 0:
-        # The pipeline places the ROI itself (open item 27); confirm it cut this box.
+        # The pipeline places the ROI itself; confirm it cut this box.
         check_output_roi(out, specimen, roi, placement)
     print(f"  exit={code}  log={log}")
     return code
@@ -211,8 +211,8 @@ def _report(results):
 def stage_run(roi, threshold):
     """Run the pipeline once per specimen with frozen parameters and matched ROIs.
 
-    The pipeline places each ROI itself from --roi-voxels (open item 27; before that it cropped
-    the array centre), and writes roi_placement.json; each run is checked against it here.
+    The pipeline places each ROI itself from --roi-voxels (before that it cropped the array
+    centre), and writes roi_placement.json; each run is checked against it here.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     results = {}
@@ -239,8 +239,8 @@ def stage_sensitivity(roi, frozen):
     """Rerun every specimen at the frozen threshold's grid neighbours, with the frozen seed.
 
     Only the flood threshold moves: the seed is passed explicitly, so it cannot follow the
-    low bound (open item 41). Outputs go to outputs/cb_h1_sensitivity/t<value>/<specimen>/,
-    which cb_h2_threshold_calibre.py reads.
+    low bound. Outputs go to outputs/cb_h1_sensitivity/t<value>/<specimen>/, which
+    cb_h2_threshold_calibre.py reads.
     """
     seed = cb_settings.HYSTERESIS_HIGH
     thresholds = sensitivity_thresholds(frozen)
