@@ -517,3 +517,12 @@ E14.5's surround at 1.5x along x and y has 58 large arterioles against the scale
 and 297. The shell's own trees were never short: they drew 30 and 84 of their 34 and 74. Branch orders
 enter no resistance, so the flows above stand. At density 3 one draw (seed 2) put all of the image's
 inflow through its open ends, its own inlet running out, and seed against seed fell to 68%.
+
+**The harness again, with D6** (2026-10-29; `outputs/surround_check/p4d_*` against `p4c_*`). The kill
+criterion holds where it held. E14.5 at 1.5x (10 runs): with the truth's template the median flow
+error falls from 0.52 to 0.47 (directions 0.86, rank 0.83), with the image's own from 0.54 to 0.48
+(directions 0.87, share error 0.60 to 0.51), each better than `estimated` (0.77, 0.76) in 9 or 10 runs
+of 10 on both. The fixture with the truth's template is unchanged (the hand-set template has no
+layout to mirror); with the image's own at 2x it still meets it (flow error 0.60 to 0.54, better in
+all 10 runs), and at 1.5x still fails it (8 of 10 drawn, the shell too thin). An E14.5 case takes
+55-77 s against about 30.
