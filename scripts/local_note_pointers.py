@@ -13,8 +13,7 @@ that does one of three things:
 3. holds a path into the scratch folder, where tickets and plans are kept.
 
 Names the tests and the pipeline write themselves (``TOY_NOTES``) are not local notes. Not read
-at all: binary files, ``.gitignore`` (it names the local notes on purpose), ``tests/data/``, and
-the markdown notes still tracked, that is every tracked ``.md`` file but ``KEPT_DOCS``.
+at all: binary files, ``.gitignore`` (it names the local notes on purpose) and ``tests/data/``.
 """
 from __future__ import annotations
 
@@ -26,9 +25,6 @@ from _worktree import git
 # Built from pieces, so this file does not match its own rules.
 OPEN_ITEM = "open" + " item"
 SCRATCH = "." + "scratch/"
-#: The markdown files that stay tracked. Every other .md file is a local note: while one is
-#: still tracked it is not read here, since its links to other notes lead somewhere on disk.
-KEPT_DOCS = {"README.md", "GLOSSARY.md", "CODING_STANDARDS.md"}
 #: .md files the tests and the pipeline write themselves. model_results.md is also spelled in
 #: ImageLynx.visualization.reporting, but this script runs on toy repos without the package and
 #: must not import it, so the name is written out here.
@@ -70,6 +66,4 @@ def _points_at_a_note(line: str, known_names: set[str]) -> bool:
 
 
 def _not_read(rel: str) -> bool:
-    if rel == ".gitignore" or rel.startswith("tests/data/"):
-        return True
-    return rel.endswith(".md") and rel not in KEPT_DOCS
+    return rel == ".gitignore" or rel.startswith("tests/data/")

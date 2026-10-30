@@ -60,8 +60,6 @@ def test_what_the_rules_leave_alone(tmp_path):
         # A glob is not a file name, and tests write these names themselves.
         "scripts/hook.sh": "case $f in *.md) ;; esac\n",
         "tests/test_report.py": "NAMES = ['notes.md', 'model_results.md']\n",
-        # A note that is still tracked, other than the three docs that stay.
-        "docs/plan" + ".md": f"See {open_item}.\n",
     })
     assert pointers(repo) == []
 
@@ -78,6 +76,11 @@ def test_the_three_kept_docs_are_checked(tmp_path):
                            for name in ("README.md", "GLOSSARY.md", "CODING_STANDARDS.md")})
     assert pointers(repo) == [f"{name}:1: See {open_item}."
                               for name in ("CODING_STANDARDS.md", "GLOSSARY.md", "README.md")]
+
+
+def test_any_other_tracked_md_file_is_checked_too(tmp_path):
+    repo = _toy(tmp_path, {"docs/plan" + ".md": "See " + "open" + " item 3.\n"})
+    assert pointers(repo) == ["docs/plan" + ".md:1: See " + "open" + " item 3."]
 
 
 def test_no_tracked_file_points_at_a_local_note():
