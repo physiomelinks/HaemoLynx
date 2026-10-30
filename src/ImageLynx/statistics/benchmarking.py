@@ -381,9 +381,9 @@ def evaluate_mask_calibre(
     gives sub-voxel ones, so it brackets the answer from both sides using biology rather than
     the classifier.
 
-    That independence is why it is worth having. With hand annotation infeasible (#98 item 23)
+    That independence is why it is worth having. With no hand annotation available
     this is the only evidence about the segmentation that does not come from the classifier
-    being assessed, and it belongs in #98 item 25's sensitivity scope.
+    being assessed, and it belongs in the sensitivity analysis of the H1 metrics.
 
     Measured on the reference subvolume, median radius falls from 20.09 um at a low threshold
     of 0.2 - a solid block of tissue, not a vessel - to 2.64 um from 0.6 onward, which is the

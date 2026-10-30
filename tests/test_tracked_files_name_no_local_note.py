@@ -49,6 +49,16 @@ def test_a_line_naming_an_untracked_md_file_is_reported(tmp_path):
     assert pointers(repo) == [f"src/calc.py:2: # The design is in {plan}."]
 
 
+def test_a_line_citing_an_issue_item_number_is_reported(tmp_path):
+    item = "#" + "98 item 7"
+    tier = "#" + "98 Tier 1 item 5"
+    repo = _toy(tmp_path, {"src/calc.py": (f"# Fixed under {item}.\n"
+                                           f"# See {tier}, now closed.\n"
+                                           "# Fixed under #98; the item list is long.\n")})
+    assert pointers(repo) == [f"src/calc.py:1: # Fixed under {item}.",
+                              f"src/calc.py:2: # See {tier}, now closed."]
+
+
 def test_what_the_rules_leave_alone(tmp_path):
     open_item = "open" + " item 3"
     repo = _toy(tmp_path, {

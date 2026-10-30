@@ -287,7 +287,7 @@ def test_reconnection_threshold_is_compared_against_physical_positions():
 #
 # Every other preprocessing benchmark scores the mask against the probability field, so all of
 # them inherit the classifier's miscalibration. This one measures how thick the segmented
-# structures physically are. With hand annotation infeasible (#98 item 23) it is the only
+# structures physically are. With no hand annotation available it is the only
 # evidence about the segmentation that does not come from the classifier being assessed.
 
 def _tube(shape, radius_voxels, spacing):
@@ -398,7 +398,7 @@ def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
     assert hi_lo <= cfg.hysteresis_threshold_high <= hi_hi
 
 
-# --- The bundle-collapse operator must not eat vascular loops (#98 Tier 1 item 5) ---------
+# --- The bundle-collapse operator must not eat vascular loops -----------------------------
 #
 # skeletonize_voxel_bundles_into_paths deletes dense skeleton regions and replaces each with one
 # hub node, merging everything passing through the window. Density is measured on the SKELETON,
@@ -503,7 +503,7 @@ def test_default_skeleton_config_preserves_a_loop_through_the_full_cleanup():
     assert _beta1(cleaned) == 1, "the shipped skeleton cleanup altered a vascular loop"
 
 
-# --- Stub pruning is micron-denominated and cannot touch beta-1 (#98 Tier 1 item 6) -------
+# --- Stub pruning is micron-denominated and cannot touch beta-1 ---------------------------
 
 def _stub_graph(stub_lengths_um):
     """A square loop plus one terminal stub of each requested physical length."""
@@ -596,7 +596,7 @@ def test_pipeline_configures_the_stub_threshold_explicitly(monkeypatch):
         "the configured threshold is not reaching prune_vascular_stubs"
 
 
-# --- Centreline smoothing provenance (#98 Tier 1 item 7) ----------------------------------
+# --- Centreline smoothing provenance ------------------------------------------------------
 #
 # `length` is only rewritten for edges that smooth successfully, so the H1 tortuosity
 # numerator mixes two operators: a B-spline arc length for some edges and a raw 26-connected

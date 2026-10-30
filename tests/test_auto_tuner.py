@@ -20,7 +20,7 @@ def _get_dummy_fixed_trial():
     Values must lie inside the declared distributions. min_component_percent was 1.0 against
     a range of [4.0, 6.0] and bundle_scan_size was 5 against [8, 10], which made Optuna emit
     a UserWarning on every run of three tests. smoothing_alpha and prune_by_tortuosity are
-    gone with the search dimensions themselves (#98 item 17).
+    gone with the search dimensions themselves.
     """
     return FixedTrial({
         "min_branch_length": 10,
@@ -54,13 +54,13 @@ def test_objective_perfect_scores_yield_zero_loss():
 def test_objective_penalizes_over_pruning():
     """Ensures the weighted loss function scales penalties correctly.
 
-    Contract change (#98, Tier 2 item 14): this previously expected 635.0, which included
+    Contract change: this previously expected 635.0, which included
     graph_fundamental_loops * 0.1 = 5.0 for the 50 loops below. The loop term has been
     removed - it is the first Betti number, i.e. the loop count H1 reports - so
     the expected total is now 630.0 and the loop count no longer contributes at all. The test
     was renamed accordingly: "spiderwebs" is no longer a thing this objective penalises.
 
-    Second contract change (#98, Tier 2 item 15): 630.0 became 130.0. The 500.0 dead-end
+    Second contract change: 630.0 became 130.0. The 500.0 dead-end
     cliff, the 20.0 degree-3 term and the 0.05 edge-length-variance term are all gone, which
     removes exactly 475.0 + 20.0 + 5.0 from this fixture. The residual 130.0 is the two
     surviving fidelity terms and nothing else. This is a deliberate contract removal, not a
@@ -284,7 +284,7 @@ def test_preprocessing_objective_loss_ignores_euler_characteristic():
     assert objective._calculate_loss(positive_euler) == objective._calculate_loss(very_negative_euler)
 
 
-# --- Sampler seeding (#98 item 18) ---------------------------------------------------------
+# --- Sampler seeding -----------------------------------------------------------------------
 #
 # Both studies previously ran on Optuna's default unseeded TPESampler, so two runs explored
 # different trial sequences. That makes any change to the objective's weights inseparable
@@ -401,7 +401,7 @@ def test_tuning_provenance_records_the_seed_beside_the_parameters(tmp_path, runn
     assert provenance["n_trials_run"] == 4
 
 
-# --- Preprocessing objective reduced to its measurable terms (#98 item 15) -----------------
+# --- Preprocessing objective reduced to its measurable terms -------------------------------
 #
 # Measured over 25 seeded TPE trials on the WKY subvolume z 60:110, y 120:280, x 120:280:
 # confidence 89.5% of loss, fragmentation 7.4%, surface_area_ratio 3.1%, and crispness, the
@@ -440,7 +440,7 @@ def test_preprocessing_objective_loss_ignores_removed_term(key, low, high):
 
 
 def test_preprocessing_objective_is_exactly_confidence_above_the_yield_cliff():
-    """The two surviving terms, and nothing else. Contract change from #98 item 15."""
+    """The two surviving terms, and nothing else: the other terms were removed, not re-weighted."""
     objective = PreprocessingObjective(lambda kwargs: None)
     # yield 0.3 is far above the 0.05 cliff, so the cliff contributes nothing.
     assert objective._calculate_loss(_preproc_bench(confidence=0.8)) == pytest.approx(20.0)
@@ -469,7 +469,7 @@ def test_preprocessing_objective_cannot_be_improved_by_merging_vessels():
     assert objective._calculate_loss(resolved) == objective._calculate_loss(merged_blob)
 
 
-# --- Skeleton objective reduced to its fidelity terms (#98 item 15) ------------------------
+# --- Skeleton objective reduced to its fidelity terms --------------------------------------
 #
 # Measured over 12 seeded TPE trials on the WKY subvolume z 60:110, y 120:280, x 120:280 at
 # the calibrated voxel size: dice 42.2% of loss, terminal cliff 37.8%, orphaned 19.3%,
@@ -538,7 +538,7 @@ def test_skeleton_objective_cannot_be_improved_by_pruning_real_branches():
     assert objective._calculate_loss(faithful) < objective._calculate_loss(over_pruned)
 
 
-# --- Dead search dimensions removed (#98 item 17) -----------------------------------------
+# --- Dead search dimensions removed -------------------------------------------------------
 
 def _suggested_dimensions(objective):
     """Names the objective actually asks the sampler for, recorded from a real trial."""
@@ -579,7 +579,7 @@ def test_dead_skeleton_search_dimensions_are_no_longer_suggested(dimension):
 def test_skeleton_search_dimensions_are_exactly_the_live_ones():
     live = _suggested_dimensions(SkeletonObjective(lambda kwargs: None))
     # bundle_scan_size and bundle_density_fraction left with the bundle-collapse operator,
-    # which is disabled for destroying 68% of beta-1 (#98 Tier 1 item 5).
+    # which is disabled for destroying 68% of beta-1.
     assert live == ["min_branch_length", "min_component_percent"]
 
 

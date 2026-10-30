@@ -55,7 +55,8 @@ class SkeletonObjective:
             # being ignored, but it must not be tuned: centreline smoothness is what H1 reads
             # tortuosity off, and this objective is only Dice plus orphaned volume,
             # neither of which can see it. Searching it would set a hypothesis readout by noise.
-            # It is a frozen, recorded constant and belongs in the #98 item 25 sensitivity scope.
+            # It is a frozen, recorded constant, so the sensitivity of each H1 metric to it has
+            # to be measured instead.
             #
             # NO prune_by_tortuosity dimension. It was suggested every trial, written into
             # best_skeleton_params.yaml and read by nothing at all - no implementation exists.
@@ -87,7 +88,8 @@ class SkeletonObjective:
             edge_length_std   0.6%                 (raw 21.9 - 35.5 um)
             degree3           0.2%                 (raw 0.960 - 1.000)
 
-        Every surviving weight enters the #98 item 25 sensitivity scope. Neither surviving weight
+        Under one frozen parameter set the weights are part of the experiment, so the sensitivity
+        of each H1 metric to every surviving weight has to be measured. Neither surviving weight
         was changed; both were already 100.
 
         CAVEAT on the two survivors: both are currently dominated by the mask rather than by

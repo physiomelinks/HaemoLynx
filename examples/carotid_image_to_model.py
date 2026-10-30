@@ -1042,8 +1042,8 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
         G, debug=pipeline_config.verbose_logging, voxel_size=current_spacing,
         min_stub_length=graph_config.min_stub_length_um,
     )
-    # Reported unconditionally, not behind verbose_logging: #98 Tier 1 item 6 asks for node
-    # counts with and without stub pruning, because how much of the graph this deletes is a
+    # Reported unconditionally, not behind verbose_logging: node counts are given with and
+    # without stub pruning, because how much of the graph this deletes is a
     # methods-section number, not a debugging detail.
     print(f"  Stub pruning at {graph_config.min_stub_length_um} um: "
           f"V {_v_before} -> {G.number_of_nodes()} "
@@ -1523,7 +1523,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
-    # Per-edge morphometry (#98 Tier 1 item 13). H1's calibre and tortuosity are distributional
+    # Per-edge morphometry. H1's calibre and tortuosity are distributional
     # claims, and the summary above reduces each to a single mean. With n = 3 specimens per
     # group the per-edge table is the only place with enough data to describe a distribution
     # at all, and every provenance tag has to travel with its measurement - the diameter,

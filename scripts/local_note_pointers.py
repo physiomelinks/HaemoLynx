@@ -6,11 +6,13 @@ nothing; code, tests and comments state the reason in words instead.
 ``tests/test_tracked_files_name_no_local_note.py`` runs this on the repo.
 
 ``pointers(root)`` returns ``path:line: text`` for every line of a file git tracks in `root`
-that does one of three things:
+that does one of four things:
 
 1. names a markdown file that git does not track, by the path as written or by its file name;
 2. holds ``OPEN_ITEM`` in any case (how the notes number unresolved items);
-3. holds a path into the scratch folder, where tickets and plans are kept.
+3. holds a path into the scratch folder, where tickets and plans are kept;
+4. gives an issue number and then an item number in the same clause (``ISSUE_ITEM``): the
+   items are numbered in a note, not in the issue. A bare issue number is fine.
 
 Names the tests and the pipeline write themselves (``TOY_NOTES``) are not local notes. Not read
 at all: binary files, ``.gitignore`` (it names the local notes on purpose) and ``tests/data/``.
@@ -25,6 +27,7 @@ from _worktree import git
 # Built from pieces, so this file does not match its own rules.
 OPEN_ITEM = "open" + " item"
 SCRATCH = "." + "scratch/"
+ISSUE_ITEM = re.compile("#" + r"\d+[^.;\n]*?\bitem\s+\d+", re.IGNORECASE)
 #: .md files the tests and the pipeline write themselves. model_results.md is also spelled in
 #: ImageLynx.visualization.reporting, but this script runs on toy repos without the package and
 #: must not import it, so the name is written out here.
@@ -62,7 +65,9 @@ def _points_at_a_note(line: str, known_names: set[str]) -> bool:
         return True
     if OPEN_ITEM in line.lower():  # rule 2
         return True
-    return SCRATCH in line  # rule 3
+    if SCRATCH in line:  # rule 3
+        return True
+    return ISSUE_ITEM.search(line) is not None  # rule 4
 
 
 def _not_read(rel: str) -> bool:
