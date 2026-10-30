@@ -125,7 +125,7 @@ def main():
     payload = {"roi_zyx": list(ROI),
                "vessel_threshold": FROZEN_VESSEL_THRESHOLD,
                "vessel_hysteresis": [cb_settings.HYSTERESIS_LOW, cb_settings.HYSTERESIS_HIGH],
-               "vessel_source": "cb_h1_batch network (open item 40)",
+               "vessel_source": "cb_h1_batch network",
                "shr_included": bool(args.all),
                "shr_caveat": SHR_CAVEAT if args.all else None,
                "by_threshold": {}}

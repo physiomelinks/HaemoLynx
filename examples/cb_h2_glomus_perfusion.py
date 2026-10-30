@@ -172,7 +172,7 @@ def main():
               f"{summary['n_penetrating']} penetrating / {summary['n_bypass']} bypass, "
               f"diameters attached {result['diameters_attached']}/{len(result['edges'])}")
 
-    print(f"\n§2.1 functional shunting")
+    print("\nfunctional shunting")
     print(f"  {'spec':7s} {'edge share':>11s} {'flow share':>11s} {'shunt idx':>10s} "
           f"{'med Q pen':>10s} {'med Q byp':>10s} {'ratio':>7s}")
     for s in summaries:
@@ -183,7 +183,7 @@ def main():
     print("  shunt index = flow share / edge share. 1.0 means flow is indifferent to the "
           "clusters;\n  below 1 means the bypassing vessels carry disproportionately more.")
 
-    print(f"\n§2.2 spatial haematocrit")
+    print("\nspatial haematocrit")
     print(f"  {'spec':7s} {'Hd pen':>8s} {'Hd byp':>8s} {'ratio':>7s} "
           f"{'d pen':>7s} {'d byp':>7s}")
     for s in summaries:
@@ -191,20 +191,20 @@ def main():
               f"{s['median_hct_bypass']:8.4f} {s['hct_ratio']:7.3f} "
               f"{s['median_diameter_penetrating']:6.2f}u {s['median_diameter_bypass']:6.2f}u")
 
-    print(f"\n§2.4 transit time to the glomus clusters")
+    print("\ntransit time to the glomus clusters")
     print(f"  {'spec':7s} {'t pen':>12s} {'t bypass':>12s} {'ratio':>7s}")
     for s in summaries:
         print(f"  {s['specimen_id']:7s} {s['median_transit_penetrating']:12.4g} "
               f"{s['median_transit_bypass']:12.4g} {s['transit_ratio']:7.3f}")
     print("  Absolute values are in arbitrary units: the pressure, viscosity and length units\n"
-          "  are not reconciled to one system, and S15 puts an absolute flow quantity under a\n"
-          "  +/-45% calibre floor regardless. Only the ratio is a result.")
+          "  are not reconciled to one system, and calibre error alone leaves any absolute flow\n"
+          "  uncertain by at least +/-45%. Only the ratio is a result.")
 
-    for field, label in (("shunt_index", "§2.1 shunt index"),
-                         ("flow_ratio", "§2.1 median flow ratio pen/byp"),
-                         ("hct_ratio", "§2.2 haematocrit ratio pen/byp"),
-                         ("transit_ratio", "§2.4 transit ratio pen/byp"),
-                         ("flow_share_penetrating", "§2.1 share of flow in penetrating edges")):
+    for field, label in (("shunt_index", "shunt index"),
+                         ("flow_ratio", "median flow ratio pen/byp"),
+                         ("hct_ratio", "haematocrit ratio pen/byp"),
+                         ("transit_ratio", "transit ratio pen/byp"),
+                         ("flow_share_penetrating", "share of flow in penetrating edges")):
         out = {}
         for grp in ("WKY", "SHR"):
             vals = [s[field] for s in summaries

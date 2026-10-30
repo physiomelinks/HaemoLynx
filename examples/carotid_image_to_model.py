@@ -1382,7 +1382,7 @@ def _rheology_cell_arrays(G, vessels):
 # cannot pass for an H2 field.
 _PERFUSION_VTI_NOTE = (
     "Pipeline perfusion field, not the H2 field. H2 hypoxia uses Tier 1 "
-    "(solve_perfusion_steady_state) with cb_settings inputs; see cb_modelling_reference.md."
+    "(solve_perfusion_steady_state) with cb_settings inputs."
 )
 
 

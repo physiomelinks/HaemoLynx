@@ -12,14 +12,6 @@ from local_note_pointers import pointers
 
 REPO = Path(__file__).resolve().parents[1]
 
-#: Lines let through for now, as (path, text). This one is a value the driver writes into its
-#: JSON output, so rewording it changes a written file; that is done with the other printed and
-#: written text, and the entry goes then. An entry that matches no line fails the test.
-NOT_YET_REWORDED = {
-    ("examples/cb_h1_th_metrics.py",
-     '"vessel_source": "cb_h1_batch network (' + "open" + ' item 40)",'),
-}
-
 
 def _toy(tmp_path, files):
     """A git repo in `tmp_path` tracking `files` ({path: text or bytes}), with nothing committed."""
@@ -74,11 +66,11 @@ def test_what_the_rules_leave_alone(tmp_path):
     assert pointers(repo) == []
 
 
-
 def test_a_tracked_file_deleted_on_disk_is_passed_over(tmp_path):
     repo = _toy(tmp_path, {"src/gone.py": "# Fixed under " + "open" + " item 3.\n"})
     (repo / "src" / "gone.py").unlink()
     assert pointers(repo) == []
+
 
 def test_the_three_kept_docs_are_checked(tmp_path):
     open_item = "open" + " item 3"
@@ -88,18 +80,7 @@ def test_the_three_kept_docs_are_checked(tmp_path):
                               for name in ("CODING_STANDARDS.md", "GLOSSARY.md", "README.md")]
 
 
-def _is(line, path, text):
-    """Whether reported `line` is `text` in file `path`."""
-    return line.startswith(path + ":") and line.endswith(": " + text)
-
-
 def test_no_tracked_file_points_at_a_local_note():
     found = pointers(REPO)
-    let_through = {(path, text) for path, text in NOT_YET_REWORDED
-                   if any(_is(line, path, text) for line in found)}
-    assert let_through == NOT_YET_REWORDED, (
-        f"These no longer match a line, so drop them: {NOT_YET_REWORDED - let_through}")
-    found = [line for line in found
-             if not any(_is(line, path, text) for path, text in NOT_YET_REWORDED)]
     assert not found, "Tracked lines that point at a local note; say the reason in words:\n" + (
         "\n".join(found))

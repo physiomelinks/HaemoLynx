@@ -392,7 +392,7 @@ def process_volume(path, args):
             print("        WARNING: >1% replaced -- threshold is too low, "
                   "you are median-filtering the image")
     else:
-        print("  [4/6] denoising SKIPPED (recommended -- see protocol section 4)")
+        print("  [4/6] denoising SKIPPED (recommended: capillaries are 2-4 voxels wide)")
 
     print(f"  [5/6] global normalisation (saturated={args.saturated}%, "
           f"stack histogram)")
@@ -583,7 +583,6 @@ def main():
     if not args.diagnose and any("error" not in r for r in results):
         print("\nNext: open the .h5 files in ilastik Pixel Classification.")
         print("  Input Data -> add all volumes; axes should read as zyxc.")
-        print("  See protocol sections 9 and 10.")
 
 
 if __name__ == "__main__":

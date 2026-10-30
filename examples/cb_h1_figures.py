@@ -343,8 +343,7 @@ def figure_diameter(path, diameters):
     fig.text(0.045, 0.015,
              f"{state}; exact p = {split.permutation_p:.2f} (floor {split.floor_p:.2f} at "
              f"n = 3). {in_window} of {len(medians)} medians lie in the {lo_um:g}–{hi_um:g} µm "
-             f"window.\nEDT diameters, not corrected for the half-voxel bias (reference open "
-             f"item 42).",
+             "window.\nEDT diameters, not corrected for the half-voxel bias.",
              fontsize=8.5, color=INK_MUTED)
     fig.tight_layout(rect=[0, 0.075, 1, 0.90])
     fig.savefig(path, dpi=200, facecolor=SURFACE)
@@ -493,7 +492,7 @@ def figure_degree(path):
     ax.set_axisbelow(True)
     ax.set_title("Node degree distribution, one line per specimen\n", fontsize=11,
                  color=INK, loc="left")
-    ax.text(0, 1.005, "degree 3 and above are the branch points section 1.1 counts",
+    ax.text(0, 1.005, "degree 3 and above are the branch points H1 counts",
             transform=ax.transAxes, fontsize=9, color=INK_MUTED, va="bottom")
     # Six near-superimposed lines cannot carry per-specimen labels without colliding, and
     # cohort identity is the only distinction the figure is making.

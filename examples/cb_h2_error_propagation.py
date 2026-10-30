@@ -193,7 +193,7 @@ def main(perturbation_um=VOXEL_UM):
 
     networks = {specimen_id: load_network(specimen_id) for specimen_id in SPECIMENS}
 
-    print("=== S10: terminal-node census, and where the boundary nodes come from ===")
+    print("=== terminal-node census, and where the boundary nodes come from ===")
     print(f"{'spec':8}{'term':>6}{'on face':>9}{'interior':>10}{'inlet':>7}{'outlet':>8}"
           f"{'in:out':>9}{'stranded':>10}")
     for specimen_id, (G, u, v, length, diameter, index) in networks.items():
@@ -204,7 +204,7 @@ def main(perturbation_um=VOXEL_UM):
               f"{len(inlets):7}{len(outlets):8}{len(inlets)/max(len(outlets),1):9.2f}"
               f"{stranded:7} ({100*stranded/total:.0f}%)")
 
-    print("\n=== S11: is the solve well posed? ===")
+    print("\n=== is the solve well posed? ===")
     for specimen_id, (G, u, v, length, diameter, index) in networks.items():
         inlet_nodes, outlet_nodes = select_boundary_terminal_nodes_by_face(
             G, ROI, axis=BOUNDARY_AXIS, face_tolerance_voxels=FACE_TOLERANCE,
@@ -214,7 +214,7 @@ def main(perturbation_um=VOXEL_UM):
               f"edges between an inlet and an outlet: {solvable}/{total} "
               f"({100*solvable/total:.1f}%)")
 
-    print("\n=== S12 and S13: how correlated calibre error propagates ===")
+    print("\n=== how correlated calibre error propagates ===")
     print(f"{'spec':8}{'independent':>13}{'correlated':>12}{'shunt ratio':>13}")
     independent_all, correlated_all, ratio_all = [], [], []
     for specimen_id, (G, u, v, length, diameter, index) in networks.items():
@@ -283,7 +283,7 @@ def boundary_sensitivity(calibre_ratio_pct):
         flows = solve_edge_flows(u, v, length, diameter, inlets, outlets, len(index))
         return flows[shunt].sum() / flows.sum()
 
-    print("\n=== S20: shunt ratio against the boundary choice (face rule) ===")
+    print("\n=== shunt ratio against the boundary choice (face rule) ===")
     print(f"{'spec':8}" + "".join(f"{name:>12}" for name, _, _ in cases)
           + f"{'axis':>8}{'tol':>8}{'total':>8}")
     axis_spread, tol_spread, total_spread = [], [], []
@@ -309,7 +309,7 @@ def boundary_sensitivity(calibre_ratio_pct):
     print(f"\nmean spread of the shunt ratio: axis {axis_mean:.1f}%, "
           f"tolerance {tol_mean:.1f}%, combined {np.nanmean(total_spread):.1f}%")
     larger = "the boundary choice" if tol_mean > calibre_ratio_pct else "calibre error"
-    print(f"Calibre error moves the same ratio {calibre_ratio_pct:.1f}% (S13, S15), against "
+    print(f"Calibre error moves the same ratio {calibre_ratio_pct:.1f}%, against "
           f"{tol_mean:.1f}% for the face tolerance at the pinned axis, so {larger} is the larger term.")
 
 
