@@ -589,18 +589,18 @@ direction agreement:
 | fixture 1.5x, z face | 38/67 (57%) | 0.93, 0.68 | 0.65, 0.78 (met) | 0.62, 0.77 (4 not drawn) |
 | fixture 2x, z face | 40/66 (61%) | 0.92, 0.66 | 0.92, 0.75 (flow 4/10: not met) | 0.70, 0.76 (met) |
 | E14.5 1.5x, faces | 97/124 (78%) | 0.77, 0.76 | 0.47, 0.86 | 0.48, 0.87 |
-| E14.5 1.5x, z face | 69/125 (55%) | 0.98, 0.65 | 0.74, 0.83 (met) | 0.54, 0.84 (1 not drawn) |
+| E14.5 1.5x, z face | 69/125 (55%) | 0.98, 0.65 | 0.74, 0.83 (met) | 0.54, 0.84 (met with the width floor; 1 not drawn before) |
 
 The trunk is right at 55-61% of tree ends, against 78-87%: near a coin, still above the "revisit D5"
 line at half. The truth is harder for every model (`estimated` 0.98 against 0.77 on E14.5), and the
 surround still beats `estimated` on both medians in every row but the fixture's 2x flow error with
 the truth's template, where they are level; the image's own template beats it in nearly every run
-it is drawn in (fixture 1.5x all 6, 2x 9 and 10 of 10; E14.5 8 and 9 of 10). Its trees' open ends still run the truth's way more often than `estimated`'s (E14.5 0.66
+it is drawn in (fixture 1.5x all 6, 2x 9 and 10 of 10; E14.5 9 and 10 of 10 with the width floor). Its trees' open ends still run the truth's way more often than `estimated`'s (E14.5 0.66
 and 0.70 against 0.59), since a trunk to an outer inlet need not feed the image where the image's own
 root sits at the inlet pressure. So D5 holds on this truth too, as far as the harness can say; the
 fixture's four image-template failures at 1.5x are its thin shell (shell-room warning), and E14.5's
-one is a drawn vessel of 1.05 um on an endothelial basis, which the in vivo viscosity law refuses
-(under 1.1 um): the generator draws no floor under the surface layer.
+one was a drawn vessel of 1.05 um on an endothelial basis, which the in vivo viscosity law refuses
+(under 1.1 um), fixed by the width floor below.
 
 **A surround from the panel** (2026-10-30; `outputs/surround_e14p5/panel_run/`). E14.5's run picked as
 the template in the real panel, 1.5x along x and y, Run pipeline: preflight passed (91 open ends, 30
@@ -608,3 +608,21 @@ left open on the z faces), the run finished in 35 s (55 s with the window shown)
 Colour by offered `network_part`, the image's vessels inside the shell. Pinned on the fixture by
 `tests/test_gui_synthetic_widget.py`'s surround run (slow, gui): the vessels layer carries both parts,
 the image flows CSV, manifest and Schmid citation are written.
+
+**A floor under drawn widths** (2026-10-30; `outputs/surround_check/narrow/`). A width drawn from a
+lognormal fitted to a class's mean and median (the bed's capillaries, a tree's first vessel: a
+statistics-source template carries no measured widths to draw from) had no lower bound, so the odd
+draw fell far under anything the template measured: the E14.5 z-face case's shell drew a 1.05 um
+capillary where the stand-in image's narrowest was 2.34 um, and on its endothelial basis the in vivo
+law refused to solve it. Such a width is now kept within 0.2-6 times its median, as a drawn length is
+(`trees.DIAMETER_CLIP`), and never under 2.2 um (`trees.MIN_DIAMETER_UM`), twice the surface layer the
+law subtracts and is singular at; the draw is clipped, not redrawn, so the random stream is
+unchanged. Of the nine reference networks four are bit for bit as before and five differ in one
+capillary each, raised from 2.02-2.19 um to 2.2; nothing else moves. E14.5's own run has 2 of its
+1,406 vessels under 2.2 um, so the floor sits just above its narrowest few. A template drawn wide
+(capillary mean 6, median 3 um, endothelial) put 72 of 154 capillaries under the floor and 32 under
+the singularity before; none now (`test_a_drawn_width_stays_near_its_median_and_above_twice_the_surface_layer`).
+The failed case draws and solves (flow error 0.41 against `estimated`'s 0.97), and the E14.5 z-face
+harness rerun draws all 10 image-template surrounds and meets the kill criterion with them (0.54
+against 0.98, better in 9 of 10; directions 0.84 against 0.65, 10 of 10); the truth-template rows are
+unchanged.

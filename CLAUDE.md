@@ -1230,7 +1230,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   over the runs beside the band. `validate_synthetic_graph` pins the graph contract
   (int ids, `pos`/`voxels` in µm, `length` the polyline's, `diameter_source="synthetic"` and, given
   the template, its `diameter_basis`, no degree-2 node, `dead_end_kind` on every dead end,
-  connected).
+  connected). A width drawn from a lognormal (a capillary's, a tree's first vessel's) stays within
+  `trees.DIAMETER_CLIP` of its median and above `trees.MIN_DIAMETER_UM`, twice the surface layer
+  the in vivo law is singular at (`trees.clip_drawn_diameters`).
 - **Presets** (`pipeline/presets.py`) — `PRESETS`, named partial configs: the panel's Preset menu
   under Load config... sets the rows a preset names and nothing else, and keeps no state (a config
   or run loaded afterwards puts the menu back to None). Switches and choices only, never a file or

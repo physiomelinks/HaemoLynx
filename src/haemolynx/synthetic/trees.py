@@ -55,6 +55,8 @@ import numpy as np
 from scipy.ndimage import map_coordinates, maximum_filter
 from scipy.spatial import cKDTree
 
+from haemolynx.haemodynamics.viscosity import PRIES_SINGULARITY_UM
+
 from .draft import TREE, NetworkDraft
 from .hole import Hole
 from .organisation import Organisation
@@ -85,6 +87,14 @@ FIRST_VESSEL_AIMS = 12
 FIRST_VESSEL_MARGIN = 0.05
 #: A drawn length is kept within these multiples of its order's median.
 LENGTH_CLIP = (0.2, 6.0)
+#: A width drawn from a lognormal is kept within these multiples of its
+#: median too, and never under MIN_DIAMETER_UM: twice the endothelial
+#: surface layer the in vivo viscosity law takes off a vessel's width, at
+#: which the law is singular. The tail otherwise drew the odd capillary
+#: narrower than any the template measured (1.05 um, the template's
+#: narrowest 2.3 um), and an endothelial run refused to solve it.
+DIAMETER_CLIP = LENGTH_CLIP
+MIN_DIAMETER_UM = 2.0 * PRIES_SINGULARITY_UM
 #: The asymmetry is drawn uniformly this far either side of the fitted one.
 ASYMMETRY_SPREAD = 0.15
 #: Below this the fitted asymmetry is not let go (a daughter of no width).
@@ -213,7 +223,16 @@ def draw_root_diameter(order: OrderTarget, cls: Optional[ClassTarget], rng: np.r
     mean = order.mean_diameter_um or (cls.mean_diameter_um if cls else None) or FALLBACK_DIAMETER_UM
     cv = order.diameter_cv if order.diameter_cv is not None else DEFAULT_DIAMETER_CV
     mu, sigma = lognormal_from_mean_cv(mean, cv)
-    return float(rng.lognormal(mu, sigma))
+    return float(clip_drawn_diameters(rng.lognormal(mu, sigma), math.exp(mu)))
+
+
+def clip_drawn_diameters(values, median: float):
+    """Widths drawn from a lognormal of *median* kept within
+    :data:`DIAMETER_CLIP` times it and at least :data:`MIN_DIAMETER_UM`
+    (which wins where the two disagree)."""
+    low = max(DIAMETER_CLIP[0] * float(median), MIN_DIAMETER_UM)
+    high = max(DIAMETER_CLIP[1] * float(median), low)
+    return np.clip(values, low, high)
 
 
 # ---------------------------------------------------------------------------

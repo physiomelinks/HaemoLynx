@@ -88,6 +88,7 @@ from .trees import (
     LENGTH_CLIP,
     TORTUOSITY_LOG_SIGMA,
     SideResult,
+    clip_drawn_diameters,
     face_distance_um,
     grow_side,
     inward_normal,
@@ -563,7 +564,7 @@ def _capillary_diameters(template: NetworkTemplate, count: int, rng: np.random.G
     mean = (cls.mean_diameter_um if cls else None) or FALLBACK_CAPILLARY_DIAMETER_UM
     median = (cls.median_diameter_um if cls else None) or mean * 0.96
     mu, sigma = lognormal_from_mean_median(max(mean, median * 1.001), median)
-    return rng.lognormal(mu, sigma, size=count)
+    return clip_drawn_diameters(rng.lognormal(mu, sigma, size=count), math.exp(mu))
 
 
 def dead_end_pairs_joined(template: NetworkTemplate, options: Any) -> int:

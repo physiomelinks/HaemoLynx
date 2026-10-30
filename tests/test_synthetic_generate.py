@@ -189,6 +189,32 @@ def test_the_validator_catches_a_broken_contract(generated):
         validate_synthetic_graph(G)
 
 
+def test_a_drawn_width_stays_near_its_median_and_above_twice_the_surface_layer():
+    """Regression (2026-10-30, the cut-out harness): a capillary width drawn
+    from the template's lognormal reached 1.05 um, under the in vivo law's
+    1.1 um singularity, so an endothelial run refused to solve it."""
+    from haemolynx.haemodynamics.viscosity import PRIES_SINGULARITY_UM, pries_in_vivo_viscosity
+
+    assert trees.MIN_DIAMETER_UM == 2.0 * PRIES_SINGULARITY_UM
+    clipped = trees.clip_drawn_diameters(np.array([0.5, 1.9, 5.0, 40.0, 90.0]), 10.0)
+    assert clipped.tolist() == [2.2, 2.2, 5.0, 40.0, 60.0]  # 0.2 and 6 times the median: 2 and 60 um
+    assert trees.clip_drawn_diameters(np.array([0.5, 3.0]), 4.0).tolist() == [2.2, 3.0]  # the floor wins over 0.8 um
+    # A template whose capillary widths spread wide: its lognormal put 72 of
+    # 154 under the floor and 32 under the singularity; none is drawn there now.
+    base = fixture_template()
+    wide = replace(base.classes["capillary"], mean_diameter_um=6.0, median_diameter_um=3.0)
+    T = replace(base, classes={**base.classes, "capillary": wide}, diameter_basis="endothelial")
+    G = generate_network(T, seed=SEED)
+    capillaries = [d["diameter_um"] for *_e, d in G.edges(data=True) if d.get("synthetic_class") == "capillary"]
+    assert len(capillaries) > 100
+    assert min(capillaries) == pytest.approx(trees.MIN_DIAMETER_UM)
+    assert all(pries_in_vivo_viscosity(width) > 0 for width in capillaries)
+    # A tree's first vessel drawn from an order of narrow widths alike.
+    order = replace(base.orders[0], mean_diameter_um=2.0, diameter_cv=0.8, samples=None)
+    rng = np.random.default_rng(0)
+    assert min(trees.draw_root_diameter(order, None, rng) for _ in range(200)) >= trees.MIN_DIAMETER_UM
+
+
 def test_every_drawn_vessel_carries_the_templates_diameter_basis(generated):
     T = replace(fixture_template(), diameter_basis="endothelial")
     G = generate_network(T, seed=SEED)
