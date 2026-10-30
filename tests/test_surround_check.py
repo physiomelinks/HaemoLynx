@@ -142,6 +142,47 @@ def test_the_surround_is_scored_on_the_image_it_was_drawn_round(fixture_case):
     assert row["open_end_inflow_share_model"] > 0.0  # the surround feeds the image through its open ends
 
 
+def test_a_truth_rooted_on_its_z_face_enters_from_the_surface_anywhere_across_it():
+    """D5's harder truth: penetrating trees, so an image can hold a root
+    and cut its branches on their way out."""
+    from synthetic_fixtures import fixture_template
+
+    T = fixture_template()
+    moved = sc.rooted_on_z_faces(T, np.random.default_rng(0))
+    assert (len(moved.inlets), len(moved.outlets)) == (len(T.inlets), len(T.outlets))
+    for end in (*moved.inlets, *moved.outlets):
+        assert end.face == "z0" and end.position_rel[0] == 0.0
+        assert all(sc.Z_ROOT_MARGIN <= v <= 1.0 - sc.Z_ROOT_MARGIN for v in end.position_rel[1:])
+    G, roles = sc.truth_network(
+        T, seed=1, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0, roots=sc.Z_FACE_ROOTS
+    )
+    roots = [*roles["inlet"], *roles["outlet"]]
+    assert roots and all(G.nodes[n]["pos"][0] == pytest.approx(0.0, abs=1e-9) for n in roots)
+    extent = np.asarray(G.graph["image_extent_um"], dtype=float)
+    inward = [G.nodes[n]["pos"][1:] / extent[1:] for n in roots]
+    assert all(0.05 < v < 0.95 for point in inward for v in point)  # across the face, not at its edges
+    with pytest.raises(ValueError, match="x and y alone"):
+        sc.truth_network(T, seed=1, scale=1.5, axes="xyz", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0,
+                         roots=sc.Z_FACE_ROOTS)
+    with pytest.raises(ValueError, match="truth roots"):
+        sc.truth_network(T, seed=1, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0,
+                         roots="interior")
+
+
+def test_a_z_face_case_records_its_roots_and_the_command_line_needs_xy(tmp_path):
+    from synthetic_fixtures import fixture_template
+
+    rows = sc.run_case(
+        fixture_template(), seed=1, scale=1.5, axes="xy", bed_model="delaunay", inlet_pa=4500.0, outlet_pa=1000.0,
+        surround=False, roots=sc.Z_FACE_ROOTS,
+    )
+    assert {r["truth_roots"] for r in rows} == {sc.Z_FACE_ROOTS}
+    oracle = rows[0]
+    assert oracle["model"] == sc.ORACLE and oracle["direction_agreement"] == 1.0
+    with pytest.raises(SystemExit):
+        sc.main(["--template", "fixture", "--axes", "xyz", "--truth-roots", "z_faces", "--out", str(tmp_path)])
+
+
 def test_the_surrounds_pressures_are_read_back_onto_the_image():
     """Blood is conserved at every junction of the image, solved as part of
     the surround: the pressures land on the right nodes, with the right

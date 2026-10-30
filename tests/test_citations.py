@@ -550,12 +550,31 @@ def test_a_synthetic_run_cites_the_generator_and_not_the_image_tools(tmp_path):
     assert "Network generation methods" in text
     assert "Smith, A.F." in text and "fphys.2019.00233" in text
     assert "- skan" not in text and "- tifffile" not in text and "- scikit-image" not in text
-    assert all(c.applies(settings) for c in NETWORK_GENERATION_CITATIONS)
+    assert [c.name for c in NETWORK_GENERATION_CITATIONS if c.applies(settings)] == [
+        "Synthetic vascular network (network_source='synthetic')"
+    ]
+    assert "Schmid, F." not in text  # the surround's alone
     image_run = {**settings, "network_source": "segmented_image"}
     assert "Network generation methods" not in render_citations(image_run)
     assert "- skan" in render_citations(image_run)
     # Tissue measurement still credits scikit-image (it is read even without a skeleton).
     assert "- scikit-image" in render_citations({**settings, "measure_tissue_volume": True})
+
+
+def test_a_surround_cites_the_generator_and_the_embedding_it_follows(tmp_path):
+    from haemolynx.pipeline.citations import NETWORK_GENERATION_CITATIONS, render_citations
+
+    settings = {
+        **SCHEMA.defaults(),
+        "network_source": "synthetic_surround",
+        "synthetic_template_path": tmp_path / "run.haemorun",
+    }
+    text = render_citations(settings)
+    assert all(c.applies(settings) for c in NETWORK_GENERATION_CITATIONS)
+    assert "Smith, A.F." in text  # the shell is drawn by the generator
+    assert "Schmid, F., Tsai, P.S., Kleinfeld, D., Jenny, P., Weber, B. (2017)" in text
+    assert "10.1371/journal.pcbi.1005392" in text
+    assert "- skan" not in text  # nothing is skeletonised
 
 
 def test_the_fahraeus_relation_is_cited_when_red_cells_are_predicted(tmp_path):

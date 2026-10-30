@@ -63,6 +63,14 @@ def _synthetic(settings: Mapping[str, Any]) -> bool:
     return network_is_synthetic(settings)
 
 
+def _surrounds(settings: Mapping[str, Any]) -> bool:
+    """A surround (``network_source=synthetic_surround``): the template
+    run's network inside a synthetic one drawn round it."""
+    from haemolynx.graph.boundaries import network_surrounds_image
+
+    return network_surrounds_image(settings)
+
+
 def _is_set(path: Any) -> bool:
     return path not in (None, "")
 
@@ -836,6 +844,21 @@ NETWORK_GENERATION_CITATIONS: tuple[Citation, ...] = (
             "in Physiology, 10, 233. https://doi.org/10.3389/fphys.2019.00233"
         ),
         applies=_synthetic,
+    ),
+    Citation(
+        name="The template run's network inside a synthetic one (network_source='synthetic_surround')",
+        reason=(
+            "the measured network implanted in a hole cut in the middle of a larger "
+            "synthetic network and joined to it where its image faces cut its vessels, "
+            "so the boundary conditions are set at the larger network's faces"
+        ),
+        reference=(
+            "Schmid, F., Tsai, P.S., Kleinfeld, D., Jenny, P., Weber, B. (2017). "
+            "Depth-dependent flow and pressure characteristics in cortical "
+            "microvascular networks. PLoS Computational Biology, 13(2), e1005392. "
+            "https://doi.org/10.1371/journal.pcbi.1005392"
+        ),
+        applies=_surrounds,
     ),
 )
 

@@ -177,3 +177,38 @@ def test_a_fine_wheel_over_the_greyed_role_tabs_does_not_hang_the_panel(panel):
     _process()
     assert tabs.isTabEnabled(tabs.currentIndex())
     assert guard.eventFilter(bar, _wheel(bar, 1.0)) is False
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_a_surround_runs_from_the_panel_into_the_viewer(make_napari_viewer, qtbot, tmp_path):
+    """The template run's network inside a synthetic one, run from the panel
+    as a user runs it: the viewer's vessels carry both parts of the network
+    to colour by, and the outputs are the surround's."""
+    from synthetic_fixtures import write_generated_run
+
+    from haemolynx.gui.results import VESSELS, available_edge_columns
+
+    template = write_generated_run(tmp_path / "image", open_ends=True, solve=True)
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    rows["network_source"].value = "synthetic_surround"
+    rows["synthetic_template_path"].value = template
+    rows["synthetic_scale"].value = 2.0
+    rows["synthetic_scale_axes"].value = "xy"
+    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    running = widget._haemolynx_run_state
+    widget._haemolynx_run()
+    qtbot.waitUntil(lambda: not running.running, timeout=600_000)
+    qtbot.wait(200)
+
+    assert widget._haemolynx_report().startswith("Finished:"), widget._haemolynx_report()
+    vessels = viewer.layers[VESSELS]
+    assert set(vessels.features["network_part"]) == {"image", "synthetic"}
+    graph = widget._haemolynx_checkpoints.get("solve").graph
+    assert "network_part" in available_edge_columns(graph)
+    out = tmp_path / "out"
+    assert (out / "e14_5_surrounded_image_flows.csv").is_file()
+    assert (out / "e14_5_surrounded_run_manifest.json").is_file()
+    assert "Schmid, F." in (out / "e14_5_surrounded_citations.txt").read_text(encoding="utf-8")

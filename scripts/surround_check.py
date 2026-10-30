@@ -40,6 +40,13 @@ leaves open under ``estimated``; the image's pressures are read back and
 scored as a model's. It is drawn to the very template the truth was, where
 an image's run would measure its own: a kind start.
 
+With ``--truth-roots z_faces`` (xy only) the truth's trees are rooted
+across its z0 face (:func:`rooted_on_z_faces`), as a cortex's penetrating
+vessels enter from its surface: an image then often holds a tree's root and
+cuts its branches on their way out, where D5's trunk runs the wrong way. The
+default roots them on the faces the template's inlets and outlets sit on,
+so a tree vessel an image cuts mostly feeds or drains it.
+
 The report ends with the plan's kill criterion (:func:`kill_criterion`: the
 surround must beat ``estimated`` on median flow error and on direction
 agreement, medians over the runs, and how many runs it beats it in), and
@@ -94,6 +101,19 @@ SURROUND_TEMPLATES = {TRUTH_TEMPLATE: SURROUND, IMAGE_TEMPLATE: "surround, image
 #: score's name and whether higher is better.
 BASELINE = "estimated"
 KILL_SCORES = (("flow_error_median", "median flow error", False), ("direction_agreement", "direction agreement", True))
+#: Where the truth's trees are rooted (``--truth-roots``): on the faces the
+#: template's inlets and outlets sit on, so a tree vessel an image cuts
+#: mostly feeds or drains it (kind to D5's trunks); or on the z face the
+#: penetrating vessels of a cortex enter from, anywhere across the box
+#: (:func:`rooted_on_z_faces`), so an image often holds a tree's root and
+#: cuts its branches on their way out, where a trunk runs the wrong way.
+FACE_ROOTS = "faces"
+Z_FACE_ROOTS = "z_faces"
+TRUTH_ROOTS = (FACE_ROOTS, Z_FACE_ROOTS)
+#: How far in from the box's x and y faces a z-face root may sit, as a
+#: share of the box, and how far its seed lies from the truth's.
+Z_ROOT_MARGIN = 0.15
+Z_ROOT_SEED_OFFSET = 2000
 SCORED = (
     "direction_agreement",
     "flow_error_median",
@@ -188,12 +208,38 @@ def set_resistances(G: nx.MultiGraph, run_basis: str = "plasma_column") -> None:
         set_edge_resistance(data, resistance)
 
 
-def truth_network(template, *, seed: int, scale: float, axes: str, bed_model: str, inlet_pa: float, outlet_pa: float):
-    """The network drawn larger, closed, labelled and solved, and its roles."""
+def rooted_on_z_faces(template, rng: np.random.Generator):
+    """*template* with every inlet and outlet moved onto the z0 face, at a
+    point drawn across it (:data:`Z_ROOT_MARGIN` in from its edges): its
+    trees enter from the surface and branch out through the sides."""
+    from dataclasses import replace
+
+    from haemolynx.synthetic.template import Endpoint
+
+    low, high = Z_ROOT_MARGIN, 1.0 - Z_ROOT_MARGIN
+
+    def moved(ends):
+        return tuple(Endpoint("z0", (0.0, float(rng.uniform(low, high)), float(rng.uniform(low, high)))) for _ in ends)
+
+    return replace(template, inlets=moved(template.inlets), outlets=moved(template.outlets))
+
+
+def truth_network(
+    template, *, seed: int, scale: float, axes: str, bed_model: str, inlet_pa: float, outlet_pa: float,
+    roots: str = FACE_ROOTS,
+):
+    """The network drawn larger, closed, labelled and solved, and its roles;
+    its trees rooted as *roots* says (:data:`TRUTH_ROOTS`)."""
     from haemolynx.graph.branch_order import assign_vessel_branch_orders
     from haemolynx.haemodynamics.open_ends import OpenEndConditions
     from haemolynx.synthetic import GenerationOptions, boundary_nodes, generate_network
 
+    if roots not in TRUTH_ROOTS:
+        raise ValueError(f"truth roots must be one of {TRUTH_ROOTS}, got {roots!r}")
+    if roots == Z_FACE_ROOTS:
+        if axes != "xy":
+            raise ValueError("z-face roots need a truth grown along x and y alone: an image's z faces are then its own")
+        template = rooted_on_z_faces(template, np.random.default_rng(seed + Z_ROOT_SEED_OFFSET))
     G = generate_network(
         template, seed=seed, options=GenerationOptions(scale=scale, scale_axes=axes, bed_model=bed_model)
     )
@@ -448,18 +494,20 @@ def image_template(image, inlets, outlets, roles: Mapping[str, Sequence[Any]]):
 def run_case(
     template, *, seed: int, scale: float, axes: str, bed_model: str, inlet_pa: float, outlet_pa: float,
     surround: bool = True, surround_scale: Optional[float] = None,
-    surround_templates: Sequence[str] = (TRUTH_TEMPLATE,),
+    surround_templates: Sequence[str] = (TRUTH_TEMPLATE,), roots: str = FACE_ROOTS,
 ) -> list[dict]:
-    """One truth network, its crop, every model's scores, and with
-    *surround* a surround's for each of *surround_templates*
-    (:data:`SURROUND_TEMPLATES`; :func:`solve_surrounded`, at
-    *surround_scale*, the truth's *scale* without one)."""
+    """One truth network (its trees rooted as *roots* says), its crop,
+    every model's scores, and with *surround* a surround's for each of
+    *surround_templates* (:data:`SURROUND_TEMPLATES`;
+    :func:`solve_surrounded`, at *surround_scale*, the truth's *scale*
+    without one)."""
     from haemolynx import haemodynamics as hd
 
     from haemolynx.graph import crop_graph_to_box
 
     truth, roles = truth_network(
-        template, seed=seed, scale=scale, axes=axes, bed_model=bed_model, inlet_pa=inlet_pa, outlet_pa=outlet_pa
+        template, seed=seed, scale=scale, axes=axes, bed_model=bed_model, inlet_pa=inlet_pa, outlet_pa=outlet_pa,
+        roots=roots,
     )
     own = np.asarray(template.extent_um, dtype=float)
     found = None
@@ -478,7 +526,7 @@ def run_case(
     # pressure. It scores the harness itself (it must match the truth) and is
     # the most a surround could give.
     case = {
-        "bed": bed_model, "seed": seed, "truth_vessels": truth.number_of_edges(),
+        "bed": bed_model, "seed": seed, "truth_roots": roots, "truth_vessels": truth.number_of_edges(),
         "box_lo_um": " ".join(f"{v:.0f}" for v in lo), "inlets": len(inlets), "outlets": len(outlets),
     }
     C = copy.deepcopy(image)
@@ -663,8 +711,14 @@ def main(argv=None) -> int:
         "--surround-templates", nargs="+", default=list(SURROUND_TEMPLATES), choices=tuple(SURROUND_TEMPLATES),
         help="what each surround is drawn to: the truth's own template, the stand-in image's measured one, or both",
     )
+    parser.add_argument(
+        "--truth-roots", default=FACE_ROOTS, choices=TRUTH_ROOTS,
+        help="where the truth's trees are rooted: the template's faces, or across its z0 face (xy only)",
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
+    if args.truth_roots == Z_FACE_ROOTS and args.axes != "xy":
+        parser.error("--truth-roots z_faces needs --axes xy")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -678,7 +732,7 @@ def main(argv=None) -> int:
                     template, seed=seed, scale=args.scale, axes=args.axes, bed_model=bed,
                     inlet_pa=args.inlet_pa, outlet_pa=args.outlet_pa,
                     surround=args.surround, surround_scale=args.surround_scale,
-                    surround_templates=args.surround_templates,
+                    surround_templates=args.surround_templates, roots=args.truth_roots,
                 )
             except ValueError as failure:
                 print(f"{bed} seed {seed}: skipped, {failure}", flush=True)
@@ -706,7 +760,8 @@ def main(argv=None) -> int:
         )
     report = (
         f"# Cut-out harness: open-end models{' and the surround' if args.surround else ''}\n\n"
-        f"Template `{args.template}` ({args.source}), truth at {args.scale:g}x along {args.axes}, closed; "
+        f"Template `{args.template}` ({args.source}), truth at {args.scale:g}x along {args.axes}, closed, "
+        f"its trees rooted {'on its faces' if args.truth_roots == FACE_ROOTS else 'across its z0 face'}; "
         f"beds {', '.join(args.beds)}, seeds {', '.join(map(str, args.seeds))}; inlet {args.inlet_pa:g} Pa, "
         f"outlet {args.outlet_pa:g} Pa. Medians over the runs; per-run rows in `surround_check_runs.csv`.\n\n"
         + markdown_table(summary, shown) + "\n\n" + "\n\n".join(lines) + "\n"

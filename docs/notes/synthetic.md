@@ -505,7 +505,8 @@ cell correlate 0.93-0.94 against 0.86, capillary length 0.85-0.89 against 0.81, 
 along x the template's capillaries are even (the comparison holds no layout there) and the
 correlation is noise. The image's flows barely move (the same way as `estimated` at 77.5%, against
 77%; seed against seed 90% against 88.5%), the open ends carry 24-40% of its inflow, and a whole run
-takes 25-30 s against 11. Networks without a hole are unchanged (the nine digests).
+took 25-30 s against 11 that day, which was other sessions' load, not D6 (2026-10-30, below).
+Networks without a hole are unchanged (the nine digests).
 
 **The large tier was mislabelled, not short** (2026-10-29). The connector drawn from an image
 vessel's tip to its face took the vessel's class but not its large-mask tag, and the large tier is
@@ -556,3 +557,54 @@ surrounded, at 1.5x and 2x along xy and 1.5x or 2x along all three
 (`outputs/surround_e14p5/node_estimate.py`): E14.5 2x xy plain 3,109 planned and 3,033 drawn,
 surrounded 3,491 and 3,507. Its dense solve needs about 0.5 GB, so the advice comes only on a
 machine short of memory or a bigger template.
+
+**D6 did not slow the surround** (2026-10-30; `outputs/surround_e14p5/slow_d6/`). E14.5 at 1.5x along
+x and y, seed 2, as `run_surround.py` runs seeds 2-5 (statistics off), the commit before D6
+(`7c2b2a46`) and this one alternated ABBA twice: 12.8, 13.1 and 12.8 s before (16.6 s cold) against
+12.5-13.7 s now, the draw 5.1-5.2 s in both. The mirroring itself takes 0.03 s; the draw alone 9.2 s
+with it and 10.6 s without, and the export's comparison 8.4 s and 8.3 s. The 25-30 s against 11 was
+load from other sessions on the machine.
+
+**Citations** (2026-10-30). A surround's citations add Schmid, Tsai, Kleinfeld, Jenny & Weber (2017),
+PLoS Comput Biol 13(2) e1005392, whose method it is: the realistic network "implanted into a large
+artificial MVN", a hole cut in the artificial network's centre, the two joined at the deep in- and
+outflow vertices, the penetrating trees' ends joined to the nearest capillary vertex, and the
+pressures there taken as the realistic network's boundary conditions. Peyrounette, Davit, Quintard &
+Lorthois (2018), PLoS ONE 13(1) e0189474, named beside it in the plan, is not cited: it couples
+anatomical arteriole and venule trees to a homogenised continuum standing in for a synthetic
+capillary bed, on a periodic domain, and does not move a measured network's boundary. Smith et al.
+(2019), already cited for the generator, applies to the shell.
+
+**D5's harder truth: trees rooted inside the image** (2026-10-30; `surround_check.py --truth-roots
+z_faces`, `outputs/surround_check/d5z_*` against `p4d_*`). The harness's truths rooted every tree on
+an outer face, so a tree vessel an image cuts mostly fed or drained it, which D5's trunks assume. The
+new truth roots them across its z0 face (`rooted_on_z_faces`: anywhere 15% in from the x and y
+edges), as a cortex's penetrating vessels enter from its surface, so an image often holds a root
+and cuts its branches on their way out. Medians of 10 runs (5 seeds, both beds), flow error and
+direction agreement:
+
+| | trunk right | `estimated` | surround (truth's template) | surround (image's own) |
+|---|---|---|---|---|
+| fixture 1.5x, faces | 46/53 (87%) | 0.94, 0.70 | 0.53, 0.84 | 0.56, 0.80 |
+| fixture 1.5x, z face | 38/67 (57%) | 0.93, 0.68 | 0.65, 0.78 (met) | 0.62, 0.77 (4 not drawn) |
+| fixture 2x, z face | 40/66 (61%) | 0.92, 0.66 | 0.92, 0.75 (flow 4/10: not met) | 0.70, 0.76 (met) |
+| E14.5 1.5x, faces | 97/124 (78%) | 0.77, 0.76 | 0.47, 0.86 | 0.48, 0.87 |
+| E14.5 1.5x, z face | 69/125 (55%) | 0.98, 0.65 | 0.74, 0.83 (met) | 0.54, 0.84 (1 not drawn) |
+
+The trunk is right at 55-61% of tree ends, against 78-87%: near a coin, still above the "revisit D5"
+line at half. The truth is harder for every model (`estimated` 0.98 against 0.77 on E14.5), and the
+surround still beats `estimated` on both medians in every row but the fixture's 2x flow error with
+the truth's template, where they are level; the image's own template beats it in nearly every run
+it is drawn in (fixture 1.5x all 6, 2x 9 and 10 of 10; E14.5 8 and 9 of 10). Its trees' open ends still run the truth's way more often than `estimated`'s (E14.5 0.66
+and 0.70 against 0.59), since a trunk to an outer inlet need not feed the image where the image's own
+root sits at the inlet pressure. So D5 holds on this truth too, as far as the harness can say; the
+fixture's four image-template failures at 1.5x are its thin shell (shell-room warning), and E14.5's
+one is a drawn vessel of 1.05 um on an endothelial basis, which the in vivo viscosity law refuses
+(under 1.1 um): the generator draws no floor under the surface layer.
+
+**A surround from the panel** (2026-10-30; `outputs/surround_e14p5/panel_run/`). E14.5's run picked as
+the template in the real panel, 1.5x along x and y, Run pipeline: preflight passed (91 open ends, 30
+left open on the z faces), the run finished in 35 s (55 s with the window shown), 2,850 vessels, and
+Colour by offered `network_part`, the image's vessels inside the shell. Pinned on the fixture by
+`tests/test_gui_synthetic_widget.py`'s surround run (slow, gui): the vessels layer carries both parts,
+the image flows CSV, manifest and Schmid citation are written.
