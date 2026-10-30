@@ -303,11 +303,6 @@ def main(argv=None):
         print("\n  --verify only; nothing written.")
         return
     (out / "export_summary.json").write_text(json.dumps(summary, indent=2))
-    # The guide is version-controlled beside the code; examples/outputs/ is gitignored, so a
-    # copy travels with the data for anyone handed the directory on its own.
-    guide = Path(__file__).resolve().parent / "cb_h1_paraview_guide.md"
-    if guide.exists():
-        (out / "README.md").write_text(guide.read_text())
     print(f"\nWrote {out}")
 
 

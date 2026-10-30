@@ -15,6 +15,8 @@ import cb_h1_vtk  # noqa: E402
 FIGURE_FILES = {"figure1_network_density.png", "figure2_diameter_distribution.png",
                 "figure3_threshold_sensitivity.png", "figure7_node_degree.png",
                 "figure8_segment_length.png"}
+VTK_FILES = {f"WKY-A_{part}" for part in ("vessels.vtp", "nodes.vtp", "skeleton.vtp",
+                                          "surface.vtp", "mask.vti")} | {"export_summary.json"}
 
 
 @pytest.fixture
@@ -50,7 +52,7 @@ def stub_vtk(tmp_path, monkeypatch, make_batch_run, stub_h1_vtk_builders):
 def test_vtk_writes_into_out_and_leaves_the_paraview_folder_alone(stub_vtk, tmp_path, capsys):
     out = tmp_path / "snap" / "cb_h1_vtk"
     cb_h1_vtk.main(["--out", str(out)])
-    assert (out / "export_summary.json").exists()
+    assert {p.name for p in out.iterdir()} == VTK_FILES
     assert not stub_vtk.exists()
     assert f"Wrote {out}" in capsys.readouterr().out
 
