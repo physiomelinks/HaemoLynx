@@ -3,11 +3,16 @@
 #   git config core.hooksPath "$PWD/scripts/git-hooks"   (run from the repo root)
 # 0. If core.hooksPath names another checkout's scripts/git-hooks (it is set absolute, so
 #    every worktree gets the main checkout's), re-exec the committing checkout's own pre-commit first.
-# 1. Pyflakes lint on staged Python files: undefined names and redefinitions,
+# 1. Refuse a commit that adds a .md file (a rename to a new name counts) other than README.md,
+#    GLOSSARY.md or CODING_STANDARDS.md: every other .md is a local note and belongs in
+#    .gitignore. Not checked in a merge, which may bring in upstream's docs. A new doc meant to be
+#    tracked: add its name to KEPT_DOCS below, or commit with --no-verify.
+# 2. Pyflakes lint on staged Python files: undefined names and redefinitions,
 #    plus unused imports in staged files under tests/ only.
-# 2. Fast tests (not slow, integration or realdata), skipped when every staged file is a Markdown doc (no test reads
-#    a repo .md file). Any other staged file, deletions included, runs them.
-#    Also skipped when .git/hook-stamp/fast-tests-ok matches the staged tree,
+# 3. Fast tests (not slow, integration or realdata). When every staged file is a Markdown doc,
+#    only the local-note pointer test runs (no other test reads a repo .md file). Any other
+#    staged file, deletions included, runs them all.
+#    Skipped when .git/hook-stamp/fast-tests-ok matches the staged tree,
 #    the interpreter and its installed packages (see _stamp.sh); a passing run
 #    here, or scripts/stamp-tests.sh, writes it.
 #    The tests run with no GIT_* variables: git's GIT_INDEX_FILE (and GIT_DIR in a worktree) would point a test's own git calls at this repo.
@@ -30,6 +35,25 @@ fi
 PY=venv/bin/python
 [ -x "$PY" ] || PY=python3
 . scripts/git-hooks/_stamp.sh
+
+KEPT_DOCS=" README.md GLOSSARY.md CODING_STANDARDS.md "
+if [ ! -e "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+    mapfile -t new_md < <(git diff --cached --name-only --diff-filter=ACR -- '*.md')
+    notes=()
+    for f in "${new_md[@]}"; do
+        case "$KEPT_DOCS" in
+            *" ${f##*/} "*) ;;
+            *) notes+=("$f") ;;
+        esac
+    done
+    if [ "${#notes[@]}" -gt 0 ]; then
+        echo "pre-commit: new .md files staged: ${notes[*]}" >&2
+        echo "  Only README.md, GLOSSARY.md and CODING_STANDARDS.md are tracked; every other .md is" >&2
+        echo "  a local note. Add its name to .gitignore and unstage it with git rm --cached." >&2
+        echo "  A new doc meant to be tracked: add it to KEPT_DOCS in this hook, or commit with --no-verify." >&2
+        exit 1
+    fi
+fi
 
 # examples/OLD is an archive and has known undefined names.
 mapfile -t files < <(git diff --cached --name-only --diff-filter=ACM -- '*.py' ':!examples/OLD')
@@ -59,14 +83,24 @@ if [ "${#staged[@]}" -gt 0 ]; then
         esac
     done
 fi
-if [ "$only_docs" -eq 1 ]; then
-    echo "pre-commit: only .md files staged, skipping fast tests." >&2
+guard=tests/test_tracked_files_name_no_local_note.py
+if [ "$only_docs" -eq 1 ] && [ ! -f "$guard" ]; then
+    echo "pre-commit: only .md files staged, and this checkout has no $guard, so no tests ran." >&2
     exit 0
 fi
 
 if stamp_matches; then
     echo "pre-commit: tests already passed for this exact staged tree, skipping fast tests." >&2
     exit 0
+fi
+
+if [ "$only_docs" -eq 1 ]; then
+    echo "pre-commit: only .md files staged, running only $guard." >&2
+    tests=("$guard")
+    what="the pointer test"
+else
+    tests=(-m "not slow and not integration and not realdata")
+    what="fast tests"
 fi
 
 # Quiet run: the full output goes to a log, the terminal gets the summary line,
@@ -78,12 +112,13 @@ rc=0
 # git's GIT_INDEX_FILE (and GIT_DIR in a worktree) would send a test's own `git init` or `git add` into this repo.
 unset_git=()
 while IFS= read -r name; do unset_git+=(-u "$name"); done < <(compgen -e | grep '^GIT_' || true)
-env "${unset_git[@]}" MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration and not realdata" >"$log" 2>&1 || rc=$?
+env "${unset_git[@]}" MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q "${tests[@]}" >"$log" 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then
     tail -n 1 "$log" >&2
-    stamp_write
+    # The stamp says the fast tests passed, which the pointer test alone does not show.
+    [ "$only_docs" -eq 1 ] || stamp_write
 else
     tail -n 40 "$log" >&2
-    echo "pre-commit: fast tests failed, full output in $log" >&2
+    echo "pre-commit: $what failed, full output in $log" >&2
     exit "$rc"
 fi
