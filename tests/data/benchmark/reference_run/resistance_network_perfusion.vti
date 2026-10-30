@@ -18,7 +18,7 @@
         AQAAAACAAAAIAAAADQAAAA==eF5jYAABEwcAALAAdQ==
       </DataArray>
       <Array type="String" Name="perfusion_note" NumberOfTuples="1" format="binary">
-        AQAAAACAAACaAAAAgAAAAA==eF49jkEKwjAURD3KLBUkoFsv4NKF+1CbafMhTUL+b7W3t0Vw9Ya3GN5DKpNkorINs0rJGIQpnJGLwSJxv/6M21dca/lIh1mpeAobLjhqSQv9/8CrsQvrhs54wlsson95pZnkUSG5zqY3KLn7qQSmLWH0jQMbc083BXf4AuA3OEQ=
+        AQAAAACAAAB7AAAAbAAAAA==eF49jMEKwjAQBf2Ud1QoBfsVPXroPUT72iyETehu1P69SsHTDHOYm1RmUaJyW5pJUSzCPHfQ4vBEjMNR+p+lvZa3RDSjYRJuuOJsJT8Z/oNgzjjvX0TnBS/xhMc9GN1FV4NobW796QOzFyyg
       </Array>
       <DataArray type="Float64" Name="perfusion_picard_tolerance" NumberOfTuples="1" format="binary" RangeMin="1e-05" RangeMax="1e-05">
         AQAAAACAAAAIAAAAEAAAAA==eF77mPG4Y+uPJ3YAGiQFlA==
