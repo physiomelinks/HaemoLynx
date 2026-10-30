@@ -56,7 +56,7 @@ count dropped, 1 when one did, 2 on a usage error, 3 when the two runs cannot be
 (different pytest arguments, a run whose tests failed, or a run ``run`` failed as above).
 
 ``table`` prints a Markdown table (module, statements, covered before, covered after, change)
-to paste under a ticket's ``## Answer``, led by a passed/skipped count line for each run. With ``--modules`` it prints those modules, changed or
+to paste into a review, led by a passed/skipped count line for each run. With ``--modules`` it prints those modules, changed or
 not; without, only modules whose covered count changed. A ``--modules`` path in neither run is
 a usage error (exit 2, nothing printed), as is a module listed in only one run.
 

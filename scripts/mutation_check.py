@@ -46,8 +46,8 @@ clean run (a ``realdata`` test skips where the data is missing from this checkou
 module constant counts.
 
 Output: a header naming the worktree's commit and the files copied in, a Markdown table to
-paste under a ticket's ``## Answer``, and a summary line. The table gives the mutation, test,
-expected, result, ran line, and the first failure: the test file's ``file:line`` (its last
+paste into a review, and a summary line. The table gives the mutation, test, expected, result,
+ran line, and the first failure: the test file's ``file:line`` (its last
 traceback frame in that file) and the first ``E`` line, where a bare ``AssertionError:`` gets
 the first non-empty ``E`` line after it; or pytest's last line when there is no ``E`` line, such
 as ``1 passed`` for a survivor. A catch made by an error other than an assert (a ``TypeError``
