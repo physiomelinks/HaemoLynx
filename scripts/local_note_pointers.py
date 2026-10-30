@@ -11,7 +11,7 @@ that does one of four things:
 1. names a markdown file that git does not track, by the path as written or by its file name;
 2. holds ``OPEN_ITEM`` in any case (how the notes number unresolved items);
 3. holds a path into the scratch folder, where tickets and plans are kept;
-4. gives an issue number and then an item number in the same clause (``ISSUE_ITEM``): the
+4. gives an issue number and then one or more item numbers in the same clause (``ISSUE_ITEM``): the
    items are numbered in a note, not in the issue. A bare issue number is fine.
 
 Names the tests and the pipeline write themselves (``TOY_NOTES``) are not local notes. Not read
@@ -30,7 +30,7 @@ from _worktree import git
 # Built from pieces, so this file does not match its own rules.
 OPEN_ITEM = "open" + " item"
 SCRATCH = "." + "scratch/"
-ISSUE_ITEM = re.compile("#" + r"\d+[^.;\n]*?\bitem\s+\d+", re.IGNORECASE)
+ISSUE_ITEM = re.compile("#" + r"\d+[^.;\n]*?\bitems?\s+\d+", re.IGNORECASE)
 #: .md files the tests and the pipeline write themselves. model_results.md is also spelled in
 #: ImageLynx.visualization.reporting, but this script runs on toy repos without the package and
 #: must not import it, so the name is written out here.

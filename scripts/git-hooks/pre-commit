@@ -3,8 +3,9 @@
 #   git config core.hooksPath "$PWD/scripts/git-hooks"   (run from the repo root)
 # 0. If core.hooksPath names another checkout's scripts/git-hooks (it is set absolute, so
 #    every worktree gets the main checkout's), re-exec the committing checkout's own pre-commit first.
-# 1. Refuse a commit that adds a .md file (a rename to a new name counts) other than README.md,
-#    GLOSSARY.md or CODING_STANDARDS.md: every other .md is a local note and belongs in
+# 1. Refuse a commit that adds a .md file, in any case (a rename to a new name counts), other
+#    than the root README.md, GLOSSARY.md or CODING_STANDARDS.md: every other .md, a README.md
+#    below the root included, is a local note and belongs in
 #    .gitignore. Not checked in a merge, which may bring in upstream's docs. A new doc meant to be
 #    tracked: add its name to KEPT_DOCS below, or commit with --no-verify.
 # 2. Pyflakes lint on staged Python files: undefined names and redefinitions,
@@ -36,20 +37,21 @@ PY=venv/bin/python
 [ -x "$PY" ] || PY=python3
 . scripts/git-hooks/_stamp.sh
 
-KEPT_DOCS=" README.md GLOSSARY.md CODING_STANDARDS.md "
+KEPT_DOCS=(README.md GLOSSARY.md CODING_STANDARDS.md)
 if [ ! -e "$(git rev-parse --git-path MERGE_HEAD)" ]; then
-    mapfile -t new_md < <(git diff --cached --name-only --diff-filter=ACR -- '*.md')
+    mapfile -d '' -t added < <(git diff --cached --name-only -z --diff-filter=ACR)
     notes=()
-    for f in "${new_md[@]}"; do
-        case "$KEPT_DOCS" in
-            *" ${f##*/} "*) ;;
+    for f in "${added[@]}"; do
+        case "${f,,}" in *.md) ;; *) continue ;; esac
+        case " ${KEPT_DOCS[*]} " in
+            *" $f "*) ;;
             *) notes+=("$f") ;;
         esac
     done
     if [ "${#notes[@]}" -gt 0 ]; then
         echo "pre-commit: new .md files staged: ${notes[*]}" >&2
-        echo "  Only README.md, GLOSSARY.md and CODING_STANDARDS.md are tracked; every other .md is" >&2
-        echo "  a local note. Add its name to .gitignore and unstage it with git rm --cached." >&2
+        echo "  Only the root ${KEPT_DOCS[*]} are tracked; every other .md is a local note." >&2
+        echo "  Add its name to .gitignore and unstage it with git rm --cached." >&2
         echo "  A new doc meant to be tracked: add it to KEPT_DOCS in this hook, or commit with --no-verify." >&2
         exit 1
     fi

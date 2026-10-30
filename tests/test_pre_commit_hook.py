@@ -150,6 +150,18 @@ def test_a_commit_adding_a_local_note_is_refused(tmp_path):
     assert toy_git(main, "log", "--format=%s") == "init\n"
 
 
+def test_a_kept_doc_name_below_the_root_or_an_upper_case_md_is_refused(tmp_path):
+    """Only the root README.md, GLOSSARY.md and CODING_STANDARDS.md are kept docs."""
+    main, _ = _toy(tmp_path)
+    _absolute_hooks_path(main)
+    nested, upper = "docs/README" + ".md", "PLAN" + ".MD"
+
+    proc = _commit_new(main, nested, upper)
+
+    assert proc.returncode == 1, proc.stderr
+    assert nested in proc.stderr and upper in proc.stderr, proc.stderr
+
+
 def test_a_rename_to_a_new_md_name_is_refused(tmp_path):
     main, _ = _toy(tmp_path)
     _absolute_hooks_path(main)
@@ -165,7 +177,7 @@ def test_a_commit_adding_a_kept_doc_is_let_through(tmp_path):
     main, _ = _toy(tmp_path)
     _absolute_hooks_path(main)
 
-    proc = _commit_new(main, "GLOSSARY.md", "CODING_STANDARDS.md", "tutorials/README.md")
+    proc = _commit_new(main, "GLOSSARY.md", "CODING_STANDARDS.md")
 
     assert proc.returncode == 0, proc.stderr
 
