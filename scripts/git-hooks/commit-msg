@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Local guardrail: refuse a commit message that points at a local note (a markdown file kept on
+# disk but never tracked). A clone does not have the notes, so a message states its reasons in
+# words, like tracked files do. The rules are scripts/local_note_pointers.py's; see its
+# message_pointers. Turned on with pre-commit (core.hooksPath); bypass with `git commit --no-verify`.
+set -euo pipefail
+self=$(realpath "$0")
+msg=$(realpath "$1")
+cd "$(git rev-parse --show-toplevel)"
+# core.hooksPath is absolute, so git runs the main checkout's copy from every worktree. Run the
+# committing checkout's own copy instead, so the hook and the rules it imports match.
+own="$PWD/scripts/git-hooks/commit-msg"
+if [ ! -f "$own" ]; then
+    echo "commit-msg: $PWD has no scripts/git-hooks/commit-msg, so no hook ran." >&2
+    exit 0
+fi
+if [ "$(realpath "$own")" != "$self" ]; then
+    exec "$own" "$msg"
+fi
+PY=venv/bin/python
+[ -x "$PY" ] || PY=python3
+
+"$PY" - "$msg" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "scripts")
+from local_note_pointers import message_pointers
+
+found = message_pointers(Path.cwd(), Path(sys.argv[1]).read_text())
+if found:
+    print("commit-msg: the message points at a local note; say the reason in words:",
+          *(f"  {line}" for line in found), sep="\n", file=sys.stderr)
+    sys.exit(1)
+PYEOF

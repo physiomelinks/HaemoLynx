@@ -16,6 +16,9 @@ that does one of four things:
 
 Names the tests and the pipeline write themselves (``TOY_NOTES``) are not local notes. Not read
 at all: binary files, ``.gitignore`` (it names the local notes on purpose) and ``tests/data/``.
+
+``message_pointers(root, message)`` runs the same rules on a commit message, for the
+``commit-msg`` hook.
 """
 from __future__ import annotations
 
@@ -32,14 +35,16 @@ ISSUE_ITEM = re.compile("#" + r"\d+[^.;\n]*?\bitem\s+\d+", re.IGNORECASE)
 #: ImageLynx.visualization.reporting, but this script runs on toy repos without the package and
 #: must not import it, so the name is written out here.
 TOY_NOTES = {"notes.md", "model_results.md"}
+# git commit -v puts the staged diff below a line holding this mark.
+SCISSORS = ">8"
 # A file name ending in .md. A glob such as *.md is not a name, so "*" is left out.
 MD_NAME = re.compile(r"[\w./-]+\.md\b")
 
 
 def pointers(root: Path) -> list[str]:
     """``path:line: text`` for each line of a tracked file in `root` that points at a local note."""
-    tracked = [rel for rel in git(root, "ls-files", "-z").split("\0") if rel]
-    names = set(tracked) | {Path(rel).name for rel in tracked} | TOY_NOTES
+    tracked = _tracked(root)
+    names = _known_names(tracked)
     found = []
     for rel in tracked:
         if _not_read(rel) or not (root / rel).is_file():
@@ -55,6 +60,32 @@ def pointers(root: Path) -> list[str]:
                   for number, line in enumerate(text.splitlines(), 1)
                   if _points_at_a_note(line, names)]
     return found
+
+
+def message_pointers(root: Path, message: str) -> list[str]:
+    """Lines of commit message `message`, for repo `root`, that point at a local note.
+
+    Git's comment lines (``#`` then a space, or ``#`` alone) and everything below the scissors
+    line of ``commit -v`` are not read: git strips them from the message after the hook runs.
+    """
+    names = _known_names(_tracked(root))
+    found = []
+    for line in message.splitlines():
+        if line.startswith("# ") and SCISSORS in line:
+            break
+        if line == "#" or line.startswith(("# ", "#\t")):
+            continue
+        if _points_at_a_note(line, names):
+            found.append(line.strip())
+    return found
+
+
+def _tracked(root: Path) -> list[str]:
+    return [rel for rel in git(root, "ls-files", "-z").split("\0") if rel]
+
+
+def _known_names(tracked: list[str]) -> set[str]:
+    return set(tracked) | {Path(rel).name for rel in tracked} | TOY_NOTES
 
 
 def _points_at_a_note(line: str, known_names: set[str]) -> bool:
