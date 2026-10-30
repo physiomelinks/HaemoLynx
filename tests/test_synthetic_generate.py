@@ -430,6 +430,22 @@ def test_the_bed_is_planned_by_the_templates_own_arithmetic():
     assert spacing == pytest.approx((np.prod(T.extent_um) / 94) ** (1.0 / 3.0))
 
 
+@pytest.mark.parametrize(
+    "options",
+    [GenerationOptions(), GenerationOptions(scale=1.5, scale_axes="xy"), GenerationOptions(scale=2.0)],
+    ids=["template's box", "1.5x along xy", "2x"],
+)
+def test_the_plan_counts_the_nodes_the_network_is_drawn_with(options):
+    """Its vessels, the trees' and the bed's, less its loops, plus one: what
+    preflight checks the dense solvers' memory on before anything is drawn."""
+    T = fixture_template()
+    plan = planned_bed(T, options)
+    trees = sum(target.count for key, target in plan.template.classes.items() if key != "capillary")
+    assert trees > 0 and plan.nodes == trees + plan.capillaries - plan.loops + 1
+    G = generate_network(T, seed=SEED, options=options)
+    assert G.number_of_nodes() == pytest.approx(plan.nodes, rel=0.03)
+
+
 def test_the_extension_is_the_box_beyond_the_templates_own():
     own = (100.0, 200.0, 200.0)
     # Twice as wide every way: 7/8 of the volume, 3/4 of each face.

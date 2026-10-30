@@ -685,6 +685,17 @@ class BedPlan:
     #: 1 no bed can be drawn (the generator lays one and fails to join it).
     vertices: int
 
+    @property
+    def nodes(self) -> int:
+        """The nodes the network (a surround's shell) is planned with: its
+        vessels, the trees' and the bed's, less its loops, plus one, as for
+        any network in one piece. Within 3% of the count drawn on the
+        fixture and E14.5, closed or open, at 1.5 and 2 times (2026-10-29);
+        the template's own node count is not, since the dead ends it has
+        are mostly not drawn."""
+        trees = sum(int(target.count) for key, target in self.template.classes.items() if key != "capillary")
+        return trees + self.capillaries - self.loops + 1
+
 
 def planned_bed(template: NetworkTemplate, options: Any = None, joins: Sequence[Join] = ()) -> BedPlan:
     """The bed :func:`generate_network` plans for *template* drawn with

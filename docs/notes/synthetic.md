@@ -542,3 +542,17 @@ stands out; with no truth for E14.5 that is consistent, not proven. The harness'
 open ends is no benchmark for E14.5: a harness crop cuts some 12 arteriole and venule ends besides
 its designated ones, and its designated inlet brings in only 8% of its blood, where E14.5's image is
 framed round its main arteriole, whose inlet brings in 46% of it even under `estimated`.
+
+**The sparse solvers advised in preflight** (2026-10-29). A synthetic network or a surround is
+drawn in the Graph stage, which warns when the dense solvers will not fit in the free memory only
+once it is drawn: about 30 s for E14.5's surround, longer for a bigger template. Preflight now asks
+the same question of the nodes the network is planned with (`generate.BedPlan.nodes`: its vessels,
+the trees' and the bed's, less its loops, plus one; a surround's adds the image run's nodes to its
+shell's) and recommends `haemodynamics_solver=sparse` (and `equivalent_resistance_solver=sparse`)
+past half the memory free. The template's own node count is no estimate: E14.5's networks came out
+with 0.65 of it (0.75-0.8 for a surround), since most of its dead ends are not drawn. The plan's
+count was within 3% of the drawn one on the fixture (closed and open) and E14.5, plain and
+surrounded, at 1.5x and 2x along xy and 1.5x or 2x along all three
+(`outputs/surround_e14p5/node_estimate.py`): E14.5 2x xy plain 3,109 planned and 3,033 drawn,
+surrounded 3,491 and 3,507. Its dense solve needs about 0.5 GB, so the advice comes only on a
+machine short of memory or a bigger template.

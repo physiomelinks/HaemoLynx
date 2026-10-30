@@ -1005,8 +1005,11 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`build_conductance_matrix_from_graph(solver=)`); `equivalent_resistance_solver`
   (`eigendecomposition` default, or `sparse`, `inf` between unconnected nodes). A dense solver is
   warned about when its estimate passes half the free memory (`warn_about_dense_solver_memory`,
-  from `build_network` and `solve`). The per-N² memory figures are pinned in
-  `tests/test_flow_solvers.py`, so a solve that gains an N × N copy fails there.
+  from `build_network` and `solve`), and a synthetic network's or surround's by preflight before
+  it is drawn, on the nodes it is planned with (`generate.BedPlan.nodes`,
+  `dense_solver_memory_warnings(planned=True)`, the solvers from `stages.solvers_run`). The per-N²
+  memory figures are pinned in `tests/test_flow_solvers.py`, so a solve that gains an N × N copy
+  fails there.
   `Solution.network_resistance` is the drop over total inflow; perturbation summaries'
   `equivalent_resistance` is that, not the two-point one.
 - **`haemodynamics/perturbations.py`** — a perturbation is a named, typed settings override

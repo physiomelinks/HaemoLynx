@@ -33,6 +33,7 @@ from haemolynx.haemodynamics import (
     calc_two_point_from_laplacian_matrix_nodeID,
     calc_two_point_resistance_sparse,
     dense_solver_memory_bytes,
+    dense_solver_memory_warnings,
     flow_conservation_residuals,
     network_resistance,
     set_edge_flows,
@@ -539,6 +540,21 @@ def test_both_dense_solvers_are_warned_about_with_what_they_need_and_the_fix(cap
     assert "equivalent_resistance_solver=eigendecomposition" in eigen and "19.6 GB" in eigen
     assert "set equivalent_resistance_solver to sparse" in eigen
     assert "do_equiv_resistance_calculation off" in eigen
+
+
+def test_the_warnings_are_had_unlogged_and_for_a_network_not_yet_drawn(caplog):
+    """Preflight lists them itself, and a synthetic network's node count is a plan."""
+    solvers = {"flow_solver": "dense", "equivalent_resistance_solver": "eigendecomposition", "available_bytes": 16e9}
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
+        quiet = dense_solver_memory_warnings(20_000, **solvers)
+        planned = dense_solver_memory_warnings(20_000, planned=True, **solvers)
+    assert not caplog.records
+    assert len(quiet) == 2 and quiet == warn_about_dense_solver_memory(20_000, **solvers)
+    assert all("the 20,000 or so nodes this network is planned with" in message for message in planned)
+    assert [
+        message.replace("the 20,000 or so nodes this network is planned with", "this network's 20,000 nodes")
+        for message in planned
+    ] == quiet
 
 
 def test_a_dense_solver_is_warned_about_only_past_half_the_free_memory(caplog):

@@ -375,6 +375,17 @@ def test_a_surround_is_drawn_again_from_its_seed(image_run):
     assert all(np.array_equal(a.nodes[n]["pos"], b.nodes[n]["pos"]) for n in a.nodes)
 
 
+def test_the_image_and_the_shells_plan_count_the_surrounds_nodes(image_run, surrounded):
+    """What preflight checks the dense solvers' memory on before the draw."""
+    T, image, roles = image_run
+    axes, G = surrounded
+    plan, _joins = surround.planned_surround_bed(
+        image, T, inlets=roles["inlet"], outlets=roles["outlet"],
+        options=GenerationOptions(scale=SCALE, scale_axes=axes),
+    )
+    assert G.number_of_nodes() == pytest.approx(image.number_of_nodes() + plan.nodes, rel=0.03)
+
+
 def test_a_surround_needs_a_larger_box_and_int_nodes(image_run):
     T, image, _roles = image_run
     with pytest.raises(ValueError, match="synthetic_scale above 1"):

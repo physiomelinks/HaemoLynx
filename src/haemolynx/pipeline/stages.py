@@ -5522,15 +5522,22 @@ def _warn_about_dense_solver_memory(settings: Mapping[str, Any], G: nx.Graph) ->
     ``build_network`` as soon as the node count is known, so a run can be
     stopped before its diameters are measured, and from ``solve`` just before
     the matrices are made."""
-    return haemodynamics.warn_about_dense_solver_memory(
-        G.number_of_nodes(),
-        flow_solver=_flow_solver(settings),
-        equivalent_resistance_solver=(
+    return haemodynamics.warn_about_dense_solver_memory(G.number_of_nodes(), **solvers_run(settings))
+
+
+def solvers_run(settings: Mapping[str, Any]) -> dict[str, str | None]:
+    """The run's flow and two-point resistance solvers, as
+    :func:`haemodynamics.warn_about_dense_solver_memory` takes them: ``None``
+    for the two-point resistance when the run does not find it. The stages'
+    memory warnings and preflight's (a synthetic network's) read these."""
+    return {
+        "flow_solver": _flow_solver(settings),
+        "equivalent_resistance_solver": (
             _equivalent_resistance_solver(settings)
             if settings.get("do_equiv_resistance_calculation")
             else None
         ),
-    )
+    }
 
 
 def resistance_statistics(solution: Solution) -> dict[str, Any]:

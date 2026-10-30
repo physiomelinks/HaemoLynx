@@ -115,7 +115,7 @@ def warn_about_dense_solver_memory(
 ) -> list[str]:
     """Warn about each dense solver that would take more than
     :data:`SOLVER_MEMORY_WARN_FRACTION` of the free memory on *n_nodes* nodes,
-    and return the warnings.
+    and return the warnings (:func:`dense_solver_memory_warnings`, logged).
 
     *flow_solver* is the run's ``haemodynamics_solver`` and
     *equivalent_resistance_solver* its ``equivalent_resistance_solver``;
@@ -123,6 +123,28 @@ def warn_about_dense_solver_memory(
     to :func:`available_memory_bytes`; when that cannot be read, nothing is
     compared and nothing is warned.
     """
+    warnings = dense_solver_memory_warnings(
+        n_nodes,
+        flow_solver=flow_solver,
+        equivalent_resistance_solver=equivalent_resistance_solver,
+        available_bytes=available_bytes,
+    )
+    for message in warnings:
+        logger.warning(message)
+    return warnings
+
+
+def dense_solver_memory_warnings(
+    n_nodes: int,
+    *,
+    flow_solver: str | None = None,
+    equivalent_resistance_solver: str | None = None,
+    available_bytes: int | None = None,
+    planned: bool = False,
+) -> list[str]:
+    """What :func:`warn_about_dense_solver_memory` warns, not logged: for
+    preflight, which lists it. *planned* says *n_nodes* is a plan (a
+    synthetic network's, before it is drawn), not a count."""
     if available_bytes is None:
         available_bytes = available_memory_bytes()
     if available_bytes is None:
@@ -130,13 +152,18 @@ def warn_about_dense_solver_memory(
         return []
     limit = SOLVER_MEMORY_WARN_FRACTION * available_bytes
     free = f"{available_bytes / 1e9:.1f} GB"
+    nodes = (
+        f"the {n_nodes:,} or so nodes this network is planned with"
+        if planned
+        else f"this network's {n_nodes:,} nodes"
+    )
     warnings: list[str] = []
     if flow_solver is not None:
         need = dense_solver_memory_bytes(n_nodes, flow_solver)
         if need > limit:
             warnings.append(
                 f"The dense flow solver (haemodynamics_solver=dense) will need about "
-                f"{need / 1e9:.1f} GB for this network's {n_nodes:,} nodes, more than "
+                f"{need / 1e9:.1f} GB for {nodes}, more than "
                 f"half of the {free} of memory free now: the solve may run out of "
                 "memory, or slow to a crawl as the computer swaps. The sparse solver "
                 "gives the same pressures and flows to rounding in a small fraction "
@@ -149,15 +176,13 @@ def warn_about_dense_solver_memory(
             warnings.append(
                 "The two-point resistance's eigendecomposition "
                 "(equivalent_resistance_solver=eigendecomposition) will need about "
-                f"{need / 1e9:.1f} GB for this network's {n_nodes:,} nodes, more than "
+                f"{need / 1e9:.1f} GB for {nodes}, more than "
                 f"half of the {free} of memory free now, and its time grows with the "
                 "cube of the node count. The sparse solver finds the same resistance "
                 "from one sparse solve: set equivalent_resistance_solver to sparse "
                 "(Haemodynamics tab, Advanced), or turn "
                 "do_equiv_resistance_calculation off."
             )
-    for message in warnings:
-        logger.warning(message)
     return warnings
 
 _NOT_CONNECTED_MESSAGE = (

@@ -1142,6 +1142,31 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     for name in ("do_skeletonize", "do_graph_building"):
         if settings.get(name, True) is False:
             report.add_warning(f"{name} is off but a synthetic network is drawn every run; nothing is read back.")
+    if not network_surrounds_image(settings):  # a surround's is planned with its shell
+        from haemolynx.pipeline.stages import synthetic_generation_options
+        from haemolynx.synthetic.generate import planned_bed
+
+        try:
+            plan = planned_bed(template, synthetic_generation_options(settings))
+        except ValueError:
+            return report  # check_settings reports the scale
+        report.extend(_check_planned_solver_memory(settings, plan.nodes))
+    return report
+
+
+def _check_planned_solver_memory(settings: Mapping[str, Any], nodes: int) -> CheckReport:
+    """Whether the run's dense solvers fit in the memory free now on the
+    *nodes* a synthetic network is planned with (``BedPlan.nodes``): the
+    Graph stage warns once it is drawn, preflight before the draw, and
+    recommends the sparse solvers."""
+    report = CheckReport()
+    if not settings.get("run_haemodynamics"):
+        return report
+    from haemolynx.haemodynamics import dense_solver_memory_warnings
+    from haemolynx.pipeline.stages import solvers_run
+
+    for message in dense_solver_memory_warnings(nodes, planned=True, **solvers_run(settings)):
+        report.add_warning(message)
     return report
 
 
@@ -1209,7 +1234,8 @@ def _check_surround_shell_room(settings: Mapping[str, Any], image, boundaries) -
     """Whether the shell round the image has room for a bed joining all its
     open ends (``surround.planned_surround_bed``, the generator's own
     arithmetic): none below one vertex, and doubtful below
-    ``surround.ROOMY_VERTICES_PER_JOIN`` vertices per join."""
+    ``surround.ROOMY_VERTICES_PER_JOIN`` vertices per join. And whether the
+    dense solvers fit on the image's nodes and the shell's planned ones."""
     from haemolynx.pipeline.stages import synthetic_generation_options
     from haemolynx.synthetic import TemplateError, load_template
     from haemolynx.synthetic.surround import ROOMY_VERTICES_PER_JOIN, planned_surround_bed
@@ -1237,6 +1263,8 @@ def _check_surround_shell_room(settings: Mapping[str, Any], image, boundaries) -
             "cut-out harness surrounds (no bed, or a trunk left apart). Fix: raise synthetic_scale if the "
             "Graph stage fails."
         )
+    if plan.vertices >= 1:
+        report.extend(_check_planned_solver_memory(settings, image.number_of_nodes() + plan.nodes))
     return report
 
 
