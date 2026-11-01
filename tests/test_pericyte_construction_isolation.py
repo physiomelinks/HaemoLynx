@@ -94,7 +94,7 @@ def _settings(tmp_path: Path, **extra) -> dict:
     values.update(
         {
             "input_path": tmp_path / "input.tif",
-            "vtk_output_prefix": tmp_path / "out" / "run",
+            "output_dir": tmp_path / "out",
             "plot_dir": plot_dir,
             "run_haemodynamics": True,
             "inlet_nodes": [0],

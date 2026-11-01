@@ -477,7 +477,7 @@ def test_the_panel_runs_the_pipeline_on_the_open_layer(make_napari_viewer, tmp_p
     widget = settings_widget(napari_viewer=viewer)
 
     values = widget._haemolynx_values()
-    values["vtk_output_prefix"] = tmp_path / "run"
+    values["output_dir"] = tmp_path
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
     # Inlets from one end of the volume and outlets from the other. Both set to
@@ -513,7 +513,7 @@ def test_a_run_from_the_panel_opens_no_browser(make_napari_viewer, tmp_path, mon
     widget = settings_widget(napari_viewer=viewer)
 
     values = widget._haemolynx_values()
-    values["vtk_output_prefix"] = tmp_path / "run"
+    values["output_dir"] = tmp_path
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
     values["inlet_node_selection_method"] = "volume"
@@ -771,7 +771,7 @@ def test_loading_a_config_for_a_different_schema_reports_instead_of_raising(
 
     report = panel._haemolynx_report()
     assert report.startswith("Could not load"), report
-    assert "output_dir" in report
+    assert "inlet_pressure_pa" in report
 
 
 # --- the About widget --------------------------------------------------------
@@ -887,7 +887,7 @@ def test_the_run_checks_pass_on_a_config_loaded_over_an_open_layer(
     panel._haemolynx_load_config(RESISTANCE_CONFIG)
 
     rows = panel._haemolynx_rows()
-    rows["vtk_output_prefix"].value = tmp_path / "run"
+    rows["output_dir"].value = tmp_path
     rows["base_plot_dir"].value = tmp_path / "plots"
 
     settings = resolve_settings(

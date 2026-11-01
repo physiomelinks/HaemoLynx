@@ -379,9 +379,20 @@ def test_the_haemodynamics_tab_leads_with_its_master_toggle():
     assert splitting.title == "Advanced junction splitting"
 
 
-def test_the_export_tab_leads_with_where_the_outputs_go():
+def test_where_the_outputs_go_is_its_own_box_on_the_input_tab():
+    """Every output goes into that folder, not only the VTK files, so it sits
+    with the inputs rather than on Export."""
+    _tab, layout = LAYOUTS["segment"]
+    keys = [box.key for box in layout.boxes]
+    output = layout.boxes[keys.index("output")]
+    assert output.title == "Output" and output.rows == ("output_dir",)
+    assert keys.index("output") == keys.index("raw_input") + 1
+    assert "output_dir" not in LAYOUTS["export_results"][1].names
+
+
+def test_the_export_tab_leads_with_the_vtk_export():
     _tab, layout = LAYOUTS["export_results"]
-    assert layout.boxes[0].rows[0] == "vtk_output_prefix"
+    assert layout.boxes[0].rows[0] == "vtk_export"
     assert layout.disclosure_of("visualize_vtk").anchor == "vtk_export"
     plots = layout.disclosure_of("show_plots_in_ide")
     assert plots.anchor is None
@@ -449,9 +460,10 @@ def test_an_unplaced_boundaries_setting_gets_its_own_button_not_the_node_ids():
 
 def test_the_input_tab_boxes_the_segmented_file_and_the_raw_file_apart():
     _tab, layout = LAYOUTS["segment"]
-    assert [(b.key, b.title) for b in layout.boxes[:4]] == [
+    assert [(b.key, b.title) for b in layout.boxes[:5]] == [
         ("segmented_input", "Segmented file input"),
         ("raw_input", "Raw file input"),
+        ("output", "Output"),
         ("input", None),
         ("voxel_size", "Voxel size and axes"),
     ]

@@ -542,7 +542,7 @@ def _perturbation_inputs(tmp_path: Path, segmentation: np.ndarray, overrides=Non
     values = {setting.name: setting.default for setting in SCHEMA}
     values.update(
         input_path=tmp_path / "seg.tif",
-        vtk_output_prefix=tmp_path / "out" / "run",
+        output_dir=tmp_path / "out",
         plot_dir=tmp_path / "plots",
         run_haemodynamics=True,
         run_perturbations=True,

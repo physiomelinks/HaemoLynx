@@ -27,7 +27,7 @@ def _run_into(folder: Path) -> None:
     values = {setting.name: setting.default for setting in SCHEMA}
     values.update({
         "input_path": FIXTURE,
-        "vtk_output_prefix": folder / "run",
+        "output_dir": folder,
         "plot_dir": folder / "plots",
         "statistics": True,
         "show_plots_in_ide": False,

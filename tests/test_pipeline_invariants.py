@@ -44,7 +44,7 @@ def test_no_stage_after_the_graph_is_built_changes_its_topology(tmp_path):
     values.update(
         {
             "input_path": FIXTURE,
-            "vtk_output_prefix": tmp_path / "run",
+            "output_dir": tmp_path,
             "plot_dir": tmp_path / "plots",
             "statistics": False,
             "show_plots_in_ide": False,
@@ -99,7 +99,7 @@ def test_a_run_leaves_every_setting_default_as_it_was(tmp_path):
     values.update(
         {
             "input_path": FIXTURE,
-            "vtk_output_prefix": tmp_path / "run",
+            "output_dir": tmp_path,
             "plot_dir": tmp_path / "plots",
             "statistics": False,
             "show_plots_in_ide": False,
@@ -130,7 +130,7 @@ def test_no_vessel_is_built_twice_between_the_same_two_nodes(tmp_path, collapse_
     values.update(
         {
             "input_path": NERVE_FIXTURE,
-            "vtk_output_prefix": tmp_path / "run",
+            "output_dir": tmp_path,
             "plot_dir": tmp_path / "plots",
             "statistics": False,
             "show_plots_in_ide": False,
@@ -178,7 +178,7 @@ def test_the_cartwheel_hub_guard_never_changes_the_graph(tmp_path, caplog):
         values.update(
             {
                 "input_path": FIXTURE,
-                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "output_dir": tmp_path / overrides.pop("run_name"),
                 "plot_dir": tmp_path / "plots",
                 "statistics": False,
                 "show_plots_in_ide": False,
@@ -239,7 +239,7 @@ def test_cluster_collapse_direction_aware_runs_end_to_end_and_never_flags_more_h
         values.update(
             {
                 "input_path": FIXTURE,
-                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "output_dir": tmp_path / overrides.pop("run_name"),
                 "plot_dir": tmp_path / "plots",
                 "statistics": False,
                 "show_plots_in_ide": False,
@@ -299,7 +299,7 @@ def test_cluster_collapse_persistence_runs_end_to_end_and_never_flags_more_hubs(
         values.update(
             {
                 "input_path": FIXTURE,
-                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "output_dir": tmp_path / overrides.pop("run_name"),
                 "plot_dir": tmp_path / "plots",
                 "statistics": False,
                 "show_plots_in_ide": False,
@@ -370,7 +370,7 @@ def test_consistency_warn_below_settings_choose_the_right_log_level(
         values.update(
             {
                 "input_path": FIXTURE,
-                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "output_dir": tmp_path / overrides.pop("run_name"),
                 "plot_dir": tmp_path / "plots",
                 "statistics": False,
                 "show_plots_in_ide": False,
@@ -454,7 +454,7 @@ def test_missing_vessel_warn_below_settings_choose_the_right_log_level(tmp_path,
         values.update(
             {
                 "input_path": FIXTURE,
-                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "output_dir": tmp_path / overrides.pop("run_name"),
                 "plot_dir": tmp_path / "plots",
                 "statistics": False,
                 "show_plots_in_ide": False,
@@ -527,7 +527,7 @@ def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
     values.update(
         {
             "input_path": NERVE_FIXTURE,
-            "vtk_output_prefix": tmp_path / "run",
+            "output_dir": tmp_path,
             "plot_dir": tmp_path / "plots",
             "statistics": False,
             "show_plots_in_ide": False,
@@ -588,7 +588,7 @@ def nerve_boundaries(tmp_path_factory):
     schema = default_schema()
     values = {setting.name: setting.default for setting in schema}
     values.update({
-        "input_path": NERVE_FIXTURE, "vtk_output_prefix": tmp_path / "run", "plot_dir": tmp_path / "plots",
+        "input_path": NERVE_FIXTURE, "output_dir": tmp_path, "plot_dir": tmp_path / "plots",
         "statistics": False, "show_plots_in_ide": False, "interactive_plots": False,
     })
     settings = resolve_settings(values, schema=schema, config_path=None)

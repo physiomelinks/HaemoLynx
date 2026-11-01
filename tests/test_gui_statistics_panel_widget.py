@@ -218,7 +218,7 @@ def test_a_real_run_fills_the_tab_and_a_rerun_of_the_statistics_updates_it(
     widget = settings_widget(napari_viewer=viewer)
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
-    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["output_dir"].value = tmp_path / "out"
     rows["statistics"].value = True
     widget._haemolynx_show_results.value = show_results
     running = widget._haemolynx_run_state

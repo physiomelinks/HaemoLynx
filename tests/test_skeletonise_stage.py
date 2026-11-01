@@ -33,7 +33,7 @@ def settings_for(tmp_path: Path, mask_path: Path, **overrides) -> dict:
     values.update(
         {
             "input_path": mask_path,
-            "vtk_output_prefix": tmp_path / "run" / "network",
+            "output_dir": tmp_path / "run",
             "plot_dir": tmp_path / "plots",
             "do_skeletonize": True,
             **overrides,

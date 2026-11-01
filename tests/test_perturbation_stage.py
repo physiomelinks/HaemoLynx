@@ -110,7 +110,7 @@ def _settings(tmp_path: Path, perturbations: list[dict], **extra) -> dict:
     values.update(
         {
             "input_path": tmp_path / "input.tif",
-            "vtk_output_prefix": tmp_path / "out" / "run",
+            "output_dir": tmp_path / "out",
             "plot_dir": tmp_path / "plots",
             "run_haemodynamics": True,
             "run_perturbations": True,
@@ -515,7 +515,7 @@ def test_each_type_writes_its_own_directory_and_files(tmp_path, perturbation_typ
 def test_unset_perturbation_output_dir_writes_under_the_general_output_folder(
     tmp_path,
 ):
-    """No custom dir: files go under vtk_output_prefix's parent, in {name}_{type}."""
+    """No custom dir: files go under output_dir, in {name}_{type}."""
     run = _run(tmp_path, [ARTERIOLE_DILATION])
     result = run.results[0]
     folder = perturbation_folder_name(

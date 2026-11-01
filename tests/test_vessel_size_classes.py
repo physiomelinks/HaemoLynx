@@ -703,7 +703,7 @@ def test_a_whole_run_classes_each_vessel_by_its_own_width(tmp_path, caplog):
     values = {
         **SCHEMA.defaults(),
         "input_path": image,
-        "vtk_output_prefix": tmp_path / "run",
+        "output_dir": tmp_path,
         "statistics": True,
         "show_plots_in_ide": False,
         "interactive_plots": False,
@@ -734,7 +734,7 @@ def test_a_whole_run_classes_each_vessel_by_its_own_width(tmp_path, caplog):
     assert size_convention_of(G)["counts"]["wide"] >= 1
     assert "Size convention: vessels classed by their measured width" in caplog.text
 
-    mesh = pv.read(str(tmp_path / "run_vessels.vtp"))
+    mesh = pv.read(str(tmp_path / "tubes_vessels.vtp"))
     assert set(mesh.cell_data["vessel_size_class"]) - {""} == set(CLASSES)
     assert float(mesh.field_data["vessel_size_wide_min_um"][0]) == 15.0
     statistics = tmp_path / "tubes_statistics.csv"

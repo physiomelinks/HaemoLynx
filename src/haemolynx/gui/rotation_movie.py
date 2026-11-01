@@ -39,7 +39,7 @@ MAX_SPEED_DEG_PER_S = 360.0
 #: ``haemolynx_rotation_YYYYMMDD_HHMMSS.mp4`` in the pipeline output folder.
 ROTATION_STEM = "haemolynx_rotation"
 ROTATION_NO_OUTPUT_FOLDER = (
-    "No output folder is set; set the VTK output prefix before recording a rotation."
+    "No output folder is set; set the output folder on the Input tab before recording a rotation."
 )
 ROTATION_NO_VIEWER = "No viewer to rotate or record."
 ROTATION_NOTHING_SHOWN = "Nothing on the canvas to rotate or record."

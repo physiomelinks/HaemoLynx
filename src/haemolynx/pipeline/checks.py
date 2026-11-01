@@ -45,11 +45,11 @@ CACHED_STAGE_ARTEFACTS = {
 def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
     """When a stage is switched off, the file it would have written must exist."""
     report = CheckReport()
-    vtk_output_prefix = settings.get("vtk_output_prefix")
+    output_dir = settings.get("output_dir")
     # A synthetic network is generated every run: nothing is read back.
-    if vtk_output_prefix is None or network_is_synthetic(settings):
+    if output_dir is None or network_is_synthetic(settings):
         return report
-    output_dir = Path(vtk_output_prefix).parent
+    output_dir = Path(output_dir)
 
     input_path = settings.get("input_path")
     if settings.get("use_ilastik_segmentation"):

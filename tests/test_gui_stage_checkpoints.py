@@ -41,7 +41,7 @@ def _group(stage: str, title: str | None = None) -> StageLayers:
 def _settings(tmp_path: Path, stem: str = "stack") -> dict:
     return {
         "input_path": tmp_path / f"{stem}.tif",
-        "vtk_output_prefix": tmp_path / "out" / stem,
+        "output_dir": tmp_path / "out",
     }
 
 
@@ -452,13 +452,19 @@ def test_frozen_checkpoints_do_not_record(tmp_path):
     )
 
 
-def test_output_dir_from_prefix_rejects_a_bare_filename():
-    from haemolynx.gui.stage_checkpoints import output_dir_from_prefix
+def test_the_output_folder_is_unset_when_it_would_be_the_working_directory():
+    """Pickles are deleted from it: a cleared picker is the working
+    directory, and must not be taken for the run's folder."""
+    from haemolynx.gui.stage_checkpoints import output_dir_from_settings
 
-    assert output_dir_from_prefix(None) is None
-    assert output_dir_from_prefix(".") is None
-    assert output_dir_from_prefix("stack") is None
-    assert output_dir_from_prefix(Path("out") / "stack") == Path("out")
+    assert output_dir_from_settings(None) is None
+    assert output_dir_from_settings({}) is None
+    assert output_dir_from_settings({"output_dir": None}) is None
+    assert output_dir_from_settings({"output_dir": "."}) is None
+    assert output_dir_from_settings({"output_dir": "  "}) is None
+    assert output_dir_from_settings({"output_dir": Path.cwd()}) is None
+    assert output_dir_from_settings({"output_dir": "stack"}) == Path("stack")
+    assert output_dir_from_settings({"output_dir": Path("out") / "stack"}) == Path("out") / "stack"
     checkpoints = StageCheckpoints()
     assert checkpoints.plan_restore("1. Input") is None
 
@@ -573,7 +579,7 @@ def test_clear_looks_for_checkpoints_under_the_input_stem_they_are_named_with(
     output_dir.mkdir()
     settings = {
         "input_path": tmp_path / "HaemoLynx_image.tif",
-        "vtk_output_prefix": tmp_path / "out" / "stack",
+        "output_dir": tmp_path / "out",
     }
     ours = checkpoint_pickle_path(output_dir, "HaemoLynx_image", "build_network")
     ours.write_bytes(b"c")
@@ -610,7 +616,7 @@ def test_a_synthetic_run_names_and_clears_its_checkpoints_after_its_template(tmp
         "network_source": "synthetic",
         "synthetic_template_path": tmp_path / "e14_5.haemorun",
         "input_path": tmp_path / "stack.tif",  # left from an image run, not read
-        "vtk_output_prefix": tmp_path / "out" / "run",
+        "output_dir": tmp_path / "out",
     }
     checkpoints = StageCheckpoints()
     results = built()

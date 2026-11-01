@@ -295,7 +295,7 @@ def write_fixture_run(
     voxel = tuple(G.graph.get("image_voxel_size_zyx") or TINY_VOXEL_ZYX)
     run_settings = {
         "input_path": tmp_path / "stack.tif",
-        "vtk_output_prefix": tmp_path / "out" / "stack",
+        "output_dir": tmp_path / "out",
         "statistics": True,
         "network_source": "segmented_image",
         "segmentation_source": "plasma_column",

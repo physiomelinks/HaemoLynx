@@ -175,7 +175,7 @@ def _base_values(tmp_dir: Path, **extra) -> dict:
     values.update(
         {
             "input_path": tmp_dir / "input.tif",
-            "vtk_output_prefix": tmp_dir / "out" / "run",
+            "output_dir": tmp_dir / "out",
             "plot_dir": tmp_dir / "plots",
         }
     )
@@ -541,7 +541,7 @@ def _run_export_results(overrides: Mapping[str, Any], tmp_dir: Path) -> dict[str
     settings = _settings_for(
         tmp_dir,
         overrides,
-        vtk_output_prefix=out_dir / "run",
+        output_dir=out_dir,
         plot_dir=out_dir / "plots",
         **_EXPORT_BASE_OVERRIDES,
     )

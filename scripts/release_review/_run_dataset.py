@@ -159,7 +159,11 @@ def main(spec_path: str) -> int:
     else:
         values = {setting.name: setting.default for setting in SCHEMA}
     values.update(spec.get("settings") or {})
-    values["vtk_output_prefix"] = str(output / "run")
+    if "output_dir" in SCHEMA:
+        values["output_dir"] = str(output)
+    else:
+        # A tree from before the output folder: its prefix names files in it.
+        values["vtk_output_prefix"] = str(output / "run")
     values["plot_dir"] = str(output / "plots")
     settings = resolve_settings(values, schema=SCHEMA, config_path=Path(config) if config else None)
 

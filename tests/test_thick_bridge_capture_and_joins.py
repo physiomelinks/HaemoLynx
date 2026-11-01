@@ -152,7 +152,7 @@ def test_a_capture_keeps_every_step_and_traces_the_bridge_back_to_the_join(tmp_p
     schema = default_schema()
     values = schema.defaults()
     values.update({
-        "input_path": tmp_path / "vessels.tif", "vtk_output_prefix": tmp_path / "out" / "run",
+        "input_path": tmp_path / "vessels.tif", "output_dir": tmp_path / "out",
         "plot_dir": tmp_path / "plots", "voxel_size_override_xyz": [1.0, 1.0, 1.0],
         "use_thick_vessel_skeletonisation": True, "skeleton_thick_vessel_min_radius_um": 5.0,
         "skeleton_thick_vessel_restrict_to_mask": "off", **CAPTURE_OVERRIDES,

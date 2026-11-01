@@ -103,7 +103,7 @@ from haemolynx.gui.stage_checkpoints import (
     StageCheckpoints,
     can_revert_from,
     discard_cached_artefacts_for_settings,
-    output_dir_from_prefix,
+    output_dir_from_settings,
     previous_tab,
     restore_message,
     stages_before,
@@ -268,7 +268,7 @@ STATISTICS_DOCK_NAME = "Statistics"
 #: Cosmetic TIFF of the current view; never a pipeline setting or input.
 SNAPSHOT_STEM = "haemolynx_snapshot"
 SNAPSHOT_NO_OUTPUT_FOLDER = (
-    "No output folder is set; set the VTK output prefix before saving a snapshot."
+    "No output folder is set; set the output folder on the Input tab before saving a snapshot."
 )
 SNAPSHOT_NO_VIEWER = "No viewer to snapshot."
 
@@ -892,21 +892,21 @@ def _safe_widget_value(widget) -> Any:
 
 def _export_dir(values: dict[str, Any]) -> Path:
     """Where a layer with no file behind it gets written: beside the outputs."""
-    prefix = values.get("vtk_output_prefix")
-    return Path(prefix).parent if prefix else Path.cwd()
+    folder = values.get("output_dir")
+    return Path(folder) if folder else Path.cwd()
 
 
 def output_folder_from_settings(values: Mapping[str, Any]) -> Path | None:
-    """Pipeline output directory (parent of ``vtk_output_prefix``), or None.
+    """The run's output folder (``output_dir``), or None.
 
     Same folder VTK and other run artifacts use. A snapshot is a cosmetic
     export into this directory; it is never read back as pipeline input.
 
     A cleared FileEdit arrives as ``"."`` or the working directory rather
-    than None. A bare filename (no directory) is treated the same way, so
-    snapshots and pickle discards do not land in the process cwd.
+    than None, and is treated as unset, so snapshots and pickle discards do
+    not land in the process cwd.
     """
-    return output_dir_from_prefix(values.get("vtk_output_prefix"))
+    return output_dir_from_settings(values)
 
 
 def _confirm_discard_hand_edits(parent, tab_title: str) -> bool:
@@ -12792,8 +12792,8 @@ def _post_processing_controls(
         path = loop_review_csv_path(read_settings())
         if path is None:
             return (
-                " Not written to a CSV: there is no output folder for the VTK "
-                "output prefix (10. Export) on this machine yet."
+                " Not written to a CSV: the output folder (1. Input) is not set "
+                "or is not on this machine yet."
             )
         try:
             state.loop_csv = append_loop_review(path, [row])
@@ -13152,8 +13152,8 @@ def _post_processing_controls(
         path = review_csv_path(read_settings(), review.kind)
         if path is None:
             return (
-                " Not written to a CSV: there is no output folder for the VTK "
-                "output prefix (10. Export) on this machine yet."
+                " Not written to a CSV: the output folder (1. Input) is not set "
+                "or is not on this machine yet."
             )
         try:
             written = append_review_record(path, row)
@@ -13221,8 +13221,8 @@ def _post_processing_controls(
             path = review_csv_path(read_settings(), DEAD_ENDS)
             if path is None:
                 written = (
-                    " Not written to a CSV: there is no output folder for the VTK "
-                    "output prefix (10. Export) on this machine yet."
+                    " Not written to a CSV: the output folder (1. Input) is not set "
+                    "or is not on this machine yet."
                 )
             else:
                 try:
@@ -16814,8 +16814,7 @@ def settings_widget(napari_viewer=None):
             logger.debug("could not read settings while clearing", exc_info=True)
         pending = list(extra)
         if values:
-            vtk_prefix = values.get("vtk_output_prefix")
-            output_dir = output_dir_from_prefix(vtk_prefix)
+            output_dir = output_dir_from_settings(values)
             if output_dir is not None:
                 from haemolynx.gui.stage_checkpoints import stems_for_cached_artefacts
 

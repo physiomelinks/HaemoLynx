@@ -168,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         handlers=[logging.FileHandler(out / "run.log", mode="w", encoding="utf-8"), logging.StreamHandler()],
     )
     overrides = {
-        "input_path": args.input, "vtk_output_prefix": str(out / "run"), "plot_dir": str(out / "plots"),
+        "input_path": args.input, "output_dir": str(out), "plot_dir": str(out / "plots"),
         **CAPTURE_OVERRIDES,
     }
     for item in args.set:

@@ -183,7 +183,7 @@ _REVIEW_MEASURES = (
 
 # -- the files ------------------------------------------------------------------
 
-_RUN = "the run's output folder (vtk_output_prefix's)"
+_RUN = "the run's output folder (output_dir)"
 _PLOTS = "the plot folder (plot_dir)"
 _PERTURBATION = "the perturbation's folder: perturbation_output_dir/{name}_{type}"
 _BATCH = "the batch's output folder"

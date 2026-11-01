@@ -292,7 +292,7 @@ def test_preflight_stops_a_run_whose_outputs_windows_would_refuse(pipeline, tmp_
         overrides={
             "input_path": image,
             "statistics": True,
-            "vtk_output_prefix": tmp_path / ("o" * 200) / "network",
+            "output_dir": tmp_path / ("o" * 200),
         }
     )
     limits = (batch.WINDOWS_MAX_FILE_PATH, batch.WINDOWS_MAX_FOLDER_PATH)
@@ -345,7 +345,7 @@ def test_preflight_requires_a_cached_graph_when_graph_building_is_off(pipeline, 
         overrides={
             "input_path": image,
             "do_graph_building": False,
-            "vtk_output_prefix": tmp_path / "outputs" / "network",
+            "output_dir": tmp_path / "outputs",
         }
     )
     report = preflight(settings, pipeline.SCHEMA)

@@ -513,7 +513,7 @@ def _saved_run(tmp_path: Path) -> Path:
 
     checkpoints = StageCheckpoints()
     results = built()
-    settings = {"input_path": tmp_path / "stack.tif", "vtk_output_prefix": tmp_path / "out" / "stack"}
+    settings = {"input_path": tmp_path / "stack.tif", "output_dir": tmp_path / "out"}
     (tmp_path / "out").mkdir(exist_ok=True)
     results.stage_finished("build_network", network(a_graph(resistance=4.0)))
     checkpoints.record(

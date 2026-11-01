@@ -41,13 +41,12 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
     output_dir = TESTS_DIR / "outputs" / "image_to_model_static"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    vtk_prefix = output_dir / "integration_network"
 
     pipeline = _load_pipeline_module()
     pipeline.image_to_model_pipeline(
         input_path=input_tiff,
         plot_dir=plot_dir,
-        vtk_output_prefix=vtk_prefix,
+        output_dir=output_dir,
         verbose_logging=False,
         do_skeletonize=True,
         do_graph_building=True,
@@ -73,9 +72,10 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
 
     skeleton_path = output_dir / f"{input_tiff.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_tiff.stem}_graph.pkl"
-    vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
-    nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
+    # Named after the image, as the skeleton and graph are.
+    vessels_path = output_dir / f"{input_tiff.stem}_vessels.vtp"
+    pericytes_path = output_dir / f"{input_tiff.stem}_pericytes.vtp"
+    nodes_path = output_dir / f"{input_tiff.stem}_nodes.vtp"
 
     assert skeleton_path.exists()
     assert graph_path.exists()
@@ -106,13 +106,12 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
     output_dir = TESTS_DIR / "outputs" / "image_to_model_coords_volume"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    vtk_prefix = output_dir / "integration_coords_volume"
 
     pipeline = _load_pipeline_module()
     pipeline.image_to_model_pipeline(
         input_path=input_tiff,
         plot_dir=plot_dir,
-        vtk_output_prefix=vtk_prefix,
+        output_dir=output_dir,
         verbose_logging=False,
         do_skeletonize=True,
         do_graph_building=True,
@@ -146,7 +145,7 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
     assert n_nodes > 0
     assert n_edges > 0
     # One export, after the solve: vessels and flow in a single file.
-    vessels = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
+    vessels = output_dir / f"{input_tiff.stem}_vessels.vtp"
     assert vessels.exists()
     import pyvista as pv
 
@@ -166,7 +165,6 @@ def test_image_to_model_pipeline_ignores_baseline_pericyte_construction_flags(tm
     output_dir = TESTS_DIR / "outputs" / "image_to_model_ignore_pericyte_flag"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    vtk_prefix = output_dir / "integration_ignore_pericyte_flag"
 
     pipeline = _load_pipeline_module()
     from haemolynx.haemodynamics import probability as probability_mod
@@ -192,7 +190,7 @@ def test_image_to_model_pipeline_ignores_baseline_pericyte_construction_flags(tm
         pipeline.image_to_model_pipeline(
             input_path=input_tiff,
             plot_dir=plot_dir,
-            vtk_output_prefix=vtk_prefix,
+            output_dir=output_dir,
             verbose_logging=False,
             do_skeletonize=True,
             do_graph_building=True,
@@ -249,7 +247,6 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     output_dir = TESTS_DIR / "outputs" / "image_to_model_h5_bundle"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    vtk_prefix = output_dir / "integration_h5_bundle"
 
     pipeline = _load_pipeline_module()
     previous_dataset_name = getattr(pipeline, "H5_DATASET_NAME", None)
@@ -265,7 +262,7 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
         pipeline.image_to_model_pipeline(
             input_path=input_h5,
             plot_dir=plot_dir,
-            vtk_output_prefix=vtk_prefix,
+            output_dir=output_dir,
             verbose_logging=False,
             do_skeletonize=True,
             do_graph_building=True,
@@ -303,9 +300,9 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
 
     skeleton_path = output_dir / f"{input_h5.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_h5.stem}_graph.pkl"
-    vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
-    nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
+    vessels_path = output_dir / f"{input_h5.stem}_vessels.vtp"
+    pericytes_path = output_dir / f"{input_h5.stem}_pericytes.vtp"
+    nodes_path = output_dir / f"{input_h5.stem}_nodes.vtp"
 
     assert skeleton_path.exists()
     assert graph_path.exists()

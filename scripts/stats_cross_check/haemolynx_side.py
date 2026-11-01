@@ -45,7 +45,7 @@ def run_overrides(mask_path: Path, voxel_size_xyz, output_dir: Path) -> dict[str
         "voxel_size_policy": "override",
         "do_skeletonize": True,
         "crop_on_import": False,
-        "vtk_output_prefix": Path(output_dir) / "run",
+        "output_dir": Path(output_dir),
         "base_plot_dir": Path(output_dir) / "plots",
         "plot_dir": Path(output_dir) / "plots",
         "visualize_results": False,

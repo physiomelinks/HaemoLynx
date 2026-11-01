@@ -58,7 +58,7 @@ def run_in_a_viewer(tmp_path_factory):
     values.update(
         {
             "input_path": FIXTURE,
-            "vtk_output_prefix": tmp / "run",
+            "output_dir": tmp,
             "plot_dir": tmp / "plots",
             "statistics": False,
             "show_plots_in_ide": False,

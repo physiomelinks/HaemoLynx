@@ -146,7 +146,7 @@ def test_the_tutorial_runs_without_the_repository(tmp_path):
     assert graph.number_of_nodes() == 8
     # The graph is pickled at Stage 2, before haemodynamics; the later stages
     # are evidenced by what they write.
-    assert (tmp_path / "outputs" / "tutorial_vessels.vtp").exists(), (
+    assert (tmp_path / "outputs" / "synthetic_vessels_vessels.vtp").exists(), (
         "the VTK export did not run on the synthetic network"
     )
     assert (tmp_path / "outputs" / "synthetic_vessels_statistics.csv").exists(), (

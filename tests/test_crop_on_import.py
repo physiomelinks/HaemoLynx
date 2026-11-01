@@ -266,7 +266,7 @@ def _run_settings(tmp_path, **overrides) -> dict:
     values.update(
         {
             "input_path": _write(tmp_path / "mask.tif", inside | outside),
-            "vtk_output_prefix": tmp_path / "run" / "network",
+            "output_dir": tmp_path / "run",
             "plot_dir": tmp_path / "plots",
             "visualize_results": False,
             "crop_on_import": True,

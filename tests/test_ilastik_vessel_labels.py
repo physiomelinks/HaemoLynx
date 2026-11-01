@@ -51,7 +51,7 @@ def _project(path: Path, names=("Vessel", "Background")) -> Path:
 
 
 def _settings(tmp_path: Path, **overrides) -> dict:
-    values = {"vtk_output_prefix": tmp_path / "run", **overrides}
+    values = {"output_dir": tmp_path, **overrides}
     return resolve_settings(values, schema=SCHEMA, config_path=None)
 
 

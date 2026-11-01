@@ -119,10 +119,6 @@ class SidePaths:
         return self.root / "artifacts"
 
     @property
-    def vtk_output_prefix(self) -> Path:
-        return self.output_dir / "comparison_run"
-
-    @property
     def graph_path(self) -> Path:
         return self.root / "final_graph.pkl"
 
@@ -160,6 +156,14 @@ def invoke_side(
         "required": list(required),
         "aliases": {
             name: list(run_settings.aliases_for(name)) for name in settings
+        },
+        "alias_values": {
+            name: {
+                alias: run_settings.alias_value(name, alias, value)
+                for alias in run_settings.aliases_for(name)
+            }
+            for name, value in settings.items()
+            if len(run_settings.aliases_for(name)) > 1
         },
         "derived": list(run_settings.DERIVED_SETTINGS),
         "path_settings": list(path_settings),
@@ -290,18 +294,23 @@ def collect_side(paths: SidePaths, image_stem: str, *, root: Path) -> SideArtefa
     artefacts.branch_statistics = metrics.read_statistics_csv(
         paths.output_dir / f"{image_stem}_branch_statistics.csv"
     )
-    artefacts.vtk = _collect_vtk(paths.vtk_output_prefix)
+    artefacts.vtk = _collect_vtk(paths.output_dir, image_stem)
     artefacts.plots = _collect_plots(paths.plot_dir, root=root)
     return artefacts
 
 
-def _collect_vtk(prefix: Path) -> dict[str, dict[str, Any] | None]:
-    """Every ``{prefix}_*.vtp`` this run exported, keyed by what follows it."""
+def _collect_vtk(folder: Path, image_stem: str) -> dict[str, dict[str, Any] | None]:
+    """Every ``{stem}_*.vtp`` this run exported into *folder*, keyed by what
+    follows the stem: the image's, or on a branch from before the output
+    folder the prefix's (:data:`run_settings.LEGACY_VTK_NAME`)."""
     summaries: dict[str, dict[str, Any] | None] = {}
-    if not prefix.parent.is_dir():
+    if not folder.is_dir():
         return summaries
-    for path in sorted(prefix.parent.glob(f"{prefix.name}_*.vtp")):
-        summaries[path.stem[len(prefix.name) + 1:]] = metrics.vtk_summary(path)
+    for stem in (image_stem, run_settings.LEGACY_VTK_NAME):
+        for path in sorted(folder.glob(f"{stem}_*.vtp")):
+            part = path.stem[len(stem) + 1:]
+            if part not in summaries:
+                summaries[part] = metrics.vtk_summary(path)
     return summaries
 
 

@@ -285,12 +285,12 @@ def _peak_rss(settings: Mapping[str, Any], stem: str) -> int | None:
     first image it is the largest of this and every earlier one's."""
     from haemolynx.pipeline.provenance import MANIFEST_SUFFIX
 
-    prefix = settings.get("vtk_output_prefix")
-    if prefix in (None, ""):
+    folder = settings.get("output_dir")
+    if folder in (None, ""):
         return None
     try:
         manifest = json.loads(
-            (Path(prefix).parent / f"{stem}{MANIFEST_SUFFIX}").read_text(encoding="utf-8")
+            (Path(folder) / f"{stem}{MANIFEST_SUFFIX}").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
         return None
@@ -382,7 +382,7 @@ def clear_image_caches(values: Mapping[str, Any], schema: Schema) -> tuple[Path,
     """
     from haemolynx.gui.stage_checkpoints import (
         discard_cached_artefacts,
-        output_dir_from_prefix,
+        output_dir_from_settings,
         stems_for_cached_artefacts,
     )
     from haemolynx.io import discard_cached_raw_volume
@@ -402,7 +402,7 @@ def clear_image_caches(values: Mapping[str, Any], schema: Schema) -> tuple[Path,
                 axis_order=settings["image_axis_order"],
                 memmap_directory=settings["memmap_directory"],
             )
-        output_dir = output_dir_from_prefix(settings.get("vtk_output_prefix"))
+        output_dir = output_dir_from_settings(settings)
         if output_dir is not None:
             for stem in stems_for_cached_artefacts(settings):
                 removed += discard_cached_artefacts(output_dir, stem)

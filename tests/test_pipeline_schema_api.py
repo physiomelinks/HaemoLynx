@@ -41,12 +41,51 @@ def test_default_schema_is_the_pipelines_settings():
         "input_path",
         "voxel_size_override_xyz",
         "inlet_p_bc",
-        "vtk_output_prefix",
+        "output_dir",
         "cut_network_at_large_vessel_volumes",
     ):
         assert name in schema, f"{name} missing from the pipeline schema"
     assert "cut_large_vessel_sample_densely" not in schema
+    assert "vtk_output_prefix" not in schema
     assert schema.title
+
+
+def test_a_config_from_before_the_output_folder_reads_its_prefix_as_the_folder():
+    """vtk_output_prefix named the VTK files' stem inside the run's folder;
+    output_dir is that folder."""
+    schema = default_schema()
+    assert schema.validate({})["output_dir"] == Path("outputs")
+    old = schema.validate({"vtk_output_prefix": "results/run_one/network"})
+    assert old["output_dir"] == Path("results/run_one")
+    assert "vtk_output_prefix" not in old
+    # A value of the new setting's own wins.
+    both = schema.validate({"vtk_output_prefix": "results/run_one/network", "output_dir": "mine"})
+    assert both["output_dir"] == Path("mine")
+    assert schema.validate({"vtk_output_prefix": None})["output_dir"] == Path("outputs")
+
+
+def test_resolve_settings_reads_the_retired_prefix_in_a_dict_or_an_override():
+    """The examples' entry points take an already-resolved dict and overrides:
+    an old name in either reaches the output folder, not the default."""
+    from haemolynx.pipeline import resolve_settings
+
+    schema = default_schema()
+    configured = {**schema.defaults(), "output_dir": Path("from_config")}
+    given = resolve_settings(
+        configured, schema=schema, config_path=None, overrides={"vtk_output_prefix": "given/run"}
+    )
+    assert given["output_dir"] == Path("given")
+    old = resolve_settings({**schema.defaults(), "vtk_output_prefix": "old/run"}, schema=schema, config_path=None)
+    assert old["output_dir"] == Path("old")
+
+
+def test_the_output_folder_is_on_the_input_tab_and_the_stages_read_it():
+    from haemolynx.gui.tabs import assign_to_stages
+    from haemolynx.pipeline.naming import run_output_dir
+
+    assert assign_to_stages(default_schema())["output_dir"] == "1. Input"
+    assert run_output_dir({"output_dir": "out"}) == Path("out")
+    assert run_output_dir({"output_dir": ""}) is None and run_output_dir({}) is None
 
 
 def test_default_schema_is_stable_between_calls():

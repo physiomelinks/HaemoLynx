@@ -648,23 +648,23 @@ def test_the_folder_name_is_the_user_name_underscore_the_type():
 
 
 def test_the_output_dir_falls_back_to_the_general_output_folder():
-    values = _settings(vtk_output_prefix=Path("results/run_one/network"))
+    values = _settings(output_dir=Path("results/run_one"))
 
     assert perturbation_output_dir(values) == Path("results/run_one")
 
 
-def test_the_output_dir_falls_back_to_cwd_when_the_run_has_no_prefix():
+def test_the_output_dir_falls_back_to_cwd_when_the_run_has_no_output_folder():
     assert perturbation_output_dir({}) == Path(".")
 
 
 def test_the_perturbation_output_dir_setting_defaults_to_unset():
-    """Unset at schema level; runtime resolution follows vtk_output_prefix."""
+    """Unset at schema level; runtime resolution follows output_dir."""
     assert SCHEMA["perturbation_output_dir"].default is None
 
 
 def test_a_configured_output_dir_wins():
     values = _settings(
-        vtk_output_prefix=Path("results/run_one/network"),
+        output_dir=Path("results/run_one"),
         perturbation_output_dir=Path("elsewhere"),
     )
 

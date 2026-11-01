@@ -546,6 +546,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "raw_image_path": "Raw image path",
     "raw_image_channel": "Raw data channel",
     "raw_image_stain": "Raw image stain",
+    "output_dir": "Output folder",
     "measure_diameters_from_raw_image": "Measure diameters from the raw image",
     "pries_viscosity_form": "Pries law override",
     # With no venule mask (classifier) entered, the arteriole row's mask is a

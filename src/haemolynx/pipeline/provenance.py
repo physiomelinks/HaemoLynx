@@ -57,7 +57,7 @@ from typing import Any, Iterator, Mapping, Optional
 
 from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
 from haemolynx.parsers.schema import Schema, is_active, section_key
-from haemolynx.pipeline.naming import run_input_path, run_stem
+from haemolynx.pipeline.naming import run_input_path, run_output_dir, run_stem
 from haemolynx.pipeline.progress import (
     STAGE_FAILED,
     STAGE_FINISHED,
@@ -633,15 +633,15 @@ def _format_bytes(count: Optional[int]) -> str:
 def manifest_location(settings: Mapping[str, Any]) -> Optional[tuple[Path, str]]:
     """The output folder and file stem a run's manifest goes under, or None.
 
-    The folder is ``vtk_output_prefix``'s, the stem the analysed image's
+    The folder is ``output_dir``, the stem the analysed image's
     (``input_path``, ilastik's output when ilastik ran): the folder and stem
     every other output of the run is named by.
     """
-    prefix = settings.get("vtk_output_prefix")
+    folder = run_output_dir(settings)
     stem = run_stem(settings)
-    if not prefix or not stem:
+    if folder is None or not stem:
         return None
-    return Path(prefix).parent, stem
+    return folder, stem
 
 
 class RunRecorder:

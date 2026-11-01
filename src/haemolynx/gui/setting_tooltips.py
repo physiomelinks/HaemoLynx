@@ -88,6 +88,11 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "Read the raw image onto a coarser grid, averaging blocks of voxels. It is always "
         "brought onto the segmented image's grid; ilastik still reads the full file"
     ),
+    "output_dir": (
+        "Folder the run's outputs are written to: VTK files, tables, statistics, the saved "
+        "network and cached stages, each named after the image. Snapshots and rotation movies "
+        "go here too"
+    ),
     "use_ilastik_segmentation": "Segment the raw image with a trained ilastik project instead of reading a segmented file",
     "ilastik_classifier_path": "The trained ilastik project (.ilp) that segments the raw image",
     "ilastik_vessel_label": (
@@ -1851,10 +1856,6 @@ SETTING_TOOLTIPS: dict[str, str] = {
     ),
     "verbose_logging": "Write more detailed messages to the log as each stage runs",
     "export_citations": "Write a text file citing the software and models this run actually used",
-    "vtk_output_prefix": (
-        "Where the run's outputs are written: its folder holds the output files, and the VTK "
-        "files are named after its last part"
-    ),
 }
 
 

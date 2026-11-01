@@ -74,7 +74,7 @@ def every_statistic(request, tmp_path_factory):
             "network_source": "synthetic",
             "synthetic_template_path": template,
             "synthetic_seed": 3,
-            "vtk_output_prefix": out / "out" / "run",
+            "output_dir": out / "out",
             "plot_dir": out / "plots",
             "statistics": True,
             "statistics_mode": request.param,

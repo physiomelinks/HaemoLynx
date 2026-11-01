@@ -35,11 +35,10 @@ def _load_pipeline_module():
 def _run_pipeline(pipeline, *, input_path, plot_dir, output_dir, image_axis_order):
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    vtk_prefix = output_dir / "axis_order_network"
     pipeline.image_to_model_pipeline(
         input_path=input_path,
         plot_dir=plot_dir,
-        vtk_output_prefix=vtk_prefix,
+        output_dir=output_dir,
         image_axis_order=image_axis_order,
         verbose_logging=False,
         do_skeletonize=True,

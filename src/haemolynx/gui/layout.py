@@ -180,6 +180,8 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
                 "raw_image_downsample",
             ),
         ),
+        # Where every output goes -- stage caches and snapshots included.
+        BoxSpec("output", "Output", names=("output_dir",)),
         BoxSpec(
             "input",
             None,
@@ -271,12 +273,10 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
         BoxSpec("network_handling", "Network handling", rest=True),
     ),
     "export_results": (
-        # Where every output goes -- stage caches and snapshots included --
-        # so it leads the tab.
         BoxSpec(
             "export",
             None,
-            names=("vtk_output_prefix", "vtk_export", "visualize_vtk", "export_citations"),
+            names=("vtk_export", "visualize_vtk", "export_citations"),
             rest=True,
         ),
     ),

@@ -70,7 +70,7 @@ def _settings(tmp_path: Path, **overrides) -> dict:
     values.update(
         {
             "input_path": image,
-            "vtk_output_prefix": tmp_path / "out" / "run",
+            "output_dir": tmp_path / "out",
             "plot_dir": tmp_path / "plots",
             **overrides,
         }
@@ -300,7 +300,7 @@ def fixture_run(tmp_path_factory):
     values.update(
         {
             "input_path": FIXTURE,
-            "vtk_output_prefix": folder / "run",
+            "output_dir": folder,
             "plot_dir": folder / "plots",
             "statistics": False,
             "show_plots_in_ide": False,
@@ -371,7 +371,7 @@ def test_the_example_pipeline_writes_a_manifest_too(tmp_path, monkeypatch):
     image = tmp_path / "image.tif"
     image.write_bytes(b"bytes")
 
-    example.image_to_model_pipeline(input_path=image, vtk_output_prefix=tmp_path / "run")
+    example.image_to_model_pipeline(input_path=image, output_dir=tmp_path)
 
     manifest = _read(tmp_path, "image")
     assert manifest["stages_finished"] == [
@@ -469,7 +469,7 @@ def test_a_manifest_that_cannot_be_written_never_fails_the_run(tmp_path, stubbed
     stubbed()
     blocker = tmp_path / "a_file"
     blocker.write_text("not a folder", encoding="utf-8")
-    settings = _settings(tmp_path, vtk_output_prefix=blocker / "out" / "run")
+    settings = _settings(tmp_path, output_dir=blocker / "out")
 
     with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.provenance"):
         graph = run_pipeline_stages(settings, SCHEMA)

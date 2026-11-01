@@ -213,7 +213,8 @@ haemolynx/
 │                           #   (the ordered STAGES + the progress callback), citations.py
 │                           #   (what a run used, and how to cite it), provenance.py (the
 │                           #   run manifest beside every run's outputs), naming.py (the
-│                           #   one stem a run's outputs carry: run_stem), batch.py (one
+│                           #   one stem a run's outputs carry, run_stem, and the one folder
+│                           #   they go in, output_dir: run_output_dir), batch.py (one
 │                           #   image's settings in a batch, and the batch checks),
 │                           #   export_dictionary.py (every output file's columns, arrays and
 │                           #   units: docs/export_dictionary.md; a new output column needs an

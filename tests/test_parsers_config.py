@@ -107,6 +107,25 @@ def test_overrides_are_validated_like_everything_else(tmp_path):
         load_config(path, _schema(), overrides={"mode": "medium"})
 
 
+def test_an_override_naming_a_retired_setting_beats_the_files_new_one(tmp_path):
+    """A script still passing the old name: read into the new setting before
+    the file's value of it, rather than dropped because the file set the new
+    one -- which sent a run's outputs somewhere its caller never named."""
+    schema = Schema([
+        Setting(
+            "folder", "path", "out", "Where outputs go", "S",
+            migrates=("prefix",), migrate=lambda values: {"folder": Path(values["prefix"]).parent},
+        ),
+    ])
+    path = _write(tmp_path, "folder: from_file\n")
+    assert load_config(path, schema)["folder"] == Path("from_file")
+    assert load_config(path, schema, overrides={"prefix": "given/run"})["folder"] == Path("given")
+    assert load_config(path, schema, overrides={"folder": "given"})["folder"] == Path("given")
+    # A file still naming the old setting is read as before.
+    old = _write(tmp_path, "prefix: old/run\n")
+    assert load_config(old, schema)["folder"] == Path("old")
+
+
 # --- generating ------------------------------------------------------------
 
 

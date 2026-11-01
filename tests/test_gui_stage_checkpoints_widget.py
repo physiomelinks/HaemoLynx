@@ -39,7 +39,7 @@ def panel(make_napari_viewer, tmp_path):
     rows = widget._haemolynx_rows()
     stem = "stack"
     rows["input_path"].value = tmp_path / f"{stem}.tif"
-    rows["vtk_output_prefix"].value = tmp_path / "out" / stem
+    rows["output_dir"].value = tmp_path / "out"
     (tmp_path / "out").mkdir()
     return widget, viewer, tmp_path
 
@@ -776,7 +776,7 @@ def test_run_from_a_tab_leaves_earlier_tabs_as_they_were(make_napari_viewer, qtb
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
     rows["remove_interior_dead_ends"].value = False
-    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["output_dir"].value = tmp_path / "out"
     running = widget._haemolynx_run_state
 
     def wait():
@@ -824,7 +824,7 @@ def test_run_from_perturbations_repeats_the_full_runs_perturbations(
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
     rows["remove_interior_dead_ends"].value = False
-    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["output_dir"].value = tmp_path / "out"
     rows["run_perturbations"].value = True
     widget._haemolynx_perturbations.add()
     widget._haemolynx_perturbations.choose_type(0, "capillary_block")
@@ -869,7 +869,7 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
     rows["remove_interior_dead_ends"].value = False
-    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["output_dir"].value = tmp_path / "out"
     running = widget._haemolynx_run_state
 
     def wait():
@@ -946,7 +946,7 @@ def test_a_run_pauses_for_post_processing_and_continue_finishes_it(
     rows = widget._haemolynx_rows()
     rows["input_path"].value = FIXTURE
     rows["remove_interior_dead_ends"].value = False
-    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["output_dir"].value = tmp_path / "out"
     rows["mid_run_postprocessing"].value = True
     running = widget._haemolynx_run_state
     checkpoints = widget._haemolynx_checkpoints

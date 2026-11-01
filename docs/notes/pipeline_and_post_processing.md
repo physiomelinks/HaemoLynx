@@ -116,7 +116,7 @@ A finished or failed stage's event carries its wall time (`ProgressEvent.seconds
 ## pipeline/provenance.py
 
 **`pipeline/provenance.py`** — every run writes `{stem}_run_manifest.json` into its output
-folder (`vtk_output_prefix`'s), with `{stem}_run_settings.yaml` beside it (a config `--config`
+folder (`output_dir`), with `{stem}_run_settings.yaml` beside it (a config `--config`
 loads): the settings after `Schema.upgrade` as the run *started*, the version, the git commit
 and dirty paths (null for a wheel, or with no git; read once per process, since a long-lived
 panel runs the code it imported), Python, platform and key dependency versions, each input

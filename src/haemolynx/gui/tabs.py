@@ -7,8 +7,8 @@ settings steer each -- are :data:`haemolynx.pipeline.progress.STAGES`, which is
 also what a progress bar counts through; this module only turns them into tabs.
 
 The schema groups settings by *section*, which is close but not the same: a
-section can span stages (`Pipeline stages` holds the skeleton thresholds, the
-graph thresholds and the output prefix), and a stage can span sections
+section can span stages (`Pipeline stages` holds the skeleton thresholds and
+the graph thresholds), and a stage can span sections
 (`assign_boundaries` reads the boundary section plus toggles from elsewhere).
 So the split is declared rather than derived -- but it was *built* from which
 stage function actually reads which setting, and :mod:`tests.test_gui_tabs`

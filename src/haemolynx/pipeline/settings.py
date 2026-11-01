@@ -33,7 +33,8 @@ def resolve_settings(
     else:
         # An already-resolved dict carries the derived entries too; they are not
         # schema settings, so set them aside rather than failing validation.
-        merged = {**settings, **overrides}
+        # Each is read in today's names first: a retired setting is not one.
+        merged = {**schema.upgrade(settings), **schema.upgrade(overrides)}
         plot_dir = plot_dir or merged.pop("plot_dir", None)
         resolved = schema.validate({k: v for k, v in merged.items() if k in schema})
     fill_derived_settings(resolved)

@@ -353,13 +353,17 @@ def test_added_nodes_layer_marks_the_new_nodes_still_in_the_graph():
     assert len(added_nodes_layer(G, []).data) == 0
 
 
-def test_default_connectivity_csv_path_sits_beside_the_vtk_output(tmp_path):
-    values = {"vtk_output_prefix": tmp_path / "stack"}
+def test_default_connectivity_csv_path_sits_in_the_output_folder(tmp_path):
+    """Named after the analysed image, as every other output of the run."""
+    values = {"input_path": tmp_path / "stack.tif", "output_dir": tmp_path}
     assert default_connectivity_csv_path(values) == str(tmp_path / "stack_connectivity.csv")
     # A run from another machine names a folder that is not here: just the name.
-    elsewhere = {"vtk_output_prefix": tmp_path / "missing" / "stack"}
+    elsewhere = {"input_path": tmp_path / "stack.tif", "output_dir": tmp_path / "missing"}
     assert default_connectivity_csv_path(elsewhere) == "stack_connectivity.csv"
     assert default_connectivity_csv_path(None) == "haemolynx_connectivity.csv"
+    assert default_connectivity_csv_path({"output_dir": tmp_path}) == str(
+        tmp_path / "haemolynx_connectivity.csv"
+    )
 
 
 # --- Manual loop review -----------------------------------------------------------
@@ -590,10 +594,13 @@ def test_a_review_row_reads_the_mask_round_the_loop_when_given_one():
     assert len(row["side_lumen_r_um"].split(";")) == 2
 
 
-def test_the_loop_review_csv_sits_beside_the_vtk_output(tmp_path):
+def test_the_loop_review_csv_sits_in_the_output_folder(tmp_path):
+    """Named after the analysed image, as every other output of the run."""
+    image = str(tmp_path / "run1.tif")
     expected = tmp_path / "run1_loop_review.csv"
-    assert loop_review_csv_path({"vtk_output_prefix": str(tmp_path / "run1")}) == expected
-    assert loop_review_csv_path({"vtk_output_prefix": str(tmp_path / "missing" / "run1")}) is None
+    assert loop_review_csv_path({"input_path": image, "output_dir": str(tmp_path)}) == expected
+    assert loop_review_csv_path({"input_path": image, "output_dir": str(tmp_path / "missing")}) is None
+    assert loop_review_csv_path({"input_path": image}) is None
     assert loop_review_csv_path({}) is None and loop_review_csv_path(None) is None
 
 
@@ -756,9 +763,10 @@ def test_a_decision_is_a_csv_row_beside_the_run_with_the_items_measures(tmp_path
     assert row["centre_zyx_vox"] == "0 0 10"
     assert row["branch_ids"] == str(branch_id_of(G, (1, 5, 0)))
     assert row["kinds"] == "short" and row["length_um"] == "12"
-    path = review_csv_path({"vtk_output_prefix": str(tmp_path / "run")}, item.kind)
+    image = str(tmp_path / "run.tif")
+    path = review_csv_path({"input_path": image, "output_dir": str(tmp_path)}, item.kind)
     assert path == tmp_path / "run_dead_ends_review.csv"
-    assert review_csv_path({"vtk_output_prefix": str(tmp_path / "missing" / "run")}, item.kind) is None
+    assert review_csv_path({"input_path": image, "output_dir": str(tmp_path / "missing")}, item.kind) is None
     append_review_record(path, row)
     append_review_record(path, {**row, "decision": "deleted", "extra": "dropped"})
     import csv

@@ -349,7 +349,7 @@ STAGES: tuple[Stage, ...] = (
         call="export_results",
         title="10. Export",
         summary="VTK and plots.",
-        settings=("vtk_output_prefix", "base_plot_dir", "verbose_logging"),
+        settings=("base_plot_dir", "verbose_logging"),
         sections=("Solver and output",),
     ),
 )

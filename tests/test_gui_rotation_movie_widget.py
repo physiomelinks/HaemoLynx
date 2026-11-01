@@ -39,7 +39,7 @@ def _volume() -> np.ndarray:
 
 def _panel_on(viewer, tmp_path):
     panel = settings_widget(napari_viewer=viewer)
-    panel._haemolynx_rows()["vtk_output_prefix"].value = tmp_path / "artifacts" / "run"
+    panel._haemolynx_rows()["output_dir"].value = tmp_path / "artifacts"
     return panel, tmp_path / "artifacts"
 
 
@@ -311,13 +311,13 @@ def test_without_an_output_folder_or_anything_shown_nothing_records(
     box = panel._haemolynx_rotation
     seen = _fake_canvas(viewer, monkeypatch)
 
-    panel._haemolynx_rows()["vtk_output_prefix"].value = ""
+    panel._haemolynx_rows()["output_dir"].value = ""
     viewer.add_image(_volume())
     box.record.click()
     assert panel._haemolynx_report() == ROTATION_NO_OUTPUT_FOLDER
     assert not box.recording
 
-    panel._haemolynx_rows()["vtk_output_prefix"].value = tmp_path / "run"
+    panel._haemolynx_rows()["output_dir"].value = tmp_path
     viewer.layers[0].visible = False
     box.record.click()
     assert panel._haemolynx_report() == ROTATION_NOTHING_SHOWN
@@ -516,7 +516,7 @@ def test_rotate_needs_no_output_folder_but_something_shown(
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     box = panel._haemolynx_rotation
-    panel._haemolynx_rows()["vtk_output_prefix"].value = ""
+    panel._haemolynx_rows()["output_dir"].value = ""
 
     box.rotate.click()
     assert panel._haemolynx_report() == ROTATION_NOTHING_SHOWN

@@ -354,7 +354,7 @@ def _settings(tmp_path: Path, entries, **extra):
     values.update(
         {
             "input_path": tmp_path / "input.tif",
-            "vtk_output_prefix": tmp_path / "out" / "run",
+            "output_dir": tmp_path / "out",
             "plot_dir": tmp_path / "plots",
             "run_haemodynamics": True,
             "run_perturbations": True,

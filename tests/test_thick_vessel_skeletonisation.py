@@ -2213,7 +2213,7 @@ def test_the_pipeline_finds_the_region_its_skeletonise_stage_found(tmp_path):
     values.update(
         {
             "input_path": tmp_path / "input.tif",
-            "vtk_output_prefix": tmp_path / "run",
+            "output_dir": tmp_path,
             "plot_dir": tmp_path / "plots",
             "use_thick_vessel_skeletonisation": True,
         }

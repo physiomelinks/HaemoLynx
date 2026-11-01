@@ -197,7 +197,7 @@ def test_a_surround_runs_from_the_panel_into_the_viewer(make_napari_viewer, qtbo
     rows["synthetic_template_path"].value = template
     rows["synthetic_scale"].value = 2.0
     rows["synthetic_scale_axes"].value = "xy"
-    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["output_dir"].value = tmp_path / "out"
     running = widget._haemolynx_run_state
     widget._haemolynx_run()
     qtbot.waitUntil(lambda: not running.running, timeout=600_000)

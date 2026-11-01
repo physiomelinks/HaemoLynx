@@ -70,7 +70,7 @@ def _settings(template: Path, out: Path, **overrides) -> dict:
             "network_source": "synthetic",
             "synthetic_template_path": template,
             "synthetic_seed": 3,
-            "vtk_output_prefix": out / "out" / "run",
+            "output_dir": out / "out",
             "plot_dir": out / "plots",
             "statistics": True,
             "show_plots_in_ide": False,
@@ -286,7 +286,7 @@ def test_every_output_is_named_after_the_template(whole_run):
         "_run_manifest.json", "_run_settings.yaml", "_citations.txt",
     ):
         assert f"e14_5_synthetic{suffix}" in names, (suffix, names)
-    assert "run_vessels.vtp" in names
+    assert "e14_5_synthetic_vessels.vtp" in names
     assert not any(name.startswith("stale") for name in names)
     assert G.number_of_edges() > 100
 
@@ -615,7 +615,7 @@ def test_a_surrounds_manifest_and_vtk_say_what_it_is(surround_run):
     manifest = json.loads((out / "out" / "e14_5_surrounded_run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["network_source"] == "synthetic_surround"
     assert manifest["synthetic"]["surrounds_template_run"] is True and manifest["synthetic"]["scale"] == 2.0
-    vessels = pv.read(str(out / "out" / "run_vessels.vtp"))
+    vessels = pv.read(str(out / "out" / "e14_5_surrounded_vessels.vtp"))
     assert set(vessels.cell_data["network_part"]) == {"image", "synthetic"}
     image_orders = [o for part, o in zip(vessels.cell_data["network_part"], vessels.cell_data["image_branch_order"]) if part == "image"]
     assert image_orders and all(image_orders)

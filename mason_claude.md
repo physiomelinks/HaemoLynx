@@ -136,7 +136,7 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
 
 Things to know:
 - **Regenerate saves the outputs.** Its Export stage writes the VTK files and the stage
-  checkpoints to the run's output folder (`vtk_output_prefix`). Edits that haven't been
+  checkpoints to the run's output folder (`output_dir`, on the Input tab). Edits that haven't been
   regenerated are only in the viewer. To keep the whole session (edits included, once
   regenerated), use **Save run**, and wait for `Wrote run …`.
 - **Scan network** reads the network as it is in the viewer now, including edits not yet
@@ -257,8 +257,8 @@ PYTHONPATH=<folder with pytest+pytest-qt> QT_QPA_PLATFORM=offscreen \
 ```
 
 **Checking Regenerate end to end** writes into the run's own output folder
-(`vtk_output_prefix`, e.g. `/home/sliu205/outputs`), overwriting its checkpoints and `.vtp`
-files. Point `vtk_output_prefix` at a scratch folder first, or rerun afterwards.
+(`output_dir`, e.g. `/home/sliu205/outputs`), overwriting its checkpoints and `.vtp`
+files. Point `output_dir` at a scratch folder first, or rerun afterwards.
 
 Known unrelated failures in this environment:
 - 3 in `tests/test_gui_view_panel.py`: the scale bar and tubes-after-snap tests fail offscreen

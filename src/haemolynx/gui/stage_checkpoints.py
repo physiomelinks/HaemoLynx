@@ -284,29 +284,27 @@ def checkpoint_pickle_path(output_dir: Path, stem: str, stage: str) -> Path:
     return Path(output_dir) / f"{stem}_checkpoint_{stage}.pkl"
 
 
-def output_dir_from_prefix(vtk_prefix: Any) -> Path | None:
-    """Parent of ``vtk_output_prefix``, or None when it is unset or a bare name.
+def output_dir_from_settings(settings: Mapping[str, Any] | None) -> Path | None:
+    """The run's output folder (``output_dir``), or None when it is unset.
 
-    A FileEdit that was cleared, ``"."``, or a filename with no directory
-    would otherwise treat the working directory as the run's output folder
-    and delete pickles there. Magicgui resolves a blank picker to
-    ``Path.cwd()`` itself, so that value is the same "unset" as ``"."``.
+    A FileEdit that was cleared, or ``"."``, would otherwise treat the
+    working directory as the run's output folder and delete pickles there.
+    Magicgui resolves a blank picker to ``Path.cwd()`` itself, so that value
+    is the same "unset" as ``"."``.
     """
-    if vtk_prefix is None:
+    value = settings.get("output_dir") if settings else None
+    if value is None:
         return None
-    text = str(vtk_prefix).strip()
+    text = str(value).strip()
     if not text or text == ".":
         return None
-    path = Path(vtk_prefix)
+    path = Path(value)
     try:
         if path.resolve() == Path.cwd().resolve():
             return None
     except OSError:
         pass
-    parent = path.parent
-    if str(parent) in {"", "."}:
-        return None
-    return parent
+    return path
 
 
 def discard_cached_artefacts(output_dir: Path, stem: str) -> tuple[Path, ...]:
@@ -358,7 +356,7 @@ def discard_cached_artefacts_for_settings(
             path.unlink()
             logger.info("Discarded cached artefact: %s", path)
         return extra
-    output_dir = output_dir_from_prefix(settings.get("vtk_output_prefix"))
+    output_dir = output_dir_from_settings(settings)
     if output_dir is None:
         extra = tuple(Path(path) for path in extra_paths if Path(path).is_file())
         for path in extra:
@@ -386,7 +384,7 @@ def discard_cached_artefacts_for_settings(
 def _stem_and_output_dir(settings: Mapping[str, Any] | None) -> tuple[str, Path] | None:
     if not settings:
         return None
-    output_dir = output_dir_from_prefix(settings.get("vtk_output_prefix"))
+    output_dir = output_dir_from_settings(settings)
     stem = run_stem(settings)
     if output_dir is None or stem is None:
         return None

@@ -23,7 +23,7 @@ def _settings(tmp_path: Path, **overrides) -> dict:
     base = {
         "input_path": FIXTURE_TIFF,
         "plot_dir": tmp_path / "plots",
-        "vtk_output_prefix": tmp_path / "run",
+        "output_dir": tmp_path,
         "statistics": False,
         "visualize_results": False,
         "visualize_vtk": False,

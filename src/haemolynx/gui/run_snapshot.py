@@ -100,14 +100,15 @@ def ensure_run_suffix(path: Path | str) -> Path:
 
 
 def default_run_path(values: Mapping[str, Any] | None) -> str:
-    """Suggested filename beside the run's VTK prefix, or a local default."""
+    """Suggested filename in the run's output folder, named after its image,
+    or a local default."""
     if not values:
         return DEFAULT_FILENAME
-    vtk_prefix = values.get("vtk_output_prefix")
-    stem = Path(vtk_prefix).name if vtk_prefix else "haemolynx-run"
-    from haemolynx.gui.stage_checkpoints import output_dir_from_prefix
+    from haemolynx.gui.stage_checkpoints import output_dir_from_settings
+    from haemolynx.pipeline.naming import run_stem
 
-    output_dir = output_dir_from_prefix(vtk_prefix)
+    stem = run_stem(values) or "haemolynx-run"
+    output_dir = output_dir_from_settings(values)
     if output_dir is not None:
         return str(output_dir / f"{stem}{SUFFIX}")
     return f"{stem}{SUFFIX}"

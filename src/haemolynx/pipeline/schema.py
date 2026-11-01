@@ -169,6 +169,17 @@ def _migrate_ilastik_mask_input(retired: str, switch: str):
     return migrate
 
 
+def _migrate_vtk_output_prefix(values: Mapping[str, Any]) -> dict[str, Any]:
+    """A config written before the output folder: ``vtk_output_prefix``
+    named the VTK files' stem inside the run's folder, so its folder is
+    ``output_dir``. The VTK files carry the image's stem now, as every other
+    output does."""
+    prefix = values.get("vtk_output_prefix")
+    if prefix in (None, ""):
+        return {}
+    return {"output_dir": Path(str(prefix)).parent}
+
+
 SCHEMA = Schema(
     [
         # ------------------------------------------------------------------
@@ -497,6 +508,22 @@ SCHEMA = Schema(
             value_aliases={"1": "none", "2": "2x", "4": "4x", "8": "8x", "16": "16x"},
             requires=("raw_image_path",),
             always_effective=True,
+        ),
+        Setting(
+            name="output_dir",
+            kind="path",
+            default=_OUTPUTS,
+            help=(
+                "Write the run's outputs into this folder: the VTK files, the CSVs and "
+                "statistics, the skeleton and graph, the run manifest and the cached stages, "
+                "each named after the analysed image (outputs/{image stem}_vessels.vtp). "
+                "Plots go under base_plot_dir and ilastik's segmentations under "
+                "ilastik_output_dir; perturbations come here too unless "
+                "perturbation_output_dir is set"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            migrates=("vtk_output_prefix",),
+            migrate=_migrate_vtk_output_prefix,
         ),
         Setting(
             name="use_ilastik_segmentation",
@@ -3275,17 +3302,6 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             requires=("do_equiv_resistance_calculation",),
             advanced=True,
-        ),
-        Setting(
-            name="vtk_output_prefix",
-            kind="path",
-            default=f"{_OUTPUTS}/resistance_network",
-            help=(
-                "Output path for the run: its folder receives the run's output files and cached "
-                "stages, and the VTK files are named after its last part (outputs/run writes "
-                "outputs/run_vessels.vtp); plots go under base_plot_dir"
-            ),
-            section=_PIPELINE_STAGES,
         ),
         Setting(
             name="skeleton_closing_radius",

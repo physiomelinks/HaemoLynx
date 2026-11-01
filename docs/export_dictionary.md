@@ -44,7 +44,7 @@ Units are spelled one way everywhere. A column name in code style (lower case, u
 
 ## `{stem}_vessels.vtp`
 
-Written to the run's output folder (vtk_output_prefix's). Every vessel as a polyline (VTK PolyData), one cell per vessel. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit, haematocrit_model, open_end_model, vessel_size_mid_min_um and vessel_size_wide_min_um. Flow arrays are written once the network is solved.
+Written to the run's output folder (output_dir). Every vessel as a polyline (VTK PolyData), one cell per vessel. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit, haematocrit_model, open_end_model, vessel_size_mid_min_um and vessel_size_wide_min_um. Flow arrays are written once the network is solved.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -73,7 +73,7 @@ Written to the run's output folder (vtk_output_prefix's). Every vessel as a poly
 
 ## `{stem}_nodes.vtp`
 
-Written to the run's output folder (vtk_output_prefix's). Every node as a point: junctions, dead ends, inlets and outlets. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
+Written to the run's output folder (output_dir). Every node as a point: junctions, dead ends, inlets and outlets. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -84,7 +84,7 @@ Written to the run's output folder (vtk_output_prefix's). Every node as a point:
 
 ## `{stem}_pericytes.vtp`
 
-Written to the run's output folder (vtk_output_prefix's). Constriction sites placed along every vessel at the run's constriction spacing and length (constriction_spacing_um, constriction_length_um). Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
+Written to the run's output folder (output_dir). Constriction sites placed along every vessel at the run's constriction spacing and length (constriction_spacing_um, constriction_length_um). Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -95,19 +95,19 @@ Written to the run's output folder (vtk_output_prefix's). Constriction sites pla
 
 ## `{stem}_tissue_surface.vtp`
 
-Written to the run's output folder (vtk_output_prefix's). The tissue's surface as a triangle mesh (with measure_tissue_volume). Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. It has no arrays.
+Written to the run's output folder (output_dir). The tissue's surface as a triangle mesh (with measure_tissue_volume). Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. It has no arrays.
 
 ## `{stem}_graph.pkl`
 
-Written to the run's output folder (vtk_output_prefix's). The network as a pickled networkx MultiGraph: node pos and edge voxels in physical (z, y, x) microns, every attribute the run set (CLAUDE.md, Graph). Read it with the same HaemoLynx version.
+Written to the run's output folder (output_dir). The network as a pickled networkx MultiGraph: node pos and edge voxels in physical (z, y, x) microns, every attribute the run set (CLAUDE.md, Graph). Read it with the same HaemoLynx version.
 
 ## `{stem}_skeleton.npy`
 
-Written to the run's output folder (vtk_output_prefix's). The skeleton as a NumPy array, voxel-indexed (z, y, x), 1 on the centreline.
+Written to the run's output folder (output_dir). The skeleton as a NumPy array, voxel-indexed (z, y, x), 1 on the centreline.
 
 ## `{stem}_voxel_size.json`
 
-Written to the run's output folder (vtk_output_prefix's). The voxel size the run read and used, and where it came from.
+Written to the run's output folder (output_dir). The voxel size the run read and used, and where it came from.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -121,7 +121,7 @@ Written to the run's output folder (vtk_output_prefix's). The voxel size the run
 
 ## `{stem}_statistics.csv`
 
-Written to the run's output folder (vtk_output_prefix's). The statistics report, one row per metric (with the Statistics toggle).
+Written to the run's output folder (output_dir). The statistics report, one row per metric (with the Statistics toggle).
 
 Each row's definition and unit: docs/statistics_glossary.md.
 
@@ -135,49 +135,49 @@ Each row's definition and unit: docs/statistics_glossary.md.
 
 ## `{stem}_statistics_connected.csv`
 
-Written to the run's output folder (vtk_output_prefix's). The geometry and topology statistics again, over the inlet/outlet-connected network only.
+Written to the run's output folder (output_dir). The geometry and topology statistics again, over the inlet/outlet-connected network only.
 
 Columns as {stem}_statistics.csv; rows in docs/statistics_glossary.md.
 
 ## `{stem}_branch_statistics.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Statistics per branch order, one row per order.
+Written to the run's output folder (output_dir). Statistics per branch order, one row per order.
 
 Every column is defined, with its unit, in docs/statistics_glossary.md.
 
 ## `{stem}_capillary_bed_joins.csv`
 
-Written to the run's output folder (vtk_output_prefix's). One row per capillary bed: the B order at which it joins another bed (statistics_capillary_bed_joins).
+Written to the run's output folder (output_dir). One row per capillary bed: the B order at which it joins another bed (statistics_capillary_bed_joins).
 
 Every column is defined, with its unit, in docs/statistics_glossary.md.
 
 ## `{stem}_tissue_volume.csv`
 
-Written to the run's output folder (vtk_output_prefix's). The tissue's volume, surface and the vessel densities it gives (measure_tissue_volume).
+Written to the run's output folder (output_dir). The tissue's volume, surface and the vessel densities it gives (measure_tissue_volume).
 
 Columns as {stem}_statistics.csv; rows in docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_resistance.json`
 
-Written to the run's output folder (vtk_output_prefix's). Weighted betweenness and vascular communities, edges weighted by resistance: the Weighted Betweenness and Communities section of the report, as JSON.
+Written to the run's output folder (output_dir). Weighted betweenness and vascular communities, edges weighted by resistance: the Weighted Betweenness and Communities section of the report, as JSON.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_length.json`
 
-Written to the run's output folder (vtk_output_prefix's). The same, edges weighted by length.
+Written to the run's output folder (output_dir). The same, edges weighted by length.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_flow.json`
 
-Written to the run's output folder (vtk_output_prefix's). The same, edges weighted by flow.
+Written to the run's output folder (output_dir). The same, edges weighted by flow.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_cell_to_vessel_3d_dual_distances.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Each object of the cell mask and its distance to the vessels (measurement_3d_to_cell_mask).
+Written to the run's output folder (output_dir). Each object of the cell mask and its distance to the vessels (measurement_3d_to_cell_mask).
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -210,7 +210,7 @@ Written to the run's output folder (vtk_output_prefix's). Each object of the cel
 
 ## `{stem}_cell_to_vessel_3d_dual_distances_summary.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Those distances summarised overall and per branch order of the nearest vessel.
+Written to the run's output folder (output_dir). Those distances summarised overall and per branch order of the nearest vessel.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -228,7 +228,7 @@ Written to the run's output folder (vtk_output_prefix's). Those distances summar
 
 ## `{stem}_pericytes.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Each pericyte of the pericyte measurements' mask (measure_pericytes): where it sits, its diameter profile's summary, its distance to its vessel's nearest junction and its branch's resistances. Columns a measurement that is off would fill are blank.
+Written to the run's output folder (output_dir). Each pericyte of the pericyte measurements' mask (measure_pericytes): where it sits, its diameter profile's summary, its distance to its vessel's nearest junction and its branch's resistances. Columns a measurement that is off would fill are blank.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -270,7 +270,7 @@ Written to the run's output folder (vtk_output_prefix's). Each pericyte of the p
 
 ## `{stem}_pericyte_branches.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Each branch with a measured pericyte on it (measure_pericytes with its diameter profiles): its resistance as a uniform tube and with the narrowing its pericytes' profiles measure. The profile scales the branch's own diameter: at each point the diameter times the reading there over reference_diameter_um; where several profiles cover a point the nearest pericyte's is read, and beyond them the diameter is kept.
+Written to the run's output folder (output_dir). Each branch with a measured pericyte on it (measure_pericytes with its diameter profiles): its resistance as a uniform tube and with the narrowing its pericytes' profiles measure. The profile scales the branch's own diameter: at each point the diameter times the reading there over reference_diameter_um; where several profiles cover a point the nearest pericyte's is read, and beyond them the diameter is kept.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -293,7 +293,7 @@ Written to the run's output folder (vtk_output_prefix's). Each branch with a mea
 
 ## `{stem}_pericyte_profiles/pericyte_<NNNN>.csv`
 
-Written to the run's output folder (vtk_output_prefix's). One pericyte's diameter profile (measure_pericytes with its diameter profiles): the vessel's width at its midline and every pericyte_profile_step_um each way along it, out to pericyte_profile_reach_um or the vessel's end: the segmentation's, or the raw image's FWHM (pericyte_profile_reading).
+Written to the run's output folder (output_dir). One pericyte's diameter profile (measure_pericytes with its diameter profiles): the vessel's width at its midline and every pericyte_profile_step_um each way along it, out to pericyte_profile_reach_um or the vessel's end: the segmentation's, or the raw image's FWHM (pericyte_profile_reading).
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -312,7 +312,7 @@ Written to the run's output folder (vtk_output_prefix's). One pericyte's diamete
 
 ## `{stem}_template_comparison.csv`
 
-Written to the run's output folder (vtk_output_prefix's). A synthetic run only: each characteristic of the template against the synthetic network (a surround's whole network, the template run's own vessels among it, against the template scaled to its box).
+Written to the run's output folder (output_dir). A synthetic run only: each characteristic of the template against the synthetic network (a surround's whole network, the template run's own vessels among it, against the template scaled to its box).
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -329,7 +329,7 @@ Written to the run's output folder (vtk_output_prefix's). A synthetic run only: 
 
 ## `{stem}_image_flows.csv`
 
-Written to the run's output folder (vtk_output_prefix's). A surround (network_source=synthetic_surround) only: one row per vessel of the template run's own network, its flow in that run and inside the surround, both from the same end.
+Written to the run's output folder (output_dir). A surround (network_source=synthetic_surround) only: one row per vessel of the template run's own network, its flow in that run and inside the surround, both from the same end.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -349,7 +349,7 @@ Written to the run's output folder (vtk_output_prefix's). A surround (network_so
 
 ## `{stem}_run_manifest.json`
 
-Written to the run's output folder (vtk_output_prefix's). What produced the outputs: the settings as the run started, the HaemoLynx version, git commit, Python, platform and dependency versions, each input file's size, time and sha256, and each stage's start, end, wall time (seconds) and peak memory (bytes); checks.lumen_artefacts holds the lumen-artefact report's counts on the graph graph building handed on (null where it did not run: the low-RAM option, a synthetic network): pairs of edges in one lumen, loops inside one lumen, dead-end tips in another vessel's lumen and whether any was found, as the run's log warns.
+Written to the run's output folder (output_dir). What produced the outputs: the settings as the run started, the HaemoLynx version, git commit, Python, platform and dependency versions, each input file's size, time and sha256, and each stage's start, end, wall time (seconds) and peak memory (bytes); checks.lumen_artefacts holds the lumen-artefact report's counts on the graph graph building handed on (null where it did not run: the low-RAM option, a synthetic network): pairs of edges in one lumen, loops inside one lumen, dead-end tips in another vessel's lumen and whether any was found, as the run's log warns.
 
 Every other key is text or a nested record; see pipeline/provenance.py.
 
@@ -364,11 +364,11 @@ Every other key is text or a nested record; see pipeline/provenance.py.
 
 ## `{stem}_run_settings.yaml`
 
-Written to the run's output folder (vtk_output_prefix's). The settings the run started with, as a config file --config loads. Each setting's unit is in its help (the comments of a config write_default_config writes).
+Written to the run's output folder (output_dir). The settings the run started with, as a config file --config loads. Each setting's unit is in its help (the comments of a config write_default_config writes).
 
 ## `{stem}_citations.txt`
 
-Written to the run's output folder (vtk_output_prefix's). Plain text: the publications behind the methods this run used, by section, to cite in a methods section (pipeline/citations.py). Written when export_citations is on.
+Written to the run's output folder (output_dir). Plain text: the publications behind the methods this run used, by section, to cite in a methods section (pipeline/citations.py). Written when export_citations is on.
 
 ## `{name}_summary.csv`
 
@@ -630,7 +630,7 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 
 ## `{stem}_connectivity.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Post processing's connectivity table: one row per vessel and what it joins.
+Written to the run's output folder (output_dir). Post processing's connectivity table: one row per vessel and what it joins.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -651,7 +651,7 @@ Written to the run's output folder (vtk_output_prefix's). Post processing's conn
 
 ## `{stem}_loop_review.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Post processing's short-loop decisions, one row each, with the loop's measures.
+Written to the run's output folder (output_dir). Post processing's short-loop decisions, one row each, with the loop's measures.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -684,7 +684,7 @@ Written to the run's output folder (vtk_output_prefix's). Post processing's shor
 
 ## `{stem}_{kind}_review.csv`
 
-Written to the run's output folder (vtk_output_prefix's). Post processing's decisions on a review list (dead ends, hairpins, ...), one row each, with the item's measures after the first ten columns.
+Written to the run's output folder (output_dir). Post processing's decisions on a review list (dead ends, hairpins, ...), one row each, with the item's measures after the first ten columns.
 
 Only the measures of the item's own list are filled.
 

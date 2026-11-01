@@ -38,7 +38,7 @@ def _recorded(tmp_path: Path) -> tuple[StageCheckpoints, ResultLayers, dict]:
     results = built()
     settings = {
         "input_path": tmp_path / "stack.tif",
-        "vtk_output_prefix": tmp_path / "out" / "stack",
+        "output_dir": tmp_path / "out",
         "do_graph_building": True,
     }
     (tmp_path / "out").mkdir()
@@ -64,11 +64,15 @@ def test_ensure_run_suffix_adds_haemorun():
     assert ensure_run_suffix(Path("out") / "stack") == Path("out") / "stack.haemorun"
 
 
-def test_default_run_path_uses_vtk_prefix_parent(tmp_path):
+def test_default_run_path_is_the_image_stem_in_the_output_folder(tmp_path):
     path = default_run_path(
-        {"vtk_output_prefix": tmp_path / "out" / "stack"}
+        {"input_path": tmp_path / "stack.tif", "output_dir": tmp_path / "out"}
     )
     assert Path(path) == tmp_path / "out" / f"stack{SUFFIX}"
+    assert default_run_path({"input_path": tmp_path / "stack.tif"}) == f"stack{SUFFIX}"
+    assert default_run_path({"output_dir": tmp_path / "out"}) == str(
+        tmp_path / "out" / f"haemolynx-run{SUFFIX}"
+    )
     assert default_run_path({}) == DEFAULT_FILENAME
 
 
@@ -316,7 +320,7 @@ def test_a_run_whose_output_folder_cannot_be_made_here_still_loads(tmp_path):
     snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
     blocker = tmp_path / "not_a_folder"
     blocker.write_text("a file where the output folder's parent should be")
-    elsewhere = dict(settings, vtk_output_prefix=blocker / "outputs" / "stack")
+    elsewhere = dict(settings, output_dir=blocker / "outputs")
     loaded = StageCheckpoints()
 
     note = write_resume_artefacts(snapshot, elsewhere, loaded)
@@ -349,7 +353,7 @@ def test_a_run_from_another_machine_is_pointed_at_this_ones_files(tmp_path):
         "large_arteriole_mask_path": str(server / "segs" / "Large_arteriole.tiff"),
         "raw_image_path": here,
         "ilastik_classifier_path": server / "classifiers" / "nowhere.ilp",
-        "vtk_output_prefix": server / "outputs" / "run",
+        "output_dir": server / "outputs",
         "base_plot_dir": server / "project" / "outputs",
         "sweep_output_dir": tmp_path / "writable" / "sweep",
         "verbose_logging": True,
@@ -364,13 +368,29 @@ def test_a_run_from_another_machine_is_pointed_at_this_ones_files(tmp_path):
     assert got["large_arteriole_mask_path"] == str(resources / "Large_arteriole.tiff")
     assert got["raw_image_path"] == here                      # already works
     assert got["ilastik_classifier_path"] == server / "classifiers" / "nowhere.ilp"  # nothing to find
-    assert got["vtk_output_prefix"] == tmp_path / "outputs" / "run"
+    assert got["output_dir"] == tmp_path / "outputs"
     assert got["base_plot_dir"] == tmp_path / "outputs"
     assert got["sweep_output_dir"] == tmp_path / "writable" / "sweep"  # can be made here
-    assert snapshot.results_state["settings"]["vtk_output_prefix"] == tmp_path / "outputs" / "run"
+    assert snapshot.results_state["settings"]["output_dir"] == tmp_path / "outputs"
     assert {m.name for m in moved} == {
-        "input_path", "large_arteriole_mask_path", "vtk_output_prefix", "base_plot_dir",
+        "input_path", "large_arteriole_mask_path", "output_dir", "base_plot_dir",
     }
+
+
+def test_a_run_saved_before_the_output_folder_loads_into_one_here(tmp_path):
+    """Its vtk_output_prefix named files inside the run's folder: moved beside
+    the run file as a prefix, it reads as that folder."""
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+    from haemolynx.pipeline import default_schema
+
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    snapshot = RunSnapshot(settings={"vtk_output_prefix": str(blocker / "outputs" / "run")})
+
+    moved = relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert [m.name for m in moved] == ["vtk_output_prefix"]
+    assert Path(default_schema().upgrade(snapshot.settings)["output_dir"]) == tmp_path / "outputs"
 
 
 def test_relocation_prefers_the_file_nearest_the_run(tmp_path):
@@ -400,13 +420,13 @@ def test_a_synthetic_run_loads_under_its_templates_stem_and_finds_its_template(t
     settings = {
         "network_source": "synthetic",
         "synthetic_template_path": PurePosixPath(blocker / "runs" / "e14_5.haemorun"),
-        "vtk_output_prefix": blocker / "outputs" / "run",
+        "output_dir": blocker / "outputs",
     }
     snapshot = RunSnapshot(settings=settings, results_state={"settings": dict(settings)})
 
     moved = relocate_run_paths(snapshot, tmp_path / "e14_5_synthetic.haemorun")
 
-    assert {m.name for m in moved} == {"synthetic_template_path", "vtk_output_prefix"}
+    assert {m.name for m in moved} == {"synthetic_template_path", "output_dir"}
     assert Path(snapshot.settings["synthetic_template_path"]) == tmp_path / "templates" / "e14_5.haemorun"
     assert run_stem(snapshot.settings) == "e14_5_synthetic"
     loaded = StageCheckpoints()

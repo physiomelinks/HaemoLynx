@@ -38,9 +38,6 @@ from haemolynx.io.batch_matching import FILE_ROLES, BatchFolders, BatchMatch, Fi
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport
 
-#: Where a run's VTK output goes when the settings name none.
-DEFAULT_PREFIX_NAME = "resistance_network"
-
 #: Output folders moved into the image's own folder: setting -> subfolder.
 OUTPUT_FOLDERS = {
     "base_plot_dir": "plots",
@@ -191,12 +188,12 @@ def batch_mask_sizes(settings: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def default_output_root(settings: Mapping[str, Any]) -> Path | None:
-    """The folder ``vtk_output_prefix`` names the parent of, or None."""
-    prefix = settings.get("vtk_output_prefix")
-    if prefix in (None, ""):
+    """The run's output folder (``output_dir``), or None when it is unset
+    or the working directory (``.``)."""
+    folder = settings.get("output_dir")
+    if folder in (None, "") or str(Path(folder)) in ("", "."):
         return None
-    parent = Path(prefix).parent
-    return None if str(parent) in ("", ".") else parent
+    return Path(folder)
 
 
 def image_output_folder(output_root: Path | str, match: BatchMatch) -> Path:
@@ -219,10 +216,8 @@ def item_settings(
             _with_files(entry, files) for entry in base["perturbations"]
         ]
     folder = image_output_folder(output_root, match)
-    prefix = base.get("vtk_output_prefix")
-    name = Path(prefix).name if prefix not in (None, "") else DEFAULT_PREFIX_NAME
-    settings["vtk_output_prefix"] = folder / (name or DEFAULT_PREFIX_NAME)
-    # An unset folder (perturbation_output_dir) already follows the VTK output.
+    settings["output_dir"] = folder
+    # An unset folder (perturbation_output_dir) already follows output_dir.
     for setting, subfolder in OUTPUT_FOLDERS.items():
         if base.get(setting) not in (None, "") or (
             setting == "ilastik_output_dir" and match.folders.from_raw
@@ -580,15 +575,15 @@ def output_paths(settings: Mapping[str, Any]) -> tuple[list[Path], list[Path]]:
         perturbation_output_dir,
     )
     from haemolynx.pipeline.export_dictionary import PERTURBATION_FOLDER, RUN_FOLDER
-    from haemolynx.pipeline.naming import run_stem
+    from haemolynx.pipeline.naming import run_output_dir, run_stem
     from haemolynx.pipeline.progress import STAGES
 
     segmented = _ilastik_segmented_image(settings)
     stem = run_stem(settings) if segmented is None else segmented.stem
-    prefix = settings.get("vtk_output_prefix")
-    if stem is None or prefix in (None, ""):
+    output_dir = run_output_dir(settings)
+    if stem is None or output_dir is None:
         return [], []
-    folder = Path(os.path.abspath(Path(prefix).parent))
+    folder = Path(os.path.abspath(output_dir))
     run_names = _documented_names(RUN_FOLDER, "{stem}", settings)
     files = [checkpoint_pickle_path(folder, stem, stage.call) for stage in STAGES if stage.call]
     files.append(folder / f"{stem}{SUFFIX}.part")
@@ -658,7 +653,6 @@ def batch_preflight(
 
 
 __all__ = [
-    "DEFAULT_PREFIX_NAME",
     "OUTPUT_FOLDERS",
     "PER_IMAGE_FILES",
     "NOT_WRITTEN_BY_A_BATCH",

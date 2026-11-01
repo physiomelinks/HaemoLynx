@@ -52,7 +52,7 @@ CAROTID_DEFAULTS: dict[str, Any] = {
     # and the small components are dropped rather than reconnected.
     "skeleton_max_bridge_distance": 0,
     "skeleton_min_component_percent": 5.0,
-    "vtk_output_prefix": "examples/outputs/carotid/carotid_network",
+    "output_dir": "examples/outputs/carotid",
 }
 
 PIPELINE_SCHEMA = default_schema()

@@ -558,7 +558,7 @@ def test_a_run_with_one_global_large_mask_classes_every_vessel(tmp_path, caplog)
     values.update(
         {
             "input_path": FIXTURE,
-            "vtk_output_prefix": tmp_path / "run",
+            "output_dir": tmp_path,
             "plot_dir": tmp_path / "plots",
             "statistics": False,
             "show_plots_in_ide": False,

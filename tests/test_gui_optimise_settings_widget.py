@@ -981,7 +981,7 @@ def test_the_optimiser_reads_ilastiks_output_and_never_runs_ilastik(monkeypatch,
     settings = {
         **default_schema().defaults(),
         "input_path": None,
-        "vtk_output_prefix": tmp_path / "run" / "network",
+        "output_dir": tmp_path / "run",
         "raw_image_path": raw,
         "use_ilastik_segmentation": True,
         "ilastik_classifier_path": tmp_path / "classifier.ilp",

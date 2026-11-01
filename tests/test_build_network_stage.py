@@ -30,7 +30,7 @@ def _settings(tmp_path: Path, **overrides) -> dict:
     values.update(
         {
             "input_path": tmp_path / "input.tif",
-            "vtk_output_prefix": tmp_path / "out" / "run",
+            "output_dir": tmp_path / "out",
             "plot_dir": tmp_path / "plots",
             **overrides,
         }

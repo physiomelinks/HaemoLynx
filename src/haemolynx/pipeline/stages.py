@@ -586,8 +586,8 @@ def segment(
             f"Input axis order '{image_axis_order}' will be transposed to the canonical "
             f"'{io.CANONICAL_AXIS_ORDER}' layout on load."
         )
-    settings["vtk_output_prefix"] = Path(settings["vtk_output_prefix"])
-    output_dir = settings["vtk_output_prefix"].parent
+    settings["output_dir"] = Path(settings["output_dir"])
+    output_dir = settings["output_dir"]
     valid_final_render_modes = {"2d", "3d"}
     if settings["final_render_mode"] not in valid_final_render_modes:
         raise ValueError(
@@ -617,8 +617,8 @@ def _segment_synthetic(settings: dict) -> SegmentedInputs:
     template_path = Path(template_path)
     settings["synthetic_template_path"] = template_path
     template = load_template(template_path, settings.get("synthetic_template_source", "statistics"))
-    settings["vtk_output_prefix"] = Path(settings["vtk_output_prefix"])
-    output_dir = settings["vtk_output_prefix"].parent
+    settings["output_dir"] = Path(settings["output_dir"])
+    output_dir = settings["output_dir"]
     valid_final_render_modes = {"2d", "3d"}
     if settings["final_render_mode"] not in valid_final_render_modes:
         raise ValueError(
@@ -1344,14 +1344,12 @@ def thick_vessel_region_cache(
     settings: dict, output_dir: Path | None = None
 ) -> preprocessing.ThickVesselRegionCache:
     """Where a run keeps the thick-vessel region it found: beside its saved
-    skeleton in *output_dir* (``vtk_output_prefix``'s directory when not
-    given), one entry per run output. Finding the region is about four
-    minutes on E14.5, and a run with the same mask and settings as the last
-    reads it back instead (:mod:`~haemolynx.preprocessing.thick_vessel_region_cache`).
+    skeleton in *output_dir* (the run's ``output_dir`` when not given), one
+    entry per run output. Finding the region is about four minutes on E14.5,
+    and a run with the same mask and settings as the last reads it back
+    instead (:mod:`~haemolynx.preprocessing.thick_vessel_region_cache`).
     """
-    directory = (
-        Path(settings["vtk_output_prefix"]).parent if output_dir is None else Path(output_dir)
-    )
+    directory = Path(settings["output_dir"]) if output_dir is None else Path(output_dir)
     stem = run_stem(settings)
     return preprocessing.ThickVesselRegionCache(directory / f"{stem}_thick_vessel_region")
 
@@ -7936,7 +7934,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # FA I don't fully understand how pericyte location is currently determined?
     if settings["run_haemodynamics"] and settings["vtk_export"]:
         vtk_export = visualization.graph_to_vtk(
-            G, settings["vtk_output_prefix"],
+            G, Path(settings["output_dir"]) / run_stem(settings),
             inlet_nodes=settings["inlet_nodes"], outlet_nodes=settings["outlet_nodes"],
         )
         logger.info("=== VTK Export ===")

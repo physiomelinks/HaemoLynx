@@ -858,20 +858,18 @@ def edits_lost_by_running_from(
 
 
 def default_connectivity_csv_path(values: Any) -> str:
-    """Suggested name for the connectivity CSV: beside the run's VTK output.
+    """Suggested name for the connectivity CSV: beside the run's other outputs.
 
-    ``{stem}_connectivity.csv`` in the folder of ``vtk_output_prefix`` when that
-    folder exists on this machine (a run loaded from another one may name a
-    folder that does not), otherwise just the filename.
+    ``{stem}_connectivity.csv`` in the run's output folder (``output_dir``)
+    when that folder exists on this machine (a run loaded from another one
+    may name a folder that does not), otherwise just the filename.
     """
-    from pathlib import Path
+    from haemolynx.gui.stage_checkpoints import output_dir_from_settings
+    from haemolynx.pipeline.naming import run_stem
 
-    from haemolynx.gui.stage_checkpoints import output_dir_from_prefix
-
-    prefix = values.get("vtk_output_prefix") if values else None
-    stem = Path(str(prefix)).name if prefix else "haemolynx"
+    stem = (run_stem(values) if values else None) or "haemolynx"
     name = f"{stem}_connectivity.csv"
-    folder = output_dir_from_prefix(prefix)
+    folder = output_dir_from_settings(values)
     return str(folder / name) if folder is not None and folder.is_dir() else name
 
 
@@ -1188,19 +1186,15 @@ def loop_review_row(
 
 def loop_review_csv_path(values: Any) -> "Path | None":
     """Where the loop decisions are written: ``{stem}_loop_review.csv`` in the
-    folder of ``vtk_output_prefix``. None when there is no such folder on
+    run's output folder (``output_dir``). None when there is no such folder on
     this machine, as for a run loaded from another one before it is run."""
-    from pathlib import Path
+    from haemolynx.gui.stage_checkpoints import output_dir_from_settings
+    from haemolynx.pipeline.naming import run_stem
 
-    from haemolynx.gui.stage_checkpoints import output_dir_from_prefix
-
-    prefix = values.get("vtk_output_prefix") if values else None
-    if not prefix:
-        return None
-    folder = output_dir_from_prefix(prefix)
+    folder = output_dir_from_settings(values)
     if folder is None or not folder.is_dir():
         return None
-    return Path(folder) / f"{Path(str(prefix)).name}_loop_review.csv"
+    return folder / f"{run_stem(values) or 'haemolynx'}_loop_review.csv"
 
 
 def append_loop_review(path: Any, rows: Iterable[dict[str, str]]) -> "Path":
@@ -1766,7 +1760,7 @@ def remove_listed_pieces(
 
 def review_csv_path(values: Any, kind: str) -> "Path | None":
     """Where a review list's decisions are written: ``{stem}_{kind}_review.csv``
-    beside the VTK output; None when there is no such folder on this machine."""
+    in the run's output folder; None when there is no such folder on this machine."""
     path = loop_review_csv_path(values)
     if path is None:
         return None

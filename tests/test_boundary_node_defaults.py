@@ -213,7 +213,7 @@ def test_the_defaults_find_inlets_and_outlets_on_the_fixture_image(tmp_path):
     settings = _defaults(
         input_path=input_tiff,
         # Every artefact the stages write is placed beside the VTK prefix.
-        vtk_output_prefix=tmp_path / "outlets" / "network",
+        output_dir=tmp_path / "outlets",
         base_plot_dir=tmp_path / "plots",
         plot_dir=tmp_path / "plots",
         verbose_logging=False,

@@ -682,20 +682,19 @@ def test_scale_bar_is_bottom_right_and_in_microns_once_layers_exist(
         assert visuals[0].node.visible is False
 
 
-def test_output_folder_is_the_vtk_prefix_parent(tmp_path):
+def test_output_folder_is_the_output_dir_setting(tmp_path):
     from pathlib import Path
 
-    assert output_folder_from_settings({"vtk_output_prefix": Path("out/run")}) == Path(
-        "out"
-    )
-    assert output_folder_from_settings({"vtk_output_prefix": None}) is None
-    assert output_folder_from_settings({"vtk_output_prefix": ""}) is None
-    assert output_folder_from_settings({"vtk_output_prefix": "."}) is None
+    assert output_folder_from_settings({"output_dir": Path("out")}) == Path("out")
+    assert output_folder_from_settings({"output_dir": "out"}) == Path("out")
+    assert output_folder_from_settings({"output_dir": None}) is None
+    assert output_folder_from_settings({"output_dir": ""}) is None
+    assert output_folder_from_settings({"output_dir": "."}) is None
     assert output_folder_from_settings({}) is None
     # A FileEdit left blank resolves to the working directory.
-    assert output_folder_from_settings({"vtk_output_prefix": Path.cwd()}) is None
-    chosen = tmp_path / "artifacts" / "run"
-    assert output_folder_from_settings({"vtk_output_prefix": chosen}) == tmp_path / "artifacts"
+    assert output_folder_from_settings({"output_dir": Path.cwd()}) is None
+    chosen = tmp_path / "artifacts"
+    assert output_folder_from_settings({"output_dir": chosen}) == tmp_path / "artifacts"
 
 
 def test_snapshot_filename_is_timestamped_and_unique(tmp_path):
@@ -711,7 +710,7 @@ def test_snapshot_filename_is_timestamped_and_unique(tmp_path):
 
 def _point_snapshot_at(panel, tmp_path):
     rows = panel._haemolynx_rows()
-    rows["vtk_output_prefix"].value = tmp_path / "artifacts" / "run"
+    rows["output_dir"].value = tmp_path / "artifacts"
     return tmp_path / "artifacts"
 
 
@@ -832,7 +831,7 @@ def test_snapshot_is_the_displayed_view_not_the_volume_cache(
 def test_snapshot_without_output_folder_does_not_crash(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
-    panel._haemolynx_rows()["vtk_output_prefix"].value = ""
+    panel._haemolynx_rows()["output_dir"].value = ""
     assert output_folder_from_settings(panel._haemolynx_values()) is None
 
     panel._haemolynx_snapshot_button.click()

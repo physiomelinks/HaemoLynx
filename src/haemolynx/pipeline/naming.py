@@ -1,7 +1,8 @@
-"""What a run's outputs are named after.
+"""What a run's outputs are named after, and where they go.
 
-Every file a run writes -- the skeleton and graph pickles, the checkpoints,
-the statistics CSVs, the manifest, the citations -- carries one stem: the
+Every file a run writes -- the VTK files, the skeleton and graph pickles, the
+checkpoints, the statistics CSVs, the manifest, the citations -- goes into one
+folder (``output_dir``, :func:`run_output_dir`) and carries one stem: the
 analysed image's (``input_path``'s file name, ilastik's output once that
 stage has replaced it), or, for a synthetic network
 (``network_source=synthetic``), the template run's file name with
@@ -46,4 +47,18 @@ def run_stem(settings: Mapping[str, Any]) -> Optional[str]:
     return None if image is None else image.stem
 
 
-__all__ = ["SURROUNDED_STEM_SUFFIX", "SYNTHETIC_STEM_SUFFIX", "run_input_path", "run_stem", "synthetic_run_stem"]
+def run_output_dir(settings: Mapping[str, Any]) -> Optional[Path]:
+    """The folder a run writes its outputs into (``output_dir``), or None
+    when it is unset."""
+    value = settings.get("output_dir")
+    return None if value in (None, "") else Path(value)
+
+
+__all__ = [
+    "SURROUNDED_STEM_SUFFIX",
+    "SYNTHETIC_STEM_SUFFIX",
+    "run_input_path",
+    "run_output_dir",
+    "run_stem",
+    "synthetic_run_stem",
+]

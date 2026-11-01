@@ -594,7 +594,7 @@ def test_build_settings_leaves_the_boundaries_to_the_config():
     settings, required = run_settings.build_settings(
         image_path="/tmp/image.tif",
         plot_dir="/tmp/plots",
-        vtk_output_prefix="/tmp/run",
+        output_dir="/tmp/run",
     )
     for name in ("inlet_node_volumes", "outlet_node_volumes",
                  "inlet_node_selection_method", "outlet_node_selection_method"):
@@ -609,8 +609,42 @@ def test_smoke_boundaries_are_still_applied_when_asked_for():
     settings, required = run_settings.build_settings(
         image_path="/tmp/image.tif",
         plot_dir="/tmp/plots",
-        vtk_output_prefix="/tmp/run",
+        output_dir="/tmp/run",
         boundary_settings=run_settings.SMOKE_BOUNDARY_SETTINGS,
     )
     assert settings["outlet_node_volumes"] == [[[0, 0, 28], [47, 47, 47]]]
     assert "outlet_node_volumes" in required
+
+
+def test_a_branch_before_the_output_folder_gets_a_prefix_inside_it():
+    """Such a branch reads vtk_output_prefix, a file stem inside the folder:
+    handed the folder itself, its VTK files would land beside it."""
+    from branch_comparison import run_settings
+
+    assert run_settings.aliases_for("output_dir") == ("output_dir", "vtk_output_prefix")
+    assert run_settings.alias_value("output_dir", "output_dir", "/tmp/run") == "/tmp/run"
+    assert Path(run_settings.alias_value("output_dir", "vtk_output_prefix", "/tmp/run")) == (
+        Path("/tmp/run") / run_settings.LEGACY_VTK_NAME
+    )
+    assert run_settings.alias_value("input_path", "image_path", "/tmp/a.tif") == "/tmp/a.tif"
+
+
+def test_vtk_files_are_read_under_the_image_stem_or_the_old_prefix(tmp_path):
+    """This branch names its VTK files after the image; one from before the
+    output folder after its prefix. Either side's files are found by part."""
+    import pyvista as pv
+    from branch_comparison import run_settings
+
+    current = tmp_path / "current"
+    reference = tmp_path / "reference"
+    current.mkdir()
+    reference.mkdir()
+    line = pv.Line((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    line.save(str(current / "stack_vessels.vtp"))
+    line.save(str(reference / f"{run_settings.LEGACY_VTK_NAME}_vessels.vtp"))
+    line.save(str(reference / f"{run_settings.LEGACY_VTK_NAME}_nodes.vtp"))
+
+    assert set(runner._collect_vtk(current, "stack")) == {"vessels"}
+    assert set(runner._collect_vtk(reference, "stack")) == {"vessels", "nodes"}
+    assert runner._collect_vtk(current, "stack")["vessels"]["n_points"] == 2
+    assert runner._collect_vtk(tmp_path / "missing", "stack") == {}

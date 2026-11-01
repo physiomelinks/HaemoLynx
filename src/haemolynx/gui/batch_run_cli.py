@@ -63,7 +63,7 @@ def _parser() -> argparse.ArgumentParser:
                 "Turns on what reads them, if the config does not."
             ),
         )
-    parser.add_argument("--output", help="Output folder (default: the config's vtk_output_prefix folder).")
+    parser.add_argument("--output", help="Output folder (default: the config's output_dir).")
     parser.add_argument("--only", nargs="*", help="Run only these image stems.")
     parser.add_argument("--rerun", action="store_true", help="Run images whose .haemorun is already there again.")
     parser.add_argument("--dry-run", action="store_true", help="Match and check every image, run nothing.")
@@ -159,7 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Turned on {batch_run.turned_on_text(turned, labels=False)} to read the folders given.")
     output_root = Path(args.output) if args.output else default_output_root(values)
     if output_root is None:
-        print("No output folder: pass --output, or set vtk_output_prefix to a path with a folder.")
+        print("No output folder: pass --output, or set output_dir in the config.")
         return 1
     try:
         found = match_batch(folders, batch_mask_sizes(values), batch_file_roles(values, schema))

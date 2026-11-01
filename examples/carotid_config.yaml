@@ -42,6 +42,8 @@ input_and_segmentation:
   raw_image_stain: auto
   # Read the raw image onto a coarser grid, each coarse voxel the mean of the voxels in it. Everything that reads the raw image does so beside the segmentation and needs it on the segmented image's grid (the diameters, the stain reading, the tissue volume, the checks), so a finer choice than segmented_image_downsample is read at that one, and a coarser choice is reduced by its own factor and each coarse voxel spread over the grid: a blockier image. ilastik reads the whole file whatever this says, as its project was trained on it  [one of: none, 2x, 4x, 8x, 16x; needs raw_image_path]
   raw_image_downsample: none
+  # Write the run's outputs into this folder: the VTK files, the CSVs and statistics, the skeleton and graph, the run manifest and the cached stages, each named after the analysed image (outputs/{image stem}_vessels.vtp). Plots go under base_plot_dir and ilastik's segmentations under ilastik_output_dir; perturbations come here too unless perturbation_output_dir is set
+  output_dir: examples/outputs/carotid
   # Segment the raw image (raw_image_path) with ilastik instead of reading a segmented file  [needs raw_image_path]
   use_ilastik_segmentation: false
   # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
@@ -456,8 +458,6 @@ pipeline_stages:
   haemodynamics_solver: dense
   # How the two-point equivalent resistance (first inlet to first outlet, unless Post processing chose two other nodes) is found. eigendecomposition computes every eigenvalue and eigenvector of the network's Laplacian: minutes at 5,000 nodes, hours at 20,000, and about 49 N^2 bytes at its peak (20 GB at 20,000 nodes); the run warns when it would take more than half the free memory. sparse is one sparse solve, a unit current in at one node and the other grounded: the same resistance to rounding, and infinite rather than a finite number when no conductive path joins the two nodes  [one of: eigendecomposition, sparse; needs do_equiv_resistance_calculation]
   equivalent_resistance_solver: eigendecomposition
-  # Output path for the run: its folder receives the run's output files and cached stages, and the VTK files are named after its last part (outputs/run writes outputs/run_vessels.vtp); plots go under base_plot_dir
-  vtk_output_prefix: examples/outputs/carotid/carotid_network
   # Close gaps in the skeleton itself, after its small pieces are dropped and its tangles collapsed, with a structuring element of this radius, then thin it again -- held within a voxel of the segmented mask while bridge_require_mask_support is on. In voxels of the finest axis: a physical radius of this many times the smallest voxel size, so it reaches fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
   skeleton_closing_radius: 2
   # Fill gaps in the skeleton itself by growing it this many voxels, then thin it again -- held within a voxel of the segmented mask while bridge_require_mask_support is on. In voxels of the finest axis: a physical distance of this many times the smallest voxel size, so fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]

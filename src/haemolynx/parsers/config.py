@@ -72,7 +72,9 @@ def load_config(
 
     flat = _flatten_sections(raw, schema, source=path)
     if overrides:
-        flat.update(overrides)
+        # In today's names first, so an override naming a retired setting
+        # beats the config's value of the setting that replaced it.
+        flat.update(schema.upgrade(overrides))
     try:
         return schema.validate(flat)
     except ConfigError as exc:

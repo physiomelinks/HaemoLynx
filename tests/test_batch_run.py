@@ -36,7 +36,7 @@ def _values(schema, tmp_path: Path) -> dict:
     values = schema.defaults()
     values.update(
         {
-            "vtk_output_prefix": tmp_path / "default_out" / "run",
+            "output_dir": tmp_path / "default_out",
             "statistics": False,
             "show_plots_in_ide": False,
             "interactive_plots": False,
@@ -104,7 +104,7 @@ def test_each_image_runs_with_its_own_files_and_folder(tmp_path, schema, monkeyp
     out = tmp_path / "out"
     summary = run_batch(_values(schema, tmp_path), schema, matches, out, folders=folders)
     assert [stem for stem, _values in calls] == ["A_seg", "B_seg"]
-    assert calls[0][1]["vtk_output_prefix"] == out / "A_seg" / "run"
+    assert calls[0][1]["output_dir"] == out / "A_seg"
     assert calls[1][1]["input_path"] == folders.segmented / "B_seg.tif"
     assert [result.status for result in summary.results] == [DONE, DONE]
     assert summary.results[0].haemorun == out / "A_seg" / "A_seg.haemorun"
@@ -943,7 +943,7 @@ def test_an_images_peak_memory_is_its_own_stages_not_the_process(tmp_path):
     folder.mkdir()
     manifest = {"peak_rss_bytes": 900, "stages": [{"peak_rss_bytes": 100}, {"peak_rss_bytes": 300}, {}]}
     (folder / "A_run_manifest.json").write_text(json.dumps(manifest))
-    settings = {"vtk_output_prefix": folder / "run"}
+    settings = {"output_dir": folder}
     assert _peak_rss(settings, "A") == 300
     (folder / "A_run_manifest.json").write_text(json.dumps({"peak_rss_bytes": 900, "stages": []}))
     assert _peak_rss(settings, "A") == 900

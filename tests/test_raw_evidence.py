@@ -427,7 +427,7 @@ def _run_settings(tmp_path, **overrides):
     settings.update(
         {
             "input_path": str(tmp_path / "mask.tif"),
-            "vtk_output_prefix": tmp_path / "run" / "network",
+            "output_dir": tmp_path / "run",
             "plot_dir": tmp_path / "plots",
             "visualize_results": False,
             **overrides,

@@ -231,7 +231,7 @@ def nerve_graph(tmp_path_factory):
     values.update(
         {
             "input_path": NERVE,
-            "vtk_output_prefix": output / "run",
+            "output_dir": output,
             "plot_dir": output / "plots",
             "statistics": False,
             "show_plots_in_ide": False,

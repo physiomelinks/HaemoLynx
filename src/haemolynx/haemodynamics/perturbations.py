@@ -743,13 +743,13 @@ def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) ->
 def perturbation_output_dir(values: Mapping[str, Any]) -> Path:
     """Where perturbation output goes, configured or derived.
 
-    Unset means the run's other output directory, which is what
-    `vtk_output_prefix` names the parent of -- so a perturbation lands with
-    the run it perturbs without anyone configuring a second path. Each
-    perturbation still writes into a ``{name}_{type}`` subfolder of this root.
+    Unset means the run's own output folder (`output_dir`) -- so a
+    perturbation lands with the run it perturbs without anyone configuring a
+    second path. Each perturbation still writes into a ``{name}_{type}``
+    subfolder of this root.
     """
     configured = values.get("perturbation_output_dir")
     if configured:
         return Path(configured)
-    prefix = values.get("vtk_output_prefix")
-    return Path(prefix).parent if prefix else Path(".")
+    folder = values.get("output_dir")
+    return Path(folder) if folder else Path(".")

@@ -205,7 +205,7 @@ if CONFIG_PATH is None or not CONFIG_PATH.exists():
 
 TUTORIAL_OVERRIDES = {
     # Where everything is written.
-    "vtk_output_prefix": OUTPUT_DIR / "tutorial",
+    "output_dir": OUTPUT_DIR,
     "plot_dir": PLOT_DIR,
     # Meaning of each input array axis. Volumes load as canonical (z, y, x), so
     # this selects which axis is z -- the one projections look through.
@@ -601,10 +601,10 @@ show_stage_plots(
 # 
 # After the cell above finishes, open the exported `.vtp` files in [ParaView](https://www.paraview.org/) or similar VTK software (e.g. napari with a VTK plugin, [3D Slicer](https://www.slicer.org/)):
 # 
-# - ``stem`_tutorial_vessels.vtp` — vessel centreline geometry and attributes
+# - `{image stem}_vessels.vtp` — vessel centreline geometry and attributes
 # - the vessels file also carries **flow** scalars once the solve has run
-# - ``stem`_tutorial_nodes.vtp` — graph nodes
-# - ``stem`_tutorial_pericytes.vtp` — pericyte points (if present)
+# - `{image stem}_nodes.vtp` — graph nodes
+# - `{image stem}_pericytes.vtp` — pericyte points (if present)
 # 
 # In ParaView: **File → Open**, select the `.vtp` files, click **Apply**, then colour by array names such as `flow` or `branch_order`.
 

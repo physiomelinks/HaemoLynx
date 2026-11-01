@@ -957,7 +957,7 @@ def _loop_page(viewer, tmp_path, *, loop_review: bool = True):
         boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
         regenerate=lambda graph, stop_after=None: True,
         running=lambda: False,
-        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+        settings=lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)},
         paused=lambda: False,
     )
     controls.refresh()
@@ -1110,7 +1110,7 @@ CLOSE = "Junctions close together"
 
 
 def _review_page(viewer, tmp_path=None, **kwargs):
-    settings = (lambda: {"vtk_output_prefix": str(tmp_path / "run")}) if tmp_path is not None else None
+    settings = (lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)}) if tmp_path is not None else None
     return _four_way_page(viewer, junction_correction=False, settings=settings, **kwargs)
 
 
@@ -1288,7 +1288,7 @@ def _t_page(viewer, tmp_path):
         viewer, SimpleNamespace(value=""), results=lambda: results,
         boundary_roles=lambda: {"inlet": (0,), "outlet": (2,)},
         regenerate=lambda graph, stop_after=None: True, running=lambda: False,
-        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+        settings=lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)},
     )
     c.refresh()
     c.review_choice.setCurrentText(DEAD_ENDS)
@@ -1376,7 +1376,7 @@ def _broken_page(viewer, tmp_path, make=None, choice=DEAD_ENDS):
         viewer, SimpleNamespace(value=""), results=lambda: results,
         boundary_roles=lambda: {"inlet": (), "outlet": ()},
         regenerate=lambda graph, stop_after=None: True, running=lambda: False,
-        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+        settings=lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)},
     )
     c.refresh()
     c.review_choice.setCurrentText(choice)
@@ -1453,7 +1453,7 @@ def test_skeleton_the_graph_does_not_follow_is_listed_and_drawn_along(make_napar
         viewer, SimpleNamespace(value=""), results=lambda: results,
         boundary_roles=lambda: {"inlet": (), "outlet": ()},
         regenerate=lambda graph, stop_after=None: True, running=lambda: False,
-        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+        settings=lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)},
     )
     c.refresh()
     c.review_choice.setCurrentText("Skeleton the graph does not follow")
@@ -1653,7 +1653,7 @@ def _island_page(viewer, tmp_path):
         viewer, SimpleNamespace(value=""), results=lambda: results,
         boundary_roles=lambda: {"inlet": (), "outlet": ()},
         regenerate=lambda graph, stop_after=None: True, running=lambda: False,
-        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+        settings=lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)},
     )
     c.refresh()
     c.review_choice.setCurrentText(DEAD_ENDS)
