@@ -18,13 +18,18 @@ from haemolynx.parsers import ConfigError, prerequisite_name
 from haemolynx.parsers.cli import settings_from_command_line
 from haemolynx.pipeline import default_schema, write_default_config
 from haemolynx.pipeline.presets import (
+    DELETE_PRESET,
+    DELETE_PRESET_TEXT,
     NO_PRESET,
     PRESETS,
+    SAVE_PRESET,
+    SAVE_PRESET_TEXT,
     USAGE_PRESETS,
     check_presets,
     preset_menu,
     preset_settings,
 )
+from haemolynx.pipeline.saved_presets import save_preset, saved_presets
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = default_schema()
@@ -120,11 +125,33 @@ def test_the_menu_starts_at_none_then_lists_the_usages_then_the_add_ons():
     assert menu[1] is None
     assert [entry[1] for entry in menu[2:2 + len(USAGE_PRESETS)]] == list(USAGE_PRESETS)
     assert menu[2 + len(USAGE_PRESETS)] is None
-    assert [entry[1] for entry in menu[3 + len(USAGE_PRESETS):]] == list(ADD_ONS)
+    add_ons = menu[3 + len(USAGE_PRESETS):3 + len(USAGE_PRESETS) + len(ADD_ONS)]
+    assert [entry[1] for entry in add_ons] == list(ADD_ONS)
+    # With nothing saved, the menu ends by offering to save these settings.
+    assert menu[-2:] == [None, (SAVE_PRESET_TEXT, SAVE_PRESET)]
     assert set(USAGE_PRESETS) <= set(PRESETS)
-    assert [entry[0] for entry in menu if entry and entry[1]] == [
+    assert [entry[0] for entry in menu if entry and entry[1] in PRESETS] == [
         PRESETS[name]["label"] for name in (*USAGE_PRESETS, *ADD_ONS)
     ]
+
+
+def test_the_presets_saved_on_this_machine_follow_the_standard_ones(tmp_path):
+    defaults = SCHEMA.defaults()
+    save_preset("Zeta", defaults, SCHEMA, directory=tmp_path)
+    save_preset("alpha", defaults, SCHEMA, directory=tmp_path)
+    saved = saved_presets(tmp_path)
+    menu = preset_menu(saved)
+    assert menu[:len(preset_menu()) - 2] == preset_menu()[:-2]
+    assert menu[len(preset_menu()) - 2:] == [
+        None,
+        ("alpha", "saved:alpha"),
+        ("Zeta", "saved:Zeta"),
+        None,
+        (SAVE_PRESET_TEXT, SAVE_PRESET),
+        (DELETE_PRESET_TEXT, DELETE_PRESET),
+    ]
+    keys = [entry[1] for entry in menu if entry]
+    assert len(set(keys)) == len(keys)
 
 
 def test_each_preset_has_its_own_label_and_a_description_in_the_tooltip_voice():

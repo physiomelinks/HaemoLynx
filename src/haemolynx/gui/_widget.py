@@ -210,8 +210,23 @@ from haemolynx.pipeline import (
     segment,
 )
 from haemolynx.pipeline import stages as pipeline_stages
-from haemolynx.pipeline.presets import PRESETS, preset_menu, preset_settings
+from haemolynx.pipeline.presets import (
+    DELETE_PRESET,
+    PRESETS,
+    SAVE_PRESET,
+    preset_menu,
+    preset_settings,
+)
 from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
+from haemolynx.pipeline.saved_presets import (
+    delete_saved_preset,
+    is_saved_preset_key,
+    save_preset,
+    saved_preset_for_key,
+    saved_preset_path,
+    saved_preset_settings,
+    saved_presets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +262,12 @@ FORCED_HIDDEN_SETTINGS: dict[str, Any] = {
     "fwhm_background_label": 0,
     "fwhm_junction_label": -1,
 }
+
+
+#: Settings the panel holds at its own values, which a saved preset neither
+#: keeps nor sets: a preset saved in napari would otherwise record plotting
+#: turned off, and give it back as on.
+PANEL_HOLDS_ITSELF = frozenset(FORCED_HIDDEN_SETTINGS) | frozenset(DISPLAY_SETTINGS_OFF_IN_NAPARI)
 
 
 def forced_hidden_value(name: str, values: Mapping[str, Any]) -> Any:
@@ -15535,8 +15556,11 @@ def settings_widget(napari_viewer=None):
         EDIT_GRAPH_TOOLTIP,
         LOAD_CONFIG_TOOLTIP,
         LOAD_RUN_TOOLTIP,
+        DELETE_PRESET_TOOLTIP,
         PRESET_TOOLTIP,
         REOPEN_VIEW_TOOLTIP,
+        SAVE_PRESET_TOOLTIP,
+        SAVED_PRESET_TOOLTIP,
         REPORT_TOOLTIP,
         RUN_CHECKS_TOOLTIP,
         RUN_PIPELINE_TOOLTIP,
@@ -15572,7 +15596,9 @@ def settings_widget(napari_viewer=None):
 
     # A standard set of settings to start from, under Load/Save config. It
     # holds nothing once loaded (see `load_preset`), so loading a config or a
-    # run puts it back to None.
+    # run puts it back to None. Below the standard ones, the presets the user
+    # saved on this machine (`pipeline/saved_presets.py`), and the entries
+    # that save and delete them.
     from qtpy.QtWidgets import QComboBox, QLabel
 
     preset_label = QLabel("Preset")
@@ -15580,22 +15606,55 @@ def settings_widget(napari_viewer=None):
     preset_dropdown = QComboBox()
     preset_dropdown.setObjectName("haemolynx_preset")
     preset_dropdown.setToolTip(PRESET_TOOLTIP)
-    for entry in preset_menu():
-        if entry is None:
-            preset_dropdown.insertSeparator(preset_dropdown.count())
-            continue
-        text, name = entry
-        preset_dropdown.addItem(text, name)
-        if name is not None:
-            preset_dropdown.setItemData(
-                preset_dropdown.count() - 1, PRESETS[name]["description"], Qt.ToolTipRole
-            )
+    command_tooltips = {SAVE_PRESET: SAVE_PRESET_TOOLTIP, DELETE_PRESET: DELETE_PRESET_TOOLTIP}
+
+    def fill_preset_menu(shown: str | None = None) -> None:
+        """List the presets, the saved ones read from disk now, showing the
+        entry keyed *shown* (None: the "None" entry)."""
+        saved = saved_presets()
+        saved_dates = {preset.key: preset.saved for preset in saved}
+        preset_dropdown.blockSignals(True)
+        try:
+            preset_dropdown.clear()
+            for entry in preset_menu(saved):
+                if entry is None:
+                    preset_dropdown.insertSeparator(preset_dropdown.count())
+                    continue
+                text, key = entry
+                preset_dropdown.addItem(text, key)
+                if key is None:
+                    continue
+                if key in PRESETS:
+                    tooltip = PRESETS[key]["description"]
+                elif key in command_tooltips:
+                    tooltip = command_tooltips[key]
+                else:
+                    when = (saved_dates.get(key) or "").replace("T", " ")
+                    tooltip = f"{SAVED_PRESET_TOOLTIP} (saved {when})" if when else SAVED_PRESET_TOOLTIP
+                preset_dropdown.setItemData(preset_dropdown.count() - 1, tooltip, Qt.ToolTipRole)
+            index = preset_dropdown.findData(shown) if shown is not None else 0
+            preset_dropdown.setCurrentIndex(max(index, 0))
+        finally:
+            preset_dropdown.blockSignals(False)
+        preset_shown[0] = preset_dropdown.currentData()
+        # The list it opens is as wide as its longest name, every entry in
+        # view, whatever its width.
+        preset_dropdown.setMaxVisibleItems(preset_dropdown.count())
+        preset_dropdown.view().setMinimumWidth(preset_dropdown.view().sizeHintForColumn(0) + 24)
+
+    #: The preset entry shown, which a Save or Delete entry puts back once done.
+    preset_shown: list[str | None] = [None]
+
+    def remember_shown_preset(index: int) -> None:
+        key = preset_dropdown.itemData(index)
+        if key not in command_tooltips:
+            preset_shown[0] = key
+
+    preset_dropdown.currentIndexChanged.connect(remember_shown_preset)
+    fill_preset_menu()
     # Fills the room left of the run-file buttons; `_wrap_row_labels` lets it
-    # shrink with the panel, as every dropdown does. The list it opens is as
-    # wide as its longest name, every entry in view, whatever its width.
+    # shrink with the panel, as every dropdown does.
     preset_dropdown.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-    preset_dropdown.setMaxVisibleItems(preset_dropdown.count())
-    preset_dropdown.view().setMinimumWidth(preset_dropdown.view().sizeHintForColumn(0) + 24)
 
     # What a run puts in the viewer, and how it is coloured. These are panel
     # controls rather than settings: a config file is read by CLI runs too,
@@ -16303,7 +16362,9 @@ def settings_widget(napari_viewer=None):
 
     def load_preset(name: str | None) -> None:
         """Set the rows preset *name* names (`pipeline/presets.py`) and no
-        others; None, the menu's "None", loads nothing.
+        others; None, the menu's "None", loads nothing. A saved preset's key
+        (`pipeline/saved_presets.py`) sets every row a saved preset may hold:
+        those it names to its values, the rest to their defaults.
 
         The preset is not kept: a row changed afterwards, or a config loaded,
         simply replaces what it set. Unlike a config it may tick a vessel-mask
@@ -16312,12 +16373,30 @@ def settings_widget(napari_viewer=None):
         """
         if name is None:
             return
+        passed_over: list[str] = []
+        if is_saved_preset_key(name):
+            try:
+                preset = saved_preset_for_key(name)
+                settings, passed_over = saved_preset_settings(preset, schema)
+            except ValueError as error:
+                report.value = f"Could not load the preset:\n{error}"
+                fill_preset_menu()
+                return
+            settings = {
+                setting: value
+                for setting, value in settings.items()
+                if setting not in PANEL_HOLDS_ITSELF
+            }
+            label = preset.name
+        else:
+            settings = preset_settings(name, schema)
+            label = PRESETS[name]["label"]
         preset_dropdown.setCurrentIndex(preset_dropdown.findData(name))
         before = current_values()
         found: list[str] = []
         preset_search_lines[0] = found
         try:
-            for setting, value in preset_settings(name, schema).items():
+            for setting, value in settings.items():
                 if setting in rows:
                     rows[setting].value = display_value_for(schema[setting], value)
             apply_prerequisites()
@@ -16326,19 +16405,139 @@ def settings_widget(napari_viewer=None):
         after = current_values()
         changed = [
             fields[setting].label
-            for setting in PRESETS[name]["overrides"]
+            for setting in settings
             if setting in rows and before.get(setting) != after.get(setting)
         ]
-        label = PRESETS[name]["label"]
         line = (
             f"Loaded preset {label}: set {', '.join(changed)}"
             if changed
             else f"Loaded preset {label}: its settings were already set"
         )
-        report.value = "\n".join([line, *found])
+        lines = [line, *found]
+        if passed_over:
+            lines.append(f"Not set, as no preset sets them here: {', '.join(passed_over)}")
+        report.value = "\n".join(lines)
+
+    def save_current_preset(name: str) -> bool:
+        """Save the panel's settings as preset *name*, over one saved under
+        the same file name, and show it in the menu. True once written."""
+        values = {
+            setting: value
+            for setting, value in current_values().items()
+            if setting not in PANEL_HOLDS_ITSELF
+        }
+        try:
+            preset = save_preset(name, values, schema)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not save the preset {name!r}:\n{error}"
+            return False
+        fill_preset_menu(preset.key)
+        count = len(preset.settings)
+        changes = (
+            f"{count} setting{'s' if count != 1 else ''} away from their defaults"
+            if count
+            else "every setting at its default"
+        )
+        report.value = (
+            f"Saved the preset {preset.name} ({changes}) in {preset.path}\n"
+            "Not kept, as they belong to one image: its files and folders, "
+            "channels, labels, voxel size, axis order, crop box, boundary nodes "
+            "and positions, and the switches reusing its cached outputs"
+        )
+        return True
+
+    def delete_preset(key: str) -> bool:
+        """Delete the saved preset keyed *key*. True once it is gone."""
+        try:
+            preset = saved_preset_for_key(key)
+            delete_saved_preset(preset)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not delete the preset:\n{error}"
+            fill_preset_menu()
+            return False
+        shown = preset_shown[0]
+        fill_preset_menu(None if shown == key else shown)
+        report.value = f"Deleted the preset {preset.name} ({preset.path})"
+        return True
+
+    def on_save_preset() -> None:
+        from qtpy.QtWidgets import QInputDialog, QLineEdit, QMessageBox
+
+        shown = preset_shown[0]
+        suggested = (
+            preset_dropdown.itemText(preset_dropdown.findData(shown))
+            if is_saved_preset_key(shown)
+            else ""
+        )
+        name, ok = QInputDialog.getText(
+            _dialog_parent(viewer),
+            "Save a preset",
+            "Name of the preset (kept on this machine):",
+            QLineEdit.Normal,
+            suggested,
+        )
+        name = name.strip() if ok else ""
+        try:
+            path = saved_preset_path(name) if name else None
+        except ValueError as error:
+            report.value = f"Could not save the preset {name!r}:\n{error}"
+            path = None
+        if path is None:
+            fill_preset_menu(shown)
+            return
+        if path.exists():
+            answer = QMessageBox.question(
+                _dialog_parent(viewer),
+                "Replace the preset?",
+                f"A preset is already saved as {path.name}. Replace it with "
+                "these settings?",
+            )
+            if answer != QMessageBox.Yes:
+                fill_preset_menu(shown)
+                return
+        if not save_current_preset(name):
+            fill_preset_menu(shown)
+
+    def on_delete_preset() -> None:
+        from qtpy.QtWidgets import QInputDialog, QMessageBox
+
+        shown = preset_shown[0]
+        saved = saved_presets()
+        if not saved:
+            fill_preset_menu(shown)
+            return
+        names = [preset.name for preset in saved]
+        name, ok = QInputDialog.getItem(
+            _dialog_parent(viewer),
+            "Delete a saved preset",
+            "Preset to delete:",
+            names,
+            0,
+            False,
+        )
+        if not ok or name not in names:
+            fill_preset_menu(shown)
+            return
+        preset = saved[names.index(name)]
+        answer = QMessageBox.question(
+            _dialog_parent(viewer),
+            "Delete the preset?",
+            f"Delete the preset {preset.name}? Its file is removed and cannot "
+            "be brought back.",
+        )
+        if answer != QMessageBox.Yes:
+            fill_preset_menu(shown)
+            return
+        delete_preset(preset.key)
 
     def on_preset_chosen(index: int) -> None:
-        load_preset(preset_dropdown.itemData(index))
+        key = preset_dropdown.itemData(index)
+        if key == SAVE_PRESET:
+            on_save_preset()
+        elif key == DELETE_PRESET:
+            on_delete_preset()
+        else:
+            load_preset(key)
 
     # `activated`, not `currentIndexChanged`: choosing the preset already
     # shown loads it again, over rows changed since.
@@ -17861,6 +18060,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_save_config = save_config_file
     panel._haemolynx_preset = preset_dropdown
     panel._haemolynx_load_preset = load_preset
+    panel._haemolynx_save_preset = save_current_preset
+    panel._haemolynx_delete_preset = delete_preset
     panel._haemolynx_save_run = save_run_file
     panel._haemolynx_saving_run = lambda: saving_run[0] is not None
     panel._haemolynx_load_run = load_run_file

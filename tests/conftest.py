@@ -93,6 +93,18 @@ def pytest_configure(config):
     )
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _saved_presets_kept_apart(tmp_path_factory):
+    """Saved presets read from and written to an empty folder, never the
+    folder of the user running the tests: a preset saved there would show in
+    every panel's Preset menu."""
+    from haemolynx.pipeline.saved_presets import PRESET_DIR_ENV
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv(PRESET_DIR_ENV, str(tmp_path_factory.mktemp("saved_presets")))
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_vessel_draw_mode():
     """Tubes/lines is a session view pref; do not leak it between tests."""

@@ -118,8 +118,22 @@ LOAD_CONFIG_TOOLTIP = (
     "and an image layer already open stays the input"
 )
 PRESET_TOOLTIP = (
-    "Start from a standard set of settings: a preset changes only the rows "
-    "it names, and None changes nothing"
+    "Start from a standard set of settings or one you saved: a standard preset "
+    "changes only the rows it names, a saved one every row but one image's "
+    "files and details; None changes nothing"
+)
+SAVE_PRESET_TOOLTIP = (
+    "Keep these settings on this machine as a preset of your own, to load in "
+    "later sessions; the files, folders, channels, voxel size and boundary "
+    "positions of this image are left out"
+)
+DELETE_PRESET_TOOLTIP = (
+    "Remove one of the presets saved on this machine; the standard presets "
+    "cannot be removed"
+)
+SAVED_PRESET_TOOLTIP = (
+    "Your own preset, saved on this machine: it puts every setting back as it "
+    "was saved, except the files, folders and details of one image"
 )
 EDIT_GRAPH_TOOLTIP = (
     "Open the graph editor to add or delete vessels by clicking in the "

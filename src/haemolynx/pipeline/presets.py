@@ -15,15 +15,29 @@ their own settings, so they go on top of a usage.
 A preset picks switches and choices only. It names no file, which belongs to
 the image being analysed, and no numeric threshold, which is calibrated on
 marked data rather than chosen for a usage.
+
+The menu also lists the presets a user saved on this machine
+(:mod:`haemolynx.pipeline.saved_presets`), whole sets of the panel's settings,
+and the entries that save and delete them.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
 from haemolynx.parsers.schema import Schema
 
+if TYPE_CHECKING:
+    from haemolynx.pipeline.saved_presets import SavedPreset
+
 #: The menu entry for no preset, the panel's starting point: it loads nothing.
 NO_PRESET = "None"
+
+#: The menu's entries that act rather than load: keep the panel's settings as
+#: a saved preset, or delete one. Not identifiers, so no preset's key is one.
+SAVE_PRESET = ":save"
+DELETE_PRESET = ":delete"
+SAVE_PRESET_TEXT = "Save these settings as a preset..."
+DELETE_PRESET_TEXT = "Delete a saved preset..."
 
 PRESETS: dict[str, dict[str, Any]] = {
     "quick_look": {
@@ -202,22 +216,37 @@ def preset_settings(name: str, schema: Schema) -> dict[str, Any]:
     }
 
 
-def preset_menu() -> list[Optional[tuple[str, Optional[str]]]]:
-    """The panel's Preset menu, in order: ``(text, preset name)`` entries,
+def preset_menu(
+    saved: Sequence["SavedPreset"] = (),
+) -> list[Optional[tuple[str, Optional[str]]]]:
+    """The panel's Preset menu, in order: ``(text, key)`` entries,
     :data:`NO_PRESET` first standing for no preset (``None``), then the
-    usages, then the rest, each group after a separator (a ``None`` entry)."""
+    usages, then the rest, then the *saved* presets by their keys, then
+    :data:`SAVE_PRESET` and, with any saved, :data:`DELETE_PRESET`; each
+    group after a separator (a ``None`` entry)."""
     usages = [name for name in PRESETS if name in USAGE_PRESETS]
     add_ons = [name for name in PRESETS if name not in USAGE_PRESETS]
     menu: list[Optional[tuple[str, Optional[str]]]] = [(NO_PRESET, None)]
     for group in (usages, add_ons):
         menu.append(None)
         menu.extend((PRESETS[name]["label"], name) for name in group)
+    if saved:
+        menu.append(None)
+        menu.extend((preset.name, preset.key) for preset in saved)
+    menu.append(None)
+    menu.append((SAVE_PRESET_TEXT, SAVE_PRESET))
+    if saved:
+        menu.append((DELETE_PRESET_TEXT, DELETE_PRESET))
     return menu
 
 
 __all__ = [
+    "DELETE_PRESET",
+    "DELETE_PRESET_TEXT",
     "NO_PRESET",
     "PRESETS",
+    "SAVE_PRESET",
+    "SAVE_PRESET_TEXT",
     "USAGE_PRESETS",
     "check_presets",
     "preset_menu",
