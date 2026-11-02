@@ -406,7 +406,7 @@ boundary_assignment:
   large_arteriole_boundary_nodes: []
   # Hold the Ven/Large_Ven hand-off node IDs chosen during the run; leave empty to let the pipeline fill it
   large_venule_boundary_nodes: []
-  # When small-arteriole/venule terminals were expected but are missing, raise; when they were never assigned, still label capillary B* orders from inlets and warn
+  # When small-arteriole/venule terminals were expected but are missing, raise; when they were never assigned, still label capillary B* orders from inlets and warn. Also raise when the Art or Ven tier crosses the capillary bed because a branch has no boundary node of its own (otherwise a warning)
   strict_branch_order_assignment: false
 
 # ------------------------------------------------------------------------

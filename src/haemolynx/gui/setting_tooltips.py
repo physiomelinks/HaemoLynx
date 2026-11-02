@@ -1015,8 +1015,8 @@ SETTING_TOOLTIPS: dict[str, str] = {
     # 5. Diameters
     "strict_branch_order_assignment": (
         "Stop the run when arteriole and venule boundaries were expected, from small-vessel "
-        "masks or a manual pick, but none were found, rather than labelling capillary orders "
-        "only"
+        "masks or a manual pick, but none were found, or one branch lacks its boundary and "
+        "its labels spread across the capillaries"
     ),
     "all_diams_const": (
         "Give every branch order the same fallback width, the \"Default diameter\". Turn off to "

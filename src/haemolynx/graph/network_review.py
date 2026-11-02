@@ -890,9 +890,11 @@ def find_boundary_issues(
     outlet that is not a dead end; one that does not leave the image; a dead
     end that leaves the image but is no boundary node -- a vessel the image
     cut, closed in the solve unless the run gives open ends a boundary
-    condition; and an inlet or outlet carrying less than *min_flow_share* of
-    the network's inflow. *roles* maps ``"inlet"``, ``"outlet"`` and the
-    other boundary roles to their nodes.
+    condition; an inlet or outlet carrying less than *min_flow_share* of
+    the network's inflow; and an Art or Ven tier that crossed the capillary
+    bed for want of a boundary node (:func:`_tiers_across_the_bed`). *roles*
+    maps ``"inlet"``, ``"outlet"`` and the other boundary roles
+    (``"arteriole_boundary"``, ``"venule_boundary"``, ...) to their nodes.
 
     Whether a dead end leaves the image is the one definition
     (:func:`haemolynx.graph.dead_ends.node_leaves_image`: its kind when the
@@ -954,8 +956,38 @@ def find_boundary_issues(
             add(2, node, "open end at a face",
                 f"Node {node} is a dead end leaving the image but no boundary node: the vessel the image cut "
                 "is closed in the solve unless open ends get a boundary condition (open_end_model).")
+    for node, side, missing in _tiers_across_the_bed(G, roles):
+        add(4, node, "tier crosses the bed",
+            f"The {side} tier reaches node {node} on the other side of the capillary bed: a branch it runs "
+            f"along has no {missing} boundary node, so every vessel on the way, capillaries included, is "
+            f"labelled {side}. Add the {missing} boundary node where that branch meets the capillaries.")
     found.sort(key=lambda pair: pair[0])
     return [item for _order, item in found]
+
+
+def _tiers_across_the_bed(G: nx.MultiGraph, roles: Mapping[str, Iterable[Any]]) -> list[tuple[Any, str, str]]:
+    """``(node, tier, boundary missing)`` where an Art vessel ends on the
+    venous side (an outlet, a venule boundary node, the Large_Ven tier) or a
+    Ven vessel on the arterial side: where the tier search crossed the bed
+    (``graph.branch_order.BranchOrderLeakWarning``)."""
+    from .branch_order import _tier_and_number
+
+    tiers_at: dict[Any, set[str]] = {}
+    for u, v, data in G.edges(data=True):
+        parsed = _tier_and_number(data.get("branch_order"))
+        if parsed is not None:
+            tiers_at.setdefault(u, set()).add(parsed[0])
+            tiers_at.setdefault(v, set()).add(parsed[0])
+    venous = {*(roles.get("outlet") or ()), *(roles.get("venule_boundary") or ())}
+    arterial = {*(roles.get("inlet") or ()), *(roles.get("arteriole_boundary") or ())}
+    found = []
+    for node in G.nodes:
+        tiers = tiers_at.get(node, set())
+        if "art" in tiers and (node in venous or "large_ven" in tiers):
+            found.append((node, "Art", "arteriole"))
+        if "ven" in tiers and (node in arterial or "large_art" in tiers):
+            found.append((node, "Ven", "venule"))
+    return found
 
 
 # --- needing the segmented mask ------------------------------------------------------

@@ -437,7 +437,8 @@ def test_with_the_box_off_branch_orders_come_first_and_an_old_convention_goes(tm
     assert size_convention_of(G) is None
     assert _trunk(G, VESSEL_SIZE_CLASS) == [None, None, None]
     assert _trunk(G, GLOBAL_MASK_CLASS) == [None, None, None]
-    assert _trunk(G, "branch_order") == ["B01", "B02", "B03"]
+    # The trunk does not branch: one vessel, of the first order.
+    assert _trunk(G, "branch_order") == ["B01", "B01", "B01"]
     assert _trunk(G, "diameter_source") == ["edt_mask"] * 3
 
 

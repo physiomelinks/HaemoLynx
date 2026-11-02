@@ -75,6 +75,13 @@ LARGE_MASK_VESSEL_TYPE = "large_mask_vessel_type"
 #: vessel beside the others.
 SMALL_MASK_VESSEL_TYPE = "small_mask_vessel_type"
 
+#: Edge attribute marking a capillary whose ``B`` order is counted from the
+#: venous side, :data:`VENOUS_SIDE`: the arterial side reaches it only through
+#: a venule or the large vein, which the ``B`` search does not cross (see
+#: :func:`assign_hierarchical_branch_orders`). Absent on every other vessel.
+BRANCH_ORDER_BASIS = "branch_order_basis"
+VENOUS_SIDE = "venous_side"
+
 
 def _tag_mask_vessel_types(
     G: nx.MultiGraph,
@@ -220,18 +227,39 @@ class MissingLargeVesselTierWarning(UserWarning):
     outlet, so the tier is empty and Art or Ven is counted as without one."""
 
 
+class BranchOrderLeakWarning(UserWarning):
+    """The Art tier reached the venous side of the capillary bed (a venule
+    boundary node, an outlet or the Large_Ven tier), or the Ven tier the
+    arterial side, because a branch it runs along has no boundary node of its
+    own. The tier stops there, but every vessel on the way is labelled with
+    it, capillaries included."""
+
+
+def _passing_nodes(G: nx.MultiGraph) -> set[Any]:
+    """The nodes where a vessel only carries on: two vessels meet there and
+    neither is a loop on the node. No branching happens at one."""
+    return {node for node, degree in G.degree() if degree == 2 and not G.has_edge(node, node)}
+
+
 def _compute_node_distances(
     G: nx.MultiGraph,
     inlet_nodes: list[int],
     stop_nodes: set[int] | None = None,
+    passing_nodes: set[Any] | None = None,
 ) -> dict[int, int]:
     """Compute unweighted BFS node distances with optional stop nodes.
 
     A zero-resistance bridge is no step: it is the radius of the thick vessel
     a vessel opens into, so the vessel is one order from the thick vessel,
-    not two.
+    not two. Nor is entering one of *passing_nodes* (by default
+    :func:`_passing_nodes` of *G*; a caller searching a view of a graph
+    passes the whole graph's): a vessel split in two there, by an edit or a
+    step that left the node, is still one vessel of one order. Each such node
+    used to add an order to everything past it.
     """
     stop_nodes = stop_nodes or set()
+    if passing_nodes is None:
+        passing_nodes = _passing_nodes(G)
     node_distances: dict[int, int] = {}
     queue: deque[tuple[int, int]] = deque()
 
@@ -254,7 +282,7 @@ def _compute_node_distances(
             continue
         for neighbor, between in G.adj[current_node].items():
             datas = between.values() if G.is_multigraph() else (between,)
-            step = 0 if all(d.get(IS_ZERO_RESISTANCE) for d in datas) else 1
+            step = 0 if neighbor in passing_nodes or all(d.get(IS_ZERO_RESISTANCE) for d in datas) else 1
             new_distance = distance + step
             if (
                 neighbor not in node_distances
@@ -275,9 +303,12 @@ def assign_branch_orders(
     stop_nodes: set[int] | None = None,
     excluded_edges: set[tuple[int, int, int]] | None = None,
     included_edges: set[tuple[int, int, int]] | None = None,
+    passing_nodes: set[Any] | None = None,
 ) -> dict:
     """Assign branch-order labels to edges from BFS distance to inlet nodes.
 
+    The distance steps at each junction, not at a node where only two
+    vessels meet (*passing_nodes*, see :func:`_compute_node_distances`).
     A zero-resistance bridge gets none (and loses any it had): it is not a
     vessel of any order. Nor has an edge the search from the inlets does not
     reach -- a piece of the network cut off from them -- which loses any it
@@ -289,6 +320,7 @@ def assign_branch_orders(
         G,
         inlet_nodes,
         stop_nodes=stop_nodes,
+        passing_nodes=passing_nodes,
     )
     excluded_edges = excluded_edges or set()
     included_edges = included_edges or set()
@@ -473,6 +505,16 @@ def _run_on_along_small_mask(
     return added
 
 
+def _without_edges(G: nx.MultiGraph, edges: set[tuple[Any, Any, Any]]) -> nx.MultiGraph:
+    """*G* without *edges* (``edge_id`` form), as a view; *G* itself when
+    there are none."""
+    if not edges:
+        return G
+    return G.edge_subgraph(
+        (u, v, key) for u, v, key in G.edges(keys=True) if edge_id(u, v, key) not in edges
+    )
+
+
 def _tier_from_seeds(
     G: nx.MultiGraph,
     seeds: list[Any],
@@ -480,45 +522,48 @@ def _tier_from_seeds(
     prefix: str,
     vessel: str,
     stop_nodes: set[Any],
+    far_side_nodes: set[Any],
     excluded_edges: set[tuple[Any, Any, Any]],
-) -> tuple[dict, set[tuple[Any, Any, Any]]]:
-    """The Art or Ven tier with no Large tier on its side: every edge both
-    of whose ends a search from *seeds* reaches before *stop_nodes*, run on
-    along the small mask (:func:`_run_on_along_small_mask`)."""
-    reached = set(_compute_node_distances(G, seeds, stop_nodes=stop_nodes))
+) -> tuple[dict, set[tuple[Any, Any, Any]], list[Any]]:
+    """The Art or Ven tier with no Large tier on its side: every edge outside
+    *excluded_edges* that a search from *seeds* reaches before *stop_nodes*
+    (the tier's own boundary nodes) or *far_side_nodes* (the other side of the
+    capillary bed), run on along the small mask
+    (:func:`_run_on_along_small_mask`), counted along the tier's own vessels.
+
+    An edge is in the tier only when one of its ends lies inside it: a
+    vessel between two boundary nodes lies beyond both (it used to be taken,
+    so a capillary joining two arterioles' boundary nodes was Art). A vessel
+    of the small mask there comes back with the run-on.
+
+    Also returns the far-side nodes the search reached: where a branch with
+    no boundary node of its own carried the tier across the bed. Without the
+    far side to stop it, the search ran on through the bed to the outlet and
+    took the other side's vessels too.
+    """
+    search = _without_edges(G, excluded_edges)
+    ends = set(stop_nodes) | set(far_side_nodes)
+    reached = set(
+        _compute_node_distances(
+            search, [node for node in seeds if node in search or node not in G], stop_nodes=ends
+        )
+    )
     edges = {
         edge_id(u, v, key)
-        for u, v, key in G.edges(keys=True)
-        if u in reached and v in reached
+        for u, v, key in search.edges(keys=True)
+        if u in reached and v in reached and not (u in ends and v in ends)
     }
-    added = _run_on_along_small_mask(
-        G,
-        edges,
-        set(seeds) | _edge_ends(edges - excluded_edges),
-        vessel=vessel,
-        excluded_edges=excluded_edges,
+    leaked = sort_nodes(node for node in reached if node in far_side_nodes and node not in set(seeds))
+    edges |= _run_on_along_small_mask(
+        G, edges, set(seeds) | _edge_ends(edges), vessel=vessel, excluded_edges=excluded_edges
     )
-    if added:
-        # Counted along the tier's own vessels, through the boundary nodes
-        # it now runs past.
-        edges |= added
-        view = G.edge_subgraph(edges)
-        results = assign_branch_orders(
-            view,
-            [node for node in seeds if node in view],
-            prefix=prefix,
-            excluded_edges=excluded_edges,
-        )
-    else:
-        results = assign_branch_orders(
-            G,
-            seeds,
-            prefix=prefix,
-            stop_nodes=stop_nodes,
-            excluded_edges=excluded_edges,
-            included_edges=edges,
-        )
-    return results, edges
+    # Counted along the tier's own vessels, through the boundary nodes the
+    # run-on takes it past.
+    view = G.edge_subgraph(edges)
+    results = assign_branch_orders(
+        view, [node for node in seeds if node in view], prefix=prefix, passing_nodes=_passing_nodes(G)
+    )
+    return results, edges, leaked
 
 
 def _tier_from_large_vessel(
@@ -550,9 +595,65 @@ def _tier_from_large_vessel(
     # Run on along the small mask, the tier is counted through the boundary
     # nodes it now runs past.
     results = assign_branch_orders(
-        view, starts, prefix=prefix, stop_nodes=set() if added else stop_nodes - set(starts)
+        view,
+        starts,
+        prefix=prefix,
+        stop_nodes=set() if added else stop_nodes - set(starts),
+        passing_nodes=_passing_nodes(G),
     )
     return results, edges
+
+
+def _capillary_branch_orders(
+    G: nx.MultiGraph,
+    *,
+    arterial_edges: set[tuple[Any, Any, Any]],
+    venous_edges: set[tuple[Any, Any, Any]],
+    feeds: Iterable[Any],
+    drains: Iterable[Any],
+) -> dict:
+    """``B`` orders on every vessel outside the tiers (*arterial_edges*,
+    *venous_edges*), counted through those vessels alone from *feeds* and
+    from every node where they leave an arterial tier.
+
+    The search crosses no tier: it used to walk the venules and the large
+    vein, so a capillary nearer an arterial feed by way of a vein took the
+    vein's count. A capillary the arterial side reaches only through a vein
+    is counted from where it meets the venous side (*drains*, and every node
+    where it meets a venous tier), and marked :data:`BRANCH_ORDER_BASIS`
+    :data:`VENOUS_SIDE`; ``results["from_venous_side"]`` counts them.
+    """
+    for data in G.edges.values():
+        data.pop(BRANCH_ORDER_BASIS, None)
+    view = _without_edges(G, arterial_edges | venous_edges)
+    arterial_ends, venous_ends = _edge_ends(arterial_edges), _edge_ends(venous_edges)
+    drains = set(drains) | venous_ends
+    starts = sort_nodes(
+        set(feeds) | {node for node in arterial_ends - drains if node in view}
+    )
+    passing = _passing_nodes(G)
+    results = assign_branch_orders(
+        view, [node for node in starts if node in view or node not in G], passing_nodes=passing
+    )
+    unreached = {edge_id(*edge) for edge in results["unreachable_edges"]}
+    results["from_venous_side"] = 0
+    if unreached:
+        from_venous = assign_branch_orders(
+            view,
+            [node for node in sort_nodes(drains) if node in view],
+            included_edges=unreached,
+            passing_nodes=passing,
+        )
+        for u, v, key in G.edges(keys=True):
+            data = G.edges[u, v, key]
+            if edge_id(u, v, key) in unreached and "branch_order" in data:
+                data[BRANCH_ORDER_BASIS] = VENOUS_SIDE
+        results["from_venous_side"] = from_venous["edges_assigned"]
+        results["unreachable_edges"] = from_venous["unreachable_edges"]
+        for label, count in from_venous["branch_order_counts"].items():
+            results["branch_order_counts"][label] += count
+        results["edges_assigned"] += from_venous["edges_assigned"]
+    return results
 
 
 def _large_tier_or_warn(
@@ -621,6 +722,12 @@ def assign_hierarchical_branch_orders(
     (:class:`MissingLargeVesselTierWarning`) and leaves Art or Ven as without
     one. Leaving both lists empty (the default) reproduces the behaviour
     without a large tier exactly, whatever tags the graph carries.
+
+    Without a Large tier, Art and Ven stop at the other side of the bed too;
+    a tier that reaches it warns (:class:`BranchOrderLeakWarning`) and names
+    the nodes in ``arteriole_leaked_to`` / ``venule_leaked_to``. The ``B``
+    orders are counted through the vessels outside every tier alone
+    (:func:`_capillary_branch_orders`).
     """
     arteriole_boundary_set = set(arteriole_boundary_nodes)
     venule_boundary_set = set(venule_boundary_nodes)
@@ -632,12 +739,14 @@ def assign_hierarchical_branch_orders(
     )
     large_edges = large_arteriole_edges | large_venule_edges
 
+    passing = _passing_nodes(G)
     large_arteriole_results = None
     arteriole_hand_offs: list[Any] = []
     if large_arteriole_edges:
         view = G.edge_subgraph(large_arteriole_edges)
         large_arteriole_results = assign_branch_orders(
-            view, [node for node in inlet_nodes if node in view], prefix="Large_Art"
+            view, [node for node in inlet_nodes if node in view], prefix="Large_Art",
+            passing_nodes=passing,
         )
         arteriole_hand_offs = _hand_off_nodes(G, large_arteriole_edges)
     large_venule_results = None
@@ -645,10 +754,13 @@ def assign_hierarchical_branch_orders(
     if large_venule_edges:
         view = G.edge_subgraph(large_venule_edges)
         large_venule_results = assign_branch_orders(
-            view, [node for node in outlet_nodes if node in view], prefix="Large_Ven"
+            view, [node for node in outlet_nodes if node in view], prefix="Large_Ven",
+            passing_nodes=passing,
         )
         venule_hand_offs = _hand_off_nodes(G, large_venule_edges)
 
+    arteriole_leaked: list[Any] = []
+    venule_leaked: list[Any] = []
     if large_arteriole_edges:
         arteriole_results, arteriole_edges = _tier_from_large_vessel(
             G,
@@ -663,12 +775,13 @@ def assign_hierarchical_branch_orders(
             excluded_edges=large_edges,
         )
     else:
-        arteriole_results, arteriole_edges = _tier_from_seeds(
+        arteriole_results, arteriole_edges, arteriole_leaked = _tier_from_seeds(
             G,
             inlet_nodes,
             prefix="Art",
             vessel="arteriole",
             stop_nodes=arteriole_boundary_set,
+            far_side_nodes=set(outlet_nodes) | venule_boundary_set | _edge_ends(large_venule_edges),
             excluded_edges=large_edges,
         )
 
@@ -686,14 +799,31 @@ def assign_hierarchical_branch_orders(
             excluded_edges=large_edges | arteriole_edges,
         )
     else:
-        venule_results, venule_edges = _tier_from_seeds(
+        venule_results, venule_edges, venule_leaked = _tier_from_seeds(
             G,
             outlet_nodes,
             prefix="Ven",
             vessel="venule",
             stop_nodes=venule_boundary_set,
+            far_side_nodes=(
+                set(inlet_nodes) | arteriole_boundary_set | _edge_ends(large_arteriole_edges)
+            ),
             excluded_edges=arteriole_edges | large_edges,
         )
+    for name, leaked, far_side, own in (
+        ("Art", arteriole_leaked, "venule boundary node(s), outlet(s) or the large vein", "arteriole"),
+        ("Ven", venule_leaked, "arteriole boundary node(s), inlet(s) or the large arteriole", "venule"),
+    ):
+        if leaked:
+            warnings.warn(
+                f"The {name} tier reached {len(leaked)} {far_side} across the capillary bed "
+                f"(nodes {leaked[:10]}): a branch it runs along has no {own} boundary node of "
+                f"its own. The tier stops there, but every vessel on the way, capillaries "
+                f"included, is labelled {name}. Add the missing {own} boundary node; Post "
+                "processing's Boundary nodes list shows where the tier crossed.",
+                BranchOrderLeakWarning,
+                stacklevel=2,
+            )
 
     capillary_start_nodes = list(
         arteriole_boundary_nodes if arteriole_boundary_nodes else inlet_nodes
@@ -702,11 +832,12 @@ def assign_hierarchical_branch_orders(
         node for node in arteriole_hand_offs if node not in set(capillary_start_nodes)
     ]
     capillary_excluded_edges = arteriole_edges | venule_edges | large_edges
-    capillary_results = assign_branch_orders(
+    capillary_results = _capillary_branch_orders(
         G,
-        capillary_start_nodes,
-        prefix="B",
-        excluded_edges=capillary_excluded_edges,
+        arterial_edges=arteriole_edges | large_arteriole_edges,
+        venous_edges=venule_edges | large_venule_edges,
+        feeds=capillary_start_nodes,
+        drains=set(outlet_nodes) | venule_boundary_set,
     )
 
     return {
@@ -720,6 +851,9 @@ def assign_hierarchical_branch_orders(
         "large_arteriole_edge_count": len(large_arteriole_edges),
         "large_venule_edge_count": len(large_venule_edges),
         "excluded_capillary_edge_count": len(capillary_excluded_edges),
+        "capillary_from_venous_side_count": capillary_results["from_venous_side"],
+        "arteriole_leaked_to": arteriole_leaked,
+        "venule_leaked_to": venule_leaked,
     }
 
 
@@ -737,7 +871,9 @@ def assign_large_tier_branch_orders(
     nodes, so there is no Art/Ven tier, but the large vessels are known. The
     Large tiers are read as :func:`assign_hierarchical_branch_orders` reads
     them, and every other vessel is a capillary, its ``B`` order counted from
-    the inlets and from where it leaves the Large_Art tier. Hierarchical mode
+    the inlets and from where it leaves the Large_Art tier, never through a
+    large vessel (one reached only through the large vein is counted from it,
+    marked :data:`BRANCH_ORDER_BASIS`). Hierarchical mode
     used to be the only way to a Large tier, so such a run fell back to ``B``
     orders from the inlets and its large arteriole was B01.
 
@@ -751,7 +887,6 @@ def assign_large_tier_branch_orders(
     )
     if not large_arteriole_edges and not large_venule_edges:
         return None
-    large_edges = large_arteriole_edges | large_venule_edges
     results: dict[str, Any] = {"large_arteriole": None, "large_venule": None}
     arteriole_hand_offs: list[Any] = []
     for name, edges, roots, prefix in (
@@ -762,14 +897,22 @@ def assign_large_tier_branch_orders(
             continue
         view = G.edge_subgraph(edges)
         results[name] = assign_branch_orders(
-            view, [node for node in roots if node in view], prefix=prefix
+            view, [node for node in roots if node in view], prefix=prefix,
+            passing_nodes=_passing_nodes(G),
         )
         if prefix == "Large_Art":
             arteriole_hand_offs = _hand_off_nodes(G, edges)
     starts = list(inlet_nodes) + [node for node in arteriole_hand_offs if node not in set(inlet_nodes)]
-    results["capillary"] = assign_branch_orders(G, starts, prefix="B", excluded_edges=large_edges)
+    results["capillary"] = _capillary_branch_orders(
+        G,
+        arterial_edges=large_arteriole_edges,
+        venous_edges=large_venule_edges,
+        feeds=starts,
+        drains=outlet_nodes,
+    )
     results["large_arteriole_edge_count"] = len(large_arteriole_edges)
     results["large_venule_edge_count"] = len(large_venule_edges)
+    results["capillary_from_venous_side_count"] = results["capillary"]["from_venous_side"]
     return results
 
 
@@ -788,6 +931,7 @@ def assign_unknown_vessel_classes(
     counts: dict[str, int] = defaultdict(int)
     bridges = 0
     for _u, _v, data in G.edges(data=True):
+        data.pop(BRANCH_ORDER_BASIS, None)
         if data.get(IS_ZERO_RESISTANCE):
             data.pop("branch_order", None)
             bridges += 1
@@ -922,9 +1066,19 @@ def assign_vessel_branch_orders(
     -------
     dict
         Summary with ``mode`` of ``"hierarchical"``, ``"large_tier"``, ``"capillary"``,
-        or ``"skipped"``.
+        or ``"skipped"`` (no inlets: every order is taken off, as no search
+        reaches any vessel; they used to be left as an earlier assignment
+        wrote them).
+
+    With *strict_hierarchical*, an Art or Ven tier that reaches the other
+    side of the bed (:class:`BranchOrderLeakWarning`) raises too, once the
+    orders are written.
     """
+    for data in G.edges.values():
+        data.pop(BRANCH_ORDER_BASIS, None)
     if not inlet_nodes:
+        for data in G.edges.values():
+            data.pop("branch_order", None)
         return {"mode": "skipped", "reason": "no_inlet_nodes"}
 
     outlet_nodes = list(outlet_nodes or [])
@@ -997,6 +1151,19 @@ def assign_vessel_branch_orders(
             large_venule_boundary_nodes=large_venule_boundary_nodes,
         )
         summary: dict[str, Any] = {"mode": "hierarchical", **branch_results}
+        leaked = {
+            tier: branch_results[key]
+            for tier, key in (("Art", "arteriole_leaked_to"), ("Ven", "venule_leaked_to"))
+            if branch_results[key]
+        }
+        if strict_hierarchical and leaked:
+            raise ValueError(
+                "Strict branch-order assignment is enabled, but the "
+                + " and ".join(f"{tier} tier reached the other side of the capillary bed at {nodes}"
+                               for tier, nodes in leaked.items())
+                + ": a branch has no boundary node of its own. Add the missing boundary "
+                "node(s) or disable strict_hierarchical."
+            )
     else:
         large_results = (
             assign_large_tier_branch_orders(

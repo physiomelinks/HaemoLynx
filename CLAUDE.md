@@ -711,7 +711,15 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   mode `large_tier`). `capillary_start_nodes(..., graph=G)` adds the Large_Art/B and Large_Ven/B
   hand-offs to the feeds and drains. An empty tier or boundary list the run expected warns
   (`MissingLargeVesselTierWarning`, `MissingSmallVesselAssignmentWarning`). The small-mask tiers
-  have only been measured on stand-in masks.
+  have only been measured on stand-in masks. **B is counted through the vessels outside every
+  tier alone** (`_capillary_branch_orders`); a capillary the arterial side reaches only through a
+  vein is counted from the venous side and marked `graph.BRANCH_ORDER_BASIS`. Without a Large
+  tier, Art and Ven stop at the bed's far side, and a tier that reaches it warns
+  (`BranchOrderLeakWarning`; strict raises; Post processing's Boundary nodes list shows where).
+  **An order steps only at a junction**: a node where two vessels meet (`_passing_nodes`, read on
+  the whole graph, so a tier's hand-offs still step) is no step, so a fixture's chain of edges
+  is one vessel of one order. What is still open: `PLAN_branch_orders.md`; history in
+  `docs/notes/vessel_masks_and_boundaries.md`.
 - **Boundary nodes after hand edits** — `post_process` tags the vessels an edit made by the same
   overlap rules (`tag_edges_in_large_vessel_masks`, `tag_edges_in_small_vessel_masks`) and
   re-judges boundary nodes only at the nodes the edits touched (`graph.touched_nodes`,

@@ -130,6 +130,7 @@ from .collapse import collapse_node_clusters
 from .direction_aware_collapse import collapse_node_clusters_direction_aware
 from .persistence_collapse import collapse_node_clusters_persistence
 from .branch_order import (
+    BRANCH_ORDER_BASIS,
     BRANCH_ORDER_CATEGORY_SEQUENCE,
     GLOBAL_MASK_CLASS,
     LARGE_MASK_VESSEL_TYPE,
@@ -138,6 +139,8 @@ from .branch_order import (
     UNKNOWN_LARGE_VESSEL,
     UNKNOWN_SMALL_VESSEL,
     UNKNOWN_VESSEL_CLASSES,
+    VENOUS_SIDE,
+    BranchOrderLeakWarning,
     MissingLargeVesselTierWarning,
     MissingSmallVesselAssignmentWarning,
     assign_branch_orders,
@@ -398,6 +401,9 @@ __all__ = [
     "tag_large_mask_vessel_types",
     "tag_small_mask_vessel_types",
     "MissingLargeVesselTierWarning",
+    "BranchOrderLeakWarning",
+    "BRANCH_ORDER_BASIS",
+    "VENOUS_SIDE",
     "BRANCH_ORDER_CATEGORY_SEQUENCE",
     "GLOBAL_MASK_CLASS",
     "LARGE_MASK_VESSEL_TYPE",

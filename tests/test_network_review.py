@@ -361,6 +361,39 @@ def test_without_the_image_size_only_what_the_graph_shows_is_judged():
     assert item.measures["issue"] == "not a dead end"
 
 
+def test_a_tier_that_crossed_the_capillary_bed_is_listed_where_it_did():
+    """An arteriole branch with no boundary node of its own carries Art
+    across the bed to the venule boundary node 6 (graph.BranchOrderLeakWarning):
+    the Boundary nodes list shows that node, so the missing boundary can be
+    added. A tier that closes on every branch lists nothing."""
+    import warnings
+
+    from haemolynx.graph import BranchOrderLeakWarning, assign_vessel_branch_orders
+
+    positions = {n: (0.0, 10.0 * n, 0.0) for n in range(8)}
+    G = _graph(positions)
+    for u, v in [(0, 1), (1, 2), (1, 3), (2, 4), (3, 5), (4, 6), (5, 6), (6, 7)]:
+        _vessel(G, u, v)
+    roles = {"inlet": [0], "outlet": [7], "arteriole_boundary": [2], "venule_boundary": [6]}
+    with pytest.warns(BranchOrderLeakWarning):
+        assign_vessel_branch_orders(
+            G, [0], outlet_nodes=[7], arteriole_boundary_nodes=[2], venule_boundary_nodes=[6]
+        )
+
+    crossed = [item for item in nr.find_boundary_issues(G, roles) if item.measures["issue"] == "tier crosses the bed"]
+
+    assert [(item.nodes, item.measures["role"]) for item in crossed] == [((6,), "venule_boundary")]
+    assert "no arteriole boundary node" in crossed[0].why
+
+    closed = dict(roles, arteriole_boundary=[2, 3])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", BranchOrderLeakWarning)
+        assign_vessel_branch_orders(
+            G, [0], outlet_nodes=[7], arteriole_boundary_nodes=[2, 3], venule_boundary_nodes=[6]
+        )
+    assert not [item for item in nr.find_boundary_issues(G, closed) if item.measures["issue"] == "tier crosses the bed"]
+
+
 # --- needing the mask -----------------------------------------------------------------
 
 

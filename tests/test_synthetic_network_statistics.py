@@ -71,11 +71,11 @@ def _build_synthetic_network() -> tuple[nx.MultiGraph, dict[str, int]]:
     # calculate_edge_length to exercise the pipeline length function.
     weighted_edges = [
         (0, 1, 12.0),  # Art1
-        (1, 2, 15.0),  # Art2
+        (1, 2, 15.0),  # Art1 (1 is no junction)
         (2, 3, 14.0),  # BO1
-        (3, 5, 13.0),  # BO2
+        (3, 5, 13.0),  # BO1 (3 is no junction)
         (2, 4, 16.0),  # BO1
-        (4, 5, 12.0),  # BO2
+        (4, 5, 12.0),  # BO1 (4 is no junction)
         (5, 6, 11.0),  # Ven1
     ]
     for u, v, weight in weighted_edges:
@@ -126,8 +126,7 @@ def _write_ground_truth_branch_csv(
                 "Notes",
             ]
         )
-        for branch in ["Art1", "Art2", "BO1", "BO2", "Ven1"]:
-            vals = expected_branch_stats[branch]
+        for branch, vals in expected_branch_stats.items():
             writer.writerow(
                 [
                     branch,
@@ -357,7 +356,7 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
         "Number of Branching Points": 2,
         "Statistics Mode": "fast",
     }
-    # Parent Art2 arrives at node 2 along +x; both BO1 daughters leave at
+    # Parent Art1 arrives at node 2 along +x; both BO1 daughters leave at
     # (z, y, x) = (±5, 0, 10) relative to that incoming tangent.
     parent_in = np.array([0.0, 0.0, 10.0])
     daughter = np.array([5.0, 0.0, 10.0])
@@ -374,30 +373,21 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
         )
     )
     na_emergence = "N/A (no unique parent junction)"
+    # Only 2 and 5 are junctions, so the orders step there alone: 0-1-2 is
+    # one arteriole (Art1) and each capillary 2-3-5, 2-4-5 one BO1. The angle
+    # is the two capillaries' at 2; the edges after 3 and 4 have none.
     expected_branch_stats = {
         "Art1": {
-            "Edge Count": 1,
-            "Mean Length (microns)": 12.0,
-            "Mean Tortuosity Index": 1.2,
-            "Mean Emergence Angle (degrees)": na_emergence,
-        },
-        "Art2": {
-            "Edge Count": 1,
-            "Mean Length (microns)": 15.0,
-            "Mean Tortuosity Index": 1.5,
+            "Edge Count": 2,
+            "Mean Length (microns)": 13.5,
+            "Mean Tortuosity Index": (1.2 + 1.5) / 2,
             "Mean Emergence Angle (degrees)": na_emergence,
         },
         "BO1": {
-            "Edge Count": 2,
-            "Mean Length (microns)": 15.0,
-            "Mean Tortuosity Index": 15.0 / straight_diag,
+            "Edge Count": 4,
+            "Mean Length (microns)": 13.75,
+            "Mean Tortuosity Index": 13.75 / straight_diag,
             "Mean Emergence Angle (degrees)": expected_bo1_angle,
-        },
-        "BO2": {
-            "Edge Count": 2,
-            "Mean Length (microns)": 12.5,
-            "Mean Tortuosity Index": 12.5 / straight_diag,
-            "Mean Emergence Angle (degrees)": na_emergence,
         },
         "Ven1": {
             "Edge Count": 1,
@@ -427,7 +417,7 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
         float(expected_stats["Average Degree"]), rel=1e-12
     )
 
-    assert list(branch_stats.keys()) == ["Art1", "Art2", "BO1", "BO2", "Ven1"]
+    assert list(branch_stats.keys()) == ["Art1", "BO1", "Ven1"]
     for branch, expected in expected_branch_stats.items():
         actual = branch_stats[branch]
         assert int(actual["Edge Count"]) == int(expected["Edge Count"])

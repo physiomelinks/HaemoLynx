@@ -43,6 +43,14 @@ def _labelled(G, feeds):
     return G
 
 
+def _with_side_capillaries(G, nodes):
+    """*G* with a 10 um dead-end capillary leaving each of *nodes*, so each is
+    a junction: the B orders step only where vessels branch."""
+    for node in nodes:
+        _vessel(G, node, 1000 + node)
+    return G
+
+
 def _rows(result):
     return result[SECTION]
 
@@ -90,11 +98,11 @@ def test_two_feeds_on_a_ladder_join_halfway_between_them(segments):
 def _uneven_chain():
     """Feeds 0 and 4 four vessels apart; the vessel off feed 0 is 100 um, the
     other three 10 um. By hops node 2 is halfway; by length node 1 is nearer
-    feed 4 (30 um) than feed 0 (100 um)."""
+    feed 4 (30 um) than feed 0 (100 um). A side capillary leaves 1, 2 and 3."""
     G = nx.MultiGraph()
     for (u, v), length in zip(((0, 1), (1, 2), (2, 3), (3, 4)), (100.0, 10.0, 10.0, 10.0)):
         _vessel(G, u, v, length)
-    return _labelled(G, [0, 4])
+    return _labelled(_with_side_capillaries(G, (1, 2, 3)), [0, 4])
 
 
 def test_hop_and_length_weighting_put_the_watershed_in_different_places():
@@ -119,12 +127,13 @@ def test_a_bridge_is_no_step():
     """Feed 9 opens into the bed through a 5 um zero-resistance bridge to node
     1. As no step, node 2 is one vessel from feed 9 and two from feed 4, so the
     beds meet on 2-3 (a B02); counted as a step, node 2 would be equidistant
-    and the watershed slide to the B01 at 1-2."""
+    and the watershed slide to the B01 at 1-2. A side capillary leaves 2 and
+    3."""
     G = nx.MultiGraph()
     G.add_edge(9, 1, length=5.0, **{IS_ZERO_RESISTANCE: True})
     for u, v in ((1, 2), (2, 3), (3, 4)):
         _vessel(G, u, v)
-    _labelled(G, [9, 4])
+    _labelled(_with_side_capillaries(G, (2, 3)), [9, 4])
 
     rows = _rows(compute_capillary_bed_joins(G, [9, 4]))
 
@@ -181,8 +190,9 @@ def test_a_tree_with_no_anastomosis_has_every_bed_censored_with_its_reason():
         "blind_end",
     ]
     assert all(row["censored"] for row in table.values())
-    # Censored at the highest B order each bed was followed to.
-    assert [table[bed]["join_order"] for bed in ("F01", "F02", "F03")] == [2, 2, 1]
+    # Censored at the highest B order each bed was followed to: past the
+    # junction at 1 for feed 0; 10-11-12 is one capillary (11 is no junction).
+    assert [table[bed]["join_order"] for bed in ("F01", "F02", "F03")] == [2, 1, 1]
     assert [table[bed]["arteriolar_tree"] for bed in ("F01", "F02", "F03")] == ["T01", "T01", ""]
     assert all(np.isnan(data["bed_join_order"]) for *_e, data in G.edges(data=True) if "bed_join_order" in data)
     # Only capillaries belong to a bed.
@@ -222,7 +232,8 @@ def test_beds_meeting_only_at_a_venule_do_not_join():
 
 def test_joins_are_classed_within_or_between_arteriolar_trees():
     """Inlet 100's tree feeds 0 and 10, inlet 200's feeds 20. Beds 0 and 10
-    meet at B01 (within one tree); bed 20 meets bed 10 at B02 (between)."""
+    meet at B01 (within one tree); bed 20 meets bed 10 on the capillary
+    10-11-12-20, also a B01, as 11 and 12 are no junctions (between)."""
     G = nx.MultiGraph()
     for u, v in ((100, 101), (101, 0), (101, 10), (200, 20)):
         _vessel(G, u, v)
@@ -236,7 +247,7 @@ def test_joins_are_classed_within_or_between_arteriolar_trees():
 
     table = _table(G)
     assert [table[bed]["arteriolar_tree"] for bed in ("F01", "F02", "F03")] == ["T01", "T01", "T02"]
-    assert [table[bed]["join_order"] for bed in ("F01", "F02", "F03")] == [1, 1, 2]
+    assert [table[bed]["join_order"] for bed in ("F01", "F02", "F03")] == [1, 1, 1]
     assert [table[bed]["joins_bed"] for bed in ("F01", "F02", "F03")] == ["F02", "F01", "F02"]
     assert [table[bed]["join_class"] for bed in ("F01", "F02", "F03")] == [
         "within_tree",
@@ -323,7 +334,8 @@ def _large_tier_bed(rung=True, bridge=False):
     bridge 1-11, as a vessel opening into a thick one does.
 
     Ordered by ``graph.branch_order``: B counts from 3 and from the hand-off
-    node 1, so 1-5 and 3-4 are B01, and 5-8, 4-7 and the rung B02.
+    node 1, so 1-5 and 3-4 are B01; with the rung, 5 and 4 are junctions and
+    5-8, 4-7 and the rung B02 (without it, 1-5-8 and 3-4-7 are one B01 each).
     """
     G = nx.MultiGraph()
     for u, v in ((0, 1), (1, 2)):
@@ -371,8 +383,9 @@ def test_capillary_start_nodes_add_where_capillaries_leave_and_join_the_large_ti
         nodes[name]
         for name in ("inlet_nodes", "outlet_nodes", "arteriole_boundary_nodes", "venule_boundary_nodes")
     ]
+    # 9 is no junction: 8-9-10 is one vessel.
     assert [G[1][2][0]["branch_order"], G[1][5][0]["branch_order"], G[8][9][0]["branch_order"]] == [
-        "Large_Art2", "B01", "Large_Ven2",
+        "Large_Art2", "B01", "Large_Ven1",
     ]
 
     assert capillary_start_nodes(*terminals, graph=G) == ([3, 1], [7, 8])
@@ -521,7 +534,8 @@ def test_the_export_stage_writes_the_per_bed_csv_beside_the_statistics_csv(tmp_p
     assert "Short Loops Removed Under" in stats_csv
     with (tmp_path / "no_haemodynamics_capillary_bed_joins.csv").open(newline="") as handle:
         beds = list(csv.DictReader(handle))
-    assert [row["join_order"] for row in beds] == ["2", "2"]
+    # 1 and 2 are no junctions: the beds meet on the one capillary 0-3.
+    assert [row["join_order"] for row in beds] == ["1", "1"]
     assert all(data["capillary_bed"] in {"F01", "F02"} for *_e, data in G.edges(data=True))
     assert BED_TABLE not in G.graph
 

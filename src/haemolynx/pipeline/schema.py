@@ -3081,7 +3081,9 @@ SCHEMA = Schema(
             help=(
                 "When small-arteriole/venule terminals were expected but are "
                 "missing, raise; when they were never assigned, still label "
-                "capillary B* orders from inlets and warn"
+                "capillary B* orders from inlets and warn. Also raise when the "
+                "Art or Ven tier crosses the capillary bed because a branch has "
+                "no boundary node of its own (otherwise a warning)"
             ),
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,

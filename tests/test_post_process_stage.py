@@ -257,11 +257,12 @@ def test_a_deletion_alone_restamps_table_diameters_from_the_new_orders(tmp_path)
 def test_a_piece_an_edit_cuts_off_from_the_inlets_loses_its_branch_orders(tmp_path):
     """Regression: assign_branch_orders left a vessel no inlet reaches as it
     was -- with no order in a fresh build, but after a hand edit with the
-    order it had. Two vessels drawn on from the chain are B03 and B04; delete
-    the first and the second hangs from nothing, yet it kept B04 and the
-    diameter the table gives B04. Now it has no order, as a vessel built cut
-    off has none. The stamp has no table entry for a vessel with no order,
-    so the diameter it had stays, counted as unset."""
+    order it had. A vessel drawn on from the chain's pendant end carries its
+    order (n1 is no junction, so both are B02); delete the pendant and the
+    drawn vessel hangs from nothing, yet it kept its order and the diameter
+    the table gives it. Now it has no order, as a vessel built cut off has
+    none. The stamp has no table entry for a vessel with no order, so the
+    diameter it had stays, counted as unset."""
     run_settings, network, boundaries, model = _diameters_run(tmp_path)
     G = model.graph
     (u, v, k), n1 = _pendant(G)
@@ -269,7 +270,7 @@ def test_a_piece_an_edit_cuts_off_from_the_inlets_loses_its_branch_orders(tmp_pa
     G.add_node(n2, pos=np.asarray(G.nodes[n1]["pos"], dtype=float) + np.asarray([50.0, 0.0, 0.0]))
     cut_off = add_vessel_between(G, n1, n2)
     post_process(run_settings, model, boundaries, SCHEMA, network=network)
-    assert [G.edges[u, v, k]["branch_order"], G.edges[cut_off]["branch_order"]] == ["B03", "B04"]
+    assert [G.edges[u, v, k]["branch_order"], G.edges[cut_off]["branch_order"]] == ["B02", "B02"]
     diameter_before = G.edges[cut_off]["diameter_um"]
     delete_vessels(G, [(u, v, k)], protected=_protected(run_settings))
     assert G.degree(n1) == 1 and G.has_edge(*cut_off)
@@ -832,8 +833,9 @@ def test_a_vessel_drawn_along_the_large_arteriole_stays_large_art(tmp_path):
 
     G = out.graph
     assert G.edges[ids["a1"], ids["a2"], 0]["branch_order"] == "Large_Art2"
+    # m is no junction: the drawn vessel and m-a3 are one vessel.
     assert G.edges[drawn].get("branch_order") == "Large_Art3"
-    assert G.edges[ids["m"], ids["a3"], 0].get("branch_order") == "Large_Art4"
+    assert G.edges[ids["m"], ids["a3"], 0].get("branch_order") == "Large_Art3"
     assert G.edges[drawn][graph_module.LARGE_MASK_VESSEL_TYPE] == "arteriole"
 
 
@@ -1099,7 +1101,8 @@ def test_deleting_the_vessel_leaving_the_large_arteriole_at_a_hand_off_drops_it(
     assert sorted(out.results["post_process"]["boundary_nodes"]["large_arteriole_boundary_nodes"]) == sorted(
         [ids["a1"], ids["a2"]]
     )
-    assert out.graph.edges[ids["p"], ids["a3"], 0]["branch_order"] == "Large_Art4"
+    # With nothing leaving it, p is no junction: a2-p-a3 is one vessel.
+    assert out.graph.edges[ids["p"], ids["a3"], 0]["branch_order"] == "Large_Art3"
 
 
 def test_an_edit_never_leaves_a_hand_off_list_empty(tmp_path, caplog):
@@ -1125,8 +1128,10 @@ def test_an_edit_never_leaves_a_hand_off_list_empty(tmp_path, caplog):
         "a1", "p",
     ]
     assert "leave no Large_Art hand-off node" in caplog.text
+    # With nothing leaving it, the trunk is one vessel from the inlet: a1 and
+    # p are no junctions.
     assert out.graph.edges[ids["a0"], ids["a1"], 0]["branch_order"] == "Large_Art1"
-    assert out.graph.edges[ids["p"], ids["a3"], 0]["branch_order"] == "Large_Art3"
+    assert out.graph.edges[ids["p"], ids["a3"], 0]["branch_order"] == "Large_Art1"
 
 
 def test_boundary_nodes_the_edits_do_not_touch_stay_as_they_are(tmp_path):

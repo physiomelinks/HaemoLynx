@@ -4472,6 +4472,13 @@ def _assign_branch_orders(
             "Assigned capillary branch orders from STARTING_NODES only "
             "(no arteriole/venule boundary-node sets supplied)."
         )
+    from_venous = branch_summary.get("capillary_from_venous_side_count", 0)
+    if from_venous:
+        logger.info(
+            f"{from_venous} capillary vessel(s) are reached from the arterial side only "
+            "through a venule or the large vein, so their B orders are counted from where "
+            f"they meet the venous side ({graph.BRANCH_ORDER_BASIS}={graph.VENOUS_SIDE!r})."
+        )
     return branch_summary
 
 

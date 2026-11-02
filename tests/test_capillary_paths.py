@@ -128,13 +128,14 @@ def _short_and_long_route():
 
 
 def test_the_draining_capillary_is_counted_along_its_own_route_not_by_its_label():
-    """Regression for reading the labels: the B orders are counted through
-    the venule end, so 6-9, the fifth capillary of its route, is labelled B03
-    (one past 9, reached along the short route). The route it ends holds five
-    capillaries, and the short one two."""
+    """Regression for reading the labels: a label is no count of the route.
+    6-9 was labelled B03, counted through the venule end along the short
+    route; no node on either route branches, so each route is one B01
+    capillary by its label now. The route 6-9 ends holds five capillaries, and
+    the short one two."""
     G = _short_and_long_route()
     assert [G[0][1][0]["branch_order"], G[9][10][0]["branch_order"]] == ["Art1", "Ven1"]
-    assert [G[2][9][0]["branch_order"], G[6][9][0]["branch_order"]] == ["B02", "B03"]
+    assert [G[2][9][0]["branch_order"], G[6][9][0]["branch_order"]] == ["B01", "B01"]
 
     rows = _rows(G, [1], [9])
 
@@ -302,7 +303,8 @@ def test_without_arteriole_or_venule_orders_every_vessel_is_a_b_order_and_it_rep
     for u in range(4):
         G.add_edge(u, u + 1, length=10.0)
     assign_vessel_branch_orders(G, [0], outlet_nodes=[4])
-    assert {data["branch_order"] for *_e, data in G.edges(data=True)} == {"B01", "B02", "B03", "B04"}
+    # No node branches: the chain is one vessel.
+    assert {data["branch_order"] for *_e, data in G.edges(data=True)} == {"B01"}
 
     rows = _rows(G, [0], [4])
 
