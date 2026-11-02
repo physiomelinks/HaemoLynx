@@ -4429,6 +4429,16 @@ def _reassign_large_vessel_boundaries(
         )
 
 
+def branch_order_steps_in_effect(settings: Mapping[str, Any]) -> str:
+    """Where the run's tier orders step (``graph.BRANCH_ORDER_STEP_RULES``):
+    ``branch_order_steps``, but every junction for a synthetic network or a
+    surround, whose generator and template comparison read each tier order as
+    one segment between side branches."""
+    if graph.network_is_synthetic(settings):
+        return graph.EVERY_JUNCTION
+    return settings["branch_order_steps"]
+
+
 def _assign_branch_orders(
     settings: dict, G: nx.MultiGraph, *, post_assign_callback=None
 ) -> dict[str, Any]:
@@ -4479,6 +4489,7 @@ def _assign_branch_orders(
             or _vessel_boundary_configured(settings, "venule")
         ),
         post_assign_callback=post_assign_callback,
+        steps=branch_order_steps_in_effect(settings),
     )
     if branch_summary["mode"] == "hierarchical":
         logger.info(
@@ -4497,6 +4508,13 @@ def _assign_branch_orders(
         logger.info(
             "Assigned capillary branch orders from STARTING_NODES only "
             "(no arteriole/venule boundary-node sets supplied)."
+        )
+    if branch_summary["mode"] in ("hierarchical", "large_tier") and (
+        G.graph.get(graph.BRANCH_ORDER_STEPS) == graph.TIER_BRANCHINGS
+    ):
+        logger.info(
+            "Tier orders (Large_Art, Art, Ven, Large_Ven) step only where the tier itself "
+            "branches (branch_order_steps=tier_branchings), not where a side branch leaves it."
         )
     from_venous = branch_summary.get("capillary_from_venous_side_count", 0)
     if from_venous:

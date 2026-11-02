@@ -430,6 +430,8 @@ boundary_assignment:
   large_venule_boundary_nodes: []
   # When small-arteriole/venule terminals were expected but are missing, raise; when they were never assigned, still label capillary B* orders from inlets and warn. Also raise when the Art or Ven tier crosses the capillary bed because a branch has no boundary node of its own (otherwise a warning)
   strict_branch_order_assignment: false
+  # Where the Large_Art, Art, Ven and Large_Ven orders step. every_junction: at every junction the tier passes, a side branch leaving it included, so each order is one segment between side branches. tier_branchings: only where three or more of the tier's own vessels meet, so a trunk is one order until it divides (as the pericyte literature counts from a penetrating arteriole). Capillary B orders step at every junction either way. A synthetic network is always numbered every_junction (its generator reads each tier order as one segment), and refuses a template numbered tier_branchings. Per-order diameter tables and statistics by order are not comparable across the two  [one of: every_junction, tier_branchings]
+  branch_order_steps: every_junction
 
 # ------------------------------------------------------------------------
 # Solver and output

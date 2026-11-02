@@ -333,6 +333,24 @@ def test_a_run_without_inlets_or_outlets_is_refused(tmp_path):
     assert caught.value.reason == "no_boundaries"
 
 
+@pytest.mark.parametrize("source", ["statistics", "graph"])
+def test_a_run_whose_tiers_count_their_own_branchings_is_refused(tmp_path, source):
+    """The generator grows one tier order per segment between side branches;
+    a run numbered by its tiers' own branchings (branch_order_steps=
+    tier_branchings) would have it grow a whole trunk's segments at once."""
+    path = write_fixture_run(tmp_path, graph_attributes={"branch_order_steps": "tier_branchings"})
+    with pytest.raises(TemplateError) as caught:
+        load_template(path, source)
+    assert caught.value.reason == "tier_branchings"
+    assert "every_junction" in str(caught.value)
+
+
+@pytest.mark.parametrize("record", [{"branch_order_steps": "every_junction"}, {}])
+def test_a_run_numbered_at_every_junction_or_before_the_choice_is_a_template(tmp_path, record):
+    path = write_fixture_run(tmp_path, graph_attributes=record)
+    assert load_template(path, "graph").vessel_count == 12
+
+
 def test_a_run_without_diameters_is_refused(tmp_path):
     G = tiny_hierarchical_graph()
     for *_e, d in G.edges(data=True):

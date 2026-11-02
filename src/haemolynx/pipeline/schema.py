@@ -3133,6 +3133,27 @@ SCHEMA = Schema(
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,
         ),
+        Setting(
+            name="branch_order_steps",
+            kind="choice",
+            default="every_junction",
+            help=(
+                "Where the Large_Art, Art, Ven and Large_Ven orders step. "
+                "every_junction: at every junction the tier passes, a side branch "
+                "leaving it included, so each order is one segment between side "
+                "branches. tier_branchings: only where three or more of the tier's "
+                "own vessels meet, so a trunk is one order until it divides (as the "
+                "pericyte literature counts from a penetrating arteriole). Capillary "
+                "B orders step at every junction either way. A synthetic network is "
+                "always numbered every_junction (its generator reads each tier order "
+                "as one segment), and refuses a template numbered tier_branchings. "
+                "Per-order diameter tables and statistics by order are not "
+                "comparable across the two"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=("every_junction", "tier_branchings"),
+            advanced=True,
+        ),
         # ------------------------------------------------------------------
         # Solver and output
         # ------------------------------------------------------------------

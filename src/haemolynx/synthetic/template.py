@@ -43,7 +43,10 @@ from haemolynx.graph.boundaries import (
 )
 from haemolynx.graph.branch_order import (
     BRANCH_ORDER_CATEGORY_SEQUENCE,
+    BRANCH_ORDER_STEPS,
+    TIER_BRANCHINGS,
     UNKNOWN_VESSEL_CLASSES,
+    _tier_and_number,
     flow_path_key,
 )
 from haemolynx.graph.dead_ends import (
@@ -949,6 +952,15 @@ def check_template_run(snapshot: Any, G: Optional[nx.Graph], boundaries: Mapping
             "The template run assigned no branch orders: run it through its "
             "Boundaries stage first.",
             reason="no_branch_orders",
+        )
+    tiers = {(_tier_and_number(label) or ("",))[0] for label in labels if label is not None}
+    if G.graph.get(BRANCH_ORDER_STEPS) == TIER_BRANCHINGS and tiers & {"art", "ven", "large_art", "large_ven"}:
+        raise TemplateError(
+            "The template run numbered its arteriole and venule tiers by their own "
+            "branchings (branch_order_steps=tier_branchings), but the generator reads "
+            "each tier order as one segment between side branches. Re-run the template "
+            "with branch_order_steps=every_junction.",
+            reason="tier_branchings",
         )
     if not boundaries.get("inlet") or not boundaries.get("outlet"):
         raise TemplateError(

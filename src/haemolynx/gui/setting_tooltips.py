@@ -1026,6 +1026,11 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "masks or a manual pick, but none were found, or one branch lacks its boundary and "
         "its labels spread across the capillaries"
     ),
+    "branch_order_steps": (
+        "Count arteriole and venule orders at every junction, side branches included, or "
+        "only where the vessel itself divides. Synthetic networks always count every "
+        "junction"
+    ),
     "all_diams_const": (
         "Give every branch order the same fallback width, the \"Default diameter\". Turn off to "
         "set fallback widths per branch order"

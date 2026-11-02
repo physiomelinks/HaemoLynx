@@ -1476,3 +1476,146 @@ def test_no_inlets_takes_every_order_off():
 
     assert summary["mode"] == "skipped"
     assert set(_labels(G).values()) == {None}
+
+
+# --- Tier orders by the tier's own branchings (PLAN_branch_orders.md D1) ------
+#
+# Harvey's choice (2026-11-02): an opt-in numbering (branch_order_steps=
+# tier_branchings) where a tier's count steps only where three or more of its
+# own vessels meet, as the pericyte literature counts from a penetrating
+# arteriole. Every junction stays the default: the synthetic generator reads
+# each tier order as one segment between side branches.
+
+
+def _forking_large_arteriole():
+    """A large arteriole 0-1-2 (inlet 0) that forks at 2 into two large
+    branches 2-3 and 2-4, with a capillary leaving the trunk at 1 and one
+    from each branch's end, all draining through 20-21 to the large vein
+    21-22 (outlet 22)."""
+    G = _tiered_graph(
+        large_arteriole=[(0, 1), (1, 2), (2, 3), (2, 4)],
+        large_venule=[(21, 22)],
+        other=[(1, 10), (3, 11), (4, 12), (10, 20), (11, 20), (12, 20), (20, 21)],
+    )
+    return G, dict(
+        inlet_nodes=[0], outlet_nodes=[22],
+        large_arteriole_boundary_nodes=[1, 3, 4], large_venule_boundary_nodes=[21],
+    )
+
+
+def test_tier_orders_can_step_only_where_the_tier_itself_branches():
+    from haemolynx.graph import BRANCH_ORDER_STEPS, TIER_BRANCHINGS
+
+    G, nodes = _forking_large_arteriole()
+    every = assign_vessel_branch_orders(G, **nodes)
+    by_junction = _labels(G)
+    assign_vessel_branch_orders(G, **nodes, steps=TIER_BRANCHINGS)
+    by_branching = _labels(G)
+
+    assert every["mode"] == "large_tier"
+    # Every junction: the capillary leaving at 1 steps the trunk.
+    assert [by_junction[e] for e in [(0, 1, 0), (1, 2, 0), (2, 3, 0), (2, 4, 0)]] == [
+        "Large_Art1", "Large_Art2", "Large_Art3", "Large_Art3",
+    ]
+    # The tier's own branchings: one order to the fork at 2, the next past it.
+    assert [by_branching[e] for e in [(0, 1, 0), (1, 2, 0), (2, 3, 0), (2, 4, 0)]] == [
+        "Large_Art1", "Large_Art1", "Large_Art2", "Large_Art2",
+    ]
+    assert G.graph[BRANCH_ORDER_STEPS] == TIER_BRANCHINGS
+    # The capillaries count every junction under both.
+    assert {e: label for e, label in by_branching.items() if label.startswith("B")} == {
+        e: label for e, label in by_junction.items() if label.startswith("B")
+    }
+
+
+def test_an_arteriole_running_on_past_its_capillaries_is_one_order():
+    """The small-mask run-on: the arteriole 0-1-2-3-4 has capillaries leave
+    it at 2 and 4, and the venule 13-14-15-16 takes one at 15. Neither tier
+    divides, so each is one order; every junction counts them Art1-Art2 and
+    Ven1-Ven2."""
+    from haemolynx.graph import TIER_BRANCHINGS
+
+    G, nodes = _small_vessels_with_side_capillaries()
+    assign_vessel_branch_orders(G, **nodes, steps=TIER_BRANCHINGS)
+
+    labels = _labels(G)
+    assert {labels[e] for e in [(0, 1, 0), (1, 2, 0), (2, 3, 0), (3, 4, 0)]} == {"Art1"}
+    assert {labels[e] for e in [(13, 14, 0), (14, 15, 0), (15, 16, 0)]} == {"Ven1"}
+
+
+def test_an_arteriole_that_divides_steps_under_both_numberings():
+    from haemolynx.graph import TIER_BRANCHINGS
+
+    for steps in ("every_junction", TIER_BRANCHINGS):
+        G, nodes = _two_arterioles_joined_by_a_capillary()
+        assign_vessel_branch_orders(G, [0], **nodes, steps=steps)
+        labels = _labels(G)
+        assert [labels[(0, 1, 0)], labels[(1, 2, 0)], labels[(1, 3, 0)]] == ["Art1", "Art2", "Art2"]
+
+
+def test_an_unknown_numbering_is_refused_and_the_record_follows_the_orders():
+    from haemolynx.graph import (
+        BRANCH_ORDER_STEPS,
+        EVERY_JUNCTION,
+        GLOBAL_MASK_CLASS,
+        assign_unknown_vessel_classes,
+    )
+
+    G, nodes = _two_arterioles_joined_by_a_capillary()
+    with pytest.raises(ValueError, match="steps must be one of"):
+        assign_vessel_branch_orders(G, [0], **nodes, steps="segments")
+
+    assign_vessel_branch_orders(G, [0], **nodes)
+    assert G.graph[BRANCH_ORDER_STEPS] == EVERY_JUNCTION
+    assign_vessel_branch_orders(G, [], **nodes)
+    assert BRANCH_ORDER_STEPS not in G.graph
+    assign_vessel_branch_orders(G, [0], **nodes)
+    G.edges[0, 1, 0][GLOBAL_MASK_CLASS] = "small"
+    assign_unknown_vessel_classes(G)
+    assert BRANCH_ORDER_STEPS not in G.graph
+
+
+def test_a_run_numbers_its_tiers_by_the_setting_and_a_synthetic_one_every_junction(tmp_path):
+    from haemolynx.pipeline.stages import (
+        _assign_branch_orders,
+        assign_boundaries,
+        branch_order_steps_in_effect,
+    )
+
+    network, ids = _branching_large_vessel_network()
+    network.small_arteriole_mask = network.small_venule_mask = None
+    settings = _large_tier_settings(tmp_path)
+    settings["use_small_vessel_masks_for_boundary_assignment"] = False
+    settings["branch_order_steps"] = "tier_branchings"
+    assign_boundaries(settings, network)
+
+    _assign_branch_orders(settings, network.graph)
+
+    G = network.graph
+
+    def label(a, b):
+        return G.edges[ids[a], ids[b], 0]["branch_order"]
+
+    # Side branches leave the trunks at a1, a2 and v1, v2; neither divides.
+    assert [label("a0", "a1"), label("a1", "a2"), label("a2", "a3")] == ["Large_Art1"] * 3
+    assert [label("v0", "v1"), label("v1", "v2"), label("v2", "v3")] == ["Large_Ven1"] * 3
+    assert branch_order_steps_in_effect(settings) == "tier_branchings"
+    assert branch_order_steps_in_effect(dict(settings, network_source="synthetic")) == "every_junction"
+    assert branch_order_steps_in_effect(dict(settings, network_source="synthetic_surround")) == "every_junction"
+
+
+def test_preflight_warns_of_a_tier_diameter_table_or_a_synthetic_run_under_branchings():
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.checks import check_branch_order_steps
+
+    settings = default_schema().defaults()
+    table = {"manual_arteriole_diameter_by_branch_order": {"Art1": 12.0}, "all_diams_const": False}
+
+    assert not check_branch_order_steps(dict(settings, **table)).warnings
+    branchings = dict(settings, branch_order_steps="tier_branchings")
+    assert not check_branch_order_steps(branchings).warnings
+    (warning,) = check_branch_order_steps(dict(branchings, **table)).warnings
+    assert "manual_arteriole_diameter_by_branch_order" in warning
+    assert not check_branch_order_steps(dict(branchings, **dict(table, all_diams_const=True))).warnings
+    (warning,) = check_branch_order_steps(dict(branchings, network_source="synthetic")).warnings
+    assert "every_junction" in warning

@@ -732,8 +732,14 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`BranchOrderLeakWarning`; strict raises; Post processing's Boundary nodes list shows where).
   **An order steps only at a junction**: a node where two vessels meet (`_passing_nodes`, read on
   the whole graph, so a tier's hand-offs still step) is no step, so a fixture's chain of edges
-  is one vessel of one order. What is still open: `PLAN_branch_orders.md`; history in
-  `docs/notes/vessel_masks_and_boundaries.md`.
+  is one vessel of one order. **`branch_order_steps`** (`graph.BRANCH_ORDER_STEPS`, recorded on
+  the graph): `every_junction` (default) steps a tier at every junction it passes, side branches
+  included; `tier_branchings` only where three or more of its own vessels meet
+  (`_tier_passing_nodes`). B is the same under both. Synthetic networks are always
+  `every_junction` (`stages.branch_order_steps_in_effect`): the generator reads each tier order as
+  one segment, so `check_template_run` refuses a template numbered `tier_branchings`, and
+  preflight warns of a per-order diameter table under it (`check_branch_order_steps`). What is
+  still open: `PLAN_branch_orders.md`; history in `docs/notes/vessel_masks_and_boundaries.md`.
 - **Boundary nodes after hand edits** — `post_process` tags the vessels an edit made by the same
   overlap rules (`tag_edges_in_large_vessel_masks`, `tag_edges_in_small_vessel_masks`) and
   re-judges boundary nodes only at the nodes the edits touched (`graph.touched_nodes`,

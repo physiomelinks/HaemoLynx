@@ -560,6 +560,41 @@ def check_large_vessel_branch_order_mode_prerequisites(
     return report
 
 
+#: The diameter tables keyed on a tier's own orders (Art n, Large_Art n, ...),
+#: whose meaning ``branch_order_steps`` changes.
+_TIER_DIAMETER_TABLES = (
+    "manual_arteriole_diameter_by_branch_order",
+    "manual_venule_diameter_by_branch_order",
+    "manual_large_arteriole_diameter_by_branch_order",
+    "manual_large_venule_diameter_by_branch_order",
+)
+
+
+def check_branch_order_steps(settings: Mapping[str, Any]) -> CheckReport:
+    """Tier orders counted by the tier's own branchings
+    (``branch_order_steps=tier_branchings``): a synthetic network reads it as
+    every junction, and a per-order diameter table written for the other
+    count gives its widths to other vessels."""
+    report = CheckReport()
+    if settings.get("branch_order_steps") != "tier_branchings":
+        return report
+    if network_is_synthetic(settings):
+        report.add_warning(
+            "branch_order_steps is tier_branchings, but a synthetic network is numbered "
+            "every_junction: its generator reads each tier order as one segment between "
+            "side branches."
+        )
+        return report
+    tables = [name for name in _TIER_DIAMETER_TABLES if settings.get(name)]
+    if tables and not settings.get("all_diams_const"):
+        report.add_warning(
+            f"{', '.join(tables)} key diameters on Art/Ven/Large orders, and "
+            "branch_order_steps=tier_branchings counts those orders where the tier itself "
+            "branches: a table written for every junction gives its widths to other vessels."
+        )
+    return report
+
+
 #: Each vessel-mask role's ilastik switch, which sits under that role's masks.
 _ILASTIK_VESSEL_MASK_FLAGS = {
     "large": "use_ilastik_large_vessel_segmentation",
@@ -1327,6 +1362,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_vessel_size_classes(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
+    report.extend(check_branch_order_steps(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
