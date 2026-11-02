@@ -797,6 +797,11 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "a boundary node or with a vessel drawn onto them since the scan. Each "
         "removal is recorded in the review CSV"
     ),
+    "remove_interior_dead_ends": (
+        "Remove every dead end in the list back to its junction, joining the two "
+        "vessels left there into one. Real blind ends and pieces with no junction "
+        "stay. Each removal goes in the review CSV"
+    ),
     "review_table": (
         "The chosen item's vessels; click or shift/ctrl-click rows to select "
         "vessels, drawn yellow in the viewer"
@@ -944,9 +949,9 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "inlets, outlets and boundary nodes are never cut off"
     ),
     "prune": (
-        "Remove every vessel no inlet-to-outlet path runs along: pieces cut off "
-        "from an inlet or outlet, and dead-end branches, trees or loops that "
-        "reach no outlet"
+        "Remove every vessel no inlet-to-outlet path runs along: cut-off pieces, "
+        "and dead-end branches, trees or loops reaching no outlet. Two vessels "
+        "left meeting where one hung become one"
     ),
     "connectivity_choice": (
         "Which vessels the connectivity CSV lists: every vessel in the viewer, "

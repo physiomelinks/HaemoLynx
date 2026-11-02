@@ -628,6 +628,58 @@ def test_the_low_ram_option_removes_and_recovers_the_same(tmp_path):
         assert np.array_equal(np.asarray(ram.edges[edge]["voxels"]), np.asarray(low.edges[edge]["voxels"]))
 
 
+# --- remove_interior_dead_ends_and_merge ---------------------------------------------
+
+
+def _cross_with_a_spur() -> np.ndarray:
+    """A cross whose four arms leave the image, and a 15 um spur off its x arm
+    12 um from the hub, ending 29 um from the nearest face: once the spur
+    goes, its junction is left with two vessels beside a junction of four."""
+    skeleton = _cross(90, 0, 90)
+    skeleton[45, 46:61, 57] = True
+    return skeleton
+
+
+def test_the_recovering_removal_leaves_a_node_of_two_vessels_beside_a_junction_of_four(tmp_path):
+    """Why the option is there: the clean-up's own merge leaves the spur's junction."""
+    skeleton = _cross_with_a_spur()
+    settings = _settings(tmp_path, remove_interior_dead_ends=True)
+    G = build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA).graph
+
+    assert G.graph["interior_dead_ends_removed"] == 1
+    assert sorted(G.degree(n) for n in G) == [1, 1, 1, 1, 2, 4]
+
+
+def test_interior_dead_ends_go_and_the_junctions_they_leave_are_merged_when_asked(tmp_path):
+    skeleton = _cross_with_a_spur()
+    settings = _settings(tmp_path, remove_interior_dead_ends_and_merge=True)
+    network = build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
+
+    G = network.graph
+    assert sorted(G.degree(n) for n in G) == [1, 1, 1, 1, 4], "no node of two vessels"
+    assert G.graph["interior_dead_ends_removed"] == 1
+    assert G.graph["interior_dead_ends_removed_um"] == pytest.approx(15.0, abs=3.0)
+    assert G.graph["interior_dead_end_junctions_merged"] == 1
+    assert sum(float(d["length"]) for *_e, d in G.edges(data=True)) == pytest.approx(178.0, abs=4.0)
+    assert all(G.nodes[n].get("dead_end_kind") == "leaves_image" for n in G if G.degree(n) == 1)
+    with _graph_path(tmp_path).open("rb") as f:
+        assert pickle.load(f).graph["interior_dead_end_junctions_merged"] == 1
+
+
+def test_the_merging_removal_is_off_by_default_and_named_when_it_takes_the_last_vessel(tmp_path):
+    assert SCHEMA["remove_interior_dead_ends_and_merge"].default is False
+    skeleton = _cross_with_a_spur()
+    G = build_network(_settings(tmp_path / "off"), _volume(tmp_path / "off", skeleton, _mask_under(skeleton)),
+                      SCHEMA).graph
+    assert "interior_dead_end_junctions_merged" not in G.graph
+    assert sorted(G.degree(n) for n in G) == [1, 1, 1, 1, 1, 3, 4]
+
+    cross = _cross(80, 25, 55)  # its arms end 25 um from the faces
+    settings = _settings(tmp_path / "on", remove_interior_dead_ends_and_merge=True)
+    with pytest.raises(ValueError, match="remove_interior_dead_ends_and_merge"):
+        build_network(settings, _volume(tmp_path / "on", cross, _mask_under(cross)), SCHEMA)
+
+
 def test_the_built_network_carries_its_lumen_artefact_counts(tmp_path):
     """The lumen-artefact report the stage logs is kept on the graph it hands
     on (``graph.LUMEN_ARTEFACT_COUNTS``), the same counts as the report; never

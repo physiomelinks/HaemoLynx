@@ -677,6 +677,37 @@ def test_prune_removes_a_dead_end_tree_and_keeps_the_routes(make_napari_viewer):
     assert "Nothing to prune" in c.status.text()
 
 
+def test_prune_joins_the_two_vessels_a_dead_end_hung_between(make_napari_viewer):
+    """A dead end 2 -> 7 off the upper route leaves 2 with two vessels once
+    pruned: 1-2 and 2-4 become one vessel 1-4, and the log names only the
+    vessels the prune removed."""
+    viewer = make_napari_viewer()
+    G = _four_way_network()
+    G.add_node(7, pos=np.asarray((20.0, 20.0, 0.0)))
+    G.add_edge(2, 7, voxels=[(20.0, 10.0, 0.0), (20.0, 20.0, 0.0)], length=10.0,
+               branch_order="B02", diameter_um=5.0)
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    report = SimpleNamespace(value="")
+    c = _post_processing_controls(
+        viewer, report, results=lambda: results,
+        boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
+        regenerate=lambda graph: None, running=lambda: False,
+    )
+    c.scan_button.click()
+    c.prune_button.click()
+
+    graph = c.state.graph
+    assert 2 not in graph and 5 not in graph and 7 not in graph
+    assert sorted(tuple(sorted(e)) for e in graph.edges()) == [(0, 1), (1, 3), (1, 4), (3, 4)]
+    # Drawn segment by segment: the joined vessel keeps its path through 2.
+    assert len(viewer.layers[VESSELS].data) == 5
+    assert "and joined the two vessels left at 1 junction(s) into one" in report.value
+    (line,) = [line for line in c.log_box.toPlainText().splitlines() if "Pruned" in line]
+    assert "(node 1-5," in line and "(node 2-7," in line
+    assert "(node 1-2," not in line and "(node 2-4," not in line
+
+
 def test_the_log_records_each_change_with_its_branch_ids(make_napari_viewer):
     viewer = make_napari_viewer()
     G = _four_way_network()
@@ -1687,6 +1718,34 @@ def test_dead_ends_filtered_to_pieces_with_no_junction_can_all_be_removed(make_n
     c.dead_end_show.setCurrentText("All kinds")
     assert c.review_items.count() == 1, "the spur is still listed, the removed piece is not"
     assert c.remove_pieces_button.isHidden()
+
+
+def test_every_listed_interior_dead_end_can_be_removed_and_its_junction_merged(make_napari_viewer, qtbot, tmp_path):
+    c, island_nodes = _island_page(make_napari_viewer(), tmp_path)
+    button = c.remove_dead_ends_button
+    assert button.toolTip() and c.review_box.isAncestorOf(button)
+
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    assert c.review_items.count() == 2, "the spur and the island"
+    assert not button.isHidden() and button.isEnabled()
+    assert button.text() == "Remove all 1 listed interior dead end and merge their junctions", "not the island"
+    for show in ("Pieces with no junction", "Marked as real blind ends"):
+        c.dead_end_show.setCurrentText(show)
+        assert button.isHidden(), show
+    c.dead_end_show.setCurrentText("All kinds")
+
+    button.click()
+    graph = c.state.graph
+    assert graph.number_of_edges() == 3, "the trunk as one vessel, and the island's two"
+    assert island_nodes <= set(graph)
+    assert not any(graph.degree(n) == 2 for n in graph if n not in island_nodes), "the spur's junction merged"
+    assert c.review_items.count() == 1, "the island is still listed"
+    assert not button.isEnabled() and button.text().startswith("Remove all 0 listed interior dead ends")
+    rows = _csv_rows(tmp_path / "run_dead_ends_review.csv")
+    assert [(r["decision"], r["kind"]) for r in rows] == [("deleted", "dead_ends")]
+    log = c.log_box.toPlainText()
+    assert "Removed 1 interior dead end(s)" in log and "merged 1 junction(s)" in log
 
 
 # --- Terminal nodes: inlets and outlets added and removed by hand ------------------

@@ -85,6 +85,11 @@ __all__ = [
     "remove_pieces_label",
     "removes_listed_pieces",
     "still_without_junction",
+    "RemovedDeadEnds",
+    "listed_interior_dead_ends",
+    "remove_interior_dead_ends_label",
+    "remove_listed_interior_dead_ends",
+    "removes_listed_interior_dead_ends",
     "NEEDS_BOUNDARIES",
     "NEEDS_FLOW",
     "NEEDS_MASK",
@@ -1755,6 +1760,128 @@ def remove_listed_pieces(
         done.rows.append(row)
         done.vessels += len(edges)
         done.length_um += length
+    return done
+
+
+def removes_listed_interior_dead_ends(review_key: str | None, show: str) -> bool:
+    """Whether the review list on show is the dead ends filtered to any kind
+    but pieces with no junction and real blind ends: the lists "Remove all
+    listed interior dead ends" acts on."""
+    from haemolynx.graph import network_review as nr
+    from haemolynx.graph.dead_ends import BLIND, ISLAND_END
+
+    return review_key == nr.DEAD_ENDS and show not in (ISLAND_END, BLIND)
+
+
+def listed_interior_dead_ends(items: Iterable[Any]) -> list[Any]:
+    """The dead-end review *items* of an interior kind
+    (``graph.dead_ends.INTERIOR_DEAD_END_KINDS``, the kinds the Graph tab's
+    removals take): not a piece with no junction, not a real blind end."""
+    from haemolynx.graph.dead_ends import INTERIOR_DEAD_END_KINDS
+
+    return [item for item in items if (item.measures or {}).get("kind") in INTERIOR_DEAD_END_KINDS]
+
+
+def remove_interior_dead_ends_label(count: int) -> str:
+    """The text of the button that removes every listed interior dead end."""
+    return f"Remove all {count} listed interior dead end{'' if count == 1 else 's'} and merge their junctions"
+
+
+def _still_the_dead_end(graph: Any, item: Any) -> bool:
+    """Whether review *item* is still the dead end the scan listed: its tip a
+    dead end whose chain runs, vessel for vessel, to a junction."""
+    from haemolynx.graph.dead_ends import chain_to_junction
+
+    tip = item.nodes[0] if item.nodes else None
+    if tip not in graph or graph.degree(tip) != 1 or not item_still_there(graph, item):
+        return False
+    nodes, edges = chain_to_junction(graph, tip)
+    listed = {(frozenset(tuple(edge)[:2]), tuple(edge)[2]) for edge in item.edges}
+    return {(frozenset(edge[:2]), edge[2]) for edge in edges} == listed and graph.degree(nodes[-1]) > 2
+
+
+@dataclass
+class RemovedDeadEnds:
+    """What :func:`remove_listed_interior_dead_ends` did."""
+
+    decisions: list[ReviewDecision] = field(default_factory=list)
+    #: One ``{stem}_dead_ends_review.csv`` row per dead end removed.
+    rows: list[dict[str, str]] = field(default_factory=list)
+    vessels: int = 0
+    length_um: float = 0.0
+    #: Dead ends edited since the scan: no longer a dead end, or not the chain listed.
+    skipped: int = 0
+    #: Dead ends left because removing them would leave a boundary node with no vessel.
+    held: int = 0
+    #: Dead ends left because their chain runs through a thick-vessel bridge.
+    bridged: int = 0
+    #: Junctions the removal left with two vessels, merged into one vessel each.
+    merged: int = 0
+    #: Those not merged: a boundary node, a vessel meeting a thick-vessel bridge, or a loop.
+    left_degree_2: int = 0
+
+    @property
+    def dead_ends(self) -> int:
+        return len(self.decisions)
+
+
+def remove_listed_interior_dead_ends(
+    graph: Any,
+    items: Iterable[Any],
+    *,
+    protected: Iterable[Any] = (),
+    time: str = "",
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+) -> RemovedDeadEnds:
+    """Delete, in place, every listed dead end of an interior kind
+    (:func:`listed_interior_dead_ends`) still as the scan listed it, back to
+    its junction, all in one ``delete_vessels`` (the tab's own edit, so post
+    processing brings it in line), which merges each junction left with two
+    vessels into one vessel. A junction two listed dead ends hung from is
+    judged once both are gone, as the Graph tab's removal judges it. Each
+    gets a "deleted" decision and its CSV row, with the branchIDs the network
+    had before. A dead end whose removal would leave a boundary node with no
+    vessel stays, and so does one whose chain runs through a thick-vessel
+    bridge (a bridge is never a dead end's)."""
+    from collections import Counter
+
+    from haemolynx.graph.post_processing import delete_vessels
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    protected = set(protected)
+    index = _branch_index(graph)
+    done = RemovedDeadEnds()
+    loss: Counter = Counter()
+    chosen = []
+    for item in listed_interior_dead_ends(items):
+        if not _still_the_dead_end(graph, item):
+            done.skipped += 1
+            continue
+        edges = [tuple(edge) for edge in item.edges]
+        if any(graph.edges[edge].get(IS_ZERO_RESISTANCE) for edge in edges):
+            done.bridged += 1
+            continue
+        after = loss.copy()
+        for u, v, _key in edges:
+            after[u] += 1
+            after[v] += 1
+        if any(node in protected and graph.degree(node) - after[node] <= 0 for node in after):
+            done.held += 1
+            continue
+        loss = after
+        chosen.append((item, edges))
+    if not chosen:
+        return done
+    left_with_two = [n for n in {item.nodes[-1] for item, _edges in chosen} if graph.degree(n) - loss[n] == 2]
+    for item, edges in chosen:
+        decision = ReviewDecision.of(item, "deleted", time=time)
+        done.decisions.append(decision)
+        done.rows.append(review_record(graph, item, decision, voxel_size_zyx=voxel_size_zyx, index=index))
+        done.vessels += len(edges)
+        done.length_um += sum(float(graph.edges[edge].get("length") or 0.0) for edge in edges)
+    delete_vessels(graph, [edge for _item, edges in chosen for edge in edges], protected=protected)
+    done.left_degree_2 = sum(1 for n in left_with_two if n in graph and graph.degree(n) == 2)
+    done.merged = len(left_with_two) - done.left_degree_2
     return done
 
 

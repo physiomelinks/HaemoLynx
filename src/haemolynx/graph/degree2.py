@@ -1,6 +1,6 @@
 """Degree-2 node removal and edge merging."""
 import logging
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import networkx as nx
@@ -432,13 +432,17 @@ def duplicate_vessel_routes(
 def smart_multigraph_degree2_removal(
     G: nx.MultiGraph,
     skeleton_data: np.ndarray = None,
-    max_degree: int = 4,
+    max_degree: Optional[int] = 4,
     debug: bool = False,
     max_iterations: int = 500,
     inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    nodes: Optional[Iterable[Any]] = None,
 ) -> nx.MultiGraph:
     """Degree-2 removal for MultiGraphs: each removed node's two edges become
     one, whose path is the two edges' own paths joined at the node.
+
+    *nodes*, when given, are the only nodes merged (those still of degree 2);
+    *max_degree* None merges a node whatever its neighbours' degrees.
 
     Where the node's neighbours are already joined, the merged path is
     compared with that edge (``should_add_merged_edge``): a different vessel
@@ -469,11 +473,12 @@ def smart_multigraph_degree2_removal(
         raise ValueError("This function is designed for MultiGraphs")
 
     total_removed = duplicates_removed = 0
+    only = None if nodes is None else list(dict.fromkeys(nodes))
     for iteration in range(max_iterations):
         duplicates_removed += remove_duplicate_parallel_edges(G, inside_lumen)
         removed_this_iter = 0
 
-        for node in list(G.nodes()):
+        for node in list(G.nodes()) if only is None else only:
             if not G.has_node(node) or G.degree[node] != 2:
                 continue
 
@@ -501,7 +506,7 @@ def smart_multigraph_degree2_removal(
             # Beside a junction of max_degree or more the node stays -- unless
             # its route repeats an edge already joining n1 and n2, which is
             # resolved below whatever the degrees: one vessel, kept once.
-            busy = G.degree[n1] >= max_degree or G.degree[n2] >= max_degree
+            busy = max_degree is not None and (G.degree[n1] >= max_degree or G.degree[n2] >= max_degree)
             if busy and not G.has_edge(n1, n2):
                 continue
 

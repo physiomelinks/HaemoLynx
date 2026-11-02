@@ -466,6 +466,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "remove_pieces_without_junction",
                 "remove_interior_dead_ends",
                 "recovery_short_loop_keep_hole_over_um",
+                "remove_interior_dead_ends_and_merge",
             ),
         ),
         ("Debugging", ("save_step_artifacts",)),

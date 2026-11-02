@@ -11648,8 +11648,12 @@ def _post_processing_controls(
         append_review_record,
         dead_ends_shown,
         find_review_items,
+        listed_interior_dead_ends,
+        remove_interior_dead_ends_label,
+        remove_listed_interior_dead_ends,
         remove_listed_pieces,
         remove_pieces_label,
+        removes_listed_interior_dead_ends,
         removes_listed_pieces,
         item_still_there,
         items_to_review,
@@ -12055,11 +12059,17 @@ def _post_processing_controls(
     remove_pieces_button.setObjectName("haemolynx_post_processing_remove_pieces")
     remove_pieces_button.setToolTip(tips["remove_pieces"])
     remove_pieces_button.setVisible(False)
+    # And the one that acts on every interior dead end it lists.
+    remove_dead_ends_button = QPushButton(remove_interior_dead_ends_label(0))
+    remove_dead_ends_button.setObjectName("haemolynx_post_processing_remove_interior_dead_ends")
+    remove_dead_ends_button.setToolTip(tips["remove_interior_dead_ends"])
+    remove_dead_ends_button.setVisible(False)
     review_layout.addWidget(review_colours)
     review_layout.addWidget(review_summary)
     review_layout.addWidget(dead_end_show_row)
     review_layout.addWidget(review_items)
     review_layout.addWidget(remove_pieces_button)
+    review_layout.addWidget(remove_dead_ends_button)
     review_layout.addWidget(review_why)
     review_layout.addWidget(QLabel("Vessels of the chosen item:"))
     review_layout.addWidget(review_table)
@@ -12671,7 +12681,9 @@ def _post_processing_controls(
             )
             return
         try:
-            pruned, stats = prune_disconnected_branches(state.graph, state.inlets, state.outlets)
+            pruned, stats = prune_disconnected_branches(
+                state.graph, state.inlets, state.outlets, protected=state.protected
+            )
         except ValueError as error:
             status.setText(str(error))
             log_edit(f"Prune refused, {error}")
@@ -12680,7 +12692,7 @@ def _post_processing_controls(
             status.setText("Nothing to prune: every vessel is on an inlet-to-outlet path.")
             log_edit("Prune: nothing to remove, every vessel is on an inlet-to-outlet path")
             return
-        removed = [e for e in edge_keys(state.graph) if not pruned.has_edge(*e)]
+        removed = stats["removed_edges"]
         lost = stats["removed_boundary_nodes"]
         what = (
             f"{stats['removed_components']} disconnected piece(s), "
@@ -12688,6 +12700,11 @@ def _post_processing_controls(
             f"{stats['removed_loop_vessels']} on loops off one node, "
             f"{stats['removed_vessels']} vessel(s)"
         )
+        if stats["junctions_merged"]:
+            what += (
+                f", and joined the two vessels left at {stats['junctions_merged']} "
+                "junction(s) into one"
+            )
         log_edit(
             f"Pruned {what}: {describe_vessels(state.graph, removed)}"
             + (f"; boundary node(s) removed with them: {', '.join(map(str, lost))}" if lost else "")
@@ -12956,6 +12973,13 @@ def _post_processing_controls(
         remove_pieces_button.setVisible(removes)
         remove_pieces_button.setText(remove_pieces_label(len(state.review_items)))
         remove_pieces_button.setEnabled(removes and bool(state.review_items) and not state.scanning)
+        removes = entry.key == state.review_key and removes_listed_interior_dead_ends(
+            state.review_key, state.dead_end_show
+        )
+        interior = len(listed_interior_dead_ends(state.review_items)) if removes else 0
+        remove_dead_ends_button.setVisible(removes)
+        remove_dead_ends_button.setText(remove_interior_dead_ends_label(interior))
+        remove_dead_ends_button.setEnabled(bool(interior) and not state.scanning)
         scan_button.setEnabled(not state.scanning)
 
     def shown(items) -> list:
@@ -13237,22 +13261,7 @@ def _post_processing_controls(
         done = remove_listed_pieces(
             state.graph, state.review_items, protected=state.protected, time=now(), voxel_size_zyx=voxel_size()
         )
-        written = ""
-        if done.rows:
-            state.review_decisions.extend(done.decisions)
-            path = review_csv_path(read_settings(), DEAD_ENDS)
-            if path is None:
-                written = (
-                    " Not written to a CSV: the output folder (1. Input) is not set "
-                    "or is not on this machine yet."
-                )
-            else:
-                try:
-                    for row in done.rows:
-                        append_review_record(path, row)
-                    written = f" Recorded in {path.name}."
-                except OSError as error:
-                    written = f" Could not write {path}: {error.strerror or error}."
+        written = record_dead_end_removals(done.decisions, done.rows)
         text = (
             f"removed {done.pieces} piece(s) with no junction "
             f"({done.vessels} vessel(s), {done.length_um:.0f} µm)"
@@ -13263,6 +13272,47 @@ def _post_processing_controls(
             text += f"; {done.skipped} skipped, no longer a piece with no junction"
         log_edit(text[0].upper() + text[1:])
         after_review_edit(text, written)
+
+    def on_remove_listed_interior_dead_ends() -> None:
+        """Delete every interior dead end the dead-end list shows back to its
+        junction, merging each junction left with two vessels, one decision
+        and CSV row per dead end."""
+        if state.graph is None or not removes_listed_interior_dead_ends(state.review_key, state.dead_end_show):
+            return
+        done = remove_listed_interior_dead_ends(
+            state.graph, state.review_items, protected=state.protected, time=now(), voxel_size_zyx=voxel_size()
+        )
+        written = record_dead_end_removals(done.decisions, done.rows)
+        text = (
+            f"removed {done.dead_ends} interior dead end(s) ({done.vessels} vessel(s), "
+            f"{done.length_um:.0f} µm) and merged {done.merged} junction(s) they left with two vessels"
+        )
+        if done.left_degree_2:
+            text += f"; {done.left_degree_2} such junction(s) stay, a boundary node, a thick-vessel bridge or a loop"
+        if done.held:
+            text += f"; {done.held} left because a boundary node would lose its last vessel"
+        if done.bridged:
+            text += f"; {done.bridged} left because a thick-vessel bridge is on it"
+        if done.skipped:
+            text += f"; {done.skipped} skipped, changed since the scan"
+        log_edit(text[0].upper() + text[1:])
+        after_review_edit(text, written)
+
+    def record_dead_end_removals(decisions, rows) -> str:
+        """Keep a removal's decisions with the run and add its rows to the
+        dead-end review CSV; what to say of the CSV."""
+        if not rows:
+            return ""
+        state.review_decisions.extend(decisions)
+        path = review_csv_path(read_settings(), DEAD_ENDS)
+        if path is None:
+            return " Not written to a CSV: the output folder (1. Input) is not set or is not on this machine yet."
+        try:
+            for row in rows:
+                append_review_record(path, row)
+        except OSError as error:
+            return f" Could not write {path}: {error.strerror or error}."
+        return f" Recorded in {path.name}."
 
     def on_review_merge() -> None:
         item = chosen_item()
@@ -14187,6 +14237,7 @@ def _post_processing_controls(
     review_buttons[ACTION_RESISTANCE_END].clicked.connect(lambda: on_review_set_resistance_node("end"))
     dead_end_show.currentTextChanged.connect(on_dead_end_show_changed)
     remove_pieces_button.clicked.connect(on_remove_listed_pieces)
+    remove_dead_ends_button.clicked.connect(on_remove_listed_interior_dead_ends)
     refresh_review_buttons()
     loop_list.currentRowChanged.connect(on_loop_changed)
     raw_check.toggled.connect(lambda _on: refresh_raw_panel())
@@ -14278,6 +14329,7 @@ def _post_processing_controls(
         raw_pictures=raw_pictures,
         dead_end_show=dead_end_show,
         remove_pieces_button=remove_pieces_button,
+        remove_dead_ends_button=remove_dead_ends_button,
         click_delete_button=click_delete_button,
         add_button=add_button,
         trace_source=trace_source,

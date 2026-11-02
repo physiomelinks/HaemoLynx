@@ -3648,6 +3648,26 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="remove_interior_dead_ends_and_merge",
+            kind="bool",
+            default=False,
+            help=(
+                "At the end of graph building, remove every dead end inside the image "
+                "(classed stops short, broken, artefact, unknown or at a thick vessel's wall: "
+                "not one leaving the image, not an island's), back to the junction it hangs "
+                "from, then merge each junction that leaves with two vessels into one vessel, "
+                "whatever the junctions beside it (the build's own merge leaves a node beside "
+                "a junction of four vessels). Nothing is traced back, unlike "
+                "remove_interior_dead_ends; with both on, this runs after it. A node where a "
+                "vessel meets a thick-vessel bridge stays, as does one with a loop on it. A "
+                "network with no loop and no vessel leaving the image goes whole. No effect "
+                "without the segmented mask"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
             name="recover_uncovered_mask_vessels",
             kind="bool",
             default=True,
@@ -5686,7 +5706,11 @@ SCHEMA = Schema(
                 "unsolved: the viewer draws them light grey, leaves them out of "
                 "every flow-based colouring and names each vessel Solved or "
                 "Unsolved on hover. remove_disconnected deletes them, so only "
-                "vessels on some inlet-to-outlet path are kept"
+                "vessels on some inlet-to-outlet path are kept, and joins the two "
+                "vessels left where a removed branch hung into one vessel, measured "
+                "afresh with the run's diameter methods, with branch orders assigned "
+                "again (a boundary node, a thick-vessel bridge and two vessels in "
+                "different vessel masks stay apart)"
             ),
             section=_NETWORK_HANDLING,
             choices=("leave_unsolved", "remove_disconnected"),

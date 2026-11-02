@@ -385,6 +385,95 @@ def test_a_tree_loses_every_interior_chain_whatever_the_node_order():
         assert G.number_of_nodes() == 0
 
 
+# --- remove_interior_dead_ends_and_merge ----------------------------------------------
+
+
+def _cross_with_a_spur():
+    """A cross (its hub a junction of four vessels) whose +x arm has a 10 um
+    spur 12 um out: the spur's junction sits beside the hub, where the
+    build's own degree-2 merge (max_degree 4) leaves a node of two vessels."""
+    from lumen_artefact_fixtures import polyline_graph
+
+    hub, fork = (0.0, 0.0, 0.0), (0.0, 0.0, 12.0)
+    G = polyline_graph([
+        [hub, fork], [fork, (0, 0, 30)],
+        [hub, (0, 0, -30)], [hub, (0, 30, 0)], [hub, (0, -30, 0)],
+        [fork, (0, 10, 12)],
+    ])
+    for node in G:
+        if G.degree(node) == 1:
+            G.nodes[node][de.DEAD_END_KIND] = de.LEAVES_IMAGE
+    G.nodes[(0.0, 10.0, 12.0)][de.DEAD_END_KIND] = de.STOPS_SHORT
+    return G, hub, fork
+
+
+def test_removing_interior_dead_ends_and_merging_leaves_no_node_of_two_vessels_even_beside_a_junction_of_four():
+    from haemolynx.graph.degree2 import smart_multigraph_degree2_removal
+
+    G, hub, fork = _cross_with_a_spur()
+    as_the_build_merges = G.copy()
+    de.remove_interior_dead_ends(as_the_build_merges)
+    smart_multigraph_degree2_removal(as_the_build_merges, None, max_degree=4)
+    assert as_the_build_merges.degree(fork) == 2, "the build's merge leaves it, beside the hub"
+
+    removed = de.remove_interior_dead_ends_and_merge(G)
+
+    assert removed == {"dead_ends": 1, "vessels": 1, "nodes": 1, "length_um": pytest.approx(10.0),
+                       "merged": 1, "left_degree_2": 0}
+    assert fork not in G and not any(G.degree(n) == 2 for n in G)
+    (arm,) = [d for _u, v, d in G.edges(hub, data=True) if G.nodes[v]["pos"][2] == 30.0]
+    assert arm["length"] == pytest.approx(30.0), "the arm is one vessel, its whole length"
+    assert G.degree(hub) == 4
+
+
+def test_the_merge_after_removal_touches_only_the_junctions_the_removal_left():
+    """A node of two vessels already in the graph is not the removal's to merge."""
+    G, hub, fork = _cross_with_a_spur()
+    G.remove_edge(hub, (0.0, 30.0, 0.0))
+    G.add_edge(hub, (0.0, 15.0, 0.0), voxels=[[0, 0, 0], [0, 15, 0]], length=15.0)
+    G.add_edge((0.0, 15.0, 0.0), (0.0, 30.0, 0.0), voxels=[[0, 15, 0], [0, 30, 0]], length=15.0)
+    G.nodes[(0.0, 15.0, 0.0)]["pos"] = np.asarray((0.0, 15.0, 0.0))
+
+    removed = de.remove_interior_dead_ends_and_merge(G)
+
+    assert removed["merged"] == 1 and fork not in G
+    assert G.degree((0.0, 15.0, 0.0)) == 2, "there before the removal: left as it was"
+
+
+def test_a_junction_left_with_a_vessel_and_its_thick_vessel_bridge_stays():
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    G, hub, fork = _cross_with_a_spur()
+    for *_e, data in G.edges([fork], data=True):
+        if (0.0, 0.0, 30.0) in _e:
+            data[IS_ZERO_RESISTANCE] = True
+
+    removed = de.remove_interior_dead_ends_and_merge(G)
+
+    assert (removed["dead_ends"], removed["merged"], removed["left_degree_2"]) == (1, 0, 1)
+    assert G.degree(fork) == 2, "a bridge is never merged with the vessel it opens"
+
+
+def test_a_degree_2_merge_limited_to_nodes_merges_those_alone_whatever_their_neighbours():
+    from lumen_artefact_fixtures import polyline_graph
+
+    from haemolynx.graph.degree2 import smart_multigraph_degree2_removal
+
+    hub = (0.0, 0.0, 0.0)
+    G = polyline_graph([
+        [hub, (0, 0, 10)], [(0, 0, 10), (0, 0, 20)],
+        [hub, (0, 10, 0)], [(0, 10, 0), (0, 20, 0)],
+        [hub, (0, 0, -20)], [hub, (0, -20, 0)],
+    ])
+    guarded = smart_multigraph_degree2_removal(G.copy(), None, max_degree=4)
+    assert guarded.degree((0.0, 0.0, 10.0)) == 2 and guarded.degree((0.0, 10.0, 0.0)) == 2
+
+    smart_multigraph_degree2_removal(G, None, max_degree=None, nodes=[(0.0, 0.0, 10.0)])
+
+    assert (0.0, 0.0, 10.0) not in G, "merged beside the junction of four"
+    assert G.degree((0.0, 10.0, 0.0)) == 2, "not one of the nodes asked for"
+
+
 def test_fixture_5_the_facing_pair_is_what_the_facing_join_joins():
     """PLAN_dead_ends.md Phase 0, fixture 5: the two tips are a pair the join
     accepts, and joining them leaves no dead end on either vessel."""

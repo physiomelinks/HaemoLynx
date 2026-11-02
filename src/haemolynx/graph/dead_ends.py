@@ -873,6 +873,34 @@ def remove_interior_dead_ends(G: nx.MultiGraph, kinds: Sequence[str] = INTERIOR_
     return {"dead_ends": len(chains), "vessels": vessels, "nodes": len(loose), "length_um": length}
 
 
+def remove_interior_dead_ends_and_merge(
+    G: nx.MultiGraph,
+    kinds: Sequence[str] = INTERIOR_DEAD_END_KINDS,
+    *,
+    inside_lumen=None,
+) -> dict[str, float]:
+    """:func:`remove_interior_dead_ends`, then every node that leaves with two
+    vessels merged into one vessel (``degree2.smart_multigraph_degree2_removal``
+    on those nodes alone), whatever the degrees of the junctions beside it:
+    the build's own merge leaves a node beside a junction of four vessels. A
+    node where a vessel meets a thick-vessel bridge stays, as does one whose
+    two vessels both run to the same node (a loop on it). *inside_lumen* is
+    the merge's (``assemble.mask_lumen_test``).
+
+    Returns :func:`remove_interior_dead_ends`' counts with ``merged``, the
+    nodes the removal left with two vessels that were merged away, and
+    ``left_degree_2``, those that stay.
+    """
+    from .degree2 import smart_multigraph_degree2_removal
+
+    before = {n for n in G if G.degree(n) == 2}
+    removed = remove_interior_dead_ends(G, kinds)
+    made = [n for n in G if G.degree(n) == 2 and n not in before]
+    smart_multigraph_degree2_removal(G, None, max_degree=None, inside_lumen=inside_lumen, nodes=made)
+    left = sum(1 for n in made if n in G and G.degree(n) == 2)
+    return {**removed, "merged": len(made) - left, "left_degree_2": left}
+
+
 def dead_end_census(dead_ends: Mapping[Any, DeadEnd]) -> dict[str, int]:
     """How many dead ends of each kind, every kind listed."""
     counts = Counter(end.kind for end in dead_ends.values())
@@ -918,6 +946,7 @@ __all__ = [
     "record_image_extent",
     "record_thick_centreline",
     "remove_interior_dead_ends",
+    "remove_interior_dead_ends_and_merge",
     "remove_pieces_without_junction",
     "set_dead_end_kind",
     "tip_heading",

@@ -67,7 +67,7 @@ def main(settings: dict) -> dict:
         with run.stage("assign_diameters"):
             diameters = assign_diameters(settings, network, boundaries, SCHEMA)
         with run.stage("build_haemodynamic_model"):
-            diameters = apply_network_handling(settings, diameters, boundaries, network)
+            diameters = apply_network_handling(settings, diameters, boundaries, network, schema=SCHEMA)
             model = build_haemodynamic_model(settings, diameters)
         with run.stage("solve"):
             solution = solve(settings, model, boundaries)

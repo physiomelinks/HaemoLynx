@@ -1059,6 +1059,101 @@ def test_a_listed_piece_that_holds_a_boundary_node_or_got_a_junction_stays():
     assert joined.pieces == 0 and joined.skipped == 1 and tip in G
 
 
+# --- Dead ends: removing every listed interior dead end and merging its junction ------
+
+
+def test_every_dead_end_list_but_pieces_and_blind_ends_gets_the_interior_removal():
+    from haemolynx.graph import network_review as nr
+    from haemolynx.gui.post_processing import (
+        DEAD_END_SHOW,
+        DEAD_END_SHOW_ALL,
+        listed_interior_dead_ends,
+        remove_interior_dead_ends_label,
+        removes_listed_interior_dead_ends,
+    )
+
+    _case, items = _island_items()
+    assert [i.measures["kind"] for i in listed_interior_dead_ends(items)] == ["artefact"], "not the island"
+    offered = {key for key, _label in DEAD_END_SHOW if removes_listed_interior_dead_ends(nr.DEAD_ENDS, key)}
+    assert offered == {DEAD_END_SHOW_ALL, "artefact", "thick_wall", "stops_short", "broken", "unknown"}
+    assert not removes_listed_interior_dead_ends(nr.THICK_WALL_ENDS, DEAD_END_SHOW_ALL)
+    assert remove_interior_dead_ends_label(1) == "Remove all 1 listed interior dead end and merge their junctions"
+    assert remove_interior_dead_ends_label(12) == "Remove all 12 listed interior dead ends and merge their junctions"
+
+
+def test_removing_listed_interior_dead_ends_merges_the_junction_and_leaves_the_island():
+    from haemolynx.graph.post_processing import has_pending_edits
+    from haemolynx.gui.post_processing import branch_id_of, remove_listed_interior_dead_ends
+
+    case, items = _island_items()
+    G = case.graph
+    spur = next(i for i in items if i.measures["kind"] == "artefact")
+    tip, junction = spur.nodes
+    ids = sorted(branch_id_of(G, e) for e in spur.edges)
+    island = {n for n in G if abs(G.nodes[n]["pos"][1] - 50.0) < 1e-6}
+    trunk_length = sum(float(d["length"]) for _u, _v, d in G.edges(junction, data=True) if tip not in (_u, _v))
+
+    done = remove_listed_interior_dead_ends(G, items, time="t0")
+
+    assert tip not in G and junction not in G, "the spur goes and its junction is merged away"
+    assert island <= set(G), "a piece with no junction is not an interior dead end"
+    trunk = [d for u, v, d in G.edges(data=True) if not {u, v} <= island]
+    assert len(trunk) == 1 and float(trunk[0]["length"]) == pytest.approx(trunk_length)
+    assert (done.dead_ends, done.vessels, done.merged, done.left_degree_2) == (1, 1, 1, 0)
+    assert (done.skipped, done.held, done.bridged) == (0, 0, 0)
+    assert done.length_um == pytest.approx(5.0)
+    row = done.rows[0]
+    assert row["decision"] == "deleted" and row["kind"] == "dead_ends" and row["time"] == "t0"
+    assert row["branch_ids"] == ";".join(str(i) for i in ids), "branchIDs as the list showed them"
+    assert has_pending_edits(G), "hand edits post processing brings in line"
+
+
+def test_a_listed_dead_end_held_by_a_boundary_node_bridged_or_changed_stays():
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.gui.post_processing import remove_listed_interior_dead_ends
+
+    case, items = _island_items()
+    G = case.graph
+    spur = next(i for i in items if i.measures["kind"] == "artefact")
+    tip, junction = spur.nodes
+
+    held = remove_listed_interior_dead_ends(G, [spur], protected={tip})
+    assert (held.dead_ends, held.held) == (0, 1) and tip in G
+
+    G.edges[tuple(spur.edges[0])][IS_ZERO_RESISTANCE] = True
+    bridged = remove_listed_interior_dead_ends(G, [spur])
+    assert (bridged.dead_ends, bridged.bridged) == (0, 1) and tip in G
+    G.edges[tuple(spur.edges[0])][IS_ZERO_RESISTANCE] = False
+
+    # A vessel drawn on from the tip since the scan: no longer a dead end.
+    G.add_edge(tip, (10.0, 30.0, 40.0), voxels=[list(tip), [10.0, 30.0, 40.0]], length=5.0)
+    changed = remove_listed_interior_dead_ends(G, [spur])
+    assert (changed.dead_ends, changed.skipped) == (0, 1) and junction in G
+
+
+def test_two_listed_dead_ends_off_one_junction_are_judged_together():
+    """As the Graph tab's removal judges them: the junction they hung from is
+    left with one vessel, a dead end, not merged into either of them."""
+    from types import SimpleNamespace
+
+    from lumen_artefact_fixtures import polyline_graph
+
+    from haemolynx.gui.post_processing import remove_listed_interior_dead_ends
+
+    hub = (0.0, 0.0, 0.0)
+    G = polyline_graph([[hub, (0, 0, 30)], [hub, (0, 10, 0)], [hub, (0, -10, 0)]])
+
+    def dead_end(tip):
+        (edge,) = list(G.edges(tip, keys=True))
+        return SimpleNamespace(kind="dead_ends", nodes=(tip, hub), edges=(edge,), why="",
+                               centre_um=tip, measures={"kind": "stops_short"})
+
+    done = remove_listed_interior_dead_ends(G, [dead_end((0.0, 10.0, 0.0)), dead_end((0.0, -10.0, 0.0))])
+
+    assert done.dead_ends == 2 and (done.merged, done.left_degree_2) == (0, 0)
+    assert set(G.nodes) == {hub, (0.0, 0.0, 30.0)} and G.degree(hub) == 1
+
+
 # --- Terminal nodes: make an inlet or an outlet, or take the role away ----------------
 
 

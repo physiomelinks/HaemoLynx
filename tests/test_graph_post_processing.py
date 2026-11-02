@@ -462,15 +462,108 @@ def test_prune_with_nothing_to_drop_changes_nothing():
 
 
 def test_prune_records_the_nodes_a_dropped_dead_end_hung_from():
-    """Inlet 0 -> 1 -> outlet 2 with a dead end 1 -> 7: the prune takes the
-    dead end, and 1, which lost it, is touched."""
+    """Inlet 0 -> 1 -> outlets 2 and 3 with a dead end 1 -> 7: the prune
+    takes the dead end, and 1, which lost it and is still a junction, is
+    touched."""
+    positions = {n: (0.0, float(n), 0.0) for n in range(4)}
+    positions[7] = (5.0, 1.0, 0.0)
+    G = _network(positions, [(0, 1), (1, 2), (1, 3), (1, 7)])
+    pruned, stats = prune_disconnected_branches(G, [0], [2, 3])
+    assert stats["removed_vessels"] == 1 and stats["junctions_merged"] == 0
+    assert touched_nodes(pruned) == [1]
+    assert touched_nodes(G) == []  # the input graph is left as it was
+
+
+def test_prune_merges_the_two_vessels_a_dead_end_hung_between():
+    """Inlet 0 -> 1 -> outlet 2 with a dead end 1 -> 7: once the dead end
+    goes, 1 is no junction, so 0-1 and 1-2 become one vessel 0-2, marked for
+    the post_process stage to measure; its ends are what the edit touched."""
     positions = {n: (0.0, float(n), 0.0) for n in range(3)}
     positions[7] = (5.0, 1.0, 0.0)
     G = _network(positions, [(0, 1), (1, 2), (1, 7)])
+
     pruned, stats = prune_disconnected_branches(G, [0], [2])
-    assert stats["removed_vessels"] == 1
-    assert touched_nodes(pruned) == [1]
-    assert touched_nodes(G) == []  # the input graph is left as it was
+
+    assert sorted(pruned.nodes) == [0, 2]
+    assert stats["removed_vessels"] == 1 and stats["removed_edges"] == [(1, 7, 0)]
+    assert stats["junctions_merged"] == 1
+    ((u, v, k, data),) = pruned.edges(keys=True, data=True)
+    assert data["length"] == pytest.approx(2.0)
+    assert edited_edges(pruned) == [(u, v, k)]
+    assert sorted(touched_nodes(pruned)) == [0, 2]
+    assert sorted(G.nodes) == [0, 1, 2, 7]  # the input graph is left as it was
+
+
+def test_prune_never_merges_an_inlet_an_outlet_or_a_protected_node():
+    """Outlet 4 <- inlet 0 -> 1 -> 2 -> outlet 3 -> outlet 8, with a dead
+    end off each of 0, 1, 2 and 3: each is left with two vessels, but 0 is an
+    inlet, 3 an outlet and 1 protected (a boundary node), so only 2 merges."""
+    positions = {n: (0.0, float(n), 0.0) for n in range(4)}
+    positions.update({4: (0.0, -1.0, 0.0), 8: (0.0, 4.0, 0.0)})
+    positions.update({5: (5.0, 0.0, 0.0), 6: (5.0, 1.0, 0.0), 9: (5.0, 2.0, 0.0), 7: (5.0, 3.0, 0.0)})
+    G = _network(
+        positions, [(4, 0), (0, 1), (1, 2), (2, 3), (3, 8), (0, 5), (1, 6), (2, 9), (3, 7)]
+    )
+
+    pruned, stats = prune_disconnected_branches(G, [0], [4, 3, 8], protected=[1])
+
+    assert stats["removed_vessels"] == 4 and stats["junctions_merged"] == 1
+    assert sorted(pruned.nodes) == [0, 1, 3, 4, 8]
+    assert pruned.has_edge(1, 3)
+    assert [sorted(edge[:2]) for edge in edited_edges(pruned)] == [[1, 3]]
+
+
+def test_prune_keeps_a_bridge_and_the_vessel_it_opens_apart():
+    """A bridge 1-2 into a thick vessel and the vessel 0-1 it opens meet at 1
+    once the dead end 1-7 goes: two vessels, not one."""
+    positions = {n: (0.0, float(n), 0.0) for n in range(4)}
+    positions[7] = (5.0, 1.0, 0.0)
+    G = _network(positions, [(0, 1), (2, 3), (1, 7)])
+    voxels = _straight(positions[1], positions[2])
+    G.add_edge(1, 2, voxels=voxels, length=1.0, **{IS_ZERO_RESISTANCE: True})
+
+    pruned, stats = prune_disconnected_branches(G, [0], [3])
+
+    assert stats["removed_vessels"] == 1 and stats["junctions_merged"] == 0
+    assert pruned.has_edge(0, 1) and pruned.has_edge(1, 2)
+
+
+# --- merge_pass_through ---------------------------------------------------------
+
+from haemolynx.graph import merge_pass_through  # noqa: E402
+
+
+def test_merge_pass_through_makes_one_vessel_of_two():
+    positions = {0: (0.0, 0.0, 0.0), 1: (0.0, 3.0, 0.0), 2: (0.0, 3.0, 4.0)}
+    G = _network(positions, [(0, 1), (1, 2)], branch_order="B01")
+
+    merged = merge_pass_through(G, 1)
+
+    assert merged[:2] in ((0, 2), (2, 0)) and 1 not in G
+    data = G.edges[merged]
+    assert data["length"] == pytest.approx(7.0)
+    assert data["branch_order"] == "B01"
+    assert EDITED not in data  # the caller says what the merge was
+
+
+def test_merge_pass_through_leaves_what_is_no_plain_pass_through():
+    positions = {0: (0.0, 0.0, 0.0), 1: (0.0, 3.0, 0.0), 2: (0.0, 6.0, 0.0), 3: (0.0, 9.0, 0.0)}
+    star = _network(positions, [(0, 1), (1, 2), (1, 3)])
+    assert merge_pass_through(star, 1) is None  # three vessels
+    assert merge_pass_through(star, 99) is None  # not in the network
+
+    loop = _network(positions, [(0, 1), (0, 1)])
+    assert merge_pass_through(loop, 1) is None  # two vessels to one neighbour
+
+    tagged = _network(positions, [(0, 1), (1, 2)])
+    tagged.edges[0, 1, 0]["large_mask_vessel_type"] = "arteriole"
+    assert merge_pass_through(tagged, 1, same=["large_mask_vessel_type"]) is None
+    assert merge_pass_through(tagged, 1) is not None  # unless asked to keep them apart
+
+    nowhere = _network(positions, [(0, 1), (1, 2)])
+    del nowhere.nodes[1]["pos"]
+    assert merge_pass_through(nowhere, 1) is None
+    assert nowhere.number_of_edges() == 2
 
 
 def test_prune_refuses_to_remove_every_vessel():

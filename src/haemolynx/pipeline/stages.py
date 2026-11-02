@@ -2154,6 +2154,11 @@ def _no_vessels_left_error(
             "remove_interior_dead_ends removes every dead end inside the image, so a network "
             "with no loop and no vessel leaving the image goes whole"
         )
+    if settings.get("remove_interior_dead_ends_and_merge"):
+        reasons.append(
+            "remove_interior_dead_ends_and_merge removes every dead end inside the image, so a "
+            "network with no loop and no vessel leaving the image goes whole"
+        )
     return ValueError(
         f"Graph building left no vessels. {built} Settings to check: " + "; ".join(reasons) + "."
     )
@@ -2376,6 +2381,23 @@ def finish_network_graph(
             thick_tree=context.thick_tree, thick_tree_radius=context.thick_tree_radius,
         )
         steps.append(("removal and recovery of interior dead ends", G.number_of_edges()))
+    # Interior dead ends out with nothing traced back, and each junction that
+    # leaves with two vessels merged into one vessel, beside a junction of
+    # four vessels too, where the build's own merge leaves it.
+    if settings.get("remove_interior_dead_ends_and_merge") and binary_mask is not None:
+        mark_dead_end_kinds(settings, G, context)
+        removed = graph.dead_ends.remove_interior_dead_ends_and_merge(G, inside_lumen=lumen_cleanup.inside_lumen)
+        G.graph["interior_dead_ends_removed"] = G.graph.get("interior_dead_ends_removed", 0) + removed["dead_ends"]
+        G.graph["interior_dead_ends_removed_um"] = (
+            G.graph.get("interior_dead_ends_removed_um", 0.0) + removed["length_um"]
+        )
+        G.graph["interior_dead_end_junctions_merged"] = removed["merged"]
+        logger.info(
+            "Removed %d interior dead end(s) (%.0f um of centreline) and merged %d junction(s) they left "
+            "with two vessels; %d stay, a vessel meeting a thick-vessel bridge or a loop.",
+            removed["dead_ends"], removed["length_um"], removed["merged"], removed["left_degree_2"],
+        )
+        steps.append(("removal of interior dead ends and merge of the junctions left", G.number_of_edges()))
     # Pieces with no junction (their dead ends are graph.dead_ends'
     # island ends), taken out last so no step after rejoins or re-makes
     # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
@@ -5189,7 +5211,6 @@ def post_process(
         points = data.get("voxels")
         if points is not None and len(points) >= 2:
             data["length"] = float(graph.calculate_path_length(points))
-    diameters = None
     summary: dict[str, Any] = {"edited_vessels": len(edited)}
     voxel_size_zyx = (
         network.volume.voxel_size_zyx
@@ -5238,52 +5259,14 @@ def post_process(
         census = _mark_touched_dead_end_kinds(settings, G, network, touched, segmentation)
         if census is not None:
             summary["dead_ends"] = census
-    # A network classed by the size convention re-classes its edited vessels
-    # by the thresholds it was run with, once they are measured.
     convention = graph.size_convention_of(G)
     if convention is not None:
         _warn_if_size_settings_differ(settings, convention)
-        classify = _size_classes_then_orders(
-            settings, (convention["mid_min_um"], convention["wide_min_um"]), edges=edited
-        )
-    if settings["inlet_nodes"]:
-        if convention is None:
-            _assign_branch_orders(settings, G)
-
-        def haemo_config():
-            return _haemodynamics_apply_config(
-                settings, schema, voxel_size_zyx=voxel_size_zyx,
-                stain=recorded_raw_image_stain(settings, G),
-            )
-
-        mask_volume = network.volume.image if network is not None else None
-        # Even with no vessel to measure (only deletions): a table or class
-        # median diameter follows the branch order just assigned.
-        if settings["run_haemodynamics"]:
-            # What an edited vessel brought with it from the vessel it was
-            # cut from or merged with is measured afresh.
-            for u, v, key in edited:
-                start_measurement_afresh(G.edges[u, v, key])
-            G, results, _raw = assign_edge_diameters(
-                G,
-                haemo_config(),
-                mask_volume=mask_volume,
-                edges=edited,
-                **({} if convention is None else {"before_fallbacks": classify}),
-            )
-            diameters = results.get("diameters")
-            summary["diameters"] = diameters
-            summary["measurement"] = results
-        elif convention is not None:
-            for u, v, key in edited:
-                G.edges[u, v, key].pop("edt_diameter_um", None)
-            measure_mask_diameters(G, haemo_config(), mask_volume=mask_volume, edges=edited)
-            _size_classes_then_orders(
-                settings, (convention["mid_min_um"], convention["wide_min_um"]),
-                edges=edited, width_attribute="edt_diameter_um",
-            )(G, ())
-        if convention is not None:
-            summary["vessel_classes"] = graph.size_convention_of(G)
+    G, measured = _orders_and_diameters_after_edit(
+        settings, schema, G, edited, network=network, voxel_size_zyx=voxel_size_zyx
+    )
+    summary.update(measured)
+    diameters = measured.get("diameters")
     model.results["post_process"] = summary
     graph.clear_edit_marks(G)
     G.graph[graph.post_processing.APPLIED] = True
@@ -5294,6 +5277,75 @@ def post_process(
         + "."
     )
     return model
+
+
+def _orders_and_diameters_after_edit(
+    settings: dict,
+    schema: Schema,
+    G: nx.MultiGraph,
+    edited: list,
+    *,
+    network: VesselNetwork | None,
+    voxel_size_zyx,
+) -> tuple[nx.MultiGraph, dict[str, Any]]:
+    """Branch orders over the whole network again, then the *edited* vessels
+    measured afresh with the run's own diameter methods: what
+    :func:`post_process` does once a hand edit is in, and the network
+    handling once it joins the two vessels a removed branch left meeting.
+
+    Returns the graph and what was measured (``diameters`` and
+    ``measurement`` with haemodynamics on, ``vessel_classes`` for a network
+    classed by the size convention). With no inlets nothing is done.
+    """
+    summary: dict[str, Any] = {}
+    # A network classed by the size convention re-classes its edited vessels
+    # by the thresholds it was run with, once they are measured.
+    convention = graph.size_convention_of(G)
+    if convention is not None:
+        classify = _size_classes_then_orders(
+            settings, (convention["mid_min_um"], convention["wide_min_um"]), edges=edited
+        )
+    if not settings.get("inlet_nodes"):
+        return G, summary
+    if convention is None:
+        _assign_branch_orders(settings, G)
+
+    def haemo_config():
+        return _haemodynamics_apply_config(
+            settings, schema, voxel_size_zyx=voxel_size_zyx,
+            stain=recorded_raw_image_stain(settings, G),
+        )
+
+    mask_volume = (
+        network.volume.image if network is not None and network.volume is not None else None
+    )
+    # Even with no vessel to measure (only deletions): a table or class
+    # median diameter follows the branch order just assigned.
+    if settings.get("run_haemodynamics"):
+        # What an edited vessel brought with it from the vessel it was
+        # cut from or merged with is measured afresh.
+        for u, v, key in edited:
+            start_measurement_afresh(G.edges[u, v, key])
+        G, results, _raw = assign_edge_diameters(
+            G,
+            haemo_config(),
+            mask_volume=mask_volume,
+            edges=edited,
+            **({} if convention is None else {"before_fallbacks": classify}),
+        )
+        summary["diameters"] = results.get("diameters")
+        summary["measurement"] = results
+    elif convention is not None:
+        for u, v, key in edited:
+            G.edges[u, v, key].pop("edt_diameter_um", None)
+        measure_mask_diameters(G, haemo_config(), mask_volume=mask_volume, edges=edited)
+        _size_classes_then_orders(
+            settings, (convention["mid_min_um"], convention["wide_min_um"]),
+            edges=edited, width_attribute="edt_diameter_um",
+        )(G, ())
+    if convention is not None:
+        summary["vessel_classes"] = graph.size_convention_of(G)
+    return G, summary
 
 
 def _warn_if_size_settings_differ(settings: dict, convention: Mapping[str, Any]) -> None:
@@ -5340,7 +5392,7 @@ def solve_post_processed(
 
     The returned solution's ``post_processed`` is what was brought in line.
     """
-    model = apply_network_handling(settings, model, boundaries, network)
+    model = apply_network_handling(settings, model, boundaries, network, schema=schema)
     model = build_haemodynamic_model(settings, model, schema)
     solution = solve(settings, model, boundaries, schema)
     solution.post_processed = model.results.get("post_process")
@@ -5369,6 +5421,8 @@ def apply_network_handling(
     model: HaemodynamicModel,
     boundaries: BoundaryNodes,
     network: VesselNetwork | None = None,
+    *,
+    schema: Schema | None = None,
 ) -> HaemodynamicModel:
     """What the "Network handling" settings do to the assigned network.
 
@@ -5381,7 +5435,11 @@ def apply_network_handling(
     branches, trees and loops hanging off one that has both. The
     boundary-node lists (on *boundaries* and in *settings*) and the
     resistance node pair follow the pruned graph, which becomes *model*'s,
-    *boundaries*' and *network*'s. ``"leave_unsolved"`` (the default) keeps
+    *boundaries*' and *network*'s. Where a removed branch hung, the two
+    vessels left are joined into one (:func:`_merge_where_branches_hung`),
+    then measured afresh and the branch orders assigned again, as post
+    processing does after a hand edit (*schema*, default the pipeline's,
+    gives the diameter settings). ``"leave_unsolved"`` (the default) keeps
     them all, and :func:`solve` marks exactly those vessels unsolved
     (:data:`haemolynx.graph.FLOW_SOLVED`).
 
@@ -5393,7 +5451,7 @@ def apply_network_handling(
     ``haematocrit_split_connector_length_um`` long, or with that at 0 as long
     as each junction's vessels are wide.
     """
-    _remove_vessels_off_inlet_outlet_paths(settings, model, boundaries, network)
+    _remove_vessels_off_inlet_outlet_paths(settings, model, boundaries, network, schema)
     _split_junctions_for_haematocrit(settings, model, boundaries, network)
     return model
 
@@ -5458,9 +5516,11 @@ def _remove_vessels_off_inlet_outlet_paths(
     model: HaemodynamicModel,
     boundaries: BoundaryNodes,
     network: VesselNetwork | None,
+    schema: Schema | None = None,
 ) -> None:
     if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return
+    G_before = model.graph
     G_pruned, io_prune_stats = graph.remove_vessels_off_inlet_outlet_paths(
         model.graph, boundaries.inlet_nodes, boundaries.outlet_nodes
     )
@@ -5507,6 +5567,67 @@ def _remove_vessels_off_inlet_outlet_paths(
     if pair is None or any(node_id not in G_pruned for node_id in pair):
         boundaries.resistance_node_pair = (boundaries.inlet_nodes[0], boundaries.outlet_nodes[0])
         logger.info(f"Re-selected resistance node pair: {boundaries.resistance_node_pair}")
+    _merge_where_branches_hung(settings, model, boundaries, network, schema, G_before)
+
+
+#: The vessel-mask tags the Boundaries stage wrote, which the network
+#: handling does not read again: two vessels tagged apart -- one leaving a
+#: mask where a removed branch hung -- stay two.
+_MASK_TAGS_KEPT_APART = (
+    graph.LARGE_MASK_VESSEL_TYPE,
+    graph.SMALL_MASK_VESSEL_TYPE,
+    graph.GLOBAL_MASK_CLASS,
+)
+
+
+def _merge_where_branches_hung(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    network: VesselNetwork | None,
+    schema: Schema | None,
+    G_before: nx.MultiGraph,
+) -> None:
+    """Join the two vessels the removal left at each node a branch hung
+    from into one (:func:`graph.merge_pass_through`), as graph building
+    leaves no node where only two vessels meet; then assign the branch orders
+    again and measure the joined vessels afresh
+    (:func:`_orders_and_diameters_after_edit`), as post processing does after
+    a deletion merges two. Boundary nodes and the resistance pair stay, as do
+    a thick-vessel bridge and the vessel it opens, and two vessels whose mask
+    tags differ (:data:`_MASK_TAGS_KEPT_APART`)."""
+    G = model.graph
+    keep = {node for name in _BOUNDARY_NODE_LISTS for node in getattr(boundaries, name)}
+    keep.update(boundaries.resistance_node_pair or ())
+    left = [n for n in G if G.degree(n) == 2 and G_before.degree(n) > 2 and n not in keep]
+    joined = [graph.merge_pass_through(G, node, same=_MASK_TAGS_KEPT_APART) for node in left]
+    merged = [edge for edge in joined if edge is not None and G.has_edge(*edge)]
+    if not merged:
+        return
+    if schema is None:
+        from haemolynx.pipeline.schema import default_schema
+
+        schema = default_schema()
+    voxel_size_zyx = (
+        network.volume.voxel_size_zyx
+        if network is not None and network.volume is not None
+        else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
+    )
+    G, measured = _orders_and_diameters_after_edit(
+        settings, schema, G, merged, network=network, voxel_size_zyx=voxel_size_zyx
+    )
+    model.graph = G
+    boundaries.graph = G
+    if network is not None:
+        network.graph = G
+    logger.info(
+        "Network handling: joined the two vessels left at "
+        f"{sum(edge is not None for edge in joined)} node(s) a removed branch hung "
+        f"from into one; branch orders assigned again and {len(merged)} joined "
+        "vessel(s) measured afresh"
+        + (f" (diameter sources: {measured['diameters']})" if measured.get("diameters") else "")
+        + "."
+    )
 
 
 def build_haemodynamic_model(
@@ -8542,7 +8663,9 @@ def _run_stages(
         return diameters.graph
     with run.stage("build_haemodynamic_model"):
         if _run_stage_body("build_haemodynamic_model", start_from):
-            diameters = apply_network_handling(settings, diameters, boundaries, network)
+            diameters = apply_network_handling(
+                settings, diameters, boundaries, network, schema=schema
+            )
             model = build_haemodynamic_model(settings, diameters, schema)
         else:
             model = diameters

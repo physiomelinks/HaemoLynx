@@ -110,6 +110,7 @@ __all__ = [
     "mark_edited",
     "mean_incident_diameter",
     "merge_junctions",
+    "merge_pass_through",
     "prune_disconnected_branches",
     "record_drawn_vessel_support",
     "resistance_node_pair_with_edits",
@@ -492,21 +493,41 @@ def delete_vessels(
             continue
         if degree != 2:
             continue
-        incident = list(G.edges(node, keys=True, data=True))
-        if len(incident) != 2:
-            continue  # a self-loop counts twice towards degree
-        (_, n1, _k1, d1), (_, n2, _k2, d2) = incident
-        if n1 == n2:
-            continue  # two vessels to one neighbour: a loop, not a pass-through
-        if _is_bridge(d1) != _is_bridge(d2):
-            continue  # a bridge and the vessel it opens: two vessels, not one
-        merged = create_trivial_merged_edge(d1, d2, G.nodes[node].get("pos"))
-        G.remove_node(node)
-        key = G.add_edge(n1, n2, **merged)
-        mark_edited(G, [(n1, n2, key)])
-        changed.update({node, n1, n2})
+        merged = merge_pass_through(G, node)
+        if merged is None:
+            continue
+        mark_edited(G, [merged])
+        changed.update({node, merged[0], merged[1]})
     mark_edited(G, nodes=[node for node in dict.fromkeys([*loss, *changed]) if G.has_node(node)])
     return changed
+
+
+def merge_pass_through(
+    G: nx.MultiGraph, node: Any, *, same: Iterable[str] = ()
+) -> EdgeKey | None:
+    """Make the two vessels meeting at *node* one vessel through it.
+
+    Only a plain pass-through is merged: a node with a position where two
+    vessels go to two different neighbours (two to one neighbour are a
+    loop), both or neither of them a thick-vessel bridge (a bridge and the
+    vessel it opens are two vessels), agreeing on every edge attribute named
+    in *same*. Returns the merged vessel's ``(u, v, key)``, or ``None`` where
+    *node* is left as it was. Nothing is marked: the caller says what the
+    merge was part of.
+    """
+    if node not in G or G.degree(node) != 2 or G.nodes[node].get("pos") is None:
+        return None
+    incident = list(G.edges(node, keys=True, data=True))
+    if len(incident) != 2:
+        return None  # a self-loop counts twice towards degree
+    (_, n1, _k1, d1), (_, n2, _k2, d2) = incident
+    if n1 == n2 or _is_bridge(d1) != _is_bridge(d2):
+        return None
+    if any(d1.get(name) != d2.get(name) for name in same):
+        return None
+    merged = create_trivial_merged_edge(d1, d2, G.nodes[node].get("pos"))
+    G.remove_node(node)
+    return (n1, n2, G.add_edge(n1, n2, **merged))
 
 
 @dataclass(frozen=True)
@@ -1546,6 +1567,8 @@ def prune_disconnected_branches(
     G: nx.MultiGraph,
     inlet_nodes: Sequence[Any],
     outlet_nodes: Sequence[Any],
+    *,
+    protected: Iterable[Any] = (),
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Drop every vessel of *G* that no inlet-to-outlet path runs along.
 
@@ -1555,9 +1578,17 @@ def prune_disconnected_branches(
     loop that reaches no outlet. The rule is
     :func:`haemolynx.graph.remove_vessels_off_inlet_outlet_paths`'s, the
     one ``boundary_handling="remove_disconnected"`` applies; this adds
-    ``removed_nodes``, ``removed_vessels`` and ``removed_boundary_nodes``
-    (inlets or outlets that sat on a dropped piece) to its counts, and
-    refuses to drop everything.
+    ``removed_nodes``, ``removed_vessels``, ``removed_edges`` (their
+    ``(u, v, key)`` in *G*) and ``removed_boundary_nodes`` (inlets or
+    outlets that sat on a dropped piece) to its counts, and refuses to drop
+    everything.
+
+    A junction the prune took a branch from and left with two vessels is no
+    junction any more: the two are merged into one vessel
+    (:func:`merge_pass_through`), marked for the ``post_process`` stage to
+    measure, as :func:`delete_vessels` merges one. Inlets, outlets and the
+    other *protected* (boundary) nodes are never merged; ``junctions_merged``
+    counts the rest.
     """
     pruned, stats = remove_vessels_off_inlet_outlet_paths(G, inlet_nodes, outlet_nodes)
     if G.number_of_edges() and not pruned.number_of_edges():
@@ -1569,7 +1600,19 @@ def prune_disconnected_branches(
     stats = dict(stats)
     stats["removed_nodes"] = G.number_of_nodes() - pruned.number_of_nodes()
     stats["removed_vessels"] = G.number_of_edges() - pruned.number_of_edges()
+    stats["removed_edges"] = [e for e in G.edges(keys=True) if not pruned.has_edge(*e)]
     stats["removed_boundary_nodes"] = [n for n in boundary if n in G and n not in pruned]
+    keep = {*protected, *boundary}
+    merged = []
+    for node in [n for n in pruned if pruned.degree(n) == 2 and G.degree(n) > 2 and n not in keep]:
+        edge = merge_pass_through(pruned, node)
+        if edge is not None:
+            merged.append(edge)
+    stats["junctions_merged"] = len(merged)
     if stats["removed_vessels"] or G.graph.get(PENDING):
-        mark_edited(pruned, nodes=[node for node in pruned if pruned.degree(node) < G.degree(node)])
+        mark_edited(
+            pruned,
+            [edge for edge in merged if pruned.has_edge(*edge)],
+            nodes=[node for node in pruned if pruned.degree(node) < G.degree(node)],
+        )
     return pruned, stats

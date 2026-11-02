@@ -927,3 +927,108 @@ def test_boundary_lists_follow_a_prune_on_regenerate():
     assert boundaries.large_arteriole_boundary_nodes == []
     assert settings["arteriole_boundary_nodes"] == [1]
     assert boundaries.resistance_node_pair == (0, 3)
+
+
+# --- remove_disconnected joins the two vessels a removed branch hung between ---
+
+import numpy as np  # noqa: E402
+
+from test_diameter_assignment import (  # noqa: E402
+    EDGE_LENGTH_UM,
+    _boundaries as _chain_boundaries,
+    _network as _chain_network,
+    _settings as _chain_settings,
+    _vessel_network,
+)
+
+
+def _chain_with_a_dead_end(tmp_path):
+    """test_diameter_assignment's straight chain, inlet 0 -> 1 -> 2 -> 3 ->
+    outlet 4, with a dead end 2-5 square to it, through the real Diameters
+    stage with remove_disconnected on."""
+    graph = _chain_network()
+    start = np.asarray(graph.nodes[2]["pos"], dtype=float)
+    end = start + np.asarray([0.0, 100.0, 0.0])
+    graph.add_node(5, pos=end)
+    graph.add_edge(2, 5, length=100.0, voxels=[list(start), list(end)])
+    run_settings = _chain_settings(tmp_path, **REMOVE)
+    network = _vessel_network(tmp_path, graph=graph)
+    boundaries = _chain_boundaries()
+    model = stages.assign_diameters(run_settings, network, boundaries, SCHEMA)
+    return run_settings, network, boundaries, model
+
+
+def _measured_edges(monkeypatch) -> list:
+    """What assign_edge_diameters is asked to measure, call by call."""
+    calls: list = []
+    real = stages.assign_edge_diameters
+
+    def spy(G, config, **kwargs):
+        calls.append(sorted(tuple(sorted(edge[:2])) for edge in kwargs["edges"]))
+        return real(G, config, **kwargs)
+
+    monkeypatch.setattr(stages, "assign_edge_diameters", spy)
+    return calls
+
+
+def test_remove_disconnected_joins_the_vessels_a_dead_end_hung_between(tmp_path, monkeypatch):
+    """Once the dead end goes, 2 is no junction: 1-2 and 2-3 become one
+    vessel 1-3, its branch order assigned again and it alone measured
+    afresh, and the network solves through it."""
+    run_settings, network, boundaries, model = _chain_with_a_dead_end(tmp_path)
+    # The junction at 2 was a step: the vessels beyond it are a generation on.
+    assert model.graph.edges[3, 4, 0]["branch_order"] == "B02"
+    measured = _measured_edges(monkeypatch)
+
+    model = apply_network_handling(run_settings, model, boundaries, network, schema=SCHEMA)
+
+    G = model.graph
+    assert sorted(G.nodes) == [0, 1, 3, 4]
+    assert G.edges[3, 4, 0]["branch_order"] == "B01"
+    assert boundaries.graph is G and network.graph is G
+    ((u, v, k),) = [edge for edge in G.edges(keys=True) if set(edge[:2]) == {1, 3}]
+    joined = G.edges[u, v, k]
+    assert joined["length"] == pytest.approx(2 * EDGE_LENGTH_UM)
+    assert measured == [[(1, 3)]]
+    assert joined["branch_order"] == "B01"
+    assert joined["diameter_um"] > 0
+
+    model = stages.build_haemodynamic_model(run_settings, model, SCHEMA)
+    solution = stages.solve(run_settings, model, boundaries, SCHEMA)
+    flows = [solution.graph.edges[e]["flow_abs"] for e in solution.graph.edges(keys=True)]
+    assert flows[0] > 0 and flows == pytest.approx([flows[0]] * 3)
+
+
+def test_remove_disconnected_keeps_a_node_the_resistance_pair_names(tmp_path, monkeypatch):
+    run_settings, network, boundaries, model = _chain_with_a_dead_end(tmp_path)
+    boundaries.resistance_node_pair = (0, 2)
+    measured = _measured_edges(monkeypatch)
+
+    model = apply_network_handling(run_settings, model, boundaries, network, schema=SCHEMA)
+
+    assert sorted(model.graph.nodes) == [0, 1, 2, 3, 4]
+    assert measured == []
+
+
+def test_remove_disconnected_keeps_two_vessels_in_different_masks_apart(tmp_path, monkeypatch):
+    """A vessel leaving a large vessel's mask where the dead end hung: the
+    tiers read the tags, which the network handling does not write again."""
+    run_settings, network, boundaries, model = _chain_with_a_dead_end(tmp_path)
+    for _u, _v, data in model.graph.edges(1, data=True):
+        data[graph_module.LARGE_MASK_VESSEL_TYPE] = "arteriole"
+    measured = _measured_edges(monkeypatch)
+
+    model = apply_network_handling(run_settings, model, boundaries, network, schema=SCHEMA)
+
+    assert sorted(model.graph.nodes) == [0, 1, 2, 3, 4]
+    assert measured == []
+
+
+def test_the_prune_button_and_network_handling_join_the_same_vessels(tmp_path):
+    run_settings, network, boundaries, model = _chain_with_a_dead_end(tmp_path)
+    pruned, stats = graph_module.prune_disconnected_branches(model.graph, [0], [4])
+
+    model = apply_network_handling(run_settings, model, boundaries, network, schema=SCHEMA)
+
+    assert stats["junctions_merged"] == 1
+    assert _vessels(pruned) == _vessels(model.graph)

@@ -414,6 +414,10 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "In the clean-up after \"Remove interior dead ends\", keep a short loop round a tissue "
         "hole wider than this and break smaller ones. 0 breaks every short loop"
     ),
+    "remove_interior_dead_ends_and_merge": (
+        "Remove every dead end inside the image back to its junction, then join the two vessels "
+        "left at each such junction into one. Nothing is traced back"
+    ),
     "recover_uncovered_mask_vessels": (
         "Trace segmented vessels the network does not run through, such as a capillary the "
         "skeleton lost, and join them to the network through the segmentation"
@@ -1386,8 +1390,8 @@ SETTING_TOOLTIPS: dict[str, str] = {
     ),
     "boundary_handling": (
         "What happens to vessels no inlet-to-outlet route runs along, which the flow solve "
-        "cannot answer. Leave unsolved (default) keeps them, greyed in the viewer; Remove "
-        "disconnected deletes them"
+        "cannot answer. Leave unsolved (default) keeps them, greyed; Remove disconnected "
+        "deletes them, joining the two vessels left where one hung"
     ),
     "open_end_model": (
         "How vessels running out of the image are treated in the flow solve. estimated (default)"

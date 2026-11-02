@@ -878,7 +878,11 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`reclassify_dead_ends`). Post processing lists `thick_wall` ends apart ("Dead ends at thick
   vessels", `network_review.find_dead_ends_at_thick_walls`), each with where a join lands. No rule reached 90% on Harvey's grids, so the kinds only label and
   list, and every repair in `graph/dead_end_extension.py` stays off. `remove_pieces_without_junction`
-  and `remove_interior_dead_ends` (Graph tab) are off by default. The fresh grids G1'-G3'
+  and `remove_interior_dead_ends` (Graph tab) are off by default, as is
+  `remove_interior_dead_ends_and_merge` (`dead_ends.remove_interior_dead_ends_and_merge`: no recovery,
+  and every junction the removal leaves with two vessels merged, beside a junction of four too, which the
+  build's own merge, `max_degree` 4, leaves); Post processing's Dead ends list removes its listed interior
+  dead ends the same way (`gui.post_processing.remove_listed_interior_dead_ends`). The fresh grids G1'-G3'
   (`scripts/dead_end_review/build_grids.py --fresh`, rules fixed in `fit_marks.FRESH_RULES`),
   marked by Harvey, confirmed no rule either. `vessels_cut_by_image_faces`: the vessels on a leaving dead end's chain,
   whose lengths are censored (decision D5): flagged in the VTK (`cut_by_image_face`) and the
@@ -962,7 +966,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   network, then `solve_post_processed`. `apply_network_handling(settings, model, boundaries, network)`
   is the Haemodynamics tab's "Network handling": `boundary_handling` acts on every vessel no
   inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`) — `leave_unsolved` (default)
-  marks them `FLOW_SOLVED=False`, `remove_disconnected` deletes them — and
+  marks them `FLOW_SOLVED=False`, `remove_disconnected` deletes them and joins the two vessels left
+  where a branch hung (`graph.merge_pass_through`; not at boundary nodes, a bridge, or vessels whose
+  mask tags differ), assigning branch orders again and measuring the joined vessels as post
+  processing does an edit (`_orders_and_diameters_after_edit`; pass `schema=`) — and
   `haematocrit_junction_rule="split_junctions"` splits 4+ junctions on a copy. It runs at the start
   of the haemodynamics stage; a caller running stages by hand calls it between `assign_diameters`
   and `build_haemodynamic_model`. The diameter calibrations sample only the vessels it will keep
