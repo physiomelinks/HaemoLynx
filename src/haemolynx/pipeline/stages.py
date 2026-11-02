@@ -234,6 +234,10 @@ class VesselNetwork:
     #: -- see `tissue_measurement`, which fills it on first use and measures
     #: again when a re-run changed either.
     tissue: "TissueCache | None" = None
+    #: The width the large masks were split at into large and small ones
+    #: (`graph.large_vessel_mask_split_diameter_um`), None when they were not:
+    #: a run resumed on the Boundaries tab cuts them again when it changed.
+    mask_split_diameter_um: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1161,16 +1165,38 @@ def _run_voxel_size_on_grid(voxel_size_xyz, downsample: Downsample | None):
 
 
 def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[str, Any]:
-    """``io.vessel_mask_arguments``, loading the role's masks only while they
-    are in use (``graph.vessel_masks_in_use``): a mask switch left ticked
-    under an unticked ``automated_vessel_assignment`` loads nothing."""
+    """``io.vessel_mask_arguments``, loading the role's masks only while its
+    own files are in use (``graph.vessel_mask_files_in_use``): a mask switch
+    left ticked under an unticked ``automated_vessel_assignment`` loads
+    nothing, and small masks cut from the large ones
+    (:func:`_split_large_vessel_masks`) are read from no file."""
     return {
         **io.vessel_mask_arguments(settings, mask_role),
-        "enabled": graph.vessel_masks_in_use(settings, mask_role),
+        "enabled": graph.vessel_mask_files_in_use(settings, mask_role),
         # Read onto disk and cleaned a slab at a time under the low-RAM option.
         "use_memmap": bool(settings.get("use_memmap_loading", False)),
         "memmap_directory": settings.get("memmap_directory"),
     }
+
+
+def _split_large_vessel_masks(
+    settings: Mapping[str, Any], large_arteriole_mask, large_venule_mask, voxel_size_xyz
+) -> tuple:
+    """``(large arteriole, large venule, small arteriole, small venule)``: the
+    loaded large masks cut by width (``io.split_large_vessel_masks_by_diameter``),
+    for a run whose small masks are cut from them
+    (``graph.small_vessel_masks_split_from_large``)."""
+    if large_arteriole_mask is None:
+        return large_arteriole_mask, large_venule_mask, None, None
+    return io.split_large_vessel_masks_by_diameter(
+        large_arteriole_mask,
+        large_venule_mask,
+        diameter_um=graph.large_vessel_mask_split_diameter_um(settings),
+        voxel_size_xyz=voxel_size_xyz,
+        dilation_um=float(settings.get("large_vessel_mask_dilation_microns") or 0.0),
+        use_memmap=bool(settings.get("use_memmap_loading", False)),
+        memmap_directory=settings.get("memmap_directory"),
+    )
 
 
 def thick_vessel_restriction_mask(
@@ -1229,35 +1255,28 @@ def thick_vessel_restriction_mask(
                 mask[z0:z0 + step], dtype=bool
             )
 
+    roles = {"large": ("large",), "small": ("small",), "both": ("large", "small")}.get(choice, ())
+    load = dict(image_shape=image_shape, main_voxel_size_xyz=voxel_size_xyz, crop=crop, downsample=downsample)
+    # Small masks cut from the large ones come with them.
+    split = graph.small_vessel_masks_split_from_large(settings)
+    pairs: dict[str, tuple] = {}
+    if "large" in roles or (split and "small" in roles):
+        pairs["large"] = tuple(
+            io.load_and_validate_vessel_masks(**_vessel_mask_arguments(settings, "large"), **load)[:2]
+        )
+        if split:
+            cut = _split_large_vessel_masks(settings, *pairs["large"], voxel_size_xyz)
+            pairs = {"large": cut[:2], "small": cut[2:]}
+    if "small" in roles and "small" not in pairs:
+        pairs["small"] = tuple(
+            io.load_and_validate_vessel_masks(**_vessel_mask_arguments(settings, "small"), **load)[:2]
+        )
     role_masks: dict[str, np.ndarray] = {}
-    if choice in ("large", "both"):
-        large_arteriole_mask, large_venule_mask, *_ = io.load_and_validate_vessel_masks(
-            **_vessel_mask_arguments(settings, "large"),
-            image_shape=image_shape,
-            main_voxel_size_xyz=voxel_size_xyz,
-            crop=crop,
-            downsample=downsample,
-        )
-        if large_arteriole_mask is not None:
-            add(large_arteriole_mask)
-            role_masks["large_arteriole_mask"] = large_arteriole_mask
-        if large_venule_mask is not None:
-            add(large_venule_mask)
-            role_masks["large_venule_mask"] = large_venule_mask
-    if choice in ("small", "both"):
-        small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
-            **_vessel_mask_arguments(settings, "small"),
-            image_shape=image_shape,
-            main_voxel_size_xyz=voxel_size_xyz,
-            crop=crop,
-            downsample=downsample,
-        )
-        if small_arteriole_mask is not None:
-            add(small_arteriole_mask)
-            role_masks["small_arteriole_mask"] = small_arteriole_mask
-        if small_venule_mask is not None:
-            add(small_venule_mask)
-            role_masks["small_venule_mask"] = small_venule_mask
+    for role in roles:
+        for vessel, mask in zip(("arteriole", "venule"), pairs[role]):
+            if mask is not None:
+                add(mask)
+                role_masks[f"{role}_{vessel}_mask"] = mask
 
     warn_below = float(settings["skeleton_thick_vessel_restrict_to_mask_warn_below"])
     for report in preprocessing.diagnose_mask_restriction_alignment(
@@ -2421,21 +2440,26 @@ def build_network(
         crop=getattr(volume, "crop", None),
         downsample=getattr(volume, "downsample", None),
     )
-    (
-        small_arteriole_mask,
-        small_venule_mask,
-        small_arteriole_mask_voxel_size,
-        small_venule_mask_voxel_size,
-    ) = io.load_and_validate_vessel_masks(
-        **_vessel_mask_arguments(mask_settings, "small"),
-        image_shape=image.shape,
-        main_voxel_size_xyz=main_voxel_size_xyz,
-        crop=getattr(volume, "crop", None),
-        downsample=getattr(volume, "downsample", None),
-        loaded_message_suffix=(
-            f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
-        ),
-    )
+    mask_split_diameter_um = graph.large_vessel_mask_split_diameter_um(settings)
+    if mask_split_diameter_um is not None:
+        # The small masks are the large ones' narrow parts, not files.
+        (
+            large_arteriole_mask,
+            large_venule_mask,
+            small_arteriole_mask,
+            small_venule_mask,
+        ) = _split_large_vessel_masks(settings, large_arteriole_mask, large_venule_mask, main_voxel_size_xyz)
+    else:
+        small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
+            **_vessel_mask_arguments(mask_settings, "small"),
+            image_shape=image.shape,
+            main_voxel_size_xyz=main_voxel_size_xyz,
+            crop=getattr(volume, "crop", None),
+            downsample=getattr(volume, "downsample", None),
+            loaded_message_suffix=(
+                f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
+            ),
+        )
     if io.vessel_masks_are_global(settings):
         # One role given a global mask makes every vessel's class unknown, so
         # a role still given an arteriole/venule pair is one mask too.
@@ -2472,6 +2496,7 @@ def build_network(
             large_venule_mask=large_venule_mask,
             small_arteriole_mask=small_arteriole_mask,
             small_venule_mask=small_venule_mask,
+            mask_split_diameter_um=mask_split_diameter_um,
         )
 
     if settings["do_graph_building"]:
@@ -2670,6 +2695,7 @@ def build_network(
         large_venule_mask=large_venule_mask,
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
+        mask_split_diameter_um=mask_split_diameter_um,
     )
 
 
@@ -8195,10 +8221,16 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
     Boundaries tab, so a run resumed there carries the masks of the run it
     resumes: a role switched off since is dropped, and one switched on since
     is loaded, so the boundaries are assigned -- and the viewer draws -- what
-    the Boundaries tab now says.
+    the Boundaries tab now says. Masks split by width (``split_large_vessel_masks_by_diameter``)
+    at another width than now asked, or split where they now are not, or not
+    where they now are, are loaded and cut again.
     """
     volume = network.volume
     changes: dict[str, Any] = {}
+    split = graph.large_vessel_mask_split_diameter_um(settings)
+    cut_otherwise = split != network.mask_split_diameter_um
+    if cut_otherwise:
+        changes["mask_split_diameter_um"] = split
     for role in graph.boundaries.VESSEL_MASK_SWITCHES:
         arteriole, venule = f"{role}_arteriole_mask", f"{role}_venule_mask"
         held = getattr(network, arteriole) is not None or getattr(network, venule) is not None
@@ -8210,9 +8242,14 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
                     network.graph.graph.pop("large_arteriole_mask_voxel_size_xyz", None)
                     network.graph.graph.pop("large_venule_mask_voxel_size_xyz", None)
             continue
-        if held:
+        if held and not cut_otherwise:
             continue
-        logger.info(f"The {role}-vessel masks are on now: loading them.")
+        if role == "small" and split is not None:
+            continue  # cut from the large masks as they loaded
+        if held:
+            logger.info(f"The {role}-vessel masks are split otherwise now: loading them again.")
+        else:
+            logger.info(f"The {role}-vessel masks are on now: loading them.")
         loaded_arteriole, loaded_venule, arteriole_size, venule_size = (
             io.load_and_validate_vessel_masks(
                 **_vessel_mask_arguments(settings, role),
@@ -8221,6 +8258,13 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
                 crop=getattr(volume, "crop", None),
             )
         )
+        if role == "large" and split is not None:
+            (
+                loaded_arteriole,
+                loaded_venule,
+                changes["small_arteriole_mask"],
+                changes["small_venule_mask"],
+            ) = _split_large_vessel_masks(settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz)
         changes[arteriole], changes[venule] = loaded_arteriole, loaded_venule
         if role == "large":
             _record_graph_voxel_metadata(

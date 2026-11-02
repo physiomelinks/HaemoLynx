@@ -29,6 +29,7 @@ from .vessel_masks import (
     vessel_masks_are_global,
 )
 from .vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
+from .vessel_mask_split import split_large_vessel_masks_by_diameter, wide_part_of_mask
 from .batch_matching import BatchFolders, BatchMatch, batch_inputs, match_batch
 from .downsample import (
     DOWNSAMPLE_CHOICES,
@@ -89,6 +90,8 @@ __all__ = [
     "vessel_masks_are_global",
     "FoundVesselMasks",
     "find_vessel_masks",
+    "split_large_vessel_masks_by_diameter",
+    "wide_part_of_mask",
     "BatchFolders",
     "BatchMatch",
     "batch_inputs",

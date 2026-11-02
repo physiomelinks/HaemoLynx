@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import warnings
 from typing import Any, Iterable, Mapping
 
@@ -528,26 +529,82 @@ VESSEL_MASK_SWITCHES: dict[str, str] = {
 }
 
 
+#: The switch that cuts the small masks from the large ones by width, and the width.
+SPLIT_LARGE_VESSEL_MASKS = "split_large_vessel_masks_by_diameter"
+SPLIT_DIAMETER = "large_vessel_mask_split_diameter_um"
+
+
 def vessel_masks_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
     """Whether the run uses the ``"large"`` or ``"small"`` arteriole/venule masks.
 
     True only with ``automated_vessel_assignment`` *and* the role's own switch
-    on. The panel hides a role's switch, and every row under it, while a gate
+    on -- or, for the small masks, while they are cut from the large ones
+    (:func:`small_vessel_masks_split_from_large`). The panel hides a role's
+    switch, and every row under it, while a gate
     above it is off, so a switch left ticked underneath is out of effect, not
     on: its masks are not loaded, nothing assigns from them, and preflight
     asks nothing of them. Never for a synthetic network
     (:func:`network_is_synthetic`): the generator chooses its boundaries, and
     there is no image for a mask to lie on. The one place this is decided:
     loading the masks, the Boundaries stage, the panel's greying and
-    preflight all ask here.
+    preflight all ask here. Whether a role's own files are read is
+    :func:`vessel_mask_files_in_use`.
     """
     if mask_role not in VESSEL_MASK_SWITCHES:
         raise ValueError(f"mask_role must be 'large' or 'small', got {mask_role!r}.")
     if network_is_synthetic(settings):
         return False
+    if mask_role == "small" and small_vessel_masks_split_from_large(settings):
+        return True
     return bool(settings.get("automated_vessel_assignment")) and bool(
         settings.get(VESSEL_MASK_SWITCHES[mask_role])
     )
+
+
+def small_vessel_masks_split_from_large(settings: Mapping[str, Any]) -> bool:
+    """Whether the small arteriole/venule masks are cut from the large ones by
+    width (``split_large_vessel_masks_by_diameter``,
+    :mod:`haemolynx.io.vessel_mask_split`): the split on, the large masks in
+    use, and the small masks' own switch off -- the panel shows the split
+    only then, so it is off otherwise, whatever it holds. The small masks are
+    then in use (:func:`vessel_masks_in_use`) though no file of theirs is
+    read (:func:`vessel_mask_files_in_use`).
+    """
+    return (
+        bool(settings.get(SPLIT_LARGE_VESSEL_MASKS))
+        and vessel_masks_in_use(settings, "large")
+        and not bool(settings.get(VESSEL_MASK_SWITCHES["small"]))
+    )
+
+
+def vessel_mask_files_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the run reads the role's own mask files, or has ilastik make
+    them: its masks in use (:func:`vessel_masks_in_use`) by its own switch,
+    not cut from the large ones. Loading, the file checks, the batch's
+    matching and the panel's search for mask files ask here."""
+    return vessel_masks_in_use(settings, mask_role) and bool(
+        settings.get(VESSEL_MASK_SWITCHES[mask_role])
+    )
+
+
+def large_vessel_mask_split_diameter_um(settings: Mapping[str, Any]) -> float | None:
+    """The width the large masks are split at, or None while they are not
+    (:func:`small_vessel_masks_split_from_large`). Raises when they are and
+    no positive width is set: preflight says so first
+    (``checks.check_large_vessel_mask_split``)."""
+    if not small_vessel_masks_split_from_large(settings):
+        return None
+    value = settings.get(SPLIT_DIAMETER)
+    try:
+        diameter = float(value)
+    except (TypeError, ValueError):
+        diameter = float("nan")
+    if not math.isfinite(diameter) or diameter <= 0.0:
+        raise ValueError(
+            f"{SPLIT_LARGE_VESSEL_MASKS} is on, but {SPLIT_DIAMETER} is {value!r}: "
+            "state the width, in microns, at which a large vessel becomes a small one."
+        )
+    return diameter
 
 
 def vessel_classes_by_size(settings: Mapping[str, Any]) -> bool:

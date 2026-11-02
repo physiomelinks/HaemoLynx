@@ -147,7 +147,7 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
     under an unticked mask switch is hidden and runs nothing. One schema value
     each — the panel reparents the same rows.
     """
-    from haemolynx.graph.boundaries import network_is_synthetic, vessel_masks_in_use
+    from haemolynx.graph.boundaries import network_is_synthetic, vessel_mask_files_in_use
 
     if network_is_synthetic(values):
         return None  # nothing is segmented: no image to run ilastik on
@@ -155,10 +155,10 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
         return "input"
     if (
         values.get("use_ilastik_large_vessel_segmentation")
-        and vessel_masks_in_use(values, "large")
+        and vessel_mask_files_in_use(values, "large")
     ) or (
         values.get("use_ilastik_small_vessel_segmentation")
-        and vessel_masks_in_use(values, "small")
+        and vessel_mask_files_in_use(values, "small")
     ):
         return "boundaries"
     return None

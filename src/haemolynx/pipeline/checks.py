@@ -13,10 +13,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from haemolynx.graph.boundaries import (
+    SPLIT_DIAMETER,
+    SPLIT_LARGE_VESSEL_MASKS,
     VESSEL_MASK_SWITCHES,
     assigns_large_vessel_branch_orders,
     boundary_role_configured,
+    large_vessel_mask_split_diameter_um,
     vessel_classes_by_size,
+    vessel_mask_files_in_use,
     vessel_masks_in_use,
 )
 from haemolynx.graph.vessel_size_classes import check_size_thresholds, size_class_range
@@ -119,7 +123,7 @@ def ilastik_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str
     if ilastik_segments(settings):
         pairs.append(("ilastik_classifier_path", "ilastik_vessel_label"))
     for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items():
-        if not (settings.get(flag) and vessel_masks_in_use(settings, role)):
+        if not (settings.get(flag) and vessel_mask_files_in_use(settings, role)):
             continue
         names = VESSEL_MASK_SETTINGS[role]
         pairs.append(
@@ -140,7 +144,7 @@ def ilastik_vessel_mask_channels_in_effect(settings: Mapping[str, Any]) -> list[
 
     names: list[str] = []
     for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items():
-        if not (settings.get(flag) and vessel_masks_in_use(settings, role)):
+        if not (settings.get(flag) and vessel_mask_files_in_use(settings, role)):
             continue
         role_names = VESSEL_MASK_SETTINGS[role]
         names.append(role_names["ilastik_arteriole_channels"])
@@ -404,6 +408,29 @@ def check_global_vessel_masks(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def check_large_vessel_mask_split(settings: Mapping[str, Any]) -> CheckReport:
+    """The large masks split by width into large and small ones
+    (``graph.small_vessel_masks_split_from_large``): refuse a width unset or
+    not positive, and say what the run does. A split left on under a gate
+    that is off (small masks given, say) is out of effect and no error."""
+    report = CheckReport()
+    try:
+        diameter = large_vessel_mask_split_diameter_um(settings)
+    except ValueError as problem:
+        report.add_error(f"{problem} Fix: enter {SPLIT_DIAMETER}, or turn {SPLIT_LARGE_VESSEL_MASKS} off.")
+        return report
+    if diameter is None:
+        return report
+    report.add_pass(
+        "large vessel masks split by width",
+        f"each large mask's part at least {diameter:g} um wide stays large, and the "
+        "rest is the small mask of its side, which assigns the arteriole and venule "
+        "boundaries as given small masks would, with the small-vessel settings as "
+        "they stand",
+    )
+    return report
+
+
 def check_vessel_size_classes(settings: Mapping[str, Any]) -> CheckReport:
     """The size convention (``classify_vessels_by_size``,
     ``graph.vessel_classes_by_size``): refuse a threshold unset or mid not
@@ -542,11 +569,11 @@ _ILASTIK_VESSEL_MASK_FLAGS = {
 
 def ilastik_segments_vessel_masks(settings: Mapping[str, Any]) -> bool:
     """Whether ilastik segments a vessel mask this run: a role's ilastik switch
-    on with that role's masks in use (``graph.vessel_masks_in_use``). A switch
+    on with that role's own masks in use (``graph.vessel_mask_files_in_use``). A switch
     left on under an unticked mask switch is hidden in the panel and runs
     nothing, so neither preflight nor the citations count it."""
     return any(
-        bool(settings.get(flag)) and vessel_masks_in_use(settings, role)
+        bool(settings.get(flag)) and vessel_mask_files_in_use(settings, role)
         for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items()
     )
 
@@ -572,13 +599,15 @@ def check_thick_vessel_restriction_prerequisites(
         return report
 
     # The masks load only while in use (graph.vessel_masks_in_use), which
-    # automated_vessel_assignment gates as well as the role's own switch.
+    # automated_vessel_assignment gates as well as the role's own switch --
+    # or, for the small masks, the large ones split by width.
     roles = {"large": ("large",), "small": ("small",), "both": ("large", "small")}.get(
         choice, ()
     )
     missing = [
         name
         for role in roles
+        if not vessel_masks_in_use(settings, role)
         for name in ("automated_vessel_assignment", VESSEL_MASK_SWITCHES[role])
         if not bool(settings.get(name))
     ]
@@ -1294,6 +1323,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
     report.extend(check_global_vessel_masks(settings))
+    report.extend(check_large_vessel_mask_split(settings))
     report.extend(check_vessel_size_classes(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))

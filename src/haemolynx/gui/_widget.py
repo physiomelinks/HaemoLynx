@@ -9471,6 +9471,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         "use_large_vessel_masks",
         "inlets_outlets_from_vessel_masks",
         "use_small_vessel_masks_for_boundary_assignment",
+        "split_large_vessel_masks_by_diameter",
         "assign_large_vessel_branch_orders",
         "cut_network_at_large_vessel_volumes",
         # Whether a role's masks are global (io.vessel_masks_are_global): a

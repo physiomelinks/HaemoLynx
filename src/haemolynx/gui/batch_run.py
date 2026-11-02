@@ -1133,11 +1133,13 @@ def read_batch_settings(path: Path | str) -> BatchRecord | None:
 def mask_switch_hint(schema: Schema, values: Mapping[str, Any], size: str) -> str:
     """Why a batch matches no *size* masks, and the switches (with their tab)
     that would make it: the greyed folder row's text."""
-    from haemolynx.graph.boundaries import VESSEL_MASK_SWITCHES
+    from haemolynx.graph.boundaries import VESSEL_MASK_SWITCHES, small_vessel_masks_split_from_large
     from haemolynx.gui.form import label_for
     from haemolynx.gui.tabs import assign_to_stages
     from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
 
+    if size == "small" and small_vessel_masks_split_from_large(values):
+        return "not used: the small masks are cut from each image's large masks by width"
     tabs = assign_to_stages(schema)
     switch = VESSEL_MASK_SWITCHES[size]
     if values.get(switch) and values.get("automated_vessel_assignment"):

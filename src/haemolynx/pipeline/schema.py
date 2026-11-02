@@ -1318,6 +1318,51 @@ SCHEMA = Schema(
             ),
         ),
         Setting(
+            # Offered only while no small masks are given: with them, the
+            # small masks are their own files (graph.small_vessel_masks_split_from_large).
+            name="split_large_vessel_masks_by_diameter",
+            kind="bool",
+            default=False,
+            help=(
+                "Cut each large mask in two by vessel width: the part at least "
+                "large_vessel_mask_split_diameter_um wide stays the large arteriole "
+                "(or venule) mask, and the rest becomes the small arteriole (or "
+                "venule) mask, used as small vessel masks are for the arteriole and "
+                "venule boundaries. A voxel is wide where a ball that wide fits in the "
+                "mask around it. Only while no small vessel masks are given; a global "
+                "mask splits into a global large and small mask"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_small_vessel_masks_for_boundary_assignment",
+            ),
+        ),
+        Setting(
+            name="large_vessel_mask_split_diameter_um",
+            kind="float",
+            # No default: the width a large vessel becomes a small one is a
+            # convention whoever runs it states (checks.check_large_vessel_mask_split).
+            default=None,
+            placeholder="no default: state the width",
+            help=(
+                "Split the large masks at this vessel width: wider stays large, "
+                "narrower becomes small. Read from each mask's own distance "
+                "transform before its load-time dilation "
+                "(large_vessel_mask_dilation_microns)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_small_vessel_masks_for_boundary_assignment",
+                "split_large_vessel_masks_by_diameter",
+            ),
+        ),
+        Setting(
             # Split from automated_vessel_assignment: the masks drive the
             # large-vessel treatment either way, and this alone decides
             # whether they also pick the inlets and outlets -- so a run can

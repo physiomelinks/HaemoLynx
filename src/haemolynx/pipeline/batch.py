@@ -31,6 +31,7 @@ from haemolynx.graph.boundaries import (
     inlets_outlets_from_vessel_masks,
     network_is_synthetic,
     vessel_classes_by_size,
+    vessel_mask_files_in_use,
     vessel_masks_in_use,
 )
 from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS, global_vessel_mask_roles
@@ -183,7 +184,7 @@ def batch_mask_sizes(settings: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(
         size
         for size, names in VESSEL_MASK_SETTINGS.items()
-        if vessel_masks_in_use(settings, size) and not settings.get(names["use_ilastik"])
+        if vessel_mask_files_in_use(settings, size) and not settings.get(names["use_ilastik"])
     )
 
 
@@ -538,7 +539,7 @@ def ilastik_output_paths(settings: Mapping[str, Any]) -> list[Path]:
     raw = settings.get("raw_image_path")
     for role, names in VESSEL_MASK_SETTINGS.items():
         if raw in (None, "") or not (
-            settings.get(names["use_ilastik"]) and vessel_masks_in_use(settings, role)
+            settings.get(names["use_ilastik"]) and vessel_mask_files_in_use(settings, role)
         ):
             continue
         # With no venule classifier the arteriole one segments a global mask.

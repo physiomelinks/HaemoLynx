@@ -18,7 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from haemolynx.graph.boundaries import vessel_classes_by_size, vessel_masks_in_use
+from haemolynx.graph.boundaries import (
+    vessel_classes_by_size,
+    vessel_mask_files_in_use,
+    vessel_masks_in_use,
+)
 from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
 
 from .checks import ilastik_segments_vessel_masks
@@ -136,7 +140,7 @@ def _image_readers(settings: Mapping[str, Any]) -> set[str]:
     elif _is_set(settings.get("input_path")):
         readers.add(_reader(settings.get("input_path")))
     for role, (ilastik_flag, mask_settings) in _VESSEL_MASK_FILES.items():
-        if not vessel_masks_in_use(settings, role):
+        if not vessel_mask_files_in_use(settings, role):
             continue
         if settings.get(ilastik_flag):
             readers.add(_reader(ilastik_output))

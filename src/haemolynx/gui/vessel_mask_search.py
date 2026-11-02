@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from haemolynx.graph.boundaries import vessel_masks_in_use
+from haemolynx.graph.boundaries import vessel_mask_files_in_use
 from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
 from haemolynx.io.vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
 
@@ -67,11 +67,11 @@ def _names_a_file(value: Any) -> bool:
 
 def roles_searched(settings: Mapping[str, Any]) -> tuple[str, ...]:
     """The mask roles (``"large"``, ``"small"``) whose rows a search fills:
-    in use (`graph.vessel_masks_in_use`), and read from files, not ilastik."""
+    in use (`graph.vessel_mask_files_in_use`), and read from files, not ilastik."""
     return tuple(
         role
         for role, names in VESSEL_MASK_SETTINGS.items()
-        if vessel_masks_in_use(settings, role) and not settings.get(names["use_ilastik"])
+        if vessel_mask_files_in_use(settings, role) and not settings.get(names["use_ilastik"])
     )
 
 

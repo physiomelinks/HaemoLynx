@@ -590,6 +590,14 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "Channels of the raw image the large venule project was trained on, counting from 0, "
         "e.g. [2]. Leave empty to give it every channel"
     ),
+    "split_large_vessel_masks_by_diameter": (
+        "With no small vessel masks, cut each large mask by vessel width: wide parts stay large, "
+        "narrow parts become the small mask of the same side"
+    ),
+    "large_vessel_mask_split_diameter_um": (
+        "Vessel width at which the large masks are cut: wider stays large, narrower becomes "
+        "small. No default: state it"
+    ),
     "inlets_outlets_from_vessel_masks": (
         "Make the network ends in the large arteriole mask its inlets and those in the large "
         "venule mask its outlets. Off: choose them with the inlet and outlet methods instead"
