@@ -1,6 +1,8 @@
 """VTK export and rendering for vessel graphs and constriction points."""
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -9,6 +11,8 @@ import networkx as nx
 
 from haemolynx.geometry import cumulative_lengths
 from haemolynx.visualization.geometry import edge_polyline
+
+logger = logging.getLogger(__name__)
 
 #: The unit of every array the VTK files carry, spelled as the statistics
 #: glossary spells units ("-" is an identifier, label or text; "flag" is 0 or
@@ -330,11 +334,22 @@ def graph_to_vtk(
     _write_units(vessel_mesh, vessel_mesh.cell_data.keys())
     vessel_mesh.save(vessel_path)
 
-    pericyte = derive_pericyte_points_from_graph(
-        graph,
-        constriction_spacing=constriction_spacing,
-        constriction_length=constriction_length,
-    )
+    if constriction_spacing > 0 and constriction_length > 0:
+        pericyte = derive_pericyte_points_from_graph(
+            graph,
+            constriction_spacing=constriction_spacing,
+            constriction_length=constriction_length,
+        )
+    else:
+        # A spacing or length of 0 places no periodic site (the settings allow
+        # 0, as the periodic strategy does): the file is written empty.
+        pericyte = {
+            "points": np.empty((0, 3), dtype=float),
+            "edge_u": np.empty(0, dtype=int),
+            "edge_v": np.empty(0, dtype=int),
+            "edge_key": np.empty(0, dtype=int),
+            "branch_order": np.empty(0, dtype=object),
+        }
     pericyte_mesh = pv.PolyData(pericyte["points"])
     pericyte_mesh.point_data["edge_u"] = pericyte["edge_u"]
     pericyte_mesh.point_data["edge_v"] = pericyte["edge_v"]
@@ -490,6 +505,13 @@ def visualize_vtk_network(
             point_size=node_size,
             render_points_as_spheres=True,
         )
-    if show:
+    if show and threading.current_thread() is threading.main_thread():
         plotter.show()
+    elif show:
+        # A VTK window opened off the main thread (a napari panel run) hangs
+        # or takes the process down; the files are written either way.
+        logger.warning(
+            "Not opening the VTK viewer: this run is not on the main thread. Open %s in ParaView.",
+            vessels_path,
+        )
     return plotter

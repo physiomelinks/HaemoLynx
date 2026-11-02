@@ -15,12 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 
 from haemolynx import statistics
 from haemolynx.visualization.plot import (
+    new_figure,
     plot_node_degree_distribution,
     visualize_3d_plotly,
     visualize_edges_and_nodes,
@@ -171,7 +171,9 @@ def plot_sweep_curves(
 
     written: dict[str, str] = {}
     for column, (stem_prefix, y_label, y_title) in SWEEP_Y_METRICS.items():
-        figure, axes = plt.subplots(figsize=(8, 5))
+        # Only saved, so not pyplot's: a panel run draws these off the main thread.
+        figure = new_figure(False, figsize=(8, 5))
+        axes = figure.add_subplot()
         if axis.series_key is None:
             ordered = sorted(rows, key=lambda r: float(r[axis.x_key]))
             axes.plot(
@@ -203,7 +205,6 @@ def plot_sweep_curves(
         figure.tight_layout()
         path = output_dir / f"{stem_prefix}_{axis.stem_suffix}.png"
         figure.savefig(path, dpi=200)
-        plt.close(figure)
         written[f"{column}_plot_path"] = str(path)
 
     logger.info(

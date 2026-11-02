@@ -339,7 +339,6 @@ ADVANCED_TITLES: Mapping[str, str] = {
     "measure_pericytes": "Advanced pericyte settings",
     "statistics": "Choose statistics",
     "statistics_network_analysis": "Choose network measures",
-    "vtk_export": "Advanced VTK settings",
     "box:export": "Advanced export settings",
 }
 

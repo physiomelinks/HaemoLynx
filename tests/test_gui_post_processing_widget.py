@@ -968,6 +968,100 @@ def test_open_connectivity_map_draws_the_last_export(page, tmp_path, monkeypatch
     assert "Opened the 2D connectivity map" in c.connectivity_status.text()
 
 
+def _read_csv(path):
+    import csv
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_export_connectivity_after_a_new_run_writes_that_run_not_the_old_edits(page, tmp_path):
+    # Regression: the tab's edited copy was exported whatever ran since, so a
+    # new run -- or a Run from this stage that threw the edits away -- still
+    # exported the old network.
+    c = page.controls
+    c.scan_button.click()
+    keys = edge_keys(c.state.graph)
+    c.branch_ids.setText(str(next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})))
+    c.delete_ids_button.click()
+    assert len(_read_csv(c.export_connectivity(tmp_path / "edited.csv"))) == 5
+
+    rerun = _four_way_network()
+    rerun.add_node(6, pos=np.asarray((40.0, 0.0, 0.0)))
+    rerun.add_edge(4, 6, voxels=[(30.0, 0.0, 0.0), (40.0, 0.0, 0.0)], length=10.0,
+                   branch_order="B01", diameter_um=5.0)
+    _apply_layers(page.viewer, page.results.stage_finished("build_network", network(rerun)))
+    rows = _read_csv(c.export_connectivity(tmp_path / "rerun.csv"))
+    assert len(rows) == 7
+    assert any({r["Edge u"], r["Edge v"]} == {"4", "6"} for r in rows)
+    assert "may be out of date" not in c.connectivity_status.text()
+
+
+def test_export_connectivity_reads_the_inlets_and_outlets_set_since_the_scan(page, tmp_path):
+    # Regression: the export read the run's own inlets and outlets, not the
+    # ones the Terminal nodes list set on the tab's graph before Regenerate.
+    from haemolynx.graph import set_terminal_role
+
+    c = page.controls
+    c.scan_button.click()
+    before = {r["Edge v"]: r for r in _read_csv(c.export_connectivity(tmp_path / "before.csv"))}
+    assert before["5"]["Notes"] == "Dead end" and before["5"]["To node ID"] == "5"
+    # What the list's "Make outlet" does, without the redraw: the viewer still
+    # shows the graph the scan copied.
+    set_terminal_role(c.state.graph, {"inlet": (0,), "outlet": (4,)}, 5, "outlet")
+    after = {r["Edge v"]: r for r in _read_csv(c.export_connectivity(tmp_path / "after.csv"))}
+    assert after["5"]["Notes"] == "Outlet" and after["5"]["To node ID"] == ""
+
+
+def test_the_map_button_asks_for_a_csv_starting_at_the_last_export(page, tmp_path, monkeypatch):
+    import webbrowser
+
+    from qtpy.QtWidgets import QFileDialog
+
+    c = page.controls
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    asked = []
+    answer = {"path": ""}
+
+    def pick(_parent, _caption, start, _filter):
+        asked.append(start)
+        return answer["path"], _filter
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", pick)
+    exported = c.export_connectivity(tmp_path / "net.csv")
+    other = tmp_path / "elsewhere" / "other.csv"
+    other.parent.mkdir()
+    other.write_bytes(exported.read_bytes())
+
+    # Cancelled: nothing drawn.
+    c.connectivity_map_button.click()
+    assert asked == [str(exported)] and opened == []
+    # Another CSV than the one exported last can be drawn.
+    answer["path"] = str(other)
+    c.connectivity_map_button.click()
+    assert asked == [str(exported)] * 2
+    assert opened == [(other.parent / "other_map.html").resolve().as_uri()]
+
+
+def test_forget_drops_the_last_connectivity_export(page, tmp_path, monkeypatch):
+    # Regression: after Clear or Load run the map still drew the cleared run's
+    # CSV, and the status line still reported it.
+    from qtpy.QtWidgets import QFileDialog
+
+    c = page.controls
+    c.export_connectivity(tmp_path / "net.csv")
+    assert c.state.connectivity_csv is not None and c.connectivity_status.text()
+    c.forget()
+    assert c.state.connectivity_csv is None and c.connectivity_status.text() == ""
+    asked = []
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", lambda _p, _c, start, f: (asked.append(start), ("", f))[1]
+    )
+    assert c.open_connectivity_map() is None
+    assert asked == [""]
+
+
 # --- Manual loop review ------------------------------------------------------------
 
 import csv  # noqa: E402

@@ -239,12 +239,24 @@ UNCOLOURED_RGBA = (0.8, 0.8, 0.8, 1.0)
 #: Settings the panel starts with switched off, because they put a run's
 #: results somewhere other than napari. ``visualize_results`` (Produce IDE
 #: plots) writes matplotlib PNG and Plotly HTML, including
-#: ``final_graph_3d.html``; the nested Show / mode / hold rows stay at their
-#: schema defaults so an untouched panel does not earn an
-#: IneffectiveSettingWarning. Tick Produce to write files, then Show plots
-#: in IDE if a browser window is wanted -- the viewer is already open.
+#: ``final_graph_3d.html``. Tick Produce to write files; the viewer is
+#: already open, so nothing the panel runs opens a window of its own
+#: (:data:`OPENS_A_WINDOW`).
 DISPLAY_SETTINGS_OFF_IN_NAPARI = {
     "visualize_results": False,
+}
+
+#: The settings that open a plot or VTK window as a run goes, at their
+#: schema defaults (all off, or inert while off). A panel run is on a worker
+#: thread, where a window is a Qt or VTK window outside the GUI thread and a
+#: blocking one ("Hold IDE plots open") would hold the run for ever, so the
+#: panel gives them no row and holds them there.
+OPENS_A_WINDOW: dict[str, Any] = {
+    "interactive_plots": False,
+    "show_plots_in_ide": False,
+    "ide_plot_mode": "final_only",
+    "hold_ide_plots_open": True,
+    "visualize_vtk": False,
 }
 
 #: Settings that are not a per-run decision, so they get no row of their
@@ -261,6 +273,7 @@ FORCED_HIDDEN_SETTINGS: dict[str, Any] = {
     "flow_arrow_scale": 1.0,
     "fwhm_background_label": 0,
     "fwhm_junction_label": -1,
+    **OPENS_A_WINDOW,
 }
 
 
@@ -11753,6 +11766,10 @@ def _post_processing_controls(
         raw_panel_centrelines=None,
         #: The connectivity CSV exported last, for Open 2D connectivity map.
         connectivity_csv=None,
+        #: A weak reference to the run's graph the last scan copied into
+        #: ``graph``: the tab's working graph is the run on screen's only while
+        #: the viewer still shows that graph or the working graph itself.
+        scanned_from=None,
         #: Manual loop review: the short loops still to review (ShortLoops,
         #: shortest first), the one picked and its row in the list.
         loops=[],
@@ -12464,6 +12481,7 @@ def _post_processing_controls(
             state.added_nodes = []
         state.raw = state.raw_problem = None
         state.graph = copy_graph(graph)
+        state.scanned_from = weakref.ref(graph) if state.graph is not None else None
         state.decisions = {}
         clear_review()
         # The vessels on screen are already this graph: recolour, no rebuild.
@@ -12495,6 +12513,20 @@ def _post_processing_controls(
             return state.scan.summary
         return f"{state.scan.vessel_count} vessels" + ("; no list chosen." if key == REVIEW_NONE else ".")
 
+    def graph_on_screen():
+        """The network the viewer shows: the tab's working graph while it is
+        still the run on screen's (the viewer draws it, or the run's graph the
+        last scan copied it from), else the run's own graph. A run since the
+        scan -- a Run from this stage that threw the edits away included --
+        replaces both, and its network is the one on screen."""
+        current = results()
+        shown = getattr(current, "_graph", None) if current is not None else None
+        if state.graph is not None and shown is not None:
+            scanned_from = state.scanned_from() if state.scanned_from is not None else None
+            if shown is state.graph or shown is scanned_from:
+                return state.graph
+        return shown
+
     def export_connectivity(path, *, only_inlet_to_outlet: bool | None = None) -> Path | None:
         """Write how the network on screen is connected to *path*.
 
@@ -12502,16 +12534,15 @@ def _post_processing_controls(
         """
         if only_inlet_to_outlet is None:
             only_inlet_to_outlet = connectivity_choice.currentText() == INLET_TO_OUTLET_ONLY
-        graph = state.graph
-        if graph is None:
-            current = results()
-            graph = getattr(current, "_graph", None) if current is not None else None
+        graph = graph_on_screen()
         if graph is None:
             connectivity_status.setText(
                 "Nothing to export yet: run the pipeline through at least Boundaries first."
             )
             return None
-        roles = boundary_roles() or {}
+        # The inlets and outlets the Terminal nodes list set since the last
+        # regenerate are kept on the graph, as the scan reads them.
+        roles = boundary_roles_with_edits(boundary_roles(), graph)
         inlets = tuple(roles.get("inlet", ()) or ())
         outlets = tuple(roles.get("outlet", ()) or ())
         if only_inlet_to_outlet and not (
@@ -12549,6 +12580,16 @@ def _post_processing_controls(
         report.value = f"Connectivity CSV written to {written}."
         return written
 
+    def pick_connectivity_csv() -> str | None:
+        """Ask for a connectivity CSV to draw, starting at the one exported last."""
+        from qtpy.QtWidgets import QFileDialog
+
+        start = str(state.connectivity_csv) if state.connectivity_csv is not None else ""
+        source, _filter = QFileDialog.getOpenFileName(
+            _dialog_parent(viewer), "Draw a connectivity CSV", start, "CSV (*.csv)"
+        )
+        return source or None
+
     def open_connectivity_map(csv_path=None) -> Path | None:
         """Draw a connectivity CSV as a 2D map and open it in the browser.
 
@@ -12559,15 +12600,9 @@ def _post_processing_controls(
 
         from haemolynx.visualization.connectivity_map import write_connectivity_map
 
-        source = csv_path or state.connectivity_csv
-        if source is None:
-            from qtpy.QtWidgets import QFileDialog
-
-            source, _filter = QFileDialog.getOpenFileName(
-                _dialog_parent(viewer), "Draw a connectivity CSV", "", "CSV (*.csv)"
-            )
-            if not source:
-                return None
+        source = csv_path or state.connectivity_csv or pick_connectivity_csv()
+        if not source:
+            return None
         source = Path(source)
         try:
             try:
@@ -12602,7 +12637,11 @@ def _post_processing_controls(
             export_connectivity(path)
 
     def on_connectivity_map() -> None:
-        open_connectivity_map()
+        # Always asked, so any CSV can be drawn: the one exported last is
+        # where the picker starts.
+        source = pick_connectivity_csv()
+        if source:
+            open_connectivity_map(source)
 
     def on_delete() -> None:
         if state.graph is None or state.node is None:
@@ -14137,6 +14176,7 @@ def _post_processing_controls(
         clear_review()
         remove_layers()
         state.graph = state.scan = state.node = None
+        state.scanned_from = None
         state.vessels = []
         state.added_nodes = []
         # The loop and review decisions stay: they are the run's, and are
@@ -14281,6 +14321,11 @@ def _post_processing_controls(
         state.review_decisions = []
         state.support = None
         state.summary_scanned = state.summary_before = None
+        state.scanned_from = None
+        # The CSV exported last was the cleared run's: the map's picker no
+        # longer starts there, and the status line no longer reports it.
+        state.connectivity_csv = None
+        connectivity_status.setText("")
         junction_list.clear()
         table.setRowCount(0)
         loop_list.clear()

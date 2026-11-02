@@ -116,11 +116,14 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         metavar="SECTION",
         help=(
-            "Leave this statistics section (and its subsections, 'Strahler Network' "
-            "takes 'Strahler Network > Orders > 1'), ignoring case, out of the batch "
+            "Leave this statistics section (and its subsections, 'Strahler Arterial' "
+            "takes 'Strahler Arterial > Orders > 1'), ignoring case, out of the batch "
             "statistics and the comparison, so the Benjamini-Hochberg q-values are "
-            "over the metrics left; e.g. --exclude-section \"Dead Ends\". Repeat it, "
-            "or separate names by commas, for more than one."
+            "over the metrics left; e.g. --exclude-section \"Dead Ends\". A section is "
+            "the statistics CSV's Section column: only a part of the report that nests "
+            "its rows (Dead Ends, Vessel Classes, Capillary Bed Joins, ...) has a title "
+            "of its own; every other measure's rows are under 'Core Statistics' and go "
+            "only together. Repeat it, or separate names by commas, for more than one."
         ),
     )
     return parser

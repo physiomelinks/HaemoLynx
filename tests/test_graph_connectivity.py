@@ -247,3 +247,23 @@ def test_a_dead_end_is_noted_with_its_kind_at_either_end_and_a_cut_vessel_is_fla
     assert find[("2", "10")]["Notes"] == "Dead end (stops_short)"
     notes = find[("20", "21")]["Notes"].split("; ")
     assert notes[:2] == ["Dead end at the from node (island_end)", "Dead end"]
+
+
+def test_a_zero_resistance_bridge_is_noted_and_nothing_else_is():
+    """A bridge into a thick vessel is no vessel of its own and is solved as
+    negligible resistance: its row says so, so a network rebuilt from the
+    table does not give it the resistance of its length and diameter."""
+    from haemolynx.graph.connectivity import BRIDGE_NOTE
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    G = _example()
+    G.edges[1, 2, 0][IS_ZERO_RESISTANCE] = True
+    G.edges[2, 5, 0][IS_ZERO_RESISTANCE] = False
+    rows = _by_id(connectivity_rows(G, [0], [8]))
+    assert rows[1]["Notes"] == BRIDGE_NOTE == "Zero-resistance bridge"
+    assert all(BRIDGE_NOTE not in rows[i]["Notes"] for i in rows if i != 1)
+    # The note sits beside the others the row carries.
+    G.add_edge(1, 2, length=5.0, **{IS_ZERO_RESISTANCE: True})
+    rows = connectivity_rows(G, [0], [8], arteriole_boundary_nodes=[1])
+    notes = [r["Notes"] for r in rows if r["Edge u"] == "1" and r["Edge v"] == "2"]
+    assert notes == [f"{BRIDGE_NOTE}; arteriole boundary"] * 2

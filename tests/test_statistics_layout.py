@@ -132,7 +132,7 @@ def test_evenly_spaced_columns_read_above_one_and_bunched_ones_below():
     assert even["Column Vessels (within 30 degrees of z)"] == 25
     assert even["Column Spacing Median (microns)"] == pytest.approx(20.0)
     assert even["Column Spacing Clark-Evans Ratio"] > 1.5
-    assert even["Columns per mm² of Image Plane"] == pytest.approx(25 / (100 * 100) * 1e6)
+    assert even["Columns per mm^2 of Image Plane"] == pytest.approx(25 / (100 * 100) * 1e6)
     pairs = [(y + dy, x) for y, x in lattice[:12] for dy in (0.0, 2.0)]
     bunched = compute_vessel_columns(_network(_columns(pairs), extent=(60.0, 100.0, 100.0)))
     assert bunched["Column Spacing Clark-Evans Ratio"] < 0.5

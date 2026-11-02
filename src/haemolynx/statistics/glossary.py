@@ -90,6 +90,22 @@ def canonical_unit(text: Any) -> Optional[str]:
     return UNIT_SPELLINGS.get(text.strip())
 
 
+#: Rows renamed since a CSV or a saved report was written: the old name, as
+#: the statistics dict spelled it, and the one it has now. The fraction of beds
+#: joined shared the Metric "Capillary Beds Joined" with the count once its
+#: unit was split off, and the columns' density had a non-ASCII name.
+RENAMED_ROWS: dict[str, str] = {
+    "Capillary Beds Joined (fraction)": "Capillary Beds Joined Share (fraction)",
+    "Columns per mm² of Image Plane": "Columns per mm^2 of Image Plane",
+}
+
+
+def current_name(name: str) -> str:
+    """*name*, or the name its row has now when it was renamed
+    (:data:`RENAMED_ROWS`): how an older CSV or saved report is read."""
+    return RENAMED_ROWS.get(name, name)
+
+
 #: A term's unit is the one its name spells in its trailing parentheses (the
 #: loop and Strahler lengths, in um or vessels by the weighting they ran on).
 UNIT_IN_NAME = "unit in the name"
@@ -300,7 +316,7 @@ _add(T, "Coverage Probe Points", "count", "Points the coverage was read at.")
 T = "Vessel columns"
 _add(T, "Column Vessels (within 30 degrees of z)", "vessels", "Vessels whose straight end-to-end line is at least 10 um long and within 30 degrees of the stack (z) axis.")
 _add(T, "Column Share of Vessel Length (fraction)", "fraction", "The columns' centreline length over every vessel's.")
-_add(T, "Columns per mm² of Image Plane", "1/mm^2", "Columns per square millimetre of the image's y-x plane.")
+_add(T, "Columns per mm^2 of Image Plane", "1/mm^2", "Columns per square millimetre of the image's y-x plane.")
 _add(T, "Column Spacing Median (microns)", "um", "The median distance in the y-x plane from each column's midpoint to the nearest other column's.")
 _add(T, "Column Spacing Clark-Evans Ratio", "dimensionless", "The columns' mean nearest-neighbour distance in the y-x plane over a random pattern's at the same density: 1 at random, above 1 evenly spaced, below 1 bunched. No edge correction.")
 _add(T, "Median Column Tortuosity Index", "dimensionless", "The median of the columns' centreline length over their straight end-to-end distance.")
@@ -407,7 +423,7 @@ _add(T, "Arteriolar / Venular Territory Length Median", "um", "The median territ
 T = "Capillary bed joins"
 _add(T, "Capillary Beds", "count", "Capillary beds, one per feed (the nodes capillary branch orders are counted from).")
 _add(T, "Capillary Beds Joined", "count", "Beds that meet another bed on a watershed vessel.")
-_add(T, "Capillary Beds Joined (fraction)", "fraction", "Beds joined over all beds.")
+_add(T, "Capillary Beds Joined Share (fraction)", "fraction", "Beds joined over all beds.")
 _add(T, "Capillary Bed Join Order, Kaplan-Meier Median", "dimensionless", "A bed's join order is the lowest capillary branch order on a watershed vessel with another bed; the Kaplan-Meier median over beds, with beds that never join censored.")
 _add(T, "Capillary Bed Join Distance, Kaplan-Meier Median (microns)", "um", "The same Kaplan-Meier median of the route length from the feed to where its bed joins another.")
 _add(T, "Capillary Beds Censored, Leaving the Image / Draining to a Venule / Ending Blind", "count", "Beds that never join another, by why: they leave the image, drain into a venule, or end blind.", pattern=r"Capillary Beds Censored, (Leaving the Image|Draining to a Venule|Ending Blind)")
@@ -587,7 +603,9 @@ del T, _TERMS
 def term_for(name: str) -> Optional[Term]:
     """The glossary term of a statistics row named *name* (the dict key, its
     unit in parentheses where it has one), or None. A unit spelled another
-    way ("(um)" for "(microns)"), or left off, finds the same term."""
+    way ("(um)" for "(microns)"), or left off, finds the same term, and so
+    does a row's old name (:data:`RENAMED_ROWS`)."""
+    name = current_name(name)
     shown, unit = split_name(name)
     candidates = [name]
     if unit is not None:
@@ -645,6 +663,7 @@ def csv_metric_and_unit(
     ("Fractal Dimension" with the unit "Node Positions") and spelled units
     microns or micron³; read through here, a row from either gives the same
     metric and unit, so a batch mixing runs from before and after lines up.
+    A row renamed since (:data:`RENAMED_ROWS`) is read under its name now.
     *rows* is every row of the file by name, for the units the run decides.
     """
     metric, unit = metric.strip(), (unit or "").strip()
@@ -653,6 +672,7 @@ def csv_metric_and_unit(
         name = f"{metric} ({unit})"
     else:
         name = metric
+    name = current_name(name)
     shown, _in_name = split_name(name)
     return name, shown, unit_for(name, rows) or canonical_unit(unit) or ""
 

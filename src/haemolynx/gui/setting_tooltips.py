@@ -1845,7 +1845,10 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "length, resistance or flow. Resistance and flow need a solved network"
     ),
     # 10. Export
-    "base_plot_dir": "Folder the plot files (PNG images and HTML pages) are written under",
+    "base_plot_dir": (
+        "Folder the plot files (PNG images and HTML pages) are written under, each image's in a "
+        "folder named after it"
+    ),
     "visualize_results": (
         "Write plot files: PNG images and interactive HTML pages, including a 3D view of the "
         "final network. Off skips them all and saves time"
@@ -1862,8 +1865,8 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "(default)"
     ),
     "vtk_export": (
-        "Save the vessels, nodes and pericytes as VTK files, which 3D viewers such as ParaView "
-        "can open"
+        "Save the vessels, nodes and evenly spaced constriction sites as VTK files, which 3D "
+        "viewers such as ParaView can open. Flows are included once the network is solved"
     ),
     "visualize_vtk": "Open the exported VTK files in a separate 3D viewer window when the run finishes",
     "flow_direction_colouring": "Offer the flow direction's z, y and x parts as colour options for the flow arrows layer",

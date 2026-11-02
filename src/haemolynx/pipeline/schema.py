@@ -2725,7 +2725,11 @@ SCHEMA = Schema(
             name="base_plot_dir",
             kind="path",
             default=_PLOTS,
-            help="Write plot artifacts under this base directory",
+            help=(
+                "Write plot artifacts under this base directory, each image's in a folder "
+                "of its own named after it ({image stem}); a relative path is relative to "
+                "the working directory"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,
         ),
@@ -3181,7 +3185,8 @@ SCHEMA = Schema(
             default=True,
             help=(
                 "Write IDE plot files (matplotlib PNG and Plotly HTML, including "
-                "final_graph_3d.html). Off skips all of that production"
+                "final_graph_3d.html and the skeleton's projections) into "
+                "base_plot_dir/{image stem}. Off skips all of that production"
             ),
             section=_SOLVER_AND_OUTPUT,
             advanced=True,
@@ -3237,17 +3242,22 @@ SCHEMA = Schema(
             name="vtk_export",
             kind="bool",
             default=True,
-            help="Export vessels, pericytes and nodes as VTK files",
+            help=(
+                "Export vessels, pericytes and nodes as VTK files: geometry, diameters and "
+                "branch orders always, pressures and flows when the network was solved"
+            ),
             section=_SOLVER_AND_OUTPUT,
-            requires=("run_haemodynamics",),
         ),
         Setting(
             name="visualize_vtk",
             kind="bool",
             default=False,
-            help="Open the exported VTK network in the interactive viewer",
+            help=(
+                "Open the exported VTK network in the interactive viewer (a script run "
+                "only: the napari panel never opens it)"
+            ),
             section=_SOLVER_AND_OUTPUT,
-            requires=("run_haemodynamics", "vtk_export"),
+            requires=("vtk_export",),
             advanced=True,
         ),
         Setting(

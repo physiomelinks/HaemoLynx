@@ -678,3 +678,17 @@ def test_a_synthetic_runs_template_comparison_is_counted(tmp_path, base):
     assert "E14_synthetic_run_manifest.json" in names
     image_run = {path.name for path in output_paths(_single_run(tmp_path, base))[0]}
     assert not [name for name in image_run if name.endswith("_template_comparison.csv")]
+
+
+def test_a_batch_opens_no_window_for_any_image(tmp_path, base):
+    """A plot or VTK window held the batch until someone closed it, image after image."""
+    from haemolynx.pipeline.batch import NO_WINDOWS
+
+    (match,) = _match(tmp_path / "in", "E14_seg.tif", "E14.tif")
+    watched = {**base, "interactive_plots": True, "show_plots_in_ide": True, "visualize_vtk": True}
+
+    settings = item_settings(watched, match, tmp_path / "out")
+
+    assert NO_WINDOWS == {"interactive_plots": False, "show_plots_in_ide": False, "visualize_vtk": False}
+    for name in NO_WINDOWS:
+        assert settings[name] is False, name

@@ -67,6 +67,18 @@ def test_a_report_saved_before_the_layout_has_it_measured_off_the_graph():
     assert read_layout(older, None) is None
 
 
+def test_a_report_saved_under_a_rows_old_name_reads_the_same_layout():
+    """The columns' density was saved as "Columns per mm² of Image Plane"
+    before it was given an ASCII name (glossary.RENAMED_ROWS)."""
+    sections = tiny_sections()
+    sections["vessel_columns"]["Columns per mm^2 of Image Plane"] = 123.0
+    older = copy.deepcopy(sections)
+    columns = older["vessel_columns"]
+    columns["Columns per mm² of Image Plane"] = columns.pop("Columns per mm^2 of Image Plane")
+    assert read_layout(older, None).columns_per_mm2 == 123.0
+    assert read_layout(older, None) == read_layout(sections, None)
+
+
 def _without_p90(sections):
     out = copy.deepcopy(sections)
     for item in out["vessel_classes"]["Vessel Classes"].values():

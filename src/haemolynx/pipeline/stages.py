@@ -135,6 +135,9 @@ STATISTICS_REPORT = "statistics_report"
 HAEMODYNAMICS_SECTION = "haemodynamics"
 BRANCH_ORDER_SECTION = "branch_orders"
 WEIGHTED_MEASURES_SECTION = "weighted_betweenness_communities"
+#: The statistics measures the weighted section and its three JSON files
+#: report: written while either is on.
+WEIGHTED_MEASURES = frozenset({"betweenness", "community"})
 TISSUE_VOLUME_SECTION = "tissue_volume"
 
 #: Pipeline stage calls in run order, for ``start_from`` comparisons.
@@ -312,6 +315,9 @@ class Solution:
     #: the solve it ran again on a hand-edited network (its
     #: ``model.results["post_process"]``); None for the Haemodynamics stage's.
     post_processed: dict[str, Any] | None = None
+    #: What `export_results` wrote, by kind ("VTK", "statistics", "plots",
+    #: "citations"), for the panel to say; empty before it runs.
+    exported: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1623,8 +1629,12 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     skeleton_path = output_dir / f"{run_stem(settings)}_skeleton.npy"
     voxel_meta_path = output_dir / f"{run_stem(settings)}_voxel_size.json"
     projection_path = settings["plot_dir"] / "skeleton_projection.png"
-    if not settings["plot_dir"].exists():
-        settings["plot_dir"].mkdir(parents=True, exist_ok=True)
+    # The skeleton's figures are plots like any other (visualize_results): the
+    # panel starts with them off, and its working folder may be one nobody
+    # can write to.
+    plotting = bool(settings["visualize_results"])
+    if plotting:
+        Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)
 
     # A loaded skeleton's image is cleaned as a fresh run's is; the
     # thick-vessel region is kept beside the skeleton, so a loaded skeleton
@@ -1706,7 +1716,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
         )
-        visualization.visualize_skeleton(skeleton, save_path=settings["plot_dir"] / "raw_skeleton.png")
+        if plotting:
+            visualization.visualize_skeleton(skeleton, save_path=settings["plot_dir"] / "raw_skeleton.png")
 
         # The `skeleton_*` settings are this function's parameters with a
         # prefix, so they go in as a group; the percentage, the mask (not a
@@ -1804,9 +1815,10 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 settings, image, voxel_size, crop, region_cache, downsample
             )
 
-    logger.info("Visualizing skeleton projection...")
-    visualization.visualize_skeleton(skeleton, save_path=projection_path)
-    logger.info("Skeleton projection saved.")
+    if plotting:
+        logger.info("Visualizing skeleton projection...")
+        visualization.visualize_skeleton(skeleton, save_path=projection_path)
+        logger.info("Skeleton projection saved.")
 
     main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
     # Image metadata reports (x, y, z); array axes are canonical (z, y, x).
@@ -7562,6 +7574,21 @@ def vascular_communities_enabled(settings: dict) -> bool:
     return bool(settings["compute_vascular_communities"])
 
 
+def _has_bridges(G: nx.MultiGraph) -> bool:
+    """Whether *G* has a zero-resistance bridge into a thick vessel."""
+    return any(data.get(graph.IS_ZERO_RESISTANCE) for *_e, data in G.edges(data=True))
+
+
+def _without_bridges(G: nx.MultiGraph) -> nx.MultiGraph:
+    """*G* as the statistics measure it: each zero-resistance bridge's two
+    ends one node (``contract_bridges``), or *G* itself when it has none."""
+    if not _has_bridges(G):
+        return G
+    from haemolynx.graph.thick_vessel_junctions import contract_bridges
+
+    return contract_bridges(G)[0]
+
+
 def shared_vascular_community_partition(
     settings: dict, G: nx.MultiGraph, *, topology_report: bool, weighted_report: bool
 ) -> "tuple[list, str] | None":
@@ -7576,8 +7603,12 @@ def shared_vascular_community_partition(
     ``statistics.compute_comprehensive_vessel_statistics`` exactly.
     *weighted_report*: the report's length/resistance/flow-weighted community
     counts run (resistance and flow only with haemodynamics).
+
+    ``None`` too for a network with zero-resistance bridges: the statistics
+    partition it with each bridge's two ends one node (:func:`_without_bridges`),
+    the vessels layer with the bridges in, and the two are not one partition.
     """
-    if not vascular_communities_enabled(settings):
+    if not vascular_communities_enabled(settings) or _has_bridges(G):
         return None
     weighting = settings["vascular_community_weighting"]
     if weighting == "topology":
@@ -7821,6 +7852,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     output_dir = network.volume.output_dir
     voxel_size_zyx = network.volume.voxel_size_zyx
     main_voxel_size_xyz = network.volume.voxel_size_xyz
+    exported: list[str] = []
 
     # The statistics report (its topological "community" measure, or its
     # weighted-community counts) and the vessels-layer vascular-community
@@ -7893,6 +7925,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
 
         stats_csv_path = output_dir / f"{run_stem(settings)}_statistics.csv"
         statistics.export_statistics_to_csv(stats, stats_csv_path)
+        exported.append("statistics")
         logger.info(f"Saved statistics CSV to: {stats_csv_path}")
         connected_stats = connected_network_statistics(
             settings, G, image_shape, voxel_size_zyx, tissue
@@ -7924,14 +7957,17 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         logger.info(f"Saved branch-order statistics CSV to: {branch_stats_csv_path}")
         report_sections[BRANCH_ORDER_SECTION] = branch_stats
 
-        if settings["run_haemodynamics"]:
+        if not statistics_arguments(settings)["enabled_measures"] & WEIGHTED_MEASURES:
+            weighted_measurements = None
+            logger.info("Weighted betweenness and communities skipped: betweenness and communities are off.")
+        elif settings["run_haemodynamics"]:
             precomputed_communities = (
                 {vascular_weighting: shared_vascular_communities}
                 if shared_vascular_communities is not None and vascular_weighting != "topology"
                 else None
             )
             weighted_measurements = statistics.compute_betweenness_and_community_measurements(
-                G, precomputed_communities=precomputed_communities,
+                _without_bridges(G), precomputed_communities=precomputed_communities,
             )
         else:
             # Resistance and solved |flow| both require haemodynamics; only
@@ -7953,17 +7989,18 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                     },
                 }
 
+            measured = _without_bridges(G)
             weighted_measurements = {
                 "edge_resistance": _na_weighted_model(),
                 "edge_flow_abs": _na_weighted_model(),
                 "edge_length": {
                     "Betweenness": statistics.compute_weighted_betweenness_summary(
-                        G,
+                        measured,
                         source_attr="length",
                         inverse_source_attr=False,
                     ),
                     "Communities": statistics.compute_weighted_communities_summary(
-                        G,
+                        measured,
                         source_attr="length",
                         inverse_source_attr=False,
                         precomputed=(
@@ -7974,28 +8011,29 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                     ),
                 },
             }
-        logger.info("=== Weighted Betweenness and Communities ===")
-        for model_name, model_results in weighted_measurements.items():
-            logger.info(f"  [{model_name}]")
-            for metric_name, metric_values in model_results.items():
-                logger.info(f"    {metric_name}: {metric_values}")
+        if weighted_measurements is not None:
+            logger.info("=== Weighted Betweenness and Communities ===")
+            for model_name, model_results in weighted_measurements.items():
+                logger.info(f"  [{model_name}]")
+                for metric_name, metric_values in model_results.items():
+                    logger.info(f"    {metric_name}: {metric_values}")
 
-        resistance_path = output_dir / f"{run_stem(settings)}_betweenness_communities_resistance.json"
-        resistance_path.write_text(
-            json.dumps(weighted_measurements["edge_resistance"], indent=2)
-        )
-        length_path = output_dir / f"{run_stem(settings)}_betweenness_communities_edge_length.json"
-        length_path.write_text(
-            json.dumps(weighted_measurements["edge_length"], indent=2)
-        )
-        flow_path = output_dir / f"{run_stem(settings)}_betweenness_communities_edge_flow.json"
-        flow_path.write_text(
-            json.dumps(weighted_measurements["edge_flow_abs"], indent=2)
-        )
-        logger.info(f"Saved edge-resistance stats to: {resistance_path}")
-        logger.info(f"Saved edge-length stats to: {length_path}")
-        logger.info(f"Saved edge-flow stats to: {flow_path}")
-        report_sections[WEIGHTED_MEASURES_SECTION] = weighted_measurements
+            resistance_path = output_dir / f"{run_stem(settings)}_betweenness_communities_resistance.json"
+            resistance_path.write_text(
+                json.dumps(weighted_measurements["edge_resistance"], indent=2)
+            )
+            length_path = output_dir / f"{run_stem(settings)}_betweenness_communities_edge_length.json"
+            length_path.write_text(
+                json.dumps(weighted_measurements["edge_length"], indent=2)
+            )
+            flow_path = output_dir / f"{run_stem(settings)}_betweenness_communities_edge_flow.json"
+            flow_path.write_text(
+                json.dumps(weighted_measurements["edge_flow_abs"], indent=2)
+            )
+            logger.info(f"Saved edge-resistance stats to: {resistance_path}")
+            logger.info(f"Saved edge-length stats to: {length_path}")
+            logger.info(f"Saved edge-flow stats to: {flow_path}")
+            report_sections[WEIGHTED_MEASURES_SECTION] = weighted_measurements
         if graph.network_is_synthetic(settings):
             # How close the synthetic network came to its template, on the
             # statistics just measured: a CSV beside them and a section of
@@ -8134,33 +8172,37 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         logger.info("Pericyte measurements skipped.")
 
     # 10) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
-    # FA I have no idea if pericyte location is correct. AI did that part.
-    # FA I don't fully understand how pericyte location is currently determined?
-    if settings["run_haemodynamics"] and settings["vtk_export"]:
+    # The pericytes file is the periodic strategy's sites at the run's own
+    # spacing and length (derive_pericyte_points_from_graph), not a mask's.
+    # Geometry and diameters need no solve; flows are written once there are some.
+    if settings["vtk_export"]:
         vtk_export = visualization.graph_to_vtk(
-            G, Path(settings["output_dir"]) / run_stem(settings),
+            G, output_dir / run_stem(settings),
+            constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
+            constriction_length=float(settings.get("constriction_length_um", 40.0)),
             inlet_nodes=settings["inlet_nodes"], outlet_nodes=settings["outlet_nodes"],
         )
+        exported.append("VTK")
         logger.info("=== VTK Export ===")
         logger.info(f"  Vessels:   {vtk_export['vessels_path']}")
         logger.info(f"  Pericytes: {vtk_export['pericytes_path']}")
         logger.info(f"  Nodes:     {vtk_export['nodes_path']}")
         logger.info(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
           f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
-    if settings["run_haemodynamics"] and settings["visualize_vtk"] and settings["vtk_export"]:
-        visualization.visualize_vtk_network(
-            vtk_export["vessels_path"],
-            vtk_export["pericytes_path"],
-            vtk_export["nodes_path"],
-            show_nodes=False,
-        )
-    if settings["run_haemodynamics"] and settings["visualize_vtk"] and not settings["vtk_export"]:
+        if settings["visualize_vtk"]:
+            visualization.visualize_vtk_network(
+                vtk_export["vessels_path"],
+                vtk_export["pericytes_path"],
+                vtk_export["nodes_path"],
+                show_nodes=False,
+            )
+        else:
+            logger.info("VTK visualization skipped.")
+    elif settings["visualize_vtk"]:
         logger.warning(
             "VTK visualization requested but VTK export is disabled. "
             "Set vtk_export: true in the config to enable."
         )
-    if settings["run_haemodynamics"] and not settings["visualize_vtk"]:
-        logger.info("VTK visualization skipped.")
     if settings["run_haemodynamics"] and graph.network_surrounds_image(settings) and run_stem(settings) is not None:
         # Each of the image's vessels: its flow in the template run and inside the surround.
         from haemolynx.synthetic.surround import image_flow_rows, write_image_flows_csv
@@ -8178,6 +8220,9 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         logger.info("Plots skipped: a synthetic network has no image to overlay on.")
     elif settings["visualize_results"]:
         logger.info("Generating visualizations...")
+        # A run resumed here skipped the Skeletonise stage that made it.
+        Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)
+        exported.append("plots")
         valid_plot_modes = {"all", "final_only", "none"}
         if settings["ide_plot_mode"] not in valid_plot_modes:
             raise ValueError(
@@ -8240,6 +8285,8 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             settings["hold_ide_plots_open"]
             and show_any_ide_plot
             and not settings["interactive_plots"]
+            # Never off the main thread (a panel run): nothing could close them.
+            and visualization.plot.backend_can_display()
             and plt.get_fignums()
         ):
             logger.info("Holding plot windows open. Close them to finish the script.")
@@ -8250,11 +8297,13 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # 12) Optional: a plain-text reading list of what this run actually used.
     if settings["export_citations"]:
         citations_path = output_dir / f"{run_stem(settings)}_citations.txt"
-        write_citations(settings, citations_path)
+        write_citations(settings, citations_path, network_nodes=G.number_of_nodes())
+        exported.append("citations")
         logger.info(f"Saved citations to: {citations_path}")
     else:
         logger.info("Citation export skipped.")
 
+    solution.exported = tuple(exported)
     return solution
 
 
@@ -8324,6 +8373,19 @@ def _resumed_segmented_path(
         return None
     produced = segmented_input_path(settings)
     return produced if produced is not None and produced.is_file() else None
+
+
+def _volume_writing_to(volume: SkeletonisedVolume, output_dir: Path) -> SkeletonisedVolume:
+    """*volume*, its outputs going to *output_dir*: the run's folder now.
+
+    A resumed volume names the folder of the run it came from; a run resumed
+    with another ``output_dir`` wrote its VTK and manifest to the new folder
+    and its statistics, citations and the rest into the old one.
+    """
+    if Path(volume.output_dir) == Path(output_dir):
+        return volume
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    return replace(volume, output_dir=Path(output_dir))
 
 
 def _fill_boundary_settings(settings: dict, resume: PipelineResume) -> None:
@@ -8593,6 +8655,7 @@ def _run_stages(
             volume = skeletonise(settings, inputs)
         else:
             logger.info("Resuming with the image and skeleton already loaded.")
+            volume = _volume_writing_to(volume, inputs.output_dir)
     _produced(on_stage_output, "skeletonise", volume)
     if stop_after == "skeletonise":
         return None

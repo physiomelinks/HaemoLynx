@@ -253,3 +253,94 @@ def test_no_display_is_attempted_under_a_non_interactive_backend():
         warnings.simplefilter("error")
         _show_matplotlib_non_blocking()
         _show_matplotlib_blocking()
+
+
+# --- off the main thread (a napari panel run) ----------------------------------
+
+
+def _pyplot_must_not_be_used(monkeypatch):
+    """Make pyplot's figure makers fail: under napari they build Qt windows."""
+    import matplotlib.pyplot as plt
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a saved figure went through pyplot")
+
+    monkeypatch.setattr(plt, "figure", refuse)
+    monkeypatch.setattr(plt, "subplots", refuse)
+
+
+def _two_vessel_graph() -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 1.0, 1.0), 1: (0.0, 4.0, 4.0), 2: (0.0, 1.0, 7.0)}.items():
+        G.add_node(node, pos=np.asarray(pos))
+    G.add_edge(0, 1, branch_order="B01", resistance=2.0, voxels=[(0.0, 1.0, 1.0), (0.0, 4.0, 4.0)])
+    G.add_edge(1, 2, branch_order="B02", resistance=4.0, voxels=[(0.0, 4.0, 4.0), (0.0, 1.0, 7.0)])
+    return G
+
+
+def test_a_saved_figure_never_goes_through_pyplot(tmp_path, monkeypatch):
+    """Every run's skeleton figures and an export's plots were pyplot figures,
+    which under napari's Qt resolve to Qt windows built on the run's worker
+    thread ("Starting a Matplotlib GUI outside of the main thread")."""
+    from pathlib import Path
+
+    from haemolynx.visualization import visualize_skeleton
+    from haemolynx.visualization.perturbation_plots import (
+        SWEEP_AXIS_BY_TYPE,
+        SWEEP_Y_METRICS,
+        plot_sweep_curves,
+    )
+
+    _pyplot_must_not_be_used(monkeypatch)
+    G = _two_vessel_graph()
+    image = np.zeros((2, 8, 9), dtype=np.uint8)
+    image[:, 1:5, 1:8] = 1
+    written = {
+        "degree": tmp_path / "degree.png",
+        "overlay": tmp_path / "overlay.png",
+        "orders": tmp_path / "orders.png",
+        "resistance": tmp_path / "resistance.png",
+        "skeleton": tmp_path / "skeleton.png",
+    }
+    plot_node_degree_distribution(G, save_path=written["degree"], show=False)
+    visualize_edges_and_nodes(image, G, save_path=written["overlay"], show=False)
+    visualize_geometry_with_branch_orders(image, G, save_path=written["orders"], show=False)
+    visualize_geometry_with_edge_resistance(image, G, save_path=written["resistance"], show=False)
+    visualize_skeleton(image.astype(bool), save_path=written["skeleton"])
+    for name, path in written.items():
+        assert path.is_file() and path.stat().st_size > 0, name
+
+    axis = SWEEP_AXIS_BY_TYPE["pressure_sweep"]
+    rows = [
+        {axis.x_key: pressure, **{column: float(i + 1) for i, column in enumerate(SWEEP_Y_METRICS)}}
+        for pressure in (1000.0, 2000.0)
+    ]
+    curves = plot_sweep_curves(rows, tmp_path / "sweep", axis=axis)
+    assert len(curves) == len(SWEEP_Y_METRICS)
+    assert all(Path(path).is_file() for path in curves.values())
+
+
+def test_no_window_is_opened_off_the_main_thread(tmp_path, monkeypatch):
+    """A blocking show on the panel's worker held the run for ever."""
+    import threading
+
+    from haemolynx.visualization.plot import backend_can_display
+
+    _pyplot_must_not_be_used(monkeypatch)
+    seen: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            seen["can_display"] = backend_can_display()
+            plot_node_degree_distribution(_two_vessel_graph(), show=True, block=True)
+            seen["shown"] = True
+        except BaseException as error:  # noqa: BLE001 - reported below
+            seen["error"] = error
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(timeout=60)
+
+    assert not worker.is_alive(), "showing a figure off the main thread blocked"
+    assert "error" not in seen, seen.get("error")
+    assert seen == {"can_display": False, "shown": True}

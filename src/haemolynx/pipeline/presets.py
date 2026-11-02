@@ -62,13 +62,14 @@ PRESETS: dict[str, dict[str, Any]] = {
         "label": "Network structure, no flow",
         "description": (
             "The network and its statistics (lengths, branching, tortuosity, "
-            "connectivity) without solving blood flow"
+            "connectivity) and its VTK files, without solving blood flow"
         ),
         "overrides": {
             "run_haemodynamics": False,
             "statistics": True,
             "statistics_network_analysis": True,
             "measurement_3d_to_cell_mask": False,
+            "vtk_export": True,
         },
     },
     "flow_segmentation_diameters": {
@@ -114,13 +115,14 @@ PRESETS: dict[str, dict[str, Any]] = {
         "label": "Cell-to-vessel distances",
         "description": (
             "How far each object in a cell mask lies from the vessels, without "
-            "solving blood flow or computing statistics; choose the cell mask "
-            "on the Additional measurements tab"
+            "solving blood flow, computing statistics or writing VTK files; "
+            "choose the cell mask on the Additional measurements tab"
         ),
         "overrides": {
             "run_haemodynamics": False,
             "statistics": False,
             "measurement_3d_to_cell_mask": True,
+            "vtk_export": False,
         },
     },
     "arteriole_venule_masks": {

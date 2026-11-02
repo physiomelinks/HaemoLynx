@@ -259,7 +259,7 @@ def compute_vessel_columns(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str, Any]:
         "Column Share of Vessel Length (fraction)": (
             float(sum(c[1] for c in columns) / total) if total > 0 else _NO_BOX
         ),
-        "Columns per mm² of Image Plane": float(len(columns) / area * 1e6) if area > 0 else _NO_BOX,
+        "Columns per mm^2 of Image Plane": float(len(columns) / area * 1e6) if area > 0 else _NO_BOX,
     }
     xy = np.array([c[0][1:] for c in columns], dtype=float).reshape(-1, 2)
     ratio = clark_evans_2d(xy, area)

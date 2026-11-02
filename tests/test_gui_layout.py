@@ -393,10 +393,26 @@ def test_where_the_outputs_go_is_its_own_box_on_the_input_tab():
 def test_the_export_tab_leads_with_the_vtk_export():
     _tab, layout = LAYOUTS["export_results"]
     assert layout.boxes[0].rows[0] == "vtk_export"
-    assert layout.disclosure_of("visualize_vtk").anchor == "vtk_export"
-    plots = layout.disclosure_of("show_plots_in_ide")
+    plots = layout.disclosure_of("visualize_results")
     assert plots.anchor is None
     assert {"visualize_results", "base_plot_dir", "verbose_logging"} <= set(plots.names)
+
+
+def test_the_export_tab_offers_no_setting_that_opens_a_window():
+    """A panel run is on a worker thread: a plot or VTK window there is built
+    outside the GUI thread, and "Hold IDE plots open" held the run for ever."""
+    from haemolynx.gui._widget import OPENS_A_WINDOW
+
+    assert set(OPENS_A_WINDOW) == {
+        "interactive_plots", "show_plots_in_ide", "ide_plot_mode", "hold_ide_plots_open", "visualize_vtk",
+    }
+    for name, value in OPENS_A_WINDOW.items():
+        assert FORCED_HIDDEN_SETTINGS[name] == value == SCHEMA[name].default, name
+    _tab, layout = LAYOUTS["export_results"]
+    shown = {name for box in layout.boxes for name in box.rows} | {
+        name for disclosure in layout.disclosures for name in disclosure.names
+    }
+    assert not shown & set(OPENS_A_WINDOW)
 
 
 def test_boundaries_box_each_mask_kind_by_its_own_toggle():

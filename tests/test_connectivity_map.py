@@ -143,7 +143,7 @@ def test_hover_names_every_vessel_by_its_branch_id(view):
     texts = [i["text"] for i in built["items"] if i["kind"] == "vessel"]
     assert len(texts) == len(rows)  # one hover item per vessel
     assert {t.split("</b>")[0].split()[-1] for t in texts} == {r["Branch ID"] for r in rows}
-    assert built["counts"] == {"vessels": 10, "inlets": 2, "outlets": 2}
+    assert built["counts"] == {"vessels": 10, "bridges": 0, "inlets": 2, "outlets": 2}
 
 
 @needs_node
@@ -244,6 +244,66 @@ def test_branch_order_stats_save_as_csv():
     table = list(csv.DictReader(io.StringIO(text)))
     assert [r["Branch order"] for r in table][-1] == "All"
     assert table[0]["Mean connections (in + out) / 2"] == "0.5000"  # Art1: (0 + 1) / 2
+
+
+def _rows_with_dead_end_kinds():
+    """Dead ends as a real run has them, every one judged by the build: 2 -> 9
+    stops short, and a piece no inlet reaches, 30 - 31, whose two ends are
+    both dead ends -- 30, with a kind, at its "from" node and 31, without one,
+    at its "to" node."""
+    G = nx.MultiGraph()
+    for u, v in [(0, 1), (1, 2), (2, 3), (2, 9), (30, 31)]:
+        G.add_edge(u, v, length=10.0, diameter_um=5.0, branch_order="B1")
+    G.nodes[9]["dead_end_kind"] = "stops_short"
+    G.nodes[30]["dead_end_kind"] = "island_end"
+    return connectivity_rows(G, [0], [3])
+
+
+@needs_node
+@pytest.mark.parametrize("view", ["inlet", "branch_order"])
+def test_dead_ends_are_marked_with_their_kinds_at_either_end(view):
+    # Regression: only a note of exactly "Dead end" was marked, so a run's
+    # dead ends, which all carry a kind, were never drawn, nor any "from" one.
+    rows = _rows_with_dead_end_kinds()
+    notes = {r["Edge v"]: r["Notes"] for r in rows}
+    assert notes["9"] == "Dead end (stops_short)"
+    assert notes["31"].startswith("Dead end at the from node (island_end); Dead end;")
+    assert _run(rows, "inlet")["deadEnds"] == ["30", "31", "9"]
+    traces = _run(rows, "view", view=view)["traces"]
+    assert [t["name"] for t in traces if t["name"].startswith("Dead end")] == ["Dead ends (3)"]
+
+
+def _rows_with_a_bridge():
+    """Inlet 0 -B01-> 1, a zero-resistance bridge 1 -> 2 into a thick
+    vessel's centreline, 2 -Ven1-> outlet 3."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=10.0, diameter_um=5.0, branch_order="B01")
+    G.add_edge(1, 2, length=4.0, diameter_um=20.0, is_zero_resistance=True)
+    G.add_edge(2, 3, length=30.0, diameter_um=20.0, branch_order="Ven1")
+    return connectivity_rows(G, [0], [3])
+
+
+@needs_node
+@pytest.mark.parametrize("view", ["inlet", "branch_order"])
+def test_a_zero_resistance_bridge_is_drawn_dashed_and_counted_apart(view):
+    built = _run(_rows_with_a_bridge(), "view", view=view)
+    assert built["counts"] == {"vessels": 2, "bridges": 1, "inlets": 1, "outlets": 1}
+    bridges = [t for t in built["traces"] if t.get("legendgroup") == "zero-resistance bridges"]
+    assert len(bridges) == 1 and bridges[0]["line"]["dash"] == "dash"
+    assert bridges[0]["name"] == "Zero-resistance bridges (1)"
+    # It is no vessel without a branch order: no "(none)" legend entry.
+    assert not any(t.get("legendgroup") == "(none)" for t in built["traces"])
+    texts = [i["text"] for i in built["items"] if i["kind"] == "vessel"]
+    assert len(texts) == 3 and sum("Zero-resistance bridge" in t for t in texts) == 1
+
+
+@needs_node
+def test_branch_order_stats_count_bridges_apart_from_the_vessels():
+    stats = {s["order"]: s for s in _run(_rows_with_a_bridge(), "stats")}
+    assert list(stats) == ["B01", "Ven1", "Zero-resistance bridges", "All"]
+    assert stats["Zero-resistance bridges"]["vessels"] == 1
+    assert stats["All"]["vessels"] == 2
+    assert stats["All"]["diameter"] == pytest.approx(12.5)  # the bridge's 20 left out
 
 
 def test_write_connectivity_map_embeds_the_csv_and_the_script(tmp_path):

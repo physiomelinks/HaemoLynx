@@ -2851,3 +2851,20 @@ def test_the_signed_branch_order_column_is_each_vessels_own_generation():
     _add_branch_order_scales(columns)
     labelled = dict(zip(columns["branch_order"], columns[BRANCH_ORDER_SIGNED]))
     assert labelled["Art1"] == -2.0
+
+
+def test_the_export_note_names_only_what_was_written():
+    """It said "Wrote the VTK, statistics and plots." whatever was written --
+    and the panel starts with plots off."""
+    from haemolynx.gui.results import export_note
+
+    assert export_note(()) == "Wrote no files: VTK, statistics, plots and citations are all off."
+    assert export_note(("statistics",)) == "Wrote the statistics."
+    assert export_note(("VTK", "statistics", "citations")) == "Wrote the VTK, statistics and citations."
+
+    graph = a_graph()
+    group = built(graph).stage_finished(
+        "export_results", SimpleNamespace(graph=graph, exported=("statistics",))
+    )
+    assert group.note.startswith("Wrote the statistics.")
+    assert "plots" not in group.note

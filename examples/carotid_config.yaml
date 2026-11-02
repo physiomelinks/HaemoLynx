@@ -332,7 +332,7 @@ vessel_masks:
 # Boundary assignment
 # ------------------------------------------------------------------------
 boundary_assignment:
-  # Write plot artifacts under this base directory
+  # Write plot artifacts under this base directory, each image's in a folder of its own named after it ({image stem}); a relative path is relative to the working directory
   base_plot_dir: plots
   # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   inlet_node_selection_method: edge_percent
@@ -423,7 +423,7 @@ solver_and_output:
   inlet_p_bc: 1000.0
   # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
   outlet_p_bc: 500.0
-  # Write IDE plot files (matplotlib PNG and Plotly HTML, including final_graph_3d.html). Off skips all of that production
+  # Write IDE plot files (matplotlib PNG and Plotly HTML, including final_graph_3d.html and the skeleton's projections) into base_plot_dir/{image stem}. Off skips all of that production
   visualize_results: true
   # Show plots interactively instead of saving them to the plot directory  [needs visualize_results]
   interactive_plots: false
@@ -435,9 +435,9 @@ solver_and_output:
   hold_ide_plots_open: true
   # Render the final graph views as a 2D overlay or an interactive 3D plot  [one of: 2d, 3d; needs visualize_results]
   final_render_mode: 3d
-  # Export vessels, pericytes and nodes as VTK files  [needs run_haemodynamics]
+  # Export vessels, pericytes and nodes as VTK files: geometry, diameters and branch orders always, pressures and flows when the network was solved
   vtk_export: true
-  # Open the exported VTK network in the interactive viewer  [needs run_haemodynamics and vtk_export]
+  # Open the exported VTK network in the interactive viewer (a script run only: the napari panel never opens it)  [needs vtk_export]
   visualize_vtk: false
   # Include flow direction axis components (flow_dir_z/y/x) as colour options in the flow-direction Vectors layer (select from the layer colour-by dropdown). The layer itself -- a napari Vectors layer of mid-edge arrows -- is always added after the solve  [needs run_haemodynamics]
   flow_direction_colouring: true

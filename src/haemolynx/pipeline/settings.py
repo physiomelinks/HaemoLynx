@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from haemolynx import haemodynamics
 from haemolynx.parsers import Schema, load_config
+from haemolynx.pipeline.naming import run_stem
 
 
 def resolve_settings(
@@ -43,6 +44,18 @@ def resolve_settings(
     return resolved
 
 
+def plot_folder(settings: Mapping[str, Any]) -> Path:
+    """Where a run's plots go: ``{base_plot_dir}/{stem}``, a folder per image.
+
+    The plot files carry no stem of their own (``final_graph_3d.html``), so
+    two images' runs into one plot folder overwrote each other's. A run that
+    names no image yet plots into ``base_plot_dir`` itself.
+    """
+    stem = run_stem(settings)
+    base = Path(settings["base_plot_dir"])
+    return base / stem if stem else base
+
+
 def fill_derived_settings(settings: dict) -> None:
     """Add the settings computed from other settings.
 
@@ -50,7 +63,7 @@ def fill_derived_settings(settings: dict) -> None:
     the config file states those and leaves these null rather than duplicating
     a 150-entry table that could then disagree with them.
     """
-    settings.setdefault("plot_dir", Path(settings["base_plot_dir"]) / "nerve")
+    settings.setdefault("plot_dir", plot_folder(settings))
     if settings.get("diameter_by_branch_order") is None:
         settings["diameter_by_branch_order"] = haemodynamics.build_diameter_by_branch_order(
             all_diams_const=settings["all_diams_const"],

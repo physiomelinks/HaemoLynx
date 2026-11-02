@@ -12,7 +12,9 @@
  *   branch_order  one column per branch order, inlets to outlets; each vessel
  *                 a short line in its order's column, thin grey lines joining
  *                 a vessel to the vessels it feeds
- * Inlet and outlet vessels are drawn bolder. "Branch order stats" opens a
+ * Inlet and outlet vessels are drawn bolder, and zero-resistance bridges into
+ * a thick vessel dashed and grey (no vessels: left out of the vessel counts
+ * and the per-order stats). "Branch order stats" opens a
  * table per branch order (orderStats). Hovering is done here rather
  * than by plotly, which only answers near a data point and so misses most of
  * a line once zoomed in: the vessel or node nearest the mouse, in pixels,
@@ -34,6 +36,17 @@
   const HOVER_PIXELS = 8;
   const VIEWS = ["inlet", "branch_order"];
   const REQUIRED_COLUMNS = ["Branch ID", "From node ID", "To node ID"];
+  /** The notes connectivity_rows writes (graph/connectivity.py): a dead end at
+   * a row's "to" node ("Dead end", or "Dead end (<kind>)"), one at its "from"
+   * node ("Dead end at the from node", with or without a kind), and a
+   * zero-resistance bridge into a thick vessel (BRIDGE_NOTE there). */
+  const DEAD_END_NOTE = "Dead end";
+  const FROM_DEAD_END_NOTE = "Dead end at the from node";
+  const BRIDGE_NOTE = "Zero-resistance bridge";
+  /** A bridge is no vessel: drawn thin, dashed and grey, its own legend entry
+   * and stats row, and left out of the vessel counts. */
+  const BRIDGE_COLOUR = "#7f7f7f";
+  const BRIDGE_STATS_ROW = "Zero-resistance bridges";
 
   const NODE_KINDS = [
     // label, symbol, colour, size
@@ -124,6 +137,22 @@
     return n.has("Inlet") || n.has("Outlet");
   }
 
+  function isBridge(row) {
+    return notes(row).has(BRIDGE_NOTE);
+  }
+
+  /** The nodes a row's notes call dead ends, *start* and *end* its ends:
+   * "Dead end at the from node ..." is its "from" node, "Dead end" or
+   * "Dead end (<kind>)" its "to" node. */
+  function deadEndNodes(row, start, end) {
+    const out = [];
+    for (const note of notes(row)) {
+      if (note.startsWith(FROM_DEAD_END_NOTE)) out.push(start);
+      else if (note === DEAD_END_NOTE || note.startsWith(`${DEAD_END_NOTE} (`)) out.push(end);
+    }
+    return out;
+  }
+
   function orderOf(row) {
     return row["Branch order"] || NO_ORDER;
   }
@@ -205,7 +234,7 @@
       vessels.push({ row, start, end });
       if (n.has("Inlet")) inlets.add(start);
       if (n.has("Outlet")) outlets.add(end);
-      if (n.has("Dead end")) deadEnds.add(end);
+      for (const node of deadEndNodes(row, start, end)) deadEnds.add(node);
     }
     const around = (map, node) => [...(map.get(node) || [])];
 
@@ -374,10 +403,14 @@
    * fed by it (its "Upstream/Downstream branch IDs"; 0 at an inlet or outlet
    * vessel's open end). connections: the mean of those two, as asked for.
    * Lengths and diameters left blank in the CSV are left out of their means.
+   * Zero-resistance bridges are no vessels: they are left out of every
+   * order's row and "All", and summed in a row of their own before "All".
    */
   function orderStats(rows, config) {
     const byOrder = new Map();
-    for (const row of rows) pushTo(byOrder, orderOf(row), row);
+    const bridges = rows.filter(isBridge);
+    const vesselRows = rows.filter((row) => !isBridge(row));
+    for (const row of vesselRows) pushTo(byOrder, orderOf(row), row);
     const summary = (order, group) => {
       const up = group.map((row) => idCount(row["Upstream branch IDs"]));
       const down = group.map((row) => idCount(row["Downstream branch IDs"]));
@@ -396,7 +429,8 @@
       };
     };
     const out = sortOrders(byOrder.keys(), config).map((o) => summary(o, byOrder.get(o)));
-    if (rows.length) out.push(summary("All", rows));
+    if (bridges.length) out.push(summary(BRIDGE_STATS_ROW, bridges));
+    if (vesselRows.length) out.push(summary("All", vesselRows));
     return out;
   }
 
@@ -462,7 +496,11 @@
    */
   function vesselTraces(segments, colourOf, config, traces, items) {
     const byOrder = new Map();
-    for (const seg of segments) pushTo(byOrder, orderOf(seg.row), seg);
+    const bridges = [];
+    for (const seg of segments) {
+      if (isBridge(seg.row)) bridges.push(seg);
+      else pushTo(byOrder, orderOf(seg.row), seg);
+    }
     for (const order of sortOrders(byOrder.keys(), config)) {
       const group = byOrder.get(order);
       let legendShown = false;
@@ -488,6 +526,25 @@
         });
         legendShown = true;
       }
+    }
+    if (bridges.length) {
+      const x = [];
+      const y = [];
+      const index = traces.length;
+      for (const seg of bridges) {
+        x.push(seg.x0, seg.x1, null);
+        y.push(seg.y0, seg.y1, null);
+        items.push({
+          kind: "vessel", trace: index, width: LINE_WIDTH,
+          x0: seg.x0, y0: seg.y0, x1: seg.x1, y1: seg.y1,
+          text: hoverText(seg.row, seg.start, seg.end),
+        });
+      }
+      traces.push({
+        type: "scatter", mode: "lines", x, y, hoverinfo: "skip",
+        line: { color: BRIDGE_COLOUR, width: LINE_WIDTH, dash: "dash" },
+        name: `${BRIDGE_STATS_ROW} (${bridges.length})`, legendgroup: "zero-resistance bridges",
+      });
     }
   }
 
@@ -602,7 +659,12 @@
     }
     return {
       traces, items, xaxis,
-      counts: { vessels: rows.length, inlets: layout.inlets.size, outlets: layout.outlets.size },
+      counts: {
+        vessels: rows.filter((row) => !isBridge(row)).length,
+        bridges: rows.filter(isBridge).length,
+        inlets: layout.inlets.size,
+        outlets: layout.outlets.size,
+      },
     };
   }
 
@@ -736,7 +798,8 @@
         const cells = STATS_COLUMNS.map(([key, , d]) => {
           const text = escapeHtml(statsCell(st[key], d));
           if (key !== "order" || st.order === "All") return `<td>${text}</td>`;
-          return `<td><span class="hl-swatch" style="background:${colourOf.get(st.order)}"></span>${text}</td>`;
+          const swatch = st.order === BRIDGE_STATS_ROW ? BRIDGE_COLOUR : colourOf.get(st.order);
+          return `<td><span class="hl-swatch" style="background:${swatch}"></span>${text}</td>`;
         });
         return `<tr${st.order === "All" ? ' class="hl-all"' : ""}>${cells.join("")}</tr>`;
       });
@@ -767,7 +830,9 @@
       const c = built.counts;
       $("hl-title").textContent = state.name || "Network connectivity";
       $("hl-counts").textContent =
-        `${c.vessels} vessels, ${c.inlets} inlets, ${c.outlets} outlets`;
+        `${c.vessels} vessels, ` +
+        (c.bridges ? `${c.bridges} zero-resistance bridges, ` : "") +
+        `${c.inlets} inlets, ${c.outlets} outlets`;
       document.title = `${state.name || "Network connectivity"} — 2D connectivity map`;
       renderStats();
       fitPlot();
@@ -897,8 +962,9 @@
   }
 
   const api = {
-    VIEWS, parseCsv, ends, orderSortKey, inletLayout, branchLayout, buildView, nearestItem,
-    orderStats, statsCsv, start,
+    VIEWS, BRIDGE_NOTE, DEAD_END_NOTE, FROM_DEAD_END_NOTE, parseCsv, ends, deadEndNodes,
+    isBridge, orderSortKey, inletLayout, branchLayout, buildView, nearestItem, orderStats,
+    statsCsv, start,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

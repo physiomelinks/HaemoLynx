@@ -2682,7 +2682,7 @@ class ResultLayers:
 
     def _from_export_results(self, output: Any) -> StageLayers:
         self._sync_graph_from_output(output)
-        note = "Wrote the VTK, statistics and plots."
+        note = export_note(getattr(output, "exported", ()))
         # Re-emit the vessels layer so any attribute this stage itself wrote
         # (e.g. vascular_community, from graph.assign_vascular_communities)
         # actually reaches layer.features -- DEFAULT_VESSEL_COLOUR has no
@@ -2710,6 +2710,16 @@ class ResultLayers:
             layers=layers,
             note=note,
         )
+
+
+def export_note(exported: Sequence[str]) -> str:
+    """What the Export stage's note says it wrote: the kinds of file
+    ``export_results`` recorded (``Solution.exported``), in its order."""
+    kinds = list(exported)
+    if not kinds:
+        return "Wrote no files: VTK, statistics, plots and citations are all off."
+    listed = kinds[0] if len(kinds) == 1 else ", ".join(kinds[:-1]) + " and " + kinds[-1]
+    return f"Wrote the {listed}."
 
 
 def _colouring(columns: Mapping[str, np.ndarray], colour_by: str | None) -> dict[str, Any]:

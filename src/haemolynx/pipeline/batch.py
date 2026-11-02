@@ -47,6 +47,9 @@ OUTPUT_FOLDERS = {
     "ilastik_output_dir": "segmentations",
 }
 
+#: The settings that open a window as a run goes, off for every image.
+NO_WINDOWS = {"interactive_plots": False, "show_plots_in_ide": False, "visualize_vtk": False}
+
 #: Single files of one image, read beside it: a batch matches each per image
 #: from a folder of its own (:data:`~haemolynx.io.batch_matching.FILE_ROLES`),
 #: and refuses one file for every image.
@@ -225,6 +228,9 @@ def item_settings(
         ):
             settings[setting] = folder / subfolder
     settings["mid_run_postprocessing"] = False
+    # Nobody watches each image: a plot or VTK window held the batch until
+    # someone closed it, image after image.
+    settings.update(NO_WINDOWS)
     return settings
 
 
@@ -654,6 +660,7 @@ def batch_preflight(
 
 
 __all__ = [
+    "NO_WINDOWS",
     "OUTPUT_FOLDERS",
     "PER_IMAGE_FILES",
     "NOT_WRITTEN_BY_A_BATCH",

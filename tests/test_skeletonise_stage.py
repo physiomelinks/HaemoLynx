@@ -1181,3 +1181,30 @@ def test_a_run_resumed_past_skeletonising_without_its_outputs_reads_the_cleaned_
         resumed["skeletonise"].thick_vessel_mask, made["skeletonise"].thick_vessel_mask
     )
     assert _graph_key(resumed_graph) == _graph_key(made_graph)
+
+
+def _rod_mask() -> np.ndarray:
+    mask = np.zeros((20, 15, 15), dtype=bool)
+    mask[2:18, 4:11, 4:11] = True
+    return mask
+
+
+def test_the_skeleton_figures_are_drawn_only_with_plots_on(tmp_path):
+    """They were written on every run, whatever visualize_results said, into a
+    folder made first: a panel run (plots off) failed at Skeletonise when the
+    plot folder could not be made, and wrote two PNGs where it could."""
+    mask_path = _write_mask(tmp_path, _rod_mask())
+    blocker = tmp_path / "not_a_folder"
+    blocker.write_text("")
+    off = settings_for(tmp_path, mask_path, visualize_results=False, plot_dir=blocker / "plots")
+
+    volume = skeletonise(off, segment(off))
+
+    assert volume.skeleton.any()
+    assert not (blocker / "plots").exists()
+
+    plots = tmp_path / "plots_on"
+    on = settings_for(tmp_path, mask_path, visualize_results=True, plot_dir=plots)
+    skeletonise(on, segment(on))
+    assert (plots / "skeleton_projection.png").is_file()
+    assert (plots / "raw_skeleton.png").is_file()

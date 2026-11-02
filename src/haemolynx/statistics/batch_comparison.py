@@ -39,8 +39,11 @@ Only numbers are read: a metric named only by digits (the per-node rows of a
 full-mode run), the Metadata section, and every text, list or N/A value are
 left out. Whole sections can be left out too (``exclude_sections``: say the
 Dead Ends of a batch whose dead ends are the segmentation's fragments), from
-all three CSVs and so from the Benjamini-Hochberg count. Pure: CSVs in, CSVs
-out.
+all three CSVs and so from the Benjamini-Hochberg count. A section is the
+statistics CSV's Section column: only a part of the report that nests its rows
+(Dead Ends, Vessel Classes, Capillary Bed Joins, ...) has a title of its own;
+the rows of every other measure are all "Core Statistics", left out only
+together. Pure: CSVs in, CSVs out.
 """
 from __future__ import annotations
 
@@ -583,7 +586,7 @@ def collect_batch_statistics(
     return images, missing
 
 
-#: Where a section's subsections are named after it ("Strahler Network > Orders > 1").
+#: Where a section's subsections are named after it ("Strahler Arterial > Orders > 1").
 SUBSECTION_SEPARATOR = " > "
 
 
@@ -1039,7 +1042,9 @@ def write_batch_statistics(
     *exclude_sections* (names, or one comma-separated string) leaves those
     sections and their subsections out of every CSV, ignoring case, before
     anything is summarised or tested: the Benjamini-Hochberg q-values are over
-    the metrics left. A name matching no section is said in ``message``."""
+    the metrics left. A section is the statistics CSV's Section column (see
+    the module), so a measure whose rows are "Core Statistics" cannot be left
+    out on its own. A name matching no section is said in ``message``."""
     output_root = Path(output_root)
     conditions = conditions or BatchConditions()
     images, missing = collect_batch_statistics(output_root, stems, conditions)

@@ -64,6 +64,11 @@ BASIS_NOTES = {
     "open_end_nearer": "B nearer an open end feeding through the image face",
 }
 
+#: The note on a zero-resistance bridge into a thick vessel
+#: (``graph.thick_vessel_junctions.IS_ZERO_RESISTANCE``): no vessel of its own,
+#: and solved as negligible resistance, whatever its length and diameter say.
+BRIDGE_NOTE = "Zero-resistance bridge"
+
 
 def _number(value: Any) -> str:
     try:
@@ -308,8 +313,9 @@ def connectivity_rows(
     end, with its kind where the build judged one: "Dead end (leaves_image)"),
     vessels the image faces cut short (on a dead end's chain that leaves the
     image, so its length is censored), capillaries whose order counts from
-    elsewhere than an arteriole in the image (:data:`BASIS_NOTES`), self-loops
-    and the arteriole/venule boundary roles of its ends.
+    elsewhere than an arteriole in the image (:data:`BASIS_NOTES`), self-loops,
+    zero-resistance bridges into a thick vessel (:data:`BRIDGE_NOTE`) and the
+    arteriole/venule boundary roles of its ends.
 
     With *only_inlet_to_outlet*, only the vessels
     :func:`inlet_to_outlet_vessels` keeps are listed, and upstream/downstream
@@ -355,6 +361,7 @@ def connectivity_rows(
     from ._helpers import edge_id
     from .branch_order import BRANCH_ORDER_BASIS
     from .dead_ends import DEAD_END_KIND, vessels_cut_by_image_faces
+    from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
     cut = vessels_cut_by_image_faces(G)
 
@@ -391,6 +398,8 @@ def connectivity_rows(
                 notes.append(dead_end_note(end))
             if edge_id(edges[branch_id][0], edges[branch_id][1], k) in cut:
                 notes.append("Cut by the image face")
+        if data.get(IS_ZERO_RESISTANCE):
+            notes.append(BRIDGE_NOTE)
         basis = BASIS_NOTES.get(data.get(BRANCH_ORDER_BASIS))
         if basis:
             notes.append(basis)

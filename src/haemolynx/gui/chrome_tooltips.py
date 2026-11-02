@@ -959,9 +959,9 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "off)"
     ),
     "connectivity_map": (
-        "Draw the last exported connectivity CSV (or one you pick) as a 2D map "
-        "in the browser: inlets left, outlets right, each vessel hoverable for "
-        "its details"
+        "Pick a connectivity CSV, starting at the one exported last, and draw it "
+        "as a 2D map in the browser: inlets left, outlets right, each vessel "
+        "hoverable for its details"
     ),
     "export_connectivity": (
         "Save a CSV of how the network is connected: one row per vessel, "

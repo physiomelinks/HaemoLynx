@@ -44,7 +44,7 @@ Units are spelled one way everywhere. A column name in code style (lower case, u
 
 ## `{stem}_vessels.vtp`
 
-Written to the run's output folder (output_dir). Every vessel as a polyline (VTK PolyData), one cell per vessel. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit, haematocrit_model, open_end_model, vessel_size_mid_min_um and vessel_size_wide_min_um. Flow arrays are written once the network is solved.
+Written to the run's output folder (output_dir). Every vessel as a polyline (VTK PolyData), one cell per vessel (with vtk_export). Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit. Field data also holds haemolynx_version, viscosity_law, diameter_basis, haematocrit, haematocrit_model, open_end_model, vessel_size_mid_min_um and vessel_size_wide_min_um. Flow arrays are written once the network is solved.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -74,7 +74,7 @@ Written to the run's output folder (output_dir). Every vessel as a polyline (VTK
 
 ## `{stem}_nodes.vtp`
 
-Written to the run's output folder (output_dir). Every node as a point: junctions, dead ends, inlets and outlets. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
+Written to the run's output folder (output_dir). Every node as a point: junctions, dead ends, inlets and outlets (with vtk_export). Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -85,7 +85,7 @@ Written to the run's output folder (output_dir). Every node as a point: junction
 
 ## `{stem}_pericytes.vtp`
 
-Written to the run's output folder (output_dir). Constriction sites placed along every vessel at the run's constriction spacing and length (constriction_spacing_um, constriction_length_um). Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
+Written to the run's output folder (output_dir). Where the periodic constriction strategy places its sites (with vtk_export): along every vessel at the run's constriction spacing and length (constriction_spacing_um, constriction_length_um), whether or not any constriction ran; empty when either is 0. Not the pericytes of a pericyte mask. Points are physical (z, y, x) microns, as node positions are; field data ``points_unit`` (um) and ``points_axis_order`` say so, and ``<array>_unit`` gives each array's unit.
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -128,8 +128,8 @@ Each row's definition and unit: docs/statistics_glossary.md.
 
 | Column | Unit | Meaning |
 |---|---|---|
-| `Section` | `-` | The report section the metric is in. |
-| `Metric` | `-` | The metric's name. |
+| `Section` | `-` | Where the row sits in the report as the CSV flattens it: a part of the report that nests its rows keeps its own title, its subsections after it (Dead Ends, Capillary Bed Joins, Vessel Classes > Capillaries, Strahler Arterial > Orders > 1); every other row is Core Statistics, whichever measure it comes from (not the Statistics tab's sections); Metadata gives the export time and row count. |
+| `Metric` | `-` | The metric's name, without the unit its name spelled (that is in Unit). |
 | `Value` | `-` | Its value (or N/A and why). |
 | `Unit` | `-` | Its unit. |
 | `Notes` | `-` | Its definition. |
@@ -160,19 +160,19 @@ Columns as {stem}_statistics.csv; rows in docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_resistance.json`
 
-Written to the run's output folder (output_dir). Weighted betweenness and vascular communities, edges weighted by resistance: the Weighted Betweenness and Communities section of the report, as JSON.
+Written to the run's output folder (output_dir). Weighted betweenness and vascular communities, edges weighted by resistance: the Weighted Betweenness and Communities section of the report, as JSON, written while the betweenness or community statistic is on, with each zero-resistance bridge's two ends one node as in the statistics. Without haemodynamics every value is the text 'N/A (haemodynamics disabled)'.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_length.json`
 
-Written to the run's output folder (output_dir). The same, edges weighted by length.
+Written to the run's output folder (output_dir). The same, edges weighted by length (measured with or without haemodynamics).
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_flow.json`
 
-Written to the run's output folder (output_dir). The same, edges weighted by flow.
+Written to the run's output folder (output_dir). The same, edges weighted by flow: 'N/A' values without haemodynamics too.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
@@ -313,7 +313,7 @@ Written to the run's output folder (output_dir). One pericyte's diameter profile
 
 ## `{stem}_template_comparison.csv`
 
-Written to the run's output folder (output_dir). A synthetic run only: each characteristic of the template against the synthetic network (a surround's whole network, the template run's own vessels among it, against the template scaled to its box).
+Written to the run's output folder (output_dir). A synthetic run with statistics on only: each characteristic of the template against the synthetic network (a surround's whole network, the template run's own vessels among it, against the template scaled to its box).
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -636,16 +636,16 @@ Written to the run's output folder (output_dir). Post processing's connectivity 
 | Column | Unit | Meaning |
 |---|---|---|
 | `Branch ID` | `-` | The vessel's branch ID. |
-| `From node ID` | `-` | Its upstream node (by flow, where solved). |
-| `To node ID` | `-` | Its downstream node. |
+| `From node ID` | `-` | Its end nearer a designated inlet, by path length along the vessels: not by solved flow, so the same before and after Haemodynamics. Blank at an inlet's open tip; in a piece no inlet reaches, the graph's own end order. |
+| `To node ID` | `-` | Its other end, farther from the inlets by path length. Blank at an outlet's open tip. |
 | `Branch order` | `-` | Its class. |
 | `Size class` | `-` | Under a size convention (classify_vessels_by_size): wide, mid or narrow by its measured width; empty otherwise. |
 | `Network part` | `-` | A surround (network_source=synthetic_surround) only: image, a vessel of the template run's own network, or synthetic, one drawn round it; empty otherwise. |
 | `Length (um)` | `um` | Its length. |
 | `Diameter (um)` | `um` | Its diameter. |
-| `Notes` | `-` | Inlet/outlet, dead ends and their kinds, cut by the image face, a capillary's B counted from the venous side or nearer an open end feeding through the image face (the VTK's branch_order_basis), boundary roles and so on. |
-| `Upstream branch IDs` | `-` | Vessels feeding it. |
-| `Downstream branch IDs` | `-` | Vessels it feeds. |
+| `Notes` | `-` | Inlet/outlet, dead ends and their kinds, cut by the image face, a capillary's B counted from the venous side or nearer an open end feeding through the image face (the VTK's branch_order_basis), a zero-resistance bridge into a thick vessel (no vessel of its own, solved as negligible resistance: the VTK's is_zero_resistance), boundary roles and so on. |
+| `Upstream branch IDs` | `-` | The vessels whose To node is its From node: before it by path length from the inlets, not by solved flow. |
+| `Downstream branch IDs` | `-` | The vessels whose From node is its To node: after it by path length from the inlets, not by solved flow. |
 | `Edge u` | `-` | Graph node u. |
 | `Edge v` | `-` | Graph node v. |
 | `Edge key` | `-` | Graph edge key. |
@@ -836,4 +836,4 @@ Written to the batch's output folder. A paired comparison: each subject's pair o
 
 ## `*.png, *.html`
 
-Written to the plot folder (plot_dir). Figures: the skeleton, the graph (final_graph.png, final_graph_3d.html, geometry_with_branch_orders.png, ...), the node degree distribution, the graph after each building step (graph_after_<step>.png, with step artifacts on) and a perturbation's plots and sweep curves in its folder. Axes carry their units.
+Written to the image's plot folder: base_plot_dir/{stem}. Figures, with visualize_results: the skeleton, the graph (final_graph.png, final_graph_3d.html, geometry_with_branch_orders.png, ...) and the node degree distribution; the graph after each building step (graph_after_<step>.png, with step artifacts on); and a perturbation's plots and sweep curves in its folder. Axes carry their units.

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from typing import Optional, Sequence, Tuple, Any
 import os
+import threading
 
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
 from matplotlib.colors import Normalize
+from matplotlib.figure import Figure
 import plotly.graph_objects as go
 
 from ._helpers import (
@@ -186,7 +188,13 @@ def backend_can_display() -> bool:
     host installs) ``plt.show`` cannot display anything and only emits
     ``UserWarning: FigureCanvasAgg is non-interactive``. Callers use this to skip
     display entirely rather than warn once per figure.
+
+    Off the main thread -- the napari panel's runs -- no backend can: a window
+    opened there is a Qt window outside the GUI thread, and a blocking show
+    would hold the run forever.
     """
+    if threading.current_thread() is not threading.main_thread():
+        return False
     backend = matplotlib.get_backend().lower()
     try:  # matplotlib >= 3.9
         from matplotlib.backends import BackendFilter, backend_registry
@@ -219,6 +227,22 @@ def _is_pytest_runtime() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
+def new_figure(shown: bool, **kwargs: Any) -> Figure:
+    """A figure to draw on: pyplot's when it will be *shown*, else one of its own.
+
+    A figure that is only saved, or cannot be shown here (:func:`backend_can_display`),
+    never touches pyplot, whose backend is the GUI's own (Qt in napari): made
+    off the main thread, as a panel run makes it, a pyplot figure is a Qt
+    window built outside the GUI thread.
+    """
+    return plt.figure(**kwargs) if shown and backend_can_display() else Figure(**kwargs)
+
+
+def _will_show(show: bool, save_path: Any, show_after_save: bool) -> bool:
+    """Whether a plot function asked to *show* puts its figure on screen."""
+    return bool(show) and (not save_path or bool(show_after_save))
+
+
 def plot_node_degree_distribution(
     G: nx.Graph,
     title: str = "Node Degree Distribution",
@@ -230,51 +254,52 @@ def plot_node_degree_distribution(
 ) -> dict:
     """Plot histogram of node degrees."""
     degrees = [d for _, d in G.degree()]
-    plt.figure(figsize=(10, 6))
-    plt.hist(
+    fig = new_figure(_will_show(show, save_path, show_after_save), figsize=(10, 6))
+    ax = fig.add_subplot()
+    ax.hist(
         degrees,
         bins=range(1, max(degrees) + 2) if degrees else [1],
         align="left",
         rwidth=0.8,
         alpha=0.7,
     )
-    plt.xlabel("Node Degree")
-    plt.ylabel("Count")
-    plt.title(f"{title} (N={G.number_of_nodes()}, E={G.number_of_edges()})")
-    plt.grid(True, alpha=0.3)
+    ax.set_xlabel("Node Degree")
+    ax.set_ylabel("Count")
+    ax.set_title(f"{title} (N={G.number_of_nodes()}, E={G.number_of_edges()})")
+    ax.grid(True, alpha=0.3)
     degree_counts = {}
     for d in degrees:
         degree_counts[d] = degree_counts.get(d, 0) + 1
     stats_text = "Degree distribution:\n" + "".join(
         f"  {d}: {degree_counts[d]} nodes\n" for d in sorted(degree_counts)
     )
-    plt.text(
+    ax.text(
         0.98,
         0.98,
         stats_text,
-        transform=plt.gca().transAxes,
+        transform=ax.transAxes,
         verticalalignment="top",
         horizontalalignment="right",
         bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
         fontsize=9,
     )
-    plt.tight_layout()
+    fig.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
                 _show_matplotlib_blocking()
             else:
                 _show_matplotlib_non_blocking()
         else:
-            plt.close()
+            plt.close(fig)
     elif show:
         if block:
             _show_matplotlib_blocking()
         else:
             _show_matplotlib_non_blocking()
     else:
-        plt.close()
+        plt.close(fig)
     return degree_counts
 
 
@@ -302,20 +327,21 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
     pos = nx.get_node_attributes(G, "pos")
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
     extent = _projection_extent(projection.shape, resolved_voxel_size)
-    plt.figure(figsize=(10, 10))
-    plt.imshow(projection, cmap="gray", extent=extent)
+    fig = new_figure(_will_show(show, save_path, show_after_save), figsize=(10, 10))
+    ax = fig.add_subplot()
+    ax.imshow(projection, cmap="gray", extent=extent)
     for u, v, d in G.edges(data=True):
         try:
             path = edge_polyline(G, u, v, d)
         except ValueError:
             continue
-        plt.plot(path[:, 2], path[:, 1], color="cyan", linewidth=0.5)
+        ax.plot(path[:, 2], path[:, 1], color="cyan", linewidth=0.5)
     if pos:
         coords = np.array(list(pos.values()))
-        plt.scatter(coords[:, 2], coords[:, 1], c="red", s=3)
+        ax.scatter(coords[:, 2], coords[:, 1], c="red", s=3)
         if label_nodes:
             for node_id, node_pos in pos.items():
-                plt.text(
+                ax.text(
                     float(node_pos[2]) + 1.0,
                     float(node_pos[1]) + 1.0,
                     str(node_id),
@@ -328,33 +354,33 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                     x = float(node_pos[2])
                     y = float(node_pos[1])
                     z = float(node_pos[0])
-                    plt.text(
+                    ax.text(
                         float(node_pos[2]) + 1.0,
                         float(node_pos[1]) + 1.0,
                         f"({x:.1f}, {y:.1f}, {z:.1f})",
                         color="blue",
                         fontsize=3,
                     )
-    plt.title("Overlay: Edges and Nodes on Z-Projection")
-    plt.axis("off")
+    ax.set_title("Overlay: Edges and Nodes on Z-Projection")
+    ax.axis("off")
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
         for extra_path in extra_save_paths or ():
-            plt.savefig(extra_path, dpi=300, bbox_inches="tight")
+            fig.savefig(extra_path, dpi=300, bbox_inches="tight")
         if show and show_after_save:
             if block:
                 _show_matplotlib_blocking()
             else:
                 _show_matplotlib_non_blocking()
         else:
-            plt.close()
+            plt.close(fig)
     elif show:
         if block:
             _show_matplotlib_blocking()
         else:
             _show_matplotlib_non_blocking()
     else:
-        plt.close()
+        plt.close(fig)
 
 
 def visualize_geometry_with_branch_orders(
@@ -409,7 +435,8 @@ def visualize_geometry_with_branch_orders(
     legend_orders, legend_counts = group_branch_orders_for_legend(
         branch_orders, group_above, actual_edge_counts
     )
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig = new_figure(_will_show(show, save_path, show_after_save), figsize=figsize, dpi=dpi)
+    ax = fig.add_subplot()
     ax.imshow(projection, cmap=background_cmap, extent=extent)
     for bo in branch_orders:
         paths = [
@@ -442,9 +469,9 @@ def visualize_geometry_with_branch_orders(
         ax.legend(handles=handles, title="Branch Orders", loc="upper right")
     ax.set_title("Network Geometry with Branch Order Colors")
     ax.axis("off")
-    plt.tight_layout()
+    fig.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
                 _show_matplotlib_blocking()
@@ -522,7 +549,8 @@ def visualize_geometry_with_edge_resistance(
     if reverse_gradient:
         cmap = cmap.reversed()
     norm = Normalize(vmin=vmin, vmax=vmax)
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig = new_figure(_will_show(show, save_path, show_after_save), figsize=figsize, dpi=dpi)
+    ax = fig.add_subplot()
     ax.imshow(projection, cmap=background_cmap, extent=extent)
     for (u, v, key), weight in edge_weights.items():
         if weight is not None:
@@ -543,13 +571,13 @@ def visualize_geometry_with_edge_resistance(
     if show_legend:
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
+        cbar = fig.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
         cbar.set_label("1/Weight" if use_inverse else "Edge Weight", rotation=270)
     ax.set_title("Network Geometry Colored by Edge Weight")
     ax.axis("off")
-    plt.tight_layout()
+    fig.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
                 _show_matplotlib_blocking()
@@ -856,7 +884,8 @@ def visualize_skeleton(
         )
         resolved_voxel_size = voxel_size or (1.0, 1.0, 1.0)
         extent = _projection_extent(projection.shape, resolved_voxel_size)
-        fig, ax = plt.subplots(figsize=(10, 10))
+        fig = new_figure(save_path is None, figsize=(10, 10))
+        ax = fig.add_subplot()
         ax.imshow(projection, cmap="gray", interpolation="nearest", extent=extent)
         ax.set_title(
             f"Skeleton Z-projection  —  shape: {skeleton.shape}  "

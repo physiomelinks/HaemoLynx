@@ -184,7 +184,7 @@ _REVIEW_MEASURES = (
 # -- the files ------------------------------------------------------------------
 
 _RUN = "the run's output folder (output_dir)"
-_PLOTS = "the plot folder (plot_dir)"
+_PLOTS = "the image's plot folder: base_plot_dir/{stem}"
 _PERTURBATION = "the perturbation's folder: perturbation_output_dir/{name}_{type}"
 _BATCH = "the batch's output folder"
 
@@ -263,20 +263,24 @@ FILES: tuple[OutputFile, ...] = (
     # -- the model ---------------------------------------------------------
     OutputFile(
         "{stem}_vessels.vtp", _RUN,
-        "Every vessel as a polyline (VTK PolyData), one cell per vessel. " + _VTK_POINTS
+        "Every vessel as a polyline (VTK PolyData), one cell per vessel (with vtk_export). "
+        + _VTK_POINTS
         + f" Field data also holds {', '.join(RUN_FIELD_DATA[:-1])} and {RUN_FIELD_DATA[-1]}."
         " Flow arrays are written once the network is solved.",
         _vtk(tuple(VESSEL_ARRAYS), VESSEL_ARRAYS),
     ),
     OutputFile(
         "{stem}_nodes.vtp", _RUN,
-        "Every node as a point: junctions, dead ends, inlets and outlets. " + _VTK_POINTS,
+        "Every node as a point: junctions, dead ends, inlets and outlets (with vtk_export). "
+        + _VTK_POINTS,
         _vtk(tuple(NODE_ARRAYS), NODE_ARRAYS),
     ),
     OutputFile(
         "{stem}_pericytes.vtp", _RUN,
-        "Constriction sites placed along every vessel at the run's constriction spacing "
-        "and length (constriction_spacing_um, constriction_length_um). " + _VTK_POINTS,
+        "Where the periodic constriction strategy places its sites (with vtk_export): along "
+        "every vessel at the run's constriction spacing and length (constriction_spacing_um, "
+        "constriction_length_um), whether or not any constriction ran; empty when either is 0. "
+        "Not the pericytes of a pericyte mask. " + _VTK_POINTS,
         _vtk(tuple(PERICYTE_ARRAYS), PERICYTE_ARRAYS),
     ),
     OutputFile(
@@ -312,8 +316,16 @@ FILES: tuple[OutputFile, ...] = (
         "{stem}_statistics.csv", _RUN,
         "The statistics report, one row per metric (with the Statistics toggle).",
         (
-            _c("Section", "-", "The report section the metric is in."),
-            _c("Metric", "-", "The metric's name."),
+            _c(
+                "Section", "-",
+                "Where the row sits in the report as the CSV flattens it: a part of the report "
+                "that nests its rows keeps its own title, its subsections after it "
+                "(Dead Ends, Capillary Bed Joins, Vessel Classes > Capillaries, Strahler Arterial "
+                "> Orders > 1); every other row is Core Statistics, whichever measure it comes "
+                "from (not the Statistics tab's sections); Metadata gives the export time and "
+                "row count.",
+            ),
+            _c("Metric", "-", "The metric's name, without the unit its name spelled (that is in Unit)."),
             _c("Value", "-", "Its value (or N/A and why)."),
             _c("Unit", "-", "Its unit."),
             _c("Notes", "-", "Its definition."),
@@ -343,17 +355,20 @@ FILES: tuple[OutputFile, ...] = (
     OutputFile(
         "{stem}_betweenness_communities_resistance.json", _RUN,
         "Weighted betweenness and vascular communities, edges weighted by resistance: "
-        "the Weighted Betweenness and Communities section of the report, as JSON.",
+        "the Weighted Betweenness and Communities section of the report, as JSON, written "
+        "while the betweenness or community statistic is on, with each zero-resistance "
+        "bridge's two ends one node as in the statistics. Without haemodynamics every value "
+        "is the text 'N/A (haemodynamics disabled)'.",
         columns_note="Keys as the report's rows; docs/statistics_glossary.md.",
     ),
     OutputFile(
         "{stem}_betweenness_communities_edge_length.json", _RUN,
-        "The same, edges weighted by length.",
+        "The same, edges weighted by length (measured with or without haemodynamics).",
         columns_note="Keys as the report's rows; docs/statistics_glossary.md.",
     ),
     OutputFile(
         "{stem}_betweenness_communities_edge_flow.json", _RUN,
-        "The same, edges weighted by flow.",
+        "The same, edges weighted by flow: 'N/A' values without haemodynamics too.",
         columns_note="Keys as the report's rows; docs/statistics_glossary.md.",
     ),
     OutputFile(
@@ -509,7 +524,8 @@ FILES: tuple[OutputFile, ...] = (
     ),
     OutputFile(
         "{stem}_template_comparison.csv", _RUN,
-        "A synthetic run only: each characteristic of the template against the synthetic network "
+        "A synthetic run with statistics on only: each characteristic of the template against "
+        "the synthetic network "
         "(a surround's whole network, the template run's own vessels among it, against the template "
         "scaled to its box).",
         (
@@ -851,8 +867,13 @@ FILES: tuple[OutputFile, ...] = (
         "Post processing's connectivity table: one row per vessel and what it joins.",
         (
             _c("Branch ID", "-", "The vessel's branch ID."),
-            _c("From node ID", "-", "Its upstream node (by flow, where solved)."),
-            _c("To node ID", "-", "Its downstream node."),
+            _c("From node ID", "-",
+               "Its end nearer a designated inlet, by path length along the vessels: not by "
+               "solved flow, so the same before and after Haemodynamics. Blank at an inlet's "
+               "open tip; in a piece no inlet reaches, the graph's own end order."),
+            _c("To node ID", "-",
+               "Its other end, farther from the inlets by path length. Blank at an outlet's "
+               "open tip."),
             _c("Branch order", "-", "Its class."),
             _c("Size class", "-",
                "Under a size convention (classify_vessels_by_size): wide, mid or narrow by its "
@@ -865,9 +886,15 @@ FILES: tuple[OutputFile, ...] = (
             _c("Notes", "-",
                "Inlet/outlet, dead ends and their kinds, cut by the image face, a capillary's B "
                "counted from the venous side or nearer an open end feeding through the image "
-               "face (the VTK's branch_order_basis), boundary roles and so on."),
-            _c("Upstream branch IDs", "-", "Vessels feeding it."),
-            _c("Downstream branch IDs", "-", "Vessels it feeds."),
+               "face (the VTK's branch_order_basis), a zero-resistance bridge into a thick vessel "
+               "(no vessel of its own, solved as negligible resistance: the VTK's "
+               "is_zero_resistance), boundary roles and so on."),
+            _c("Upstream branch IDs", "-",
+               "The vessels whose To node is its From node: before it by path length from the "
+               "inlets, not by solved flow."),
+            _c("Downstream branch IDs", "-",
+               "The vessels whose From node is its To node: after it by path length from the "
+               "inlets, not by solved flow."),
             _c("Edge u", "-", "Graph node u."),
             _c("Edge v", "-", "Graph node v."),
             _c("Edge key", "-", "Graph edge key."),
@@ -1008,10 +1035,11 @@ FILES: tuple[OutputFile, ...] = (
     # -- figures -------------------------------------------------------------
     OutputFile(
         "*.png, *.html", _PLOTS,
-        "Figures: the skeleton, the graph (final_graph.png, final_graph_3d.html, "
-        "geometry_with_branch_orders.png, ...), the node degree distribution, the graph after "
-        "each building step (graph_after_<step>.png, with step artifacts on) and a perturbation's "
-        "plots and sweep curves in its folder. Axes carry their units.",
+        "Figures, with visualize_results: the skeleton, the graph (final_graph.png, "
+        "final_graph_3d.html, geometry_with_branch_orders.png, ...) and the node degree "
+        "distribution; the graph after each building step (graph_after_<step>.png, with step "
+        "artifacts on); and a perturbation's plots and sweep curves in its folder. Axes carry "
+        "their units.",
     ),
 )
 

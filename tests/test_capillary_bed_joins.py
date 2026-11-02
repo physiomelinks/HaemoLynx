@@ -178,7 +178,7 @@ def test_a_tree_with_no_anastomosis_has_every_bed_censored_with_its_reason():
 
     assert rows["Capillary Beds"] == 3
     assert rows["Capillary Beds Joined"] == 0
-    assert rows["Capillary Beds Joined (fraction)"] == 0.0
+    assert rows["Capillary Beds Joined Share (fraction)"] == 0.0
     assert rows["Capillary Beds Censored, Leaving the Image"] == 1
     assert rows["Capillary Beds Censored, Draining to a Venule"] == 1
     assert rows["Capillary Beds Censored, Ending Blind"] == 1

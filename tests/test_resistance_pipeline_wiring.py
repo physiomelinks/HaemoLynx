@@ -105,8 +105,22 @@ def test_an_explicit_diameter_table_is_left_alone(pipeline):
 
 
 def test_the_plot_directory_is_derived_from_the_base_plot_directory(pipeline):
+    """A folder per image under it: the plot files carry no stem of their own,
+    and every run's went into one ``nerve`` folder, overwriting the last."""
+    from haemolynx.pipeline.naming import run_stem
+
     settings = pipeline.resolve_settings(overrides={"base_plot_dir": "somewhere/plots"})
-    assert settings["plot_dir"] == Path("somewhere/plots/nerve")
+    assert settings["plot_dir"] == Path("somewhere/plots") / run_stem(settings)
+    other = pipeline.resolve_settings(
+        overrides={"base_plot_dir": "somewhere/plots", "input_path": "images/other_image.tif"}
+    )
+    assert other["plot_dir"] == Path("somewhere/plots/other_image")
+
+
+def test_a_run_naming_no_image_plots_into_the_base_plot_directory():
+    from haemolynx.pipeline.settings import plot_folder
+
+    assert plot_folder({"base_plot_dir": "plots", "input_path": None}) == Path("plots")
 
 
 def test_an_explicit_plot_directory_wins(pipeline):

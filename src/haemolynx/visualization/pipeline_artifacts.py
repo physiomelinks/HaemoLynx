@@ -134,8 +134,10 @@ def save_graph_snapshot(
         pickle.dump(graph, handle)
     logger.info(f"Saved graph after '{step_name}': {graph_snapshot_path}")
 
-    plot_snapshot_path = plot_dir / f"graph_after_{safe_step}.png"
-    extra_paths = [plot_dir / f"{name}.png" for name in extra_plot_names]
+    # Made here: the plot folder exists only once a run is asked for plots.
+    Path(plot_dir).mkdir(parents=True, exist_ok=True)
+    plot_snapshot_path = Path(plot_dir) / f"graph_after_{safe_step}.png"
+    extra_paths = [Path(plot_dir) / f"{name}.png" for name in extra_plot_names]
     visualize_edges_and_nodes(
         image,
         graph,

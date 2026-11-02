@@ -189,7 +189,7 @@ names it lists.
 |---|---|---|
 | Column Vessels (within 30 degrees of z) | vessels | Vessels whose straight end-to-end line is at least 10 um long and within 30 degrees of the stack (z) axis. |
 | Column Share of Vessel Length (fraction) | fraction | The columns' centreline length over every vessel's. |
-| Columns per mm² of Image Plane | 1/mm^2 | Columns per square millimetre of the image's y-x plane. |
+| Columns per mm^2 of Image Plane | 1/mm^2 | Columns per square millimetre of the image's y-x plane. |
 | Column Spacing Median (microns) | um | The median distance in the y-x plane from each column's midpoint to the nearest other column's. |
 | Column Spacing Clark-Evans Ratio | dimensionless | The columns' mean nearest-neighbour distance in the y-x plane over a random pattern's at the same density: 1 at random, above 1 evenly spaced, below 1 bunched. No edge correction. |
 | Median Column Tortuosity Index | dimensionless | The median of the columns' centreline length over their straight end-to-end distance. |
@@ -310,7 +310,7 @@ names it lists.
 |---|---|---|
 | Capillary Beds | count | Capillary beds, one per feed (the nodes capillary branch orders are counted from). |
 | Capillary Beds Joined | count | Beds that meet another bed on a watershed vessel. |
-| Capillary Beds Joined (fraction) | fraction | Beds joined over all beds. |
+| Capillary Beds Joined Share (fraction) | fraction | Beds joined over all beds. |
 | Capillary Bed Join Order, Kaplan-Meier Median | dimensionless | A bed's join order is the lowest capillary branch order on a watershed vessel with another bed; the Kaplan-Meier median over beds, with beds that never join censored. |
 | Capillary Bed Join Distance, Kaplan-Meier Median (microns) | um | The same Kaplan-Meier median of the route length from the feed to where its bed joins another. |
 | Capillary Beds Censored, Leaving the Image / Draining to a Venule / Ending Blind | count | Beds that never join another, by why: they leave the image, drain into a venule, or end blind. |

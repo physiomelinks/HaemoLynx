@@ -171,6 +171,34 @@ def test_the_bed_table_columns_have_terms(every_statistic):
         assert glossary.term_for(column).topic.startswith("Capillary bed table"), column
 
 
+def test_no_two_rows_of_a_section_share_a_metric_name(every_statistic):
+    """The Metric column drops the unit a name spells, so two rows that
+    differed only by it ("Capillary Beds Joined" and its fraction) read as one
+    in anything keyed on Section and Metric."""
+    folder, stem, _report = every_statistic
+    for name in (f"{stem}_statistics.csv", f"{stem}_statistics_connected.csv"):
+        rows = [(row["Section"], row["Metric"]) for row in _rows(folder / name)]
+        repeated = sorted({key for key in rows if rows.count(key) > 1})
+        assert not repeated, (name, repeated)
+    rows = {row["Metric"]: row for row in _rows(folder / f"{stem}_statistics.csv")}
+    assert rows["Capillary Beds Joined"]["Unit"] == "count"
+    assert rows["Capillary Beds Joined Share"]["Unit"] == "fraction"
+
+
+def test_every_name_a_run_writes_is_ascii(every_statistic):
+    """Sections, metrics and units read the same in any program (Excel opens
+    a UTF-8 CSV without a byte-order mark as the local code page)."""
+    folder, stem, _report = every_statistic
+    for name in (f"{stem}_statistics.csv", f"{stem}_statistics_connected.csv"):
+        for row in _rows(folder / name):
+            for column in ("Section", "Metric", "Unit"):
+                assert row[column].isascii(), (name, column, row[column])
+    for name in (f"{stem}_branch_statistics.csv", f"{stem}_capillary_bed_joins.csv"):
+        with (folder / name).open(encoding="utf-8", newline="") as handle:
+            header = next(csv.reader(handle))
+        assert all(column.isascii() for column in header), (name, header)
+
+
 # -- the units ------------------------------------------------------------------
 
 
@@ -306,6 +334,38 @@ def test_an_older_csv_reads_back_as_the_same_metrics_and_units(tmp_path):
         ("Core Statistics", "Median Inlet-Outlet Route", "vessels"): 12.0,
         ("Core Statistics", "Vessel Density in Tissue", "um/um^3"): 0.002,
     }
+
+
+def test_a_renamed_row_reads_back_under_its_name_now(tmp_path):
+    """A CSV written before a row was renamed (glossary.RENAMED_ROWS) gives
+    the keys a CSV written after it does, and its old name finds its term."""
+    beds = capillary_bed_joins.SECTION
+    stats = {
+        beds: {
+            "Capillary Beds Joined": 7,
+            "Capillary Beds Joined Share (fraction)": 0.5,
+        },
+        "Columns per mm^2 of Image Plane": 575.0,
+    }
+    new = read_statistics_csv(export_statistics_to_csv(stats, tmp_path / "new.csv"))
+    old = tmp_path / "old.csv"
+    old.write_text(
+        "Section,Metric,Value,Unit,Notes\n"
+        f"{beds},Capillary Beds Joined,7,count,\n"
+        f"{beds},Capillary Beds Joined,0.5,fraction,\n"
+        "Core Statistics,Columns per mm² of Image Plane,575,1/mm^2,\n",
+        encoding="utf-8",
+    )
+    assert read_statistics_csv(old) == new
+    assert new == {
+        (beds, "Capillary Beds Joined", "count"): 7.0,
+        (beds, "Capillary Beds Joined Share", "fraction"): 0.5,
+        ("Core Statistics", "Columns per mm^2 of Image Plane", "1/mm^2"): 575.0,
+    }
+    for old_name, name in glossary.RENAMED_ROWS.items():
+        assert glossary.term_for(old_name) is glossary.term_for(name) is not None, old_name
+        assert glossary.unit_for(old_name) == glossary.unit_for(name), old_name
+        assert name.isascii(), name
 
 
 # -- the page --------------------------------------------------------------------

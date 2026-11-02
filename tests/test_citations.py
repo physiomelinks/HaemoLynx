@@ -104,9 +104,23 @@ def _perturbed(tmp_path: Path, entries, **overrides) -> dict:
 
 def test_matplotlib_follows_visualize_results(tmp_path):
     on = _settings(tmp_path, visualize_results=True)
-    off = _settings(tmp_path, visualize_results=False)
+    off = _settings(tmp_path, visualize_results=False, save_step_artifacts=False)
     assert "Matplotlib" in _names(used_citations(on, PACKAGE_CITATIONS))
     assert "Matplotlib" not in _names(used_citations(off, PACKAGE_CITATIONS))
+
+
+def test_matplotlib_is_cited_for_the_graph_after_each_building_step(tmp_path):
+    steps = _settings(tmp_path, visualize_results=False, save_step_artifacts=True)
+    assert "Matplotlib" in _names(used_citations(steps, PACKAGE_CITATIONS))
+
+
+def test_a_synthetic_run_cites_no_matplotlib_for_plots_it_never_draws(tmp_path):
+    """The export skips every plot when there is no image to overlay on."""
+    synthetic = {
+        **_settings(tmp_path, visualize_results=True, save_step_artifacts=True),
+        "network_source": "synthetic",
+    }
+    assert "Matplotlib" not in _names(used_citations(synthetic, PACKAGE_CITATIONS))
 
 
 @pytest.mark.parametrize("entry", [SWEEP, RE_SOLVE])
@@ -123,13 +137,15 @@ def test_matplotlib_is_cited_for_a_perturbations_plots(tmp_path, entry):
         assert "Matplotlib" not in _names(used_citations(off, PACKAGE_CITATIONS))
 
 
-def test_plotly_needs_both_visualize_results_and_3d_render_mode(tmp_path):
-    both = _settings(tmp_path, visualize_results=True, final_render_mode="3d")
-    only_2d = _settings(tmp_path, visualize_results=True, final_render_mode="2d")
-    only_off = _settings(tmp_path, visualize_results=False, final_render_mode="3d")
-    assert "Plotly" in _names(used_citations(both, PACKAGE_CITATIONS))
-    assert "Plotly" not in _names(used_citations(only_2d, PACKAGE_CITATIONS))
-    assert "Plotly" not in _names(used_citations(only_off, PACKAGE_CITATIONS))
+def test_plotly_follows_visualize_results_in_either_render_mode(tmp_path):
+    """In 2d mode the vessel types after branch orders and the large-vessel
+    assignment are still Plotly pages."""
+    in_3d = _settings(tmp_path, visualize_results=True, final_render_mode="3d")
+    in_2d = _settings(tmp_path, visualize_results=True, final_render_mode="2d")
+    off = _settings(tmp_path, visualize_results=False, final_render_mode="3d")
+    assert "Plotly" in _names(used_citations(in_3d, PACKAGE_CITATIONS))
+    assert "Plotly" in _names(used_citations(in_2d, PACKAGE_CITATIONS))
+    assert "Plotly" not in _names(used_citations(off, PACKAGE_CITATIONS))
 
 
 def test_plotly_is_cited_for_a_single_re_solves_3d_overlay(tmp_path):
@@ -176,13 +192,13 @@ def test_plotly_is_cited_for_the_vessel_mask_views_when_their_masks_are_in_use(t
     assert "Plotly" not in _names(used_citations(slow, PACKAGE_CITATIONS))
 
 
-def test_pyvista_needs_both_run_haemodynamics_and_vtk_export(tmp_path):
+def test_pyvista_follows_vtk_export_with_or_without_haemodynamics(tmp_path):
     both = _settings(tmp_path, run_haemodynamics=True, vtk_export=True)
     no_vtk = _settings(tmp_path, run_haemodynamics=True, vtk_export=False)
     no_haemo = _settings(tmp_path, run_haemodynamics=False, vtk_export=True)
     assert "PyVista / VTK" in _names(used_citations(both, PACKAGE_CITATIONS))
     assert "PyVista / VTK" not in _names(used_citations(no_vtk, PACKAGE_CITATIONS))
-    assert "PyVista / VTK" not in _names(used_citations(no_haemo, PACKAGE_CITATIONS))
+    assert "PyVista / VTK" in _names(used_citations(no_haemo, PACKAGE_CITATIONS))
 
 
 def test_pyvista_is_cited_for_the_tissue_surface(tmp_path):

@@ -179,18 +179,24 @@ def _used_tifffile(settings: Mapping[str, Any]) -> bool:
 
 
 def _used_matplotlib(settings: Mapping[str, Any]) -> bool:
-    """The run's own figures, or a perturbation's: a sweep draws its curves
-    and a single re-solve its degree, overlay and resistance figures."""
-    return bool(settings.get("visualize_results")) or bool(_perturbation_entries(settings))
+    """The run's own figures (an image's: a synthetic network has none to
+    overlay), the graph after each topology step (``save_step_artifacts``),
+    or a perturbation's: a sweep draws its curves and a single re-solve its
+    degree, overlay and resistance figures."""
+    own_figures = not _synthetic(settings) and (
+        bool(settings.get("visualize_results")) or bool(settings.get("save_step_artifacts"))
+    )
+    return own_figures or bool(_perturbation_entries(settings))
 
 
 def _used_plotly(settings: Mapping[str, Any]) -> bool:
-    """The 3D views: the run's own and a single re-solve's in the ``3d``
-    render mode, and the two vessel-mask debug views when their masks are in
-    use."""
-    if settings.get("final_render_mode") == "3d" and (
-        settings.get("visualize_results") or _runs_non_sweep_perturbation(settings)
-    ):
+    """The 3D views: the run's own in either render mode (the vessel types
+    after branch orders, the large-vessel assignment), a single re-solve's
+    in the ``3d`` render mode, and the two vessel-mask debug views when
+    their masks are in use."""
+    if settings.get("visualize_results"):
+        return True
+    if settings.get("final_render_mode") == "3d" and _runs_non_sweep_perturbation(settings):
         return True
     if (
         settings.get("write_fast_mode_preassignment_large_vessel_debug_3d_html")
@@ -206,10 +212,7 @@ def _used_plotly(settings: Mapping[str, Any]) -> bool:
 
 def _used_vtk_export(settings: Mapping[str, Any]) -> bool:
     """The vessel, pericyte and node files, and the tissue's surface."""
-    return bool(
-        (settings.get("run_haemodynamics") and settings.get("vtk_export"))
-        or settings.get("measure_tissue_volume")
-    )
+    return bool(settings.get("vtk_export") or settings.get("measure_tissue_volume"))
 
 
 def _pries_form(settings: Mapping[str, Any]) -> str | None:
@@ -744,6 +747,20 @@ def _used_greedy_modularity(settings: Mapping[str, Any]) -> bool:
     )
 
 
+def _greedy_modularity_ran(settings: Mapping[str, Any], network_nodes: int | None) -> bool:
+    """Whether a network of *network_nodes* nodes was partitioned by greedy
+    modularity at all: above ``DEFAULT_MAX_NODES_EXACT`` every partition but
+    the full-mode community measure's is connected components instead.
+    Unknown (None): as the settings say."""
+    from haemolynx.graph.communities import DEFAULT_MAX_NODES_EXACT
+
+    if network_nodes is None or network_nodes <= DEFAULT_MAX_NODES_EXACT:
+        return True
+    return settings.get("statistics_mode") == "full" and _statistics_measure_runs(
+        "community", network_analysis=True
+    )(settings)
+
+
 #: Measures of the network graph, from the statistics report (and Murray's
 #: law from a synthetic network's trees too).
 NETWORK_STATISTICS_CITATIONS: tuple[Citation, ...] = (
@@ -881,12 +898,14 @@ def _render_section(title: str, citations: list[Citation], empty_note: str) -> l
     return lines
 
 
-def render_citations(settings: Mapping[str, Any]) -> str:
+def render_citations(settings: Mapping[str, Any], *, network_nodes: int | None = None) -> str:
     """The full citation-export text for one run, given its settings.
 
     Every entry's ``applies`` is checked against *settings* fresh -- nothing
     here is pulled in just because the pipeline can theoretically use it, only
-    because this run's own configuration turned it on.
+    because this run's own configuration turned it on. *network_nodes*, the
+    solved network's size when the caller has it, leaves out greedy
+    modularity where the network was too large for it to run.
     """
     lines = [
         "HaemoLynx run citations",
@@ -919,7 +938,12 @@ def render_citations(settings: Mapping[str, Any]) -> str:
     image_analysis = used_citations(settings, IMAGE_ANALYSIS_CITATIONS)
     if image_analysis:
         lines.extend(_render_section("Image analysis methods", image_analysis, ""))
-    network_statistics = used_citations(settings, NETWORK_STATISTICS_CITATIONS)
+    network_statistics = [
+        citation
+        for citation in used_citations(settings, NETWORK_STATISTICS_CITATIONS)
+        if citation.applies is not _used_greedy_modularity
+        or _greedy_modularity_ran(settings, network_nodes)
+    ]
     if network_statistics:
         lines.extend(_render_section("Network statistics methods", network_statistics, ""))
     generation = used_citations(settings, NETWORK_GENERATION_CITATIONS)
@@ -940,9 +964,11 @@ def render_citations(settings: Mapping[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_citations(settings: Mapping[str, Any], output_path: str | Path) -> Path:
+def write_citations(
+    settings: Mapping[str, Any], output_path: str | Path, *, network_nodes: int | None = None
+) -> Path:
     """Render and write the citation text file for one run, returning its path."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_citations(settings), encoding="utf-8")
+    output_path.write_text(render_citations(settings, network_nodes=network_nodes), encoding="utf-8")
     return output_path

@@ -67,6 +67,7 @@ from haemolynx.haemodynamics.viscosity import (
 )
 from haemolynx.statistics.bifurcation import _normalize_branch_order_tag, branch_order_category
 from haemolynx.statistics.dead_ends import DENSITY_KINDS, _KIND_ROWS
+from haemolynx.statistics.glossary import current_name
 from haemolynx.statistics.vessel_classes import (
     VESSEL_CLASS_TITLES,
     VESSEL_CLASSES,
@@ -300,7 +301,7 @@ LAYOUT_ROWS: dict[str, tuple[str, str]] = {
     "distance_median_um": ("tissue_coverage", "Median Distance to Nearest Vessel (microns)"),
     "distance_p90_um": ("tissue_coverage", "90th Percentile Distance to Nearest Vessel (microns)"),
     "column_length_share": ("vessel_columns", "Column Share of Vessel Length (fraction)"),
-    "columns_per_mm2": ("vessel_columns", "Columns per mm² of Image Plane"),
+    "columns_per_mm2": ("vessel_columns", "Columns per mm^2 of Image Plane"),
     "column_spacing_median_um": ("vessel_columns", "Column Spacing Median (microns)"),
     "column_clark_evans": ("vessel_columns", "Column Spacing Clark-Evans Ratio"),
     "column_tortuosity_median": ("vessel_columns", "Median Column Tortuosity Index"),
@@ -1057,7 +1058,8 @@ def _read_classes(section: Optional[Mapping[str, Any]], notes: list[str]) -> dic
 def read_layout(sections: Mapping[str, Any], G: Optional[nx.Graph] = None) -> Optional[LayoutTarget]:
     """The :class:`LayoutTarget` of report *sections*; a layout section the
     report lacks (one saved before 2026-10-25) measured off *G* by the same
-    statistics. None when neither has any of it."""
+    statistics. None when neither has any of it. A row renamed since the
+    report was saved is read under its old name too."""
     have = {name: sections.get(name) for name in LAYOUT_SECTIONS if isinstance(sections.get(name), Mapping)}
     missing = [name for name in LAYOUT_SECTIONS if name not in have]
     if missing and G is not None and G.number_of_edges():
@@ -1065,6 +1067,7 @@ def read_layout(sections: Mapping[str, Any], G: Optional[nx.Graph] = None) -> Op
 
         computed = compute_vessel_statistics_by_measure(G, enabled_measures=frozenset(missing))
         have.update({name: computed.get(name) or {} for name in missing})
+    have = {section: {current_name(str(row)): value for row, value in (rows or {}).items()} for section, rows in have.items()}
     values = {field: _number((have.get(section) or {}).get(name)) for field, (section, name) in LAYOUT_ROWS.items()}
     if all(value is None for value in values.values()):
         return None

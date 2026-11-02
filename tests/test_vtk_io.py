@@ -609,3 +609,33 @@ def test_pericyte_count_in_the_summary_matches_the_written_file(tmp_path):
     assert out["pericyte_count"] == 3
     assert pericytes.n_points == 3
     assert np.allclose(np.sort(pericytes.points[:, 0]), [20.0, 50.0, 80.0])
+
+
+def test_the_vtk_viewer_is_not_opened_off_the_main_thread(simple_graph, tmp_path, monkeypatch, caplog):
+    """A VTK window opened on the napari panel's worker thread hangs the run or
+    takes the process down; the files are written and the viewer is skipped."""
+    import logging
+    import threading
+
+    out = graph_to_vtk(simple_graph, tmp_path / "threaded")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the VTK viewer was opened off the main thread")
+
+    monkeypatch.setattr(pv.Plotter, "show", refuse)
+    seen: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            seen["plotter"] = visualize_vtk_network(out["vessels_path"], show=True)
+        except BaseException as error:  # noqa: BLE001 - reported below
+            seen["error"] = error
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx.visualization.vtk_io"):
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join(timeout=60)
+
+    assert "error" not in seen, seen.get("error")
+    assert seen["plotter"] is not None
+    assert "not on the main thread" in caplog.text

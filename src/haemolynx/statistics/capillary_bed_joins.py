@@ -369,7 +369,7 @@ def compute_capillary_bed_joins(
         f"{_PREFIX} Route Weighting": label,
         "Capillary Beds": len(beds),
         "Capillary Beds Joined": int(sum(joined)),
-        "Capillary Beds Joined (fraction)": float(np.mean(joined)),
+        "Capillary Beds Joined Share (fraction)": float(np.mean(joined)),
     }
     for reason, row in _CENSOR_ROWS.items():
         rows[row] = sum(1 for bed in beds if bed.censor_reason == reason)
