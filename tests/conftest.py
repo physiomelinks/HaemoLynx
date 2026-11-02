@@ -115,3 +115,48 @@ def _reset_vessel_draw_mode():
     mod = sys.modules.get("haemolynx.gui._widget")
     if mod is not None and hasattr(mod, "DEFAULT_VESSEL_DRAW"):
         mod._vessel_draw_mode = mod.DEFAULT_VESSEL_DRAW
+
+
+def _qt_application():
+    """The running QApplication, without importing Qt in a run that has none."""
+    widgets = sys.modules.get("qtpy.QtWidgets")
+    return widgets.QApplication.instance() if widgets is not None else None
+
+
+@pytest.fixture(autouse=True)
+def _delete_leftover_windows():
+    """Delete the top-level widgets a test leaves behind, once it has finished.
+
+    A panel a test builds (`settings_widget(napari_viewer=viewer)`) is never
+    docked, so closing the viewer does not delete it: it waits for a full
+    garbage collection, which `make_napari_viewer` runs at every 50th viewer.
+    That one then frees 49 panels at once, and PyQt posts a call for each
+    Python slot they fed, each of which posts a deleteLater: some 100,000
+    events. On Windows every timer of 20 ms or less runs on a multimedia timer
+    whose thread rescans the GUI thread's whole event queue, under its lock,
+    on each tick; the next panel starts 65 of them (one per drop-down), the
+    GUI thread never gets the lock back, and `pytest -m gui` stalled at the
+    50th viewer of a file. Deleting each test's leftovers here keeps that
+    queue a couple of thousand long.
+
+    Autouse, so this runs after `make_napari_viewer` has closed the viewer.
+    Only parentless windows: a child goes with its parent.
+    """
+    app = _qt_application()
+    before = set(app.topLevelWidgets()) if app is not None else set()
+    yield
+    app = _qt_application()
+    if app is None:
+        return
+    from qtpy.QtCore import QEvent
+
+    for widget in app.topLevelWidgets():
+        # napari's own leak check lets vispy's canvas outlive a viewer too.
+        if widget not in before and widget.parent() is None \
+                and type(widget).__name__ != "CanvasBackendDesktop":
+            widget.deleteLater()
+    # Outside an event loop deleteLater waits for one, so ask for it now; then
+    # run the slot proxies' clean-up the deletions queued, and delete those.
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
