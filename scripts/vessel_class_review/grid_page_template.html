@@ -1,0 +1,407 @@
+<title>__TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a sticky marking bar over one column of wide case cards (four panels each);
+   a case opens in a zoomable viewer. Arteriole red, venule blue: the anatomist's convention. */
+:root {
+  --bg: #eef1ef;
+  --surface: #ffffff;
+  --ink: #18201d;
+  --muted: #55605b;
+  --line: #d3dad6;
+__MARK_TOKENS__
+  --unk: #5f6b66;
+  --unk-soft: #e5e9e7;
+  --sw-vessel: #ff0000;
+  --sw-blue: #1f77b4;
+  --sw-other: #9aa39f;
+  --focus: #0f766e;
+  --shade: rgba(16, 24, 21, 0.72);
+  --font-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --font-id: "Barlow Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111513; --surface: #1a1f1d; --ink: #e6ebe8; --muted: #9aa6a0; --line: #2d3532;
+__MARK_TOKENS_DARK__
+    --unk: #a3aea9; --unk-soft: #262d2a; --focus: #2dd4bf; --shade: rgba(0, 0, 0, 0.8);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111513; --surface: #1a1f1d; --ink: #e6ebe8; --muted: #9aa6a0; --line: #2d3532;
+__MARK_TOKENS_DARK__
+  --unk: #a3aea9; --unk-soft: #262d2a; --focus: #2dd4bf; --shade: rgba(0, 0, 0, 0.8);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+}
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap {
+  max-width: 1180px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+header.bar {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.bar .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding-block: 10px; }
+.bar h1 { font-family: var(--font-id); font-size: 24px; letter-spacing: 0.02em; margin: 0; white-space: nowrap; }
+.progress { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 220px; }
+.progress-track { flex: 1; height: 8px; border-radius: 4px; background: var(--unk-soft); overflow: hidden; min-width: 80px; }
+.progress-fill { height: 100%; width: 0; background: var(--focus); transition: width 0.2s; }
+#progress-text { font-family: var(--font-data); font-size: 13px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.store { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.store::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--unk); }
+.store[data-state="shared"]::before { background: var(--focus); }
+.store[data-state="error"]::before, .store[data-state="readonly"]::before { background: #c2410c; }
+.tools { display: flex; gap: 8px; flex-wrap: wrap; }
+button { font: inherit; color: inherit; cursor: pointer; }
+.tool {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 5px 11px; font-size: 13px;
+}
+.tool[aria-pressed="true"] { border-color: var(--focus); color: var(--focus); }
+button:focus-visible, textarea:focus-visible, input:focus-visible, .card-img:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+#copy-out { width: 100%; font-family: var(--font-data); font-size: 12px; margin-top: 8px; }
+
+.intro { padding-block: 22px 8px; display: grid; gap: 14px; }
+.intro h2 { font-family: var(--font-id); font-size: 30px; line-height: 1.15; margin: 0; text-wrap: balance; max-width: 30ch; }
+.intro p { margin: 0; max-width: 72ch; color: var(--muted); }
+.key { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 0; padding: 0; list-style: none; }
+.key li { display: flex; align-items: center; gap: 8px; }
+.chip { font-family: var(--font-id); font-weight: 700; font-size: 18px; width: 30px; height: 30px; display: inline-grid; place-items: center; border-radius: 6px; }
+.chip { background: var(--cs); color: var(--c); }
+.legend { font-size: 13.5px; color: var(--muted); display: grid; gap: 4px; max-width: 80ch; }
+.swatch { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+kbd { font-family: var(--font-data); font-size: 12px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface); }
+
+main.wrap { display: grid; gap: 16px; padding-block: 12px 40px; }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px 14px;
+  display: grid; gap: 10px; scroll-margin-top: 90px;
+}
+.card[data-selected="true"] { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.only-unmarked .card[data-marked="true"] { display: none; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.card-id { font-family: var(--font-id); font-size: 30px; font-weight: 700; line-height: 1; min-width: 2ch; font-variant-numeric: tabular-nums; }
+.marks { display: flex; gap: 6px; }
+.mark-btn {
+  font-family: var(--font-id); font-weight: 700; font-size: 17px; min-width: 116px; padding: 5px 12px;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--surface); text-align: left;
+  display: flex; align-items: center; gap: 8px;
+}
+.mark-btn .k { font-family: var(--font-data); font-size: 12px; font-weight: 500; color: var(--muted); margin-left: auto; }
+.mark-btn[aria-pressed="true"] { background: var(--c); border-color: var(--c); color: var(--surface); }
+.mark-btn[aria-pressed="true"] .k { color: inherit; opacity: 0.8; }
+.where { font-family: var(--font-data); font-size: 12.5px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+.card-img { display: block; width: 100%; border: 0; padding: 0; background: #ffffff; border-radius: 4px; cursor: zoom-in; }
+.card-img img { display: block; width: 100%; height: auto; aspect-ratio: 1760 / 484; }
+.note-row { display: flex; gap: 8px; align-items: center; }
+.note-row label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.note-row input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+
+/* viewer */
+.viewer { position: fixed; inset: 0; z-index: 20; background: var(--shade); display: grid; grid-template-rows: auto 1fr; }
+.viewer[hidden] { display: none; }
+.v-bar {
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding-block: calc(10px + env(safe-area-inset-top, 0px)) 10px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+}
+.v-bar .card-id { font-size: 32px; }
+.v-stage { overflow: auto; padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+.v-stage img { display: block; background: #ffffff; margin: 0 auto; border-radius: 4px; max-width: none; }
+.v-note { flex: 1 1 240px; min-width: 0; font: inherit; font-size: 14px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+.zoom { display: flex; gap: 4px; }
+@media (max-width: 640px) {
+  .mark-btn { min-width: 0; }
+  .mark-btn .k { display: none; }
+  .where { margin-left: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { .progress-fill { transition: none; } }
+</style>
+
+<header class="bar">
+  <div class="wrap">
+    <h1>__GRID__</h1>
+    <div class="progress" aria-live="polite">
+      <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <span id="progress-text">0 of __N__ marked</span>
+    </div>
+    <span class="store" id="store" data-state="local">Connecting to saved marks</span>
+    <div class="tools">
+      <button class="tool" id="only-unmarked" aria-pressed="false">Unmarked only</button>
+      <button class="tool" id="copy">Copy marks</button>
+    </div>
+    <textarea id="copy-out" rows="3" readonly hidden aria-label="Marks as text"></textarea>
+  </div>
+</header>
+
+<section class="wrap intro">
+  <h2>__QUESTION__</h2>
+  <ul class="key">__KEY_ITEMS__</ul>
+  <div class="legend">__LEGEND__
+    <div>Keys: __KEYS_HINT__ mark the chosen case and move to the next unmarked one,
+      <kbd>←</kbd> <kbd>→</kbd> choose a case, <kbd>Enter</kbd> opens it larger, <kbd>Esc</kbd> closes it.
+      Marks save as you go.</div>
+  </div>
+</section>
+
+<main class="wrap" id="cases"></main>
+
+<div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="v-id">
+  <div class="v-bar">
+    <span class="card-id" id="v-id"></span>
+    <div class="marks" id="v-marks"></div>
+    <input class="v-note" id="v-note" type="text" placeholder="Note (optional)" aria-label="Note for this case">
+    <div class="zoom">
+      <button class="tool" data-zoom="1" aria-pressed="true">Fit</button>
+      <button class="tool" data-zoom="1.6" aria-pressed="false">1.6×</button>
+      <button class="tool" data-zoom="2.4" aria-pressed="false">2.4×</button>
+    </div>
+    <button class="tool" id="v-prev" aria-label="Previous case">←</button>
+    <button class="tool" id="v-next" aria-label="Next case">→</button>
+    <button class="tool" id="v-close">Close</button>
+  </div>
+  <div class="v-stage" id="v-stage"><img id="v-img" alt=""></div>
+</div>
+
+<script>
+(() => {
+  const CASES = __CASES__;
+  const MARKS = __MARKS__;
+  const LOCAL_KEY = "__LOCAL_KEY__";
+  const marks = {};            // id -> {mark, note}
+  const cardOf = {};
+  let db = null, readOnly = false, selected = CASES[0].id, current = null;
+
+  // ---------- cards ----------
+  const main = document.getElementById("cases");
+  function markButtons(id, container) {
+    for (const m of MARKS) {
+      const b = document.createElement("button");
+      b.className = "mark-btn"; b.dataset.mark = m.key; b.setAttribute("aria-pressed", "false");
+      b.style.setProperty("--c", `var(--${m.token})`);
+      b.innerHTML = `<span></span><span class="k">${m.hint}</span>`;
+      b.firstChild.textContent = m.label;
+      b.addEventListener("click", () => { select(id, false); setMark(id, m.key, false); });
+      container.appendChild(b);
+    }
+  }
+  for (const c of CASES) {
+    const card = document.createElement("article");
+    card.className = "card"; card.id = "case-" + c.id; card.dataset.id = c.id;
+    const head = document.createElement("div"); head.className = "card-head";
+    const id = document.createElement("span"); id.className = "card-id"; id.textContent = c.id;
+    const marksEl = document.createElement("div"); marksEl.className = "marks";
+    markButtons(c.id, marksEl);
+    const where = document.createElement("span"); where.className = "where";
+    where.textContent = `voxel z y x ${c.voxel} · projected through ${c.plane}`;
+    head.append(id, marksEl, where);
+    const imgBtn = document.createElement("button");
+    imgBtn.className = "card-img"; imgBtn.setAttribute("aria-label", `Open case ${c.id} larger`);
+    const img = document.createElement("img");
+    img.src = c.img; img.alt = `Case ${c.id}: overview, segmentation, dextran and claudin-5`;
+    img.loading = c.id <= 3 ? "eager" : "lazy"; img.decoding = "async";
+    imgBtn.appendChild(img);
+    imgBtn.addEventListener("click", () => { select(c.id, false); openViewer(c.id); });
+    const noteRow = document.createElement("div"); noteRow.className = "note-row";
+    const label = document.createElement("label"); label.htmlFor = "note-" + c.id; label.textContent = "Note";
+    const note = document.createElement("input"); note.type = "text"; note.id = "note-" + c.id;
+    note.placeholder = "Optional: what decided it, or why you can't tell";
+    note.addEventListener("input", () => noteChanged(c.id, note.value));
+    note.addEventListener("focus", () => select(c.id, false));
+    noteRow.append(label, note);
+    card.append(head, imgBtn, noteRow);
+    card.addEventListener("pointerdown", () => select(c.id, false));
+    main.appendChild(card);
+    cardOf[c.id] = card;
+  }
+
+  function select(id, scroll) {
+    selected = id;
+    for (const c of CASES) cardOf[c.id].dataset.selected = String(c.id === id);
+    if (scroll) cardOf[id].scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+  function nextUnmarked(from) {
+    const i = CASES.findIndex(c => c.id === from);
+    for (let k = 1; k <= CASES.length; k++) {
+      const c = CASES[(i + k) % CASES.length];
+      if (!(marks[c.id] && marks[c.id].mark)) return c.id;
+    }
+    return null;
+  }
+  function step(id, by) {
+    const i = CASES.findIndex(c => c.id === id);
+    return CASES[Math.max(0, Math.min(CASES.length - 1, i + by))].id;
+  }
+
+  function renderMarks() {
+    let done = 0;
+    for (const c of CASES) {
+      const m = marks[c.id] || {};
+      const card = cardOf[c.id];
+      card.dataset.marked = m.mark ? "true" : "false";
+      if (m.mark) done++;
+      for (const b of card.querySelectorAll(".mark-btn")) b.setAttribute("aria-pressed", String(b.dataset.mark === m.mark));
+      const note = document.getElementById("note-" + c.id);
+      if (document.activeElement !== note) note.value = m.note || "";
+    }
+    document.getElementById("progress-text").textContent = `${done} of ${CASES.length} marked`;
+    document.getElementById("progress-fill").style.width = (100 * done / CASES.length) + "%";
+    if (current !== null) renderViewer();
+  }
+  function marksText() {
+    const parts = CASES.map(c => `${c.id} ${(marks[c.id] && marks[c.id].mark) || "-"}`);
+    const notes = CASES.filter(c => marks[c.id] && marks[c.id].note).map(c => `${c.id}: ${marks[c.id].note}`);
+    return parts.join(", ") + (notes.length ? "\nNotes: " + notes.join(" | ") : "");
+  }
+  document.getElementById("copy").addEventListener("click", () => {
+    const text = marksText(); const out = document.getElementById("copy-out");
+    const show = () => { out.hidden = false; out.value = text; out.focus(); out.select(); };
+    try {
+      navigator.clipboard.writeText(text).then(() => {
+        const b = document.getElementById("copy"); b.textContent = "Copied"; setTimeout(() => { b.textContent = "Copy marks"; }, 1500);
+      }, show);
+    } catch (e) { show(); }
+  });
+  document.getElementById("only-unmarked").addEventListener("click", e => {
+    const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+    e.currentTarget.setAttribute("aria-pressed", String(on));
+    document.body.classList.toggle("only-unmarked", on);
+  });
+
+  // ---------- saving ----------
+  const storeEl = document.getElementById("store");
+  function setStore(state, text) { storeEl.dataset.state = state; storeEl.textContent = text; }
+  function loadLocal() {
+    try { Object.assign(marks, JSON.parse(localStorage.getItem(LOCAL_KEY) || "{}")); } catch (e) { /* none kept */ }
+  }
+  function saveLocal() { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(marks)); } catch (e) { /* not kept */ } }
+  const chains = {};
+  function save(id) {
+    const m = marks[id] || {};
+    const body = { mark: m.mark || "", note: m.note || "", updatedAt: new Date().toISOString() };
+    saveLocal();
+    if (!db || readOnly) return;
+    chains[id] = (chains[id] || Promise.resolve()).then(() => db.doc("marks/" + id).set(body)).catch(err => {
+      if (err && err.code === "invalid_argument") { readOnly = true; setStore("readonly", "View only: marks kept in this browser"); }
+      else setStore("error", "Not saved; use Copy marks");
+    });
+  }
+  function setMark(id, key, advance) {
+    const m = marks[id] || (marks[id] = {});
+    m.mark = m.mark === key ? "" : key;
+    renderMarks(); save(id);
+    if (advance && m.mark) {
+      const next = nextUnmarked(id);
+      if (next !== null) { select(next, current === null); if (current !== null) openViewer(next); }
+    }
+  }
+  const noteTimers = {};
+  function noteChanged(id, text) {
+    const m = marks[id] || (marks[id] = {});
+    m.note = text;
+    clearTimeout(noteTimers[id]);
+    noteTimers[id] = setTimeout(() => save(id), 600);
+  }
+  async function connect() {
+    loadLocal(); renderMarks();
+    let store = null;
+    try { store = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { store = null; }
+    if (!store) { setStore("local", "Saved in this browser only; use Copy marks"); return; }
+    db = store;
+    db.collection("marks").onSnapshot(snap => {
+      for (const d of snap.docs) {
+        const body = d.data() || {};
+        const typing = document.activeElement && document.activeElement.id === "note-" + d.id;
+        marks[d.id] = { mark: body.mark || "", note: typing && marks[d.id] ? marks[d.id].note : (body.note || "") };
+      }
+      for (const ch of snap.docChanges()) if (ch.type === "removed") delete marks[ch.doc.id];
+      setStore(readOnly ? "readonly" : "shared", readOnly ? "View only: marks kept in this browser" : "Marks saved with the page");
+      renderMarks();
+    }, () => setStore("error", "Saved marks unavailable; use Copy marks"));
+  }
+
+  // ---------- viewer ----------
+  const viewer = document.getElementById("viewer"), vImg = document.getElementById("v-img");
+  const vNote = document.getElementById("v-note"), vMarks = document.getElementById("v-marks");
+  let zoom = 1, lastFocus = null;
+  function renderViewer() {
+    const c = CASES.find(x => x.id === current);
+    document.getElementById("v-id").textContent = c.id;
+    const m = marks[c.id] || {};
+    for (const b of vMarks.querySelectorAll(".mark-btn")) b.setAttribute("aria-pressed", String(b.dataset.mark === m.mark));
+    if (document.activeElement !== vNote) vNote.value = m.note || "";
+  }
+  function sizeImage() {
+    const stage = document.getElementById("v-stage");
+    const fit = Math.max(200, stage.clientWidth - 32);
+    vImg.style.width = Math.round(fit * zoom) + "px";
+  }
+  function openViewer(id) {
+    if (current === null) lastFocus = document.activeElement;
+    current = id;
+    const c = CASES.find(x => x.id === id);
+    vImg.src = c.img; vImg.alt = `Case ${c.id}, larger`;
+    vMarks.innerHTML = "";
+    for (const m of MARKS) {
+      const b = document.createElement("button");
+      b.className = "mark-btn"; b.dataset.mark = m.key;
+      b.style.setProperty("--c", `var(--${m.token})`);
+      b.innerHTML = `<span></span><span class="k">${m.hint}</span>`; b.firstChild.textContent = m.label;
+      b.addEventListener("click", () => setMark(current, m.key, false));
+      vMarks.appendChild(b);
+    }
+    viewer.hidden = false; renderViewer(); sizeImage();
+    document.getElementById("v-close").focus();
+  }
+  function closeViewer() {
+    viewer.hidden = true; const id = current; current = null;
+    select(id, true);
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+  vNote.addEventListener("input", () => noteChanged(current, vNote.value));
+  document.getElementById("v-close").addEventListener("click", closeViewer);
+  document.getElementById("v-prev").addEventListener("click", () => openViewer(step(current, -1)));
+  document.getElementById("v-next").addEventListener("click", () => openViewer(step(current, 1)));
+  for (const b of viewer.querySelectorAll("[data-zoom]")) {
+    b.addEventListener("click", () => {
+      zoom = Number(b.dataset.zoom);
+      for (const o of viewer.querySelectorAll("[data-zoom]")) o.setAttribute("aria-pressed", String(o === b));
+      sizeImage();
+    });
+  }
+  addEventListener("resize", () => { if (current !== null) sizeImage(); });
+
+  // ---------- keys ----------
+  addEventListener("keydown", e => {
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
+      if (e.key === "Escape") t.blur();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const id = current !== null ? current : selected;
+    const key = e.key;
+    const mark = MARKS.find(m => m.hint.toLowerCase() === key.toLowerCase() || (m.hint === "?" && key === "/"));
+    if (mark) { e.preventDefault(); setMark(id, mark.key, true); }
+    else if (key === "ArrowRight" || key === "ArrowDown" || key === "j") {
+      e.preventDefault(); const n = step(id, 1); if (current !== null) openViewer(n); else select(n, true);
+    } else if (key === "ArrowLeft" || key === "ArrowUp" || key === "k") {
+      e.preventDefault(); const n = step(id, -1); if (current !== null) openViewer(n); else select(n, true);
+    } else if (key === "Enter" && current === null && !(t && t.tagName === "BUTTON")) { e.preventDefault(); openViewer(selected); }
+    else if (key === "Escape" && current !== null) { e.preventDefault(); closeViewer(); }
+  });
+
+  select(selected, false);
+  connect();
+})();
+</script>
