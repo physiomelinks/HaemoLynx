@@ -1619,3 +1619,245 @@ def test_preflight_warns_of_a_tier_diameter_table_or_a_synthetic_run_under_branc
     assert not check_branch_order_steps(dict(branchings, **dict(table, all_diams_const=True))).warnings
     (warning,) = check_branch_order_steps(dict(branchings, network_source="synthetic")).warnings
     assert "every_junction" in warning
+
+
+# --- capillaries an open end feeds (PLAN_branch_orders.md D3) ------------------------
+
+
+def _chain_with_an_open_end_by_the_outlet() -> nx.MultiGraph:
+    """Inlet 0 to outlet 6 along x, a blind twig at each of 1..4 (so each is a
+    junction), and an open end 9 leaving the y = 0 face off node 5, beside the
+    outlet. Every vessel 1e15 Pa.s/m^3."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE
+
+    resistance = 1.0e15
+    G = nx.MultiGraph()
+    pos = {i: (5.0, 5.0, 15.0 * i) for i in range(7)}
+    pos.update({10 + i: (5.0, 8.0, 15.0 * i) for i in range(1, 5)})
+    pos[9] = (5.0, 0.0, 75.0)
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p))
+    for u, v in [(i, i + 1) for i in range(6)] + [(i, 10 + i) for i in range(1, 5)] + [(5, 9)]:
+        length = float(np.linalg.norm(np.subtract(pos[u], pos[v])))
+        G.add_edge(u, v, length=length, diameter_um=5.0, resistance=resistance, conductance=1.0 / resistance)
+    G.graph["image_extent_um"] = (10.0, 10.0, 90.0)
+    G.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
+    for n in (0, 6, 9):
+        G.nodes[n][DEAD_END_KIND] = LEAVES_IMAGE
+    for n in range(11, 15):
+        G.nodes[n][DEAD_END_KIND] = "unknown"
+    return G
+
+
+def _solve_chain(G: nx.MultiGraph, open_end_model: str):
+    from haemolynx.pipeline import default_schema, stages
+
+    settings = default_schema().defaults()
+    settings.update(
+        run_haemodynamics=True, haematocrit_model="fixed", do_equiv_resistance_calculation=False,
+        inlet_p_bc=4500.0, outlet_p_bc=1000.0, inlet_nodes=[0], outlet_nodes=[6],
+        open_end_model=open_end_model, haemodynamics_solver="dense",
+    )
+    boundaries = stages.BoundaryNodes(inlet_nodes=[0], outlet_nodes=[6], graph=G)
+    return stages.solve(settings, stages.HaemodynamicModel(graph=G), boundaries)
+
+
+def _marked(G: nx.MultiGraph, basis: str) -> set:
+    from haemolynx.graph import BRANCH_ORDER_BASIS
+
+    return {tuple(sorted((u, v))) for u, v, d in G.edges(data=True) if d.get(BRANCH_ORDER_BASIS) == basis}
+
+
+def test_the_solve_marks_the_capillaries_an_open_end_feeds_in_fewer_steps(caplog):
+    """D3(b): blood enters the chain through open end 9 as well as inlet 0.
+    The capillaries 9 reaches in fewer steps than 0 are marked
+    open_end_nearer; their B orders, which key the diameters, stand. Twig
+    3-13 is three steps from either, and a tie keeps the count unmarked."""
+    from haemolynx.graph import OPEN_END_NEARER
+    from haemolynx.haemodynamics.open_ends import FEEDS, open_end_directions
+
+    G = _chain_with_an_open_end_by_the_outlet()
+    assign_vessel_branch_orders(G, [0], outlet_nodes=[6])
+    orders = {tuple(sorted((u, v))): d["branch_order"] for u, v, d in G.edges(data=True)}
+
+    with caplog.at_level("INFO", logger="haemolynx.pipeline.stages"):
+        _solve_chain(G, "estimated")
+
+    assert open_end_directions(G) == {9: FEEDS}
+    assert _marked(G, OPEN_END_NEARER) == {(3, 4), (4, 5), (4, 14), (5, 6), (5, 9)}
+    assert {tuple(sorted((u, v))): d["branch_order"] for u, v, d in G.edges(data=True)} == orders
+    assert "5 capillary vessel(s) are fewer steps from an open end" in caplog.text
+
+    # Solved again with the open end closed, no blood comes in through it.
+    _solve_chain(G, "closed")
+    assert _marked(G, OPEN_END_NEARER) == set()
+
+
+def test_an_open_end_draining_or_on_an_arteriole_marks_nothing_and_venous_side_stands():
+    """Only an open end in the bed feeds a capillary: one on an arteriole
+    feeds the arteriole, which counts its capillaries. A capillary counted
+    from the venous side keeps that mark, and tier vessels are never marked."""
+    from haemolynx.graph import (
+        BRANCH_ORDER_BASIS,
+        OPEN_END_NEARER,
+        VENOUS_SIDE,
+        mark_capillaries_nearer_open_end_feeds,
+    )
+
+    G = nx.MultiGraph()
+    labels = {
+        (0, 1): "Art1", (1, 2): "Art2",  # 2: an open end on the arteriole
+        (1, 3): "B01", (3, 4): "B02", (3, 5): "B02", (4, 6): "B03", (4, 7): "B03",
+        (8, 9): "Ven1", (9, 10): "B01",  # 10: an open end on a venous-side capillary
+    }
+    for (u, v), label in labels.items():
+        G.add_edge(u, v, branch_order=label)
+    G.edges[9, 10, 0][BRANCH_ORDER_BASIS] = VENOUS_SIDE
+
+    marked = mark_capillaries_nearer_open_end_feeds(G, [2, 10], feeds=[1], drains=[8])
+
+    assert marked == 0
+    assert _marked(G, OPEN_END_NEARER) == set()
+    assert _marked(G, VENOUS_SIDE) == {(9, 10)}
+
+    # A capillary end feeding the bed, beyond node 4: 4-6 and 4-7 are nearer
+    # it (0 and 1 steps) than the arteriole's hand-off at 1 (2 steps).
+    marked = mark_capillaries_nearer_open_end_feeds(G, [6], feeds=[1], drains=[8])
+    assert marked == 2
+    assert _marked(G, OPEN_END_NEARER) == {(4, 6), (4, 7)}
+    # Called again without it, the earlier marks go.
+    assert mark_capillaries_nearer_open_end_feeds(G, [], feeds=[1], drains=[8]) == 0
+    assert _marked(G, OPEN_END_NEARER) == set()
+    assert _marked(G, VENOUS_SIDE) == {(9, 10)}
+
+
+def test_the_marks_reach_the_vtk_the_connectivity_csv_and_the_branch_statistics(tmp_path):
+    """Each capillary whose B counts from elsewhere than an arteriole in the
+    image says so: the VTK's branch_order_basis, a note in the connectivity
+    CSV, and per order in the branch statistics, among its Edge Count."""
+    pv = pytest.importorskip("pyvista")
+    from haemolynx.graph import BRANCH_ORDER_BASES, BRANCH_ORDER_BASIS, OPEN_END_NEARER, VENOUS_SIDE
+    from haemolynx.graph.connectivity import BASIS_NOTES, connectivity_rows
+    from haemolynx.statistics.bifurcation import (
+        BASIS_COUNTS,
+        compute_branch_order_statistics,
+        export_branch_order_statistics_to_csv,
+    )
+    from haemolynx.statistics.batch_comparison import read_branch_statistics_csv
+    from haemolynx.visualization.vtk_io import graph_to_vtk
+
+    assert set(BASIS_NOTES) == set(BASIS_COUNTS) == set(BRANCH_ORDER_BASES)
+    G = _chain_with_an_open_end_by_the_outlet()
+    assign_vessel_branch_orders(G, [0], outlet_nodes=[6])
+    _solve_chain(G, "estimated")
+    G.edges[1, 11, 0][BRANCH_ORDER_BASIS] = VENOUS_SIDE  # as if reached only through a vein
+
+    vessels = pv.read(graph_to_vtk(G, tmp_path / "chain", inlet_nodes=[0], outlet_nodes=[6])["vessels_path"])
+    by_edge = {
+        tuple(sorted((int(u), int(v)))): str(basis)
+        for u, v, basis in zip(
+            vessels.cell_data["edge_u"], vessels.cell_data["edge_v"], vessels.cell_data["branch_order_basis"]
+        )
+    }
+    assert {e for e, basis in by_edge.items() if basis == OPEN_END_NEARER} == _marked(G, OPEN_END_NEARER)
+    assert {e for e, basis in by_edge.items() if basis == VENOUS_SIDE} == {(1, 11)}
+    assert {basis for e, basis in by_edge.items() if e not in {(1, 11)} | _marked(G, OPEN_END_NEARER)} == {""}
+
+    rows = connectivity_rows(G, [0], [6])
+    noted = {
+        tuple(sorted((int(row["Edge u"]), int(row["Edge v"])))): row["Notes"] for row in rows
+    }
+    for edge, notes in noted.items():
+        expected = (
+            BASIS_NOTES[OPEN_END_NEARER] if edge in _marked(G, OPEN_END_NEARER)
+            else BASIS_NOTES[VENOUS_SIDE] if edge == (1, 11)
+            else None
+        )
+        assert (expected in notes) if expected else not any(n in notes for n in BASIS_NOTES.values()), edge
+
+    stats = compute_branch_order_statistics(G)
+    nearer, venous = BASIS_COUNTS[OPEN_END_NEARER], BASIS_COUNTS[VENOUS_SIDE]
+    assert {tag: rec[nearer] for tag, rec in stats.items() if rec[nearer]} == {"BO4": 1, "BO5": 2, "BO6": 2}
+    assert {tag: rec[venous] for tag, rec in stats.items() if rec[venous]} == {"BO2": 1}
+    assert stats["BO5"]["Edge Count"] == 2
+    values = read_branch_statistics_csv(export_branch_order_statistics_to_csv(stats, tmp_path / "branch.csv"))
+    assert values[("Branch Order BO5", nearer, "")] == 2.0
+    assert values[("Branch Order BO2", venous, "")] == 1.0
+
+
+# --- generations from the bed, per vessel (PLAN_branch_orders.md Phase 4, F7) ----------
+
+
+def _trees_of_every_shape() -> nx.MultiGraph:
+    """Arterial trees of depth 3 (0-3) and 1 (10-11); one dividing into a
+    deep and a shallow branch (20-27); a trunk of one order past a capillary
+    side branch, as tier_branchings numbers it (30-37); a venous tree whose
+    Large_Ven hands off to Ven through a bridge (40-46)."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph()
+    for (u, v), label in {
+        (0, 1): "Art1", (1, 2): "Art2", (2, 3): "Art3", (3, 4): "B01", (3, 5): "B01",
+        (10, 11): "Art1", (11, 12): "B01", (11, 13): "B01",
+        (20, 21): "Art1", (21, 22): "Art2", (21, 23): "Art2", (22, 24): "Art3",
+        (24, 25): "B01", (23, 26): "B01", (22, 27): "B01",
+        (30, 31): "Art1", (31, 32): "Art1", (31, 33): "B01", (32, 34): "Art2", (32, 35): "Art2",
+        (34, 36): "B01", (35, 37): "B01",
+        (40, 41): "Large_Ven1", (41, 42): "Large_Ven2", (46, 43): "Ven1", (43, 44): "Ven2",
+        (44, 45): "B01", (41, 47): "Unknown_Cap",
+    }.items():
+        G.add_edge(u, v, branch_order=label)
+    G.add_edge(42, 46, **{IS_ZERO_RESISTANCE: True})
+    return G
+
+
+def test_each_vessel_counts_its_own_generations_from_the_bed():
+    """F7: from the labels alone, a shallow tree's last arteriole read as
+    many generations from the bed as the deepest tree's first. Counted in
+    each vessel's own tree, the arteriole with nothing but capillaries beyond
+    it is -1 in every tree."""
+    from haemolynx.graph.branch_order import branch_order_generations, branch_order_signed_values
+
+    G = _trees_of_every_shape()
+    generations = dict(zip(((u, v) for u, v, _k in G.edges(keys=True)), branch_order_generations(G)))
+    labels = [G.edges[e]["branch_order"] if "branch_order" in G.edges[e] else None for e in G.edges(keys=True)]
+    by_labels = dict(zip(((u, v) for u, v, _k in G.edges(keys=True)), branch_order_signed_values(labels)))
+
+    assert [generations[e] for e in ((0, 1), (1, 2), (2, 3))] == [-3.0, -2.0, -1.0]
+    assert generations[(10, 11)] == -1.0
+    assert by_labels[(10, 11)] == -3.0
+    # The deep and the shallow branch of one division, and the vessel above both.
+    assert [generations[e] for e in ((20, 21), (21, 22), (21, 23), (22, 24))] == [-3.0, -2.0, -1.0, -1.0]
+    # One order past a capillary side branch is one vessel: both pieces -2.
+    assert [generations[e] for e in ((30, 31), (31, 32), (32, 34), (32, 35))] == [-2.0, -2.0, -1.0, -1.0]
+    # The venous side counts the same way, positive, across the bridge.
+    assert [generations[e] for e in ((43, 44), (46, 43), (41, 42), (40, 41))] == [1.0, 2.0, 3.0, 4.0]
+    assert all(generations[e] == 0.0 for e in G.edges() if G.edges[(*e, 0)].get("branch_order") == "B01")
+    assert np.isnan(generations[(42, 46)]) and np.isnan(generations[(41, 47)])
+
+
+def test_neighbouring_vessels_stand_in_the_order_their_labels_give():
+    """What the flow-against review compares -- a vessel against the one it
+    meets -- reads the same counted per vessel as from the labels."""
+    from haemolynx.graph.branch_order import branch_order_generations, branch_order_signed_values
+
+    G = _trees_of_every_shape()
+    edges = list(G.edges(keys=True))
+    generations = dict(zip(edges, branch_order_generations(G)))
+    by_labels = dict(zip(edges, branch_order_signed_values(G.edges[e].get("branch_order") for e in edges)))
+    compared = 0
+    for node in G:
+        meeting = [e for e in G.edges(node, keys=True) if np.isfinite(generations[_edge(e, edges)])]
+        for a in meeting:
+            for b in meeting:
+                a, b = _edge(a, edges), _edge(b, edges)
+                if G.edges[a]["branch_order"] != G.edges[b]["branch_order"]:
+                    compared += 1
+                    assert np.sign(generations[b] - generations[a]) == np.sign(by_labels[b] - by_labels[a]), (a, b)
+    assert compared > 20
+
+
+def _edge(edge, edges):
+    """*edge* as ``G.edges(keys=True)`` lists it."""
+    u, v, key = edge
+    return (u, v, key) if (u, v, key) in edges else (v, u, key)

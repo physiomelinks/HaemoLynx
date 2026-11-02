@@ -130,6 +130,7 @@ from .collapse import collapse_node_clusters
 from .direction_aware_collapse import collapse_node_clusters_direction_aware
 from .persistence_collapse import collapse_node_clusters_persistence
 from .branch_order import (
+    BRANCH_ORDER_BASES,
     BRANCH_ORDER_BASIS,
     BRANCH_ORDER_STEP_RULES,
     BRANCH_ORDER_STEPS,
@@ -142,6 +143,7 @@ from .branch_order import (
     UNKNOWN_SMALL_VESSEL,
     UNKNOWN_VESSEL_CLASSES,
     EVERY_JUNCTION,
+    OPEN_END_NEARER,
     TIER_BRANCHINGS,
     VENOUS_SIDE,
     BranchOrderLeakWarning,
@@ -152,6 +154,7 @@ from .branch_order import (
     assign_large_tier_branch_orders,
     assign_unknown_vessel_classes,
     assign_vessel_branch_orders,
+    mark_capillaries_nearer_open_end_feeds,
     tag_large_mask_vessel_types,
     tag_small_mask_vessel_types,
 )
@@ -405,12 +408,15 @@ __all__ = [
     "assign_large_tier_branch_orders",
     "assign_vessel_branch_orders",
     "assign_unknown_vessel_classes",
+    "mark_capillaries_nearer_open_end_feeds",
     "tag_large_mask_vessel_types",
     "tag_small_mask_vessel_types",
     "MissingLargeVesselTierWarning",
     "BranchOrderLeakWarning",
     "BRANCH_ORDER_BASIS",
+    "BRANCH_ORDER_BASES",
     "VENOUS_SIDE",
+    "OPEN_END_NEARER",
     "BRANCH_ORDER_STEPS",
     "BRANCH_ORDER_STEP_RULES",
     "EVERY_JUNCTION",

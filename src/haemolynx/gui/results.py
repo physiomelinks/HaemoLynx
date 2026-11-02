@@ -36,6 +36,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from haemolynx.graph.branch_order import (
+    branch_order_generations,
     branch_order_rank_values,
     branch_order_signed_values,
     flow_path_key,
@@ -799,25 +800,31 @@ def _enrich_flow_colour_columns(
 #: the labels a network has: Large_Art, Art, B, then Ven and Large_Ven.
 BRANCH_ORDER_RANK = "branch_order_rank"
 #: ``branch_order`` as generations from the capillary bed: capillaries 0,
-#: the arterial side negative (-1 feeds the capillaries), the venous side
-#: positive (+1 drains them).
+#: the arterial side negative (-1 feeds nothing but capillaries), the venous
+#: side positive (+1 drains them), each vessel counted in its own tree
+#: (``graph.branch_order.branch_order_generations``).
 BRANCH_ORDER_SIGNED = "branch_order_signed"
 
 
-def _add_branch_order_scales(columns: dict[str, np.ndarray]) -> None:
+def _add_branch_order_scales(columns: dict[str, np.ndarray], graph: Any = None) -> None:
     """Add :data:`BRANCH_ORDER_RANK` and :data:`BRANCH_ORDER_SIGNED`.
 
     ``branch_order`` is text, so choosing it colours by a fixed categorical
     palette: no colour map to pick, no range to fit, no colour bar -- the
     controls flow gets. These two colour the way flow does, and both keep
     the tiers apart, which the label's bare number (Art1, B01, Ven1 all 1)
-    could not.
+    could not. Given the *graph* the columns' ``edge_index`` counts in, the
+    signed generations are each vessel's own; without it, from the labels.
     """
     labels = columns.get("branch_order")
     if labels is None:
         return
     columns[BRANCH_ORDER_RANK] = branch_order_rank_values(labels)
-    columns[BRANCH_ORDER_SIGNED] = branch_order_signed_values(labels)
+    index = columns.get("edge_index")
+    if graph is not None and index is not None:
+        columns[BRANCH_ORDER_SIGNED] = branch_order_generations(graph)[np.asarray(index, dtype=int)]
+    else:
+        columns[BRANCH_ORDER_SIGNED] = branch_order_signed_values(labels)
 
 
 #: Columns holding text rather than numbers; a missing one is "" not NaN.
@@ -1675,7 +1682,7 @@ class ResultLayers:
             columns, graph,
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
-        _add_branch_order_scales(columns)
+        _add_branch_order_scales(columns, graph)
         _mark_unsolved(columns, graph)
         _mark_bridges(columns, graph)
 
@@ -2363,7 +2370,7 @@ class ResultLayers:
             columns, graph,
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
-        _add_branch_order_scales(columns)
+        _add_branch_order_scales(columns, graph)
         _mark_unsolved(columns, graph)
         _mark_bridges(columns, graph)
         vectors, owner = polylines_to_vectors(paths, dashed=columns[IS_ZERO_RESISTANCE])
@@ -2475,7 +2482,7 @@ class ResultLayers:
             and name not in stale
         ]
         columns.update(edge_features(graph, non_flow))
-        _add_branch_order_scales(columns)
+        _add_branch_order_scales(columns, graph)
 
         flow0 = np.asarray(sweep.flow_abs_at(*([0] * len(sweep.axis_names))), dtype=float)
         columns["flow_abs"] = flow0[edge_index]

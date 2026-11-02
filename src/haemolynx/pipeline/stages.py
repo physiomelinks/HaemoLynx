@@ -5832,10 +5832,42 @@ def solve(
 
     if solution.pressure is not None:
         _mark_flow_solved(G, settings["inlet_nodes"], settings["outlet_nodes"], open_ends.nodes)
+    _mark_capillaries_fed_from_open_ends(settings, G, solved=solution.pressure is not None)
 
     solution.graph = G
     _stamp_solution(G, solution)
     return solution
+
+
+def _mark_capillaries_fed_from_open_ends(settings: dict, G: nx.MultiGraph, *, solved: bool) -> None:
+    """Mark the capillaries an open end feeding the network through an image
+    face reaches in fewer steps than any arteriole in the image does
+    (:func:`haemolynx.graph.mark_capillaries_nearer_open_end_feeds`), by this
+    solve's flows. A network not solved keeps no such mark. Perturbations
+    re-solve without this, so they keep the baseline's marks, as they keep
+    its open-end conditions."""
+    from haemolynx.graph.branch_order import capillary_start_nodes
+
+    open_ends = haemodynamics.open_ends
+    feeding = [
+        node for node, way in (open_ends.open_end_directions(G) if solved else {}).items()
+        if way == open_ends.FEEDS
+    ]
+    feeds, drains = capillary_start_nodes(
+        settings["inlet_nodes"],
+        settings["outlet_nodes"],
+        settings.get("arteriole_boundary_nodes"),
+        settings.get("venule_boundary_nodes"),
+        graph=G,
+    )
+    marked = graph.mark_capillaries_nearer_open_end_feeds(G, feeding, feeds=feeds, drains=drains)
+    if marked:
+        logger.info(
+            f"{marked} capillary vessel(s) are fewer steps from an open end feeding the network "
+            "through an image face than from any arteriole in the image: their B orders count "
+            "from the image's arterioles, but their blood comes in from outside it "
+            f"({graph.BRANCH_ORDER_BASIS}={graph.OPEN_END_NEARER!r})."
+        )
 
 
 def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes, open_ends=()) -> None:

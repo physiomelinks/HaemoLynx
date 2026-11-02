@@ -57,6 +57,14 @@ CONNECTIVITY_COLUMNS = (
 )
 
 
+#: The note a capillary's ``branch_order_basis`` (``graph.BRANCH_ORDER_BASES``)
+#: adds to its row.
+BASIS_NOTES = {
+    "venous_side": "B counted from the venous side",
+    "open_end_nearer": "B nearer an open end feeding through the image face",
+}
+
+
 def _number(value: Any) -> str:
     try:
         number = float(value)
@@ -299,8 +307,9 @@ def connectivity_rows(
     its notes, as do dead ends (a tip that is no inlet or outlet, at either
     end, with its kind where the build judged one: "Dead end (leaves_image)"),
     vessels the image faces cut short (on a dead end's chain that leaves the
-    image, so its length is censored), self-loops and the arteriole/venule
-    boundary roles of its ends.
+    image, so its length is censored), capillaries whose order counts from
+    elsewhere than an arteriole in the image (:data:`BASIS_NOTES`), self-loops
+    and the arteriole/venule boundary roles of its ends.
 
     With *only_inlet_to_outlet*, only the vessels
     :func:`inlet_to_outlet_vessels` keeps are listed, and upstream/downstream
@@ -344,6 +353,7 @@ def connectivity_rows(
         into.setdefault(end, []).append(branch_id)
 
     from ._helpers import edge_id
+    from .branch_order import BRANCH_ORDER_BASIS
     from .dead_ends import DEAD_END_KIND, vessels_cut_by_image_faces
 
     cut = vessels_cut_by_image_faces(G)
@@ -381,6 +391,9 @@ def connectivity_rows(
                 notes.append(dead_end_note(end))
             if edge_id(edges[branch_id][0], edges[branch_id][1], k) in cut:
                 notes.append("Cut by the image face")
+        basis = BASIS_NOTES.get(data.get(BRANCH_ORDER_BASIS))
+        if basis:
+            notes.append(basis)
         for node in dict.fromkeys((start, end)):
             notes.extend(role_notes(node))
         if not reached:

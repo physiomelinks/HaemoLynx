@@ -21,10 +21,13 @@ from scipy.spatial.distance import euclidean
 
 from haemolynx.geometry import cumulative_lengths
 from haemolynx.graph.branch_order import (
+    BRANCH_ORDER_BASIS,
     BRANCH_ORDER_CATEGORY_SEQUENCE,
+    OPEN_END_NEARER,
     UNKNOWN_CAPILLARY,
     UNKNOWN_LARGE_VESSEL,
     UNKNOWN_SMALL_VESSEL,
+    VENOUS_SIDE,
 )
 from haemolynx.visualization.geometry import edge_polyline
 
@@ -239,10 +242,19 @@ def _angle_between_unit_vectors(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.degrees(np.arccos(cos_a)))
 
 
+#: The record's counts of the order's capillaries whose ``B`` counts from
+#: elsewhere than an arteriole in the image, by ``graph.BRANCH_ORDER_BASIS``.
+BASIS_COUNTS = {
+    VENOUS_SIDE: "Vessels Counted From The Venous Side",
+    OPEN_END_NEARER: "Vessels Nearer A Feeding Open End",
+}
+
+
 def _empty_branch_order_record(tag: str) -> Dict[str, Any]:
     return {
         "Branch Order": tag,
         "Edge Count": 0,
+        **{column: 0 for column in BASIS_COUNTS.values()},
         "Mean Length (microns)": 0.0,
         "Mean Tortuosity Index": "N/A (no position data)",
         "Tortuosity Sample Count": 0,
@@ -547,6 +559,10 @@ def compute_branch_order_statistics(
     """Compute mean length, tortuosity, and emergence angle per branch order.
 
     Returns a dictionary keyed by branch-order label with a compact summary.
+    Each counts its vessels whose order counts from elsewhere than an
+    arteriole in the image (:data:`BASIS_COUNTS`): capillaries counted from the
+    venous side, and those an open end feeding through an image face reaches
+    in fewer steps. They are among its Edge Count, not apart from it.
     """
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     edge_iter = G.edges(keys=True, data=True) if is_mg else G.edges(data=True)
@@ -572,6 +588,9 @@ def compute_branch_order_statistics(
         rec = by_tag[normalized_tag]
         rec["Edge Count"] += 1
         rec["Mean Length (microns)"] += length_f
+        basis = BASIS_COUNTS.get(data.get(BRANCH_ORDER_BASIS))
+        if basis is not None:
+            rec[basis] += 1
 
         if (
             node_positions is not None
@@ -707,6 +726,7 @@ def export_branch_order_statistics_to_csv(
                 "Total Pressure Drop (Pa)",
                 "Mean Diameter (um)",
                 "Diameter Coefficient of Variation",
+                *BASIS_COUNTS.values(),
                 "Notes",
             ]
         )
@@ -721,6 +741,7 @@ def export_branch_order_statistics_to_csv(
                 "",
                 "",
                 "",
+                *("" for _column in BASIS_COUNTS),
                 "Large_Art* first, then Art*, then BO*, then Ven*, then Large_Ven*.",
             ]
         )
@@ -784,6 +805,7 @@ def export_branch_order_statistics_to_csv(
                     total_drop_s,
                     mean_diam_s,
                     diam_cv_s,
+                    *(int(rec.get(column, 0)) for column in BASIS_COUNTS.values()),
                     " ".join(notes),
                 ]
             )

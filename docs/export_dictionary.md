@@ -52,6 +52,7 @@ Written to the run's output folder (output_dir). Every vessel as a polyline (VTK
 | `edge_v` | `-` | Node ID at the other end. |
 | `edge_key` | `-` | Which of the vessels between edge_u and edge_v (0 for the first). |
 | `branch_order` | `-` | The vessel's class: Art01..., B01..., Ven01..., Large_Art/Large_Ven, Unknown_* or No_BO. Under a size convention (classify_vessels_by_size) Unknown_Large, Unknown_Small and Unknown_Cap are the wide, mid and narrow classes (vessel_size_class). |
+| `branch_order_basis` | `-` | On a capillary whose B counts from elsewhere than an arteriole in the image: venous_side (the arterial side reaches it only through a vein, so B counts from where it meets the venous side) or open_end_nearer (an open end feeding the network through an image face reaches it in fewer steps than any arteriole in the image: its blood comes from outside); empty on every other vessel. |
 | `resistance` | `Pa.s/m^3` | The vessel's hydraulic resistance (Poiseuille, with the run's viscosity law). |
 | `conductance` | `m^3/(Pa.s)` | 1 / resistance. |
 | `length_um` | `um` | The vessel's length along its (smoothed) centreline. |
@@ -642,7 +643,7 @@ Written to the run's output folder (output_dir). Post processing's connectivity 
 | `Network part` | `-` | A surround (network_source=synthetic_surround) only: image, a vessel of the template run's own network, or synthetic, one drawn round it; empty otherwise. |
 | `Length (um)` | `um` | Its length. |
 | `Diameter (um)` | `um` | Its diameter. |
-| `Notes` | `-` | Bridge, unsolved, inlet/outlet and so on. |
+| `Notes` | `-` | Inlet/outlet, dead ends and their kinds, cut by the image face, a capillary's B counted from the venous side or nearer an open end feeding through the image face (the VTK's branch_order_basis), boundary roles and so on. |
 | `Upstream branch IDs` | `-` | Vessels feeding it. |
 | `Downstream branch IDs` | `-` | Vessels it feeds. |
 | `Edge u` | `-` | Graph node u. |

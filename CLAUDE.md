@@ -738,8 +738,14 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`_tier_passing_nodes`). B is the same under both. Synthetic networks are always
   `every_junction` (`stages.branch_order_steps_in_effect`): the generator reads each tier order as
   one segment, so `check_template_run` refuses a template numbered `tier_branchings`, and
-  preflight warns of a per-order diameter table under it (`check_branch_order_steps`). What is
-  still open: `PLAN_branch_orders.md`; history in `docs/notes/vessel_masks_and_boundaries.md`.
+  preflight warns of a per-order diameter table under it (`check_branch_order_steps`). After every
+  solve, a capillary an open end feeding through an image face reaches in fewer steps than any
+  feed of its B count is marked `open_end_nearer` (`graph.mark_capillaries_nearer_open_end_feeds`,
+  from `stages.solve`; perturbations keep the baseline's), its order unchanged; both
+  `branch_order_basis` marks reach the VTK, the connectivity CSV's notes and the branch statistics'
+  counts. The viewer's signed colour counts each vessel's generations from the bed in its own
+  tree (`branch_order_generations`); the flow-against review stays on the labels. What is still
+  open: `PLAN_branch_orders.md`; history in `docs/notes/vessel_masks_and_boundaries.md`.
 - **Boundary nodes after hand edits** — `post_process` tags the vessels an edit made by the same
   overlap rules (`tag_edges_in_large_vessel_masks`, `tag_edges_in_small_vessel_masks`) and
   re-judges boundary nodes only at the nodes the edits touched (`graph.touched_nodes`,

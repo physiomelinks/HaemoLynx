@@ -209,6 +209,13 @@ VESSEL_ARRAYS: dict[str, str] = {
     "edge_v": "Node ID at the other end.",
     "edge_key": "Which of the vessels between edge_u and edge_v (0 for the first).",
     "branch_order": _BRANCH_ORDER.meaning,
+    "branch_order_basis": (
+        "On a capillary whose B counts from elsewhere than an arteriole in the image: "
+        "venous_side (the arterial side reaches it only through a vein, so B counts from where "
+        "it meets the venous side) or open_end_nearer (an open end feeding the network through "
+        "an image face reaches it in fewer steps than any arteriole in the image: its blood "
+        "comes from outside); empty on every other vessel."
+    ),
     "resistance": "The vessel's hydraulic resistance (Poiseuille, with the run's viscosity law).",
     "conductance": "1 / resistance.",
     "length_um": "The vessel's length along its (smoothed) centreline.",
@@ -855,7 +862,10 @@ FILES: tuple[OutputFile, ...] = (
                "run's own network, or synthetic, one drawn round it; empty otherwise."),
             _c("Length (um)", "um", "Its length."),
             _c("Diameter (um)", "um", "Its diameter."),
-            _c("Notes", "-", "Bridge, unsolved, inlet/outlet and so on."),
+            _c("Notes", "-",
+               "Inlet/outlet, dead ends and their kinds, cut by the image face, a capillary's B "
+               "counted from the venous side or nearer an open end feeding through the image "
+               "face (the VTK's branch_order_basis), boundary roles and so on."),
             _c("Upstream branch IDs", "-", "Vessels feeding it."),
             _c("Downstream branch IDs", "-", "Vessels it feeds."),
             _c("Edge u", "-", "Graph node u."),

@@ -19,6 +19,7 @@ ARRAY_UNITS: Dict[str, str] = {
     "edge_v": "-",
     "edge_key": "-",
     "branch_order": "-",
+    "branch_order_basis": "-",
     "resistance": "Pa.s/m^3",
     "conductance": "m^3/(Pa.s)",
     "length_um": "um",
@@ -188,8 +189,10 @@ def graph_to_vtk(
 
     Each vessel also says whether the image faces cut it
     (``cut_by_image_face``: on the chain of a dead end leaving the image, its
-    length censored), and each node its ``boundary_role``
-    (:data:`BOUNDARY_ROLES`): *inlet_nodes* and *outlet_nodes* are the run's
+    length censored) and what its capillary order counts from
+    (``branch_order_basis``, ``graph.BRANCH_ORDER_BASES``; "" for a count from
+    an arteriole in the image, and on every other vessel), and each node its
+    ``boundary_role`` (:data:`BOUNDARY_ROLES`): *inlet_nodes* and *outlet_nodes* are the run's
     designated ones, the open ends come from the solve's record on *graph*.
     """
     try:
@@ -211,6 +214,7 @@ def graph_to_vtk(
     edge_v: List[int] = []
     edge_key: List[int] = []
     branch_order: List[str] = []
+    order_bases: List[str] = []
     resistances: List[float] = []
     conductances: List[float] = []
     lengths: List[float] = []
@@ -225,6 +229,7 @@ def graph_to_vtk(
     #: and an image vessel's branch order in its own run.
     network_parts: List[str] = []
     image_orders: List[str] = []
+    from haemolynx.graph.branch_order import BRANCH_ORDER_BASIS
     from haemolynx.graph.dead_ends import vessels_cut_by_image_faces
     from haemolynx.graph.vessel_size_classes import VESSEL_SIZE_CLASS, size_convention_of
     from haemolynx.graph._helpers import edge_id
@@ -274,6 +279,7 @@ def graph_to_vtk(
         edge_v.append(int(v) if isinstance(v, (int, np.integer)) else -1)
         edge_key.append(int(k) if isinstance(k, (int, np.integer)) else 0)
         branch_order.append(str(data.get("branch_order", "No_BO")))
+        order_bases.append(str(data.get(BRANCH_ORDER_BASIS) or ""))
         r = data.get("resistance")
         c = data.get("conductance")
         resistances.append(float(r) if r is not None else np.nan)
@@ -300,6 +306,7 @@ def graph_to_vtk(
         vessel_mesh.cell_data["edge_v"] = np.asarray(edge_v, dtype=np.int64)
         vessel_mesh.cell_data["edge_key"] = np.asarray(edge_key, dtype=np.int64)
         vessel_mesh.cell_data["branch_order"] = np.asarray(branch_order)
+        vessel_mesh.cell_data["branch_order_basis"] = np.asarray(order_bases)
         vessel_mesh.cell_data["resistance"] = np.asarray(resistances, dtype=float)
         vessel_mesh.cell_data["conductance"] = np.asarray(conductances, dtype=float)
         vessel_mesh.cell_data["length_um"] = np.asarray(lengths, dtype=float)

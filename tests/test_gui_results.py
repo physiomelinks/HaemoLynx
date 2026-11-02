@@ -2822,3 +2822,32 @@ def test_a_node_whose_every_vessel_is_unsolved_shows_no_pressure():
     assert values[0] == 9.0 and values[1] == 8.0 and np.isnan(values[2])
     assert np.isnan(values[3]) and np.isnan(values[4])
     assert values[5] == 1.0 and values[6] == 2.0
+
+
+def test_the_signed_branch_order_column_is_each_vessels_own_generation():
+    """Colouring by generations from the bed reads each vessel in its own
+    tree (graph.branch_order.branch_order_generations): a shallow tree's
+    arteriole is -1, beside the deep tree's -2, on the vessels drawn, even
+    with one before them that cannot be drawn."""
+    from haemolynx.gui.results import BRANCH_ORDER_SIGNED, _add_branch_order_scales
+
+    G = nx.MultiGraph()
+    G.add_edge(90, 91, branch_order="Art1")  # no positions: not drawn
+    for n, p in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 0, 30), 4: (0, 5, 30),
+                 10: (0, 20, 0), 11: (0, 20, 10), 12: (0, 20, 20)}.items():
+        G.add_node(n, pos=np.asarray(p, dtype=float))
+    for (u, v), label in {(0, 1): "Art1", (1, 2): "Art2", (2, 3): "B01", (2, 4): "B01",
+                          (10, 11): "Art1", (11, 12): "B01"}.items():
+        G.add_edge(u, v, branch_order=label)
+    _paths, identity = edge_polylines(G)
+    columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
+    columns.update(edge_features(G, ["branch_order"]))
+
+    _add_branch_order_scales(columns, G)
+    signed = {(int(u), int(v)): s for u, v, s in zip(columns["u"], columns["v"], columns[BRANCH_ORDER_SIGNED])}
+    assert signed == {(0, 1): -2.0, (1, 2): -1.0, (2, 3): 0.0, (2, 4): 0.0, (10, 11): -1.0, (11, 12): 0.0}
+
+    # Without the graph, from the labels: both Art1 are the deeper tree's.
+    _add_branch_order_scales(columns)
+    labelled = dict(zip(columns["branch_order"], columns[BRANCH_ORDER_SIGNED]))
+    assert labelled["Art1"] == -2.0

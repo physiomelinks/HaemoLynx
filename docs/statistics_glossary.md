@@ -490,6 +490,8 @@ names it lists.
 |---|---|---|
 | Branch Order | (text) | The branch-order label (Large_Art, Art, BO for capillaries, Ven, Large_Ven, and a number). |
 | Edge Count | vessels | Vessels of that branch order. |
+| Vessels Counted From The Venous Side | vessels | Of those, capillaries the arterial side reaches only through a vein, so their B counts from where they meet the venous side (the VTK's branch_order_basis venous_side). |
+| Vessels Nearer A Feeding Open End | vessels | Of those, capillaries an open end feeding the network through an image face reaches in fewer steps than any arteriole in the image does: their B counts from the image's arterioles, but their blood comes in from outside it (branch_order_basis open_end_nearer). |
 | Tortuosity Sample Count | vessels | Vessels whose tortuosity was measured. |
 | Mean Emergence Angle (degrees) | degrees | The mean angle between the parent's and each daughter's tangent where a vessel of that order leaves its parent. |
 | Emergence Angle Sample Count | count | Emergence angles measured. |

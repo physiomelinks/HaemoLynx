@@ -75,12 +75,18 @@ LARGE_MASK_VESSEL_TYPE = "large_mask_vessel_type"
 #: vessel beside the others.
 SMALL_MASK_VESSEL_TYPE = "small_mask_vessel_type"
 
-#: Edge attribute marking a capillary whose ``B`` order is counted from the
-#: venous side, :data:`VENOUS_SIDE`: the arterial side reaches it only through
-#: a venule or the large vein, which the ``B`` search does not cross (see
-#: :func:`assign_hierarchical_branch_orders`). Absent on every other vessel.
+#: Edge attribute marking a capillary whose ``B`` order says less than it
+#: seems: :data:`VENOUS_SIDE`, counted from the venous side, as the arterial
+#: side reaches it only through a venule or the large vein, which the ``B``
+#: search does not cross (see :func:`assign_hierarchical_branch_orders`); or
+#: :data:`OPEN_END_NEARER`, counted from an arteriole in the image but reached
+#: in fewer steps from an open end that feeds the network through an image
+#: face (:func:`mark_capillaries_nearer_open_end_feeds`, after the solve).
+#: Absent on every other vessel.
 BRANCH_ORDER_BASIS = "branch_order_basis"
 VENOUS_SIDE = "venous_side"
+OPEN_END_NEARER = "open_end_nearer"
+BRANCH_ORDER_BASES: tuple[str, ...] = (VENOUS_SIDE, OPEN_END_NEARER)
 
 #: Where the Large_Art/Art/Ven/Large_Ven counts step, also the graph
 #: attribute recording which rule numbered the network
@@ -183,12 +189,14 @@ def flow_path_key(label: Any) -> tuple:
 def branch_order_signed_values(labels: Iterable[Any]) -> np.ndarray:
     """Generations from the capillary bed, per label, for *labels* together.
 
-    Capillaries are 0. Upstream of them, the arteriole that feeds them is
-    -1 and the count grows through Art to the most upstream Large_Art (so
-    ``Art`` n is ``-(Art_max - n + 1)``, and a Large_Art lies beyond every
-    Art). Downstream, the venule that drains them is +1 and the count grows
-    through Ven to Large_Ven1 at the outlet. The maxima are the network's
-    own; a label of no known tier is NaN.
+    Capillaries are 0. Upstream of them, the deepest arteriole is -1 and the
+    count grows through Art to the most upstream Large_Art (so ``Art`` n is
+    ``-(Art_max - n + 1)``, and a Large_Art lies beyond every Art).
+    Downstream, the deepest venule is +1 and the count grows through Ven to
+    Large_Ven1 at the outlet. The maxima are the network's own, so a
+    shallower tree's last arteriole reads lower than -1;
+    :func:`branch_order_generations` counts each vessel in its own tree, given
+    the graph. A label of no known tier is NaN.
     """
     labels = [str(label) for label in labels]
     most: dict[str, int] = {}
@@ -224,6 +232,89 @@ def branch_order_rank_values(labels: Iterable[Any]) -> np.ndarray:
     present = sorted({label for label in labels if _tier_and_number(label)}, key=flow_path_key)
     rank = {label: float(index) for index, label in enumerate(present, start=1)}
     return np.asarray([rank.get(label, np.nan) for label in labels], dtype=float)
+
+
+def branch_order_generations(G: nx.Graph) -> np.ndarray:
+    """Generations from the capillary bed, one per vessel of *G*, in the order
+    ``G.edges(keys=True)`` gives them (``G.edges()`` for a simple graph).
+
+    Capillaries are 0. An arteriole is ``-(1 +`` the most order steps from it
+    to the bed through its side's tiers): one with nothing but capillaries
+    beyond it is -1, in a shallow tree as in the deepest. A venule is the
+    same count, positive. :func:`branch_order_signed_values`, from the labels
+    alone, counts from the network's deepest tree, so a shallow tree's last
+    arteriole read -8 where the deepest one's read -1.
+
+    Read off the labels: a vessel steps towards the bed into a neighbour of
+    its side with a later order (Large_Art before Art, then by number; on the
+    venous side Large_Ven before Ven, numbered from the outlet). Neighbours of
+    one order where only the two of them meet are one vessel carrying on; a
+    zero-resistance bridge joins its two ends. Between any two neighbouring
+    vessels the order is the labels', so a comparison along the flow reads
+    as :func:`branch_order_signed_values` reads it. A vessel with no label of
+    a known tier, a bridge among them, is NaN.
+    """
+    if G.is_multigraph():
+        edges = [(u, v, key, data) for u, v, key, data in G.edges(keys=True, data=True)]
+    else:
+        edges = [(u, v, 0, data) for u, v, data in G.edges(data=True)]
+    values = np.full(len(edges), np.nan)
+
+    # A bridge's two ends are one place.
+    parent: dict[Any, Any] = {}
+
+    def place(node: Any) -> Any:
+        while parent.get(node, node) != node:
+            parent[node] = parent.get(parent[node], parent[node])
+            node = parent[node]
+        return node
+
+    for u, v, _key, data in edges:
+        if data.get(IS_ZERO_RESISTANCE):
+            parent[place(u)] = place(v)
+
+    # Each tier vessel's side and its key towards the bed.
+    side: dict[int, int] = {}
+    towards_bed: dict[int, tuple[int, int]] = {}
+    at: dict[tuple[int, Any], list[int]] = defaultdict(list)
+    for index, (u, v, _key, data) in enumerate(edges):
+        parsed = _tier_and_number(data.get("branch_order"))
+        tier = _FLOW_PATH_TIERS.get(parsed[0]) if parsed is not None else None
+        if tier is None:
+            continue
+        if tier[1] == 0:
+            values[index] = 0.0
+            continue
+        side[index] = tier[1]
+        towards_bed[index] = (0 if parsed[0].startswith("large") else 1, parsed[1])
+        for node in {place(u), place(v)}:
+            at[(tier[1], node)].append(index)
+
+    # One vessel carrying on through a node where only it meets itself.
+    vessel = {index: index for index in side}
+
+    def root(index: int) -> int:
+        while vessel[index] != index:
+            vessel[index] = vessel[vessel[index]]
+            index = vessel[index]
+        return index
+
+    for members in at.values():
+        if len(members) == 2 and towards_bed[members[0]] == towards_bed[members[1]]:
+            vessel[root(members[0])] = root(members[1])
+    beyond: dict[int, set[int]] = defaultdict(set)
+    for members in at.values():
+        for a in members:
+            for b in members:
+                if towards_bed[b] > towards_bed[a]:
+                    beyond[root(a)].add(root(b))
+
+    depth: dict[int, int] = {}
+    for start in sorted({root(index) for index in side}, key=lambda r: towards_bed[r], reverse=True):
+        depth[start] = 1 + max((depth[later] for later in beyond[start]), default=0)
+    for index, tier_side in side.items():
+        values[index] = float(tier_side * depth[root(index)])
+    return values
 
 
 class MissingSmallVesselAssignmentWarning(UserWarning):
@@ -649,6 +740,25 @@ def _tier_from_large_vessel(
     return results, edges
 
 
+def _capillary_bed(
+    G: nx.MultiGraph,
+    arterial_edges: set[tuple[Any, Any, Any]],
+    venous_edges: set[tuple[Any, Any, Any]],
+    feeds: Iterable[Any],
+    drains: Iterable[Any],
+) -> tuple[nx.MultiGraph, list[Any], set[Any]]:
+    """The vessels outside every tier (a view of *G*), the nodes ``B`` is
+    counted from in it -- *feeds*, and every node where it leaves an arterial
+    tier -- and the venous nodes: *drains* and every venous tier's ends."""
+    view = _without_edges(G, arterial_edges | venous_edges)
+    arterial_ends, venous_ends = _edge_ends(arterial_edges), _edge_ends(venous_edges)
+    drains = set(drains) | venous_ends
+    starts = sort_nodes(
+        set(feeds) | {node for node in arterial_ends - drains if node in view}
+    )
+    return view, [node for node in starts if node in view or node not in G], drains
+
+
 def _capillary_branch_orders(
     G: nx.MultiGraph,
     *,
@@ -670,16 +780,9 @@ def _capillary_branch_orders(
     """
     for data in G.edges.values():
         data.pop(BRANCH_ORDER_BASIS, None)
-    view = _without_edges(G, arterial_edges | venous_edges)
-    arterial_ends, venous_ends = _edge_ends(arterial_edges), _edge_ends(venous_edges)
-    drains = set(drains) | venous_ends
-    starts = sort_nodes(
-        set(feeds) | {node for node in arterial_ends - drains if node in view}
-    )
+    view, starts, drains = _capillary_bed(G, arterial_edges, venous_edges, feeds, drains)
     passing = _passing_nodes(G)
-    results = assign_branch_orders(
-        view, [node for node in starts if node in view or node not in G], passing_nodes=passing
-    )
+    results = assign_branch_orders(view, starts, passing_nodes=passing)
     unreached = {edge_id(*edge) for edge in results["unreachable_edges"]}
     results["from_venous_side"] = 0
     if unreached:
@@ -1073,6 +1176,75 @@ def capillary_start_nodes(
         feeds += [node for node in arterial if node not in known_feeds]
         drains += [node for node in venous if node not in known_drains]
     return feeds, drains
+
+
+def _tier_edges_by_label(G: nx.MultiGraph) -> tuple[set, set]:
+    """The arterial (Large_Art, Art) and venous (Ven, Large_Ven) tiers'
+    edges, read off the labels."""
+    arterial: set[tuple[Any, Any, Any]] = set()
+    venous: set[tuple[Any, Any, Any]] = set()
+    for u, v, key, data in G.edges(keys=True, data=True):
+        side = _FLOW_PATH_TIERS.get((_tier_and_number(data.get("branch_order")) or ("",))[0])
+        if side is not None and side[1] < 0:
+            arterial.add(edge_id(u, v, key))
+        elif side is not None and side[1] > 0:
+            venous.add(edge_id(u, v, key))
+    return arterial, venous
+
+
+def mark_capillaries_nearer_open_end_feeds(
+    G: nx.MultiGraph,
+    feeding_open_ends: Iterable[Any],
+    *,
+    feeds: Iterable[Any],
+    drains: Iterable[Any],
+) -> int:
+    """Mark :data:`BRANCH_ORDER_BASIS` :data:`OPEN_END_NEARER` on each
+    capillary that an open end feeding the network reaches in fewer steps
+    than its ``B`` count's feeds do, and return how many.
+
+    *feeding_open_ends* are the open ends blood enters the network through
+    (``haemodynamics.open_ends.open_end_directions``, after the solve);
+    *feeds* and *drains* are :func:`capillary_start_nodes`'. Both searches
+    run as the ``B`` count does (:func:`_capillary_bed`): through the vessels
+    outside every tier, read off the labels, with no step at a node where a
+    vessel only carries on. So an open end on an arteriole feeds no
+    capillary directly: the arteriole counts them. A tie keeps the count, and
+    a capillary counted from the venous side keeps that mark.
+
+    Branch orders key the diameters, which are set before the solve that
+    says which ends feed, so these capillaries are marked rather than counted
+    again. Marks an earlier call left are cleared first.
+    """
+    for data in G.edges.values():
+        if data.get(BRANCH_ORDER_BASIS) == OPEN_END_NEARER:
+            del data[BRANCH_ORDER_BASIS]
+    capillaries = [
+        (u, v, key)
+        for u, v, key, data in G.edges(keys=True, data=True)
+        if (_tier_and_number(data.get("branch_order")) or ("",))[0] in {"b", "bo"}
+        and data.get(BRANCH_ORDER_BASIS) is None
+    ]
+    if not capillaries:
+        return 0
+    view, starts, _drains = _capillary_bed(G, *_tier_edges_by_label(G), feeds, drains)
+    sources = [node for node in sort_nodes(set(feeding_open_ends)) if node in view]
+    if not sources:
+        return 0
+    passing = _passing_nodes(G)
+    from_feeds = _compute_node_distances(
+        view, [node for node in starts if node in view], passing_nodes=passing
+    )
+    from_open_ends = _compute_node_distances(view, sources, passing_nodes=passing)
+    far = float("inf")
+    marked = 0
+    for u, v, key in capillaries:
+        feed = min(from_feeds.get(u, far), from_feeds.get(v, far))
+        open_end = min(from_open_ends.get(u, far), from_open_ends.get(v, far))
+        if open_end < feed:
+            G.edges[u, v, key][BRANCH_ORDER_BASIS] = OPEN_END_NEARER
+            marked += 1
+    return marked
 
 
 def assign_vessel_branch_orders(

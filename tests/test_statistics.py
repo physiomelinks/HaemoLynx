@@ -1132,12 +1132,13 @@ def test_export_branch_order_statistics_to_csv(tmp_path):
         "Branch Order,Edge Count,Mean Length (um),Mean Tortuosity Index,"
         "Mean Emergence Angle (degrees),Mean Pressure Drop (Pa),"
         "Total Pressure Drop (Pa),Mean Diameter (um),"
-        "Diameter Coefficient of Variation,Notes"
+        "Diameter Coefficient of Variation,Vessels Counted From The Venous Side,"
+        "Vessels Nearer A Feeding Open End,Notes"
     ) in text
     assert (
         "Art1,3,12.5,1.1,N/A (no unique parent junction),"
         "N/A (no flow solved),N/A (no flow solved),"
-        "N/A (no diameter assigned),N/A (no diameter assigned),"
+        "N/A (no diameter assigned),N/A (no diameter assigned),0,0,"
     ) in text
     assert "Mean tortuosity is path length / straight distance." in text
     assert "Emergence angle unavailable (no unique lower-order parent junction)." in text
