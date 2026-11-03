@@ -745,7 +745,9 @@ def _recording_stages(monkeypatch):
         # what these tests check is which segmented image a resume hands on.
         assert kwargs.pop("progress") is not None
         calls["segment"] = kwargs
-        return SimpleNamespace(image_path=kwargs.get("segmented_path"))
+        # The run's output folder, as SegmentedInputs carries it: a resumed
+        # volume is written to it (stages._volume_writing_to).
+        return SimpleNamespace(image_path=kwargs.get("segmented_path"), output_dir=Path("out"))
 
     def skeletonise(*_args, **_kwargs):
         calls["skeletonise"] = {}
