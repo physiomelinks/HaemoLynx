@@ -611,3 +611,31 @@ def test_the_boundary_pressures_grey_with_the_haemodynamics_and_preflight_checks
     (backwards,) = check_haemodynamics(dict(on, inlet_p_bc=500.0, outlet_p_bc=1000.0)).warnings
     assert "against the branch orders" in backwards
     assert not check_haemodynamics(dict(off, inlet_p_bc=500.0, outlet_p_bc=1000.0)).warnings
+
+
+def test_the_model_reads_the_stain_the_diameters_stage_recorded(monkeypatch):
+    """build_haemodynamic_model built its config reading an auto stain as a
+    plasma column, though the Diameters stage had recorded the raw image as
+    endothelial, so the config preferred FWHM widths the run never measured.
+    It reads the recorded stain, as Diameters does."""
+    from haemolynx.pipeline import default_schema, stages
+
+    seen = []
+    real = stages.apply_poiseuille_resistances
+
+    def spy(G, config):
+        seen.append(config)
+        return real(G, config)
+
+    monkeypatch.setattr(stages, "apply_poiseuille_resistances", spy)
+    schema = default_schema()
+    G = nx.MultiGraph(raw_image_stain="endothelial", image_voxel_size_zyx=(1.0, 1.0, 1.0))
+    G.add_edge(0, 1, length=10.0, diameter_um=5.0, branch_order="B01")
+    settings = dict(
+        schema.defaults(), run_haemodynamics=True, raw_image_stain="auto", raw_image_path="raw.tif",
+        measure_diameters_from_raw_image=True, diameter_by_branch_order={"B01": 5.0},
+    )
+    stages.build_haemodynamic_model(settings, stages.HaemodynamicModel(graph=G), schema)
+    (config,) = seen
+    assert not config.use_fwhm_edge_diameters
+    assert config.endothelial["use_endothelial_diameters"] is True

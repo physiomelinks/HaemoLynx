@@ -534,12 +534,17 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
 def find_unsolved_pieces(G: nx.MultiGraph, inlets: Iterable[Any], outlets: Iterable[Any]) -> list[ReviewItem]:
     """The vessels no inlet-to-outlet path runs along, piece by piece
     (:func:`~haemolynx.graph.connectivity.unsolved_pieces`), longest first: a
-    long one is more often a missed connection than debris."""
+    long one is more often a missed connection than debris. The open ends
+    the solve gave a condition count as inlets and outlets, as its flow
+    marks count them."""
+    from haemolynx.haemodynamics.open_ends import conditions_on_graph
+
     from .connectivity import unsolved_pieces
 
+    opened = conditions_on_graph(G).nodes
     pos = _node_pos(G)
     items = []
-    for piece in unsolved_pieces(G, list(inlets), list(outlets)):
+    for piece in unsolved_pieces(G, [*inlets, *opened], [*outlets, *opened]):
         points = _points(G, piece.edges, pos)
         where = (
             f"hangs off node(s) {', '.join(str(n) for n in piece.attached_at)}"

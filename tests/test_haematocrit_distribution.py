@@ -887,9 +887,10 @@ def test_the_solve_stage_divides_a_trifurcation_by_the_chosen_junction_rule():
     assert h_3 != pytest.approx(h_4)
 
 
-def test_iterate_flow_and_haematocrit_reports_the_iteration_count_honestly():
-    """A single allowed iteration cannot claim convergence -- there is
-    nothing to compare it against."""
+def test_iterate_flow_and_haematocrit_runs_at_least_two_passes():
+    """A single pass has nothing to compare against, so it could never
+    converge, and it reported a change of 0. One allowed pass runs two, and
+    the change it reports is one it measured."""
     G = _bifurcating_network()
     model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
     _seed_uniform_resistances(G, model)
@@ -905,8 +906,18 @@ def test_iterate_flow_and_haematocrit_reports_the_iteration_count_honestly():
         max_iterations=1,
         tolerance=1e-4,
     )
-    assert result["iterations"] == 1
-    assert result["converged"] is False
+    # The resistances never change, so the second pass distributes the same.
+    assert (result["iterations"], result["converged"], result["max_delta"]) == (2, True, 0.0)
+
+
+def test_one_haematocrit_iteration_is_read_as_two():
+    """Old configs and runs saying 1 still load: they run the two passes the
+    setting now asks for at least."""
+    from haemolynx.pipeline import default_schema
+
+    setting = default_schema()["haematocrit_distribution_max_iterations"]
+    assert setting.minimum == 2
+    assert (setting.coerce(1), setting.coerce(5)) == (2, 5)
 
 
 def _recompute_for(G, model: PoiseuilleModel):
@@ -1006,3 +1017,96 @@ def test_the_sparse_solver_reaches_the_dense_fixed_point():
         assert sparse_G.edges[u, v, key]["discharge_haematocrit"] == pytest.approx(
             data["discharge_haematocrit"], rel=1e-9
         )
+
+
+def _bifurcation_with_a_blind_stub() -> nx.MultiGraph:
+    """The bifurcation with a blind stub 1-4 (an interior dead end) off its
+    junction: one inflow, two outflows and a vessel carrying nothing."""
+    G = _bifurcating_network()
+    G.add_node(4, pos=(10.0, 0.0, 10.0))
+    G.add_edge(1, 4, key=0, length=10.0, diameter_um=6.0, branch_order="B03")
+    return G
+
+
+def test_a_blind_stub_does_not_turn_a_bifurcation_into_a_mixed_junction(monkeypatch):
+    """Regression: inside the loop's passes a blind stub's flow was the
+    pressure solve's rounding (up to about 1e-20 m^3/s on E14.5, either way),
+    so its junction had three outflows and was mixed, with no phase
+    separation. Every pass now sets the flows behind dead ends to exactly 0,
+    and the junction divides as the bifurcation it is."""
+    from haemolynx import graph as graph_module
+    from haemolynx.haemodynamics import haematocrit_distribution as module
+
+    real = module.set_edge_flows
+
+    def with_rounding(G, *args, **kwargs):
+        result = real(G, *args, **kwargs)
+        if G.has_edge(1, 4):
+            G.edges[1, 4, 0]["flow_signed"] = 1e-20  # the solve's rounding, out along the stub
+        return result
+
+    monkeypatch.setattr(module, "set_edge_flows", with_rounding)
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    settled = {}
+    for name, G in (("stub", _bifurcation_with_a_blind_stub()), ("none", _bifurcating_network())):
+        _seed_uniform_resistances(G, model)
+        graph_module.mark_flow_solved_edges(G, [0], [2, 3])
+        result = _iterate(G, model, max_iterations=30, tolerance=1e-4)
+        assert result["non_bifurcation_junctions"] == 0, name
+        settled[name] = G
+    assert settled["stub"].edges[1, 4, 0]["flow_signed"] == 0.0
+    for edge in ((1, 2, 0), (1, 3, 0)):
+        assert settled["stub"].edges[edge]["discharge_haematocrit"] == pytest.approx(
+            settled["none"].edges[edge]["discharge_haematocrit"], abs=1e-3
+        ), edge
+    assert settled["stub"].edges[1, 3, 0]["discharge_haematocrit"] < 0.45
+
+
+def test_the_solve_stage_marks_blind_ends_before_the_haematocrit_loop(monkeypatch):
+    """The stage marks the flow states before the loop, so its passes zero
+    the stub's flow too: the stage's own call, not a hand-marked graph."""
+    from haemolynx.haemodynamics import haematocrit_distribution as module
+
+    real = module.set_edge_flows
+    seen = []
+
+    def with_rounding(G, *args, **kwargs):
+        result = real(G, *args, **kwargs)
+        if G.has_edge(1, 4):
+            G.edges[1, 4, 0]["flow_signed"] = 1e-20
+        return result
+
+    def distribute(G, **kwargs):
+        seen.append(G.edges[1, 4, 0]["flow_signed"])
+        return real_distribute(G, **kwargs)
+
+    real_distribute = module.distribute_discharge_haematocrit
+    monkeypatch.setattr(module, "set_edge_flows", with_rounding)
+    monkeypatch.setattr(module, "distribute_discharge_haematocrit", distribute)
+    solution = _solve_bifurcation(True, graph=_bifurcation_with_a_blind_stub())
+    assert seen and set(seen) == {0.0}
+    assert solution.statistics["haematocrit_distribution"]["non_bifurcation_junctions"] == 0
+
+
+def test_the_haematocrit_loop_logs_its_repeated_passes_at_debug(caplog):
+    """Regression: every pass logged the whole resistance block (formula, law,
+    one line per table entry, summary) and the flow solve's own notes at
+    INFO, so 20 passes flooded the run log. They are said once at INFO --
+    by the model built before the loop and its first solve -- and every pass
+    after at DEBUG."""
+    import logging
+
+    with caplog.at_level(logging.DEBUG, logger="haemolynx"):
+        solution = _solve_bifurcation(True)
+    passes = solution.statistics["haematocrit_distribution"]["iterations"]
+    assert passes > 2
+
+    def said(text, level):
+        return sum(1 for r in caplog.records if r.levelno == level and text in r.getMessage())
+
+    for text in ("=== Poiseuille Resistance Calculation", "[flow-solve]"):
+        assert said(text, logging.INFO) == 1, text
+    assert said("=== Poiseuille Resistance Calculation", logging.DEBUG) == passes
+    # Each pass after the first, and the final solve.
+    assert said("[flow-solve]", logging.DEBUG) == passes
+    assert said("[haematocrit-distribution] iteration", logging.INFO) == passes - 1

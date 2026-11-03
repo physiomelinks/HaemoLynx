@@ -169,6 +169,18 @@ def open_end_candidates(G: nx.Graph, inlet_nodes: Sequence[Any], outlet_nodes: S
     return [n for n in open_end_nodes(G) if n in driven and n not in designated]
 
 
+def open_ends_in_effect(
+    model: Optional[str], G: nx.Graph, inlet_nodes: Sequence[Any], outlet_nodes: Sequence[Any]
+) -> list[Any]:
+    """The open ends *model* may give a condition (:func:`open_end_candidates`;
+    none under ``closed``). A vessel leading to one is on a path flow can take,
+    as the solve's flow marks count it: ``boundary_handling="remove_disconnected"``
+    and Post processing's prune keep it."""
+    if model in (None, CLOSED):
+        return []
+    return open_end_candidates(G, inlet_nodes, outlet_nodes)
+
+
 def _chain_resistance(G: nx.MultiGraph, tip: Any) -> Optional[float]:
     from haemolynx.graph.dead_ends import chain_to_junction
     from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
@@ -626,6 +638,7 @@ __all__ = [
     "open_end_conditions",
     "open_end_directions",
     "open_end_flows",
+    "open_ends_in_effect",
     "outlet_conditions",
     "terminal_resistance_conditions",
 ]

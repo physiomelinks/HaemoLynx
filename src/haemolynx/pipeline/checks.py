@@ -26,7 +26,7 @@ from haemolynx.graph.boundaries import (
 from haemolynx.graph.vessel_size_classes import check_size_thresholds, size_class_range
 from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
 from haemolynx.haemodynamics.viscosity import run_diameter_basis
-from haemolynx.haemodynamics.open_ends import CLOSED, ESTIMATED, TERMINAL_RESISTANCE
+from haemolynx.haemodynamics.open_ends import ESTIMATED, TERMINAL_RESISTANCE
 from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
@@ -658,9 +658,8 @@ def check_thick_vessel_restriction_prerequisites(
 
 def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
     """The Haemodynamics tab's values the solve would refuse, or that leave it
-    nothing to do: an open-end value its model cannot use, boundary pressures
-    that drive no flow or drive it from the outlets, and open ends
-    ``remove_disconnected`` takes away before ``open_end_model`` opens them."""
+    nothing to do: an open-end value its model cannot use, and boundary
+    pressures that drive no flow or drive it from the outlets."""
     report = CheckReport()
     if not settings.get("run_haemodynamics"):
         return report
@@ -677,12 +676,6 @@ def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
         report.add_error(
             f"open_end_estimate_shear_target_pa is {target}: the estimate scales its shear term "
             "by it, so it must be above 0. Leave it unset for the closed solve's median."
-        )
-    if settings.get("boundary_handling") == "remove_disconnected" and model not in (None, CLOSED):
-        report.add_warning(
-            f"open_end_model={model} has no effect with boundary_handling=remove_disconnected: "
-            "a vessel that leads only to vessels leaving the image reaches no outlet, so it is "
-            "removed before the open ends are given a condition."
         )
     inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
     if inlet is not None and outlet is not None and float(inlet) <= float(outlet):

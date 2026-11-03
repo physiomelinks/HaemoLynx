@@ -481,6 +481,32 @@ def test_run_from_the_haemodynamics_tab_applies_the_pruning(monkeypatch):
     assert seen["solve_boundaries"].inlet_nodes == [0]
 
 
+def test_continuing_with_the_haemodynamics_off_exports_no_earlier_flows(monkeypatch):
+    """Regression: unticking run_haemodynamics while a run waited at Post
+    processing, then Continue, left the earlier solve's resistances, flows,
+    flow states and pressures on the network, and the export wrote them. The
+    solve stage runs whenever the haemodynamics are off, and takes them off."""
+    solved = _solve_with_strays(**LEAVE).graph
+    assert all("flow_abs" in data and "resistance" in data for *_e, data in solved.edges(data=True))
+    real_solve = stages.solve
+    _stub_stages(monkeypatch)
+    monkeypatch.setattr(stages, "solve", real_solve)
+    resume = PipelineResume(
+        start_from="post_process", graph=solved, inlet_nodes=(0, 10), outlet_nodes=(2, 3)
+    )
+
+    run_pipeline_stages(
+        dict(run_haemodynamics=False), schema=None, start_from="post_process", resume=resume
+    )
+
+    left = {"flow_abs", "flow_signed", "pressure_drop", "resistance", "conductance",
+            graph_module.FLOW_SOLVED, graph_module.FLOW_STATE}
+    for *_edge, data in solved.edges(data=True):
+        assert not left & set(data)
+    assert all("pressure" not in data for _node, data in solved.nodes(data=True))
+    assert not {"haematocrit_model", "viscosity_law"} & set(solved.graph)
+
+
 # --- the diameters stage calibrates on what will be kept ---------------------
 
 
@@ -833,6 +859,58 @@ def test_remove_disconnected_solves_the_network_without_its_dead_ends(haematocri
     assert inflow == pytest.approx(
         solution.graph.edges[1, 2, 0]["flow_abs"] + solution.graph.edges[1, 3, 0]["flow_abs"]
     )
+
+
+def _solve_with_an_open_end(model: str, handling: dict):
+    """The bifurcation with vessel 1-8 running out through the image's y = 0
+    face (node 8 leaves the image), solved under *model* and *handling*."""
+    import numpy as np
+
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE
+    from haemolynx.pipeline import resolve_settings
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(
+        handling, run_haemodynamics=True, open_end_model=model, inlet_p_bc=1000.0, outlet_p_bc=0.0,
+        inlet_nodes=[0], outlet_nodes=[2, 3], all_diams_const=False,
+        diameter_by_branch_order={"B01": 15.0, "B02": 20.0, "B03": 8.0},
+        do_equiv_resistance_calculation=False,
+    )
+    settings = resolve_settings(values, schema=SCHEMA, config_path=None)
+    graph = _bifurcation_and_strays()
+    graph.remove_nodes_from([10, 11, 12, 20, 21])
+    graph.add_node(8, pos=np.asarray((0.0, -50.0, 50.0)), **{DEAD_END_KIND: LEAVES_IMAGE})
+    graph.add_edge(1, 8, key=0, length=50.0, branch_order="B03", diameter_um=8.0,
+                   voxels=[list(graph.nodes[1]["pos"]), [0.0, -50.0, 50.0]])
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3], resistance_node_pair=(0, 2), graph=graph)
+    calibrated = stages.edges_network_handling_keeps(settings, graph, boundaries)
+    model_ = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries)
+    solution = solve(settings, build_haemodynamic_model(settings, model_, SCHEMA), boundaries, SCHEMA)
+    return solution, calibrated
+
+
+@pytest.mark.parametrize("model", ["estimated", "terminal_resistance", "outlet"])
+def test_remove_disconnected_keeps_a_vessel_leaving_the_image_the_solve_opens(model):
+    """Regression: remove_disconnected deleted every vessel leading out of the
+    image -- a dead end that reaches no outlet -- before the open ends were
+    opened, so open_end_model did nothing under it. A vessel leaving the image
+    the model may open counts as an inlet and an outlet, as the solve's flow
+    marks count it: kept, opened and solved, and calibrated on by Diameters."""
+    removed, calibrated = _solve_with_an_open_end(model, REMOVE)
+    assert removed.graph.has_edge(1, 8)
+    assert (1, 8, 0) in calibrated
+    assert removed.statistics["open_ends"]["open_ends"] == 1
+    assert removed.graph.edges[1, 8, 0][graph_module.FLOW_SOLVED] is True
+    assert removed.graph.edges[1, 8, 0]["flow_abs"] > 0
+    left, _calibrated = _solve_with_an_open_end(model, LEAVE)
+    assert left.graph.edges[1, 8, 0]["flow_abs"] == pytest.approx(removed.graph.edges[1, 8, 0]["flow_abs"])
+
+
+def test_remove_disconnected_still_removes_a_vessel_leaving_the_image_when_closed():
+    removed, calibrated = _solve_with_an_open_end("closed", REMOVE)
+    assert not removed.graph.has_edge(1, 8) and 8 not in removed.graph
+    assert (1, 8, 0) not in calibrated
 
 
 DEAD_ENDS = [(1, 4), (4, 5), (2, 6), (6, 7), (2, 7)]

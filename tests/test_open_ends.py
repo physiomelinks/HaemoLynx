@@ -394,20 +394,65 @@ def test_a_shear_target_of_0_is_refused_rather_than_closing_the_open_ends():
         _run_solve(settings)
 
 
-def test_remove_disconnected_leaves_no_open_end_and_preflight_says_so():
-    """A vessel running out of the image ends in a node no inlet-to-outlet path
-    passes through, so remove_disconnected deletes it before the open ends
-    are given a condition: whatever open_end_model says does nothing."""
-    from haemolynx.pipeline.checks import check_haemodynamics
+def test_post_processings_prune_and_unsolved_list_keep_the_opened_open_ends():
+    """The Post processing tab's prune applies remove_disconnected's rule, and
+    its Unsolved pieces list the vessels the solve marks unsolved: a vessel
+    leading to an open end the solve opened is neither pruned nor listed.
+    Regression: both read the inlets and outlets alone, so the prune deleted
+    vessel 1-4 the estimate gave flow, and the list called it unsolved."""
+    from haemolynx.graph.network_review import find_unsolved_pieces
 
-    pruned, _stats = graph_module.remove_vessels_off_inlet_outlet_paths(_network(), [0], [3])
-    assert oe.open_end_candidates(_network(), [0], [3]) == [4]
-    assert oe.open_end_candidates(pruned, [0], [3]) == []
-    (warning,) = check_haemodynamics(_settings("estimated", boundary_handling="remove_disconnected")).warnings
-    assert "open_end_model=estimated has no effect" in warning
-    for quiet in (
-        _settings("closed", boundary_handling="remove_disconnected"),
-        _settings("estimated", boundary_handling="leave_unsolved"),
-        dict(_settings("estimated", boundary_handling="remove_disconnected"), run_haemodynamics=False),
-    ):
-        assert not check_haemodynamics(quiet).warnings
+    _s, G, _b = _run_solve(_settings("estimated"))
+    assert G.edges[1, 4, 0][graph_module.FLOW_SOLVED] is True
+    pruned, _stats = graph_module.prune_disconnected_branches(G, [0], [3], protected=[2])
+    assert pruned.has_edge(1, 4) and not pruned.has_edge(2, 5) and 6 not in pruned
+    listed = {frozenset(e[:2]) for item in find_unsolved_pieces(G, [0], [3]) for e in item.edges}
+    assert listed == {frozenset((2, 5)), frozenset((6, 7))}
+
+    _s, closed, _b = _run_solve(_settings("closed"))
+    pruned, _stats = graph_module.prune_disconnected_branches(closed, [0], [3], protected=[1, 2])
+    assert not pruned.has_edge(1, 4)
+    listed = {frozenset(e[:2]) for item in find_unsolved_pieces(closed, [0], [3]) for e in item.edges}
+    assert frozenset((1, 4)) in listed
+
+
+def test_the_estimate_is_handed_a_sparse_matrix_whatever_the_flow_solver(monkeypatch):
+    """The estimate converts its conductance matrix to sparse, so under the
+    dense flow solver it was handed an N x N array only to convert it. It is
+    handed the sparse one, and estimates the same conditions."""
+    import scipy.sparse as sp
+
+    real = oe.estimate_open_end_conditions
+    handed = []
+
+    def spy(G, conductance, node_list, **kwargs):
+        handed.append(sp.issparse(conductance))
+        return real(G, conductance, node_list, **kwargs)
+
+    monkeypatch.setattr(oe, "estimate_open_end_conditions", spy)
+    _s, G, _b = _run_solve(_settings("estimated"))  # the dense flow solver
+    assert handed == [True]
+    conductance, nodes = hd.build_conductance_matrix_from_graph(_network(), solver="dense")
+    from_dense = real(_network(), conductance, nodes, inlet_nodes=[0], outlet_nodes=[3],
+                      inlet_p_bc=P_IN, outlet_p_bc=P_OUT, ends=[4])
+    record = oe.OpenEndConditions.from_record(G.graph[oe.GRAPH_RECORD])
+    assert record.to_inlet == pytest.approx(from_dense.to_inlet, rel=1e-12)
+    assert record.to_outlet == pytest.approx(from_dense.to_outlet, rel=1e-12)
+
+
+def test_no_matrix_is_built_for_an_estimate_with_no_open_end(monkeypatch):
+    """With no vessel leaving the image, the estimated model builds nothing:
+    the flow solve's own matrix is the only one."""
+    real = hd.build_conductance_matrix_from_graph
+    built = []
+
+    def count(*args, **kwargs):
+        built.append(kwargs.get("solver"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hd, "build_conductance_matrix_from_graph", count)
+    G = _network()
+    G.nodes[4][DEAD_END_KIND] = "unknown"
+    stages.solve(_settings("estimated"), stages.HaemodynamicModel(graph=G),
+                 stages.BoundaryNodes(inlet_nodes=[0], outlet_nodes=[3], graph=G))
+    assert built == ["dense"]
