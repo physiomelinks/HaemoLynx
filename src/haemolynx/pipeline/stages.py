@@ -1240,12 +1240,14 @@ def _vessel_mask_sources(settings: Mapping[str, Any]) -> dict[str, tuple]:
 
 
 def _split_large_vessel_masks(
-    settings: Mapping[str, Any], large_arteriole_mask, large_venule_mask, voxel_size_xyz
+    settings: Mapping[str, Any], large_arteriole_mask, large_venule_mask, voxel_size_xyz, segmentation
 ) -> tuple:
     """``(large arteriole, large venule, small arteriole, small venule)``: the
     loaded large masks cut by width (``io.split_large_vessel_masks_by_diameter``),
     for a run whose small masks are cut from them
-    (``graph.small_vessel_masks_split_from_large``)."""
+    (``graph.small_vessel_masks_split_from_large``). The widths are read on
+    *segmentation*, the run's segmented image on the masks' grid, binary or
+    read as the run binarises it (:class:`_SegmentationBoxes`)."""
     if large_arteriole_mask is None:
         return large_arteriole_mask, large_venule_mask, None, None
     return io.split_large_vessel_masks_by_diameter(
@@ -1253,6 +1255,7 @@ def _split_large_vessel_masks(
         large_venule_mask,
         diameter_um=graph.large_vessel_mask_split_diameter_um(settings),
         voxel_size_xyz=voxel_size_xyz,
+        segmentation=segmentation,
         dilation_um=float(settings.get("large_vessel_mask_dilation_microns") or 0.0),
         use_memmap=bool(settings.get("use_memmap_loading", False)),
         memmap_directory=settings.get("memmap_directory"),
@@ -1325,7 +1328,7 @@ def thick_vessel_restriction_mask(
             io.load_and_validate_vessel_masks(**_vessel_mask_arguments(settings, "large"), **load)[:2]
         )
         if split:
-            cut = _split_large_vessel_masks(settings, *pairs["large"], voxel_size_xyz)
+            cut = _split_large_vessel_masks(settings, *pairs["large"], voxel_size_xyz, binary_image)
             pairs = {"large": cut[:2], "small": cut[2:]}
     if "small" in roles and "small" not in pairs:
         pairs["small"] = tuple(
@@ -2577,7 +2580,13 @@ def build_network(
             large_venule_mask,
             small_arteriole_mask,
             small_venule_mask,
-        ) = _split_large_vessel_masks(settings, large_arteriole_mask, large_venule_mask, main_voxel_size_xyz)
+        ) = _split_large_vessel_masks(
+            settings,
+            large_arteriole_mask,
+            large_venule_mask,
+            main_voxel_size_xyz,
+            _SegmentationBoxes(image, settings.get("input_path")),
+        )
     else:
         small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
             **_vessel_mask_arguments(mask_settings, "small"),
@@ -8800,7 +8809,11 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
         )
         if role == "large" and split is not None:
             loaded_arteriole, loaded_venule, *small = _split_large_vessel_masks(
-                settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz
+                settings,
+                loaded_arteriole,
+                loaded_venule,
+                volume.voxel_size_xyz,
+                _SegmentationBoxes(volume.image, settings.get("input_path")),
             )
             changes["small_arteriole_mask"], changes["small_venule_mask"] = as_read(*small)
         loaded_arteriole, loaded_venule = as_read(loaded_arteriole, loaded_venule)

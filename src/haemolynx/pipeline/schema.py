@@ -1330,8 +1330,10 @@ SCHEMA = Schema(
                 "(or venule) mask, and the rest becomes the small arteriole (or "
                 "venule) mask, used as small vessel masks are for the arteriole and "
                 "venule boundaries. A voxel is wide where a ball that wide fits in the "
-                "mask around it. Only while no small vessel masks are given; a global "
-                "mask splits into a global large and small mask"
+                "segmented image around it, centred in the same mask: the mask says "
+                "only which side a vessel is on, since a classifier's mask may be "
+                "thinner than the vessel. Only while no small vessel masks are given; "
+                "a global mask splits into a global large and small mask"
             ),
             section=_VESSEL_MASKS,
             requires=(
@@ -1349,9 +1351,9 @@ SCHEMA = Schema(
             placeholder="no default: state the width",
             help=(
                 "Split the large masks at this vessel width: wider stays large, "
-                "narrower becomes small. Read from each mask's own distance "
-                "transform before its load-time dilation "
-                "(large_vessel_mask_dilation_microns)"
+                "narrower becomes small. Read on the segmented image the skeleton "
+                "is made from, so neither the masks' own thickness nor their "
+                "load-time dilation (large_vessel_mask_dilation_microns) moves it"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,

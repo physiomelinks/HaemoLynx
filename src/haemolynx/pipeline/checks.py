@@ -446,10 +446,10 @@ def check_large_vessel_mask_split(settings: Mapping[str, Any]) -> CheckReport:
         return report
     report.add_pass(
         "large vessel masks split by width",
-        f"each large mask's part at least {diameter:g} um wide stays large, and the "
-        "rest is the small mask of its side, which assigns the arteriole and venule "
-        "boundaries as given small masks would, with the small-vessel settings as "
-        "they stand",
+        f"each large mask's part at least {diameter:g} um wide, read on the segmented "
+        "image, stays large, and the rest is the small mask of its side, which assigns "
+        "the arteriole and venule boundaries as given small masks would, with the "
+        "small-vessel settings as they stand",
     )
     return report
 
