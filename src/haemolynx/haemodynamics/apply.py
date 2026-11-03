@@ -13,7 +13,7 @@ import numpy as np
 from haemolynx import io
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
-from haemolynx.io.downsample import raw_volume_like_graph
+from haemolynx.io.downsample import raw_volume_like_graph, segmentation_like_graph
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.preprocessing.memmap_support import release_memmap_array
 from haemolynx.haemodynamics import fwhm_diameter
@@ -72,6 +72,11 @@ FALLBACK_ZERO_RESISTANCE_VALUE = 1e-6
 #: FWHM settings are named `fwhm_<parameter>` in the config, matching the
 #: measurement function's parameters one for one.
 FWHM_SETTING_PREFIX = "fwhm_"
+
+#: ``G.graph`` key: how the run's FWHM got its blur -- ``settings``,
+#: ``estimated`` or ``per_profile`` (fitted each profile's, holding none) --
+#: so vessels measured after an edit are fitted as the rest were.
+FWHM_PSF_SOURCE = "fwhm_psf_source"
 
 #: Seed used for the probabilistic pericyte cohort when the settings do not
 #: name one, so a run made through the library API repeats by default. The
@@ -291,6 +296,26 @@ def _cropped_like_graph(
     return cropped
 
 
+def load_edt_mask_volume_like_graph(
+    config: HaemodynamicsApplyConfig, G: nx.MultiGraph
+) -> np.ndarray | None:
+    """The run's segmentation (``edt_mask_path``, binarised), placed under
+    *G*'s positions as import placed it (see
+    :func:`haemolynx.io.downsample.segmentation_like_graph`), or ``None``
+    when no path is configured: what a run without the volume in memory
+    reads."""
+    volume = load_edt_mask_volume(config)
+    if volume is None:
+        return None
+    placed = segmentation_like_graph(
+        volume, G, description="EDT mask",
+        use_memmap=config.use_memmap, memmap_directory=config.memmap_directory,
+    )
+    if placed is not volume and isinstance(volume, np.memmap):
+        release_memmap_array(volume)
+    return placed
+
+
 def _fwhm_raw_channel(config: HaemodynamicsApplyConfig) -> int | None:
     """The channel of the FWHM raw image to read, or ``None`` for a single-channel file."""
     channel = config.fwhm_setting("fwhm_raw_channel")
@@ -455,9 +480,7 @@ def measure_mask_diameters(
 
     loaded = None
     if mask_volume is None:
-        mask_volume = loaded = _cropped_like_graph(
-            load_edt_mask_volume(config), G, config, "EDT mask"
-        )
+        mask_volume = loaded = load_edt_mask_volume_like_graph(config, G)
     if mask_volume is None:
         return {
             "skipped": True,
@@ -597,6 +620,7 @@ def _measure_raw_section_diameters(
         fallback_guide_um=float(config.fwhm_setting("fwhm_diameter_guess_um", None) or 4.0),
         calibration_edges=calibration_edges,
         calibration_workers=sections.default_worker_count(),
+        workers=sections.default_worker_count(),
         memmap_directory=config.memmap_directory,
     )
 
@@ -894,7 +918,8 @@ def assign_edge_diameters(
     keeps its measurement, and a table or class-median diameter follows its
     branch order. How the post_process stage brings hand-edited vessels in
     line: FWHM holds its blur at the PSF the run already recorded
-    (``G.graph["fwhm_psf_sigma_zyx"]``) rather than estimating it again, the
+    (``G.graph["fwhm_psf_sigma_zyx"]``), or fits each profile's where the run
+    held none (:data:`FWHM_PSF_SOURCE`), rather than estimating it again, the
     raw-section fit (where FWHM held none) and the ring fit read with the
     blur and wall theirs recorded (``raw_section_psf_sigma_zyx``,
     ``endothelial_psf_sigma_zyx``, ``endothelial_wall_um``), and the decoy
@@ -976,9 +1001,7 @@ def assign_edge_diameters(
         # No segmentation in memory (e.g. a resumed run): read it from
         # edt_mask_path -- the run's own segmented input -- once, for both
         # the EDT widths and FWHM's neighbouring-vessel stops.
-        mask_volume = loaded_mask = _cropped_like_graph(
-            load_edt_mask_volume(config), G, config, "EDT mask"
-        )
+        mask_volume = loaded_mask = load_edt_mask_volume_like_graph(config, G)
     try:
         return _assign_edge_diameters_binarised(
             G, config, summary, mask_volume, edges, calibration_edges, raw_volume=raw_volume,
@@ -1073,8 +1096,8 @@ def _assign_edge_diameters_with_mask(
     if config.use_edt_diameter_crosscheck and not measuring:
         use_edt_fallback = config.edt_diameter_prefer_over_table_on_fwhm_failure
     elif config.use_edt_diameter_crosscheck:
-        edt_mask = mask_volume if mask_volume is not None else _cropped_like_graph(
-            load_edt_mask_volume(config), G, config, "EDT mask"
+        edt_mask = (
+            mask_volume if mask_volume is not None else load_edt_mask_volume_like_graph(config, G)
         )
         if edt_mask is not None:
             summary["edt"] = _measure_edt_diameters(
@@ -1108,12 +1131,19 @@ def _assign_edge_diameters_with_mask(
             if recorded is not None:
                 psf = tuple(float(v) for v in recorded)
                 summary["fwhm_psf"] = {"source": "recorded", "psf_sigma_zyx": psf}
+            elif subset and G.graph.get(FWHM_PSF_SOURCE) == "per_profile":
+                # The run held no blur (none to estimate, or held off), and
+                # fitted each profile's: so are the edited vessels', rather
+                # than an estimate the rest were never measured with.
+                psf = None
+                summary["fwhm_psf"] = {"source": "recorded", "psf_sigma_zyx": None}
             else:
                 psf, psf_details = image_psf_for_fwhm(
                     G, config, raw_volume=raw_volume, vessel_mask=mask_volume,
                     edges=calibration_edges,
                 )
                 summary["fwhm_psf"] = psf_details
+                G.graph[FWHM_PSF_SOURCE] = psf_details.get("source")
                 if psf is not None:
                     G.graph["fwhm_psf_sigma_zyx"] = psf
                 else:

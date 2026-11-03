@@ -914,6 +914,40 @@ def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
     )
 
 
+#: The image blur pairs the Diameters stage reads, each with what reads it
+#: and the stain it is read for: a blur is read only as a pair.
+_DIAMETER_BLUR_PAIRS = (
+    ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um",
+     "FWHM and the raw-section fit", "endothelial"),
+    ("endothelial_psf_sigma_xy_um", "endothelial_psf_sigma_z_um",
+     "the endothelial ring fit", "plasma_column"),
+)
+
+
+def check_diameter_blur_pairs(settings: Mapping[str, Any]) -> CheckReport:
+    """Warn of an image blur set across the slices or along z, not both,
+    where diameters are measured from the raw image: each blur is read only
+    as a pair, so the run estimates both from the image and the one set is
+    not read -- said before the run rather than in its log."""
+    from haemolynx.pipeline.stages import measures_diameters_from_raw_image
+
+    report = CheckReport()
+    if not settings.get("run_haemodynamics", True) or not measures_diameters_from_raw_image(settings):
+        return report
+    for xy, z, readers, unread_for in _DIAMETER_BLUR_PAIRS:
+        if settings.get("raw_image_stain") == unread_for:
+            continue
+        given = [name for name in (xy, z) if settings.get(name) is not None]
+        if len(given) == 1:
+            other = z if given[0] == xy else xy
+            report.add_warning(
+                f"{given[0]} is set but {other} is not: {readers} read the image's blur only "
+                f"as a pair, so both are estimated from the image and {given[0]} is not read. "
+                f"Fix: set {other} too, or clear {given[0]}."
+            )
+    return report
+
+
 def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
     """``measure_tissue_volume`` needs a raw image -- its own, or the run's
     -- that is there, with a channel chosen if it has several."""
@@ -1375,6 +1409,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
     report.extend(check_raw_image(settings))
+    report.extend(check_diameter_blur_pairs(settings))
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))

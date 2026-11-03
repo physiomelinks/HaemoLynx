@@ -80,6 +80,7 @@ __all__ = [
     "mask_volume_like_graph",
     "raw_volume_like_graph",
     "record_on_graph",
+    "segmentation_like_graph",
     "spread_onto_grid",
 ]
 
@@ -543,6 +544,33 @@ def mask_volume_like_graph(
         return cropped
     reduced = downsample_volume(
         cropped, Downsample.from_record(record), reduce="max", description=description,
+        use_memmap=use_memmap, memmap_directory=memmap_directory,
+    )
+    _release_if_replaced(reduced, cropped, volume)
+    return reduced
+
+
+def segmentation_like_graph(
+    volume: np.ndarray,
+    G: Any,
+    *,
+    description: str,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> np.ndarray:
+    """The run's own segmentation read whole from disk, binarised by the
+    whole file's rule, placed on the network *G*'s grid as import placed it:
+    cut to the ``crop_on_import`` box, then reduced by block majority (not a
+    raw image's mean, nor another mask's max), so a run reading it again
+    reads the vessels its skeleton was made from."""
+    cropped = crop_volume_like_graph(
+        volume, G, description=description, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    record = getattr(G, "graph", {}).get(GRAPH_ATTRIBUTE) if G is not None else None
+    if not record:
+        return cropped
+    reduced = downsample_volume(
+        cropped, Downsample.from_record(record), reduce="majority", description=description,
         use_memmap=use_memmap, memmap_directory=memmap_directory,
     )
     _release_if_replaced(reduced, cropped, volume)

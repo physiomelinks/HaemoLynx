@@ -121,6 +121,31 @@ def test_a_neighbouring_vessel_is_left_out_of_the_fit():
     assert graph[0][1][0]["raw_section_diameter_um"] == pytest.approx(4.0, rel=0.15)
 
 
+def test_worker_processes_read_the_same_widths_as_one(monkeypatch):
+    """Regression: the fallback read every edge in this process, unlike the
+    mask's widths and the ring fit; its edges are now read in workers, with
+    the same widths, statuses and summary, in the same order."""
+    from haemolynx.haemodynamics import sections
+
+    monkeypatch.setattr(sections, "MIN_EDGES_FOR_WORKERS", 1)
+    raw, mask, lines = _render(
+        [(4.0, (0, 0, 1), (0, -10, 0)), (8.0, (0, 0, 1), (0, 10, 0))], seed=11
+    )
+    outcomes = []
+    for workers in (1, 2):
+        graph = _graph(lines, [4.0, 8.0])
+        graph.add_edge(4, 5, key=0, voxels=[(1.0, 1.0, 1.0)], length=0.0)  # skipped: no voxels
+        summary = _measure(graph, raw, mask, workers=workers)
+        outcomes.append((
+            [{k: v for k, v in d.items() if k.startswith("raw_section_")} for *_e, d in graph.edges(data=True)],
+            summary["edges_skipped"], summary["readings_rejected"], summary["edges_measured"],
+        ))
+
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0][3] == 2
+    assert outcomes[0][1] == [(4, 5, 0, "no_voxels")]
+
+
 def test_texture_with_no_lumen_in_it_is_not_given_a_width():
     """Speckled tissue fluorescence, no vessel: a lumen fitted to a blob of
     it stands only a fluctuation or two above the speckle round it, and not
