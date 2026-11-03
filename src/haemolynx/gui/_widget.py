@@ -16569,7 +16569,7 @@ def settings_widget(napari_viewer=None):
         report.value = (
             f"Saved the preset {preset.name} ({changes}) in {preset.path}\n"
             "Not kept, as they belong to one image: its files and folders, "
-            "channels, labels, voxel size, axis order, crop box, boundary nodes "
+            "channels, labels, voxel size, axis order, crop on import, boundary nodes "
             "and positions, and the switches reusing its cached outputs"
         )
         return True

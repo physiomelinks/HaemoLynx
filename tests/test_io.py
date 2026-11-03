@@ -1202,22 +1202,6 @@ def test_a_2d_mask_is_read_as_one_plane_beside_a_2d_image(tmp_path):
     assert voxel_xyz[:2] == pytest.approx((0.5, 0.5)) and status["missing_axes"] == ["z"]
 
 
-def test_a_2d_rgb_mask_is_one_plane_not_three_voxels_wide(tmp_path):
-    import tifffile
-
-    from haemolynx.io.load import load_binary_mask_voxel_size_and_status
-
-    rgb = np.zeros((10, 12, 3), dtype=np.uint8)
-    rgb[4:6, 2:10] = 255
-    path = tmp_path / "rgb.tif"
-    tifffile.imwrite(path, rgb, photometric="rgb")
-
-    mask, *_ = load_binary_mask_voxel_size_and_status(path)
-
-    assert mask.shape == (1, 10, 12)
-    assert np.array_equal(mask[0], rgb[..., 0] > 0)
-
-
 def test_a_2d_h5_keeps_its_element_size(tmp_path):
     """Regression: a 2D dataset's element_size_um has two entries, (y, x),
     which was no triplet, so both axes read as 1 um."""

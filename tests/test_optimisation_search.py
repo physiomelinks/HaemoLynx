@@ -1184,8 +1184,9 @@ def test_optimise_settings_auto_downsample_uses_the_time_budget_resolver(monkeyp
 
     recorded = {}
 
-    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, starting_values, restriction=None):
+    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, starting_values, restriction=None, min_factor=1):
         recorded["target_seconds"] = target_seconds
+        recorded["min_factor"] = min_factor
         recorded["use_thick_vessel_skeletonisation"] = starting_values["use_thick_vessel_skeletonisation"]
         return search_module._AutoDownsample(
             4, estimated_seconds=123.0, typical_radius_um=9.0, resolution_cap=4,

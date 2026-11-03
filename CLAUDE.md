@@ -1291,7 +1291,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   writes the panel's settings, those away from their defaults, to one YAML file per preset in the
   user's settings folder (`saved_preset_dir`, `HAEMOLYNX_PRESET_DIR`; the tests point it at an
   empty folder). `held_by_saved_presets` is the one rule for what a preset leaves out: files and
-  folders, one image's channels, labels, voxel size, axis order, crop box, nodes and vessels, and
+  folders, one image's channels, labels, voxel size, axis order, every crop setting, nodes and vessels, and
   the switches reusing cached outputs. Loading one is a whole set: what it names, every other
   setting it holds back to its default, the rest left as they are.
 ---

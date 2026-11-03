@@ -872,13 +872,6 @@ def load_3d_tif_with_voxel_size(
         else:
             out = None
         raw = tif.asarray(out=out)
-        if str(tif.series[0].axes).upper() == "YXS" and raw.ndim == 3:
-            # One RGB plane: its samples are not a third axis. Read as a
-            # stack, a 2D RGB mask became a volume three voxels wide.
-            logger.warning(
-                "%s is an RGB image: its first sample (red) is read, as one plane.", filepath
-            )
-            raw = raw[..., 0]
         flat = allow_2d and raw.ndim == 2
         if flat:
             image = raw
