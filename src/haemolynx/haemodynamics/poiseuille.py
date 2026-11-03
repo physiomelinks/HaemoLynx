@@ -897,6 +897,8 @@ class PoiseuilleModel:
         --------
         dict : Summary of resistance assignments
         """
+        from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
         results = {
             'edges_set': 0,
             'missing_branch_order': [],
@@ -906,6 +908,7 @@ class PoiseuilleModel:
             'invalid_diameter': [],
             'viscosity_calculations': {},  # Track viscosity for each diameter
             'used_fwhm_edge_diameter': 0,
+            'zero_resistance_bridges': 0,
         }
 
         logger.info("=== Poiseuille Resistance Calculation (Branch Order Based) ===")
@@ -932,6 +935,11 @@ class PoiseuilleModel:
             )
 
         for u, v, key, data in G.edges(keys=True, data=True):
+            if data.get(IS_ZERO_RESISTANCE):
+                # A thick-vessel bridge has no branch order and is no vessel:
+                # apply_final_resistance_overrides gives it its resistance.
+                results['zero_resistance_bridges'] += 1
+                continue
             # Check for branch order
             branch_order = data.get('branch_order', None)
             if branch_order is None:

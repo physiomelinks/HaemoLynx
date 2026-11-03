@@ -49,6 +49,7 @@ from haemolynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
 )
 from haemolynx.haemodynamics.haematocrit_distribution import (
+    DISCHARGE_HAEMATOCRIT_ATTR,
     JUNCTION_RULE_NO_SEPARATION,
     JUNCTION_RULE_SPLIT_JUNCTIONS,
     iterate_flow_and_haematocrit,
@@ -5647,9 +5648,16 @@ def build_haemodynamic_model(
     model: HaemodynamicModel,
     schema: Schema | None = None,
 ):
-    """Write Poiseuille resistance from diameters already on the graph."""
+    """Write Poiseuille resistance from diameters already on the graph.
+
+    A haematocrit an earlier solve distributed to each vessel (a solved
+    network post processed, edited or loaded) is dropped first: a fixed
+    model would compute its resistances from it, and a distributed one would
+    start from it rather than from the one value a fresh run starts from."""
     if not settings["run_haemodynamics"]:
         return model
+    for *_edge, data in model.graph.edges(data=True):
+        data.pop(DISCHARGE_HAEMATOCRIT_ATTR, None)
     if schema is None:
         from haemolynx.pipeline.schema import default_schema
 
@@ -6036,18 +6044,21 @@ def _open_end_conditions(settings: dict, G: nx.MultiGraph, flow_solver: str):
     conductance = node_list = None
     if model == open_ends.ESTIMATED:
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G, solver=flow_solver)
+    # Unset is the default; 0 is a value (a shear weight of 0 estimates by
+    # pressure alone), so neither is read with `or`.
+    multiple = _plain_optional_float(settings.get("open_end_terminal_resistance_multiple"))
+    weight = _plain_optional_float(settings.get("open_end_estimate_shear_weight"))
     conditions = open_ends.open_end_conditions(
         model, G,
         inlet_nodes=settings["inlet_nodes"], outlet_nodes=settings["outlet_nodes"],
         inlet_p_bc=float(settings["inlet_p_bc"]), outlet_p_bc=float(settings["outlet_p_bc"]),
         conductance=conductance, node_list=node_list,
-        terminal_resistance_multiple=float(
-            settings.get("open_end_terminal_resistance_multiple")
-            or open_ends.DEFAULT_TERMINAL_RESISTANCE_MULTIPLE
+        terminal_resistance_multiple=(
+            open_ends.DEFAULT_TERMINAL_RESISTANCE_MULTIPLE if multiple is None else multiple
         ),
         pressure_target_pa=_plain_optional_float(settings.get("open_end_estimate_pressure_target_pa")),
         shear_target_pa=_plain_optional_float(settings.get("open_end_estimate_shear_target_pa")),
-        shear_weight=float(settings.get("open_end_estimate_shear_weight") or open_ends.DEFAULT_SHEAR_WEIGHT),
+        shear_weight=open_ends.DEFAULT_SHEAR_WEIGHT if weight is None else weight,
     )
     open_ends.keep_on_graph(G, conditions)
     return conditions

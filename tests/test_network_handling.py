@@ -634,6 +634,57 @@ def test_the_connector_length_only_shows_with_split_junctions():
     assert setting.default == 0.0 and setting.unit == "um" and setting.advanced
 
 
+def _thick_vessel_with_two_bridges() -> nx.MultiGraph:
+    """Thick vessel 0-1-2 (inlet 0, outlet 2); two bridges leave its
+    centreline node 1 side by side, to capillaries draining to outlets 5 and
+    6: node 1 is a four-way junction, as bridges sharing one centreline node
+    make (thick_vessel_junctions._share_centreline_nodes)."""
+    import numpy as np
+
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    positions = {0: (0, 0, 0), 1: (0, 0, 50), 2: (0, 0, 100), 3: (0, 10, 48), 4: (0, 10, 52),
+                 5: (0, 40, 40), 6: (0, 40, 60)}
+    graph = nx.MultiGraph(image_voxel_size_zyx=(1.0, 1.0, 1.0))
+    for node, pos in positions.items():
+        graph.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v, order, diameter in ((0, 1, "B01", 30.0), (1, 2, "B01", 30.0), (1, 3, None, 30.0),
+                                  (1, 4, None, 30.0), (3, 5, "B02", 5.0), (4, 6, "B02", 5.0)):
+        extra = {"branch_order": order} if order else {IS_ZERO_RESISTANCE: True}
+        length = float(np.linalg.norm(graph.nodes[u]["pos"] - graph.nodes[v]["pos"]))
+        graph.add_edge(u, v, length=length, diameter_um=diameter,
+                       voxels=[list(graph.nodes[u]["pos"]), list(graph.nodes[v]["pos"])], **extra)
+    return graph
+
+
+def test_split_junctions_keeps_two_bridges_joined_to_their_thick_vessel():
+    """Regression: a connector peeling off two thick-vessel bridges took no
+    branch order -- a bridge has none -- so it got no resistance, and the
+    vessels beyond the bridges were cut off from the thick vessel: no flow.
+    Such a connector is a bridge too."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.pipeline import resolve_settings
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(SPLIT, inlet_p_bc=1000.0, outlet_p_bc=0.0, inlet_nodes=[0], outlet_nodes=[2, 5, 6],
+                  all_diams_const=False, diameter_by_branch_order={"B01": 30.0, "B02": 5.0},
+                  do_equiv_resistance_calculation=False)
+    settings = resolve_settings(values, schema=SCHEMA, config_path=None)
+    graph = _thick_vessel_with_two_bridges()
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 5, 6], graph=graph)
+    model = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries)
+    solved = solve(settings, build_haemodynamic_model(settings, model, SCHEMA), boundaries, SCHEMA).graph
+    for end in (5, 6):
+        (data,) = [d for _u, _v, d in solved.edges(end, data=True)]
+        assert data["flow_abs"] > 0, end
+    assert all(data.get("conductance") for _u, _v, data in solved.edges(data=True))
+    (connector,) = [
+        data for _u, _v, data in solved.edges(data=True) if data.get("junction_split_connector")
+    ]
+    assert connector.get(IS_ZERO_RESISTANCE) and connector.get("branch_order") is None
+
+
 def test_split_junctions_leaves_a_network_of_bifurcations_alone():
     graph = _four_way()
     graph.remove_edge(1, 4)

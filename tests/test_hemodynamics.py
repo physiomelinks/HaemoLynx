@@ -567,3 +567,47 @@ def test_flow_conservation_residuals_reports_an_imbalance():
 
     residuals = flow_conservation_residuals(G, boundary_nodes=[0, 2])
     assert residuals[1] == pytest.approx(-2.0)
+
+
+def test_a_thick_vessel_bridge_is_not_reported_as_missing_its_branch_order(caplog):
+    """Regression: a bridge has no branch order (apply_final_resistance_overrides
+    gives it its resistance), and every resistance pass -- each haematocrit
+    iteration among them -- warned of it as an edge left without one."""
+    import logging
+
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=10.0, branch_order="B01")
+    G.add_edge(1, 2, length=5.0, **{IS_ZERO_RESISTANCE: True})
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.poiseuille"):
+        _G, results = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances(G, {"B01": 5.0})
+    assert (results["edges_set"], results["zero_resistance_bridges"]) == (1, 1)
+    assert results["missing_branch_order"] == []
+    assert "missing branch_order" not in caplog.text
+    assert "resistance" not in G.edges[1, 2, 0]
+
+
+def test_the_boundary_pressures_grey_with_the_haemodynamics_and_preflight_checks_them():
+    """Regression: the two pressure rows were the only ones on the
+    Haemodynamics tab that stayed in effect with run_haemodynamics off,
+    though nothing reads them then. Preflight warns of pressures that drive
+    no flow, or drive it from the outlets."""
+    from haemolynx.gui.form import unmet_chain
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    schema = default_schema()
+    on = dict(schema.defaults(), run_haemodynamics=True)
+    off = dict(on, run_haemodynamics=False)
+    for name in ("inlet_p_bc", "outlet_p_bc"):
+        assert unmet_chain(schema, name, off) == ("run_haemodynamics",)
+        assert unmet_chain(schema, name, on) == ()
+    report = check_haemodynamics(on)
+    assert not report.warnings and not report.errors
+    (level,) = check_haemodynamics(dict(on, inlet_p_bc=1000.0, outlet_p_bc=1000.0)).warnings
+    assert "no pressure difference drives any flow" in level
+    (backwards,) = check_haemodynamics(dict(on, inlet_p_bc=500.0, outlet_p_bc=1000.0)).warnings
+    assert "against the branch orders" in backwards
+    assert not check_haemodynamics(dict(off, inlet_p_bc=500.0, outlet_p_bc=1000.0)).warnings

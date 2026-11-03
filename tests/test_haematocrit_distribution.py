@@ -665,14 +665,15 @@ def test_bifurcating_network_produces_a_pinned_median_haematocrit_signature():
 # --- end to end through the pipeline stages ---------------------------------
 
 
-def _solve_bifurcation(distribute: bool):
-    """`stages.build_haemodynamic_model` + `stages.solve` on the bifurcation,
-    with haematocrit_model distributed_iterative or fixed."""
+def _solve_bifurcation(distribute: bool, graph: nx.MultiGraph | None = None):
+    """`stages.build_haemodynamic_model` + `stages.solve` on the bifurcation
+    (or on *graph*, one an earlier solve left), with haematocrit_model
+    distributed_iterative or fixed."""
     from haemolynx.pipeline import BoundaryNodes, HaemodynamicModel, default_schema, resolve_settings
     from haemolynx.pipeline.stages import build_haemodynamic_model, solve
 
     schema = default_schema()
-    G = _bifurcating_network()
+    G = _bifurcating_network() if graph is None else graph
     G.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
     model = HaemodynamicModel(graph=G)
     boundaries = BoundaryNodes(
@@ -722,6 +723,26 @@ def test_solve_stage_with_the_toggle_on_converges_and_changes_resistances():
     assert on.graph[1][3][0]["resistance"] != pytest.approx(
         off.graph[1][3][0]["resistance"]
     )
+
+
+@pytest.mark.parametrize("distribute", [False, True], ids=["fixed", "distributed_iterative"])
+def test_a_network_solved_again_starts_from_no_distributed_haematocrit(distribute):
+    """Regression: build_haemodynamic_model read the discharge_haematocrit an
+    earlier distributed solve left on each vessel. A solved network solved
+    again (post processed, edited or loaded) with a fixed haematocrit kept it:
+    the narrow branch's resistance came out 20% low, and the stale value went
+    on to the VTK and the red-cell statistics. Distributed again, it started
+    from the last answer rather than from the inlet haematocrit, as a fresh
+    run does."""
+    fresh = _solve_bifurcation(distribute).graph
+    again = _solve_bifurcation(distribute, graph=_solve_bifurcation(True).graph).graph
+    for edge in fresh.edges(keys=True):
+        assert again.edges[edge]["resistance"] == fresh.edges[edge]["resistance"], edge
+        assert again.edges[edge].get("discharge_haematocrit") == fresh.edges[edge].get(
+            "discharge_haematocrit"
+        ), edge
+    if not distribute:
+        assert all("discharge_haematocrit" not in data for *_e, data in again.edges(data=True))
 
 
 @pytest.mark.parametrize("distribute", [False, True], ids=["fixed", "distributed_iterative"])

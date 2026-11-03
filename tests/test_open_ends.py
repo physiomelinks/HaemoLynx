@@ -354,3 +354,60 @@ def test_an_unsolved_graph_has_no_open_end_directions():
     G = nx.MultiGraph(open_end_conditions={"model": "outlet", "as_outlets": [1]})
     G.add_edge(0, 1)
     assert open_end_directions(G) == {}
+
+
+# --- the settings' values as given, and preflight --------------------------------
+
+
+def test_a_shear_weight_of_0_estimates_by_pressure_alone():
+    """Regression: the solve stage read the weight with ``or``, so 0 -- the
+    pressure target alone -- ran as the default 1."""
+    _s, by_pressure, _b = _run_solve(_settings("estimated", open_end_estimate_shear_weight=0.0))
+    _s, weighted, _b = _run_solve(_settings("estimated"))
+    record, default = by_pressure.graph[oe.GRAPH_RECORD]["info"], weighted.graph[oe.GRAPH_RECORD]["info"]
+    assert (record["shear_weight"], default["shear_weight"]) == (0.0, 1.0)
+    assert record["pressure_range_pa"] != pytest.approx(default["pressure_range_pa"])
+
+
+def test_a_terminal_multiple_of_0_is_refused_rather_than_run_at_10():
+    """Regression: 0 passes the schema's minimum, and the solve stage read it
+    with ``or``, so it drained every open end through 10 times its vessel's
+    resistance. Preflight refuses it, and the solve no longer swaps it."""
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    settings = _settings("terminal_resistance", open_end_terminal_resistance_multiple=0.0)
+    (error,) = check_haemodynamics(settings).errors
+    assert "open_end_terminal_resistance_multiple" in error
+    with pytest.raises(ValueError, match="must be positive"):
+        _run_solve(settings)
+
+
+def test_a_shear_target_of_0_is_refused_rather_than_closing_the_open_ends():
+    """Regression: a target set to 0 closed every open end, with a warning
+    blaming the closed solve for perfusing no vessel."""
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    settings = _settings("estimated", open_end_estimate_shear_target_pa=0.0)
+    (error,) = check_haemodynamics(settings).errors
+    assert "open_end_estimate_shear_target_pa" in error
+    with pytest.raises(ValueError, match="above 0"):
+        _run_solve(settings)
+
+
+def test_remove_disconnected_leaves_no_open_end_and_preflight_says_so():
+    """A vessel running out of the image ends in a node no inlet-to-outlet path
+    passes through, so remove_disconnected deletes it before the open ends
+    are given a condition: whatever open_end_model says does nothing."""
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    pruned, _stats = graph_module.remove_vessels_off_inlet_outlet_paths(_network(), [0], [3])
+    assert oe.open_end_candidates(_network(), [0], [3]) == [4]
+    assert oe.open_end_candidates(pruned, [0], [3]) == []
+    (warning,) = check_haemodynamics(_settings("estimated", boundary_handling="remove_disconnected")).warnings
+    assert "open_end_model=estimated has no effect" in warning
+    for quiet in (
+        _settings("closed", boundary_handling="remove_disconnected"),
+        _settings("estimated", boundary_handling="leave_unsolved"),
+        dict(_settings("estimated", boundary_handling="remove_disconnected"), run_haemodynamics=False),
+    ):
+        assert not check_haemodynamics(quiet).warnings

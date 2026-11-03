@@ -3169,6 +3169,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="outlet_p_bc",
@@ -3178,6 +3179,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="visualize_results",

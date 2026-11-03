@@ -6,7 +6,8 @@ closed dead end: no blood leaves through it, and every vessel that only leads
 to such ends carries no flow. ``open_end_model`` chooses what happens instead
 (PLAN_dead_ends.md, Phase 4):
 
-- ``closed`` -- nothing: no flow through any open end (the default, as before).
+- ``closed`` -- nothing: no flow through any open end (as before the models;
+  ``estimated`` is the setting's default).
 - ``terminal_resistance`` -- each open end drains through a resistance to the
   outlet pressure: *k* times the resistance of its own vessel (the chain from
   the open end to its junction), *k* being
@@ -382,9 +383,16 @@ def estimate_open_end_conditions(
     -- so *shear_weight* is how much the shear target counts against the
     pressure target. *p0* and *tau0* default to the closed solve's
     length-weighted mean pressure and median wall shear stress over the
-    vessels it perfuses.
+    vessels it perfuses. A *shear_target_pa* given must be above 0: the shear
+    term is scaled by it.
     """
     from scipy.sparse.linalg import spsolve
+
+    if shear_target_pa is not None and not float(shear_target_pa) > 0:
+        raise ValueError(
+            f"open_end_estimate_shear_target_pa must be above 0, got {shear_target_pa}; "
+            "leave it unset for the closed solve's median"
+        )
 
     from .resistance import calc_laplacian_from_conductance_matrix, reachable_through_conductances
 

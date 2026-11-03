@@ -439,9 +439,9 @@ boundary_assignment:
 # Solver and output
 # ------------------------------------------------------------------------
 solver_and_output:
-  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   inlet_p_bc: 4500.0
-  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   outlet_p_bc: 1000.0
   # Write IDE plot files (matplotlib PNG and Plotly HTML, including final_graph_3d.html and the skeleton's projections) into base_plot_dir/{image stem}. Off skips all of that production
   visualize_results: false

@@ -745,7 +745,8 @@ def split_high_degree_junctions(
     each connector also takes a ``branch_order`` here -- without one it would
     get no resistance. It takes the order the two vessels peeled onto it
     share, else the wider one's: the connector is the first stretch of their
-    common trunk.
+    common trunk. A connector peeling off thick-vessel bridges alone has no
+    order to take, and is a bridge itself.
 
     Without *connector_length_um*, each junction's connectors are as long as
     its vessels are wide (:func:`mean_incident_diameter`, which is also the
@@ -774,6 +775,11 @@ def split_high_degree_junctions(
                     connector = data
                 else:
                     peeled.append(data)
+            if connector is not None and peeled and all(_is_bridge(data) for data in peeled):
+                # Bridges alone, into a thick vessel's lumen: their common
+                # trunk is one too, given its resistance as theirs is.
+                connector[IS_ZERO_RESISTANCE] = True
+                continue
             labelled = [data for data in peeled if data.get("branch_order") is not None]
             if connector is None or not labelled:
                 continue
