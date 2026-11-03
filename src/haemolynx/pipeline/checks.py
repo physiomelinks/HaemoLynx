@@ -1322,7 +1322,9 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
         "skeleton_thick_vessel_restrict_to_mask", "off"
     ) not in ("off", None):
         report.add_warning("skeleton_thick_vessel_restrict_to_mask is not read for a synthetic network: nothing is skeletonised.")
-    for name in ("do_skeletonize", "do_graph_building"):
+    # do_graph_building needs a segmented image (its row greys), so the
+    # schema's own check says it is not in effect.
+    for name in ("do_skeletonize",):
         if settings.get(name, True) is False:
             report.add_warning(f"{name} is off but a synthetic network is drawn every run; nothing is read back.")
     if not network_surrounds_image(settings):  # a surround's is planned with its shell

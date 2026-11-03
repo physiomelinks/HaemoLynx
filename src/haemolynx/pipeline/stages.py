@@ -24,8 +24,10 @@ per topology step inside graph building.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
+import os
 import pickle
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -802,8 +804,7 @@ def _build_synthetic_network(
         stem = run_stem(settings)
         if stem is not None:
             graph_path = volume.output_dir / f"{stem}_graph.pkl"
-            with graph_path.open("wb") as handle:
-                pickle.dump(G, handle)
+            write_pickle_whole(G, graph_path)
             logger.info(f"Saved the synthetic network to: {graph_path}")
     _record_graph_voxel_metadata(G, volume.voxel_size_xyz, volume.voxel_size_zyx, None, None, None, None)
     return VesselNetwork(graph=G, volume=volume)
@@ -2021,12 +2022,15 @@ def _write_run_final_graph_3d_html(
 
 def _log_graph_consistency_diagnostics(
     settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx,
-    downsample: Downsample | None = None,
+    downsample: Downsample | None = None, mask_support=None,
 ) -> None:
     """The four read-only graph checks build_network logs. They never change
     G's nodes or edges; the lumen-artefact report's counts are kept on
     ``G.graph`` (``graph.LUMEN_ARTEFACT_COUNTS``), and the run's manifest
-    repeats them."""
+    repeats them. The report reads the mask through *mask_support* (the
+    build's, when it has one) held to the run's bridge limits, as the
+    clean-up judged it: with the defaults it counted loops the clean-up had
+    kept by the run's own limits, and packed the mask a second time."""
     # How much of the skeleton the graph still traces -- see
     # graph.diagnostics.diagnose_skeleton_graph_consistency.
     graph_consistency = graph.diagnose_skeleton_graph_consistency(
@@ -2076,8 +2080,17 @@ def _log_graph_consistency_diagnostics(
     # one lumen, loops inside one, dead ends by kind -- see
     # graph.diagnostics.diagnose_lumen_artefacts. On the graph that is saved,
     # after the smoothing and the thick-vessel split.
+    gap_um = float(settings["bridge_max_background_gap_um"])
+    fraction = float(settings["bridge_min_mask_fraction"])
+    if mask_support is not None:
+        mask_support = mask_support.limited_to(gap_um, fraction)
+    else:
+        mask_support = preprocessing.MaskSupport(
+            _to_binary_volume_for_skeletonization(image), voxel_size_zyx,
+            max_background_gap_um=gap_um, min_mask_fraction=fraction,
+        )
     artefacts = graph.diagnose_lumen_artefacts(
-        G, image, voxel_size_zyx=voxel_size_zyx,
+        G, image, voxel_size_zyx=voxel_size_zyx, mask_support=mask_support,
         stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     G.graph[graph.LUMEN_ARTEFACT_COUNTS] = graph.lumen_artefact_counts(artefacts)
@@ -2357,6 +2370,73 @@ def network_context(
     return context
 
 
+#: What graph building took out and drew, as its steps keep it on the graph
+#: (``G.graph``): repeated in the run's manifest (``checks.graph_building``),
+#: where a run's outputs had no word of what remove_interior_dead_ends or the
+#: removal of pieces without a junction took.
+GRAPH_BUILDING_COUNTS: tuple[str, ...] = (
+    "edges_off_mask_removed",
+    "parallel_lumen_edges_removed",
+    "parallel_lumen_edges_rewired",
+    "doubled_stretches_resolved",
+    "recovered_joins",
+    "recovered_dead_ends_removed",
+    "recovered_one_ended_removed",
+    "interior_dead_ends_removed",
+    "interior_dead_ends_removed_um",
+    "interior_recovery_drawn_um",
+    "interior_recovery_kept_um",
+    "interior_dead_end_junctions_merged",
+    "pieces_without_junction_removed",
+    "pieces_without_junction_removed_um",
+)
+
+
+def graph_building_counts(G: nx.Graph) -> dict[str, float | int]:
+    """The :data:`GRAPH_BUILDING_COUNTS` *G* carries, as plain numbers."""
+    counts = {}
+    for name in GRAPH_BUILDING_COUNTS:
+        value = G.graph.get(name)
+        if value is not None:
+            counts[name] = int(value) if float(value).is_integer() and not name.endswith("_um") else float(value)
+    return counts
+
+
+#: What :func:`build_network` reports after its last step, saving the graph
+#: and checking it, as steps of its own: a cancelled run stops at each, and
+#: the step bar does not stand finished while they run.
+BUILD_TAIL_STEPS: tuple[str, ...] = ("dead-end kinds", "graph saved", "consistency checks")
+
+
+def finish_step_labels(settings: Mapping[str, Any], context: NetworkContext) -> list[str]:
+    """The steps :func:`finish_network_graph` will report for *settings* and
+    *context*, in the order it reports them: a progress bar needs the count
+    before the first step lands, as ``graph.STEP_LABELS`` gives the build's."""
+    masked = context.binary_mask is not None
+    supported = masked and bool(settings["bridge_require_mask_support"])
+    smooth = bool(settings["smooth_centrelines"])
+    labels = []
+    if smooth:
+        labels.append("centreline smoothing")
+        if masked:
+            labels.append("consolidate_lumen after centreline smoothing")
+    if context.thick_vessel_mask is not None:
+        labels.append("thick-vessel split")
+        if masked:
+            labels.append("consolidate_lumen after the thick-vessel split")
+    if settings.get("retrace_lost_skeleton") and _short_loop_keep_hole_um(settings) > 0 and supported:
+        labels.append("skeleton re-trace")
+    if smooth:
+        labels.append("smoothing of straight steps")
+    if settings.get("remove_interior_dead_ends") and supported:
+        labels.append("removal and recovery of interior dead ends")
+    if settings.get("remove_interior_dead_ends_and_merge") and masked:
+        labels.append("removal of interior dead ends and merge of the junctions left")
+    if settings.get("remove_pieces_without_junction"):
+        labels.append("removal of pieces with no junction")
+    return labels
+
+
 def finish_network_graph(
     G: nx.MultiGraph,
     skeleton: np.ndarray,
@@ -2364,6 +2444,7 @@ def finish_network_graph(
     context: NetworkContext,
     *,
     edges_after_step: list | None = None,
+    step_callback: Callable[[nx.MultiGraph, str], None] | None = None,
 ) -> nx.MultiGraph:
     """Every step :func:`build_network` takes after
     ``graph.build_graph_from_skeleton``: the centreline smoothing, the
@@ -2371,8 +2452,18 @@ def finish_network_graph(
     that, the skeleton re-trace, the smoothing of straight steps, and the
     optional removal of interior dead ends and of pieces with no junction.
     The graph a run saves, and the one a settings-optimiser trial scores.
-    *edges_after_step* (a list) is given each step's label and edge count."""
+    *edges_after_step* (a list) is given each step's label and edge count;
+    *step_callback*, ``(G, label)`` as graph building's own, is called
+    instead after each (the labels :func:`finish_step_labels` names)."""
     steps = edges_after_step if edges_after_step is not None else []
+
+    def finished(label: str) -> None:
+        # Reported as each lands, as graph building's steps are: where a
+        # cancelled run stops, and what a watcher sees while it runs.
+        if step_callback is not None:
+            step_callback(G, label)
+        else:
+            steps.append((label, G.number_of_edges()))
     binary_mask = context.binary_mask
     voxel_size_zyx = context.voxel_size_zyx
     radius_at = context.radius_at
@@ -2389,6 +2480,7 @@ def finish_network_graph(
             **centreline_smoothing_arguments(settings),
             radius_at=radius_at,
         )
+        finished("centreline smoothing")
     # Smoothing moves every centreline, so what graph building's last
     # step judged is judged again on the curves that are saved: on E14.5
     # smoothing alone turned 2 loops inside one lumen into 12. The same
@@ -2418,7 +2510,7 @@ def finish_network_graph(
         )
         if settings["smooth_centrelines"]:
             G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
-            steps.append(("consolidate_lumen after centreline smoothing", G.number_of_edges()))
+            finished("consolidate_lumen after centreline smoothing")
     # After every topology step and the centreline smoothing above: a
     # vessel joined to a thick one runs on through its lumen with no
     # marker of where the vessel ends and the thick vessel begins. Each
@@ -2435,10 +2527,10 @@ def finish_network_graph(
             **thick_junction_bridge_arguments(settings),
             mask_support=context.mask_support, tree_radius_um=context.thick_tree_radius,
         )
-        steps.append(("thick-vessel split", G.number_of_edges()))
+        finished("thick-vessel split")
         if lumen_cleanup is not None:
             G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
-            steps.append(("consolidate_lumen after the thick-vessel split", G.number_of_edges()))
+            finished("consolidate_lumen after the thick-vessel split")
     # Skeleton the clean-up took round a wide hole, drawn back after the last
     # clean-up so no rule takes it again (Harvey's grid N): the pair and
     # in-lumen loop rules never read the hole a loop runs round. A hole limit
@@ -2462,7 +2554,7 @@ def finish_network_graph(
                 radius_at=radius_at,
                 edges=retraced,
             )
-        steps.append(("skeleton re-trace", G.number_of_edges()))
+        finished("skeleton re-trace")
     # The clean-ups after smoothing join a cut piece to the vessel it
     # doubled with a straight chord across the lumen: those vessels only
     # are smoothed again (PLAN_bridging.md 6b).
@@ -2474,6 +2566,7 @@ def finish_network_graph(
             **centreline_smoothing_arguments(settings),
             radius_at=radius_at,
         )
+        finished("smoothing of straight steps")
     # Interior dead ends out, the mask they leave uncovered recovered as
     # vessels joined at both ends, and the clean-up run again (Harvey's
     # grids G5, L1 and L2, 2026-10-21; off by default).
@@ -2487,7 +2580,7 @@ def finish_network_graph(
             radius_at=radius_at, cleanup=lumen_cleanup, thick_mask=context.thick_vessel_mask,
             thick_tree=context.thick_tree, thick_tree_radius=context.thick_tree_radius,
         )
-        steps.append(("removal and recovery of interior dead ends", G.number_of_edges()))
+        finished("removal and recovery of interior dead ends")
     # Interior dead ends out with nothing traced back, and each junction that
     # leaves with two vessels merged into one vessel, beside a junction of
     # four vessels too, where the build's own merge leaves it.
@@ -2504,7 +2597,7 @@ def finish_network_graph(
             "with two vessels; %d stay, a vessel meeting a thick-vessel bridge or a loop.",
             removed["dead_ends"], removed["length_um"], removed["merged"], removed["left_degree_2"],
         )
-        steps.append(("removal of interior dead ends and merge of the junctions left", G.number_of_edges()))
+        finished("removal of interior dead ends and merge of the junctions left")
     # Pieces with no junction (their dead ends are graph.dead_ends'
     # island ends), taken out last so no step after rejoins or re-makes
     # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
@@ -2517,7 +2610,7 @@ def finish_network_graph(
             "Removed %d piece(s) with no junction: %d vessel(s), %.0f um of centreline.",
             removed["pieces"], removed["vessels"], removed["length_um"],
         )
-        steps.append(("removal of pieces with no junction", G.number_of_edges()))
+        finished("removal of pieces with no junction")
     return G
 
 
@@ -2549,68 +2642,85 @@ def build_network(
     voxel_size_zyx = volume.voxel_size_zyx
     graph_path = output_dir / f"{run_stem(settings)}_graph.pkl"
 
-    # The vessel-mask and segmentation settings go in as a group; each role
-    # picks the ones it uses. `io.VESSEL_MASK_SETTINGS` lists which those are.
-    mask_settings = {
-        **schema.section_values(settings, "Vessel masks"),
-        **schema.section_values(settings, "Input and segmentation"),
-        "use_memmap_loading": settings["use_memmap_loading"],
-        "memmap_directory": settings["memmap_directory"],
-    }
-    (
-        large_arteriole_mask,
-        large_venule_mask,
-        large_arteriole_mask_voxel_size,
-        large_venule_mask_voxel_size,
-    ) = io.load_and_validate_vessel_masks(
-        **_vessel_mask_arguments(mask_settings, "large"),
-        image_shape=image.shape,
-        main_voxel_size_xyz=main_voxel_size_xyz,
-        crop=getattr(volume, "crop", None),
-        downsample=getattr(volume, "downsample", None),
-    )
-    mask_split_diameter_um = graph.large_vessel_mask_split_diameter_um(settings)
-    if mask_split_diameter_um is not None:
-        # The small masks are the large ones' narrow parts, not files.
+    def load_vessel_masks():
+        """The run's vessel masks, loaded once the graph is: graph building
+        reads none of them, and they were held through its peak memory."""
+        # The vessel-mask and segmentation settings go in as a group; each role
+        # picks the ones it uses. `io.VESSEL_MASK_SETTINGS` lists which those are.
+        mask_settings = {
+            **schema.section_values(settings, "Vessel masks"),
+            **schema.section_values(settings, "Input and segmentation"),
+            "use_memmap_loading": settings["use_memmap_loading"],
+            "memmap_directory": settings["memmap_directory"],
+        }
         (
             large_arteriole_mask,
             large_venule_mask,
-            small_arteriole_mask,
-            small_venule_mask,
-        ) = _split_large_vessel_masks(settings, large_arteriole_mask, large_venule_mask, main_voxel_size_xyz)
-    else:
-        small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
-            **_vessel_mask_arguments(mask_settings, "small"),
+            large_arteriole_mask_voxel_size,
+            large_venule_mask_voxel_size,
+        ) = io.load_and_validate_vessel_masks(
+            **_vessel_mask_arguments(mask_settings, "large"),
             image_shape=image.shape,
             main_voxel_size_xyz=main_voxel_size_xyz,
             crop=getattr(volume, "crop", None),
             downsample=getattr(volume, "downsample", None),
-            loaded_message_suffix=(
-                f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
-            ),
         )
-    if io.vessel_masks_are_global(settings):
-        # One role given a global mask makes every vessel's class unknown, so
-        # a role still given an arteriole/venule pair is one mask too.
-        for role, pair in (
-            ("large", (large_arteriole_mask, large_venule_mask)),
-            ("small", (small_arteriole_mask, small_venule_mask)),
-        ):
-            if pair[1] is not None:
-                logger.warning(
-                    f"The {role}-vessel arteriole and venule masks are read as one "
-                    f"global {role}-vessel mask: the other role's mask is global, so "
-                    "no vessel is classed arteriole or venule."
-                )
-        on_disk = dict(use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"])
-        large_arteriole_mask = io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask, **on_disk)
-        small_arteriole_mask = io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask, **on_disk)
-        large_venule_mask = small_venule_mask = None
-        large_venule_mask_voxel_size = None
+        mask_split_diameter_um = graph.large_vessel_mask_split_diameter_um(settings)
+        if mask_split_diameter_um is not None:
+            # The small masks are the large ones' narrow parts, not files.
+            (
+                large_arteriole_mask,
+                large_venule_mask,
+                small_arteriole_mask,
+                small_venule_mask,
+            ) = _split_large_vessel_masks(settings, large_arteriole_mask, large_venule_mask, main_voxel_size_xyz)
+        else:
+            small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
+                **_vessel_mask_arguments(mask_settings, "small"),
+                image_shape=image.shape,
+                main_voxel_size_xyz=main_voxel_size_xyz,
+                crop=getattr(volume, "crop", None),
+                downsample=getattr(volume, "downsample", None),
+                loaded_message_suffix=(
+                    f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
+                ),
+            )
+        if io.vessel_masks_are_global(settings):
+            # One role given a global mask makes every vessel's class unknown, so
+            # a role still given an arteriole/venule pair is one mask too.
+            for role, pair in (
+                ("large", (large_arteriole_mask, large_venule_mask)),
+                ("small", (small_arteriole_mask, small_venule_mask)),
+            ):
+                if pair[1] is not None:
+                    logger.warning(
+                        f"The {role}-vessel arteriole and venule masks are read as one "
+                        f"global {role}-vessel mask: the other role's mask is global, so "
+                        "no vessel is classed arteriole or venule."
+                    )
+            on_disk = dict(use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"])
+            large_arteriole_mask = io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask, **on_disk)
+            small_arteriole_mask = io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask, **on_disk)
+            large_venule_mask = small_venule_mask = None
+            large_venule_mask_voxel_size = None
+        return (
+            large_arteriole_mask, large_venule_mask, small_arteriole_mask, small_venule_mask,
+            large_arteriole_mask_voxel_size, large_venule_mask_voxel_size, mask_split_diameter_um,
+        )
 
     if resumed_graph is not None:
         # Its consistency checks and plots were made when it was built.
         logger.info("Resuming with the network already built; not building or loading one.")
+        # Built on another crop box or grid, its positions are off this image.
+        _check_saved_graph_fits_image(
+            resumed_graph, "The resumed network", image.shape if image is not None else skeleton.shape,
+            voxel_size_zyx, getattr(volume, "crop", None),
+            remedy="Run from Skeletonise or Graph to build it again on this image.",
+        )
+        (
+            large_arteriole_mask, large_venule_mask, small_arteriole_mask, small_venule_mask,
+            large_arteriole_mask_voxel_size, large_venule_mask_voxel_size, mask_split_diameter_um,
+        ) = load_vessel_masks()
         _record_graph_voxel_metadata(
             resumed_graph, main_voxel_size_xyz, voxel_size_zyx,
             large_arteriole_mask, large_venule_mask,
@@ -2650,17 +2760,24 @@ def build_network(
         # The vessels left after each step, so a build that ends with none
         # can say which step took the last one.
         edges_after_step: list[tuple[str, int]] = []
+        # Every step this stage reports, in order: the build's thirteen, the
+        # finish's (finish_step_labels), then saving and checking the graph.
+        # Each is where a cancelled run stops.
+        step_labels: list[str] = list(graph.STEP_LABELS)
 
-        def _graph_build_step_callback(graph_obj, label: str) -> None:
+        def _graph_build_step_callback(graph_obj, label: str, *, draw: bool = True) -> None:
             edges_after_step.append((label, graph_obj.number_of_edges()))
             # Report before drawing: the snapshots below are the slow part of
             # this step, so a watcher should see it tick over on arrival.
             if progress is not None:
+                done = len(edges_after_step)
                 progress.step(
                     label,
-                    total=len(graph.STEP_LABELS),
-                    next_step=graph.assemble.step_after(label),
+                    total=len(step_labels),
+                    next_step=step_labels[done] if done < len(step_labels) else None,
                 )
+            if not draw:
+                return
             # The graph as it stands, for anyone drawing the repair as it
             # happens. It is mid-repair and will change again, which is why it
             # goes out here rather than being kept.
@@ -2700,6 +2817,7 @@ def build_network(
             thick_centreline=getattr(volume, "thick_vessel_centreline", None),
         )
         radius_at, mask_support = context.radius_at, context.mask_support
+        step_labels[:] = [*graph.STEP_LABELS, *finish_step_labels(settings, context), *BUILD_TAIL_STEPS]
         G = graph.build_graph_from_skeleton(
             skeleton,
             voxel_size=voxel_size_zyx,
@@ -2710,7 +2828,7 @@ def build_network(
             mask_support=mask_support,
             **graph_build_arguments(settings),
         )
-        G = finish_network_graph(G, skeleton, settings, context, edges_after_step=edges_after_step)
+        G = finish_network_graph(G, skeleton, settings, context, step_callback=_graph_build_step_callback)
         if context.thick_vessel_mask is not None and G.number_of_edges():
             _log_thick_vessel_bridge_shapes(G, context, settings)
 
@@ -2727,13 +2845,23 @@ def build_network(
         # saved while the mask is still at hand: those leaving the image are
         # what the flow's open ends are put on, the rest what the review lists.
         graph.dead_ends.record_image_extent(G, skeleton.shape, voxel_size_zyx)
+        raw_refused = None
         if binary_mask is not None and no_vessels is None:
             mark_dead_end_kinds(settings, G, context)
-            _record_raw_evidence(
-                settings, G, binary_mask, voxel_size_zyx,
-                getattr(volume, "crop", None), getattr(volume, "downsample", None),
-            )
+            try:
+                _record_raw_evidence(
+                    settings, G, binary_mask, voxel_size_zyx,
+                    getattr(volume, "crop", None), getattr(volume, "downsample", None),
+                )
+            except (OSError, ValueError) as error:
+                # Refused, as a raw image that does not lie on the segmentation
+                # always is, but once the graph is saved: refused here, the
+                # whole build was lost with it.
+                raw_refused = error
 
+        # The consistency checks read the mask through the build's support
+        # (in RAM; the low-RAM option skips them), not one packed again.
+        report_support = None if settings["use_memmap_loading"] else context.mask_support
         if binary_mask is not None:
             # The support holds the mask's bits and surface tree: let them go
             # with the mask.
@@ -2743,11 +2871,23 @@ def build_network(
         if no_vessels is not None:
             raise no_vessels
 
-        # Saved with the box it was built in, so a run loading it can tell.
+        # Saved with the box it was built in and the skeleton it was built
+        # from, so a run loading it can tell.
         _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
-        with graph_path.open("wb") as f:
-            pickle.dump(G, f)
+        G.graph[SKELETON_DIGEST] = skeleton_digest(skeleton)
+        _graph_build_step_callback(G, BUILD_TAIL_STEPS[0], draw=False)
+        # Written whole or not at all: a cancelled or failed save never leaves
+        # half a graph for do_graph_building off to load.
+        write_pickle_whole(G, graph_path)
         logger.info(f"Saved graph to: {graph_path}")
+        if raw_refused is not None:
+            logger.warning(
+                f"The graph was saved to {graph_path} before the raw image was refused: with the "
+                "raw image put right (or cleared), do_graph_building off loads it rather than "
+                "building it again."
+            )
+            raise raw_refused
+        _graph_build_step_callback(G, BUILD_TAIL_STEPS[1], draw=False)
     else:
         if not graph_path.exists():
             raise FileNotFoundError(
@@ -2763,10 +2903,16 @@ def build_network(
                 "Turn do_graph_building on to build it again from the skeleton."
             )
         _check_saved_graph_fits_image(
-            G, graph_path, image.shape if image is not None else skeleton.shape, voxel_size_zyx,
-            getattr(volume, "crop", None),
+            G, f"The saved graph {graph_path}", image.shape if image is not None else skeleton.shape,
+            voxel_size_zyx, getattr(volume, "crop", None),
         )
+        _warn_if_built_from_another_skeleton(G, graph_path, skeleton)
+        report_support = None
 
+    (
+        large_arteriole_mask, large_venule_mask, small_arteriole_mask, small_venule_mask,
+        large_arteriole_mask_voxel_size, large_venule_mask_voxel_size, mask_split_diameter_um,
+    ) = load_vessel_masks()
     _record_graph_voxel_metadata(
         G, main_voxel_size_xyz, voxel_size_zyx,
         large_arteriole_mask, large_venule_mask,
@@ -2797,8 +2943,12 @@ def build_network(
         G.graph.pop(graph.LUMEN_ARTEFACT_COUNTS, None)
     else:
         _log_graph_consistency_diagnostics(
-            settings, G, skeleton, image, voxel_size_zyx, downsample=volume.downsample
+            settings, G, skeleton, image, voxel_size_zyx, downsample=volume.downsample,
+            mask_support=report_support,
         )
+    report_support = None
+    if settings["do_graph_building"]:
+        _graph_build_step_callback(G, BUILD_TAIL_STEPS[2], draw=False)
 
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:
@@ -2839,14 +2989,22 @@ def build_network(
 
 
 def _check_saved_graph_fits_image(
-    G: nx.MultiGraph, graph_path: Path, shape, voxel_size_zyx, crop: CropBox | None = None
+    G: nx.MultiGraph,
+    which: str,
+    shape,
+    voxel_size_zyx,
+    crop: CropBox | None = None,
+    *,
+    remedy: str = "Turn do_graph_building back on to build it again.",
 ) -> None:
-    """Refuse a saved graph built on another image grid, as a saved skeleton
-    is refused: its node positions are microns from that image's corner, so
-    on another crop box, downsample or voxel size they no longer lie on this
-    run's image and masks. Judged by the extent recorded when it was built
+    """Refuse a graph built on another image grid -- a saved one, or a resumed
+    run's network (*which* names it) -- as a saved skeleton is refused: its
+    node positions are microns from that image's corner, so on another crop
+    box, downsample or voxel size they no longer lie on this run's image and
+    masks. Judged by the extent recorded when it was built
     (``image_extent_um``) and, where it was recorded, the crop box; a graph
-    saved before either was recorded is not judged by it."""
+    saved before either was recorded is not judged by it. *remedy* says
+    what to do."""
     saved = graph.dead_ends.graph_image_extent_um(G)
     now = graph.dead_ends.image_extent_um(shape, voxel_size_zyx)
     differs = saved is not None and not (
@@ -2865,11 +3023,54 @@ def _check_saved_graph_fits_image(
         else f" was built on an image {' x '.join(f'{v:g}' for v in saved)} um (z, y, x)"
     )
     raise ValueError(
-        f"The saved graph {graph_path}{built_on} does not fit this run's image, "
+        f"{which}{built_on} does not fit this run's image, "
         f"{' x '.join(f'{v:g}' for v in now)} um: it was made with a different "
-        "crop_on_import box, segmented_image_downsample or voxel size. Turn "
-        "do_graph_building back on to build it again."
+        f"crop_on_import box, segmented_image_downsample or voxel size. {remedy}"
     )
+
+
+#: The graph attribute holding :func:`skeleton_digest` of the skeleton a
+#: saved graph was built from.
+SKELETON_DIGEST = "skeleton_digest"
+
+
+def skeleton_digest(skeleton: np.ndarray) -> str:
+    """A digest of *skeleton*'s shape and voxels, read a plane at a time (a
+    disk-backed one is never copied whole): what a saved graph was built
+    from, so a run loading the graph can tell another skeleton."""
+    digest = hashlib.sha256(repr(tuple(int(n) for n in skeleton.shape)).encode())
+    for plane in skeleton:
+        digest.update(np.packbits(np.asarray(plane, dtype=bool)).tobytes())
+    return digest.hexdigest()
+
+
+def _warn_if_built_from_another_skeleton(G: nx.MultiGraph, graph_path: Path, skeleton: np.ndarray) -> None:
+    """Warn when the saved graph's skeleton (:data:`SKELETON_DIGEST`) is not
+    this run's: a build that was cancelled, or a skeleton made again since,
+    leaves a graph of another skeleton on the same grid, which the grid
+    check cannot see. A graph saved before the digest was kept is not judged."""
+    saved = G.graph.get(SKELETON_DIGEST)
+    if saved is None or saved == skeleton_digest(skeleton):
+        return
+    logger.warning(
+        f"The saved graph {graph_path} was built from another skeleton than this run's: the "
+        "skeleton was made again, or the build that would have replaced the graph did not "
+        "finish. Turn do_graph_building back on to build the graph from this skeleton."
+    )
+
+
+def write_pickle_whole(obj: Any, path: Path) -> None:
+    """Pickle *obj* to *path* through a ``.part`` file moved over it once
+    written, so the file is either the old one or the whole new one: a run
+    stopped mid-write left half a graph that the next run loaded."""
+    part = path.with_name(path.name + ".part")
+    try:
+        with part.open("wb") as handle:
+            pickle.dump(obj, handle)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    os.replace(part, path)
 
 
 #: The segmentation-cleanup steps, each switched on by ``segmentation_cleanup_<step>``.
@@ -3152,9 +3353,12 @@ def _record_raw_evidence(
     told by ``raw_stain.read_raw_stain``, the Diameters stage's own rule -- is
     kept on the graph too (``raw_image_stain``, ``raw_image_stain_reading``), so
     that stage takes the build's answer rather than reading the image again, and
-    one graph never names its raw image two ways."""
-    for key in ("raw_image_stain", "raw_image_stain_reading"):
+    one graph never names its raw image two ways. The stain is kept with the
+    raw image it was read from (:data:`RAW_IMAGE_STAIN_SOURCE`), and is taken
+    only while that is still the run's."""
+    for key in ("raw_image_stain", "raw_image_stain_reading", RAW_IMAGE_STAIN_SOURCE):
         G.graph.pop(key, None)
+    G.graph.pop(preprocessing.raw_evidence.GRAPH_ATTRIBUTE, None)
     evidence = preprocessing.raw_evidence_from_settings(
         settings, binary_mask, voxel_size_zyx, box=crop, downsample=downsample
     )
@@ -3165,6 +3369,35 @@ def _record_raw_evidence(
     if settings.get("raw_image_stain", "auto") not in raw_stain.STAINS:
         G.graph["raw_image_stain"] = evidence.calibration.stain
         G.graph["raw_image_stain_reading"] = evidence.calibration.reading
+        G.graph[RAW_IMAGE_STAIN_SOURCE] = raw_image_identity(settings)
+
+
+#: The graph attribute holding :func:`raw_image_identity` of the raw image
+#: ``G.graph["raw_image_stain"]`` was read from.
+RAW_IMAGE_STAIN_SOURCE = "raw_image_stain_source"
+
+
+def raw_image_identity(settings: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The raw image a stain reading is of: its file (path, size and
+    modification time), its channel and its downsample. None without one. A
+    stain recorded under another (the path or channel changed since) is read
+    again rather than taken (:func:`resolve_raw_image_stain`)."""
+    if not raw_image_is_set(settings):
+        return None
+    path = Path(settings["raw_image_path"])
+    try:
+        stat = path.stat()
+        size, modified = int(stat.st_size), int(stat.st_mtime_ns)
+    except OSError:
+        size = modified = None
+    channel = settings.get("raw_image_channel")
+    return {
+        "path": str(path.resolve()),
+        "size": size,
+        "mtime_ns": modified,
+        "channel": None if channel is None else int(channel),
+        "downsample": settings.get(RAW_DOWNSAMPLE_SETTING),
+    }
 
 
 def _record_crop(
@@ -4208,6 +4441,15 @@ def resolve_raw_image_stain(
     if stain in raw_stain.STAINS:
         return stain, None, None
     recorded = network.graph.graph.get("raw_image_stain") if network is not None else None
+    if recorded in raw_stain.STAINS and network.graph.graph.get(RAW_IMAGE_STAIN_SOURCE) != raw_image_identity(
+        settings
+    ):
+        # Read from another raw image, or one changed since: read again.
+        logger.info(
+            "raw_image_stain=auto: the stain the network build read was of another raw image "
+            "(or channel) than this run's; reading this one."
+        )
+        recorded = None
     if recorded in raw_stain.STAINS:
         logger.info(f"raw_image_stain=auto: {recorded}, as the network build read the raw image.")
         return recorded, None, None
@@ -4861,6 +5103,7 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             if measures_diameters_from_raw_image(settings):
                 stain, reading, raw_volume = resolve_raw_image_stain(settings, network)
                 G.graph["raw_image_stain"] = stain
+                G.graph[RAW_IMAGE_STAIN_SOURCE] = raw_image_identity(settings)
                 # The build's own reading stands unless the image was read here.
                 if reading is not None or "raw_image_stain_reading" not in G.graph:
                     G.graph["raw_image_stain_reading"] = None if reading is None else reading.as_dict()
@@ -8982,7 +9225,9 @@ def _run_stages(
                 ),
                 resumed_graph=resumed_graph,
             )
-    if resume is not None and resume.graph is not None:
+    if resume is not None and resume.graph is not None and not _run_stage_body("build_network", start_from):
+        # Only where graph building did not run: a script resuming at or
+        # before it would have had the network it just built replaced.
         network.graph = resume.graph
     # The statistics a resumed network carries are of the network before this
     # run changed it; the export measures it again.
@@ -8992,6 +9237,7 @@ def _run_stages(
         # The lumen-artefact counts of the graph handed on, for the run's
         # manifest; None where the report did not run (low RAM, synthetic).
         run.checks[graph.LUMEN_ARTEFACT_COUNTS] = network_graph.graph.get(graph.LUMEN_ARTEFACT_COUNTS)
+        run.checks["graph_building"] = graph_building_counts(network_graph)
     _produced(on_stage_output, "build_network", network)
     if stop_after == "build_network":
         return network.graph

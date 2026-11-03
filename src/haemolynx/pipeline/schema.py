@@ -3327,6 +3327,7 @@ SCHEMA = Schema(
             default=True,
             help="Run the graph-building stage instead of reusing the cached graph",
             section=_PIPELINE_STAGES,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="run_haemodynamics",
@@ -3585,6 +3586,7 @@ SCHEMA = Schema(
                 "face is kept -- that is a vessel the image cut through"
             ),
             section=_PIPELINE_STAGES,
+            requires=("network_source=segmented_image",),
             unit="um",
             minimum=0.0,
         ),
@@ -3601,6 +3603,7 @@ SCHEMA = Schema(
                 "for every stub"
             ),
             section=_PIPELINE_STAGES,
+            requires=("network_source=segmented_image",),
             minimum=0.0,
         ),
         Setting(
@@ -3700,12 +3703,13 @@ SCHEMA = Schema(
             default=30.0,
             help=(
                 "Recover only uncovered mask regions at least this large: "
-                "smaller ones are segmentation specks, not vessels"
+                "smaller ones are segmentation specks, not vessels. Read by the recovery "
+                "remove_interior_dead_ends runs too"
             ),
             section=_PIPELINE_STAGES,
             unit="um3",
             minimum=0.0,
-            requires=("do_graph_building", "recover_uncovered_mask_vessels"),
+            requires=("do_graph_building",),
             advanced=True,
         ),
         Setting(
@@ -3714,12 +3718,13 @@ SCHEMA = Schema(
             default=5.0,
             help=(
                 "Recover only traced vessels at least this long, unless both "
-                "their ends join the network"
+                "their ends join the network. Read by the recovery remove_interior_dead_ends "
+                "runs too"
             ),
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("do_graph_building", "recover_uncovered_mask_vessels"),
+            requires=("do_graph_building",),
             advanced=True,
         ),
         Setting(
@@ -3757,7 +3762,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("bridge_require_mask_support",),
+            requires=("bridge_require_mask_support", "network_source=segmented_image"),
             advanced=True,
         ),
         Setting(
@@ -3795,7 +3800,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("bridge_require_mask_support",),
+            requires=("bridge_require_mask_support", "network_source=segmented_image"),
             advanced=True,
         ),
         Setting(
@@ -3989,9 +3994,10 @@ SCHEMA = Schema(
                 "the skeleton's own voxels are still traced by the finished graph's "
                 "edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for "
                 "what that measures and why. Checked whether the graph was just built or "
-                "loaded from cache, so this is not gated on do_graph_building"
+                "loaded from cache, not under use_memmap_loading, which skips the check"
             ),
             section=_PIPELINE_STAGES,
+            requires=("!use_memmap_loading", "network_source=segmented_image"),
             minimum=0.0,
             maximum=1.0,
             advanced=True,
@@ -4006,9 +4012,10 @@ SCHEMA = Schema(
                 "the finished graph's edges -- see "
                 "graph.diagnostics.diagnose_graph_mask_consistency for what that measures "
                 "and why. Checked whether the graph was just built or loaded from cache, "
-                "so this is not gated on do_graph_building"
+                "not under use_memmap_loading, which skips the check"
             ),
             section=_PIPELINE_STAGES,
+            requires=("!use_memmap_loading", "network_source=segmented_image"),
             minimum=0.0,
             maximum=1.0,
             advanced=True,
@@ -4156,9 +4163,10 @@ SCHEMA = Schema(
                 "warn_below's per-voxel coverage: this catches a whole vessel a topology-"
                 "repair pass dropped, not just imprecisely traced. See graph.diagnostics."
                 "diagnose_vessels_missing_from_graph. Checked whether the graph was just "
-                "built or loaded from cache, so this is not gated on do_graph_building"
+                "built or loaded from cache, not under use_memmap_loading, which skips the check"
             ),
             section=_PIPELINE_STAGES,
+            requires=("!use_memmap_loading", "network_source=segmented_image"),
             minimum=0.0,
             maximum=1.0,
             advanced=True,
@@ -4336,7 +4344,7 @@ SCHEMA = Schema(
                 "bridged to it. Nothing of the graph's own is taken out"
             ),
             section=_PIPELINE_STAGES,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "network_source=segmented_image"),
             advanced=True,
         ),
         Setting(
@@ -4355,7 +4363,7 @@ SCHEMA = Schema(
                 "checked on a second set of marked examples"
             ),
             section=_PIPELINE_STAGES,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "network_source=segmented_image"),
             advanced=True,
         ),
         Setting(
@@ -4374,7 +4382,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=("use_thick_vessel_skeletonisation", "network_source=segmented_image"),
             advanced=True,
         ),
         # A purely additive, read-only QC check on the tree
@@ -4544,6 +4552,7 @@ SCHEMA = Schema(
                 "together. Diagnostic only: never changes the graph"
             ),
             section=_CARTWHEEL_GUARD,
+            requires=("network_source=segmented_image",),
             advanced=True,
         ),
         # This and cartwheel_hub_tangent_length_um are read by the guard and by
@@ -4560,6 +4569,7 @@ SCHEMA = Schema(
                 "nodes by the same count"
             ),
             section=_CARTWHEEL_GUARD,
+            requires=("network_source=segmented_image",),
             minimum=2,
             advanced=True,
         ),
@@ -4588,6 +4598,7 @@ SCHEMA = Schema(
                 "cluster_collapse_method=direction_aware alike"
             ),
             section=_CARTWHEEL_GUARD,
+            requires=("network_source=segmented_image",),
             unit="um",
             # A sample distance of exactly 0 always lands back on the node
             # itself, giving a zero-length vector -- hub_spoke_directions

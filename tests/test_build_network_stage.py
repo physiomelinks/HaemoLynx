@@ -788,3 +788,193 @@ def test_a_saved_graph_is_refused_in_another_crop_box_of_the_same_size(tmp_path)
     for volume in (cropped((10, 0, 0)), _volume(tmp_path, LONG_CROSS, mask)):
         with pytest.raises(ValueError, match="does not fit this run's image"):
             build_network(_settings(tmp_path, do_graph_building=False), volume, SCHEMA)
+
+
+# --- the second review pass ---------------------------------------------------
+
+
+class _Steps:
+    """A stand-in for the stage's progress reporter: every step it is told
+    of, and, given *stop_at*, raises there as a cancelled panel run does."""
+
+    def __init__(self, stop_at=None):
+        self.events, self.stop_at = [], stop_at
+
+    def step(self, label, total=None, next_step=None):
+        self.events.append((label, total, next_step))
+        if label == self.stop_at:
+            raise RuntimeError("cancelled")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"smooth_centrelines": False}, {"remove_pieces_without_junction": True, "retrace_lost_skeleton": False}],
+    ids=["default", "no smoothing", "pieces removed"],
+)
+def test_every_step_the_stage_takes_is_reported_and_counted_up_front(tmp_path, overrides):
+    """Regression: only the thirteen topology steps were reported, so the
+    step bar stood at 13/13 while the smoothing, the clean-ups, the split,
+    the re-trace, the save and the checks ran, none of them a place a
+    cancelled run could stop."""
+    from haemolynx.graph import STEP_LABELS
+    from haemolynx.pipeline.stages import BUILD_TAIL_STEPS
+
+    steps = _Steps()
+    build_network(_settings(tmp_path, **overrides), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)),
+                  SCHEMA, progress=steps)
+
+    labels = [label for label, _total, _next in steps.events]
+    assert labels[: len(STEP_LABELS)] == list(STEP_LABELS)
+    assert labels[-len(BUILD_TAIL_STEPS):] == list(BUILD_TAIL_STEPS)
+    assert {total for _label, total, _next in steps.events} == {len(labels)}
+    assert [following for _label, _total, following in steps.events] == [*labels[1:], None]
+    assert ("centreline smoothing" in labels) == overrides.get("smooth_centrelines", True)
+    assert ("removal of pieces with no junction" in labels) is bool(overrides.get("remove_pieces_without_junction"))
+
+
+def test_a_run_cancelled_before_the_save_leaves_no_graph_file(tmp_path):
+    """Regression: a cancel landed only between the topology steps; one
+    pressed later let the run write {stem}_graph.pkl, in place, while the
+    next run started."""
+    with pytest.raises(RuntimeError, match="cancelled"):
+        build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)),
+                      SCHEMA, progress=_Steps(stop_at="dead-end kinds"))
+    assert not _graph_path(tmp_path).exists()
+    assert list((tmp_path / "out").glob("*.part")) == []
+
+
+def test_a_graph_that_fails_to_save_leaves_the_saved_one_whole(tmp_path):
+    from haemolynx.pipeline.stages import write_pickle_whole
+
+    class Unpicklable:
+        def __reduce__(self):
+            raise RuntimeError("cannot pickle")
+
+    path = tmp_path / "graph.pkl"
+    write_pickle_whole({"old": True}, path)
+    with pytest.raises(RuntimeError):
+        write_pickle_whole({"new": Unpicklable()}, path)
+    assert pickle.loads(path.read_bytes()) == {"old": True}
+    assert not (tmp_path / "graph.pkl.part").exists()
+
+
+def test_a_resumed_network_is_refused_in_another_crop_box(tmp_path):
+    """Regression: a resumed run's network was stamped with this run's crop
+    box without asking whether it was built in it."""
+    from haemolynx.io.crop import CropBox
+
+    mask = _mask_under(LONG_CROSS)
+
+    def cropped(start):
+        volume = _volume(tmp_path, LONG_CROSS, mask)
+        volume.crop = CropBox(start, tuple(a + 40 for a in start), (60, 60, 60))
+        return volume
+
+    built = build_network(_settings(tmp_path), cropped((0, 0, 0)), SCHEMA).graph
+    assert build_network(_settings(tmp_path), cropped((0, 0, 0)), SCHEMA, resumed_graph=built.copy())
+    with pytest.raises(ValueError, match="The resumed network .* does not fit this run's image"):
+        build_network(_settings(tmp_path), cropped((10, 0, 0)), SCHEMA, resumed_graph=built.copy())
+
+
+def test_a_saved_graph_of_another_skeleton_is_warned_of_when_loaded(tmp_path, caplog):
+    """A graph saved from another skeleton on the same grid (the skeleton
+    made again, or the build that would have replaced the graph cancelled)
+    loaded silently; it is now warned of."""
+    mask = _mask_under(LONG_CROSS)
+    build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, mask), SCHEMA)
+
+    with caplog.at_level(logging.WARNING):
+        build_network(_settings(tmp_path, do_graph_building=False), _volume(tmp_path, LONG_CROSS, mask), SCHEMA)
+    assert "built from another skeleton" not in caplog.text
+
+    other = LONG_CROSS.copy()
+    other[5:35, 20, 30] = True
+    with caplog.at_level(logging.WARNING):
+        build_network(_settings(tmp_path, do_graph_building=False), _volume(tmp_path, other, mask), SCHEMA)
+    assert "built from another skeleton" in caplog.text
+
+
+def test_a_raw_image_of_another_shape_is_refused_once_the_graph_is_saved(tmp_path, caplog):
+    """Regression: the raw image was read beside the mask after the whole
+    build, and one of another shape raised before the graph was saved, so
+    the build was lost. Still refused, after the save: do_graph_building off
+    then loads the graph."""
+    import tifffile
+
+    from haemolynx.preprocessing.raw_evidence import GRAPH_ATTRIBUTE
+
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, np.zeros((30, 40, 40), dtype=np.uint16))
+    volume = _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS))
+    with caplog.at_level(logging.WARNING), pytest.raises(ValueError, match="not the image's"):
+        build_network(_settings(tmp_path, raw_image_path=raw), volume, SCHEMA)
+    assert "saved to" in caplog.text and "before the raw image was refused" in caplog.text
+
+    loaded = build_network(_settings(tmp_path, do_graph_building=False), volume, SCHEMA).graph
+    assert loaded.number_of_edges() == 4
+    assert GRAPH_ATTRIBUTE not in loaded.graph
+
+
+def test_the_lumen_artefact_report_reads_the_mask_by_the_runs_bridge_limits(tmp_path, monkeypatch):
+    """Regression: the report built its own mask support with the default
+    limits, so it judged loops the clean-up had kept by the run's own."""
+    import functools
+
+    from haemolynx.pipeline import stages
+
+    seen = {}
+    real = stages.graph.diagnose_lumen_artefacts
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        seen["support"] = kwargs.get("mask_support")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stages.graph, "diagnose_lumen_artefacts", spy)
+    build_network(
+        _settings(tmp_path, bridge_max_background_gap_um=0.5, bridge_min_mask_fraction=0.6),
+        _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA,
+    )
+    support = seen["support"]
+    assert (support.max_background_gap_um, support.min_mask_fraction) == (0.5, 0.6)
+
+
+def test_the_vessel_masks_load_after_the_graph_is_built(tmp_path, monkeypatch):
+    """Graph building reads none of the vessel masks, which were loaded
+    first and held through its peak memory."""
+    from haemolynx.pipeline import stages
+
+    order = []
+    real_masks, real_build = stages.io.load_and_validate_vessel_masks, stages.graph.build_graph_from_skeleton
+    monkeypatch.setattr(stages.io, "load_and_validate_vessel_masks",
+                        lambda *a, **k: (order.append("masks"), real_masks(*a, **k))[1])
+    monkeypatch.setattr(stages.graph, "build_graph_from_skeleton",
+                        lambda *a, **k: (order.append("graph"), real_build(*a, **k))[1])
+    build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+    assert order[0] == "graph" and "masks" in order
+
+
+def test_a_stain_read_from_another_raw_image_is_not_taken(tmp_path):
+    """Regression: with raw_image_stain auto, the Diameters stage took the
+    stain the build recorded whatever raw image it had been read from, so a
+    new raw image or channel was measured by the old one's method."""
+    from types import SimpleNamespace
+
+    from haemolynx.pipeline.stages import RAW_IMAGE_STAIN_SOURCE, raw_image_identity, resolve_raw_image_stain
+
+    first, second = tmp_path / "a.tif", tmp_path / "b.tif"
+    for path in (first, second):
+        path.write_bytes(b"raw")
+    settings = _settings(tmp_path, raw_image_path=first, raw_image_stain="auto")
+    G = nx.MultiGraph()
+    G.graph["raw_image_stain"] = "endothelial"
+    G.graph[RAW_IMAGE_STAIN_SOURCE] = raw_image_identity(settings)
+    network = SimpleNamespace(graph=G, volume=None)
+
+    assert resolve_raw_image_stain(settings, network)[0] == "endothelial"
+    for changed in ({"raw_image_path": second}, {"raw_image_channel": 1}):
+        # Not taken: read again (here, with no volume to read it against, the
+        # segmentation's own kind).
+        assert resolve_raw_image_stain({**settings, **changed}, network)[0] == "plasma_column"
+    del G.graph[RAW_IMAGE_STAIN_SOURCE]
+    assert resolve_raw_image_stain(settings, network)[0] == "plasma_column"

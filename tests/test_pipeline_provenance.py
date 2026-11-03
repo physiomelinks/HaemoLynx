@@ -565,3 +565,16 @@ def test_a_run_without_git_still_writes_its_manifest(
     assert manifest["git"]["commit"] is None
     assert manifest["git"]["dirty"] is None
     assert manifest["haemolynx_version"] == haemolynx.__version__
+
+
+def test_a_staged_runs_manifest_records_what_graph_building_took_and_drew(fixture_run):
+    """The counts graph building keeps on the graph (mask recovery's joins,
+    the pairs and stretches the clean-up took, the optional removals) are
+    the manifest's ``checks.graph_building``: a run's outputs said nothing
+    of what remove_interior_dead_ends or the pieces removal took."""
+    from haemolynx.pipeline.stages import graph_building_counts
+
+    folder, _before, graph = fixture_run
+    recorded = _read(folder, FIXTURE.stem)["checks"]["graph_building"]
+    assert recorded == graph_building_counts(graph)
+    assert {"recovered_joins", "edges_off_mask_removed"} <= set(recorded)
