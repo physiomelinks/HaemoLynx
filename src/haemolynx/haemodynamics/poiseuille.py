@@ -659,6 +659,7 @@ from .viscosity import (  # noqa: E402, F401  (re-export, must follow the docstr
     VISCOSITY_LAWS,
     PlaceholderViscosityWarning,
     describe_law,
+    reads_in_vivo_1994,
     validity_range_um,
     viscosity_for,
 )
@@ -771,12 +772,24 @@ class PoiseuilleModel:
         overrides ``self.diameter_basis`` the same way, for a vessel whose
         diameter was measured on another basis (see :func:`edge_diameter_basis`).
         """
+        basis = self.diameter_basis if diameter_basis is None else diameter_basis
+        if self.reads_below_fitted_floor(diameter, basis):
+            # The 1994 in vivo form is singular at 1.1 um: read a narrower
+            # vessel's viscosity at the law's fitted floor. Its own width
+            # still sets the d^4 of its resistance.
+            diameter = PRIES_MIN_DIAMETER_UM
         return viscosity_for(
             diameter,
             law=self.viscosity_law,
             haematocrit=self.haematocrit if haematocrit is None else float(haematocrit),
-            diameter_basis=self.diameter_basis if diameter_basis is None else diameter_basis,
+            diameter_basis=basis,
         )
+
+    def reads_below_fitted_floor(self, diameter: float, diameter_basis: str | None = None) -> bool:
+        """Whether a vessel *diameter* um wide has its viscosity read at the
+        1994 in vivo form's fitted floor (:func:`viscosity.reads_in_vivo_1994`)."""
+        basis = self.diameter_basis if diameter_basis is None else diameter_basis
+        return 0 < float(diameter) < PRIES_MIN_DIAMETER_UM and reads_in_vivo_1994(self.viscosity_law, basis)
 
     def describe_viscosity_law(self) -> str:
         """The law and its range, for a run's metadata."""
@@ -911,6 +924,7 @@ class PoiseuilleModel:
             'viscosity_calculations': {},  # Track viscosity for each diameter
             'used_fwhm_edge_diameter': 0,
             'zero_resistance_bridges': 0,
+            'viscosity_at_fitted_floor': 0,
         }
 
         # Inside the haematocrit loop, which repeats this every pass, at DEBUG.
@@ -934,7 +948,7 @@ class PoiseuilleModel:
                 'diameter': diameter,
                 'viscosity': viscosity
             }
-            logger.log(info, 
+            logger.log(info,
                 f"{branch_order}: diameter={diameter}um, calculated viscosity={viscosity:.6f}"
             )
 
@@ -987,6 +1001,8 @@ class PoiseuilleModel:
             # pays no extra cost.
             edge_haematocrit = data.get("discharge_haematocrit")
             basis = edge_diameter_basis(data, self.diameter_basis)
+            if self.reads_below_fitted_floor(diameter, basis):
+                results['viscosity_at_fitted_floor'] += 1
             if basis != self.diameter_basis:
                 # Its own basis: the precalculated map assumed the run's.
                 viscosity = self.calculate_viscosity(
@@ -1020,27 +1036,32 @@ class PoiseuilleModel:
         logger.log(info, "=== Summary ===")
         logger.log(info, f"Edges assigned resistance: {results['edges_set']}")
         if prefer_edge_fwhm_diameter:
-            logger.log(info, 
+            logger.log(info,
                 f"Edges using per-edge fwhm_diameter_um: "
                 f"{results.get('used_fwhm_edge_diameter', 0)}"
             )
         # Every count below is an edge that was skipped, so it left the graph
         # without a resistance: a problem the run recovered from, not progress.
         if results['missing_branch_order']:
-            logger.log(warning, 
+            logger.log(warning,
                 f"Edges missing branch_order: {len(results['missing_branch_order'])}"
             )
         if results['missing_length']:
             logger.log(warning, f"Edges missing length: {len(results['missing_length'])}")
         if results['unknown_branch_order']:
-            logger.log(warning, 
+            logger.log(warning,
                 f"Edges with unknown branch_order: {len(results['unknown_branch_order'])}"
             )
         if results['invalid_length']:
             logger.log(warning, f"Edges with invalid length: {len(results['invalid_length'])}")
         if results['invalid_diameter']:
-            logger.log(warning, 
+            logger.log(warning,
                 f"Edges with invalid diameter: {len(results['invalid_diameter'])}"
+            )
+        if results['viscosity_at_fitted_floor']:
+            logger.log(warning,
+                f"Edges narrower than {PRIES_MIN_DIAMETER_UM} um, the in vivo law's fitted floor, "
+                f"with their viscosity read at it: {results['viscosity_at_fitted_floor']}"
             )
 
         return G, results

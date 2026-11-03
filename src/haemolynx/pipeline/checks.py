@@ -677,6 +677,17 @@ def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
             "that many times its own vessel's resistance, so it must be above 0 "
             "(open_end_model=outlet holds the open ends at the outlet pressure)."
         )
+    pressure = settings.get("open_end_estimate_pressure_target_pa")
+    inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
+    if model == ESTIMATED and None not in (pressure, inlet, outlet) and not (
+        min(float(inlet), float(outlet)) <= float(pressure) <= max(float(inlet), float(outlet))
+    ):
+        report.add_warning(
+            f"open_end_estimate_pressure_target_pa ({pressure} Pa) lies outside the boundary "
+            f"pressures ({outlet} to {inlet} Pa): the estimate pulls the open ends towards a "
+            "pressure no inlet or outlet holds, and those that pass the inlet or outlet "
+            "pressure are held just inside it."
+        )
     target = settings.get("open_end_estimate_shear_target_pa")
     if model == ESTIMATED and target is not None and not float(target) > 0:
         report.add_error(

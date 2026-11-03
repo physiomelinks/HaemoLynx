@@ -899,7 +899,7 @@ network_handling:
   open_end_terminal_resistance_multiple: 10.0
   # How much the wall shear stress target counts against the pressure target when estimating the open ends' pressures, each term divided by its own scale  [range 0.0..; needs run_haemodynamics and open_end_model = estimated]
   open_end_estimate_shear_weight: 1.0
-  # The pressure the estimate keeps the network near. Leave unset for the closed solve's mean pressure over the vessels it perfuses  [Pa; needs run_haemodynamics and open_end_model = estimated]
+  # The pressure the estimate keeps the network near. Leave unset for the closed solve's mean pressure over the vessels it perfuses  [Pa; range 0.0..; needs run_haemodynamics and open_end_model = estimated]
   open_end_estimate_pressure_target_pa: null
   # The wall shear stress the estimate keeps each vessel near. Leave unset for the closed solve's median over the vessels it perfuses  [Pa; range 0.0..; needs run_haemodynamics and open_end_model = estimated]
   open_end_estimate_shear_target_pa: null
