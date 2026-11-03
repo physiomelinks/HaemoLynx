@@ -535,21 +535,55 @@ def test_an_fwhm_proposal_applies_only_on_apply(panel):
     review = panel._haemolynx_optimise_fwhm_review
     applied = []
     message = review.propose(
-        SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda: applied.append(1)
+        SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), applied.append
     )
 
     assert message.startswith("Optimised FWHM settings ready to review below: 1 change.")
     assert applied == []
     review.apply()
-    assert applied == [1]
+    assert applied == [("fwhm_min_fit_r2",)]
     assert panel._haemolynx_report() == "Applied the optimised FWHM settings."
+
+
+def test_apply_writes_only_the_settings_the_review_listed(panel):
+    """Regression: Apply wrote every setting the optimiser returned, so a
+    row the review said would not change, edited since, was put back."""
+    from types import SimpleNamespace
+
+    review = panel._haemolynx_optimise_fwhm_review
+    model = panel._haemolynx_rows()["fwhm_profile_model"].value
+    written = []
+    review.propose(
+        SimpleNamespace(
+            settings={"fwhm_min_fit_r2": 0.5, "fwhm_profile_model": model}, scorecard=()
+        ),
+        written.append,
+    )
+
+    review.apply()
+
+    assert written == [("fwhm_min_fit_r2",)]
+
+
+def test_loading_a_config_drops_a_pending_fwhm_proposal(panel, tmp_path):
+    """Its changes were listed against the settings the config replaces."""
+    from types import SimpleNamespace
+
+    review = panel._haemolynx_optimise_fwhm_review
+    review.propose(SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda _names: None)
+    config = tmp_path / "config.yaml"
+    config.write_text("fwhm_min_fit_r2: 0.9\n", encoding="utf-8")
+
+    panel._haemolynx_load_config(config)
+
+    assert not review.pending
 
 
 def test_on_clear_drops_a_pending_fwhm_proposal(panel):
     from types import SimpleNamespace
 
     review = panel._haemolynx_optimise_fwhm_review
-    review.propose(SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda: None)
+    review.propose(SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda _names: None)
 
     panel._haemolynx_clear(ask=False)
 

@@ -125,6 +125,23 @@ def test_an_auto_stain_shows_it_only_once_a_run_read_it_as_endothelial(panel, tm
     assert panel._haemolynx_optimise_endothelial_button.visible is False
 
 
+def test_another_raw_image_drops_the_last_runs_reading_of_its_stain(panel, tmp_path):
+    """Regression: an auto stain's reading stayed after another raw image
+    was named, so the rows and optimiser followed the old image's stain."""
+    _on_the_diameters_tab(panel)
+    rows = _endothelial_run(panel, tmp_path, stain="auto")
+    graph = _tiny_graph()
+    graph.graph["raw_image_stain"] = "endothelial"
+    panel._haemolynx_view.results = _fake_results(graph)
+    panel._haemolynx_refresh_stain_reading()
+    assert panel._haemolynx_optimise_endothelial_button.visible is True
+
+    other = tmp_path / "dextran.tif"
+    other.write_bytes(b"")
+    rows["raw_image_path"].value = other
+    assert panel._haemolynx_optimise_endothelial_button.visible is False
+
+
 def test_neither_optimiser_shows_while_haemodynamics_is_off(panel, tmp_path):
     """Regression: with haemodynamics off the Diameters stage measures
     nothing and the measuring box is hidden, but either optimiser still
@@ -362,20 +379,20 @@ def test_a_proposal_applies_only_on_apply_and_writes_unset_as_unset(panel):
         scorecard=(),
     )
 
-    message = review.propose(proposal, lambda: applied.append(1))
+    message = review.propose(proposal, applied.append)
 
     assert message.startswith("Optimised endothelial settings ready to review below: 2 changes.")
     assert "endothelial_wall_thickness_um: 1.5 -> unset" in review.text.value
     assert applied == []
     review.apply()
-    assert applied == [1]
+    assert applied == [("endothelial_wall_thickness_um", "endothelial_min_ring_contrast")]
     assert panel._haemolynx_report() == "Applied the optimised endothelial settings."
 
 
 def test_clear_resets_the_button_and_drops_a_pending_proposal(panel):
     review = panel._haemolynx_optimise_endothelial_review
     review.propose(
-        SimpleNamespace(settings={"endothelial_min_ring_contrast": 3.0}, scorecard=()), lambda: None
+        SimpleNamespace(settings={"endothelial_min_ring_contrast": 3.0}, scorecard=()), lambda _names: None
     )
     panel._haemolynx_optimise_endothelial_button.enabled = False
     panel._haemolynx_run_state.start(worker=None, cancel_flag={"cancelled": False})

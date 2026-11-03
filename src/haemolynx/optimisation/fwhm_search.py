@@ -40,7 +40,11 @@ left plus the share of decoys given a width -- so a setting loose enough to
 fit specks does not win by measuring more. The decoys and the demotion score
 every trial whatever ``fwhm_decoy_check`` and ``fwhm_demote_flagged_edges``
 say for the run, and the report says so. Every trial also holds FWHM's blur
-at the image PSF the run would use (``fwhm_fix_blur_to_image_psf``).
+at the image PSF the run would use (``fwhm_fix_blur_to_image_psf``), and
+starts from the mask widths the run would: a trial whose sample spacing,
+aggregation, guess attribute or averaging length changes what the run
+derives from them -- the mask widths, FWHM's first guess, and the PSF
+estimated from them -- derives them again, once per distinct value.
 """
 from __future__ import annotations
 
@@ -383,12 +387,14 @@ def _fresh_template(
     the panel hands over the run's graph, and a trial must not be credited
     with the run's widths -- with no width kept as provisional, since an
     image's vessels have none before the Diameters stage. The segmentation's
-    own widths stay (:data:`_MEASURED_BEFORE_FWHM`): where the run measures
-    them (``use_edt_diameter_crosscheck``) they are its own, measured again
-    here, as the run measures them, when *G* has none."""
+    own widths stay (:data:`_MEASURED_BEFORE_FWHM`) where the run measures
+    them (``use_edt_diameter_crosscheck``): they are its own, measured again
+    here, as the run measures them, when *G* has none. Where it does not,
+    they go too: a run's FWHM would find no mask width to start from."""
     template = apply.measured_vessels(G).copy()
+    keep = _MEASURED_BEFORE_FWHM if config.use_edt_diameter_crosscheck else ()
     for _u, _v, data in template.edges(data=True):
-        clear_edge_measurements(data, keep_prefixes=_MEASURED_BEFORE_FWHM)
+        clear_edge_measurements(data, keep_prefixes=keep)
     if (
         vessel_mask is not None
         and config.use_edt_diameter_crosscheck
@@ -551,6 +557,8 @@ class _FwhmSearch(_SweepBookkeeping):
         sample_edges: Optional[Iterable[tuple]] = None,
         config: Optional[HaemodynamicsApplyConfig] = None,
         pool_size: Optional[int] = None,
+        calibration_edges: Optional[Iterable[tuple]] = None,
+        rederive: bool = False,
     ) -> None:
         #: The vessels a run measures, as its FWHM finds them (see
         #: `_fresh_template`). Never mutated by a trial -- every trial copies
@@ -578,8 +586,25 @@ class _FwhmSearch(_SweepBookkeeping):
         #: beside by (``fwhm_stop_at_other_vessels_in_mask``).
         self.vessel_mask = vessel_mask
         #: The image PSF every trial holds FWHM's blur at, while
-        #: ``fwhm_fix_blur_to_image_psf`` is on.
+        #: ``fwhm_fix_blur_to_image_psf`` is on: the starting settings' (see
+        #: `_psf_for`).
         self.psf_sigma_zyx = psf_sigma_zyx
+        #: With *rederive*, a trial whose settings change what a run derives
+        #: from them derives it again, as the run would: the mask's widths
+        #: (FWHM's first guess) at its sample spacing and aggregation, and the
+        #: image PSF from its guess attribute, averaging length and those
+        #: widths, estimated on *calibration_edges* (every vessel when None).
+        #: Each distinct value is derived once. Without it every trial holds
+        #: the template's widths and *psf_sigma_zyx*.
+        self.rederive = bool(rederive)
+        self.calibration_edges = (
+            None if calibration_edges is None else [tuple(edge) for edge in calibration_edges]
+        )
+        starting = _with_fwhm_settings(self.config, starting_values)
+        self._starting_mask_key = self._mask_width_key(starting)
+        self._starting_psf_key = self._psf_key(starting)
+        self._vessels_by_key: dict[Any, nx.MultiGraph] = {}
+        self._psf_by_key: dict[Any, Optional[tuple[float, float, float]]] = {}
         self.edt_warn_ratio = float(
             self.config.edt_setting("edt_fwhm_disagreement_warn_ratio") or _DEFAULT_EDT_WARN_RATIO
         )
@@ -612,10 +637,12 @@ class _FwhmSearch(_SweepBookkeeping):
         """Place the sampled vessels' decoys and plant their known-width
         vessels -- once, before any trial -- each guided by its vessel's mask
         width: the run's own, or, where the run measures none, one measured
-        here as a run would, on a copy no trial reads, since a run's FWHM
-        would have none to start from."""
+        here as a run would, on a copy no trial reads. They carry it as
+        FWHM's first guess only where the trials' vessels carry theirs: a
+        run's FWHM with no mask width has none to start from."""
         guide = self.template.edge_subgraph(self.sample_edges)
-        if not _has_mask_widths(guide, self.sample_edges):
+        seeded = _has_mask_widths(guide, self.sample_edges)
+        if not seeded:
             guide = guide.copy()
             apply.measure_edt_diameters(guide, self.config, mask_volume=vessel_mask)
         edges = list(self.sample_edges)
@@ -629,6 +656,7 @@ class _FwhmSearch(_SweepBookkeeping):
             rng=rng,
             guide_attribute="edt_diameter_um",
             copy_attributes=("diameter_um",),
+            seed_guess=seeded,
         )
         self.planted = fwhm_planted.plant_vessels(
             self.raw_volume,
@@ -638,7 +666,69 @@ class _FwhmSearch(_SweepBookkeeping):
             self.voxel_size_zyx,
             image_psf_um=self.planting_psf_um,
             rng=np.random.default_rng(1),
+            seed_guess=seeded,
+            use_memmap=self.config.use_memmap,
+            memmap_directory=self.config.memmap_directory,
         )
+
+    def _mask_width_key(self, config: HaemodynamicsApplyConfig) -> Optional[tuple]:
+        """The settings a run's mask widths are measured with under *config*,
+        when a trial derives them again; ``None`` when it does not, or the run
+        measures none (``use_edt_diameter_crosscheck`` off)."""
+        if not self.rederive or self.vessel_mask is None or not config.use_edt_diameter_crosscheck:
+            return None
+        return (
+            config.fwhm_setting("fwhm_sample_spacing_along_edge_um"),
+            config.fwhm_setting("fwhm_edge_diameter_aggregation"),
+        )
+
+    def _psf_key(self, config: HaemodynamicsApplyConfig) -> tuple:
+        """What the image PSF a run estimates under *config* depends on."""
+        return (
+            config.fwhm_setting("fwhm_diameter_guess_edge_attribute"),
+            config.fwhm_setting("fwhm_longitudinal_average_um"),
+            self._mask_width_key(config),
+        )
+
+    def _vessels_for(self, config: HaemodynamicsApplyConfig) -> nx.MultiGraph:
+        """The vessels as a run's FWHM finds them under *config*: the
+        template, with the mask's widths measured at *config*'s sample
+        spacing and aggregation where those are not the starting ones."""
+        key = self._mask_width_key(config)
+        if key is None or key == self._starting_mask_key:
+            return self.template
+        if key not in self._vessels_by_key:
+            vessels = self.template.copy()
+            for _u, _v, data in vessels.edges(data=True):
+                clear_edge_measurements(data)
+            apply.measure_edt_diameters(vessels, config, mask_volume=self.vessel_mask)
+            self._vessels_by_key[key] = vessels
+        return self._vessels_by_key[key]
+
+    def _psf_for(self, config: HaemodynamicsApplyConfig) -> Optional[tuple[float, float, float]]:
+        """The PSF a run under *config* holds FWHM's blur at: ``None`` unless
+        ``fwhm_fix_blur_to_image_psf`` is on and the profile model has a
+        blur; the starting one; or, where *config* changes what the estimate
+        reads, the image's estimated again as the run estimates it."""
+        fixed_blur = bool(config.fwhm_setting("fwhm_fix_blur_to_image_psf", True)) and (
+            config.fwhm_setting("fwhm_profile_model", "blurred_lumen") == "blurred_lumen"
+        )
+        if not fixed_blur:
+            return None
+        key = self._psf_key(config)
+        if not self.rederive or key == self._starting_psf_key:
+            return self.psf_sigma_zyx
+        if key not in self._psf_by_key:
+            self._psf_by_key[key], _details = image_psf_from_settings(
+                self._vessels_for(config),
+                config.fwhm,
+                voxel_size_zyx=config.voxel_size_zyx,
+                raw_volume=self.raw_volume,
+                vessel_mask=self.vessel_mask,
+                edges=self.calibration_edges,
+                memmap_directory=config.memmap_directory,
+            )
+        return self._psf_by_key[key]
 
     def _measure(
         self,
@@ -651,26 +741,25 @@ class _FwhmSearch(_SweepBookkeeping):
         """The run's FWHM measurement of *graph* (of its *edges*, among all
         of them, when given) with *settings* on *volume* (the raw image
         unless given), its blur held at the image PSF while
-        ``fwhm_fix_blur_to_image_psf`` is on and the profile model has one."""
+        ``fwhm_fix_blur_to_image_psf`` is on and the profile model has one
+        (see `_psf_for`)."""
         config = _with_fwhm_settings(self.config, settings)
-        fixed_blur = bool(config.fwhm_setting("fwhm_fix_blur_to_image_psf", True)) and (
-            config.fwhm_setting("fwhm_profile_model", "blurred_lumen") == "blurred_lumen"
-        )
         return apply.measure_fwhm_diameters(
             graph,
             config,
             raw_volume=self.raw_volume if volume is None else volume,
             vessel_mask=self.vessel_mask,
-            psf_sigma_zyx=self.psf_sigma_zyx if fixed_blur else None,
+            psf_sigma_zyx=self._psf_for(config),
             edges=edges,
         )
 
     def _run_trial(self, overrides: Mapping[str, Any]) -> tuple[nx.MultiGraph, dict[str, Any]]:
         """Run the real measurement of the sampled vessels on a fresh copy of
-        the template with `self.current` plus *overrides* -- never a previous
-        trial's own output."""
+        the vessels as the run finds them under `self.current` plus
+        *overrides* (see `_vessels_for`) -- never a previous trial's own
+        output."""
         settings = {**self.current, **overrides}
-        graph_trial = self.template.copy()
+        graph_trial = self._vessels_for(_with_fwhm_settings(self.config, settings)).copy()
         summary = self._measure(graph_trial, settings, edges=self.sample_edges)
         return graph_trial, summary
 
@@ -711,9 +800,10 @@ class _FwhmSearch(_SweepBookkeeping):
     ) -> tuple[met.FwhmMeasurementQuality, np.ndarray]:
         """:meth:`_checked_trial`'s quality and accepted per-sample diameters
         for ``self.current`` plus *overrides*, measured once per distinct set
-        of settings. The sample, its decoys, the raw image, the PSF and the
-        EDT ratio are fixed for the run, so the settings a measurement reads
-        are the whole key."""
+        of settings. The sample, its decoys, the raw image and the EDT ratio
+        are fixed for the run, and the mask widths and the PSF follow from
+        the settings (`_vessels_for`, `_psf_for`), so the settings a
+        measurement reads are the whole key."""
         settings = {**self.current, **overrides}
         key = (
             _measurement_kwargs(settings),
@@ -1165,6 +1255,8 @@ def _prepared_search(
         vessel_mask=vessel_mask,
         psf_sigma_zyx=psf_sigma_zyx,
         planting_psf_um=image_psf,
+        calibration_edges=calibration,
+        rederive=True,
     )
     return search, estimated_seconds
 

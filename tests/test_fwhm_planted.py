@@ -131,6 +131,48 @@ def test_planted_vessels_keep_clear_of_the_real_ones(scene):
         assert data["planted_diameter_um"] <= (1 + fwhm_planted.PLANTED_WIDTH_SPREAD) * guide
 
 
+def test_under_the_low_ram_option_planting_draws_on_disk_the_same_vessels(scene, tmp_path):
+    """Regression: planting copied the whole raw image (as float32) and the
+    mask into RAM whatever use_memmap_loading said -- 27 GB on a 5.5 G-voxel
+    stack. Under the option both copies are on disk, and the vessels drawn
+    are the same to the bit."""
+    raw, mask, lines, truth = scene
+    G = _graph(lines, list(truth * 1.1))
+
+    def plant(**kwargs):
+        return plant_vessels(
+            raw, G, list(G.edges(keys=True)), mask, VOXEL,
+            image_psf_um=EFFECTIVE_PSF, rng=np.random.default_rng(0), **kwargs,
+        )
+
+    in_ram = plant()
+    on_disk = plant(use_memmap=True, memmap_directory=tmp_path)
+
+    assert not isinstance(in_ram.volume, np.memmap)
+    assert isinstance(on_disk.volume, np.memmap)
+    assert str(tmp_path) in str(on_disk.volume.filename)
+    np.testing.assert_array_equal(on_disk.volume, in_ram.volume)
+    assert [d for *_e, d in on_disk.probe.edges(data=True)] == [
+        d for *_e, d in in_ram.probe.edges(data=True)
+    ]
+
+
+def test_a_planted_vessel_carries_the_guide_as_a_first_guess_only_when_asked(scene):
+    """It is sized by its vessel's mask width either way; a run that measures
+    no mask width seeds its vessels' FWHM with none, so the planted ones it
+    is scored on carry none either."""
+    raw, mask, lines, truth = scene
+    G = _graph(lines, list(truth * 1.1))
+
+    planted = plant_vessels(
+        raw, G, list(G.edges(keys=True)), mask, VOXEL,
+        image_psf_um=EFFECTIVE_PSF, rng=np.random.default_rng(0), seed_guess=False,
+    )
+
+    assert planted.probe.number_of_edges() >= len(TUBES)
+    assert all("edt_diameter_um" not in data for _u, _v, data in planted.probe.edges(data=True))
+
+
 def test_planted_vessels_are_read_about_as_well_as_real_ones(scene):
     """What makes them worth scoring by: FWHM's error on them is the size of
     its error on the real vessels beside them."""

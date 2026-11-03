@@ -1411,10 +1411,12 @@ class _OptimiseReview:
     """One optimiser's proposal, shown under its button until Apply or Discard.
 
     An optimisation run hands :meth:`propose` its result and a function that
-    writes it into the panel; this shows what would change against the
-    panel's current values (see :mod:`haemolynx.gui.optimise_review`) and
-    keeps the function until the user decides. Nothing reaches the panel's
-    rows before Apply. Built and used on the GUI thread only.
+    writes the settings it names into the panel; this shows what would
+    change against the panel's current values (see
+    :mod:`haemolynx.gui.optimise_review`) and keeps the function until the
+    user decides. Nothing reaches the panel's rows before Apply, and Apply
+    writes the changes listed and nothing else: a row edited since is left
+    as it is. Built and used on the GUI thread only.
     """
 
     def __init__(self, current_values, report, *, what: str) -> None:
@@ -1450,7 +1452,8 @@ class _OptimiseReview:
         status line to report."""
         changes = proposed_changes(result.settings, self._current_values())
         self.text.value = review_text(changes, result.scorecard)
-        self._apply = apply
+        names = tuple(change.name for change in changes)
+        self._apply = lambda: apply(names)
         self.container.visible = True
         count = len(changes)
         worse = worse_rows(result.scorecard)
@@ -7186,10 +7189,11 @@ def _run_optimisation_in_background(
             return
         result, input_path, raw_image_error, restriction_error = payload
 
-        def apply_result() -> None:
-            for name, value in result.settings.items():
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
                 if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
             apply_prerequisites()
 
         out_path = Path(input_path).parent / config_filename(input_path)
@@ -7410,10 +7414,11 @@ def _run_fwhm_optimisation_in_background(
             return
         result, raw_path = payload
 
-        def apply_result() -> None:
-            for name, value in result.settings.items():
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
                 if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
             apply_prerequisites()
 
         out_path = Path(raw_path).parent / config_filename(raw_path)
@@ -7572,10 +7577,11 @@ def _run_endothelial_optimisation_in_background(
             return
         result, raw_path = payload
 
-        def apply_result() -> None:
-            for name, value in result.settings.items():
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
                 if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
             apply_prerequisites()
 
         out_path = Path(raw_path).parent / config_filename(raw_path)
@@ -14863,8 +14869,10 @@ def settings_widget(napari_viewer=None):
 
     #: What the last run read the raw image's stain as when the setting is
     #: auto (the graph's raw_image_stain, with its reading): None until a run
-    #: has read it. Filled by refresh_stain_reading, below the view.
-    stain_read: dict[str, Any] = {"stain": None, "reading": None}
+    #: has read it, or once another raw image or channel is named. Filled by
+    #: refresh_stain_reading, below the view; "graph" and "image" are the
+    #: run's graph it was read off and the raw image named when it arrived.
+    stain_read: dict[str, Any] = {"stain": None, "reading": None, "graph": None, "image": None}
 
     def resolved_raw_image_stain(values: Mapping[str, Any]) -> str | None:
         """The stain the run measures by: the setting, or what the last run
@@ -16267,21 +16275,29 @@ def settings_widget(napari_viewer=None):
         """Say what the last run read the raw image's stain as, and let the
         Diameters tab's method rows follow it when that answer changed."""
         graph = getattr(view.results, "_graph", None) if view.results is not None else None
-        record = graph.graph if graph is not None else {}
+        values = current_values()
+        named = (str(values.get("raw_image_path") or ""), values.get("raw_image_channel"))
+        if id(graph) != stain_read["graph"]:
+            # A run's reading is of the raw image named as its graph arrives.
+            stain_read["graph"], stain_read["image"] = id(graph), named
+        # Another image or channel named since has not been read yet.
+        record = graph.graph if graph is not None and stain_read["image"] == named else {}
         read = record.get("raw_image_stain")
         before = stain_read["stain"]
         stain_read["stain"] = read if read in ("plasma_column", "endothelial") else None
         stain_read["reading"] = record.get("raw_image_stain_reading")
         stain_reading_label.value = raw_image_stain_note(
-            current_values().get("raw_image_stain"), stain_read["stain"], stain_read["reading"]
+            values.get("raw_image_stain"), stain_read["stain"], stain_read["reading"]
         )
         stain_reading_label.visible = bool(stain_reading_label.value)
         if stain_read["stain"] != before:
             apply_prerequisites()
 
-    if "raw_image_stain" in rows:
-        # A stain named by hand needs no note; back on auto, the run's stands.
-        rows["raw_image_stain"].changed.connect(lambda *_args: refresh_stain_reading())
+    for name in ("raw_image_stain", "raw_image_path", "raw_image_channel"):
+        # A stain named by hand needs no note; back on auto, the run's stands,
+        # for as long as the raw image it read is the one named.
+        if name in rows:
+            rows[name].changed.connect(lambda *_args: refresh_stain_reading())
 
     def reparent_arrow_length_slider() -> None:
         if viewer is None:
@@ -16453,6 +16469,9 @@ def settings_widget(napari_viewer=None):
             # YAML from an older save) is a user-facing message, not a crash.
             report.value = f"Could not load {path}:\n{error}"
             return
+        # A pending proposal listed its changes against the settings replaced here.
+        for review in (optimise_review, fwhm_review, endothelial_review):
+            review.clear()
         loaded_paths.clear()
         loaded_config_dir[0] = Path(path).parent
         last_config_path[0] = str(path)

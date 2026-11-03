@@ -444,20 +444,81 @@ def test_a_width_disagreeing_with_the_mask_is_not_usable():
     assert quality.edt_disagreement_fraction == pytest.approx(1.0)
 
 
-def test_the_mask_guides_the_decoys_without_seeding_the_trials():
-    """The mask's own width places each decoy and planted vessel; a run that
+@pytest.mark.parametrize("measured", [False, True])
+def test_the_checks_carry_the_masks_width_as_a_first_guess_only_as_the_trials_do(measured):
+    """The mask's own width places each decoy and planted vessel. A run that
     does not measure it (use_edt_diameter_crosscheck off, the default) has no
-    such width to seed FWHM's guess from, so the trials have none either."""
+    such width to seed FWHM's guess from, so the trials have none -- and,
+    regression, neither now do the decoys and planted vessels, which carried
+    one and so were measured from another first guess than the vessels."""
     G = _multi_vessel_graph()
+    if measured:
+        for _u, _v, data in G.edges(data=True):
+            data["edt_diameter_um"] = 3.5
     search = _search(G, _multi_vessel_raw_volume(), vessel_mask=_vessel_mask())
 
     assert search.decoy_probe is not None and search.decoy_probe.number_of_edges() > 0
+    assert search.planted is not None and search.planted.probe.number_of_edges() > 0
+    checks = [*search.decoy_probe.edges(data=True), *search.planted.probe.edges(data=True)]
+    assert all(("edt_diameter_um" in data) is measured for _u, _v, data in checks)
     assert all(
-        float(data["edt_diameter_um"]) > 0.0 for _u, _v, data in search.decoy_probe.edges(data=True)
+        ("edt_diameter_um" in data) is measured for _u, _v, data in search.template.edges(data=True)
     )
-    assert search.planted is not None
-    assert all("edt_diameter_um" not in data for _u, _v, data in search.template.edges(data=True))
-    assert all("edt_diameter_um" not in data for _u, _v, data in G.edges(data=True))
+
+
+def test_a_trial_derives_the_mask_widths_and_the_psf_its_settings_change(multi_vessel, monkeypatch):
+    """Regression: the image PSF was estimated once, from the starting
+    settings, and the mask widths (FWHM's first guess) measured once, while
+    the settings a run reads for both -- the averaging length, the guess
+    attribute, the sample spacing, the aggregation -- were swept. A trial
+    now holds the PSF and starts from the widths a run with its settings
+    would have."""
+    import functools
+
+    G, raw_path = multi_vessel
+
+    def fake_psf(_graph, settings, **_kwargs):
+        return (float(settings["fwhm_longitudinal_average_um"]), 0.5, 0.5), {}
+
+    def fake_edt(graph, config, *, mask_volume, edges=None):
+        spacing = float(config.fwhm_setting("fwhm_sample_spacing_along_edge_um"))
+        for _u, _v, data in graph.edges(data=True):
+            data["edt_diameter_um"] = 10.0 * spacing
+        return {}
+
+    seen = []
+    real = s.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff
+
+    @functools.wraps(real)  # the search reads its keyword arguments off the signature
+    def recording(graph, **kwargs):
+        widths = {data.get("edt_diameter_um") for _u, _v, data in graph.edges(data=True)}
+        seen.append((kwargs.get("profile_psf_sigma_zyx"), widths))
+        return real(graph, **kwargs)
+
+    monkeypatch.setattr(s, "image_psf_from_settings", fake_psf)
+    monkeypatch.setattr(s.apply, "measure_edt_diameters", fake_edt)
+    monkeypatch.setattr(s.fwhm_diameter, "measure_edge_diameters_fwhm_from_raw_tiff", recording)
+    search, _estimate = s._prepared_search(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values=_fwhm_starting_values(use_edt_diameter_crosscheck=True),
+        sample_edge_count=4,
+        vessel_mask=_vessel_mask(),
+    )
+    seen.clear()
+
+    search._run_trial({"fwhm_longitudinal_average_um": 8.0})
+    search._run_trial(
+        {"fwhm_sample_spacing_along_edge_um": 1.0, "fwhm_edge_diameter_aggregation": "mean"}
+    )
+    search._run_trial({})
+
+    assert seen == [
+        ((8.0, 0.5, 0.5), {20.0}),
+        ((4.0, 0.5, 0.5), {10.0}),
+        ((4.0, 0.5, 0.5), {20.0}),
+    ]
 
 
 @pytest.mark.parametrize("size", [1, 3])
@@ -812,7 +873,7 @@ def test_the_trials_start_from_vessels_with_none_of_the_runs_measurements(multi_
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
-        starting_values=_fwhm_starting_values(),
+        starting_values=_fwhm_starting_values(use_edt_diameter_crosscheck=True),
         sample_edge_count=5,
         vessel_mask=_vessel_mask(),
     )
@@ -829,6 +890,26 @@ def test_the_trials_start_from_vessels_with_none_of_the_runs_measurements(multi_
     ) < 5
     assert 42.0 not in search._baseline_diameters_um()
     assert G.edges[off_vessel]["fwhm_diameter_um"] == 42.0  # the caller's graph is untouched
+
+
+def test_mask_widths_a_run_no_longer_measures_are_not_the_trials_first_guess(multi_vessel):
+    """Regression: mask widths an earlier run left on the panel's graph
+    stayed on the trials' vessels with use_edt_diameter_crosscheck now off,
+    seeding FWHM's first guess where the run's has none."""
+    G, raw_path = multi_vessel
+    for _u, _v, data in G.edges(data=True):
+        data["edt_diameter_um"] = 3.0
+
+    search, _estimate = s._prepared_search(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values=_fwhm_starting_values(),
+        sample_edge_count=4,
+    )
+
+    assert all("edt_diameter_um" not in data for _u, _v, data in search.template.edges(data=True))
+    assert all(data["edt_diameter_um"] == 3.0 for _u, _v, data in G.edges(data=True))
 
 
 def test_bridges_and_vessels_the_run_removes_are_never_sampled_nor_calibrated_on(
