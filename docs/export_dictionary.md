@@ -112,7 +112,7 @@ Written to the run's output folder (output_dir). The voxel size the run read and
 
 | Column | Unit | Meaning |
 |---|---|---|
-| `voxel_size` | `um` | The image's voxel size as read, (x, y, z). |
+| `voxel_size` | `um` | The voxel size the run resolved for the image as read, before any downsampling, (x, y, z): its metadata, or the override when one was used. |
 | `run_voxel_size` | `um` | The voxel size the run used, (x, y, z) (after any downsampling). |
 | `voxel_size_source` | `-` | Where it came from: OME header, TIFF tags, override, ... |
 | `voxel_metadata_status` | `-` | Whether the metadata was found, and its source. |

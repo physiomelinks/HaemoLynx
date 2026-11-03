@@ -1137,6 +1137,18 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     return scaled
 
 
+def missing_vessel_min_voxels_on_grid(settings: Mapping[str, Any], downsample: Downsample | None) -> int:
+    """``missing_vessel_min_voxels``, voxels of the image as read, on
+    *downsample*'s grid: as many as hold the same volume, rounded half up and
+    never below 1. Counted on the coarse grid as set, the missing-vessel
+    checks' noise floor was a piece of eight times the volume (at 2x)."""
+    value = int(settings["missing_vessel_min_voxels"])
+    if downsample is None or downsample.is_identity:
+        return value
+    block = int(np.prod(downsample.axis_factors_zyx, dtype=np.int64))
+    return max(1, int(np.floor(value / block + 0.5)))
+
+
 def skeleton_voxel_settings_from_grid(
     chosen: Mapping[str, Any], settings: Mapping[str, Any], downsample: Downsample | None
 ) -> dict:
@@ -1412,7 +1424,8 @@ def thick_vessel_mask_from_image(
     """The thick-vessel region skeletonisation found in *image*, found again.
 
     For a run that needs the region but loaded its skeleton instead of making
-    it (a resume with no stored stage outputs). None when thickness-gated
+    it: ``skeletonise`` with ``do_skeletonize`` off, and post processing on a
+    resume with no stored stage outputs. None when thickness-gated
     skeletonisation is off, or finds no thick vessel. *crop* is the
     ``crop_on_import`` box *image* was cut to, *downsample* how it was reduced
     after that. With *cache*
@@ -1428,41 +1441,14 @@ def thick_vessel_mask_from_image(
     )
     arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
     key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
-    if found:
-        return region
-    region = preprocessing.thick_vessel_region(binary, **arguments)
-    if cache is not None:
-        cache.store(key, region, binary.shape)
-    return region
-
-
-def _thick_vessel_region_if_cached(
-    settings: dict,
-    image: np.ndarray,
-    voxel_size_xyz,
-    crop: CropBox | None,
-    cache: preprocessing.ThickVesselRegionCache,
-    downsample: Downsample | None = None,
-) -> np.ndarray | None:
-    """The thick-vessel region a previous run found in *image*, for a run
-    loading its skeleton rather than making it; None when none is cached
-    (graph building then makes no thick-vessel bridges, as before there
-    was a cache) or that run found none."""
-    binary = _to_binary_volume_for_skeletonization(
-        image,
-        use_memmap=settings["use_memmap_loading"],
-        memmap_directory=settings["memmap_directory"],
-    )
-    _key, found, region = _cached_thick_vessel_region(
-        cache, binary, _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
-    )
-    preprocessing.release_superseded(binary, image, keep=image)
     if not found:
-        logger.info(
-            "No thick-vessel region is cached for the loaded skeleton (%s), so graph "
-            "building makes no thick-vessel bridges; turn do_skeletonize on to find it.",
-            cache.sidecar,
-        )
+        # Without it graph building makes no thick-vessel bridges: the graph
+        # of a run resumed on another machine was not the run's it resumed.
+        logger.info("No thick-vessel region is kept for this mask and these settings: finding it.")
+        region = preprocessing.thick_vessel_region(binary, **arguments)
+        if cache is not None:
+            cache.store(key, region, binary.shape)
+    preprocessing.release_superseded(binary, image, keep=image)
     return region
 
 
@@ -1692,7 +1678,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
 
     # A loaded skeleton's image is cleaned as a fresh run's is; the
     # thick-vessel region is kept beside the skeleton, so a loaded skeleton
-    # gets it back when the mask and settings are the run's that found it.
+    # gets it back when the mask and settings are the run's that found it,
+    # and finds it again when they are not.
     thick_vessel_mask: np.ndarray | None = None
     raw_segmented_image: np.ndarray | None = None
     region_cache = thick_vessel_region_cache(settings, output_dir)
@@ -1867,8 +1854,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             )
         image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
         if settings["use_thick_vessel_skeletonisation"]:
-            thick_vessel_mask = _thick_vessel_region_if_cached(
-                settings, image, voxel_size, crop, region_cache, downsample
+            thick_vessel_mask = thick_vessel_mask_from_image(
+                settings, image, voxel_size, crop, cache=region_cache, downsample=downsample
             )
 
     if plotting:
@@ -1890,7 +1877,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         # Both checks from one distance transform of the skeleton.
         mask_consistency, missing_vessels = preprocessing.diagnose_skeleton_against_mask(
             skeleton, image, voxel_size_zyx=voxel_size_zyx,
-            min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+            min_vessel_voxels=missing_vessel_min_voxels_on_grid(settings, downsample),
         )
         consistency_report = preprocessing.format_skeleton_mask_consistency_report(
             mask_consistency
@@ -1991,7 +1978,8 @@ def _write_run_final_graph_3d_html(
 
 
 def _log_graph_consistency_diagnostics(
-    settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx
+    settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx,
+    downsample: Downsample | None = None,
 ) -> None:
     """The four read-only graph checks build_network logs. They never change
     G's nodes or edges; the lumen-artefact report's counts are kept on
@@ -2017,7 +2005,7 @@ def _log_graph_consistency_diagnostics(
     # Both mask checks from one distance transform of the graph's edges.
     graph_mask_consistency, missing_vessels = graph.diagnose_graph_against_mask(
         G, image, voxel_size_zyx=voxel_size_zyx,
-        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+        min_vessel_voxels=missing_vessel_min_voxels_on_grid(settings, downsample),
     )
     graph_mask_consistency_report = graph.format_graph_mask_consistency_report(
         graph_mask_consistency
@@ -2750,7 +2738,9 @@ def build_network(
         # Not measured: a loaded graph's counts are of another build.
         G.graph.pop(graph.LUMEN_ARTEFACT_COUNTS, None)
     else:
-        _log_graph_consistency_diagnostics(settings, G, skeleton, image, voxel_size_zyx)
+        _log_graph_consistency_diagnostics(
+            settings, G, skeleton, image, voxel_size_zyx, downsample=volume.downsample
+        )
 
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:

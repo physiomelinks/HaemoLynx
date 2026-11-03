@@ -1025,6 +1025,7 @@ def test_a_run_loading_its_skeleton_gets_the_region_back_from_the_cache(tmp_path
     """With do_skeletonize off the region used to be None whatever the
     settings said, and graph building made no thick-vessel bridges."""
     from haemolynx.preprocessing import thick_vessels as module
+    from haemolynx.preprocessing import thick_vessel_region
 
     mask, _fat_roi = plasma_labelled_object(8.0)
     settings = settings_for(
@@ -1032,15 +1033,42 @@ def test_a_run_loading_its_skeleton_gets_the_region_back_from_the_cache(tmp_path
     )
     first = skeletonise(settings, segment(settings))
 
+    real = module.thick_vessel_object_mask
     monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
     settings["do_skeletonize"] = False
     loaded = skeletonise(settings, segment(settings))
     assert np.array_equal(loaded.skeleton, first.skeleton)
     assert np.array_equal(loaded.thick_vessel_mask, first.thick_vessel_mask)
 
-    # No entry for these settings: None, as before there was a cache.
+    # No entry for these settings: found, as the settings say, and kept.
+    monkeypatch.setattr(module, "thick_vessel_object_mask", real)
     settings["skeleton_thick_vessel_min_radius_um"] = 5.0
-    assert skeletonise(settings, segment(settings)).thick_vessel_mask is None
+    found = skeletonise(settings, segment(settings)).thick_vessel_mask
+    expected = thick_vessel_region(
+        mask, min_radius_um=5.0, voxel_size_zyx=first.voxel_size_zyx, fill_mask_holes=True
+    )
+    assert np.array_equal(found, expected)
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    assert np.array_equal(skeletonise(settings, segment(settings)).thick_vessel_mask, expected)
+
+
+def test_a_loaded_skeleton_with_no_region_kept_finds_it_again(tmp_path):
+    """A skeleton loaded on another machine, or after its region was cleared
+    (a batch clears it), gave graph building no thick vessels to bridge: the
+    graph was not the one the run that made the skeleton built."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    made = skeletonise(settings, segment(settings))
+    assert made.thick_vessel_mask is not None
+    from haemolynx.pipeline.stages import thick_vessel_region_cache
+
+    assert thick_vessel_region_cache(settings).discard()
+
+    settings["do_skeletonize"] = False
+    loaded = skeletonise(settings, segment(settings))
+    assert np.array_equal(loaded.thick_vessel_mask, made.thick_vessel_mask)
 
 
 @pytest.mark.parametrize("low_ram", [False, True])

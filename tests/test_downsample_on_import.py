@@ -968,3 +968,42 @@ def test_preflight_warns_when_the_raw_choice_differs_and_says_what_happens():
     # Without a raw image the raw choice is out of effect: no warning.
     assert not check_downsample_on_import({SEGMENTED_SETTING: "4x", RAW_SETTING: "16x"}).warnings
     assert not check_downsample_on_import(base).errors
+
+
+def test_the_missing_vessel_floor_keeps_its_volume_on_the_reduced_grid():
+    """missing_vessel_min_voxels counts voxels of the image as read: on a
+    grid reduced 2x on every axis a piece of 2 voxels of it is a quarter of
+    one, so the floor is 1, not 2 (a piece of 16 of the image's)."""
+    from haemolynx.io.downsample import downsample_for
+    from haemolynx.pipeline.stages import missing_vessel_min_voxels_on_grid
+
+    settings = {"missing_vessel_min_voxels": 20}
+    assert missing_vessel_min_voxels_on_grid(settings, None) == 20
+    assert missing_vessel_min_voxels_on_grid(
+        settings, downsample_for(1, (8, 8, 8), (1.0, 1.0, 1.0))
+    ) == 20
+    every_axis = downsample_for(2, (8, 8, 8), (1.0, 1.0, 1.0))
+    assert every_axis.axis_factors_zyx == (2, 2, 2)
+    assert missing_vessel_min_voxels_on_grid(settings, every_axis) == 3  # 20 / 8, half up
+    in_plane = downsample_for(2, (8, 8, 8), (2.0, 0.5, 0.5))
+    assert in_plane.axis_factors_zyx == (1, 2, 2)
+    assert missing_vessel_min_voxels_on_grid(settings, in_plane) == 5
+    assert missing_vessel_min_voxels_on_grid({"missing_vessel_min_voxels": 2}, every_axis) == 1
+
+
+def test_the_stage_checks_against_the_floor_on_its_grid(tmp_path, monkeypatch):
+    from haemolynx import preprocessing as preprocessing_module
+
+    captured = []
+    real = preprocessing_module.diagnose_skeleton_against_mask
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs["min_vessel_voxels"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "diagnose_skeleton_against_mask", spy)
+    settings = _run_settings(tmp_path, missing_vessel_min_voxels=40)
+    volume = stages.skeletonise(settings, stages.segment(settings))
+    block = int(np.prod(volume.downsample.axis_factors_zyx))
+    assert block > 1
+    assert captured == [max(1, int(np.floor(40 / block + 0.5)))]
