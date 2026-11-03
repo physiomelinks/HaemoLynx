@@ -5370,9 +5370,10 @@ def post_process(
     this does to those vessels what the stages before Haemodynamics did to
     every vessel:
 
-    1. the boundary-node lists follow the graph -- a prune can drop an inlet
-       -- and the inlets and outlets set by hand on the tab's Terminal nodes
-       list replace the run's (:func:`_take_edited_terminal_roles`), as the
+    1. the boundary-node lists follow the graph -- a prune can drop an inlet,
+       and so can the split in 2 -- and the inlets and outlets set by hand on
+       the tab's Terminal nodes list replace the run's
+       (:func:`_take_edited_terminal_roles`), as the
        two nodes chosen on its Two-point resistance nodes list replace the
        first inlet and the first outlet (:func:`_take_chosen_resistance_pair`);
     2. an edited vessel that opens into a thick vessel is split where it
@@ -5429,6 +5430,11 @@ def post_process(
         _record_downsample(G, settings, network.volume)
     _take_edited_terminal_roles(settings, boundaries, G)
     had_inlets, had_outlets = bool(boundaries.inlet_nodes), bool(boundaries.outlet_nodes)
+    # One binarised segmentation and one support for the three readers below.
+    segmentation = _PostProcessSegmentation.of(settings, network)
+    # The lists are trimmed after the split: it takes a short blind vessel
+    # beyond its bridge, and the node it hung from, out with it.
+    G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask, segmentation)
     _trim_boundary_lists(settings, boundaries, G)
     if (had_inlets and not boundaries.inlet_nodes) or (had_outlets and not boundaries.outlet_nodes):
         raise ValueError(
@@ -5436,9 +5442,6 @@ def post_process(
             "network has nothing left to solve between."
         )
     _take_chosen_resistance_pair(boundaries, G)
-    # One binarised segmentation and one support for the three readers below.
-    segmentation = _PostProcessSegmentation.of(settings, network)
-    G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask, segmentation)
     model.graph = G
     boundaries.graph = G
     if network is not None:
