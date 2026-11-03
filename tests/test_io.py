@@ -1199,7 +1199,8 @@ def test_a_2d_mask_is_read_as_one_plane_beside_a_2d_image(tmp_path):
 
     assert mask.shape == vessel.shape == (1, 10, 12)
     assert np.array_equal(mask[0], plane > 0) and np.array_equal(vessel[0], plane > 0)
-    assert voxel_xyz[:2] == pytest.approx((0.5, 0.5)) and status["missing_axes"] == ["z"]
+    # z, which the file gives none of, takes the finest in-plane spacing.
+    assert voxel_xyz == pytest.approx((0.5, 0.5, 0.5)) and status["z_from_in_plane"]
 
 
 def test_a_2d_h5_keeps_its_element_size(tmp_path):
@@ -1212,5 +1213,21 @@ def test_a_2d_h5_keeps_its_element_size(tmp_path):
     image, x, y, z, status = load_image_with_voxel_size_2d_aware(str(path), input_format="h5")
 
     assert image.shape == (1, 10, 12)
-    assert (x, y) == pytest.approx((0.25, 0.5))
-    assert status["status"] == "partial" and status["missing_axes"] == ["z"]
+    assert (x, y, z) == pytest.approx((0.25, 0.5, 0.25))
+    assert status["missing_axes"] == ["z"] and status["z_from_in_plane"]
+
+
+def test_a_float_label_h5_cut_by_a_box_reads_as_its_whole_volume_does(tmp_path):
+    """Regression: the rule a box of an H5 is read by took a float dataset by
+    its range alone, so a float 1/2 label mask cut by a crop box was solid
+    vessel in RAM, and its minority label under the low-RAM option."""
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization, h5_binarization_rule
+
+    labels = np.full((4, 10, 20), 2.0, dtype=np.float32)
+    labels[1:3, 4:6, 2:18] = 1.0
+    path = _write_h5(tmp_path / "labels.h5", labels)
+
+    rule = h5_binarization_rule(path)
+
+    assert np.array_equal(rule(labels), _to_binary_volume_for_skeletonization(labels))
+    assert int(rule(labels).sum()) == 2 * 2 * 16
