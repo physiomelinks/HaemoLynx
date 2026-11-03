@@ -402,6 +402,7 @@ def compare_block_to_baseline(
     (:data:`FLUX_HETEROGENEITY_SUMMARY_ROWS`) count red cells by
     *red_cell_volume_fl* (the ``red_cell_volume_fl`` setting).
     """
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
     from haemolynx.statistics.bifurcation import (
         _branch_order_sort_key,
         branch_order_label,
@@ -531,7 +532,14 @@ def compare_block_to_baseline(
             # pipeline solved carries these zeros already; one solved by
             # hand does not, and this keeps the comparison right for it.
             zero_stopped_vessel_flows(G, inlets, outlets)
-        times = compute_transit_times(G, inlets, outlets)
+        # Measured as the statistics measure a network: each zero-resistance
+        # bridge's two ends one node, so its baseline rows are the CSV's.
+        measured, terminals_in, terminals_out = G, inlets, outlets
+        if any(d.get(IS_ZERO_RESISTANCE) for *_e, d in G.edges(data=True)):
+            measured, became = contract_bridges(G)
+            terminals_in = list(dict.fromkeys(became.get(n, n) for n in inlets))
+            terminals_out = list(dict.fromkeys(became.get(n, n) for n in outlets))
+        times = compute_transit_times(measured, terminals_in, terminals_out)
         for key, name in (
             ("Mean Transit Time (s)", "mean_transit_time_s"),
             ("Transit Time SD (s)", "transit_time_sd_s"),
@@ -542,7 +550,7 @@ def compare_block_to_baseline(
                 summary[f"{name}_{label}"] = times[key]
         if "Transit Time Status" in times:
             summary[f"transit_time_status_{label}"] = times["Transit Time Status"]
-        flux = compute_flux_heterogeneity(G, red_cell_volume_fl=red_cell_volume_fl)
+        flux = compute_flux_heterogeneity(measured, red_cell_volume_fl=red_cell_volume_fl)
         for key, name in FLUX_HETEROGENEITY_SUMMARY_ROWS:
             if key in flux:
                 summary[f"{name}_{label}"] = flux[key]

@@ -388,6 +388,33 @@ def test_a_vessel_draining_through_an_open_end_is_not_stopped():
     assert elsewhere[1][4][0]["flow_abs"] > 0
 
 
+def test_the_comparison_measures_a_bridge_as_the_statistics_do():
+    """0-1 and 2-3 are two vessels of one width, 1-2 a zero-resistance bridge
+    into a thick vessel. The statistics count two vessels, one velocity, CV 0;
+    the comparison counted the bridge as a third (CV 0.79 here)."""
+    from haemolynx.graph import FLOW_STATE
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
+    from haemolynx.statistics.flux_heterogeneity import compute_flux_heterogeneity
+
+    G = nx.MultiGraph()
+    _vessel(G, 0, 1, branch_order="Art1", diameter=5.0)
+    _vessel(G, 1, 2, branch_order=None, resistance=1e-9, length=3.0, diameter=20.0)
+    G[1][2][0][IS_ZERO_RESISTANCE] = True
+    _vessel(G, 2, 3, branch_order="Ven1", diameter=5.0)
+    _solve(G, [0], [3])
+    for *_e, data in G.edges(keys=True, data=True):
+        data[FLOW_STATE] = "solved"
+    blocked = G.copy()
+    block_vessels(blocked, [], 1e6)
+
+    summary, _ = compare_block_to_baseline(G, blocked, inlet_nodes=[0], outlet_nodes=[3])
+
+    statistics = compute_flux_heterogeneity(contract_bridges(G.copy())[0])
+    assert statistics["Vessel Velocity CV"] == pytest.approx(0.0, abs=1e-6)
+    assert summary["vessel_velocity_cv_baseline"] == pytest.approx(statistics["Vessel Velocity CV"], abs=1e-6)
+    assert summary["vessels_carrying_flow_baseline"] == statistics["Vessels Carrying Flow"] == 2
+
+
 def test_a_vessel_never_solved_is_left_alone_by_the_zeroing():
     G = _two_routes()
     block_vessels(G, [(1, 2, 0)], 1e6)
