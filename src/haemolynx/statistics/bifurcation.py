@@ -489,6 +489,7 @@ def compute_murray_law_compliance(
     """
     ratios: list[float] = []
     exponents: list[float] = []
+    tier_exponents: list[float] = []
     skipped = 0
     for _node, parent_item, daughter_items in _iter_parent_daughter_junctions(G):
         if not daughter_items:
@@ -502,6 +503,9 @@ def compute_murray_law_compliance(
         fitted = fitted_murray_exponent(parent_d, daughter_ds)
         if fitted is not None:
             exponents.append(fitted)
+            tier = _murray_tier(parent_item[4])
+            if tier is not None and all(_murray_tier(item[4]) == tier for item in daughter_items):
+                tier_exponents.append(fitted)
 
     result: Dict[str, Any] = {
         "Murray Ratio Sample Count": len(ratios),
@@ -525,7 +529,29 @@ def compute_murray_law_compliance(
         result["Median Fitted Murray Exponent"] = note
         result["Fitted Murray Exponent IQR Low"] = note
         result["Fitted Murray Exponent IQR High"] = note
+    # The same over the arteriole and venule tiers' own branchings alone,
+    # where Murray's law is the rule: the rows above also hold the capillary
+    # bed's junctions and the side branches a tier hands to it.
+    result["Tier Fitted Murray Exponent Sample Count"] = len(tier_exponents)
+    if tier_exponents:
+        low, median, high = np.percentile(tier_exponents, [25, 50, 75])
+        result["Median Tier Fitted Murray Exponent"] = float(median)
+        result["Tier Fitted Murray Exponent IQR Low"] = float(low)
+        result["Tier Fitted Murray Exponent IQR High"] = float(high)
+    else:
+        note = "N/A (no arteriole or venule branching of two or more narrower measured daughters)"
+        result["Median Tier Fitted Murray Exponent"] = note
+        result["Tier Fitted Murray Exponent IQR Low"] = note
+        result["Tier Fitted Murray Exponent IQR High"] = note
     return result
+
+
+def _murray_tier(tag: str) -> Optional[str]:
+    """``"art"`` or ``"ven"`` for a vessel of the arteriole or venule tier
+    (its normalised branch order), else None: the tiers whose branchings
+    Murray's law describes."""
+    m = re.match(r"^(art|ven)\s*\d+$", str(tag), flags=re.IGNORECASE)
+    return m.group(1).lower() if m else None
 
 
 def compute_daughter_daughter_angles(

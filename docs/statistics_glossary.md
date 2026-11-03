@@ -147,6 +147,10 @@ names it lists.
 | Fitted Murray Exponent IQR Low | dimensionless | The 25th percentile of the fitted exponents. |
 | Fitted Murray Exponent IQR High | dimensionless | The 75th percentile of the fitted exponents. |
 | Fitted Murray Exponent Sample Count | count | Junctions an exponent was fitted at. |
+| Median Tier Fitted Murray Exponent | dimensionless | The fitted exponent's median over the arteriole and venule tiers' own branchings only: a parent and every daughter in one tier, no capillary or large vessel among them. What a synthetic network draws its arteriole and venule tiers to. |
+| Tier Fitted Murray Exponent IQR Low | dimensionless | The 25th percentile of the tiers' fitted exponents. |
+| Tier Fitted Murray Exponent IQR High | dimensionless | The 75th percentile of the tiers' fitted exponents. |
+| Tier Fitted Murray Exponent Sample Count | count | Arteriole and venule branchings an exponent was fitted at. |
 
 ## Intercapillary distance
 

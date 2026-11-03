@@ -282,6 +282,10 @@ _add(T, "Median Fitted Murray Exponent", "dimensionless", "The median over junct
 _add(T, "Fitted Murray Exponent IQR Low", "dimensionless", "The 25th percentile of the fitted exponents.")
 _add(T, "Fitted Murray Exponent IQR High", "dimensionless", "The 75th percentile of the fitted exponents.")
 _add(T, "Fitted Murray Exponent Sample Count", "count", "Junctions an exponent was fitted at.")
+_add(T, "Median Tier Fitted Murray Exponent", "dimensionless", "The fitted exponent's median over the arteriole and venule tiers' own branchings only: a parent and every daughter in one tier, no capillary or large vessel among them. What a synthetic network draws its arteriole and venule tiers to.")
+_add(T, "Tier Fitted Murray Exponent IQR Low", "dimensionless", "The 25th percentile of the tiers' fitted exponents.")
+_add(T, "Tier Fitted Murray Exponent IQR High", "dimensionless", "The 75th percentile of the tiers' fitted exponents.")
+_add(T, "Tier Fitted Murray Exponent Sample Count", "count", "Arteriole and venule branchings an exponent was fitted at.")
 
 # -- Intercapillary distance --------------------------------------------------
 T = "Intercapillary distance"

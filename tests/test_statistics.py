@@ -1622,6 +1622,49 @@ def test_a_venous_junctions_parent_is_the_vessel_nearest_the_outlet():
     assert "Large_Ven1" not in angles
 
 
+def test_the_tier_murray_exponent_fits_only_a_tiers_own_branchings():
+    """A branching of Art into two Art daughters drawn to exponent 3 fits 3;
+    an arteriole handing a capillary to the bed beside the vessel it runs on
+    as (a side branch, no Murray split) fits far lower, and is in the whole
+    network's rows but not the tier's."""
+    G = nx.MultiGraph()
+    for node, pos in {
+        0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 15.0, 35.0), 3: (0.0, -15.0, 35.0),
+        4: (0.0, 15.0, 60.0), 5: (0.0, 30.0, 35.0),
+    }.items():
+        G.add_node(node, pos=pos)
+    _straight_edge(G, 0, 1, "Art1")
+    _straight_edge(G, 1, 2, "Art2")
+    _straight_edge(G, 1, 3, "Art2")
+    _straight_edge(G, 2, 4, "Art3")
+    _straight_edge(G, 2, 5, "B01")
+    daughter = 10.0 / 2.0 ** (1.0 / 3.0)
+    for (u, v), diameter in {(0, 1): 10.0, (1, 2): daughter, (1, 3): daughter, (2, 4): 7.5, (2, 5): 4.0}.items():
+        G.edges[u, v, 0]["diameter_um"] = diameter
+
+    rows = compute_murray_law_compliance(G)
+
+    assert rows["Fitted Murray Exponent Sample Count"] == 2
+    assert rows["Tier Fitted Murray Exponent Sample Count"] == 1
+    assert rows["Median Tier Fitted Murray Exponent"] == pytest.approx(3.0, abs=1e-3)
+    assert rows["Median Fitted Murray Exponent"] < 3.0
+
+
+def test_with_no_tier_branching_the_tier_rows_say_so():
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 15.0, 35.0), 3: (0.0, -15.0, 35.0)}.items():
+        G.add_node(node, pos=pos)
+    for u, v, order, diameter in ((0, 1, "B01", 6.0), (1, 2, "B02", 4.5), (1, 3, "B02", 4.5)):
+        _straight_edge(G, u, v, order)
+        G.edges[u, v, 0]["diameter_um"] = diameter
+
+    rows = compute_murray_law_compliance(G)
+
+    assert rows["Fitted Murray Exponent Sample Count"] == 1
+    assert rows["Tier Fitted Murray Exponent Sample Count"] == 0
+    assert rows["Median Tier Fitted Murray Exponent"].startswith("N/A")
+
+
 def test_a_capillary_draining_into_a_venule_is_its_daughter():
     """The capillary bed sits furthest from both roots: at a venule taking in
     two capillaries, the venule is the parent (no unique parent before)."""
