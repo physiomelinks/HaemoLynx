@@ -3236,6 +3236,9 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     global_masks = io.vessel_masks_are_global(settings)
     if global_masks:
         large_in_use = small_in_use = large_vessel_tier = False
+    # Whether the masks also choose the inlets and outlets; off, they only
+    # drive the large-vessel treatment and the Inlet/Outlet methods choose.
+    io_from_masks = graph.inlets_outlets_from_vessel_masks(settings)
     auto_inlet_nodes: list[int] = []
     auto_outlet_nodes: list[int] = []
     if large_in_use:
@@ -3346,6 +3349,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 graph.exclude_smaller_overlapping_large_vessel_components(
                     assignment_large_arteriole_mask,
                     assignment_large_venule_mask,
+                    low_memory=bool(settings["use_memmap_loading"]),
+                    memmap_directory=settings["memmap_directory"],
                 )
             )
             if cleaned_arteriole_mask is not None and cleaned_venule_mask is not None:
@@ -3465,6 +3470,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 f"{len(auto_outlet_nodes)} outlet node(s)), instead of "
                 "being cut away."
             )
+        elif not io_from_masks:
+            # Nothing reads the masks' own terminals: the Inlet and Outlet
+            # methods choose, and there is no Large tier to seed.
+            pass
         elif use_legacy_large_vessel_assignment:
             auto_inlet_nodes, auto_outlet_nodes = (
                 graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
@@ -3529,16 +3538,17 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             )
         large_arteriole_mask = assignment_large_arteriole_mask
         large_venule_mask = assignment_large_venule_mask
-    # Whether the masks also choose the inlets and outlets; off, they only
-    # drive the large-vessel treatment and the Inlet/Outlet methods choose.
-    io_from_masks = graph.inlets_outlets_from_vessel_masks(settings)
     if large_in_use and not io_from_masks:
         logger.info(
-            "inlets_outlets_from_vessel_masks is off: the large-vessel masks found "
-            f"{len(auto_inlet_nodes)} arteriole and {len(auto_outlet_nodes)} venule "
-            "terminal(s), but the inlets and outlets come from "
+            "inlets_outlets_from_vessel_masks is off: the inlets and outlets come from "
             f"inlet_node_selection_method={settings['inlet_node_selection_method']!r} "
-            f"and outlet_node_selection_method={settings['outlet_node_selection_method']!r}."
+            f"and outlet_node_selection_method={settings['outlet_node_selection_method']!r}"
+            + (
+                f"; the large masks' stumps seed the Large tier only ({len(auto_inlet_nodes)} "
+                f"arteriole, {len(auto_outlet_nodes)} venule)."
+                if large_vessel_tier
+                else "."
+            )
         )
     if io_from_masks:
         if not auto_inlet_nodes:
@@ -3577,18 +3587,13 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "mask's dilation, or turn inlets_outlets_from_vessel_masks off and "
                 "choose the outlets on the Outlet tab."
             )
-        settings["inlet_node_coordinates"] = [
-            tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
-            for node_id in auto_inlet_nodes
-        ]
-        settings["outlet_node_coordinates"] = [
-            tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
-            for node_id in auto_outlet_nodes
-        ]
+        # The Inlet and Outlet tabs' own coordinates are left as they are:
+        # written here, a settings dict reused for a run with the masks off
+        # took these nodes as hand-picked inlets.
         logger.info(
-            "Automated vessel assignment selected "
-            f"{len(settings['inlet_node_coordinates'])} input coordinates from arteriole-mask overlap "
-            f"and {len(settings['outlet_node_coordinates'])} outlet coordinates from venule-mask overlap."
+            f"Automated vessel assignment selected {len(auto_inlet_nodes)} inlet node(s) "
+            f"from arteriole-mask overlap and {len(auto_outlet_nodes)} outlet node(s) from "
+            "venule-mask overlap."
         )
 
     _reset_run_node_list(settings, "inlet_nodes")
@@ -3615,9 +3620,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
         settings["large_vessel_outlet_nodes"][:] = list(auto_outlet_nodes)
     used_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
-    # While the small masks are in use (global ones included) the panel greys
-    # these manual lists and a batch does not read them: neither does the run.
-    manual_vessel_boundaries = not graph.vessel_masks_in_use(settings, "small")
+    # While the small masks are in use, or any mask is global (no branch
+    # orders, so nothing reads them), the panel greys these manual lists and
+    # a batch does not read them: neither does the run.
+    manual_vessel_boundaries = graph.manual_vessel_boundaries_read(settings)
     if manual_vessel_boundaries and _vessel_boundary_configured(settings, "arteriole"):
         art_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "arteriole_boundary", exclude_nodes=list(used_nodes)
@@ -3707,6 +3713,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 graph.exclude_smaller_overlapping_small_vessel_components(
                     assignment_small_arteriole_mask,
                     assignment_small_venule_mask,
+                    low_memory=bool(settings["use_memmap_loading"]),
+                    memmap_directory=settings["memmap_directory"],
                 )
             )
             if (
@@ -3760,6 +3768,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 reassignment_parallel_workers=int(
                     settings["small_vessel_tangential_redefinition_parallel_workers"]
                 ),
+                low_memory=bool(settings["use_memmap_loading"]),
+                memmap_directory=settings["memmap_directory"],
             )
             assignment_small_arteriole_mask = np.asarray(
                 redefinition_result["small_arteriole_mask"], dtype=bool
@@ -4288,7 +4298,10 @@ def _small_vessel_boundary_fallback(
     ):
         coverage_mask = small_masks[index]
         if large_masks is not None:
-            coverage_mask = coverage_mask | np.asarray(large_masks[index], dtype=bool)
+            from haemolynx.preprocessing.memmap_support import MaskUnion
+
+            # Read where the edges ask, not made as a volume.
+            coverage_mask = MaskUnion(coverage_mask, large_masks[index])
         uncovered = graph.seed_nodes_without_mask_coverage(
             G, list(settings[seed_key]), coverage_mask, voxel_size_zyx=voxel_size_zyx
         )

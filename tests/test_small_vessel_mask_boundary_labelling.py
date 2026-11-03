@@ -198,6 +198,23 @@ def test_a_gap_equally_in_both_masks_goes_to_the_first_as_a_labelled_edge_does(n
     assert (1, 2, 0) in labelled[first]
 
 
+def test_a_parallel_edge_beside_one_labelled_edge_is_no_gap_to_fill():
+    """Regression: an edge parallel to a labelled one meets that one edge at
+    both its ends, which read as joining two edges of its type, so it took
+    the label at a quarter of the threshold with no gap to bridge."""
+    from haemolynx.graph.terminal_node_assignment import _fill_label_gaps
+
+    edges = [(1, 2, (1, 2, 0), {}), (1, 2, (1, 2, 1), {}), (0, 1, (0, 1, 0), {}), (2, 3, (2, 3, 0), {})]
+    labelled = {"arteriole": {(1, 2, 0)}, "venule": set()}
+
+    filled = _fill_label_gaps(edges, {(1, 2, 1): (0.3, 0.0)}, dict(labelled), low_fraction=0.25)
+
+    assert filled == 0 and "mask_vessel_type" not in edges[1][3]
+    # With the vessel going on at both ends, the same edge is a gap in it.
+    labelled = {"arteriole": {(1, 2, 0), (0, 1, 0), (2, 3, 0)}, "venule": set()}
+    assert _fill_label_gaps(edges, {(1, 2, 1): (0.3, 0.0)}, labelled, low_fraction=0.25) == 1
+
+
 def test_an_uncovered_edge_between_two_arteriole_edges_is_left_a_gap():
     """Hysteresis, not a blanket fill: an edge with too little of itself in
     the mask -- a capillary linking two arteriole branches -- keeps no type."""

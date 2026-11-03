@@ -69,7 +69,7 @@ from haemolynx.graph.boundaries import (
     BOUNDARY_ROLE_SETTINGS,
     assigns_large_vessel_branch_orders,
     inlets_outlets_from_vessel_masks,
-    vessel_masks_in_use,
+    manual_vessel_boundaries_read,
 )
 from haemolynx.gui.results import (
     BOUNDARY_COORDINATE_POINT_SIZE,
@@ -113,6 +113,7 @@ __all__ = [
     "LARGE_VESSEL_NETWORK_MODE_OFF_NOTE",
     "DISABLED_ROLE_TOOLTIP",
     "SYNTHETIC_CHOOSES_NOTE",
+    "GLOBAL_MASKS_NOTE",
     "role_disabled_note",
     "BoundaryPicks",
     "box_colours",
@@ -186,8 +187,9 @@ def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
 
     The large-vessel masks replace manual inlet/outlet picking only while
     they choose the inlets and outlets (:func:`inlets_outlets_from_vessel_masks`);
-    the small-vessel masks, while in use (:func:`vessel_masks_in_use`), replace
-    manual arteriole/venule boundary picking. Each asks whether its switch is
+    the small-vessel masks, while in use, replace manual arteriole/venule
+    boundary picking, which global vessel masks leave unread
+    (:func:`manual_vessel_boundaries_read`). Each asks whether its switch is
     in effect, not what it holds: a switch left ticked under one the user
     unticked is hidden and greys nothing. The sub-tab stays visible but is
     greyed out -- unlike vessel-mask option rows, which hide.
@@ -196,7 +198,7 @@ def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
         return False  # the generator chose every role's nodes
     if role in LARGE_AUTO_ROLES and inlets_outlets_from_vessel_masks(values):
         return False
-    if role in SMALL_AUTO_ROLES and vessel_masks_in_use(values, "small"):
+    if role in SMALL_AUTO_ROLES and not manual_vessel_boundaries_read(values):
         return False
     if role in LARGE_VESSEL_NETWORK_ROLES and not assigns_large_vessel_branch_orders(values):
         return False
@@ -228,13 +230,22 @@ DISABLED_ROLE_TOOLTIP: dict[str, str] = {
 SYNTHETIC_CHOOSES_NOTE = (
     "A synthetic network chooses its own inlets, outlets and boundary nodes"
 )
+GLOBAL_MASKS_NOTE = (
+    "Masks without a venule mask give no branch orders, so arteriole and venule "
+    "boundaries are not used"
+)
 
 
 def role_disabled_note(role: str, values: Mapping[str, Any]) -> str:
     """Why *role*'s sub-tab is greyed for *values*: the synthetic note when
-    the network is generated, else :data:`DISABLED_ROLE_TOOLTIP`'s."""
+    the network is generated, the global masks' for the arteriole and venule
+    roles under global vessel masks, else :data:`DISABLED_ROLE_TOOLTIP`'s."""
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
+
     if network_is_synthetic(values):
         return SYNTHETIC_CHOOSES_NOTE
+    if role in SMALL_AUTO_ROLES and vessel_masks_are_global(values):
+        return GLOBAL_MASKS_NOTE
     return DISABLED_ROLE_TOOLTIP[role]
 
 
