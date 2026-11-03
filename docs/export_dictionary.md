@@ -119,6 +119,7 @@ Written to the run's output folder (output_dir). The voxel size the run read and
 | `voxel_size_policy` | `-` | The voxel_size_policy setting. |
 | `voxel_size_override_xyz` | `um` | The voxel_size_override_xyz setting, if any. |
 | `downsample` | `-` | The downsample-on-import record, or null. |
+| `crop` | `voxel` | The crop-on-import box the skeleton was cut to, its (z, y, x) start and stop (stop not kept), or null for the whole image. |
 
 ## `{stem}_statistics.csv`
 

@@ -1617,6 +1617,60 @@ def _mask_skeleton_is_made_from(
     )
 
 
+def _crop_record(crop: CropBox | None) -> dict | None:
+    """The ``crop_on_import`` box a skeleton was cut to, as kept beside it:
+    its voxel corners, or None for the whole image."""
+    if crop is None or crop.is_whole_volume:
+        return None
+    return {"start_zyx": [int(v) for v in crop.start_zyx], "stop_zyx": [int(v) for v in crop.stop_zyx]}
+
+
+def _saved_skeleton_record(path: Path, skeleton_path: Path) -> dict:
+    """What a run making its skeleton kept beside it (``{stem}_voxel_size.json``);
+    empty when there is none, it cannot be read, or it is older than the
+    skeleton: written by another run than the one that made it, as when the
+    panel writes a skeleton alone for a resumed run
+    (``gui.stage_checkpoints.ensure_skeleton_artefact``)."""
+    try:
+        if Path(path).stat().st_mtime_ns < Path(skeleton_path).stat().st_mtime_ns:
+            return {}
+        record = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _check_saved_skeleton_grid(
+    skeleton_path: Path, skeleton_shape, image_shape, record: Mapping[str, Any],
+    crop: CropBox | None, downsample: Downsample | None,
+) -> None:
+    """Refuse a saved skeleton made on another grid than the image this run
+    reads: another shape, or the same shape cut from another box or reduced
+    by other blocks (a box moved, or a larger box reduced), which the shape
+    alone let through. A record from before the box was kept is judged by
+    its shape and reduction."""
+    def blocks(factors) -> list[int] | None:
+        factors = None if factors is None else [int(b) for b in factors]
+        return None if factors is None or max(factors) <= 1 else factors
+
+    saved_blocks = blocks((record.get("downsample") or {}).get("axis_factors_zyx"))
+    if tuple(skeleton_shape) != tuple(image_shape):
+        problem = f"is {tuple(skeleton_shape)} voxels but the image is {tuple(image_shape)}"
+    elif "crop" in record and record["crop"] != _crop_record(crop):
+        problem = f"was cut from the box {record['crop']}, this run from {_crop_record(crop)}"
+    elif "downsample" in record and saved_blocks != blocks(
+        None if downsample is None else downsample.axis_factors_zyx
+    ):
+        problem = "was reduced by other blocks than this run's"
+    else:
+        return
+    raise ValueError(
+        f"The saved skeleton {skeleton_path} {problem}: it was made with a different "
+        "crop_on_import box or segmented_image_downsample, or none. Turn do_skeletonize "
+        "back on to make it again."
+    )
+
+
 def skeletonise(settings: dict, inputs: SegmentedInputs):
     """Load the mask, resolve its voxel size, and skeletonise it."""
     if inputs.synthetic:
@@ -1705,6 +1759,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 min_occupied_slices=int(
                     settings["thick_vessel_braid_min_occupied_slices"]
                 ),
+                low_memory=bool(settings["use_memmap_loading"]),
             )
             if braided:
                 logger.warning(preprocessing.format_braided_thick_vessel_report(braided))
@@ -1763,6 +1818,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                     "voxel_size_override_xyz": settings["voxel_size_override_xyz"],
                     # For the record: the saved skeleton is on the reduced grid.
                     "downsample": None if downsample is None else downsample.to_record(),
+                    # And cut to this box: a run loading it checks it is its own.
+                    "crop": _crop_record(crop),
                 }
             )
         )
@@ -1777,24 +1834,15 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             skeleton = np.load(skeleton_path)
         # The image as the run reads it: cut to the crop box and reduced by the
         # downsample, as the skeleton was when it was made.
-        image, _metadata, _status, crop, downsample = _load_and_crop_volume(settings, input_format)
-        if skeleton.shape != image.shape:
-            raise ValueError(
-                f"The saved skeleton {skeleton_path} is {skeleton.shape} voxels but the "
-                f"image is {image.shape}: it was made with a different crop_on_import "
-                "box or segmented_image_downsample, or none. Turn do_skeletonize back on "
-                "to make it again."
-            )
-        if voxel_meta_path.exists():
-            cached_voxel_meta = json.loads(voxel_meta_path.read_text())
-            metadata_voxel_size = tuple(cached_voxel_meta["voxel_size"])
-            voxel_meta_status = cached_voxel_meta.get(
-                "voxel_metadata_status",
-                {"source": "cache", "status": "unknown"},
-            )
-        else:
-            metadata_voxel_size = (1.0, 1.0, 1.0)
-            voxel_meta_status = {"source": "none", "status": "missing"}
+        image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
+            settings, input_format
+        )
+        saved = _saved_skeleton_record(voxel_meta_path, skeleton_path)
+        _check_saved_skeleton_grid(skeleton_path, skeleton.shape, image.shape, saved, crop, downsample)
+        # Resolved from the image just read, as a run making its skeleton does.
+        # The record beside the skeleton holds what that run resolved -- an
+        # override among it, read back here as metadata -- and is not there at
+        # all for a skeleton the panel wrote for a resumed run (1 um voxels).
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
             metadata_voxel_size_xyz=metadata_voxel_size,
             metadata_status=voxel_meta_status,
@@ -1804,11 +1852,19 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         voxel_size = _run_voxel_size_on_grid(voxel_size, downsample)
         logger.info(f"Loaded skeleton from: {skeleton_path}")
         logger.info(
-            "Voxel-size resolution (from cache/default): "
+            "Voxel-size resolution (skeleton loaded): "
             f"source={voxel_size_source}, "
             f"metadata_status={voxel_meta_status.get('status')}, "
             f"final={voxel_size}"
         )
+        made_at = saved.get("run_voxel_size")
+        if made_at is not None and not np.allclose(np.asarray(made_at, dtype=float), voxel_size):
+            logger.warning(
+                "The saved skeleton %s was made at a voxel size of %s um (x, y, z); this "
+                "run's is %s. Its clean-up was measured at the old size: turn "
+                "do_skeletonize back on to make it again.",
+                skeleton_path, tuple(made_at), voxel_size,
+            )
         image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
         if settings["use_thick_vessel_skeletonisation"]:
             thick_vessel_mask = _thick_vessel_region_if_cached(

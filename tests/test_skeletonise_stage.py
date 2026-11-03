@@ -1208,3 +1208,161 @@ def test_the_skeleton_figures_are_drawn_only_with_plots_on(tmp_path):
     skeletonise(on, segment(on))
     assert (plots / "skeleton_projection.png").is_file()
     assert (plots / "raw_skeleton.png").is_file()
+
+
+# --- a skeleton loaded instead of made (do_skeletonize off) -----------------
+
+TUBE_VOXEL_SIZE_XYZ = (0.4, 0.5, 2.0)
+
+
+def _write_anisotropic_tube(tmp_path: Path) -> Path:
+    """A tube along x in a stack whose ImageJ metadata gives its voxel size."""
+    mask = np.zeros((12, 40, 60), dtype=np.uint8)
+    mask[4:9, 17:24, 2:58] = 255
+    path = tmp_path / "tube.tif"
+    tifffile.imwrite(
+        str(path), mask, imagej=True,
+        resolution=(1.0 / TUBE_VOXEL_SIZE_XYZ[0], 1.0 / TUBE_VOXEL_SIZE_XYZ[1]),
+        metadata={"spacing": TUBE_VOXEL_SIZE_XYZ[2], "unit": "um"},
+    )
+    return path
+
+
+def test_a_loaded_skeleton_reads_the_voxel_size_of_its_image_without_the_record(tmp_path):
+    """The panel writes a skeleton alone for a run resumed from a later tab
+    (stage_checkpoints.ensure_skeleton_artefact); loading it read the voxel
+    size from the record beside it, and with none ran on 1 um voxels."""
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = settings_for(tmp_path, path)
+    made = skeletonise(made_settings, segment(made_settings))
+    assert made.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+    (tmp_path / "run" / "tube_voxel_size.json").unlink()
+
+    loaded_settings = settings_for(tmp_path, path, do_skeletonize=False)
+    loaded = skeletonise(loaded_settings, segment(loaded_settings))
+
+    assert loaded.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+    assert loaded.voxel_size_zyx == pytest.approx(made.voxel_size_zyx)
+    assert np.array_equal(loaded.skeleton, made.skeleton)
+
+
+def test_a_loaded_skeleton_resolves_its_voxel_size_as_a_fresh_run_would(tmp_path, caplog):
+    """The record keeps the voxel size the making run resolved: an override,
+    read back as the image's metadata, outlived the override itself."""
+    import logging
+
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = settings_for(
+        tmp_path, path, voxel_size_policy="override", voxel_size_override_xyz=(1.0, 1.0, 1.0)
+    )
+    made = skeletonise(made_settings, segment(made_settings))
+    assert made.voxel_size_xyz == pytest.approx((1.0, 1.0, 1.0))
+
+    loaded_settings = settings_for(tmp_path, path, do_skeletonize=False)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+        loaded = skeletonise(loaded_settings, segment(loaded_settings))
+
+    fresh_settings = settings_for(tmp_path / "fresh", path)
+    fresh = skeletonise(fresh_settings, segment(fresh_settings))
+    assert loaded.voxel_size_xyz == pytest.approx(fresh.voxel_size_xyz)
+    assert loaded.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+    assert any("was made at a voxel size" in r.getMessage() for r in caplog.records)
+
+
+def _cropped(tmp_path, path, start_xyz, end_xyz, **overrides) -> dict:
+    return settings_for(
+        tmp_path, path, crop_on_import=True, crop_method="coordinates",
+        crop_start_xyz=start_xyz, crop_end_xyz=end_xyz, **overrides,
+    )
+
+
+def test_a_loaded_skeleton_cut_from_another_box_of_its_size_is_refused(tmp_path):
+    """Only the shape was compared: a box moved, the same size, loaded the
+    skeleton of the old box onto the new one's image."""
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = _cropped(tmp_path, path, (0, 0, 0), (39, 39, 11))
+    made = skeletonise(made_settings, segment(made_settings))
+
+    own = _cropped(tmp_path, path, (0, 0, 0), (39, 39, 11), do_skeletonize=False)
+    assert np.array_equal(skeletonise(own, segment(own)).skeleton, made.skeleton)
+
+    moved = _cropped(tmp_path, path, (10, 0, 0), (49, 39, 11), do_skeletonize=False)
+    with pytest.raises(ValueError, match="crop_on_import"):
+        skeletonise(moved, segment(moved))
+
+
+def test_a_loaded_downsampled_skeleton_is_refused_for_a_box_of_its_size(tmp_path):
+    """The whole image reduced 2x in y and x is the shape of a box half its
+    width and height: the box's run loaded the whole image's skeleton."""
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = settings_for(tmp_path, path, segmented_image_downsample="2x")
+    made = skeletonise(made_settings, segment(made_settings))
+    assert made.skeleton.shape == (12, 20, 30)
+
+    box = _cropped(tmp_path, path, (0, 0, 0), (29, 19, 11), do_skeletonize=False)
+    with pytest.raises(ValueError, match="crop_on_import"):
+        skeletonise(box, segment(box))
+
+
+def test_preflight_looks_for_the_skeleton_the_stage_loads_with_ilastik_out_of_effect(tmp_path):
+    """With ilastik's switch on but no raw image to segment, ilastik does not
+    run and the stage loads {input stem}_skeleton.npy; preflight looked for
+    input_skeleton.npy and refused the run."""
+    from haemolynx.pipeline.checks import check_cached_artefacts
+
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+    np.save(output_dir / "vessels_skeleton.npy", np.zeros((2, 2, 2), dtype=bool))
+    settings = {
+        "input_path": tmp_path / "vessels.tif",
+        "output_dir": output_dir,
+        "do_skeletonize": False,
+        "use_ilastik_segmentation": True,
+        "raw_image_path": None,
+    }
+    assert check_cached_artefacts(settings).ok, check_cached_artefacts(settings).errors
+
+    settings["raw_image_path"] = tmp_path / "raw.tif"  # ilastik segments: its output's name
+    report = check_cached_artefacts(settings)
+    assert any("raw_segmented_skeleton.npy" in message for message in report.errors)
+
+
+def test_a_record_older_than_its_skeleton_is_not_held_against_it(tmp_path):
+    """The panel writes a skeleton alone for a resumed run, beside the record
+    of whichever run made one there before: that record says nothing of it."""
+    path = _write_anisotropic_tube(tmp_path)
+    first = _cropped(tmp_path, path, (0, 0, 0), (39, 39, 11))
+    skeletonise(first, segment(first))
+    record = tmp_path / "run" / "tube_voxel_size.json"
+    old_ns = time.time_ns() - 60_000_000_000
+    os.utime(record, ns=(old_ns, old_ns))
+
+    moved_made = _cropped(tmp_path / "other", path, (10, 0, 0), (49, 39, 11))
+    moved = skeletonise(moved_made, segment(moved_made))
+    np.save(tmp_path / "run" / "tube_skeleton.npy", np.asarray(moved.skeleton))
+
+    resumed = _cropped(tmp_path, path, (10, 0, 0), (49, 39, 11), do_skeletonize=False)
+    loaded = skeletonise(resumed, segment(resumed))
+    assert np.array_equal(loaded.skeleton, moved.skeleton)
+    assert loaded.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+
+
+def test_the_braid_check_labels_by_slab_under_the_low_ram_option(tmp_path, monkeypatch):
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = []
+
+    def spy(*_args, **kwargs):
+        captured.append(kwargs.get("low_memory"))
+        return []
+
+    monkeypatch.setattr(preprocessing_module, "detect_braided_thick_vessel_components", spy)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    for low_ram in (False, True):
+        settings = settings_for(
+            tmp_path / str(low_ram), mask_path, use_thick_vessel_skeletonisation=True,
+            detect_thick_vessel_braiding=True, use_memmap_loading=low_ram,
+        )
+        skeletonise(settings, segment(settings))
+    assert captured == [False, True]

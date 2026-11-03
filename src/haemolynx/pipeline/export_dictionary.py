@@ -309,6 +309,11 @@ FILES: tuple[OutputFile, ...] = (
             _c("voxel_size_policy", "-", "The voxel_size_policy setting."),
             _c("voxel_size_override_xyz", "um", "The voxel_size_override_xyz setting, if any."),
             _c("downsample", "-", "The downsample-on-import record, or null."),
+            _c(
+                "crop", "voxel",
+                "The crop-on-import box the skeleton was cut to, its (z, y, x) start and "
+                "stop (stop not kept), or null for the whole image.",
+            ),
         ),
     ),
     # -- statistics ---------------------------------------------------------
