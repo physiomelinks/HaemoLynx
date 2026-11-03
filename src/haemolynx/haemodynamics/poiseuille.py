@@ -505,7 +505,7 @@ def stamp_edge_diameters(
                 continue
         if keep:
             measured = positive_diameter_um(data.get("fwhm_diameter_um"))
-            if measured is not None:
+            if measured is not None and fwhm_demotion_reason(data) is None:
                 stamp(data, measured, DIAMETER_SOURCE_MEASURED)
                 continue
 

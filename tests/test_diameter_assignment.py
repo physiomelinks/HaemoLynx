@@ -1108,6 +1108,27 @@ def test_a_speck_width_steps_aside_for_the_next_source():
     assert set(_sources(graph).values()) == {DIAMETER_SOURCE_EDT}
 
 
+def test_keeping_existing_diameters_does_not_bring_back_a_width_set_aside():
+    """Regression: stamping again with the diameters kept -- post processing
+    after an edit, or a run with do_fwhm_measurement off -- stamped every
+    vessel whose FWHM width had been set aside and had fallen to the table
+    as measured, at the width set aside."""
+    from haemolynx.haemodynamics.poiseuille import mark_fwhm_demotions
+
+    graph = _network()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_diameter_um"] = 1.5
+        data["fwhm_in_speck_width_range"] = True
+    mark_fwhm_demotions(graph)
+    stamp_edge_diameters(graph, dict(DIAMETERS))
+
+    stamp_edge_diameters(graph, dict(DIAMETERS), keep_existing=True, fresh_edges=[(0, 1, 0)])
+
+    for (u, v), order in zip(((0, 1), (1, 2), (2, 3), (3, 4)), BRANCH_ORDERS):
+        assert graph.edges[u, v, 0]["diameter_source"] == DIAMETER_SOURCE_TABLE
+        assert graph.edges[u, v, 0]["diameter_um"] == pytest.approx(DIAMETERS[order])
+
+
 # --- class median: an unmeasured vessel takes its label's measured median -----
 
 
@@ -1309,6 +1330,22 @@ def test_a_subset_is_measured_by_fwhm_even_with_do_fwhm_measurement_off(monkeypa
     assert graph.edges[0, 1, 0]["diameter_um"] == pytest.approx(9.0)
 
 
+def test_an_edited_vessels_raw_section_is_fitted_with_the_runs_own_blur(monkeypatch, tmp_path):
+    """Regression: with FWHM fitting each profile's blur, the raw-section fit
+    of a vessel post processing measured estimated the image's blur again
+    over the whole edited network, not with the one the run's fit recorded."""
+    seen, raw_path = _fake_measurements(monkeypatch, tmp_path, fwhm_um=None)
+    graph = _network()
+    graph.graph["raw_section_psf_sigma_zyx"] = (1.1, 0.3, 0.3)
+
+    assign_edge_diameters(
+        graph, _fwhm_config(raw_path, fwhm_fix_blur_to_image_psf=False), edges=[(0, 1, 0)]
+    )
+
+    assert seen["fwhm_psf"] == [None]
+    assert seen["raw_psf"] == [(1.1, 0.3, 0.3)]
+
+
 def test_an_empty_subset_measures_nothing_and_still_restamps_the_table(monkeypatch):
     """Only a deletion was made: no image is read, but a table diameter follows
     the branch order just assigned."""
@@ -1352,6 +1389,48 @@ def test_a_bridge_is_not_measured_and_takes_the_thick_vessels_diameter():
     assert summary["bridges"] == 1
     assert summary["diameters"]["table"] == stamped.number_of_edges() - 2
     assert summary["diameters"]["override"] == 1
+
+
+def test_a_bridged_network_is_measured_from_the_raw_image_it_was_handed(monkeypatch):
+    """Regression: with a zero-resistance bridge in the network the vessels
+    were measured without the raw image the Diameters stage had loaded to
+    read its stain, so FWHM loaded the file a second time -- or, given no
+    path to load, failed the run."""
+    import haemolynx.haemodynamics.apply as apply_module
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    handed = []
+
+    def fake_fwhm(G, **kwargs):
+        handed.append(kwargs.get("raw_volume"))
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            data["fwhm_diameter_um"] = 5.0
+        return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
+
+    monkeypatch.setattr(
+        apply_module.fwhm_diameter, "measure_edge_diameters_fwhm_from_raw_tiff", fake_fwhm
+    )
+    graph = _network()
+    last = graph.number_of_nodes()
+    graph.add_node(last, pos=np.asarray([0.0, 7.0, EDGE_LENGTH_UM]))
+    graph.add_edge(1, last, key=0, length=7.0, voxels=[[0.0, 0.0, EDGE_LENGTH_UM], [0.0, 7.0, EDGE_LENGTH_UM]],
+                   **{IS_ZERO_RESISTANCE: True})
+    raw = np.zeros((2, 2, 2), dtype=np.float32)
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={
+            "use_fwhm_edge_diameters": True,
+            "do_fwhm_measurement": True,
+            "fwhm_decoy_check": False,
+            "fwhm_fix_blur_to_image_psf": False,
+        },
+    )
+
+    stamped, summary, returned = assign_edge_diameters(graph, config, raw_volume=raw)
+
+    assert handed and all(volume is raw for volume in handed)
+    assert returned is raw
+    assert summary["diameters"]["measured"] == stamped.number_of_edges() - 1
 
 
 def test_the_apply_config_takes_the_runs_basis_from_the_segmentation_source(tmp_path):

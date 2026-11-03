@@ -179,7 +179,7 @@ def test_optimise_fwhm_settings_hands_the_worker_the_runs_segmented_image(
 ):
     """The segmented image the skeletonise stage kept is what the optimiser
     places decoys and reads the mask's own widths from; a run with no such
-    checkpoint (a loaded one) optimises without them."""
+    checkpoint (a loaded one) hands none, and the worker reads it from disk."""
     import numpy as np
 
     from haemolynx.gui.stage_checkpoints import StageCheckpoint
@@ -266,6 +266,7 @@ def test_the_fwhm_optimiser_measures_with_the_runs_config_and_calibration_edges(
     monkeypatch.setattr(
         widget_mod, "optimise_fwhm_settings", lambda graph, **kwargs: calls.append(kwargs) or "done"
     )
+    monkeypatch.setattr(widget_mod, "_run_segmentation_on_its_grid", lambda _settings: None)
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
     schema = default_schema()
@@ -302,6 +303,53 @@ def test_the_settings_the_fwhm_optimiser_reads_are_real_settings():
     from haemolynx.pipeline.schema import SCHEMA
 
     assert set(widget_mod._FWHM_OPTIMISER_READS) <= {setting.name for setting in SCHEMA}
+
+
+@pytest.mark.parametrize("optimiser", ["optimise_fwhm_settings", "optimise_endothelial_settings"])
+def test_after_load_run_the_diameter_optimisers_read_the_runs_segmentation(
+    monkeypatch, tmp_path, optimiser
+):
+    """Regression: a loaded run keeps no segmented image in memory, so both
+    optimisers ran their trials without one -- no line stopped at the vessel
+    beside, and no decoys or planted vessels -- where a run resumed there
+    reads it from disk. They now read it as the run's skeletonise does: cut
+    and reduced onto its grid, binarised."""
+    import numpy as np
+    import tifffile
+
+    from haemolynx.pipeline import default_schema, resolve_settings
+
+    calls = []
+    monkeypatch.setattr(widget_mod, optimiser, lambda graph, **kwargs: calls.append(kwargs) or "done")
+    segmented = np.zeros((4, 6, 8), dtype=np.uint8)
+    segmented[1:3, 2:4, 1:7] = 255
+    segmented_file = tmp_path / "segmented.tif"
+    tifffile.imwrite(segmented_file, segmented)
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    schema = default_schema()
+    endothelial = optimiser == "optimise_endothelial_settings"
+    settings = resolve_settings(
+        {
+            "input_path": segmented_file,
+            "raw_image_path": raw_file,
+            "raw_image_stain": "endothelial" if endothelial else "plasma_column",
+            "measure_diameters_from_raw_image": True,
+        },
+        schema=schema,
+        config_path=None,
+    )
+    run_for = (
+        widget_mod._optimise_endothelial_settings_for_run if endothelial
+        else widget_mod._optimise_fwhm_settings_for_run
+    )
+
+    run_for(
+        _branched_graph(), (1.0, 1.0, 1.0), settings, schema, boundaries=None, progress=None,
+        groups=None, vessel_mask=None, sample_edge_count=None, max_passes=1,
+    )
+
+    np.testing.assert_array_equal(calls[0]["vessel_mask"], segmented > 0)
 
 
 def test_clicking_the_native_fwhm_button_triggers_optimisation(panel, monkeypatch, tmp_path):

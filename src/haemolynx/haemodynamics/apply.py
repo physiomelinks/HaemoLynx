@@ -769,6 +769,27 @@ def calibrate_endothelial_rings(
     )
 
 
+def _recorded_endothelial_calibration(
+    G: nx.MultiGraph, config: HaemodynamicsApplyConfig
+) -> tuple[tuple[float, float, float], float, dict[str, Any]] | None:
+    """The PSF and wall *G*'s run read its rings with
+    (``G.graph["endothelial_psf_sigma_zyx"]``, ``["endothelial_wall_um"]``),
+    as the *calibration* :func:`measure_endothelial_diameters` takes -- each
+    the settings' own where they set it; ``None`` when the run recorded
+    none. How a few vessels are measured as the rest were: calibrating again
+    on the whole edited network reads other rings, and takes a minute."""
+    recorded_psf = G.graph.get("endothelial_psf_sigma_zyx")
+    recorded_wall = G.graph.get("endothelial_wall_um")
+    if recorded_psf is None or recorded_wall is None:
+        return None
+    psf, wall = endothelial_psf_and_wall(config)
+    return (
+        tuple(float(v) for v in (recorded_psf if psf is None else psf)),
+        float(recorded_wall if wall is None else wall),
+        {"source": "recorded"},
+    )
+
+
 def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     """The binary mask EDT diameter measurement samples from
     ``edt_mask_path`` -- the pipeline sets it to the run's segmented input --
@@ -873,9 +894,12 @@ def assign_edge_diameters(
     keeps its measurement, and a table or class-median diameter follows its
     branch order. How the post_process stage brings hand-edited vessels in
     line: FWHM holds its blur at the PSF the run already recorded
-    (``G.graph["fwhm_psf_sigma_zyx"]``) rather than estimating it again, and
-    the decoy check -- a statistic of the whole image, already reported --
-    is not run again.
+    (``G.graph["fwhm_psf_sigma_zyx"]``) rather than estimating it again, the
+    raw-section fit (where FWHM held none) and the ring fit read with the
+    blur and wall theirs recorded (``raw_section_psf_sigma_zyx``,
+    ``endothelial_psf_sigma_zyx``, ``endothelial_wall_um``), and the decoy
+    check -- a statistic of the whole image, already reported -- is not run
+    again.
 
     When ``use_edt_diameter_crosscheck`` is on, also measures each edge's
     diameter from the segmentation mask's own inscribed radius (*mask_volume*
@@ -927,6 +951,7 @@ def assign_edge_diameters(
             mask_volume=mask_volume,
             edges=not_a_bridge(edges),
             calibration_edges=not_a_bridge(calibration_edges),
+            raw_volume=raw_volume,
             before_fallbacks=(
                 None if before_fallbacks is None
                 else lambda _vessels, waiting: before_fallbacks(G, waiting)
@@ -1070,7 +1095,9 @@ def _assign_edge_diameters_with_mask(
     use_endothelial = bool(config.endothelial_setting("use_endothelial_diameters", False))
     if use_endothelial and measuring:
         summary["endothelial"] = _measure_endothelial_diameters(
-            G, config, calibration_edges=calibration_edges, raw_volume=raw_volume, **_subset(edges)
+            G, config, calibration_edges=calibration_edges, raw_volume=raw_volume,
+            calibration=_recorded_endothelial_calibration(G, config) if subset else None,
+            **_subset(edges),
         )
     demote_flagged = bool(config.fwhm_setting("fwhm_demote_flagged_edges", True))
     if config.use_fwhm_edge_diameters and measuring:
@@ -1127,9 +1154,15 @@ def _assign_edge_diameters_with_mask(
                 )
             summary["fwhm_demoted"] = mark_fwhm_demotions(G, enabled=demote_flagged)
             if use_raw_section_fallback:
+                # Edited vessels only: the fit's own blur estimate, where FWHM
+                # held none, is the run's too.
+                section_psf = psf
+                if section_psf is None and subset:
+                    section_psf = G.graph.get("raw_section_psf_sigma_zyx")
                 summary["raw_section"] = _measure_raw_section_diameters(
-                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf,
-                    calibration_edges=calibration_edges, **_subset(edges),
+                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume,
+                    psf_sigma_zyx=section_psf, calibration_edges=calibration_edges,
+                    **_subset(edges),
                 )
         else:
             summary["fwhm"] = {

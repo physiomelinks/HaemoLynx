@@ -7265,6 +7265,28 @@ def _run_optimisation_in_background(
     )
 
 
+def _run_segmentation_on_its_grid(settings: Mapping[str, Any]) -> "np.ndarray | None":
+    """The run's segmented image as its skeletonise read it -- cut and
+    reduced onto the run's grid, binarised -- for a Diameters optimiser after
+    Load run, whose checkpoints keep no image in memory; a run resumed there
+    reads it too. None, said in the log, when there is none to read."""
+    local_settings = dict(settings)
+    segmented_path, refusal = _segmented_image_to_optimise(local_settings)
+    if segmented_path is None:
+        logger.warning("The optimiser's trials read no segmentation: %s", refusal)
+        return None
+    ilastik = pipeline_stages.ilastik_segments(local_settings)
+    if not ilastik:
+        local_settings["input_path"] = segmented_path
+    inputs = segment(local_settings, segmented_path=segmented_path if ilastik else None)
+    volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+    return _to_binary_volume_for_skeletonization(
+        volume.image,
+        use_memmap=bool(local_settings.get("use_memmap_loading")),
+        memmap_directory=local_settings.get("memmap_directory"),
+    )
+
+
 #: Settings outside the ``fwhm_`` group the FWHM optimiser reads and never
 #: changes: the image PSF its trials hold the blur at, and the FWHM/EDT ratio a
 #: width is set aside at.
@@ -7307,6 +7329,8 @@ def _optimise_fwhm_settings_for_run(
         None if boundaries is None
         else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
     )
+    if vessel_mask is None:
+        vessel_mask = _run_segmentation_on_its_grid(settings)
     return optimise_fwhm_settings(
         graph,
         voxel_size_zyx=voxel_size_zyx,
@@ -7474,6 +7498,8 @@ def _optimise_endothelial_settings_for_run(
         None if boundaries is None
         else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
     )
+    if vessel_mask is None:
+        vessel_mask = _run_segmentation_on_its_grid(settings)
     return optimise_endothelial_settings(
         graph,
         starting_values={name: settings.get(name) for name in ENDOTHELIAL_SETTING_NAMES},
@@ -14828,10 +14854,12 @@ def settings_widget(napari_viewer=None):
         """Whether every gate above *name* holds (haemolynx.gui.form.unmet_chain)."""
         return not unmet_chain(schema, name, values)
 
-    def row_shows(name: str, values: Mapping[str, Any]) -> bool:
+    def row_shows(name: str, values: Mapping[str, Any], gates: Mapping[str, Any]) -> bool:
         """Whether *name*'s row would show: a hidden row needs its whole chain
-        met, bar a path gate it names itself (the raw image), which greys it."""
-        return fields[name].is_visible(values, unmet_chain(schema, name, values))
+        met by *gates* (as the rows themselves are judged: an auto stain as
+        read, a set batch's image rows filled), bar a path gate it names
+        itself (the raw image), which greys it."""
+        return fields[name].is_visible(values, unmet_chain(schema, name, gates))
 
     #: What the last run read the raw image's stain as when the setting is
     #: auto (the graph's raw_image_stain, with its reading): None until a run
@@ -14937,13 +14965,13 @@ def settings_widget(napari_viewer=None):
             # call) state -- reading it here would latch the group hidden
             # forever once hidden once. `field.is_visible` is the pure,
             # ancestor-independent answer the per-row loop above just used.
-            group.setVisible(any(row_shows(name, values) for name in section_names))
+            group.setVisible(any(row_shows(name, values, gates) for name in section_names))
 
         # Each Advanced button hides when none of its rows would show, and
         # counts the rows holding something other than where the panel started.
         for disclosure in advanced_disclosures.values():
             disclosure.refresh(
-                lambda name: row_shows(name, values), values, schema, ADVANCED_BASELINE
+                lambda name: row_shows(name, values, gates), values, schema, ADVANCED_BASELINE
             )
         if perturbations is not None:
             perturbations.refresh_entries()
@@ -14968,8 +14996,13 @@ def settings_widget(napari_viewer=None):
         # only ever toggles `.enabled`. Hiding it entirely (rather than
         # greying it out) matches every other `hide_when_unmet` FWHM row
         # right next to it.
+        # Without haemodynamics the Diameters stage measures nothing, whatever
+        # the measuring box (hidden then) still holds.
+        measures_diameters = bool(values.get("run_haemodynamics")) and bool(
+            values.get("measure_diameters_from_raw_image")
+        )
         fwhm_could_run = (
-            bool(values.get("measure_diameters_from_raw_image"))
+            measures_diameters
             and bool(values.get("raw_image_path"))
             and resolved_raw_image_stain(values) != "endothelial"
         )
@@ -14984,7 +15017,7 @@ def settings_widget(napari_viewer=None):
         from haemolynx.graph.boundaries import network_is_synthetic
 
         ring_fit_could_run = (
-            bool(values.get("measure_diameters_from_raw_image"))
+            measures_diameters
             and bool(values.get("raw_image_path"))
             and resolved_raw_image_stain(values) == "endothelial"
             and not network_is_synthetic(values)
