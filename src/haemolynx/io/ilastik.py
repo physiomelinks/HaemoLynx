@@ -186,10 +186,31 @@ CHANNEL_INPUT_FOLDER = "channels"
 def channel_input_path(output_path: str | Path) -> Path:
     """Where the chosen channels ilastik segments into *output_path* are
     written first: ``{output folder}/channels/{output stem}_input.tif``. Not
-    the output's own folder, where ilastik writes its export, named after its
-    input, before it is moved to *output_path*."""
+    the output's own folder, where the output is moved to *output_path*."""
     output_path = Path(output_path)
     return output_path.parent / CHANNEL_INPUT_FOLDER / f"{output_path.stem}_input.tif"
+
+
+def export_folder(output_path: str | Path) -> Path:
+    """The folder ilastik writes the export for *output_path* into, named
+    after its input, before it is moved to *output_path*:
+    ``{output folder}/{output stem}_ilastik_export``. Its own folder, so the
+    export's name can never be another file's -- the raw image's, when the
+    output folder is the raw image's own."""
+    output_path = Path(output_path)
+    return output_path.parent / f"{output_path.stem}_ilastik_export"
+
+
+def _discard_export_folder(output_path: Path, input_stem: str) -> None:
+    """Delete what ilastik left in :func:`export_folder` (an export a failed
+    run did not move), and the folder once empty."""
+    folder = export_folder(output_path)
+    for extension in {extension for _format, extension in OUTPUT_FORMATS.values()}:
+        (folder / f"{input_stem}{extension}").unlink(missing_ok=True)
+    try:
+        folder.rmdir()
+    except OSError:
+        pass
 
 
 def write_ilastik_channels(
@@ -220,7 +241,9 @@ def write_ilastik_channels(
         series = tif.series[0]
         axes = series.axes.upper()
         shape = tuple(int(size) for size in series.shape)
-        channel_axis = tiff_channel_axis(axes, shape, tif.imagej_metadata)
+        channel_axis = tiff_channel_axis(
+            axes, shape, tif.imagej_metadata, tif.ome_metadata if tif.is_ome else None
+        )
         if channel_axis is None:
             raise ValueError(
                 f"{image_path.name} has no channels to choose from (axes {axes}): leave the "
@@ -517,9 +540,10 @@ def run_ilastik_headless_segmentation(
         ilastik executable. Defaults to ``ilastik.exe`` and can also be a full path.
     timeout:
         Kill the subprocess and raise if it runs longer than this many
-        seconds. ``None`` (this function's own default) waits forever; the
-        pipeline itself always passes ``ilastik_timeout_seconds`` so a hung
-        or misconfigured ilastik process cannot block a run indefinitely.
+        seconds. ``None`` (this function's own default) or 0 waits forever
+        (0 killed it at once); the pipeline itself always passes
+        ``ilastik_timeout_seconds`` so a hung or misconfigured ilastik
+        process cannot block a run indefinitely unless asked to.
     vessel_label:
         Which of the project's labels is the vessel: a label name, or its
         number (1 for the first label made). Resolved against the names the
@@ -553,6 +577,8 @@ def run_ilastik_headless_segmentation(
     input_image_path = Path(input_image_path)
     classifier_path = Path(classifier_path)
     output_path = Path(output_path)
+    if timeout is not None and float(timeout) <= 0:
+        timeout = None
 
     if not input_image_path.exists():
         raise FileNotFoundError(f"Input image not found: {input_image_path}")
@@ -612,6 +638,7 @@ def run_ilastik_headless_segmentation(
             provenance=provenance,
         )
     finally:
+        _discard_export_folder(output_path, ilastik_input.stem)
         if ilastik_input != input_image_path:
             _discard_channel_input(ilastik_input)
 
@@ -647,12 +674,18 @@ def _segment(
     output_path.unlink(missing_ok=True)
     sidecar_path(output_path).unlink(missing_ok=True)
     export_format, export_extension = OUTPUT_FORMATS[output_suffix]
+    # ilastik names its export after the input ({nickname}), so it writes into
+    # a folder of its own: beside the output, that name is the raw image's
+    # own when the output folder is the raw image's (a raw "stack.tiff"), and
+    # the raw image was deleted, then overwritten.
+    export_dir = export_folder(output_path)
+    export_dir.mkdir(parents=True, exist_ok=True)
     # The name ilastik writes to, moved to *output_path* afterwards: one an
     # earlier run left there would be moved in the same way.
-    generated_path = output_path.parent / f"{input_image_path.stem}{export_extension}"
+    generated_path = export_dir / f"{input_image_path.stem}{export_extension}"
     generated_path.unlink(missing_ok=True)
     # ilastik expects output placeholders in the pattern string.
-    output_pattern = str(output_path.parent / f"{{nickname}}{export_extension}")
+    output_pattern = str(export_dir / f"{{nickname}}{export_extension}")
     command = [
         str(ilastik_executable),
         "--headless",

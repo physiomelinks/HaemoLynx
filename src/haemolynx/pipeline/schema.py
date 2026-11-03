@@ -571,9 +571,10 @@ SCHEMA = Schema(
             kind="float",
             default=7200.0,
             help=(
-                "Kill an ilastik headless run that takes longer than this. A "
-                "hang usually means a bad project file or unreadable input, "
-                "not a slow but working run -- raise it for very large volumes"
+                "Kill an ilastik headless run that takes longer than this, or "
+                "never with 0. A hang usually means a bad project file or "
+                "unreadable input, not a slow but working run -- raise it for "
+                "very large volumes"
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
@@ -1329,8 +1330,10 @@ SCHEMA = Schema(
                 "(or venule) mask, and the rest becomes the small arteriole (or "
                 "venule) mask, used as small vessel masks are for the arteriole and "
                 "venule boundaries. A voxel is wide where a ball that wide fits in the "
-                "mask around it. Only while no small vessel masks are given; a global "
-                "mask splits into a global large and small mask"
+                "segmented image around it, centred in the same mask: the mask says "
+                "only which side a vessel is on, since a classifier's mask may be "
+                "thinner than the vessel. Only while no small vessel masks are given; "
+                "a global mask splits into a global large and small mask"
             ),
             section=_VESSEL_MASKS,
             requires=(
@@ -1348,9 +1351,9 @@ SCHEMA = Schema(
             placeholder="no default: state the width",
             help=(
                 "Split the large masks at this vessel width: wider stays large, "
-                "narrower becomes small. Read from each mask's own distance "
-                "transform before its load-time dilation "
-                "(large_vessel_mask_dilation_microns)"
+                "narrower becomes small. Read on the segmented image the skeleton "
+                "is made from, so neither the masks' own thickness nor their "
+                "load-time dilation (large_vessel_mask_dilation_microns) moves it"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -5526,11 +5529,12 @@ SCHEMA = Schema(
             kind="choice",
             default="topology",
             help=(
-                "Distance model the vascular-community partition is weighted "
-                "by: plain topology, or the same resistance/length/flow-"
-                "weighted models the statistics report's community counts "
-                "use. Resistance and flow are only meaningful once "
-                "haemodynamics has run"
+                "What the vascular-community partition weighs each vessel "
+                "by: plain topology, or how strongly the vessel ties its two "
+                "ends -- its conductance (resistance), 1/length (length) or "
+                "|flow| (flow), parallel vessels' ties added -- as the "
+                "statistics report's weighted community counts do. Resistance "
+                "and flow are only meaningful once haemodynamics has run"
             ),
             section=_VASCULAR_COMMUNITIES,
             choices=("topology", "resistance", "length", "flow"),

@@ -3,8 +3,9 @@
 A saved preset is the panel's settings as they were when it was saved, less
 what belongs to one image (:func:`held_by_saved_presets`): the files and
 folders a run reads and writes, the channels, labels, voxel size and axis
-order that describe those files, the nodes, vessels and positions of one
-image's network, and the switches that reuse one image's cached outputs.
+order that describe those files, the crop on import, the nodes, vessels and
+positions of one image's network, and the switches that reuse one image's
+cached outputs.
 
 Unlike the shipped presets (:mod:`haemolynx.pipeline.presets`), which name a
 few switches and leave every other setting alone, a saved preset is a whole
@@ -58,16 +59,15 @@ _ONE_IMAGE_ENDINGS = (
     "_nodes",
 )
 
-#: The rest of one image's settings: how its file is laid out, the box cut
-#: from it, its vessels by ID, the ilastik program it was segmented with, and
-#: the switches that reuse its cached skeleton, graph and diameters (the
-#: panel's ``SKIP_FOR_RESUME``).
+#: The rest of one image's settings: how its file is laid out, its vessels by
+#: ID, the ilastik program it was segmented with, and the switches that reuse
+#: its cached skeleton, graph and diameters (the panel's ``SKIP_FOR_RESUME``).
+#: The crop on import is one image's too, every setting of it
+#: (:data:`_ONE_IMAGE_PREFIXES`).
 _ONE_IMAGE_NAMES = frozenset(
     {
         "voxel_size_override_xyz",
         "image_axis_order",
-        "crop_start_xyz",
-        "crop_end_xyz",
         "custom_edges",
         "capillary_block_vessel_ids",
         "ilastik_executable",
@@ -76,6 +76,12 @@ _ONE_IMAGE_NAMES = frozenset(
         "do_fwhm_measurement",
     }
 )
+
+#: Beginnings of the names of one image's settings: the crop on import, its
+#: switch, method, size, place and corners alike (Harvey, 2026-11-03). Kept
+#: with its switch but not its corners, a preset turned on a crop for the
+#: next image with that image's corners, or none.
+_ONE_IMAGE_PREFIXES = ("crop_",)
 
 #: Names Windows refuses as a file's stem, whatever its suffix.
 _WINDOWS_RESERVED = frozenset(
@@ -98,7 +104,7 @@ def held_by_saved_presets(setting: Setting) -> bool:
     or a setting of one image's (see the module docstring)."""
     if setting.kind == "path":
         return False
-    if setting.name in _ONE_IMAGE_NAMES:
+    if setting.name in _ONE_IMAGE_NAMES or setting.name.startswith(_ONE_IMAGE_PREFIXES):
         return False
     return not setting.name.endswith(_ONE_IMAGE_ENDINGS)
 

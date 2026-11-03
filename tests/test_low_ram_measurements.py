@@ -382,10 +382,9 @@ def test_fwhm_in_low_ram_mode_keeps_its_volumes_on_disk(tmp_path, monkeypatch):
     assert seen == {"labels": True, "raw": True}
 
 
-# --- graph.edit: the graph editor's routing cost field ------------------------
+# --- graph.edit: the routing cost field Add vessel traces through ---------------
 
 from haemolynx.graph import edit as graph_edit  # noqa: E402
-from haemolynx.gui.graph_editor import GraphEditorState  # noqa: E402
 
 
 def _cost_mask(kind: str) -> np.ndarray:
@@ -446,17 +445,19 @@ def test_an_empty_mask_falls_back_to_the_whole_volume_field():
     )
 
 
-def test_graph_editor_routes_the_same_branch_in_low_ram_mode():
-    mask = _cost_mask("vessels")
-    states = []
-    for use_memmap in (False, True):
-        state = GraphEditorState(graph=nx.MultiGraph(), voxel_size_zyx=(2.0, 0.5, 0.5))
-        state.cost_field_from_mask(mask.astype(np.uint8) * 255, use_memmap=use_memmap)
-        states.append(state)
+def test_a_vessel_is_traced_along_the_same_path_in_low_ram_mode():
+    """The Post processing tab's Add vessel traces through the segmented image
+    as it is shown (labels 0/255, anisotropic voxels), windowed or whole."""
+    mask = _cost_mask("vessels").astype(np.uint8) * 255
+    fields = [
+        graph_edit.mask_cost_field(mask, use_memmap=use_memmap, voxel_size_zyx=(2.0, 0.5, 0.5))
+        for use_memmap in (False, True)
+    ]
 
-    assert isinstance(states[1].cost_field, graph_edit.WindowedMaskCostField)
+    assert isinstance(fields[1], graph_edit.WindowedMaskCostField)
     paths = [
-        graph_edit.astar_path(s.cost_field, (4.0, 10.0, 12.0), (30.0, 70.0, 88.0)) for s in states
+        graph_edit.astar_path(field, (4.0, 10.0, 12.0), (30.0, 70.0, 88.0), voxel_size_zyx=(2.0, 0.5, 0.5))
+        for field in fields
     ]
     assert np.array_equal(paths[0], paths[1])
 

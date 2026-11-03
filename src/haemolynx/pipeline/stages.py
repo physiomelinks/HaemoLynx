@@ -93,7 +93,7 @@ from haemolynx.io.downsample import (
     raw_volume_like_graph,
     record_on_graph as record_downsample_on_graph,
 )
-from haemolynx.io.ilastik import ilastik_segmented_path
+from haemolynx.io.ilastik import ilastik_segmented_path, ilastik_segmented_stem
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -222,6 +222,11 @@ class SkeletonisedVolume:
     #: drawing the tree again (a volume of zeros and a Dijkstra over every
     #: fat voxel). None when this run did not draw it: graph building does.
     thick_vessel_centreline: np.ndarray | None = None
+    #: The segmentation as post processing last read it, binarised with its
+    #: ``MaskSupport`` (:class:`_PostProcessSegmentation`): kept for the next
+    #: Regenerate of this run, which is handed this volume again, while
+    #: ``image`` and the settings that shape it are the same.
+    post_process_segmentation: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -458,15 +463,22 @@ def segmented_input_path(settings: dict) -> Path | None:
     With ilastik on, the Input tab's ``input_path`` is not the answer until
     `segment` has replaced it with ilastik's output (it may still hold an
     unrelated file from before ilastik was switched on): it counts only once
-    it lies in ``ilastik_output_dir``. Otherwise the output is derived where
-    `segment` writes it -- that stage's own naming rule. None for a
-    synthetic network, which has no segmented image."""
+    it is the output for this raw image -- in ``ilastik_output_dir``, named
+    ``{raw image stem}_segmented`` (ilastik may have written ``.tif`` as
+    ``.tiff``). Any file in that folder counted, so a resumed run read
+    another raw image's segmentation, or a vessel mask's. Otherwise the
+    output is derived where `segment` writes it -- that stage's own naming
+    rule. None for a synthetic network, which has no segmented image."""
     if graph.network_is_synthetic(settings):
         return None
     produced = settings.get("input_path")
     if ilastik_segments(settings):
         output_dir = Path(settings["ilastik_output_dir"])
-        if produced is not None and Path(produced).parent == output_dir:
+        if (
+            produced is not None
+            and Path(produced).parent == output_dir
+            and Path(produced).stem == ilastik_segmented_stem(settings["raw_image_path"])
+        ):
             return Path(produced)
         return ilastik_segmented_path(
             output_dir, settings["raw_image_path"], settings["ilastik_output_suffix"]
@@ -1119,6 +1131,15 @@ SKELETON_VOXEL_SETTINGS: tuple[str, ...] = (
 )
 
 
+def finest_spacing_ratio(source_voxel_size_zyx, grid_voxel_size_zyx) -> float:
+    """How many voxels of the source's finest axis one voxel of the grid's
+    finest axis spans: what a count of finest-axis voxels (the skeleton
+    clean-up's) is divided by on the grid. Not the source's finest axis's
+    own reduction: a coarse z reduced less can be the grid's finest axis
+    (z 1.5 um, x and y 0.5 um at 4x: a 1.5 um grid voxel, not 2 um)."""
+    return round(float(min(grid_voxel_size_zyx)) / float(min(source_voxel_size_zyx)), 9)
+
+
 def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Downsample | None) -> dict:
     """The :data:`SKELETON_VOXEL_SETTINGS` a run on *downsample*'s grid uses:
     each the same physical length as on the image as read, so divided by the
@@ -1129,8 +1150,7 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     again as many false junctions (2026-10-19)."""
     if downsample is None or downsample.is_identity:
         return {}
-    finest = int(np.argmin(downsample.source_voxel_size_zyx))
-    factor = float(downsample.axis_factors_zyx[finest])
+    factor = finest_spacing_ratio(downsample.source_voxel_size_zyx, downsample.voxel_size_zyx)
     scaled = {}
     for name in SKELETON_VOXEL_SETTINGS:
         value = settings.get(name)
@@ -1169,8 +1189,7 @@ def skeleton_voxel_settings_from_grid(
     optimiser, which searches on the run's grid. Empty without a reduction."""
     if downsample is None or downsample.is_identity:
         return {}
-    finest = int(np.argmin(downsample.source_voxel_size_zyx))
-    factor = int(downsample.axis_factors_zyx[finest])
+    factor = finest_spacing_ratio(downsample.source_voxel_size_zyx, downsample.voxel_size_zyx)
     on_grid = skeleton_voxel_settings_on_grid(settings, downsample)
     restored = {}
     for name in SKELETON_VOXEL_SETTINGS:
@@ -1225,12 +1244,14 @@ def _vessel_mask_sources(settings: Mapping[str, Any]) -> dict[str, tuple]:
 
 
 def _split_large_vessel_masks(
-    settings: Mapping[str, Any], large_arteriole_mask, large_venule_mask, voxel_size_xyz
+    settings: Mapping[str, Any], large_arteriole_mask, large_venule_mask, voxel_size_xyz, segmentation
 ) -> tuple:
     """``(large arteriole, large venule, small arteriole, small venule)``: the
     loaded large masks cut by width (``io.split_large_vessel_masks_by_diameter``),
     for a run whose small masks are cut from them
-    (``graph.small_vessel_masks_split_from_large``)."""
+    (``graph.small_vessel_masks_split_from_large``). The widths are read on
+    *segmentation*, the run's segmented image on the masks' grid, binary or
+    read as the run binarises it (:class:`_SegmentationBoxes`)."""
     if large_arteriole_mask is None:
         return large_arteriole_mask, large_venule_mask, None, None
     return io.split_large_vessel_masks_by_diameter(
@@ -1238,6 +1259,7 @@ def _split_large_vessel_masks(
         large_venule_mask,
         diameter_um=graph.large_vessel_mask_split_diameter_um(settings),
         voxel_size_xyz=voxel_size_xyz,
+        segmentation=segmentation,
         dilation_um=float(settings.get("large_vessel_mask_dilation_microns") or 0.0),
         use_memmap=bool(settings.get("use_memmap_loading", False)),
         memmap_directory=settings.get("memmap_directory"),
@@ -1310,7 +1332,7 @@ def thick_vessel_restriction_mask(
             io.load_and_validate_vessel_masks(**_vessel_mask_arguments(settings, "large"), **load)[:2]
         )
         if split:
-            cut = _split_large_vessel_masks(settings, *pairs["large"], voxel_size_xyz)
+            cut = _split_large_vessel_masks(settings, *pairs["large"], voxel_size_xyz, binary_image)
             pairs = {"large": cut[:2], "small": cut[2:]}
     if "small" in roles and "small" not in pairs:
         pairs["small"] = tuple(
@@ -2562,7 +2584,13 @@ def build_network(
             large_venule_mask,
             small_arteriole_mask,
             small_venule_mask,
-        ) = _split_large_vessel_masks(settings, large_arteriole_mask, large_venule_mask, main_voxel_size_xyz)
+        ) = _split_large_vessel_masks(
+            settings,
+            large_arteriole_mask,
+            large_venule_mask,
+            main_voxel_size_xyz,
+            _SegmentationBoxes(image, settings.get("input_path")),
+        )
     else:
         small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
             **_vessel_mask_arguments(mask_settings, "small"),
@@ -4970,7 +4998,11 @@ class _PostProcessSegmentation:
     through one ``MaskSupport`` at the run's bridge limits. Its three
     readers (the drawn vessels, the edited vessels' thick-vessel bridges and
     the dead ends at the edits) each binarised the whole image in RAM and
-    made a support of their own. Made when first asked for."""
+    made a support of their own. Made when first asked for.
+
+    :meth:`of` keeps it on the network's volume, so the next Regenerate of
+    the run does not binarise the image and build the support's surface tree
+    again: on E14.5 that was about 5 of the 6 s post processing took."""
 
     def __init__(self, settings: dict, network: "VesselNetwork | None"):
         self.settings = settings
@@ -4978,8 +5010,42 @@ class _PostProcessSegmentation:
         self.voxel_size_zyx = (
             None if network is None else tuple(float(v) for v in network.volume.voxel_size_zyx)
         )
+        self.key = self._key(settings, network)
         self._binary = None
         self._support = None
+
+    @staticmethod
+    def _key(settings: Mapping[str, Any], network: "VesselNetwork | None") -> tuple:
+        """What the binarised image and its support are made from."""
+        if network is None:
+            return (None,)
+        return (
+            id(network.volume.image),
+            tuple(float(v) for v in network.volume.voxel_size_zyx),
+            float(settings["bridge_max_background_gap_um"]),
+            float(settings["bridge_min_mask_fraction"]),
+            bool(settings.get("use_memmap_loading")),
+            str(settings.get("memmap_directory")),
+        )
+
+    @classmethod
+    def of(cls, settings: dict, network: "VesselNetwork | None") -> "_PostProcessSegmentation":
+        """The one kept on *network*'s volume while it still reads its image
+        with these settings, else a new one, kept there in its place."""
+        if network is None:
+            return cls(settings, None)
+        volume = network.volume
+        kept = volume.post_process_segmentation
+        if (
+            isinstance(kept, cls)
+            and kept.image is volume.image
+            and kept.key == cls._key(settings, network)
+        ):
+            kept.settings = settings
+            return kept
+        made = cls(settings, network)
+        volume.post_process_segmentation = made
+        return made
 
     @property
     def binary(self) -> np.ndarray | None:
@@ -5035,7 +5101,7 @@ def _judge_drawn_vessels(
     if not drawn or network is None or network.volume.image is None:
         return None
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     support = segmentation.support(voxel_size_zyx)
     records = graph.record_drawn_vessel_support(G, drawn, support)
     off_segmentation = sum(not record.within_bridge_gate for record in records)
@@ -5117,7 +5183,7 @@ def _bridge_edited_vessels(
         )
 
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     before = edited_bridges(G)
     # The tree skeletonisation drew, when this is the region it drew it in.
     tree = None
@@ -5177,7 +5243,7 @@ def _mark_touched_dead_end_kinds(
         )
         return None
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     binary_mask = segmentation.binary
     if not np.any(binary_mask):
         logger.info(
@@ -5333,7 +5399,7 @@ def post_process(
        endothelium -- whichever it uses), keeping the diameter the edit gave
        it as a provisional override: a measurement replaces that, the
        branch-order table does not;
-    6. each vessel the edits drew is read against the segmentation as graph
+    7. each vessel the edits drew is read against the segmentation as graph
        building reads every bridge it draws (:func:`_judge_drawn_vessels`:
        the fraction of it in the mask, the longest run of background it
        crosses, whether it runs beside a vessel in the same lumen), written
@@ -5369,7 +5435,7 @@ def post_process(
         )
     _take_chosen_resistance_pair(boundaries, G)
     # One binarised segmentation and one support for the three readers below.
-    segmentation = _PostProcessSegmentation(settings, network)
+    segmentation = _PostProcessSegmentation.of(settings, network)
     G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask, segmentation)
     model.graph = G
     boundaries.graph = G
@@ -7667,7 +7733,9 @@ def _perturb_one(
                 name_stem=spec.name,
                 statistics_kwargs=perturbation_statistics,
                 voxel_size_zyx=voxel_size_zyx,
-                betweenness_and_communities=bool(perturbed["statistics"]),
+                # As the baseline's: only while betweenness or communities are on.
+                betweenness_and_communities=bool(perturbed["statistics"])
+                and bool(perturbation_statistics["enabled_measures"] & WEIGHTED_MEASURES),
             )
         )
 
@@ -7953,6 +8021,11 @@ def tissue_measurement(
         )
     resolved = io.resolve_image_path_with_optional_zip(Path(path))
     stat = resolved.stat()
+    # The raw image is read onto the network's grid by the factor its record
+    # holds: recorded as raw_image_downsample says now (the perturbations
+    # measure before the export records it), and part of the key.
+    _record_downsample(network.graph, settings, network.volume)
+    downsample_record = network.graph.graph.get(DOWNSAMPLE_GRAPH_ATTRIBUTE) or {}
     key = (
         str(resolved),
         stat.st_mtime_ns,
@@ -7961,6 +8034,7 @@ def tissue_measurement(
         io.axis_order_for_run(settings),
         tuple(network.volume.voxel_size_zyx),
         tuple(settings[name] for name in _TISSUE_SETTINGS),
+        int(downsample_record.get("raw_factor", 1)),
     )
     segmentation = network.volume.image
     cached = network.tissue
@@ -8757,7 +8831,11 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
         )
         if role == "large" and split is not None:
             loaded_arteriole, loaded_venule, *small = _split_large_vessel_masks(
-                settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz
+                settings,
+                loaded_arteriole,
+                loaded_venule,
+                volume.voxel_size_xyz,
+                _SegmentationBoxes(volume.image, settings.get("input_path")),
             )
             changes["small_arteriole_mask"], changes["small_venule_mask"] = as_read(*small)
         loaded_arteriole, loaded_venule = as_read(loaded_arteriole, loaded_venule)

@@ -477,6 +477,30 @@ def test_one_network_is_measured_once_and_again_when_a_setting_changes(tmp_path,
     assert len(calls) == 3
 
 
+def test_a_new_raw_image_downsample_measures_the_tissue_again(tmp_path, monkeypatch):
+    """Regression: the cache was keyed without the raw image's downsample
+    factor, so a run resumed at the export after raw_image_downsample changed
+    divided vessel density by the tissue read at the old one."""
+    settings, network, _G, _vessel = _stage_inputs(tmp_path)
+    calls = []
+    real = stages.statistics.measure_tissue_volume
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stages.statistics, "measure_tissue_volume", counting)
+    first = stages.tissue_measurement(settings, network)
+    coarser = {**settings, "raw_image_downsample": "2x"}
+    # As the perturbations stage asks, before the export records the factor:
+    # the perturbations and the baseline divide by the tissue read at 2x.
+    assert stages.tissue_measurement(coarser, network) is not first
+    assert len(calls) == 2
+    assert network.graph.graph[stages.DOWNSAMPLE_GRAPH_ATTRIBUTE]["raw_factor"] == 2
+    assert stages.tissue_measurement(coarser, network) is network.tissue.tissue
+    assert len(calls) == 2
+
+
 def test_an_ilastik_label_segmentation_reads_its_minority_label_as_vessel(tmp_path):
     """A Simple Segmentation is labels 1 and 2, not 0 and 1: the vessels are
     what skeletonisation took as foreground, not every non-zero voxel."""

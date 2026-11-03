@@ -81,8 +81,9 @@ def _metric_comparison(before: Optional[TrialRecord], after: TrialRecord) -> str
 def _changes(trials: Sequence[TrialRecord], *, search_grid_factor: int = 1) -> list[str]:
     """One line per sweep in *trials* that moved its setting: the value it
     started from, the one it chose, and the measurements behind the choice.
-    On a downsampled search, a voxel-counted setting's values are the search
-    grid's, and say so."""
+    On a grid coarser than the image as read (*search_grid_factor* above 1:
+    the search's own, the run's downsample on import, or both), a
+    voxel-counted setting's values are the search grid's, and say so."""
     by_sweep: dict[int, list[TrialRecord]] = {}
     for trial in trials:
         if trial.sweep >= 0:
@@ -147,6 +148,13 @@ def build_report_text(
             f"Searched on a {result.downsample_factor}x downsampled copy for speed{per_axis}; "
             "voxel-based settings below are already scaled back up to the full-resolution grid."
         )
+    run_grid_factor = int(getattr(result, "run_grid_factor", 1) or 1)
+    if run_grid_factor > 1:
+        lines.append(
+            f"The run reads the image downsampled {run_grid_factor}x on import, so the search started "
+            "on that grid; voxel-based settings in each group's line are the image's own voxels, as "
+            "the panel holds them, and in the changes under it the search grid's."
+        )
     if result.typical_radius_um is not None and result.resolution_cap is not None:
         lines.append(
             f"Auto measured a typical vessel radius of {result.typical_radius_um:.2f} um, so searched "
@@ -205,6 +213,6 @@ def build_report_text(
             f"- {group}: tried {len(trials)} candidate(s){failure_note}{guard_note} -> {winners}"
             f"{time_note}"
         )
-        lines.extend(_changes(trials, search_grid_factor=result.downsample_factor))
+        lines.extend(_changes(trials, search_grid_factor=result.downsample_factor * run_grid_factor))
 
     return "\n".join(lines)

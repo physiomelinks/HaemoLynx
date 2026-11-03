@@ -1173,6 +1173,45 @@ def test_setting_a_diameter_refuses_a_bad_width_or_vessel_and_changes_nothing():
     assert not has_pending_edits(G)
 
 
+# --- mark_dead_end_kind (the Dead ends list's verdicts) ----------------------
+
+from haemolynx.graph import dead_ends as de  # noqa: E402
+from haemolynx.graph.post_processing import TOUCHED, mark_dead_end_kind  # noqa: E402
+
+
+@pytest.mark.parametrize("kind", [de.BLIND, de.LEAVES_IMAGE])
+def test_a_dead_end_marked_by_hand_is_an_edit_regenerate_solves_again(kind):
+    """Whether a dead end leaves the image is the open-end boundary condition
+    the solve puts on it. The mark went on the node and nothing else, so
+    Regenerate graph stayed off and Continue never solved the network again
+    with it."""
+    G = _two_close_junctions()
+    tip = 10
+    G.nodes[tip][de.DEAD_END_KIND] = de.UNKNOWN
+    assert G.degree(tip) == 1 and not has_pending_edits(G)
+
+    assert mark_dead_end_kind(G, tip, kind) is True
+
+    assert G.nodes[tip][de.DEAD_END_KIND] == kind
+    assert G.nodes[tip][de.DEAD_END_KIND_SOURCE] == de.SOURCE_REVIEW
+    assert has_pending_edits(G)
+    assert de.node_leaves_image(G, tip) is (kind == de.LEAVES_IMAGE)
+    # The network is as it was: no vessel to measure, no node to judge again.
+    assert not any(EDITED in d for *_e, d in G.edges(data=True))
+    assert TOUCHED not in G.graph
+
+
+def test_a_dead_end_marked_as_what_it_is_is_no_edit_and_a_junction_is_refused():
+    G = _two_close_junctions()
+    G.nodes[10][de.DEAD_END_KIND] = de.BLIND
+    assert mark_dead_end_kind(G, 10, de.BLIND) is False
+    assert G.nodes[10][de.DEAD_END_KIND_SOURCE] == de.SOURCE_REVIEW
+    assert not has_pending_edits(G)
+    with pytest.raises(ValueError, match="not a dead end"):
+        mark_dead_end_kind(G, 1, de.BLIND)
+    assert not has_pending_edits(G)
+
+
 # --- set_terminal_role (the Terminal nodes list's edit) ----------------------
 
 from haemolynx.graph import boundary_roles_with_edits, set_terminal_role  # noqa: E402

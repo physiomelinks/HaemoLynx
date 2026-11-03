@@ -184,6 +184,27 @@ def test_widths_not_measured_or_in_doubt_are_listed_by_their_share_of_the_flow()
     assert items[3].measures["reasons"] == "FWHM at odds with the mask's width"
 
 
+def test_a_width_set_by_hand_is_not_asked_about_again():
+    """Set diameter of selected vessels to gives the vessel a person's width;
+    its FWHM flags stay, so it came back on every scan. A width an edit only
+    lends a vessel it drew, until it is measured, is still listed, and so is
+    a hand-set vessel measured again since."""
+    from haemolynx.graph import set_vessel_diameter
+
+    G = _graph({n: (0, 0, 10 * n) for n in range(4)})
+    flags = {"fwhm_diameter_um": 3.0, FWHM_DEMOTED_ATTR: "speck width", "fwhm_low_confidence_vs_edt": True}
+    _vessel(G, 0, 1, diameter_um=5.0, diameter_source="edt_mask", **flags)
+    _vessel(G, 1, 2, diameter_um=5.0, diameter_source="override", **flags)  # lent by an edit
+    _vessel(G, 2, 3, diameter_um=5.0, diameter_source="edt_mask", **flags)
+    assert [item.nodes for item in nr.find_unmeasured_diameters(G)] == [(0, 1), (1, 2), (2, 3)]
+
+    set_vessel_diameter(G, [(0, 1, 0), (2, 3, 0)], 7.0)
+
+    assert [item.nodes for item in nr.find_unmeasured_diameters(G)] == [(1, 2)]
+    G.edges[2, 3, 0]["diameter_source"] = "edt_mask"  # measured afresh since
+    assert [item.nodes for item in nr.find_unmeasured_diameters(G)] == [(1, 2), (2, 3)]
+
+
 def test_an_unsolved_vessel_keeps_its_place_at_the_end_with_no_share():
     G = _graph({0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20)})
     _vessel(G, 0, 1, diameter_um=5.0, diameter_source="table", flow_abs=1.0, **{FLOW_SOLVED: False})
