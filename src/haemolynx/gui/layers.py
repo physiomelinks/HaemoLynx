@@ -34,16 +34,17 @@ class LayerInput:
 def rejection_reason(layer: Any) -> str | None:
     """Why this layer cannot be the pipeline's input, or None if it can be.
 
-    The pipeline skeletonises a 3D volume, so a 2D image or an RGB stack is a
+    The pipeline skeletonises a 3D volume, or a 2D image read as a stack of
+    one (as a 2D file is: ``io.load_2d``), so a 4D layer or an RGB image is a
     mistake worth naming rather than a crash three stages later.
     """
     data = getattr(layer, "data", None)
     if data is None:
         return "That layer has no image data."
     shape = getattr(data, "shape", ())
-    if len(shape) != 3:
+    if len(shape) not in (2, 3):
         return (
-            f"The pipeline needs a 3D volume; this layer is {len(shape)}D "
+            f"The pipeline needs a 3D volume or a 2D image; this layer is {len(shape)}D "
             f"with shape {tuple(shape)}."
         )
     if getattr(layer, "rgb", False):
@@ -80,17 +81,21 @@ def voxel_size_xyz_from_scale(
     isotropic data and wrong on every real stack.
 
     A scale of all ones carries no information, so it is left alone rather than
-    overriding whatever the file says.
+    overriding whatever the file says. A 2D layer's ``(y, x)`` scale gives
+    ``(x, y, 1)``: a 2D image is read as a stack of one, with no z spacing of
+    its own, as its file's would be.
     """
     from haemolynx.io.axis_order import voxel_size_xyz_from_file_axes
 
     if scale is None:
         return None
     values = [float(v) for v in scale]
-    if len(values) != 3:
+    if len(values) not in (2, 3):
         return None
     if all(value == 1.0 for value in values):
         return None
+    if len(values) == 2:
+        return (values[1], values[0], 1.0)
     return voxel_size_xyz_from_file_axes(values, axis_order)
 
 

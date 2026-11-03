@@ -88,6 +88,19 @@ def _extract_h5_voxel_size(
         element_size = attrs["element_size_um"]
         if dropped_axes and np.asarray(element_size).size == len(dataset.shape):
             element_size = np.delete(np.asarray(element_size).ravel(), dropped_axes)
+        plane = np.asarray(element_size, dtype=float).ravel()
+        if plane.size == 2 and len(dataset.shape) - len(dropped_axes) == 2:
+            # A 2D image's (y, x): read as its TIFF is, z missing. Taken as a
+            # triplet it was nothing, and both axes read as 1 um.
+            voxel_size_xyz = (float(plane[1]), float(plane[0]), 1.0)
+            if _is_valid_voxel_size_triplet(voxel_size_xyz):
+                return voxel_size_xyz, _default_voxel_meta_status(
+                    source="h5_attributes",
+                    status="partial",
+                    key_used="element_size_um",
+                    missing_axes=["z"],
+                    fallback_applied=True,
+                )
         per_axis = _coerce_triplet(element_size)
         if per_axis is not None:
             voxel_size_xyz = voxel_size_xyz_from_file_axes(per_axis, axis_order)
@@ -333,19 +346,69 @@ def mask_binarization_rule(volume: np.ndarray):
     return _binarization_rule(arr, use_memmap=True)
 
 
-def _binarization_rule(arr: np.ndarray, *, use_memmap: bool):
+def _binarization_rule(arr: np.ndarray, *, use_memmap: bool, objects: bool = False):
     """The elementwise rule that turns *arr* into a foreground mask.
 
     Decided from the whole volume (its distinct values, or its finite
     range), but applied elementwise -- so the same rule gives the same
     answer whether it is applied to the whole array at once or to one
     slice at a time.
+
+    A floating volume holding whole numbers only (a label mask saved as
+    float) is read by the integer rule: by its range alone a float 1/2 mask
+    was all vessel where the same mask in uint8 was its minority label.
+
+    *objects*: a mask of objects (pericytes, cells, blocks), binary or
+    labelled one number per object. With a 0 background, every other value
+    is an object; the integer rule kept only the rarest label of three or
+    four, and of more thresholded at half the dtype's range (300 labelled
+    objects in uint16 read as none). Without a 0 (ilastik's 1/2) the
+    integer rule decides, as for any mask.
     """
-    if np.issubdtype(arr.dtype, np.integer):
-        return _integer_rule(*_unique_with_counts(arr, use_memmap=use_memmap), shape=arr.shape)
     if np.issubdtype(arr.dtype, np.floating):
-        return _floating_rule(_finite_range(arr, use_memmap=use_memmap))
-    return lambda a: a.astype(bool)
+        labels = _whole_number_values(arr, use_memmap=use_memmap)
+        if labels is None:
+            return _floating_rule(_finite_range(arr, use_memmap=use_memmap))
+        values, counts = labels
+    elif np.issubdtype(arr.dtype, np.integer):
+        values, counts = _unique_with_counts(arr, use_memmap=use_memmap)
+    else:
+        return lambda a: a.astype(bool)
+    if objects and values.size > 1 and np.any(values == 0):
+        return lambda a: a != 0
+    return _integer_rule(values, counts, shape=arr.shape)
+
+
+#: The most distinct values a floating volume may hold and still be read as
+#: a label mask (:func:`_whole_number_values`).
+_MAX_FLOAT_LABELS = 256
+
+
+def _whole_number_values(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarray, np.ndarray] | None:
+    """``(values, counts)`` of a floating *arr* holding only finite whole
+    numbers, at most :data:`_MAX_FLOAT_LABELS` of them; None otherwise (a
+    probability or intensity map), found a slab at a time and given up at
+    the first slab that rules it out."""
+    if arr.ndim == 0 or arr.size == 0:
+        return None
+    tally: dict[float, int] = {}
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        slab = np.asarray(arr[start:start + step])
+        if not np.all(np.isfinite(slab)) or np.any(slab != np.round(slab)):
+            return None
+        slab_values, slab_counts = np.unique(slab, return_counts=True)
+        for value, count in zip(slab_values.tolist(), slab_counts.tolist()):
+            tally[value] = tally.get(value, 0) + count
+        if len(tally) > _MAX_FLOAT_LABELS:
+            return None
+    if not tally:
+        return None
+    ordered = sorted(tally)
+    return (
+        np.array(ordered, dtype=np.int64),
+        np.array([tally[value] for value in ordered], dtype=np.int64),
+    )
 
 
 def _integer_rule(values: np.ndarray, counts: np.ndarray, *, shape: tuple[int, ...]):
@@ -398,6 +461,7 @@ def _to_binary_volume_for_skeletonization(
     *,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    objects: bool = False,
 ) -> np.ndarray:
     """Convert loaded image volume to a boolean mask for skeletonization.
 
@@ -420,11 +484,14 @@ def _to_binary_volume_for_skeletonization(
     into a new memmap in *memmap_directory* -- otherwise the final
     comparison alone is a fresh, plain-RAM boolean array the size of the
     whole volume. The already-bool pass-through is unaffected either way.
+
+    *objects* reads a labelled mask of objects as every object
+    (:func:`_binarization_rule`).
     """
     arr = np.asanyarray(image)
     if arr.dtype == bool:
         return arr
-    rule = _binarization_rule(arr, use_memmap=use_memmap)
+    rule = _binarization_rule(arr, use_memmap=use_memmap, objects=objects)
     if not use_memmap:
         return rule(arr)
     result = new_memmap_array(arr.shape, bool, directory=memmap_directory)
@@ -805,6 +872,13 @@ def load_3d_tif_with_voxel_size(
         else:
             out = None
         raw = tif.asarray(out=out)
+        if str(tif.series[0].axes).upper() == "YXS" and raw.ndim == 3:
+            # One RGB plane: its samples are not a third axis. Read as a
+            # stack, a 2D RGB mask became a volume three voxels wide.
+            logger.warning(
+                "%s is an RGB image: its first sample (red) is read, as one plane.", filepath
+            )
+            raw = raw[..., 0]
         flat = allow_2d and raw.ndim == 2
         if flat:
             image = raw
@@ -1147,21 +1221,20 @@ def _load_volume_voxel_size_and_status(
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
-    """:func:`load_volume_and_voxel_size`, plus the voxel size's metadata status."""
+    """:func:`load_volume_and_voxel_size`, plus the voxel size's metadata status.
+    A 2D file is read as a stack of one, as the main image is
+    (:func:`haemolynx.io.load_2d.load_image_with_voxel_size_2d_aware`): a mask
+    beside a 2D image was refused."""
+    from haemolynx.io.load_2d import load_image_with_voxel_size_2d_aware
+
     path = Path(volume_path)
     suffix = path.suffix.lower()
-    if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_tif_with_voxel_size(
+    if suffix in {".tif", ".tiff", ".h5"}:
+        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_image_with_voxel_size_2d_aware(
             str(path),
+            input_format=suffix[1:],
             axis_order=axis_order,
-            use_memmap=use_memmap,
-            memmap_directory=memmap_directory,
-        )
-    elif suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(path),
-            dataset_name=h5_dataset_name,
-            axis_order=axis_order,
+            h5_dataset_name=h5_dataset_name,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
         )
@@ -1181,13 +1254,16 @@ def load_binary_mask_voxel_size_and_status(
     description: str = "mask",
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    objects: bool = False,
 ) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
     """:func:`load_binary_mask_and_voxel_size`, plus how complete the file's
     voxel-size metadata was -- what
     :func:`haemolynx.io.voxel_validation.resolve_voxel_size_xyz` needs to apply
     the run's override and policy to it, as it does to the main image. The one
     place a binary mask is read; :func:`load_binary_mask_and_voxel_size` is
-    this without the status."""
+    this without the status. *objects*: a mask of objects (pericytes, cells,
+    blocks), binary or labelled, every labelled object kept
+    (:func:`_binarization_rule`)."""
     path = resolve_image_path_with_optional_zip(Path(mask_path))
     image, voxel_size_xyz, status = _load_volume_voxel_size_and_status(
         path,
@@ -1200,7 +1276,7 @@ def load_binary_mask_voxel_size_and_status(
     if image.ndim != 3:
         raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
     binary = _to_binary_volume_for_skeletonization(
-        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory, objects=objects
     )
     return binary, voxel_size_xyz, status
 

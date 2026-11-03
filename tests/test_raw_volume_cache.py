@@ -54,6 +54,51 @@ def _cache_files_for(tmp_path, source_path, axis_order="zyx"):
     return _cache_file_paths(tmp_path, key)
 
 
+def test_a_same_size_rewrite_keeping_the_old_time_misses(tmp_path):
+    """Regression: the key was the path, time, size and axis order, so a copy
+    that keeps the old file's time (copy2, robocopy, unzipping) of a stack
+    the same size was served the old volume."""
+    source = tmp_path / "volume.tif"
+    _write_tiff(source, seed=1)
+    old = os.stat(source)
+    cache_dir = tmp_path / "cache"
+    load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+
+    new_raw = _write_tiff(source, seed=2, backdate=False)
+    os.utime(source, ns=(old.st_atime_ns, old.st_mtime_ns))
+    assert os.stat(source).st_size == old.st_size  # the premise
+
+    image, *_ = load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+
+    assert np.array_equal(image, new_raw)
+
+
+def test_another_dataset_of_the_same_h5_misses(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    source = tmp_path / "volume.h5"
+    first = np.zeros((4, 5, 6), dtype=np.uint8)
+    second = np.ones((4, 5, 6), dtype=np.uint8)
+    with h5py.File(source, "w") as handle:
+        handle.create_dataset("data", data=first)
+        handle.create_dataset("other", data=second)
+    _backdate(source)
+    cache_dir = tmp_path / "cache"
+
+    read = [
+        load_raw_volume_reusing_cache(
+            str(source), input_format="h5", axis_order="zyx", memmap_directory=cache_dir,
+            h5_dataset_name=name,
+        )[0]
+        for name in ("data", "other")
+    ]
+
+    assert np.array_equal(read[0], first) and np.array_equal(read[1], second)
+
+
 def test_a_cache_miss_loads_and_writes_a_reusable_entry(tmp_path):
     source = tmp_path / "volume.tif"
     raw = _write_tiff(source)

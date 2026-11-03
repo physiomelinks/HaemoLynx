@@ -238,6 +238,7 @@ def load_pericyte_mask(
         h5_dataset_name=h5_dataset_name,
         axis_order=axis_order,
         description=PERICYTE_MASK_DESCRIPTION,
+        objects=True,
     )
     # Its centroids are placed against the graph's positions, which are
     # measured from the crop_on_import box's corner when the image was cut,

@@ -241,7 +241,9 @@ def write_ilastik_channels(
         series = tif.series[0]
         axes = series.axes.upper()
         shape = tuple(int(size) for size in series.shape)
-        channel_axis = tiff_channel_axis(axes, shape, tif.imagej_metadata)
+        channel_axis = tiff_channel_axis(
+            axes, shape, tif.imagej_metadata, tif.ome_metadata if tif.is_ome else None
+        )
         if channel_axis is None:
             raise ValueError(
                 f"{image_path.name} has no channels to choose from (axes {axes}): leave the "
@@ -538,9 +540,10 @@ def run_ilastik_headless_segmentation(
         ilastik executable. Defaults to ``ilastik.exe`` and can also be a full path.
     timeout:
         Kill the subprocess and raise if it runs longer than this many
-        seconds. ``None`` (this function's own default) waits forever; the
-        pipeline itself always passes ``ilastik_timeout_seconds`` so a hung
-        or misconfigured ilastik process cannot block a run indefinitely.
+        seconds. ``None`` (this function's own default) or 0 waits forever
+        (0 killed it at once); the pipeline itself always passes
+        ``ilastik_timeout_seconds`` so a hung or misconfigured ilastik
+        process cannot block a run indefinitely unless asked to.
     vessel_label:
         Which of the project's labels is the vessel: a label name, or its
         number (1 for the first label made). Resolved against the names the
@@ -574,6 +577,8 @@ def run_ilastik_headless_segmentation(
     input_image_path = Path(input_image_path)
     classifier_path = Path(classifier_path)
     output_path = Path(output_path)
+    if timeout is not None and float(timeout) <= 0:
+        timeout = None
 
     if not input_image_path.exists():
         raise FileNotFoundError(f"Input image not found: {input_image_path}")

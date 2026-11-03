@@ -9,6 +9,7 @@ enough to tell a red plasma channel from a green endothelial one.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def _lut_colour(lut) -> str | None:
     return _COLOURS.get(tuple(int(v > 0.5 * top.max()) for v in top))
 
 
-def tiff_channel_axis(axes: str, shape, imagej_metadata=None) -> int | None:
+def tiff_channel_axis(axes: str, shape, imagej_metadata=None, ome_xml: str | None = None) -> int | None:
     """Which of a TIFF series' axes holds channels, or ``None``.
 
     A ``C`` axis alone is not enough: tifffile saves a plain ``(z, y, x)``
@@ -70,7 +71,20 @@ def tiff_channel_axis(axes: str, shape, imagej_metadata=None) -> int | None:
     metadata = imagej_metadata or {}
     if str(metadata.get("mode", "")).lower() in ("composite", "color") or metadata.get("LUTs"):
         return index
+    if ome_xml and _OME_DESCRIBED_CHANNEL.search(ome_xml):
+        # An OME file's channels described as channels (a name, colour,
+        # fluor or wavelength): a 2D composite was read as a stack of its
+        # channels. Not the C axis alone: tifffile writes a plain 3D array
+        # as OME "CYX".
+        return index
     return None
+
+
+#: A Channel element of an OME header that says something only a channel
+#: has (see :func:`tiff_channel_axis`).
+_OME_DESCRIBED_CHANNEL = re.compile(
+    r"<Channel\b[^>]*\b(?:Name|Color|Fluor|EmissionWavelength|ExcitationWavelength)=\"[^\"]+\""
+)
 
 
 def tiff_channels(path: str | Path | None) -> list[TiffChannel]:
@@ -88,15 +102,15 @@ def tiff_channels(path: str | Path | None) -> list[TiffChannel]:
             series = tif.series[0]
             axes = series.axes.upper()
             metadata = tif.imagej_metadata or {}
-            channel_axis = tiff_channel_axis(axes, series.shape, metadata)
+            channel_axis = tiff_channel_axis(
+                axes, series.shape, metadata, tif.ome_metadata if tif.is_ome else None
+            )
             if channel_axis is None:
                 return []
             count = int(series.shape[channel_axis])
             names: list[str | None] = [None] * count
             colours: list[str | None] = [None] * count
             if tif.is_ome and tif.ome_metadata:
-                import re
-
                 # Every Channel element in order, named or not: collecting
                 # only the named ones gave C1 the name of C2 when C1 had none.
                 elements = re.findall(r"<Channel\b([^>]*)>", tif.ome_metadata)

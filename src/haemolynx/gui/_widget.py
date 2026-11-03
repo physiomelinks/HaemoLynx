@@ -181,6 +181,7 @@ from haemolynx.optimisation import (
     OptimisationEvent,
     build_report_text,
     config_filename,
+    finest_factor_fitting_memory,
     full_resolution_search_refusal,
     optimise_fwhm_settings,
     optimise_skeleton_and_graph_settings,
@@ -1334,6 +1335,9 @@ def _scale_layer_from_its_file(
     if found is None:
         return None
     scale = file_axis_spacing_from_xyz(found[0], axis_order)
+    if len(getattr(getattr(layer, "data", None), "shape", ())) == 2:
+        # A 2D image's own axes are (y, x), not reordered.
+        scale = file_axis_spacing_from_xyz(found[0])[1:]
     try:
         layer.scale = scale
     except Exception:  # noqa: BLE001 - a layer that will not take a scale is survivable
@@ -7063,14 +7067,22 @@ def _optimise_settings_for_run(
     volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
     voxel_size_xyz = volume.voxel_size_xyz
     use_memmap = bool(local_settings.get("use_memmap_loading"))
-    if use_memmap and downsample_factor == 1:
+    min_downsample_factor = 1
+    if use_memmap and downsample_factor in (None, 1):
         if available_bytes is None:
             from haemolynx.haemodynamics import available_memory_bytes
 
             available_bytes = available_memory_bytes()
-        refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
-        if refusal is not None:
-            raise _OptimiseRefused(refusal)
+        if downsample_factor == 1:
+            refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
+            if refusal is not None:
+                raise _OptimiseRefused(refusal)
+        else:
+            # Auto chooses no grid finer than fits: its resolution cap alone
+            # could resolve to full resolution on any stack.
+            min_downsample_factor = finest_factor_fitting_memory(
+                volume.image.shape, tuple(reversed(voxel_size_xyz)), available_bytes
+            )
     raw_mask = _to_binary_volume_for_skeletonization(
         volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
     )
@@ -7118,15 +7130,22 @@ def _optimise_settings_for_run(
         raw_image_stain=raw_image_stain,
         max_passes=max_passes,
         thick_restriction_mask=restriction,
+        min_downsample_factor=min_downsample_factor,
     )
     # Voxel counts back from the run's grid to the image as read, as the
     # rows hold them.
-    result = replace(result, settings={
-        **result.settings,
-        **pipeline_stages.skeleton_voxel_settings_from_grid(
-            result.settings, local_settings, volume.downsample
+    result = replace(
+        result,
+        settings={
+            **result.settings,
+            **pipeline_stages.skeleton_voxel_settings_from_grid(
+                result.settings, local_settings, volume.downsample
+            ),
+        },
+        run_grid_factor=(
+            1 if volume.downsample is None or volume.downsample.is_identity else int(volume.downsample.factor)
         ),
-    })
+    )
     return result, local_settings["input_path"], raw_image_error, restriction_error
 
 

@@ -681,6 +681,15 @@ def test_ilastik_timeout_kills_the_process_and_raises_an_actionable_error(tmp_pa
     assert _stopped_growing(beat)
 
 
+def test_an_ilastik_timeout_of_0_never_stops_it(tmp_path, monkeypatch):
+    """Regression: the setting's minimum is 0, and 0 killed ilastik about
+    half a second in. It means no limit."""
+    image, project, output = _ilastik_inputs(tmp_path)
+    monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
+
+    assert _segment(tmp_path, image, project, output, timeout=0) == output
+
+
 def test_a_poll_that_raises_stops_ilastik_and_propagates(tmp_path, monkeypatch):
     """How the panel's stop reaches a segmentation that can take hours."""
     image, project, output = _ilastik_inputs(tmp_path)
@@ -1110,3 +1119,114 @@ def test_h5_loader_still_rejects_several_channels(tmp_path):
 
     with pytest.raises(ValueError, match="Simple Segmentation"):
         load_3d_h5_with_voxel_size(str(path))
+
+
+# --- masks of objects, float labels and 2D masks -------------------------------
+
+
+def _labelled_objects(count, dtype):
+    """*count* separate one-voxel-wide objects, labelled 1..count."""
+    volume = np.zeros((3, 4, 2 * count), dtype=dtype)
+    for label in range(1, count + 1):
+        volume[1, 1:3, 2 * (label - 1)] = label
+    return volume
+
+
+@pytest.mark.parametrize("count, dtype", [(3, np.uint8), (300, np.uint16)])
+def test_a_labelled_mask_of_objects_keeps_every_object(tmp_path, count, dtype):
+    """Regression: a labelled pericyte, cell or block mask lost objects --
+    the rarest label of three kept, 300 thresholded at half the dtype's
+    range to none."""
+    import tifffile
+
+    from haemolynx.io.load import load_binary_mask_voxel_size_and_status
+
+    path = tmp_path / "objects.tif"
+    tifffile.imwrite(path, _labelled_objects(count, dtype))
+
+    mask, *_ = load_binary_mask_voxel_size_and_status(path, objects=True)
+
+    assert int(mask.sum()) == 2 * count
+    # A segmentation's own reading is unchanged: not every label is vessel.
+    vessels, *_ = load_binary_mask_voxel_size_and_status(path)
+    assert int(vessels.sum()) < 2 * count
+
+
+def test_an_object_mask_without_a_zero_background_is_read_as_any_mask():
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    labels = np.full((4, 6, 8), 2, dtype=np.uint8)
+    labels[:1] = 1  # ilastik's 1/2: the minority is the object
+    as_objects = _to_binary_volume_for_skeletonization(labels, objects=True)
+    assert np.array_equal(as_objects, labels == 1)
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_a_float_label_mask_reads_as_the_same_mask_in_integers(tmp_path, use_memmap):
+    """Regression: a float 1/2 mask was all vessel by its range alone, where
+    the uint8 one is its minority label; a float volume of 2s was solid."""
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    labels = np.full((4, 6, 8), 2, dtype=np.uint8)
+    labels[:1] = 1
+    kwargs = dict(use_memmap=use_memmap, memmap_directory=tmp_path)
+    for volume in (labels, np.full((4, 6, 8), 2, dtype=np.uint8)):
+        as_float = _to_binary_volume_for_skeletonization(volume.astype(np.float32), **kwargs)
+        as_int = _to_binary_volume_for_skeletonization(volume, **kwargs)
+        assert np.array_equal(np.asarray(as_float), np.asarray(as_int))
+    # A probability map is still thresholded at a half.
+    probabilities = np.linspace(0.0, 1.0, 4 * 6 * 8, dtype=np.float32).reshape(4, 6, 8)
+    assert np.array_equal(
+        np.asarray(_to_binary_volume_for_skeletonization(probabilities, **kwargs)), probabilities > 0.5
+    )
+
+
+def test_a_2d_mask_is_read_as_one_plane_beside_a_2d_image(tmp_path):
+    """Regression: the main image reads a 2D file as a stack of one, and
+    every mask beside it was refused as not 3D."""
+    import tifffile
+
+    from haemolynx.io.load import load_binary_mask_voxel_size_and_status
+    from haemolynx.io.vessel_masks import _load_mask_image
+
+    plane = np.zeros((10, 12), dtype=np.uint8)
+    plane[4:6, 2:10] = 255
+    path = tmp_path / "plane.tif"
+    tifffile.imwrite(path, plane, resolution=(1 / 0.5, 1 / 0.5))
+
+    mask, voxel_xyz, status = load_binary_mask_voxel_size_and_status(path)
+    vessel, *_ = _load_mask_image(path)
+
+    assert mask.shape == vessel.shape == (1, 10, 12)
+    assert np.array_equal(mask[0], plane > 0) and np.array_equal(vessel[0], plane > 0)
+    assert voxel_xyz[:2] == pytest.approx((0.5, 0.5)) and status["missing_axes"] == ["z"]
+
+
+def test_a_2d_rgb_mask_is_one_plane_not_three_voxels_wide(tmp_path):
+    import tifffile
+
+    from haemolynx.io.load import load_binary_mask_voxel_size_and_status
+
+    rgb = np.zeros((10, 12, 3), dtype=np.uint8)
+    rgb[4:6, 2:10] = 255
+    path = tmp_path / "rgb.tif"
+    tifffile.imwrite(path, rgb, photometric="rgb")
+
+    mask, *_ = load_binary_mask_voxel_size_and_status(path)
+
+    assert mask.shape == (1, 10, 12)
+    assert np.array_equal(mask[0], rgb[..., 0] > 0)
+
+
+def test_a_2d_h5_keeps_its_element_size(tmp_path):
+    """Regression: a 2D dataset's element_size_um has two entries, (y, x),
+    which was no triplet, so both axes read as 1 um."""
+    from haemolynx.io import load_image_with_voxel_size_2d_aware
+
+    path = _write_h5(tmp_path / "plane.h5", np.ones((10, 12), dtype=np.uint8), element_size_um=[0.5, 0.25])
+
+    image, x, y, z, status = load_image_with_voxel_size_2d_aware(str(path), input_format="h5")
+
+    assert image.shape == (1, 10, 12)
+    assert (x, y) == pytest.approx((0.25, 0.5))
+    assert status["status"] == "partial" and status["missing_axes"] == ["z"]
