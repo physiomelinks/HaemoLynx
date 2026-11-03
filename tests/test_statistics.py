@@ -184,28 +184,39 @@ def test_a_network_too_small_to_fit_reports_no_fractal_dimension():
         assert result[f"{name} R^2"] == "N/A (no scaling range to fit)"
 
 
-def test_a_flat_network_reports_no_density_rather_than_none():
-    """Regression: a network whose nodes span no volume (a 2D image's, or a
-    measured tissue of 0) had a vessel density of 0, as though it had no
-    vessels; every class's densities likewise."""
+def test_a_flat_network_divides_by_a_slab_one_voxel_deep():
+    """Regression: a network whose nodes lie in one plane (every 2D image's)
+    spanned a box of no volume, so its density was 0, then N/A, while the
+    whole image's divided by its area one voxel deep. The box's flat axis is
+    one voxel deep too; the classes' densities divide by the same."""
     from haemolynx.statistics import compute_vessel_statistics_by_measure
 
     G = nx.MultiGraph()
     pos = {0: (0.0, 0.0, 0.0), 1: (0.0, 10.0, 0.0), 2: (0.0, 0.0, 10.0)}
     for node, p in pos.items():
         G.add_node(node, pos=p)
-    G.add_edge(0, 1, length=10.0, branch_order="B01", diameter=5.0)
-    G.add_edge(0, 2, length=10.0, branch_order="B01", diameter=5.0)
+    G.add_edge(0, 1, length=10.0, branch_order="B01", diameter_um=5.0)
+    G.add_edge(0, 2, length=10.0, branch_order="B01", diameter_um=5.0)
     sections = compute_vessel_statistics_by_measure(
-        G, node_positions=pos, enabled_measures=frozenset({"vessel_density", "vessel_classes"})
+        G, node_positions=pos, voxel_size=(2.0, 0.5, 0.5),
+        enabled_measures=frozenset({"vessel_density", "vessel_classes"}),
     )
-    assert sections["vessel_density"]["Vessel Density in Tissue (microns/micron³)"].startswith("N/A")
-    densities = [
-        value
-        for name, value in _leaves(sections["vessel_classes"])
-        if "Density in Tissue" in name
-    ]
-    assert densities and all(isinstance(value, str) and value.startswith("N/A") for value in densities)
+    slab = 2.0 * 10.0 * 10.0  # z one voxel (2 um) deep under the 10 x 10 um the nodes span
+    density = sections["vessel_density"]
+    assert density["Vessel-Occupied Volume (micron³)"] == pytest.approx(slab)
+    assert density["Vessel Density in Tissue (microns/micron³)"] == pytest.approx(20.0 / slab)
+    classes = sections["vessel_classes"]["Vessel Classes"]
+    assert classes["Vessel Class Density Volume (micron³)"] == pytest.approx(slab)
+    assert classes["Capillaries"]["Length Density in Tissue (microns/micron³)"] == pytest.approx(20.0 / slab)
+
+    # A network of one point spans nothing.
+    point = nx.MultiGraph()
+    point.add_node(0, pos=(1.0, 2.0, 3.0))
+    point.add_edge(0, 0, length=10.0, branch_order="B01")
+    one = compute_vessel_statistics_by_measure(
+        point, node_positions={0: (1.0, 2.0, 3.0)}, enabled_measures=frozenset({"vessel_density"})
+    )["vessel_density"]
+    assert one["Vessel Density in Tissue (microns/micron³)"].startswith("N/A")
 
     measured = compute_vessel_statistics_by_measure(
         G, node_positions=pos, enabled_measures=frozenset({"vessel_density"}),
@@ -376,6 +387,19 @@ def test_box_counts_are_the_fewest_over_grid_offsets():
 def test_compute_path_efficiency(simple_graph):
     s = compute_path_efficiency(simple_graph, False)
     assert "Path Efficiency" in s
+
+
+@pytest.mark.parametrize("mode", ["fast", "full"])
+def test_path_efficiency_of_no_network_is_not_available(mode):
+    """Regression: networkx raised on the null graph ("Connectivity is
+    undefined"), failing the whole statistics report of a network a run had
+    emptied, where every other measure reports N/A or 0."""
+    from haemolynx.statistics import compute_vessel_statistics_by_measure
+
+    sections = compute_vessel_statistics_by_measure(
+        nx.MultiGraph(), statistics_mode=mode, enabled_measures=frozenset({"path_efficiency"})
+    )
+    assert sections["path_efficiency"] == {"Path Efficiency": "N/A (no vessels)"}
 
 
 def _brute_force_mean_path_length(G):
@@ -1620,6 +1644,34 @@ def test_a_venous_junctions_parent_is_the_vessel_nearest_the_outlet():
     assert angles["Ven1"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0)
     assert angles["Large_Ven2"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
     assert "Large_Ven1" not in angles
+
+
+def test_a_run_classed_by_size_takes_the_larger_vessel_for_the_parent():
+    """Regression: the classes of a run classed by size (global masks, the
+    size convention) ranked by name, Unknown_Cap first, so a capillary was the
+    parent of the two large vessels it joined: a Murray ratio of 119 and both
+    large vessels read as 90 degree daughters."""
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 0.0, 40.0), 3: (0.0, 20.0, 20.0)}.items():
+        G.add_node(node, pos=pos)
+    for u, v, label, diameter in (
+        (0, 1, "Unknown_Large", 20.0), (1, 2, "Unknown_Large", 19.0), (1, 3, "Unknown_Cap", 5.0),
+    ):
+        _straight_edge(G, u, v, label)
+        G.edges[u, v, 0]["diameter_um"] = diameter
+
+    murray = compute_murray_law_compliance(G)
+    angles = compute_emergence_angles_by_branch_order(G)
+
+    assert murray["Mean Murray Ratio"] == pytest.approx((19.0**3 + 5.0**3) / 20.0**3)
+    assert angles["Unknown_Large"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert angles["Unknown_Cap"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0)
+    # A small vessel ranks between them: with the large vessel there, it and
+    # the capillary are both daughters.
+    G.edges[1, 3, 0]["branch_order"] = "Unknown_Small"
+    G.edges[0, 1, 0]["branch_order"] = "Unknown_Cap"
+    angles = compute_emergence_angles_by_branch_order(G)
+    assert set(angles) == {"Unknown_Small", "Unknown_Cap"}
 
 
 def test_the_tier_murray_exponent_fits_only_a_tiers_own_branchings():

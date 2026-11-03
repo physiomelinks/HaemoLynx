@@ -1464,6 +1464,9 @@ class ResultLayers:
         #: Run settings (Export-tab toggles such as ``flow_arrow_scale``).
         self.settings: dict[str, Any] = dict(settings or {})
         self._graph: Any | None = None
+        #: Each perturbation's own network by its name, as the view panel's
+        #: "Showing" menu names it: what the Statistics tab shows for it.
+        self.perturbation_graphs: dict[str, Any] = {}
         #: Live network after ``assign_boundaries`` (post large-vessel cut when
         #: that ran). Later stages must alias this object; a pre-cut copy with
         #: the same or larger edge count must not replace it in napari.
@@ -2576,6 +2579,11 @@ class ResultLayers:
         from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
 
         results = list(getattr(output, "solved", ()) or ())
+        self.perturbation_graphs = {
+            str(result.name): result.graph
+            for result in results
+            if getattr(result, "graph", None) is not None
+        }
         layers: list[LayerSpec] = []
         for result in results:
             if is_sweep_perturbation(getattr(result, "type", "")):

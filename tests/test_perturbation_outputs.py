@@ -243,6 +243,25 @@ def test_a_perturbation_writes_the_betweenness_and_community_reports_like_the_ru
         assert (name in written) == statistics_on
 
 
+def test_a_perturbation_keeps_its_statistics_report_where_the_statistics_tab_finds_it(tmp_path):
+    """Regression: a perturbation's statistics went to its CSV only, so the
+    Statistics tab could show nothing but the baseline's. Its report is kept
+    on its own graph, as the baseline's is, naming the perturbation, and the
+    viewer's results keep each perturbation's graph by name."""
+    from haemolynx.pipeline.stages import BRANCH_ORDER_SECTION, STATISTICS_REPORT
+
+    run = _run(tmp_path, [ARTERIOLE_DILATION], statistics=True)
+    (result,) = run.results
+    report = result.graph.graph[STATISTICS_REPORT]
+    assert report["network"] == ARTERIOLE_DILATION["name"]
+    assert report["csv"].endswith(f"{ARTERIOLE_DILATION['name']}_statistics.csv")
+    assert "basic" in report["sections"] and BRANCH_ORDER_SECTION in report["sections"]
+
+    results = ResultLayers()
+    results.stage_finished("run_perturbations", run)
+    assert results.perturbation_graphs == {ARTERIOLE_DILATION["name"]: result.graph}
+
+
 def test_a_perturbation_leaves_the_weighted_reports_out_with_betweenness_and_communities_off(
     tmp_path,
 ):
@@ -274,13 +293,13 @@ def test_perturbation_statistics_scale_by_the_runs_voxel_size(tmp_path, monkeypa
     from haemolynx import statistics
 
     seen = []
-    real = statistics.compute_comprehensive_vessel_statistics
+    real = statistics.compute_vessel_statistics_by_measure
 
     def spy(*args, **kwargs):
         seen.append(tuple(kwargs["voxel_size"]))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(statistics, "compute_comprehensive_vessel_statistics", spy)
+    monkeypatch.setattr(statistics, "compute_vessel_statistics_by_measure", spy)
     from test_perturbation_stage import _model, _boundaries, _settings, SCHEMA
     from haemolynx.pipeline import run_perturbations
 
@@ -303,7 +322,7 @@ def test_perturbations_use_the_baseline_images_voxel_size_for_statistics_and_plo
     from test_perturbation_stage import SCHEMA, _boundaries, _model, _settings
 
     seen = {"statistics": [], "plots": []}
-    real_stats = statistics.compute_comprehensive_vessel_statistics
+    real_stats = statistics.compute_vessel_statistics_by_measure
     real_plot = perturbation_plots.visualize_geometry_with_edge_resistance
 
     def spy_stats(*args, **kwargs):
@@ -314,7 +333,7 @@ def test_perturbations_use_the_baseline_images_voxel_size_for_statistics_and_plo
         seen["plots"].append(tuple(kwargs["voxel_size"]))
         return real_plot(*args, **kwargs)
 
-    monkeypatch.setattr(statistics, "compute_comprehensive_vessel_statistics", spy_stats)
+    monkeypatch.setattr(statistics, "compute_vessel_statistics_by_measure", spy_stats)
     monkeypatch.setattr(perturbation_plots, "visualize_geometry_with_edge_resistance", spy_plot)
     model = _model()
     model.graph.graph["image_voxel_size_zyx"] = (9.0, 9.0, 9.0)  # the volume's must win

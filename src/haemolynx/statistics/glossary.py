@@ -215,7 +215,7 @@ _add(T, "Daughter-Daughter Angle Sample Count", "count", "Daughter pairs measure
 T = "Density and volume"
 _add(T, "Total Vessel Length (microns)", "um", "The sum of every vessel's centreline length (the same as Total Edge Length).")
 _add(T, "Vessel Density in Tissue (microns/micron³)", "um/um^3", "Total vessel length over the tissue volume: the tissue measured from the raw image when it was, else the box the network's nodes span (Tissue Volume Source says which).")
-_add(T, "Vessel-Occupied Volume (micron³)", "um^3", "The volume of the axis-aligned box the network's nodes span.")
+_add(T, "Vessel-Occupied Volume (micron³)", "um^3", "The volume of the axis-aligned box the network's nodes span; an axis they do not spread along (a 2D image's z) one voxel deep, as the whole image's volume has it.")
 _add(T, "Tissue Volume (micron³)", "um^3", "The tissue's volume, inside the closed surface measured from the raw image (Additional measurements: tissue volume).")
 _add(T, "Tissue Volume Source", TEXT, "What the in-tissue densities divide by: the measured tissue, or the bounding box of the network's nodes.")
 _add(T, "Vessel Volume in Tissue (micron³)", "um^3", "Segmented vessel voxels inside the measured tissue.")

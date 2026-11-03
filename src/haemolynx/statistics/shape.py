@@ -17,9 +17,22 @@ from ._sampling import REPRODUCIBILITY_SEED
 #: quadratic in node count on a large network.
 DEFAULT_PATH_EFFICIENCY_MAX_PAIRS = 5000
 
-#: A density over a volume of 0 (a flat network's box, a 2D image, no tissue
-#: found): not 0, which would read as no vessels.
+#: A density over a volume of 0 (a network of one point, no tissue found):
+#: not 0, which would read as no vessels.
 _NO_VOLUME = "N/A (no volume to divide by)"
+
+
+def node_box_volume_um3(positions: np.ndarray, voxel_size) -> float:
+    """The volume (um^3) of the box *positions* (``(z, y, x)`` um) span. An
+    axis they do not spread along -- a 2D image's z, a network lying in one
+    plane -- is one voxel deep (*voxel_size*, ``(z, y, x)``), as the whole
+    image's volume has it, so a flat network's density divides by a slab of
+    one voxel rather than by nothing. Points that all coincide span 0."""
+    extent = positions.max(axis=0) - positions.min(axis=0)
+    if not np.any(extent > 0):
+        return 0.0
+    spacing = np.asarray(voxel_size if voxel_size is not None else (1.0, 1.0, 1.0), dtype=float)
+    return float(np.prod(np.where(extent > 0, extent, spacing)))
 
 
 def compute_tortuosity_measures(
@@ -272,7 +285,9 @@ def compute_path_efficiency(
         G_s = G
 
     # Efficiency is undefined for disconnected graphs because some node pairs
-    # have infinite path length.
+    # have infinite path length, and for no network at all (networkx raises).
+    if G_s.number_of_nodes() == 0:
+        return {"Path Efficiency": "N/A (no vessels)"}
     if not nx.is_connected(G_s):
         return {"Path Efficiency": "N/A (disconnected graph)"}
 
@@ -432,9 +447,7 @@ def compute_vessel_density(
             [node_positions[n] for n in G.nodes() if n in node_positions]
         )
         if len(positions) > 0:
-            vol = np.prod(
-                positions.max(axis=0) - positions.min(axis=0)
-            )
+            vol = node_box_volume_um3(positions, voxel_size)
             out["Vessel Density in Tissue (microns/micron³)"] = (
                 total_length / vol if vol > 0 else _NO_VOLUME
             )
