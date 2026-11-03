@@ -509,10 +509,17 @@ def _fill_label_gaps(
             for name, fraction in zip(names, edge_fractions):
                 if fraction < lows[name]:
                     continue
-                if touching[name].get(u, set()) - {edge_id} and touching[name].get(v, set()) - {edge_id}:
+                at_u = touching[name].get(u, set()) - {edge_id}
+                at_v = touching[name].get(v, set()) - {edge_id}
+                # Two edges, one at each end: a parallel edge (or a loop)
+                # meets the one labelled edge beside it at both its ends.
+                if at_u and at_v and len(at_u | at_v) >= 2:
                     options.append((fraction, name))
             if options:
-                added.append((max(options)[1], edge_id))
+                # The larger fraction; on a tie the first of *names* (the
+                # arteriole, or the large mask), as _apply_edge_labels does.
+                best = max(options, key=lambda option: (option[0], -names.index(option[1])))
+                added.append((best[1], edge_id))
         if not added:
             return filled
         for name, edge_id in added:
@@ -669,8 +676,11 @@ def infer_boundary_nodes_from_small_vessel_masks(
     middle of an arteriole used to leave a gap, and both its ends were then
     reported as the arteriole meeting the capillary bed. Associated endpoint
     nodes are given the same mask vessel type. Boundary nodes are the
-    labeled-mask nodes that connect to at least one unlabeled edge, i.e.
-    where the small-vessel mask region transitions into the capillary bed.
+    labeled-mask nodes with at least one edge not of their type -- unlabelled,
+    or of the other type -- i.e. where the small-vessel mask region meets the
+    capillary bed or the other class. Without *allow_overlap* a node of both
+    types is the arteriole's, so at an arteriole meeting a venule directly the
+    arteriole has the boundary node and the venule none.
     ``arteriole_edges``/``venule_edges`` hold the labelled edges'
     ``(u, v, key)`` ids.
     """

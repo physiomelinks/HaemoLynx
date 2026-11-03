@@ -501,12 +501,14 @@ def remove_small_opposite_attached_large_vessel_components(
     )
     structure = np.ones((3, 3, 3), dtype=np.uint8)
 
-    def _clean_one_side(
+    def _attached_side(
         mask_raw: np.ndarray,
         opposite_mask_raw: np.ndarray,
         *,
         side_key: str,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, Any, list[int]]:
+        """The side's mask, its components and the small ones within reach of
+        the other side's mask as it stands."""
         mask = mask_raw.astype(bool, copy=False)
         opposite_mask = opposite_mask_raw.astype(bool, copy=False)
         labels = ForegroundLabels(mask, structure)
@@ -514,17 +516,17 @@ def remove_small_opposite_attached_large_vessel_components(
         stats[side_key]["total_component_count"] = float(component_count)
         if component_count <= 0:
             stats[side_key]["min_component_distance_microns"] = 0.0
-            return mask
+            return mask, labels, []
         component_sizes = labels.sizes
         candidate_ids: list[int] = []
-        too_large_ids: list[int] = []
+        too_large_ids: set[int] = set()
         for component_id in range(1, int(component_count) + 1):
             voxel_count = int(component_sizes[int(component_id)])
             volume = float(voxel_count) * float(voxel_volume_um3)
             if volume <= max_volume:
                 candidate_ids.append(int(component_id))
             else:
-                too_large_ids.append(int(component_id))
+                too_large_ids.add(int(component_id))
         stats[side_key]["candidate_component_count"] = float(len(candidate_ids))
         stats[side_key]["too_large_component_count"] = float(len(too_large_ids))
 
@@ -554,41 +556,63 @@ def remove_small_opposite_attached_large_vessel_components(
         stats[side_key]["min_component_distance_microns"] = float(
             min_component_distance
         )
+        attached = [
+            component_id
+            for component_id in candidate_ids
+            if float(component_distance[component_id]) <= max_dist
+        ]
+        return mask, labels, attached
 
-        if not candidate_ids:
+    def _without(mask: np.ndarray, labels, component_ids: list[int]) -> np.ndarray:
+        if not component_ids:
             return mask
-
         cleaned = _copy_of(mask, low_memory=low_memory, memmap_directory=memmap_directory)
-        removed_components = 0
-        removed_voxels = 0
-        for component_id in candidate_ids:
+        for component_id in component_ids:
             members = labels.members(int(component_id))
-            if not len(members):
-                continue
-            min_distance = float(component_distance[component_id])
-            if min_distance <= max_dist:
-                removed_components += 1
-                removed_voxels += int(len(members))
+            if len(members):
                 _set_at(cleaned, labels, labels.keys[members], False)
-
-        stats[side_key]["removed_component_count"] = float(removed_components)
-        stats[side_key]["removed_voxel_count"] = float(removed_voxels)
-        stats[side_key]["removed_volume_um3"] = (
-            float(removed_voxels) * float(voxel_volume_um3)
-        )
         return cleaned
 
-    cleaned_arteriole = _clean_one_side(
-        large_arteriole_mask,
-        large_venule_mask,
-        side_key="arteriole",
+    def _still_attached(mask, labels, component_ids, opposite_cleaned) -> list[int]:
+        distance = _component_distances_to_mask(
+            labels, int(labels.count), opposite_cleaned, sampling_zyx=sampling_zyx,
+            mask=mask, low_memory=low_memory,
+        )
+        return [component_id for component_id in component_ids if float(distance[component_id]) <= max_dist]
+
+    arteriole, arteriole_labels, arteriole_attached = _attached_side(
+        large_arteriole_mask, large_venule_mask, side_key="arteriole"
     )
-    cleaned_venule = _clean_one_side(
-        large_venule_mask,
-        large_arteriole_mask,
-        side_key="venule",
+    venule, venule_labels, venule_attached = _attached_side(
+        large_venule_mask, large_arteriole_mask, side_key="venule"
     )
-    return cleaned_arteriole, cleaned_venule, stats
+    if arteriole_attached and venule_attached:
+        # A small piece is removed for lying against the other class, not
+        # against small pieces of it that go too: two touching only each
+        # other were both removed, leaving a gap where one vessel ran.
+        venule_cleaned = _without(venule, venule_labels, venule_attached)
+        arteriole_cleaned = _without(arteriole, arteriole_labels, arteriole_attached)
+        arteriole_attached, venule_attached = (
+            _still_attached(arteriole, arteriole_labels, arteriole_attached, venule_cleaned),
+            _still_attached(venule, venule_labels, venule_attached, arteriole_cleaned),
+        )
+    cleaned = {}
+    for side_key, mask, labels, removed in (
+        ("arteriole", arteriole, arteriole_labels, arteriole_attached),
+        ("venule", venule, venule_labels, venule_attached),
+    ):
+        removed_voxels = sum(int(len(labels.members(int(component_id)))) for component_id in removed)
+        stats[side_key]["removed_component_count"] = float(len(removed))
+        stats[side_key]["removed_voxel_count"] = float(removed_voxels)
+        stats[side_key]["removed_volume_um3"] = float(removed_voxels) * float(voxel_volume_um3)
+        if labels.count > 0 and stats[side_key]["candidate_component_count"] > 0:
+            # A copy whenever a component was small enough to be judged, as before.
+            cleaned[side_key] = _without(mask, labels, removed) if removed else _copy_of(
+                mask, low_memory=low_memory, memmap_directory=memmap_directory
+            )
+        else:
+            cleaned[side_key] = mask
+    return cleaned["arteriole"], cleaned["venule"], stats
 
 
 def _component_distances_to_mask(

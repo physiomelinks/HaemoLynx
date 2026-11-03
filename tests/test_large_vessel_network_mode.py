@@ -97,6 +97,70 @@ def test_select_large_vessel_stump_terminal_nodes_ignores_interior_dead_end():
     assert outlets == []
 
 
+@pytest.mark.parametrize("width", [5, 9, 15])
+def test_a_single_slice_mask_has_its_stumps_only_where_the_image_cuts_it(width):
+    """Regression: on a one-slice volume (a 2D image, z of 1) the z faces are
+    the image itself, so every component read as two stumps there, wherever
+    it lay; and on an x or y face the footprint is a line, which the disc
+    test read as a vessel lying along the face, so a vessel the image cut
+    gave no stump."""
+    from haemolynx.graph.large_vessel_network import find_large_vessel_mask_stump_points
+
+    mask = np.zeros((1, 60, 60), dtype=bool)
+    mask[0, 20:20 + width, 0:30] = True      # cut by the x=0 face
+    mask[0, 45:52, 40:47] = True             # inside the image: no stump
+
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(2.0, 1.0, 1.0))
+
+    assert len(points) == 1
+    middle = 20.0 + (width - 1) / 2.0
+    np.testing.assert_allclose(points[0], (0.0, middle, 0.0))
+    # And the vessel's own end at the face takes it, with no warning.
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, middle, 0.0))
+    G.add_node(1, pos=(0.0, middle, 40.0))
+    G.add_node(2, pos=(0.0, 58.0, 40.0))
+    G.add_edge(0, 1, voxels=[(0.0, middle, float(x)) for x in range(41)])
+    G.add_edge(1, 2, voxels=[(0.0, middle + (58.0 - middle) * t, 40.0) for t in np.linspace(0, 1, 30)])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        inlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
+            G,
+            mask,
+            node_role="inlet",
+            voxel_size_zyx=(2.0, 1.0, 1.0),
+            image_shape=mask.shape,
+            coordinates_setting_name="single slice",
+        )
+    assert inlets == [0]
+
+
+def test_the_two_sided_stump_call_never_gives_one_node_both_roles():
+    """Regression: the outlet side was not told the inlet side's nodes, which
+    the per-role call's *exclude_nodes* is for, so two stumps whose nearest
+    terminal was the same one made it both the inlet and the outlet."""
+    arteriole = np.zeros((12, 40, 100), dtype=bool)
+    venule = np.zeros_like(arteriole)
+    arteriole[3:8, 8:13, 0:20] = True
+    venule[3:8, 18:23, 0:20] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(5.0, 15.0, 40.0))
+    G.add_node(1, pos=(5.0, 15.0, 90.0))
+    G.add_edge(0, 1, voxels=[(5.0, 15.0, float(x)) for x in range(40, 91)])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # both stumps fall back to a distant end
+        inlets, outlets = select_large_vessel_stump_terminal_nodes(
+            G,
+            large_arteriole_mask=arteriole,
+            large_venule_mask=venule,
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            image_shape=arteriole.shape,
+        )
+
+    assert inlets and not set(inlets) & set(outlets)
+
+
 def test_select_large_vessel_mask_stump_terminal_nodes_for_role_matches_the_two_sided_call():
     """select_large_vessel_stump_terminal_nodes is now a thin wrapper calling
     this once per side -- pinned equal for one side, on the same fixture."""

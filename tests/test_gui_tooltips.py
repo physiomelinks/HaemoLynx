@@ -63,7 +63,7 @@ def _chrome_strings() -> dict[str, str]:
     for module, names in (
         (chrome_tooltips, None),
         (perturbation_editing, ("NAME_TOOLTIP", "TYPE_TOOLTIP", "ADD_TOOLTIP", "REMOVE_TOOLTIP")),
-        (boundary_picking, ("DISABLED_ROLE_TOOLTIP", "SYNTHETIC_CHOOSES_NOTE")),
+        (boundary_picking, ("DISABLED_ROLE_TOOLTIP", "SYNTHETIC_CHOOSES_NOTE", "GLOBAL_MASKS_NOTE")),
     ):
         for name in names or [name for name in vars(module) if not name.startswith("_")]:
             value = getattr(module, name)

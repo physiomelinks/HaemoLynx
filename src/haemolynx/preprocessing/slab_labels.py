@@ -618,8 +618,11 @@ class ForegroundLabels:
     def members(self, number: int) -> np.ndarray:
         """Indices into :attr:`keys` of component *number*'s voxels, C order."""
         if self._order is None:
-            self._order = np.argsort(self.numbers, kind="stable")
-            self._bounds = np.searchsorted(self.numbers[self._order], np.arange(self.count + 2))
+            # Both before either is kept: threads read pieces at once, and one
+            # seeing the order set must find its bounds set too.
+            order = np.argsort(self.numbers, kind="stable")
+            self._bounds = np.searchsorted(self.numbers[order], np.arange(self.count + 2))
+            self._order = order
         return self._order[self._bounds[int(number)]:self._bounds[int(number) + 1]]
 
     def write(self, out: np.ndarray, lut: np.ndarray, *, block_voxels: int | None = None) -> np.ndarray:
