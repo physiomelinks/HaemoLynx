@@ -1841,8 +1841,9 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "other than to the rest, and offer them as a vessel colour option"
     ),
     "vascular_community_weighting": (
-        "What the community split weighs vessels by: topology (default, connections only), "
-        "length, resistance or flow. Resistance and flow need a solved network"
+        "What the community split weighs vessels by: topology (default, connections only), or "
+        "how strongly each vessel links its ends: short, low-resistance and high-flow vessels "
+        "link most. Resistance and flow need a solved network"
     ),
     # 10. Export
     "base_plot_dir": (

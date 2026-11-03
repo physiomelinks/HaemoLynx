@@ -6,8 +6,10 @@ from typing import Any, Dict, Optional, Union
 import networkx as nx
 
 from haemolynx.graph.branch_order import capillary_start_nodes
-from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
+
+from ._contracted import contracted_for_statistics
 
 from .bifurcation import compute_daughter_daughter_angles, compute_murray_law_compliance
 from .capillary_bed_joins import compute_capillary_bed_joins
@@ -420,8 +422,9 @@ def compute_vessel_statistics_by_measure(
         float(d.get("length") or 0.0) for *_e, d in G.edges(data=True) if d.get(IS_ZERO_RESISTANCE)
     ]
     bridge_rows: Dict[str, Any] = {}
+    own_ends: dict = {}
     if bridge_lengths:
-        G, became = contract_bridges(G)
+        G, became, own_ends = contracted_for_statistics(G)
         inlet_nodes = _as_contracted(inlet_nodes, became)
         outlet_nodes = _as_contracted(outlet_nodes, became)
         arteriole_boundary_nodes = _as_contracted(arteriole_boundary_nodes, became)
@@ -459,7 +462,9 @@ def compute_vessel_statistics_by_measure(
     if "basic" in enabled:
         sections["basic"] = compute_basic_statistics(G, is_mg)
     if "tortuosity" in enabled:
-        sections["tortuosity"] = compute_tortuosity_measures(G, node_positions, is_mg)
+        sections["tortuosity"] = compute_tortuosity_measures(
+            G, node_positions, is_mg, own_ends=own_ends
+        )
     if "branching" in enabled:
         # The original G: two parallel vessels are two vessel ends at each of
         # their nodes, as junction shape counts them.
@@ -490,6 +495,7 @@ def compute_vessel_statistics_by_measure(
                 voxel_size,
                 image_dimensions,
                 tissue_volume_um3=tissue_volume_um3,
+                own_ends=own_ends,
             )
         sections["vessel_classes"].update(_face_margin_rows(flow_face_margin_um, near_faces))
     if "murray_law" in enabled:

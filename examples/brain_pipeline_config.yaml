@@ -797,7 +797,7 @@ connectivity/network_analysis:
 vascular_communities:
   # Partition the network into vascular communities/domains by modularity (Blinder et al.'s 'cortical angiome' style) and add 'vascular_community' as a colour option in the vessels layer's colour-by dropdown. Independent of Statistics; reuses the statistics report's own partition when it computes the same one
   compute_vascular_communities: false
-  # Distance model the vascular-community partition is weighted by: plain topology, or the same resistance/length/flow-weighted models the statistics report's community counts use. Resistance and flow are only meaningful once haemodynamics has run  [one of: topology, resistance, length, flow; needs compute_vascular_communities]
+  # What the vascular-community partition weighs each vessel by: plain topology, or how strongly the vessel ties its two ends -- its conductance (resistance), 1/length (length) or |flow| (flow), parallel vessels' ties added -- as the statistics report's weighted community counts do. Resistance and flow are only meaningful once haemodynamics has run  [one of: topology, resistance, length, flow; needs compute_vascular_communities]
   vascular_community_weighting: topology
 
 # ------------------------------------------------------------------------

@@ -433,7 +433,7 @@ names it lists.
 | Average Shortest Path Length (microns) | um | The mean shortest path, by centreline length, between node pairs. |
 | Path Efficiency Pair Sample Size | count | Node pairs measured. |
 | Path Efficiency Pair Coverage | fraction | Node pairs measured over all node pairs. |
-| Community Count | count | Communities found by greedy modularity on the network's topology. |
+| Community Count | count | Communities found by greedy modularity on the network's topology; in the weighted reports, with each vessel tying its ends by its conductance, 1/length or |flow|. |
 | Largest Community Size | count | Nodes in the largest community. |
 | Mean Community Size | count | The mean nodes per community. |
 | Community Method | (text) | How the communities were found. |

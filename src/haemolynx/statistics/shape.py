@@ -6,10 +6,10 @@ from typing import Any, Dict, Optional, Union
 import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
-from scipy.spatial.distance import euclidean
 
 from haemolynx.visualization.geometry import edge_polyline
 
+from ._contracted import vessel_span_um
 from ._sampling import REPRODUCIBILITY_SEED
 
 #: Above this many unique node pairs, path efficiency is estimated from a
@@ -26,8 +26,12 @@ def compute_tortuosity_measures(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict],
     is_multigraph: bool,
+    *,
+    own_ends: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """Compute tortuosity index and curvature."""
+    """Compute tortuosity index and curvature: each vessel's length over the
+    straight distance between its own two ends (*own_ends* where contracting
+    the bridges moved one, see :mod:`._contracted`)."""
     if node_positions is None:
         return {
             "Average Tortuosity Index": "N/A (no position data)",
@@ -39,10 +43,8 @@ def compute_tortuosity_measures(
     for item in it:
         u, v = item[0], item[1]
         edge_data = item[-1]
-        if u in node_positions and v in node_positions:
-            pos_u = np.array(node_positions[u])
-            pos_v = np.array(node_positions[v])
-            straight = euclidean(pos_u, pos_v)
+        straight = vessel_span_um(u, v, edge_data, node_positions, own_ends)
+        if straight is not None:
             path_length = edge_data.get("length", straight)
             if straight > 0:
                 tortuosity_indices.append(path_length / straight)

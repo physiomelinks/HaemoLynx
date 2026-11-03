@@ -1553,7 +1553,9 @@ def test_emergence_angle_uses_local_centreline_not_node_span():
 
 
 def test_emergence_angle_skipped_when_parent_order_is_tied():
-    """Two equal-order stems at a confluence are not a unique parent."""
+    """Two equal-order stems at a confluence are not a unique parent. (Two
+    capillaries draining into a venule are not that: the venule is their
+    parent, test_a_capillary_draining_into_a_venule_is_its_daughter.)"""
     G = nx.MultiGraph()
     G.add_node(0, pos=(0.0, 10.0, 0.0))
     G.add_node(1, pos=(0.0, -10.0, 0.0))
@@ -1561,7 +1563,7 @@ def test_emergence_angle_skipped_when_parent_order_is_tied():
     G.add_node(3, pos=(0.0, 0.0, 10.0))
     _straight_edge(G, 0, 2, "B02")
     _straight_edge(G, 1, 2, "B02")
-    _straight_edge(G, 2, 3, "Ven1")
+    _straight_edge(G, 2, 3, "B05")
 
     angles = compute_emergence_angles_by_branch_order(G)
     assert angles == {}
@@ -1597,6 +1599,45 @@ def test_emergence_angle_counts_a_bridging_edge_only_once():
     assert angles["Ven2"]["Emergence Angle Sample Count"] == 1
 
 
+def test_a_venous_junctions_parent_is_the_vessel_nearest_the_outlet():
+    """Regression: the parent was the lowest in the display order (Large_Art
+    to Large_Ven), so a venule draining into a large vein was the parent of
+    both large-vein vessels: a Murray ratio of 16 and its angle never read.
+    Venous orders run from the outlet, so Large_Ven1 is the parent."""
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 20.0, 0.0), 3: (0.0, 0.0, -20.0)}.items():
+        G.add_node(node, pos=pos)
+    _straight_edge(G, 0, 1, "Large_Ven1")
+    _straight_edge(G, 0, 3, "Large_Ven2")
+    _straight_edge(G, 0, 2, "Ven1")
+    for u, v, diameter in ((0, 1, 40.0), (0, 3, 40.0), (0, 2, 20.0)):
+        G.edges[u, v, 0]["diameter_um"] = diameter
+
+    murray = compute_murray_law_compliance(G)
+    angles = compute_emergence_angles_by_branch_order(G)
+
+    assert murray["Mean Murray Ratio"] == pytest.approx((20.0**3 + 40.0**3) / 40.0**3)
+    assert angles["Ven1"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0)
+    assert angles["Large_Ven2"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert "Large_Ven1" not in angles
+
+
+def test_a_capillary_draining_into_a_venule_is_its_daughter():
+    """The capillary bed sits furthest from both roots: at a venule taking in
+    two capillaries, the venule is the parent (no unique parent before)."""
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 20.0, 0.0), 3: (0.0, -20.0, 0.0)}.items():
+        G.add_node(node, pos=pos)
+    _straight_edge(G, 0, 1, "Ven2")
+    _straight_edge(G, 0, 2, "BO4")
+    _straight_edge(G, 0, 3, "BO4")
+
+    angles = compute_emergence_angles_by_branch_order(G)
+
+    assert angles["BO4"]["Emergence Angle Sample Count"] == 2
+    assert "Ven2" not in angles
+
+
 def test_statistics_leave_zero_resistance_bridges_out():
     """A bridge is not a vessel: not counted, not in the length, and a vessel
     opening into a thick vessel meets its centreline directly; the bridges
@@ -1621,6 +1662,50 @@ def test_statistics_leave_zero_resistance_bridges_out():
     assert stats["Zero-resistance Bridge Length (microns)"] == pytest.approx(9.0)
     assert "strahler_order" in G.edges[3, 4, 0]
     assert "strahler_order" not in G.edges[1, 3, 0]
+    assert G.number_of_edges() == 4, "the graph itself keeps its bridge"
+
+
+def _vessel_into_a_thick_vessel_through_a_bridge():
+    """Centreline 0-1-2 (Large_Art1, Large_Art2) along z; vessel 3-4 (Art1),
+    31 um straight along y, opening into it at 1 through the 9 um bridge 1-3."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 40), 2: (0, 0, 80), 3: (0, 9, 40), 4: (0, 40, 40)}.items():
+        G.add_node(node, pos=np.asarray(pos, float))
+    for u, v, order in ((0, 1, "Large_Art1"), (1, 2, "Large_Art2"), (3, 4, "Art1")):
+        _straight_edge(G, u, v, order)
+    G.add_edge(1, 3, length=9.0, voxels=[[0, 0, 40], [0, 9, 40]], **{IS_ZERO_RESISTANCE: True})
+    return G
+
+
+def test_a_vessel_opening_into_a_thick_vessel_spans_its_own_two_ends():
+    """Regression: with the bridge contracted, the vessel's straight span ran
+    to the centreline node (40 um) while its length (31 um) leaves the bridge
+    out: a tortuosity of 0.775, below what any vessel can have."""
+    G = _vessel_into_a_thick_vessel_through_a_bridge()
+    pos = nx.get_node_attributes(G, "pos")
+
+    sections = compute_vessel_statistics_by_measure(
+        G, node_positions=pos, enabled_measures=frozenset({"tortuosity", "vessel_classes"})
+    )
+
+    assert sections["tortuosity"]["Average Tortuosity Index"] == pytest.approx(1.0)
+    classes = sections["vessel_classes"]["Vessel Classes"]
+    assert classes["Small Arterioles"]["Mean Tortuosity Index"] == pytest.approx(1.0)
+
+
+def test_the_branch_order_statistics_contract_the_bridges_as_the_report_does():
+    """Regression: measured with the bridge in, the vessel's end at it had two
+    vessels, no junction, so a vessel opening into a thick vessel never had an
+    emergence angle, where Murray's law (contracted) took it as a daughter."""
+    G = _vessel_into_a_thick_vessel_through_a_bridge()
+
+    stats = compute_branch_order_statistics(G, node_positions=nx.get_node_attributes(G, "pos"))
+
+    assert stats["Art1"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0)
+    assert stats["Large_Art2"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert stats["Art1"]["Mean Tortuosity Index"] == pytest.approx(1.0)
     assert G.number_of_edges() == 4, "the graph itself keeps its bridge"
 
 

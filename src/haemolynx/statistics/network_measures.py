@@ -166,6 +166,11 @@ def compute_weighted_communities_summary(
 ) -> Dict[str, Any]:
     """Compute weighted community summary using greedy modularity.
 
+    *source_attr*/*inverse_source_attr* name a distance, as for
+    :func:`compute_weighted_betweenness_summary`; modularity weighs each
+    vessel by its inverse, how strongly it ties its ends (conductance,
+    1/length, |flow|), parallel vessels' ties added.
+
     *precomputed*, when given, is a ``(communities, method)`` pair already
     produced by :func:`~haemolynx.graph.communities.communities_for_weighting`
     for this exact (*source_attr*, *inverse_source_attr*) -- lets a caller
@@ -185,9 +190,12 @@ def compute_weighted_communities_summary(
         # three named weightings `graph.communities` knows about -- fall
         # back to the same computation inline, so this function's public
         # signature stays general rather than restricted to those three.
-        transform = (lambda x: 1.0 / x) if inverse_source_attr else None
+        # The pair names a distance; modularity weighs a tie, its inverse,
+        # parallel vessels' ties added.
+        transform = None if inverse_source_attr else (lambda x: 1.0 / x)
         G_s = simple_graph_with_edge_attr(
-            G, source_attr=source_attr, transform=transform, target_attr="analysis_weight"
+            G, source_attr=source_attr, transform=transform, target_attr="analysis_weight",
+            combine="sum",
         )
         n_nodes = G_s.number_of_nodes()
         if n_nodes == 0:

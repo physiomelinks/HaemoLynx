@@ -338,9 +338,9 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "parent at, and the pressure drop across them"
     ),
     "weighted_betweenness_communities": (
-        "Betweenness and communities with vessels weighted by resistance "
-        "(easiest paths for flow), length (shortest) and 1/|flow| (busiest): "
-        "the most central nodes and the communities' number and sizes"
+        "Betweenness with vessels as distances by resistance, length and "
+        "1/|flow|, and communities with vessels tied by conductance, 1/length "
+        "and |flow|: the most central nodes and the communities' number and sizes"
     ),
     "zero_resistance_bridges": (
         "The joins drawn inside thick vessels to link the vessels opening "

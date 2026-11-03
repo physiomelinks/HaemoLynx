@@ -532,7 +532,7 @@ _add(T, "Path Efficiency", "1/um", "1 over the mean shortest-path length between
 _add(T, "Average Shortest Path Length (microns)", "um", "The mean shortest path, by centreline length, between node pairs.")
 _add(T, "Path Efficiency Pair Sample Size", "count", "Node pairs measured.")
 _add(T, "Path Efficiency Pair Coverage", "fraction", "Node pairs measured over all node pairs.")
-_add(T, "Community Count", "count", "Communities found by greedy modularity on the network's topology.")
+_add(T, "Community Count", "count", "Communities found by greedy modularity on the network's topology; in the weighted reports, with each vessel tying its ends by its conductance, 1/length or |flow|.")
 _add(T, "Largest Community Size", "count", "Nodes in the largest community.")
 _add(T, "Mean Community Size", "count", "The mean nodes per community.")
 _add(T, "Community Method", TEXT, "How the communities were found.")
