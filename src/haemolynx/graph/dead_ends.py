@@ -7,8 +7,9 @@ hangs from), as the stub prune judges a stub -- and given one kind:
 - :data:`LEAVES_IMAGE` -- the vessel runs out of the field of view: its tip
   touches an image face, or the segmented vessel runs on from the tip to a face
   within :data:`FACE_REACH_RADII` of its radius. Open in the tissue: what the
-  flow's open-end boundaries are put on.
-- :data:`ISLAND_END` -- an end of a piece with no junction.
+  flow's open-end boundaries are put on, whether or not the tip's piece has
+  a junction.
+- :data:`ISLAND_END` -- an end of a piece with no junction, inside the image.
 - :data:`ARTEFACT` -- not a vessel end at all: a chain mostly off the mask, a
   tip inside the lumen of the vessel it leaves or of one close by in the
   network, a strand beside another centreline in one lumen, or a blind end
@@ -670,11 +671,13 @@ def _kind(values: Mapping[str, Any], *, junction_degree: int, leaves: bool, has_
     """The first proposal of PLAN_dead_ends.md, section 4, in its order, then
     :data:`THICK_WALL` (PLAN_bridging.md 1.3) in place of any vessel's end
     the split's wall join looked at and left. An artefact stays one: it is
-    no vessel's end."""
-    if junction_degree <= 1:
-        return ISLAND_END
+    no vessel's end. A tip leaving the image leaves it whether or not its
+    piece has a junction: a vessel the image cut at both ends, with none, is
+    open at both."""
     if leaves:
         return LEAVES_IMAGE
+    if junction_degree <= 1:
+        return ISLAND_END
     kind = _interior_kind(values, has_mask=has_mask)
     if kind != ARTEFACT and values.get("at_thick_wall"):
         return THICK_WALL
@@ -824,9 +827,10 @@ def vessels_cut_by_image_faces(G: nx.Graph, *, extent_um: Optional[Sequence[floa
 
 def remove_pieces_without_junction(G: nx.MultiGraph) -> dict[str, float]:
     """Remove every piece of *G* that has no junction, in place: the chains
-    whose dead ends are :data:`ISLAND_END` (a tip whose chain ends at another
-    dead end, not at a junction), whatever their length or where they lie.
-    Rings and lone nodes have no dead end and stay.
+    from a tip to another dead end, not to a junction -- their ends are
+    :data:`ISLAND_END`, or :data:`LEAVES_IMAGE` where they leave the image --
+    whatever their length or where they lie. Rings and lone nodes have no
+    dead end and stay.
 
     Returns ``{"pieces", "vessels", "nodes", "length_um"}`` removed.
     """

@@ -606,16 +606,94 @@ def paths_separated_by_background(
     return bool(separating.sum() >= 0.5 * judged.sum())
 
 
+def antipodal_chords(loop_um: np.ndarray, step_um: float):
+    """The chords of a closed path from each of its points, evenly spaced at
+    most *step_um* apart round it, to the point half the path away:
+    ``(starts_at, ends_at, starts, chords)`` -- how far round the path each
+    chord starts and ends, its start, and the vector to its end -- or None
+    for a path under four steps round. *loop_um* runs round once, its last
+    point its first."""
+    loop = np.asarray(loop_um, dtype=float).reshape(-1, 3)
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))])
+    count = int(np.ceil(arc[-1] / step_um))
+    if count < 4:
+        return None
+    along = np.arange(count) * (arc[-1] / count)
+    points = np.column_stack([np.interp(along, arc, loop[:, axis]) for axis in range(3)])
+    half = count // 2
+    return along[:half], along[half:2 * half], points[:half], points[half:2 * half] - points[:half]
+
+
+def loop_separated_by_background(
+    path_a: List,
+    path_b: List,
+    inside_lumen: Callable[[np.ndarray], np.ndarray],
+    *,
+    step_um: float = 0.5,
+    min_gap_um: float = 1.0,
+) -> bool:
+    """Whether two paths joining the same two end points are two vessels
+    round tissue, not one lumen: judged on the closed loop they make, by its
+    antipodal chords (:func:`antipodal_chords`, as
+    ``lumen_loops.loop_inside_one_lumen`` judges a loop).
+
+    The nearest point of one path to a sample of the other is, for most of
+    a loop, one of the junctions the two share, so the chords
+    :func:`paths_separated_by_background` draws ran along the sample's own
+    lumen to it, and the two arcs of a loop round tissue -- 25 um across --
+    read as one vessel. Across the loop a chord crosses what it runs round.
+
+    Only the chords from one path to the other count (a chord between two
+    points of one path says nothing of the other), and each counts as in
+    :func:`paths_separated_by_background`: both its ends in the lumen and
+    at least ``2 * min_gap_um`` long to be judged, separating with at least
+    *min_gap_um* of background along it. The paths are two vessels when at
+    least half the chords judged separate them; with none to judge, one.
+    """
+    a = np.asarray(path_a, dtype=float).reshape(-1, 3)
+    b = np.asarray(path_b, dtype=float).reshape(-1, 3)
+    if len(a) < 2 or len(b) < 2:
+        return False
+    if (np.linalg.norm(a[0] - b[-1]) + np.linalg.norm(a[-1] - b[0])
+            < np.linalg.norm(a[0] - b[0]) + np.linalg.norm(a[-1] - b[-1])):
+        b = b[::-1]
+    # Round the loop: a, across to b's end, b backwards, and back to a's start.
+    a_um = float(np.linalg.norm(np.diff(a, axis=0), axis=1).sum())
+    b_from = a_um + float(np.linalg.norm(a[-1] - b[-1]))
+    b_to = b_from + float(np.linalg.norm(np.diff(b, axis=0), axis=1).sum())
+    chords = antipodal_chords(np.vstack([a, b[::-1], a[:1]]), step_um)
+    if chords is None:
+        return False
+    starts_at, ends_at, p, chord = chords
+    between = (starts_at <= a_um) & (ends_at >= b_from) & (ends_at <= b_to)
+    p, chord = p[between], chord[between]
+    length = np.linalg.norm(chord, axis=1)
+    long_enough = length >= 2.0 * min_gap_um
+    p, chord, length = p[long_enough], chord[long_enough], length[long_enough]
+    if not len(p):
+        return False
+    n = int(np.ceil(length.max() / step_um)) + 1
+    t = np.linspace(0.0, 1.0, n)
+    samples = p[:, None, :] + t[None, :, None] * chord[:, None, :]
+    inside = np.asarray(inside_lumen(samples.reshape(-1, 3)), dtype=bool).reshape(len(p), n)
+    judged = inside[:, 0] & inside[:, -1]
+    if not judged.any():
+        return False
+    background_um = (~inside).sum(axis=1) * length / (n - 1)
+    separating = judged & (background_um >= min_gap_um)
+    return bool(separating.sum() >= 0.5 * judged.sum())
+
+
 def are_paths_similar(voxels1, voxels2, tolerance=3.0, inside_lumen=None):
     """True when two paths are the same vessel.
 
     They must join the same end points, and either never stray further than
     *tolerance* microns from each other or, given *inside_lumen* (the
-    segmentation the skeleton came from), run through one lumen: not
-    separated by background (:func:`paths_separated_by_background`). Shared
-    end points alone are not enough: two distinct vessels between the same
-    two junctions (a loop) share them too, and treating those as one path
-    deletes a vessel. Distance alone is not enough either: Lee thinning
+    segmentation the skeleton came from), run through one lumen: the loop
+    they make not round tissue (:func:`loop_separated_by_background`).
+    Shared end points alone are not enough: two distinct vessels between the
+    same two junctions (a loop) share them too, and treating those as one
+    path deletes a vessel. Distance alone is not enough either: Lee thinning
     leaves two or more strands 5-10 um apart through one wide vessel, and
     those are one vessel.
     """
@@ -633,7 +711,7 @@ def are_paths_similar(voxels1, voxels2, tolerance=3.0, inside_lumen=None):
         return False
     if path_separation(voxels1, voxels2) <= tolerance:
         return True
-    return inside_lumen is not None and not paths_separated_by_background(
+    return inside_lumen is not None and not loop_separated_by_background(
         voxels1, voxels2, inside_lumen
     )
     

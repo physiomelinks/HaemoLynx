@@ -133,6 +133,37 @@ def test_a_merge_of_two_recovered_halves_is_recovered_and_of_one_kind_of_bridge_
     assert again[BRIDGE_KINDS] == "gap+orphan" and "recovered" not in again
 
 
+@pytest.mark.parametrize("marked_first", [True, False])
+def test_a_merge_carries_the_interior_recoverys_mark_as_a_share_whichever_half_comes_first(marked_first):
+    """Regression: the trivial merge copied its first half's attributes and
+    the smart merge none, so a vessel merged with a stretch the interior
+    dead ends' recovery drew came out marked whole or not at all by which
+    half came first, and the stage's kept length counted all of it or none."""
+    from haemolynx.graph.degree2 import INTERIOR_RECOVERY, INTERIOR_RECOVERY_FRACTION, drawn_um
+    from haemolynx.pipeline.stages import interior_recovery_um
+
+    drawn = {"voxels": [(0, 0, 0), (0, 0, 6)], "length": 6.0, INTERIOR_RECOVERY: True}
+    vessel = {"voxels": [(0, 0, 6), (0, 0, 20)], "length": 14.0}
+    halves = (drawn, vessel) if marked_first else (vessel, drawn)
+    merged = create_trivial_merged_edge(*halves, np.array([0.0, 0.0, 6.0]))
+
+    assert INTERIOR_RECOVERY not in merged
+    assert merged[INTERIOR_RECOVERY_FRACTION] == pytest.approx(0.3)
+    assert drawn_um(merged, INTERIOR_RECOVERY_FRACTION) == pytest.approx(6.0)
+    both = create_trivial_merged_edge(drawn, dict(drawn, voxels=[(0, 0, 6), (0, 0, 8)], length=2.0), np.array([0.0, 0.0, 6.0]))
+    assert both[INTERIOR_RECOVERY] is True and both[INTERIOR_RECOVERY_FRACTION] == pytest.approx(1.0)
+
+    G = _chain_with_a_recovered_stretch()
+    for *_e, data in G.edges(data=True):
+        data.pop("recovered", None)
+    G.edges["N", "M", 0][INTERIOR_RECOVERY] = True
+    assert interior_recovery_um(G) == pytest.approx(4.0)
+    smart_multigraph_degree2_removal(G, debug=False)
+    (merged_vessel,) = [d for u, v, d in G.edges(data=True) if {u, v} == {"J1", "J2"}]
+    assert merged_vessel[INTERIOR_RECOVERY_FRACTION] == pytest.approx(0.2)
+    assert interior_recovery_um(G) == pytest.approx(4.0)
+
+
 def test_a_vessel_merged_with_a_recovered_edge_is_not_trimmed_as_recovery():
     """Regression: the trivial merge copied its first half's attributes, so a
     vessel merged with a recovered stretch listed first came out
@@ -783,6 +814,124 @@ def test_degree2_removal_resolves_a_duplicate_route_even_beside_a_busy_junction(
         assert G2.number_of_edges("a", "b") == 1
     else:
         assert G2.has_node("mid") and G2.number_of_edges("a", "b") == 1
+
+
+#: A ring vessel of lumen radius 2.5 um, 15 um round its centre line, in the
+#: plane z = 10: a loop round a hole of tissue 25 um across.
+_RING_CENTRE, _RING_RADIUS = (10.0, 24.0, 24.0), 15.0
+
+
+def _ring_arc(from_deg, to_deg, n=120):
+    t = np.radians(np.linspace(from_deg, to_deg, n))
+    return [(_RING_CENTRE[0], _RING_CENTRE[1] + _RING_RADIUS * np.sin(a), _RING_CENTRE[2] + _RING_RADIUS * np.cos(a))
+            for a in t]
+
+
+def _ring_lumen():
+    zz, yy, xx = np.indices((21, 48, 48), dtype=float)
+    from_axis = np.hypot(yy - _RING_CENTRE[1], xx - _RING_CENTRE[2]) - _RING_RADIUS
+    return mask_lumen_test(np.hypot(from_axis, zz - _RING_CENTRE[0]) <= 2.5, (1.0, 1.0, 1.0))
+
+
+#: A straight vessel along y = 10 with a detour off it from x = 10 to x = 30,
+#: 20 um out and back, all 4 um across: a rectangular loop round 16 um of tissue.
+_RECTANGLE_STRAIGHT = _line((12.0, 10.0, 10.0), (12.0, 10.0, 30.0), 41)
+_RECTANGLE_DETOUR = (
+    _line((12.0, 10.0, 10.0), (12.0, 30.0, 10.0), 41)
+    + _line((12.0, 30.0, 10.0), (12.0, 30.0, 30.0), 41)[1:]
+    + _line((12.0, 30.0, 30.0), (12.0, 10.0, 30.0), 41)[1:]
+)
+
+
+def _rectangle_lumen():
+    mask = np.zeros((25, 48, 48), dtype=bool)
+    mask[10:15, 8:13, :] = True      # the straight vessel
+    mask[10:15, 8:33, 8:13] = True   # the detour's legs ...
+    mask[10:15, 8:33, 28:33] = True
+    mask[10:15, 28:33, 8:33] = True  # ... and its far side
+    return mask_lumen_test(mask, (1.0, 1.0, 1.0))
+
+
+def _two_strands_in_one_wide_lumen():
+    """Lee thinning's two strands 7 um apart through one 14 um vessel,
+    meeting at both ends, and the vessel's lumen."""
+    a = _line((5.0, 14.0, 0.0), (5.0, 10.0, 5.0), 6) + _line((5.0, 10.0, 5.0), (5.0, 10.0, 35.0), 31)[1:] \
+        + _line((5.0, 10.0, 35.0), (5.0, 14.0, 40.0), 6)[1:]
+    b = _line((5.0, 14.0, 0.0), (5.0, 17.0, 5.0), 6) + _line((5.0, 17.0, 5.0), (5.0, 17.0, 35.0), 31)[1:] \
+        + _line((5.0, 17.0, 35.0), (5.0, 14.0, 40.0), 6)[1:]
+    wide = np.zeros((11, 30, 41), dtype=bool)
+    wide[2:9, 7:21, :] = True
+    return a, b, mask_lumen_test(wide, (1.0, 1.0, 1.0))
+
+
+@pytest.mark.parametrize("split_deg", [180, 120, 60])
+def test_the_two_arcs_of_a_loop_round_tissue_are_two_vessels(split_deg):
+    """Regression: each sample's nearest point on the other arc was mostly
+    the junction the two share, so the chords to it ran along the sample's
+    own lumen and the two arcs of a loop round 25 um of tissue read as one
+    vessel, at every split. Across the loop, the chords cross the hole."""
+    inside = _ring_lumen()
+    first, second = _ring_arc(0, split_deg), _ring_arc(360, split_deg)
+    assert not are_paths_similar(first, second, inside_lumen=inside)
+    assert not are_paths_similar(first, second[::-1], inside_lumen=inside)
+    assert not are_paths_similar(_RECTANGLE_STRAIGHT, _RECTANGLE_DETOUR, inside_lumen=_rectangle_lumen())
+    # Two strands through one wide lumen are still one vessel.
+    a, b, wide = _two_strands_in_one_wide_lumen()
+    assert are_paths_similar(a, b, inside_lumen=wide)
+
+
+def _junctions_with_stubs(a_pos, b_pos, outward):
+    """Junctions "a" and "b" with two stubs each, leaving along *outward*
+    (a unit vector) from "b" and against it from "a"."""
+    G = nx.MultiGraph()
+    for name, pos, sign in (("a", a_pos, -1.0), ("b", b_pos, 1.0)):
+        G.add_node(name, pos=np.asarray(pos, dtype=float))
+        for i, side in enumerate((-3.0, 3.0)):
+            end = np.asarray(pos, dtype=float) + sign * 6.0 * np.asarray(outward) + np.array([side, 0.0, 0.0])
+            G.add_node(f"{name}_stub{i}", pos=end)
+            _add_path_edge(G, name, f"{name}_stub{i}", _line(pos, end, 8))
+    return G
+
+
+@pytest.mark.parametrize("loop", ["round", "rectangle"])
+def test_degree2_merging_keeps_both_arcs_of_a_loop_round_tissue(loop):
+    """Regression: one arc of a real vessel loop -- round, or a detour off a
+    straight vessel -- was merged away as the other's duplicate: a 15 um ring
+    round 25 um of tissue lost an arc in the first degree-2 pass of a build."""
+    if loop == "round":
+        direct, routed, inside, outward = _ring_arc(0, 180), _ring_arc(360, 180), _ring_lumen(), (0.0, 0.0, -1.0)
+    else:
+        direct, routed, inside, outward = _RECTANGLE_STRAIGHT, _RECTANGLE_DETOUR, _rectangle_lumen(), (0.0, 0.0, 1.0)
+    G = _junctions_with_stubs(direct[0], direct[-1], outward)
+    two_edges = G.copy()
+    _add_path_edge(G, "a", "b", direct)
+    G.add_node("mid", pos=np.asarray(routed[len(routed) // 2], dtype=float))
+    _add_path_edge(G, "a", "mid", routed[: len(routed) // 2 + 1])
+    _add_path_edge(G, "mid", "b", routed[len(routed) // 2:])
+    for path in (direct, routed):
+        _add_path_edge(two_edges, "a", "b", path)
+
+    merged = smart_multigraph_degree2_removal(G, max_degree=8, inside_lumen=inside)
+
+    assert not merged.has_node("mid")
+    assert sorted(d["length"] for d in merged["a"]["b"].values()) == pytest.approx(
+        sorted([calculate_path_length(direct), calculate_path_length(routed)])
+    )
+    assert duplicate_parallel_edges(two_edges, inside) == []
+
+
+def test_degree2_merging_still_takes_one_of_two_strands_through_one_wide_lumen():
+    a, b, wide = _two_strands_in_one_wide_lumen()
+    G = _junctions_with_stubs(a[0], a[-1], (0.0, 0.0, 1.0))
+    _add_path_edge(G, "a", "b", a)
+    G.add_node("mid", pos=np.asarray(b[len(b) // 2], dtype=float))
+    _add_path_edge(G, "a", "mid", b[: len(b) // 2 + 1])
+    _add_path_edge(G, "mid", "b", b[len(b) // 2:])
+
+    merged = smart_multigraph_degree2_removal(G, max_degree=8, inside_lumen=wide)
+
+    assert not merged.has_node("mid")
+    assert merged.number_of_edges("a", "b") == 1
 
 
 def test_build_graph_requires_skan(tiny_skeleton):

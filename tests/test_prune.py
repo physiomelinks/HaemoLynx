@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from haemolynx.graph import build_graph_from_skeleton
 from haemolynx.graph.prune import prune_vascular_stubs
@@ -223,6 +224,66 @@ def test_a_hair_beside_a_real_branch_does_not_take_the_branch_with_it():
     G.add_edge((7.0, 7.0, 30.0), (7.0, 7.0, 59.0), voxels=[[7.0, 7.0, float(x)] for x in range(30, 60)], length=29.0)
     judged = prune_vascular_stubs(G, min_stub_length=10.0, radius_multiple=1.5, **_rules(mask))
     assert (7.0, 31.0, 30.0) in judged
+
+
+def _wide_vessel_branching_near_a_face():
+    """A 6 um-radius vessel through both x faces of a 60 um cube image, a
+    2 um branch leaving it 10 um before the x = 60 face for the y face, and
+    a hair 22 um along the inside of its wall, 27 um or more from every
+    face: the graph, its paths a point a voxel as a skeleton's are, and its
+    mask."""
+    from lumen_artefact_fixtures import capsule
+
+    mask = capsule(np.zeros((61, 61, 61), dtype=bool), (30, 30, -5), (30, 30, 65), 6)
+    capsule(mask, (30, 30, 50), (30, 65, 50), 2)
+    G = nx.MultiGraph()
+    for corners in ([(30, 30, 0), (30, 30, 10)], [(30, 30, 10), (30, 30, 50)], [(30, 30, 50), (30, 30, 60)],
+                    [(30, 30, 50), (30, 60, 50)], [(30, 30, 10), (30, 33, 13), (30, 33, 32)]):
+        corners = np.asarray(corners, dtype=float)
+        path = [corners[0]]
+        for a, b in zip(corners[:-1], corners[1:]):
+            steps = int(np.abs(b - a).max())
+            path.extend(a + (b - a) * t for t in np.linspace(0.0, 1.0, steps + 1)[1:])
+        u, v = (tuple(float(c) for c in corners[i]) for i in (0, -1))
+        for node in (u, v):
+            G.add_node(node, pos=np.asarray(node))
+        G.add_edge(u, v, voxels=np.asarray(path).tolist(),
+                   length=float(np.sum(np.linalg.norm(np.diff(np.asarray(path), axis=0), axis=1))))
+    return G, mask
+
+
+@pytest.mark.parametrize("face_protection", ["threshold", "leaves_image"])
+def test_the_hair_rule_leaves_a_wide_vessels_last_stretch_to_the_face(face_protection):
+    """Regression: 10 um from a branch to the face, a 6 um vessel's last
+    stretch never gets a radius outside its own other half's lumen, so the
+    hair rule took it, and with it the vessel's open end; both ends left
+    were then those of a piece with no junction. A hair away from the faces
+    still goes."""
+    from haemolynx.graph.assemble import lumen_cleanup
+
+    G, mask = _wide_vessel_branching_near_a_face()
+    cleanup = lumen_cleanup(
+        mask, (1.0, 1.0, 1.0), image_shape=mask.shape, min_stub_length=10.0,
+        min_stub_length_radius_multiple=3.0, stub_face_protection=face_protection,
+    )
+
+    pruned = cleanup.prune(G)
+
+    assert (30.0, 30.0, 60.0) in pruned, "the vessel's end at the x = 60 face"
+    assert {(30.0, 30.0, 0.0), (30.0, 60.0, 50.0)} <= set(pruned)
+    assert (30.0, 33.0, 32.0) not in pruned, "the hair along the wall, away from the faces"
+
+
+def test_the_hair_rule_is_what_took_the_last_stretch_to_the_face():
+    """With no length rule (a threshold of 0), only the hair rule can take
+    the stretch: it does without the image's extent, not with it."""
+    G, mask = _wide_vessel_branching_near_a_face()
+    rules = _rules(mask)
+
+    assert (30.0, 30.0, 60.0) not in prune_vascular_stubs(G, min_stub_length=0.0, **rules)
+    kept = prune_vascular_stubs(G, min_stub_length=0.0, image_extent_um=(60.0, 60.0, 60.0), **rules)
+    assert (30.0, 30.0, 60.0) in kept
+    assert (30.0, 33.0, 32.0) not in kept
 
 
 def test_a_dead_end_in_short_pieces_is_judged_whole():

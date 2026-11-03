@@ -206,7 +206,7 @@ names it lists.
 | Dead Ends That Are Artefacts | count | Dead ends off the mask, inside a neighbouring lumen or along a vessel's wall. |
 | Blind Ends (marked by hand) | count | Dead ends a person marked as real blind ends. |
 | Interior Dead Ends, Blind or Broken (unknown) | count | Interior dead ends no rule could class. |
-| Ends of Pieces Without a Junction | count | Dead ends of pieces of network with no junction. |
+| Ends of Pieces Without a Junction | count | Dead ends of pieces of network with no junction, inside the image: one leaving it is counted as leaving the image. |
 | Interior Dead Ends per mm of Vessel (1/mm) | 1/mm | Interior dead ends that could be the tissue's own (blind, unknown, broken, stopped short, at a thick vessel's wall) per mm of vessel. |
 | Interior Dead Ends per mm^3 of Tissue (1/mm^3) | 1/mm^3 | The same dead ends per cubic millimetre of measured tissue. |
 | Interior Dead-End Chain Length, median (microns) | um | The median length of those dead ends' chains, tip to junction. |

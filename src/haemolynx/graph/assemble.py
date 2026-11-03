@@ -209,7 +209,8 @@ def mask_lumen_test(
 
     What degree-2 merging and direction-aware collapse ask when two edges
     join the same two nodes: one vessel, or two with background between
-    (``_helpers.paths_separated_by_background``). With *support*, a
+    (``_helpers.loop_separated_by_background``,
+    ``_helpers.paths_separated_by_background``). With *support*, a
     ``MaskSupport`` over the same mask, the points are read through it
     (``MaskSupport.lookup_volume``): the same answers, from its bits once it
     has packed the mask, rather than a memmap a voxel at a time.

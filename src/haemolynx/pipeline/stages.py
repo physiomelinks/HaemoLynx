@@ -2506,9 +2506,9 @@ def finish_network_graph(
         )
         steps.append(("removal of interior dead ends and merge of the junctions left", G.number_of_edges()))
     # Pieces with no junction (their dead ends are graph.dead_ends'
-    # island ends), taken out last so no step after rejoins or re-makes
-    # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
-    # specks and 3 real vessel the segmentation cut off.
+    # island ends, or leave the image), taken out last so no step after
+    # rejoins or re-makes one. On Harvey's AIA patella grid P1 (2026-10-20)
+    # 11 of 14 were specks and 3 real vessel the segmentation cut off.
     if settings.get("remove_pieces_without_junction"):
         removed = graph.dead_ends.remove_pieces_without_junction(G)
         G.graph["pieces_without_junction_removed"] = removed["pieces"]
@@ -3016,8 +3016,17 @@ def mark_dead_end_kinds(settings: Mapping[str, Any], G: nx.MultiGraph, context: 
 
 
 #: The edge mark on what :func:`_remove_and_recover_interior_dead_ends`'
-#: recovery drew.
-INTERIOR_RECOVERY = "interior_recovery"
+#: recovery drew; a merge carries it as a share
+#: (``graph.degree2.INTERIOR_RECOVERY_FRACTION``).
+INTERIOR_RECOVERY = graph.degree2.INTERIOR_RECOVERY
+
+
+def interior_recovery_um(G: nx.MultiGraph) -> float:
+    """How many um of *G* the interior dead ends' recovery drew: every edge
+    it marked, and the share of each vessel a merge made from one."""
+    return float(sum(
+        graph.degree2.drawn_um(data, graph.degree2.INTERIOR_RECOVERY_FRACTION) for *_e, data in G.edges(data=True)
+    ))
 
 
 #: Where :func:`_set_aside_earlier_recovery` keeps the build's own
@@ -3119,9 +3128,7 @@ def _remove_and_recover_interior_dead_ends(
             G, None, max_degree=cleanup.max_degree, debug=cleanup.debug, inside_lumen=cleanup.inside_lumen,
         )
         graph.thick_vessel_junctions.remove_dangling_bridges(G)
-    kept_um = sum(
-        float(data.get("length") or 0.0) for *_e, data in G.edges(data=True) if data.get(INTERIOR_RECOVERY)
-    )
+    kept_um = interior_recovery_um(G)
     G.graph["interior_dead_ends_removed"] = first["dead_ends"] + second["dead_ends"]
     G.graph["interior_dead_ends_removed_um"] = first["length_um"] + second["length_um"]
     G.graph["interior_recovery_drawn_um"] = drawn_um
