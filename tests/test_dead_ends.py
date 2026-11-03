@@ -680,3 +680,24 @@ def test_the_stub_prune_takes_a_short_stub_in_a_2d_image():
     )
     assert 2 not in pruned
     assert {0, 3} <= set(pruned)
+
+
+def test_every_face_test_reads_a_2d_image_as_having_no_z_faces():
+    """Regression: three more callers measured a point's depth in the image
+    by hand, every axis's two faces included, so in a 2D image every point lay
+    on a z face: every terminal was an open end for boundary selection, the
+    review lists read every node at depth 0, and the statistics' face margin
+    left every vessel out of the flow rows. They read the one face test."""
+    from haemolynx.graph.boundaries import open_terminal_nodes
+    from haemolynx.statistics.comprehensive import _vessels_within_face_margin
+
+    mask, G = _plane_t()
+    G.graph["voxel_size"] = (1.0, 1.0, 1.0)
+    de.record_image_extent(G, mask.shape, (1.0, 1.0, 1.0))
+
+    assert open_terminal_nodes(G, mask.shape, max_distance_um=5.0) == []
+    assert open_terminal_nodes(G, mask.shape, max_distance_um=12.0) == [0, 2, 3]  # 9-10 um from x / y faces
+    pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in G}
+    depth, _leaves = nr._face_readers(G, pos, None, None)
+    assert depth(1) == pytest.approx(29.0)  # x = 30 in a 60 um plane: 29 um from the x = 59 face
+    assert _vessels_within_face_margin(G, 5.0) == []

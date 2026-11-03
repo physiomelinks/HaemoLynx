@@ -1663,3 +1663,67 @@ def test_a_vessel_loop_bridged_to_one_node_from_outside_the_lumen_stays():
 
     assert remove_dangling_bridges(G) == 0
     assert G.has_edge("A", "B") and len(_bridges(G)) == 2
+
+
+def _reordered(G, seed):
+    """*G* with its nodes and edges added in a shuffled order, half its
+    edges' paths running the other way."""
+    import random
+
+    rng = random.Random(seed)
+    H = nx.MultiGraph()
+    nodes = list(G.nodes(data=True))
+    rng.shuffle(nodes)
+    for node, data in nodes:
+        H.add_node(node, **dict(data))
+    edges = list(G.edges(data=True))
+    rng.shuffle(edges)
+    for u, v, data in edges:
+        data = dict(data)
+        if rng.random() < 0.5:
+            data["voxels"], u, v = list(reversed(data["voxels"])), v, u
+        H.add_edge(u, v, **data)
+    return H
+
+
+def _drawn(G):
+    """Each edge as its path, read from its lower end, and whether it is a bridge."""
+    out = []
+    for _u, _v, data in G.edges(data=True):
+        path = np.round(np.asarray(data["voxels"], dtype=float), 3)
+        if tuple(path[-1]) < tuple(path[0]):
+            path = path[::-1]
+        out.append((tuple(map(tuple, path)), bool(data.get(IS_ZERO_RESISTANCE))))
+    return sorted(out)
+
+
+@pytest.mark.parametrize("case", ["side_by_side", "stopping"])
+def test_the_split_does_not_depend_on_the_order_of_the_graphs_edges(case):
+    """Regression: two bridges equally near their group's middle shared the
+    node of the first in edge order, and an extended thick end joined the
+    vessel ahead at whichever of two equally near path vertices came first
+    along the way the edge ran: the same network, held another way, came out
+    4 um or 1 um apart."""
+    G, lumen, body, tree = _side_by_side(4.0) if case == "side_by_side" else _stopping()
+    drawn = {
+        repr(_drawn(_split(_reordered(G, seed) if seed else G, lumen, body, tree, extend_thick_ends=True)))
+        for seed in range(5)
+    }
+    assert len(drawn) == 1
+
+
+@pytest.mark.parametrize("short_of_face_um", [2.5, 4.0])
+def test_a_vessel_beyond_a_bridge_stopping_short_of_where_its_mask_leaves_the_image_stays(short_of_face_um):
+    """Regression: the vessel beyond a bridge was blind unless its tip lay
+    within 2 um of a face, so one stopping a few microns short of the face
+    its segmented vessel runs on out through went with its bridge. Read as
+    the dead ends are (``dead_ends.leaves_image``), it leaves the image."""
+    lumen, body, tree = _thick((20.0, 0.0, 44.0), (20.0, 63.0, 44.0))
+    _thin_vessel(lumen, (20, 30, 44), (20, 30, 63))
+    tip = 63.0 - short_of_face_um
+    G = _graph(("T0", "J", (20, 2, 44), (20, 30, 44)), ("J", "T1", (20, 30, 44), (20, 61, 44)),
+               ("TIP", "J", (20, 30, tip), (20, 30, 44)))
+
+    split = _split(G, lumen, body, tree)
+
+    assert "TIP" in split and len(_bridges(split)) == 1
