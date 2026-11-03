@@ -241,3 +241,55 @@ def test_complete_metadata_logs_no_warning(override, caplog):
     with caplog.at_level(logging.WARNING, logger="haemolynx"):
         resolve_voxel_size_xyz(METADATA_XYZ, COMPLETE, override, "auto")
     assert _warnings(caplog) == []
+
+
+# -- preflight: an override auto will not read ---------------------------------
+
+
+def _calibrated_tiff(tmp_path):
+    """A stack whose header gives every axis's spacing, METADATA_XYZ."""
+    path = tmp_path / "calibrated.tif"
+    tifffile.imwrite(
+        path,
+        np.zeros((3, 4, 5), dtype=np.uint8),
+        imagej=True,
+        resolution=(1.0 / METADATA_XYZ[0], 1.0 / METADATA_XYZ[1]),
+        metadata={"unit": "um", "spacing": METADATA_XYZ[2]},
+    )
+    return path
+
+
+def _override_warnings(path, override, policy="auto"):
+    from haemolynx.pipeline.checks import check_voxel_size_override
+
+    report = check_voxel_size_override(
+        {
+            "input_path": path,
+            "use_ilastik_segmentation": False,
+            "image_axis_order": "zyx",
+            "voxel_size_override_xyz": override,
+            "voxel_size_policy": policy,
+        }
+    )
+    return [w for w in report.warnings if "voxel_size_override_xyz" in w]
+
+
+def test_preflight_warns_of_an_override_auto_will_not_read(tmp_path):
+    """Under auto a complete header wins, so an override typed in is
+    silently not used: preflight says so, with the spacing that is."""
+    path = _calibrated_tiff(tmp_path)
+    _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path))
+    resolved, source = resolve_voxel_size_xyz((x, y, z), status, OVERRIDE_XYZ, "auto")
+    assert source == "metadata" and np.allclose(resolved, METADATA_XYZ)
+
+    (warning,) = _override_warnings(path, list(OVERRIDE_XYZ))
+    assert "not used" in warning and "voxel_size_policy to override" in warning
+
+
+def test_preflight_says_nothing_of_an_override_that_is_read_or_agrees(tmp_path):
+    calibrated = _calibrated_tiff(tmp_path)
+    assert _override_warnings(calibrated, list(OVERRIDE_XYZ), policy="override") == []
+    assert _override_warnings(calibrated, list(METADATA_XYZ)) == []
+    assert _override_warnings(calibrated, None) == []
+    # Under auto an incomplete header reads the override.
+    assert _override_warnings(_tiff_without_z_spacing(tmp_path), list(OVERRIDE_XYZ)) == []

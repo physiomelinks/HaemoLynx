@@ -294,6 +294,54 @@ def test_an_imagej_stack_with_only_a_spacing_reads_as_it_did_before(tmp_path):
     assert status["axis_sources"] == {"x": "tiff_metadata", "y": "tiff_metadata", "z": "tiff_metadata"}
 
 
+@pytest.mark.parametrize(
+    "unit, per_um",
+    [("nm", 1e3), ("mm", 1e-3), ("cm", 1e-4), ("micron", 1.0), ("\\u00B5m", 1.0)],
+)
+def test_an_imagej_stack_is_read_in_its_own_unit(tmp_path, unit, per_um):
+    """Regression: the tags and ImageJ's spacing were read as microns
+    whatever ImageJ's unit said, so a stack calibrated in nm read 1000 times
+    too coarse, and "complete", so auto never took the override instead.
+    Fiji writes the micro sign escaped."""
+    import tifffile
+
+    from haemolynx.io import load_3d_tif_with_voxel_size, read_voxel_size_xyz
+
+    x_um, y_um, z_um = ANISOTROPIC_XYZ
+    path = tmp_path / "calibrated.tif"
+    description = (
+        f"ImageJ=1.54f\nimages=4\nslices=4\nunit={unit}\nspacing={z_um * per_um}\nloop=false\n"
+    )
+    tifffile.imwrite(
+        path, np.zeros((4, 6, 8), dtype=np.uint8),
+        resolution=(1.0 / (x_um * per_um), 1.0 / (y_um * per_um)), resolutionunit="NONE",
+        description=description, metadata=None,
+    )
+
+    _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path))
+
+    assert (x, y, z) == pytest.approx(ANISOTROPIC_XYZ)
+    assert status["status"] == "complete"
+    assert read_voxel_size_xyz(path)[0] == pytest.approx(ANISOTROPIC_XYZ)
+
+
+def test_resolution_tags_in_centimetres_are_read_in_microns(tmp_path):
+    import tifffile
+
+    from haemolynx.io import load_3d_tif_with_voxel_size
+
+    path = tmp_path / "cm.tif"
+    tifffile.imwrite(
+        path, np.zeros((4, 6, 8), dtype=np.uint8),
+        resolution=(1e4 / ANISOTROPIC_XYZ[0], 1e4 / ANISOTROPIC_XYZ[1]), resolutionunit="CENTIMETER",
+    )
+
+    _image, x, y, _z, status = load_3d_tif_with_voxel_size(str(path))
+
+    assert (x, y) == pytest.approx(ANISOTROPIC_XYZ[:2])
+    assert status["missing_axes"] == ["z"]
+
+
 def _ome_xml(pixels_attributes):
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -495,6 +543,39 @@ def test_ilastik_output_is_moved_and_binarised_at_the_vessel_label(tmp_path, mon
     mask = _to_binary_volume_for_skeletonization(np.squeeze(written))
     assert int(mask.sum()) == _FAKE_VESSEL_VOXELS
     assert mask[:3].all() and not mask[3:].any()
+
+
+@pytest.mark.parametrize("raw_name, suffix", [("stack.tiff", ".tif"), ("stack.h5", ".h5")])
+def test_ilastik_output_beside_the_raw_image_leaves_the_raw_image_alone(
+    tmp_path, monkeypatch, raw_name, suffix
+):
+    """Regression: ilastik's export, named after its input, was written into
+    the output folder -- the raw image's own name there when the output folder
+    is the raw image's, so the raw image was deleted before ilastik ran."""
+    _image, project, _output = _ilastik_inputs(tmp_path, suffix)
+    raw = tmp_path / raw_name
+    raw.write_bytes(b"the raw image")
+    output = tmp_path / f"stack_segmented{suffix}"
+    monkeypatch.setenv("FAKE_ILASTIK_MODE", "ok")
+
+    produced = _segment(tmp_path, raw, project, output)
+
+    assert produced == output
+    assert raw.read_bytes() == b"the raw image"
+    assert set(np.unique(_read_output(output)).tolist()) == {0, 1}
+    assert not any(path.is_dir() and path.name.endswith("_ilastik_export") for path in tmp_path.iterdir())
+
+
+def test_a_failed_ilastik_run_leaves_no_export_folder(tmp_path, monkeypatch):
+    from haemolynx.io.ilastik import export_folder
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    monkeypatch.setenv("FAKE_ILASTIK_MODE", "fail")
+
+    with pytest.raises(RuntimeError):
+        _segment(tmp_path, image, project, output)
+
+    assert not export_folder(output).exists()
 
 
 def test_the_vessel_label_may_be_the_second_label_by_name_or_number(tmp_path, monkeypatch):
@@ -948,6 +1029,19 @@ def test_h5_loader_drops_a_trailing_singleton_axis_without_axis_names(tmp_path):
 
     labels = _ilastik_segmentation()
     path = _write_h5(tmp_path / "untagged.h5", labels[..., np.newaxis])
+
+    image, *_ = load_3d_h5_with_voxel_size(str(path))
+
+    assert np.array_equal(image, labels)
+
+
+def test_h5_loader_reads_an_upper_case_suffix(tmp_path):
+    """Regression: the segment stage reads the suffix lower-cased and sends
+    X.H5 to the H5 loader, which refused it as not .h5."""
+    from haemolynx.io import load_3d_h5_with_voxel_size
+
+    labels = _ilastik_segmentation()
+    path = _write_h5(tmp_path / "UPPER.H5", labels[..., np.newaxis])
 
     image, *_ = load_3d_h5_with_voxel_size(str(path))
 

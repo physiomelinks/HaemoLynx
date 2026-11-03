@@ -73,6 +73,26 @@ def test_ome_channel_names_are_read(tmp_path):
     assert [c.name for c in tiff_channels(path)] == ["plasma", "claudin-5"]
 
 
+def test_an_unnamed_ome_channel_does_not_take_the_next_ones_name(tmp_path):
+    """Regression: only the named Channel elements were collected and handed
+    out in order, so with C1 unnamed the panel listed C1 as claudin-5."""
+    path = tmp_path / "half_named.ome.tif"
+    ome = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06">'
+        '<Image ID="Image:0"><Pixels ID="Pixels:0" DimensionOrder="XYCZT" Type="uint16" '
+        'SizeX="8" SizeY="8" SizeC="2" SizeZ="3" SizeT="1">'
+        '<Channel ID="Channel:0:0" SamplesPerPixel="1"/>'
+        '<Channel ID="Channel:0:1" Name="claudin-5" SamplesPerPixel="1"/>'
+        '<TiffData/></Pixels></Image></OME>'
+    )
+    tifffile.imwrite(str(path), np.zeros((6, 8, 8), dtype=np.uint16), description=ome, metadata=None)
+
+    channels = tiff_channels(path)
+
+    assert [c.label for c in channels] == ["C1", "C2 (claudin-5)"]
+
+
 def test_a_channel_with_nothing_said_about_it_is_just_its_fiji_name(tmp_path):
     path = tmp_path / "plain.tif"
     _composite(path, channels=3)

@@ -410,6 +410,25 @@ def test_the_skeleton_voxel_counts_keep_their_physical_size_on_the_reduced_grid(
     assert stages.skeleton_voxel_settings_on_grid(settings, anisotropic)["skeleton_bundle_scan_size"] == 2
 
 
+def test_voxel_counts_follow_the_grids_finest_axis_when_a_coarse_z_becomes_it():
+    """Regression: counts are voxels of the grid's finest axis, and they were
+    divided by the reduction of the image's finest axis. At 4x, 1.5 x 0.5 x
+    0.5 um voxels reduce z by 1 and x, y by 4: the grid's finest axis is z, at
+    1.5 um, so 9 voxels of 0.5 um (4.5 um) are 3 of the grid's, not 2 (3 um)."""
+    flipped = downsample_for(4, STACK, (1.5, 0.5, 0.5))
+    assert flipped.axis_factors_zyx == (1, 4, 4)
+    settings = {"skeleton_bundle_scan_size": 9, "skeleton_closing_radius": 6}
+
+    on_grid = stages.skeleton_voxel_settings_on_grid(settings, flipped)
+
+    assert on_grid == {"skeleton_bundle_scan_size": 3, "skeleton_closing_radius": 2}
+    for name, count in on_grid.items():
+        assert count * min(flipped.voxel_size_zyx) == pytest.approx(settings[name] * 0.5)
+    assert stages.skeleton_voxel_settings_from_grid(
+        {"skeleton_bundle_scan_size": 4}, settings, flipped
+    ) == {"skeleton_bundle_scan_size": 12}
+
+
 def test_voxel_counts_chosen_on_the_reduced_grid_come_back_as_the_image_as_read_counts_them():
     """The settings optimiser searches on the run's grid: a count it kept is
     the user's own again (1 on the 2x grid is the 1 or 2 set, never 2 for a

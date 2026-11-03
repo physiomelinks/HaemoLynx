@@ -975,11 +975,17 @@ def _thick_vessel_kwargs(
     every thick trial itself (:func:`_raw_skeleton`). Without it a trial's
     thick region was 99.8% of E14.5's mask, the run's 12%.
     """
-    return {
+    kwargs = {
         "voxel_size_zyx": voxel_size_zyx,
         **_stages.thick_region_settings(settings),
         **_stages.thick_vessel_refinement_arguments(settings),
     }
+    if kwargs["large_stack_tree"]:
+        # The large-stack tree is drawn on the low-RAM path alone, and is not
+        # the in-RAM tree: held in RAM, a trial drew another tree from the run's.
+        kwargs["use_memmap"] = True
+        kwargs["memmap_directory"] = settings.get("memmap_directory")
+    return kwargs
 
 
 def _cleanup_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -2800,7 +2806,7 @@ class _Search(_SweepBookkeeping):
             self._run_group(name, method)
 
 
-def _to_search_grid(starting_values: Mapping[str, Any], factor: int) -> dict[str, Any]:
+def _to_search_grid(starting_values: Mapping[str, Any], factor: float) -> dict[str, Any]:
     """*starting_values* with every voxel-counted setting
     (:data:`_VOXEL_SCALED_SETTING_NAMES`) in voxels of a search grid
     *factor* times coarser, rounded half up.
@@ -2820,7 +2826,7 @@ def _to_full_resolution(
     settings: Mapping[str, Any],
     starting_values: Mapping[str, Any],
     search_starting_values: Mapping[str, Any],
-    factor: int,
+    factor: float,
     *,
     bundle_refinement_ran: bool,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
@@ -2975,9 +2981,11 @@ def optimise_skeleton_and_graph_settings(
         search_voxel_size_xyz = voxel_size_xyz
         search_raw_image = raw_image
 
-    # Voxel counts of the finest axis, which the search grid reduces by the
-    # full factor: into its voxels on the way in, back out on the way out.
-    search_starting_values = _to_search_grid(starting_values, factor)
+    # Voxel counts of the finest axis: into the search grid's on the way in,
+    # back out on the way out. Its finest axis may be another (a coarse z
+    # reduced less), so by the ratio of the two grids' finest spacings.
+    voxel_ratio = _stages.finest_spacing_ratio(voxel_size_zyx, tuple(reversed(search_voxel_size_xyz)))
+    search_starting_values = _to_search_grid(starting_values, voxel_ratio)
     search_restriction = _downsample_restriction(thick_restriction_mask, factor, voxel_size_zyx)
     search = _Search(
         search_mask, search_voxel_size_xyz, search_starting_values, progress,
@@ -3011,7 +3019,7 @@ def optimise_skeleton_and_graph_settings(
     finer_than_search_grid: tuple[str, ...] = ()
     if factor > 1:
         settings, finer_than_search_grid = _to_full_resolution(
-            settings, starting_values, search_starting_values, factor,
+            settings, starting_values, search_starting_values, voxel_ratio,
             bundle_refinement_ran="bundle_refinement" in search.groups_run,
         )
     return OptimisationResult(

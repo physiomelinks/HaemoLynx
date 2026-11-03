@@ -193,12 +193,15 @@ def _boundary_patch_count(mask: np.ndarray) -> int:
     Each face is labelled on its own 2D slice (26-connectivity in 3D has no
     meaning on a single-voxel-thick face), so a vessel touching two opposite
     faces counts twice -- it opens the volume in two separate places, which
-    is exactly what this is meant to count.
+    is exactly what this is meant to count. An axis one voxel long (a 2D
+    image, read as a stack of one) has no faces: both are the whole image.
     """
     if mask.ndim != 3:
         raise ValueError(f"mask must be 3D, got {mask.ndim}D")
     count = 0
     for axis in range(3):
+        if mask.shape[axis] == 1:
+            continue
         for index in (0, -1):
             face = np.take(mask, index, axis=axis)
             if not face.any():

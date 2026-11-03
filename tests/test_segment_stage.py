@@ -373,3 +373,110 @@ def test_no_ilastik_output_is_current_when_ilastik_does_not_segment(tmp_path, no
         folder.mkdir()
         settings, _output, _project = _ilastik_run(folder, **overrides)
         assert current_ilastik_output(settings)[0] is None
+
+
+# -- preflight's quality check never runs ilastik ------------------------------
+
+
+@pytest.fixture
+def ilastik_calls(monkeypatch):
+    """Every ilastik run asked for. Recorded rather than raised: the quality
+    check turns any exception into a warning, which would hide the call."""
+    from haemolynx import io
+
+    calls = []
+
+    def record(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("ilastik was run")
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", record)
+    return calls
+
+
+def test_preflight_quality_check_does_not_run_ilastik(tmp_path, ilastik_calls):
+    """Preflight runs on the panel's own thread: scoring the segmentation
+    must not start an ilastik run, which can take hours."""
+    from haemolynx.pipeline.checks import check_segmentation_quality
+
+    settings, output, _project = _ilastik_run(tmp_path, min_acceptable_segmentation_quality=1.0)
+    output.unlink()  # nothing segmented yet
+
+    report = check_segmentation_quality(settings)
+
+    assert ilastik_calls == []
+    assert any("ilastik has not yet made" in warning for warning in report.warnings), report.warnings
+    assert not report.errors
+
+
+def test_preflight_quality_check_scores_ilastiks_current_output(tmp_path, ilastik_calls):
+    from haemolynx.pipeline.checks import check_segmentation_quality
+
+    settings, _output, _project = _ilastik_run(tmp_path, min_acceptable_segmentation_quality=0.0)
+
+    report = check_segmentation_quality(settings)
+
+    assert ilastik_calls == []
+    assert [label for label, _detail in report.passed] == ["segmentation quality"], (report.passed, report.warnings)
+
+
+# -- preflight reads ilastik as the stage does ---------------------------------
+
+
+def _preflight(settings):
+    from haemolynx.pipeline import preflight
+
+    return preflight(settings, SCHEMA, echo=False)
+
+
+def test_preflight_with_ilastik_on_but_no_raw_image_checks_the_segmented_image(tmp_path):
+    """Without a raw image the stage skips ilastik and reads input_path, its
+    outputs named after it: preflight asked for ilastik's program and project
+    and looked for a cached skeleton named 'input'."""
+    mask = a_segmented_tiff(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "mask_skeleton.npy").write_bytes(b"")
+    settings = settings_for(
+        tmp_path,
+        output_dir=out,
+        use_ilastik_segmentation=True,
+        raw_image_path=None,
+        input_path=mask,
+        ilastik_classifier_path=tmp_path / "missing.ilp",
+        ilastik_executable="",
+        do_skeletonize=False,
+    )
+
+    assert segment(dict(settings)).image_path == mask
+    report = _preflight(settings)
+
+    assert not [e for e in report.errors if "ilastik" in e or "skeleton" in e], report.errors
+
+
+def test_preflight_refuses_a_raw_image_that_is_not_a_tiff(tmp_path):
+    """The build reads the raw image whenever it is set, as a TIFF: an HDF5
+    one passed preflight, then stopped the Graph stage."""
+    raw = tmp_path / "raw.h5"
+    raw.write_bytes(b"")
+    settings = settings_for(tmp_path, input_path=a_segmented_tiff(tmp_path), raw_image_path=raw)
+
+    report = _preflight(settings)
+
+    assert any("raw_image_path" in e and "not a TIFF" in e for e in report.errors), report.errors
+
+
+@pytest.mark.parametrize(
+    "overrides, named",
+    [
+        ({"ilastik_output_suffix": "tif"}, "ilastik_output_suffix"),
+        ({"ilastik_output_suffix": ".png"}, "ilastik_output_suffix"),
+        ({"ilastik_output_dir": None}, "ilastik_output_dir"),
+    ],
+)
+def test_preflight_refuses_ilastik_output_settings_the_runner_would(tmp_path, overrides, named):
+    settings, _output, _project = _ilastik_run(tmp_path, **overrides)
+
+    report = _preflight(settings)
+
+    assert any(named in e for e in report.errors), report.errors

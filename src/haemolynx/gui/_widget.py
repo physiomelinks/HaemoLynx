@@ -6992,9 +6992,12 @@ class _OptimiseRefused(Exception):
     panel as it is, and not a failure."""
 
 
-def _segmented_image_to_optimise(settings: Mapping[str, Any]) -> tuple["Path | None", str]:
+def _segmented_image_to_optimise(
+    settings: Mapping[str, Any], action: str = "Optimise settings"
+) -> tuple["Path | None", str]:
     """``(path, "")``: the segmented image Optimise settings tries settings
-    on -- the Input tab's, or, while ilastik does the segmenting, its output
+    on, and Check segmented image scores (*action*, the button pressed) --
+    the Input tab's, or, while ilastik does the segmenting, its output
     from the raw image when that output's record says it is the one a run
     would make now (``pipeline.stages.current_ilastik_output``) -- else
     ``(None, why not)``. Ilastik is never run from here: a segmentation can
@@ -7004,13 +7007,13 @@ def _segmented_image_to_optimise(settings: Mapping[str, Any]) -> tuple["Path | N
         if path is None:
             return None, (
                 "ilastik segments this run's raw image, and there is no current output of it "
-                f"to optimise on ({reason}). Run the pipeline once to make it, then press "
-                "Optimise settings."
+                f"to work on ({reason}). Run the pipeline once to make it, then press "
+                f"{action}."
             )
         return path, ""
     input_path = settings.get("input_path")
     if not input_path or not Path(input_path).is_file():
-        return None, "Choose a segmented input image first, then press Optimise settings."
+        return None, f"Choose a segmented input image first, then press {action}."
     return Path(input_path), ""
 
 
@@ -7164,6 +7167,9 @@ def _run_optimisation_in_background(
     from napari.qt.threading import thread_worker
 
     cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
+    # What the search started from: Apply writes only what it changed from
+    # these, so a row edited (or a config loaded) since keeps its new value.
+    started_from = dict(settings)
 
     @thread_worker
     def run():
@@ -7187,9 +7193,11 @@ def _run_optimisation_in_background(
         result, input_path, raw_image_error, restriction_error = payload
 
         def apply_result() -> None:
-            for name, value in result.settings.items():
-                if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+            # Only the search's changes: every setting it kept was written
+            # back as at the press, undoing edits made since.
+            for change in proposed_changes(result.settings, started_from):
+                if change.name in rows:
+                    rows[change.name].value = display_value_for(schema[change.name], change.now)
             apply_prerequisites()
 
         out_path = Path(input_path).parent / config_filename(input_path)
@@ -7608,9 +7616,12 @@ def _run_segmentation_quality_check_in_background(
     button,
     *,
     run_state: RunState,
+    segmented_path: "Path | None" = None,
 ):
     """Score the segmented input image off the GUI thread, printing the
-    breakdown to *report* when done.
+    breakdown to *report* when done. *segmented_path* is the image to score
+    (`_segmented_image_to_optimise`): ilastik's current output while it
+    segments, which is never made here.
 
     Shares *run_state* with "Run pipeline" and "Optimise settings" purely
     for mutual exclusion -- a large volume's EDT/connected-components/
@@ -7639,7 +7650,7 @@ def _run_segmentation_quality_check_in_background(
     @thread_worker
     def run():
         local_settings = dict(settings)
-        inputs = segment(local_settings)
+        inputs = segment(local_settings, segmented_path=segmented_path)
         image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             local_settings, inputs.input_format
         )
@@ -16752,16 +16763,18 @@ def settings_widget(napari_viewer=None):
         if batch_mode.setup is not None:
             report.value = SINGLE_IMAGE_IN_BATCH
             return
-        values = current_values()
-        input_path = values.get("input_path")
-        if not input_path or not Path(input_path).is_file():
-            report.value = "Choose a segmented input image first, then press Check segmented image."
+        segmented_path, refusal = _segmented_image_to_optimise(
+            current_values(), action="Check segmented image"
+        )
+        if segmented_path is None:
+            report.value = refusal
             return
         _run_segmentation_quality_check_in_background(
             _settings(),
             report,
             check_image_button,
             run_state=run_state,
+            segmented_path=segmented_path,
         )
 
     def on_check() -> None:

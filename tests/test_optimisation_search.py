@@ -1316,6 +1316,34 @@ def test_optimise_settings_runs_for_real_at_an_explicit_downsample_factor(y_shap
     )
 
 
+def test_the_search_grid_counts_voxels_of_its_own_finest_axis(y_shaped_mask, monkeypatch):
+    """Regression: voxel counts went onto the search grid divided by the
+    reduction of the image's finest axis. At 4x, 0.5 x 0.5 x 1.5 um voxels
+    reduce x and y by 4 and z by 1, so the grid's finest axis is z, at 1.5 um:
+    a scan of 9 voxels of 0.5 um is 3 of the grid's, not 2."""
+    import haemolynx.optimisation.search as search_mod
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def capture(mask, voxel_size_xyz, starting_values, *_args, **_kwargs):
+        seen.update(voxel_size_xyz=voxel_size_xyz, values=dict(starting_values))
+        raise Stop
+
+    monkeypatch.setattr(search_mod, "_Search", capture)
+    with pytest.raises(Stop):
+        optimise_skeleton_and_graph_settings(
+            y_shaped_mask, voxel_size_xyz=(0.5, 0.5, 1.5),
+            starting_values={**_DEFAULT_STARTING_VALUES, "skeleton_bundle_scan_size": 9},
+            downsample_factor=4,
+        )
+
+    assert min(seen["voxel_size_xyz"]) == pytest.approx(1.5)
+    assert seen["values"]["skeleton_bundle_scan_size"] == 3
+
+
 # ---------------------------------------------------------------------------
 # Choose optimisation types (selective groups)
 # ---------------------------------------------------------------------------
@@ -2757,3 +2785,28 @@ def test_a_full_resolution_search_is_refused_only_when_it_would_not_fit():
     assert "100 x 200 x 300" in refusal
     assert f"about {needed / 1e9:.1f} GB" in refusal
     assert "Optimisation downsampling is Off" in refusal and "Auto" in refusal
+
+
+def test_a_thick_trial_takes_the_low_ram_path_when_the_run_draws_the_large_stack_tree(tmp_path):
+    """Regression: the large-stack tree is drawn on the low-RAM path alone,
+    and a trial held in RAM drew the in-RAM tree instead of the run's."""
+    from haemolynx.optimisation.search import _thick_vessel_kwargs
+    from haemolynx.pipeline import default_schema
+
+    settings = {setting.name: setting.default for setting in default_schema()}
+    voxel = (1.0, 1.0, 1.0)
+
+    plain = _thick_vessel_kwargs(settings, voxel)
+    assert not plain["large_stack_tree"] and "use_memmap" not in plain
+
+    large = _thick_vessel_kwargs(
+        {
+            **settings,
+            "use_memmap_loading": True,
+            "memmap_directory": tmp_path,
+            "skeleton_thick_vessel_large_stack_tree": True,
+        },
+        voxel,
+    )
+    assert large["large_stack_tree"] and large["use_memmap"] is True
+    assert large["memmap_directory"] == tmp_path

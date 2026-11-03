@@ -97,9 +97,12 @@ def tiff_channels(path: str | Path | None) -> list[TiffChannel]:
             if tif.is_ome and tif.ome_metadata:
                 import re
 
-                found = re.findall(r"<Channel\b[^>]*\bName=\"([^\"]*)\"", tif.ome_metadata)
-                for index, name in enumerate(found[:count]):
-                    names[index] = name or None
+                # Every Channel element in order, named or not: collecting
+                # only the named ones gave C1 the name of C2 when C1 had none.
+                elements = re.findall(r"<Channel\b([^>]*)>", tif.ome_metadata)
+                for index, attributes in enumerate(elements[:count]):
+                    found = re.search(r"\bName=\"([^\"]*)\"", attributes)
+                    names[index] = (found.group(1) or None) if found else None
             labels = metadata.get("Labels") or []
             if labels and not any(names) and channel_axis == 1 and len(labels) >= count:
                 # A hyperstack's slice labels run channel-fastest (Z, C, ...),

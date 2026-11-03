@@ -587,6 +587,43 @@ def _ome_physical_sizes_um(ome_xml: str | None) -> dict[str, float]:
     return sizes
 
 
+#: Microns per unit for ImageJ's ``unit`` (the unit of its resolution tags
+#: and its ``spacing``), beside the OME names: ImageJ spells microns several
+#: ways, and writes the micro sign escaped.
+_IMAGEJ_LENGTH_UNIT_UM = {
+    **_OME_LENGTH_UNIT_UM,
+    "micron": 1.0,
+    "microns": 1.0,
+    "\\u00b5m": 1.0,
+}
+
+#: TIFF's ResolutionUnit CENTIMETER: the resolution tags are pixels per cm.
+#: INCH is read as microns, as it always was: tifffile writes INCH for any
+#: ``resolution=`` given without a unit, so it says nothing about the unit.
+_RESOLUTION_UNIT_CENTIMETER = 3
+
+
+def _tiff_tag_unit_um(meta: dict, tags) -> float:
+    """Microns per unit of a TIFF's resolution tags (and ImageJ's ``spacing``):
+    ImageJ's ``unit`` when it names a length, else 1e4 for a ResolutionUnit of
+    centimetres, else 1 -- the tags read as microns."""
+    unit = meta.get("unit")
+    if unit is not None:
+        per_unit = _IMAGEJ_LENGTH_UNIT_UM.get(str(unit).strip().lower()) or _IMAGEJ_LENGTH_UNIT_UM.get(
+            str(unit).strip()
+        )
+        if per_unit:
+            return float(per_unit)
+        return 1.0
+    resolution_unit = tags.get("ResolutionUnit")
+    try:
+        if resolution_unit is not None and int(resolution_unit.value) == _RESOLUTION_UNIT_CENTIMETER:
+            return 1e4
+    except (TypeError, ValueError):
+        pass
+    return 1.0
+
+
 def _voxel_size_xyz_from_tiff(
     tif, axis_order: str = CANONICAL_AXIS_ORDER
 ) -> tuple[float, float, float, dict[str, object]]:
@@ -612,6 +649,9 @@ def _voxel_size_xyz_from_tiff(
     ome_sizes = _ome_physical_sizes_um(tif.ome_metadata) if tif.is_ome else {}
     meta = tif.imagej_metadata or {}
     tags = tif.pages[0].tags
+    # The tags and ImageJ's spacing are in ImageJ's unit, or the tags' own:
+    # a stack calibrated in nm read 1000 times too coarse, "complete".
+    unit_um = _tiff_tag_unit_um(meta, tags)
 
     # Keyed by file axis: "x" the width, "y" the height, "z" the pages.
     spacing: dict[str, float] = {}
@@ -629,7 +669,7 @@ def _voxel_size_xyz_from_tiff(
         sources[axis] = "tiff_metadata"
         if axis == "z":
             if "spacing" in meta:
-                spacing[axis] = float(meta.get("spacing"))
+                spacing[axis] = float(meta.get("spacing")) * unit_um
                 if spacing[axis] <= 0:
                     invalid_axes.append(axis)
             else:
@@ -639,12 +679,15 @@ def _voxel_size_xyz_from_tiff(
             continue
         res_tag = tags.get(f"{axis.upper()}Resolution")
         if res_tag:
-            res = res_tag.value[0] / res_tag.value[1]
+            numerator, denominator = res_tag.value[0], res_tag.value[1]
+            res = numerator / denominator if denominator else 0.0
         else:
             logger.debug("No %s resolution tag found; defaulting to 1.0", axis)
             res = 1.0
             missing_axes.append(axis)
-        spacing[axis] = 1.0 / res if res else 1.0
+            spacing[axis] = 1.0
+            continue
+        spacing[axis] = unit_um / res if res else 1.0
         if res <= 0:
             invalid_axes.append(axis)
     invalid_axes.extend(axis for axis in "xyz" if not np.isfinite(spacing[axis]))
@@ -987,7 +1030,7 @@ def load_3d_h5_with_voxel_size(
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
     path = Path(filepath)
-    if dataset_name is None and path.suffix not in {".h5", ".hdf5"}:
+    if dataset_name is None and path.suffix.lower() not in {".h5", ".hdf5"}:
         raise ValueError(f"Expected a .h5/.hdf5 file, got: {filepath}")
     axis_order = axis_order_for_file(axis_order, path, dataset_name=dataset_name)
 
