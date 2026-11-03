@@ -72,6 +72,18 @@ def test_compute_branching_statistics_counts_junctions():
     assert s == {"Number of Branching Points": 2}
 
 
+def test_the_report_counts_a_junction_formed_by_two_parallel_vessels():
+    """Regression: the report counted on the graph with parallel vessels
+    collapsed, so nodes 0 and 1 (three vessel ends each) were no junction,
+    where junction shape counted them."""
+    from haemolynx.statistics import compute_vessel_statistics_by_measure
+
+    G = nx.MultiGraph()
+    G.add_edges_from([(0, 1), (0, 1), (1, 2), (0, 3)], length=10.0)
+    sections = compute_vessel_statistics_by_measure(G, enabled_measures=frozenset({"branching"}))
+    assert sections["branching"] == {"Number of Branching Points": 2}
+
+
 def test_compute_tree_asymmetry(simple_graph):
     s = compute_tree_asymmetry(simple_graph)
     assert "Tree Asymmetry Index" in s
@@ -153,8 +165,62 @@ def test_compute_fractal_dimension_with_coincident_node_positions_does_not_raise
 
     result = compute_fractal_dimension(G, pos)
 
-    assert result["Fractal Dimension (Node Positions)"] == 0.0
-    assert result["Fractal Dimension (Centreline)"] == 0.0
+    # Nothing to fit: N/A, not a dimension of 0.
+    assert result["Fractal Dimension (Node Positions)"] == "N/A (no scaling range to fit)"
+    assert result["Fractal Dimension (Centreline)"] == "N/A (no scaling range to fit)"
+
+
+def test_a_network_too_small_to_fit_reports_no_fractal_dimension():
+    """Regression: a single 15 um vessel has no scaling range to fit, and its
+    dimension was written as 0.0 beside an R^2 of N/A."""
+    G = nx.Graph()
+    G.add_edge(0, 1, length=15.0, voxels=[(0.0, 0.0, float(x)) for x in range(16)])
+    pos = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 15.0)}
+
+    result = compute_fractal_dimension(G, pos)
+
+    for name in ("Fractal Dimension (Node Positions)", "Fractal Dimension (Centreline)"):
+        assert result[name] == "N/A (no scaling range to fit)"
+        assert result[f"{name} R^2"] == "N/A (no scaling range to fit)"
+
+
+def test_a_flat_network_reports_no_density_rather_than_none():
+    """Regression: a network whose nodes span no volume (a 2D image's, or a
+    measured tissue of 0) had a vessel density of 0, as though it had no
+    vessels; every class's densities likewise."""
+    from haemolynx.statistics import compute_vessel_statistics_by_measure
+
+    G = nx.MultiGraph()
+    pos = {0: (0.0, 0.0, 0.0), 1: (0.0, 10.0, 0.0), 2: (0.0, 0.0, 10.0)}
+    for node, p in pos.items():
+        G.add_node(node, pos=p)
+    G.add_edge(0, 1, length=10.0, branch_order="B01", diameter=5.0)
+    G.add_edge(0, 2, length=10.0, branch_order="B01", diameter=5.0)
+    sections = compute_vessel_statistics_by_measure(
+        G, node_positions=pos, enabled_measures=frozenset({"vessel_density", "vessel_classes"})
+    )
+    assert sections["vessel_density"]["Vessel Density in Tissue (microns/micron³)"].startswith("N/A")
+    densities = [
+        value
+        for name, value in _leaves(sections["vessel_classes"])
+        if "Density in Tissue" in name
+    ]
+    assert densities and all(isinstance(value, str) and value.startswith("N/A") for value in densities)
+
+    measured = compute_vessel_statistics_by_measure(
+        G, node_positions=pos, enabled_measures=frozenset({"vessel_density"}),
+        tissue_volume_um3=0.0, vessel_volume_um3=0.0,
+    )["vessel_density"]
+    assert measured["Vessel Density in Tissue (microns/micron³)"].startswith("N/A")
+    assert measured["Vascular Volume Fraction in Tissue"].startswith("N/A")
+
+
+def _leaves(rows, prefix=""):
+    for name, value in rows.items():
+        if isinstance(value, dict):
+            yield from _leaves(value, f"{prefix}{name} > ")
+        else:
+            yield f"{prefix}{name}", value
 
 
 def test_fractal_dimension_centreline_sees_the_polyline_the_node_only_one_misses():
@@ -398,17 +464,39 @@ def test_sampled_path_efficiency_matches_a_search_per_sampled_pair(monkeypatch, 
 
 
 def _critical_points_by_removal(G, inlets, outlets):
-    """What robustness used to do: copy the graph once per point, remove it."""
+    """Copy the graph once per point and remove it: critical when an inlet
+    and an outlet of the point's own component (the point itself among them)
+    end up apart. A pair already in different components is no point's doing."""
     count = 0
     for point in nx.articulation_points(G):
+        component = nx.node_connected_component(G, point)
+        own_in, own_out = inlets & component, outlets & component
         H = G.copy()
         H.remove_node(point)
         if any(
-            ((inlets & c) and (outlets - c)) or ((outlets & c) and (inlets - c))
-            for c in nx.connected_components(H)
+            ((own_in & c) and (own_out - c)) or ((own_out & c) and (own_in - c))
+            for c in nx.connected_components(H) if c <= component
         ):
             count += 1
     return count
+
+
+def test_a_point_or_bridge_separates_only_an_inlet_and_outlet_it_joined():
+    """Regression: with an inlet on an island, every articulation point and
+    bridge elsewhere counted as critical, the island's inlet being apart from
+    the outlet already."""
+    G = nx.MultiGraph()
+    G.add_edges_from(
+        [("i1", "j"), ("j", "o1"), ("j", "s"), ("s", "t"), ("i2", "q")], length=1.0
+    )
+
+    result = compute_network_robustness(G, inlet_nodes={"i1", "i2"}, outlet_nodes={"o1"})
+
+    # Only j stands between i1 and o1; s only cuts off the spur to t.
+    assert result["Critical Articulation Point Count"] == 1
+    assert result["Critical Articulation Point Fraction"] == pytest.approx(0.5)
+    # Of the bridges, i1-j and j-o1 do; j-s, s-t and the island's own do not.
+    assert result["Critical Bridge Edge Count"] == 2
 
 
 @pytest.mark.parametrize("seed", range(60))

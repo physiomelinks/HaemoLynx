@@ -279,6 +279,7 @@ names it lists.
 | Occlusion Hypoperfused Length Unit | (text) | The unit of the hypoperfused lengths: um, or vessels when a vessel has no length. |
 | Occlusion Impact (Network) / By Vessel Type / By Branch Order | (text) | Sections: the single-vessel occlusion summary for the whole network, per vessel type and per branch order. |
 | Evaluated Count | vessels | Vessels whose single occlusion was evaluated. |
+| Status | (text) | Why a group's flow-loss rows are missing: none of its vessels was evaluated. |
 | Mean Flow Loss | fraction | Blocking one vessel alone: the share of total inlet-outlet flow lost (with the route weighting's fixed conductances). The mean over vessels. |
 | Median Flow Loss | fraction | The median of that flow loss. |
 | P90 Flow Loss | fraction | The 90th percentile of that flow loss. |

@@ -7425,7 +7425,9 @@ def _perturb_one(
                 name_stem=spec.name,
                 statistics_kwargs=perturbation_statistics,
                 voxel_size_zyx=voxel_size_zyx,
-                betweenness_and_communities=bool(perturbed["statistics"]),
+                # As the baseline's: only while betweenness or communities are on.
+                betweenness_and_communities=bool(perturbed["statistics"])
+                and bool(perturbation_statistics["enabled_measures"] & WEIGHTED_MEASURES),
             )
         )
 
@@ -7710,6 +7712,11 @@ def tissue_measurement(
         )
     resolved = io.resolve_image_path_with_optional_zip(Path(path))
     stat = resolved.stat()
+    # The raw image is read onto the network's grid by the factor its record
+    # holds: recorded as raw_image_downsample says now (the perturbations
+    # measure before the export records it), and part of the key.
+    _record_downsample(network.graph, settings, network.volume)
+    downsample_record = network.graph.graph.get(DOWNSAMPLE_GRAPH_ATTRIBUTE) or {}
     key = (
         str(resolved),
         stat.st_mtime_ns,
@@ -7718,6 +7725,7 @@ def tissue_measurement(
         io.axis_order_for_run(settings),
         tuple(network.volume.voxel_size_zyx),
         tuple(settings[name] for name in _TISSUE_SETTINGS),
+        int(downsample_record.get("raw_factor", 1)),
     )
     segmentation = network.volume.image
     cached = network.tissue

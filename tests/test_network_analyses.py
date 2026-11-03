@@ -62,6 +62,28 @@ def test_unequal_parallel_branches_give_the_flow_weighted_spread():
     assert result["Capillary Transit Time Status"].startswith("N/A")
 
 
+def test_a_vessel_carrying_no_flow_has_no_transit_time():
+    """Regression: transit time kept its own floor (1e-12 of the largest
+    flow) and read no flow state, so the cross-vessel of a balanced
+    Wheatstone bridge, carrying no flow everywhere else, got an endless
+    transit time, and a vessel behind a dead end with flow written got one."""
+    G = nx.MultiGraph()
+    for node, p in ((0, 3.0), (1, 2.0), (2, 2.0), (3, 1.0)):
+        G.add_node(node, pressure=p)
+    for u, v in ((0, 1), (0, 2), (1, 3), (2, 3)):
+        _flow_vessel(G, u, v, 1e-12, flow_state="solved", branch_order="B01")
+    _flow_vessel(G, 1, 2, 1e-23, flow_state="solved", branch_order="B01")  # 1e-11 of the largest
+    _flow_vessel(G, 1, 4, 1e-12, flow_state="blind_end", branch_order="B01")
+    G.nodes[4]["pressure"] = 2.0
+
+    result = compute_transit_times(G, [0], [3])
+
+    for u, v in ((1, 2), (1, 4)):
+        assert not G[u][v][0].get("transit_time_s", math.nan) < math.inf
+    tau = _tau(10.0, 100.0, 1e-12)
+    assert result["Mean Transit Time (s)"] == pytest.approx(2 * tau)
+
+
 def test_transit_time_needs_a_solved_flow():
     G = nx.MultiGraph()
     G.add_edge(0, 1, length=10.0, diameter_um=5.0)

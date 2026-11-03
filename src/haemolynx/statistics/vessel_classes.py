@@ -113,9 +113,11 @@ def _median(values: list, missing: str) -> Union[float, str]:
 
 
 def _per_volume(amount: float, volume: Optional[float]) -> Union[float, str]:
-    if volume is None:
+    # A volume of 0 (a flat network's box, a 2D image, no tissue found) is
+    # no volume either: a density of 0 would read as no vessels.
+    if volume is None or not volume > 0:
         return _NO_VOLUME
-    return amount / volume if volume > 0 else 0.0
+    return amount / volume
 
 
 def carries_flow(data: dict) -> bool:

@@ -461,7 +461,9 @@ def compute_vessel_statistics_by_measure(
     if "tortuosity" in enabled:
         sections["tortuosity"] = compute_tortuosity_measures(G, node_positions, is_mg)
     if "branching" in enabled:
-        sections["branching"] = compute_branching_statistics(G_simple)
+        # The original G: two parallel vessels are two vessel ends at each of
+        # their nodes, as junction shape counts them.
+        sections["branching"] = compute_branching_statistics(G)
     if "tree_asymmetry" in enabled:
         sections["tree_asymmetry"] = compute_tree_asymmetry(G_simple)
     if "fractal_dimension" in enabled:

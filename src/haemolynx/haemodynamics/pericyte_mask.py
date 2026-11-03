@@ -18,11 +18,12 @@ from scipy.spatial import cKDTree
 from haemolynx.geometry import cumulative_lengths
 from haemolynx.io import (
     CANONICAL_AXIS_ORDER,
+    voxel_size_xyz_from_zyx,
     voxel_size_zyx_from_xyz,
 )
 from haemolynx.io.downsample import graph_downsample, mask_volume_like_graph
 from haemolynx.io.load import load_binary_mask_voxel_size_and_status
-from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
+from haemolynx.io.vessel_masks import _resolve_mask_voxel_size_xyz
 from .constriction import (
     apply_constriction_sites,
     is_capillary_branch_order,
@@ -243,19 +244,28 @@ def load_pericyte_mask(
     # measured from the crop_on_import box's corner when the image was cut,
     # on the grid it was downsampled to.
     mask_bool = mask_volume_like_graph(mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION)
-    mask_voxel_size, _source = resolve_voxel_size_xyz(
-        metadata_voxel_size_xyz=metadata_voxel_size,
-        metadata_status=metadata_status,
+    downsample = graph_downsample(graph)
+    image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
+    # Under the auto policy a mask with no voxel size of its own (an ilastik
+    # export) takes the image's as read, as the vessel masks do.
+    if downsample is not None:
+        source_voxel_size_xyz = downsample.source_voxel_size_xyz
+    elif image_voxel_size_zyx is not None:
+        source_voxel_size_xyz = voxel_size_xyz_from_zyx(image_voxel_size_zyx)
+    else:
+        source_voxel_size_xyz = None
+    mask_voxel_size = _resolve_mask_voxel_size_xyz(
+        metadata_voxel_size,
+        metadata_status,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
+        fallback_voxel_size_xyz=source_voxel_size_xyz,
     )
     # The mask's own voxel size is the image's as read; reduced with the
     # image, it is the run's.
-    downsample = graph_downsample(graph)
     if downsample is not None:
         mask_voxel_size = downsample.scale_voxel_size_xyz(mask_voxel_size)
     mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
-    image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
     if image_voxel_size_zyx is not None and not np.allclose(
         mask_voxel_size_zyx, np.asarray(image_voxel_size_zyx, dtype=float), rtol=1e-3, atol=0.0
     ):

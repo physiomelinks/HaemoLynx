@@ -396,6 +396,7 @@ _add(T, "Occlusion Hypoperfusion Threshold (fraction)", "fraction", "A vessel co
 _add(T, "Occlusion Hypoperfused Length Unit", TEXT, "The unit of the hypoperfused lengths: um, or vessels when a vessel has no length.")
 _add(T, "Occlusion Impact (Network) / By Vessel Type / By Branch Order", TEXT, "Sections: the single-vessel occlusion summary for the whole network, per vessel type and per branch order.", pattern=r"Occlusion Impact (\(Network\)|By Vessel Type|By Branch Order)")
 _add(T, "Evaluated Count", "vessels", "Vessels whose single occlusion was evaluated.")
+_add(T, "Status", TEXT, "Why a group's flow-loss rows are missing: none of its vessels was evaluated.")
 _add(T, "Mean Flow Loss", "fraction", "Blocking one vessel alone: the share of total inlet-outlet flow lost (with the route weighting's fixed conductances). The mean over vessels.")
 _add(T, "Median Flow Loss", "fraction", "The median of that flow loss.")
 _add(T, "P90 Flow Loss", "fraction", "The 90th percentile of that flow loss.")

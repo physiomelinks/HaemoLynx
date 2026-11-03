@@ -468,6 +468,26 @@ def test_a_pericytes_depth_is_read_at_the_images_z_spacing(tmp_path):
     assert summary["objects_per_mm_capillary"] == pytest.approx(25.0)
 
 
+def test_a_pericyte_mask_without_a_voxel_size_of_its_own_takes_the_images(tmp_path):
+    """Regression: an ilastik export carries no voxel size; read as 1 um, it
+    was refused on any image whose voxels are not 1 um, where the vessel and
+    cell masks take the image's."""
+    G = nx.MultiGraph()
+    G.graph["image_voxel_size_zyx"] = (2.0, 0.5, 0.5)
+    mask = np.zeros((4, 6, 6), dtype=np.uint8)
+    mask[1, 2:4, 2:4] = 1
+    path = tmp_path / "pericytes.tif"
+    tifffile.imwrite(str(path), mask)
+
+    loaded, voxel_size_xyz, voxel_size_zyx = load_pericyte_mask(path, G)
+
+    assert voxel_size_xyz == (0.5, 0.5, 2.0) and voxel_size_zyx == (2.0, 0.5, 0.5)
+    assert loaded.sum() == 4
+    # A voxel size given by the run still wins.
+    with pytest.raises(ValueError, match="does not match"):
+        load_pericyte_mask(path, G, voxel_size_override_xyz=(1.0, 1.0, 1.0), voxel_size_policy="override")
+
+
 # --- the perturbation ----------------------------------------------------------------
 
 

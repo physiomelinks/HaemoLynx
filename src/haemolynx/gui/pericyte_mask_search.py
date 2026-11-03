@@ -85,6 +85,20 @@ class PericyteMaskFill:
     released: tuple[str, ...] = ()
 
 
+def filled_after_renumbering(filled: Mapping[str, Any], rows: Mapping[str, Any]) -> dict[str, Any]:
+    """What the panel filled, once an entry added or removed has numbered the
+    entries afresh: the measurement row's as it was, and each entry's row
+    that still holds a mask the panel filled into an entry. Else the masks
+    the panel found would read as the user's own, never to be replaced."""
+    kept = {name: value for name, value in filled.items() if name == MEASUREMENT_FIELD}
+    panel_masks = {_path_key(value) for name, value in filled.items() if name != MEASUREMENT_FIELD}
+    panel_masks.discard(None)
+    for name, value in rows.items():
+        if perturbation_index(name) is not None and _path_key(value) in panel_masks:
+            kept[name] = value
+    return kept
+
+
 def _path_key(value: Any) -> str | None:
     if value in (None, ""):
         return None

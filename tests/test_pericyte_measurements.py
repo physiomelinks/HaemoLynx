@@ -731,6 +731,35 @@ def test_the_raw_image_reading_needs_a_raw_image():
     assert any("wall" in line for line in check_pericyte_measurements(settings).warnings)
 
 
+def test_the_measured_constriction_perturbation_needs_the_raw_image_too():
+    """Regression: the perturbation reads its profiles as the measurement does,
+    with measure_pericytes off or on; preflight passed it, and it failed at
+    the end of the run for want of a raw image."""
+    entry = {
+        "name": "as_measured",
+        "type": "pericyte_measured_constriction",
+        "overrides": {"use_pericyte_mask_constriction": True, "pericyte_mask_path": "pericytes.tif"},
+    }
+    settings = {
+        **SCHEMA.defaults(),
+        "run_perturbations": True,
+        "perturbations": [entry],
+        "pericyte_profile_reading": "raw_image_fwhm",
+    }
+    assert not settings["measure_pericytes"]
+    (error,) = check_pericyte_measurements(settings).errors
+    assert error.startswith("The as_measured perturbation's") and "raw_image_path is not set" in error
+
+    settings["raw_image_path"] = "raw.tif"
+    assert not check_pericyte_measurements(settings).errors
+    assert not check_pericyte_measurements(
+        {**settings, "raw_image_path": None, "run_perturbations": False}
+    ).errors
+    assert not check_pericyte_measurements(
+        {**settings, "raw_image_path": None, "pericyte_profile_reading": "segmentation"}
+    ).errors
+
+
 def test_the_reading_choices_are_the_modules():
     from haemolynx.haemodynamics.pericyte_measurements import PROFILE_READINGS
 

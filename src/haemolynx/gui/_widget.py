@@ -139,6 +139,7 @@ from haemolynx.gui.pericyte_mask_search import (
     MEASUREMENT_FIELD as PERICYTE_MEASUREMENT_FIELD,
     REFERENCE_SETTINGS as PERICYTE_REFERENCE_SETTINGS,
     TRIGGER_SETTINGS as PERICYTE_MASK_TRIGGERS,
+    filled_after_renumbering as pericyte_filled_after_renumbering,
     perturbation_field as pericyte_perturbation_field,
     perturbation_index as pericyte_perturbation_index,
     update_pericyte_mask_rows,
@@ -15121,9 +15122,10 @@ def settings_widget(napari_viewer=None):
         pericyte_references_seen[0] = reference_key
         if rebuilt:
             # The entries were numbered afresh: what the panel filled an
-            # entry's row with is not known by its index any more.
-            for name in [name for name in pericyte_rows_filled if name != PERICYTE_MEASUREMENT_FIELD]:
-                pericyte_rows_filled.pop(name)
+            # entry's row with is known by the mask it still holds.
+            refilled = pericyte_filled_after_renumbering(pericyte_rows_filled, after)
+            pericyte_rows_filled.clear()
+            pericyte_rows_filled.update(refilled)
         if restoring_settings[0] or rebuilt:
             return
         fill = update_pericyte_mask_rows(

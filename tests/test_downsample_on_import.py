@@ -832,6 +832,17 @@ def test_a_mask_read_later_is_reduced_by_the_graphs_record():
     assert mask_volume_like_graph(whole, nx.MultiGraph(), description="pericyte mask") is whole
 
 
+def test_a_vessel_mask_read_later_can_be_reduced_by_majority():
+    whole = np.zeros((20, 40, 64), dtype=bool)
+    whole[3, 5, 7] = True  # one voxel of its block
+    whole[10:12, 20:22, 30:32] = True  # a whole block
+
+    placed = mask_volume_like_graph(whole, _reduced_graph(), description="vessel mask", reduce="majority")
+
+    assert placed.shape == (10, 20, 32)
+    assert placed[5, 10, 15] and placed.sum() == 1
+
+
 def test_a_raw_image_read_later_is_reduced_by_the_graphs_record_and_its_own_factor():
     whole = np.arange(20 * 40 * 64, dtype=np.float32).reshape(20, 40, 64)
 
