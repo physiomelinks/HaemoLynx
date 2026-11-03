@@ -385,6 +385,14 @@ def check_batch(
         report.add_warning(
             "crop_method is 'coordinates': the same box is cut from every image."
         )
+    if str(settings.get("voxel_size_policy", "auto")).lower() == "override" or (
+        settings.get("voxel_size_override_xyz") is not None
+        and str(settings.get("voxel_size_policy", "auto")).lower() == "auto"
+    ):
+        report.add_warning(
+            "voxel_size_override_xyz is one voxel size for every image: read in place of "
+            "each image's own (policy override), or where its metadata lacks one (auto)."
+        )
     for name in ("do_skeletonize", "do_graph_building"):
         if settings.get(name, True) is False:
             report.add_warning(

@@ -692,3 +692,12 @@ def test_a_batch_opens_no_window_for_any_image(tmp_path, base):
     assert NO_WINDOWS == {"interactive_plots": False, "show_plots_in_ide": False, "visualize_vtk": False}
     for name in NO_WINDOWS:
         assert settings[name] is False, name
+
+
+def test_a_batch_says_one_voxel_size_override_is_every_images(base, schema):
+    def warned(settings):
+        return [w for w in check_batch(settings, schema).warnings if "one voxel size for every image" in w]
+
+    assert warned(base) == []
+    assert warned({**base, "voxel_size_policy": "override", "voxel_size_override_xyz": [1.0, 1.0, 2.0]})
+    assert warned({**base, "voxel_size_policy": "auto", "voxel_size_override_xyz": [1.0, 1.0, 2.0]})

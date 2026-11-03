@@ -1185,10 +1185,106 @@ def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
     from haemolynx.io.crop import crop_problems
 
     problems = crop_problems(settings)
+    shape = segmented_image_shape(settings) if not problems else None
+    if shape is not None:
+        # Against this image, read from its header: a box outside it
+        # passed, and the Skeletonise stage (or one image of a batch) stopped.
+        from haemolynx.io.crop import crop_box_from_settings
+
+        try:
+            crop_box_from_settings(settings, shape)
+        except ValueError as error:
+            problems = [f"{error} (the segmented image is {shape} voxels, z, y, x)"]
     for problem in problems:
         report.add_error(f"Crop on import: {problem}")
     if not problems:
         report.add_pass("crop on import", str(settings.get("crop_method")))
+    return report
+
+
+def segmented_image_shape(settings: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    """The segmented image's shape ``(z, y, x)`` as the run reads it, from
+    its header -- a 2D image as a stack of one -- or None: no image yet
+    (ilastik has still to make it), or not a TIFF or HDF5 one can read."""
+    from haemolynx.io import axis_order_for_run, h5_volume_shape
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    path = segmented_input_path(dict(settings))
+    if path is None or not Path(path).is_file():
+        return None
+    axis_order = axis_order_for_run(settings)
+    suffix = Path(path).suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        header = _tiff_header(path, axis_order)
+        shape = None if header is None else header[0]
+    elif suffix in {".h5", ".hdf5"}:
+        try:
+            shape = tuple(int(n) for n in h5_volume_shape(path, axis_order=axis_order))
+        except Exception:  # noqa: BLE001 - the loader reports an unreadable file itself
+            return None
+    else:
+        return None
+    if shape is not None and len(shape) == 2:
+        shape = (1, *shape)
+    return tuple(shape) if shape is not None and len(shape) == 3 else None
+
+
+def raw_image_shape(settings: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    """The raw image's shape ``(z, y, x)`` as the run reads its channel
+    (``raw_image_channel``), from its header -- a 2D image as a stack of
+    one -- or None: unset, missing, not a TIFF, or its channel not one it has."""
+    import tifffile
+
+    from haemolynx.io import axis_order_for_file, axis_order_for_run, axis_order_transpose, tiff_channel_axis
+
+    path = settings.get("raw_image_path")
+    if not path or Path(path).suffix.lower() not in {".tif", ".tiff"} or not Path(path).is_file():
+        return None
+    try:
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            axes = series.axes.upper()
+            shape = [int(n) for n in series.shape]
+            channel_axis = tiff_channel_axis(
+                axes, shape, tif.imagej_metadata, tif.ome_metadata if tif.is_ome else None
+            )
+    except Exception:  # noqa: BLE001 - the loader reports an unreadable file itself
+        return None
+    channel = settings.get("raw_image_channel")
+    if channel_axis is not None:
+        if channel is None or not 0 <= int(channel) < shape[channel_axis]:
+            return None  # check_image_channels says why
+        del shape[channel_axis]
+    shape = [n for n in shape if n != 1]
+    if len(shape) == 2:
+        return (1, shape[0], shape[1])
+    if len(shape) != 3:
+        return None
+    order = axis_order_for_file(axis_order_for_run(settings), path)
+    return tuple(shape[axis] for axis in axis_order_transpose(order))
+
+
+def check_raw_image_shape(settings: Mapping[str, Any]) -> CheckReport:
+    """The raw image must be the stack the segmentation was made from: the
+    network build reads it beside the mask whenever it is set, and one of
+    another shape stopped the Graph stage after every step, the graph unsaved.
+    Read from the two headers, the raw image's channel as the run reads it;
+    not checked while either cannot be read yet (ilastik makes the mask)."""
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report  # no image: nothing here applies
+    raw = raw_image_shape(settings)
+    segmented = segmented_image_shape(settings)
+    if raw is None or segmented is None:
+        return report
+    if raw != segmented:
+        report.add_error(
+            f"raw_image_path: {Path(settings['raw_image_path']).name} is {raw} voxels (z, y, x) "
+            f"but the segmented image is {segmented}: it must be the stack the segmentation was "
+            "made from. Fix: choose that raw image, or clear raw_image_path."
+        )
+    else:
+        report.add_pass("raw image shape", f"{raw}, the segmented image's")
     return report
 
 
@@ -1206,7 +1302,15 @@ def check_voxel_size_override(settings: Mapping[str, Any]) -> CheckReport:
 
     report = CheckReport()
     override = settings.get("voxel_size_override_xyz")
-    if override is None or str(settings.get("voxel_size_policy", "auto")).lower() != "auto":
+    policy = str(settings.get("voxel_size_policy", "auto")).lower()
+    if policy == "override" and override is None:
+        report.add_error(
+            "voxel_size_policy is override but voxel_size_override_xyz is not set: the run "
+            "would stop reading the image. Fix: set the voxel size (x, y, z) in um, or set "
+            "voxel_size_policy to auto."
+        )
+        return report
+    if override is None or policy != "auto":
         return report
     image = _tiff_header(segmented_input_path(dict(settings)), axis_order_for_run(settings))
     if image is None:
@@ -1331,6 +1435,13 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
             report.add_error(
                 f"{name} needs the run's image, and a synthetic network has none. Fix: switch it off."
             )
+    for name in _mask_reading_perturbations(settings):
+        # Read with the image's axis order and voxel size, rows the tab hides
+        # for a synthetic network, and lined up with no image at all.
+        report.add_error(
+            f"perturbation '{name}' reads a mask lined up with the run's image, and a synthetic "
+            "network has none. Fix: remove it, or run it on the image's own run."
+        )
     unread = [
         ("use_ilastik_segmentation", "nothing is segmented"),
         ("measure_diameters_from_raw_image", "the vessels keep the widths they were drawn with"),
@@ -1357,6 +1468,23 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
             return report  # check_settings reports the scale
         report.extend(_check_planned_solver_memory(settings, plan.nodes))
     return report
+
+
+def _mask_reading_perturbations(settings: Mapping[str, Any]) -> list[str]:
+    """The names of the perturbations a run makes that read a mask of the
+    image: a block mask, or pericyte sites from a pericyte mask."""
+    if not settings.get("run_perturbations"):
+        return []
+    from haemolynx.haemodynamics.perturbations import perturbations_from_settings, places_pericytes
+
+    names = []
+    for spec in perturbations_from_settings(settings):
+        merged = {**settings, **dict(spec.overrides)}
+        if spec.type == "capillary_block_mask" or (
+            places_pericytes(spec.type) and merged.get("use_pericyte_mask_constriction")
+        ):
+            names.append(spec.name)
+    return names
 
 
 def _check_planned_solver_memory(settings: Mapping[str, Any], nodes: int) -> CheckReport:
@@ -1516,6 +1644,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_segmentation_quality(settings))
     report.extend(check_raw_image(settings))
     report.extend(check_image_channels(settings))
+    report.extend(check_raw_image_shape(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))
     report.extend(check_voxel_size_override(settings))

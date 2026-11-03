@@ -480,3 +480,64 @@ def test_preflight_refuses_ilastik_output_settings_the_runner_would(tmp_path, ov
     report = _preflight(settings)
 
     assert any(named in e for e in report.errors), report.errors
+
+
+# -- the raw image and the crop box against the segmented image ---------------
+
+
+def _raw_shape_report(tmp_path, raw_array, *, segmented=None, **overrides):
+    from haemolynx.pipeline.checks import check_raw_image_shape
+
+    mask = a_segmented_tiff(tmp_path) if segmented is None else segmented
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, raw_array, **overrides.pop("write", {}))
+    settings = settings_for(tmp_path, input_path=mask, raw_image_path=raw, **overrides)
+    return check_raw_image_shape(settings)
+
+
+def test_preflight_refuses_a_raw_image_of_another_shape(tmp_path):
+    """Regression: preflight passed it, and the Graph stage then stopped after
+    every step, reading it beside the mask, with the graph unsaved."""
+    report = _raw_shape_report(tmp_path, np.zeros((3, 4, 4), np.uint16))
+
+    assert any("(3, 4, 4)" in e and "(4, 4, 4)" in e for e in report.errors), report.errors
+
+
+def test_preflight_passes_the_raw_images_channel_of_the_masks_shape(tmp_path):
+    assert _raw_shape_report(tmp_path, np.zeros((4, 4, 4), np.uint16)).errors == []
+    composite = np.zeros((4, 2, 4, 4), np.uint16)  # z, c, y, x
+    folder = tmp_path / "composite"
+    folder.mkdir()
+    report = _raw_shape_report(
+        folder, composite, raw_image_channel=1,
+        write={"imagej": True, "metadata": {"axes": "ZCYX", "mode": "composite"}},
+    )
+    assert report.errors == [] and report.passed
+
+
+def test_preflight_compares_a_2d_raw_image_with_a_2d_mask(tmp_path):
+    mask = tmp_path / "plane.tif"
+    tifffile.imwrite(mask, np.zeros((6, 8), np.uint8))
+    assert _raw_shape_report(tmp_path, np.zeros((6, 8), np.uint16), segmented=mask).errors == []
+    other = tmp_path / "other"
+    other.mkdir()
+    mask2 = other / "plane.tif"
+    tifffile.imwrite(mask2, np.zeros((6, 8), np.uint8))
+    assert _raw_shape_report(other, np.zeros((6, 9), np.uint16), segmented=mask2).errors
+
+
+def test_preflight_refuses_a_crop_box_outside_the_image(tmp_path):
+    """Regression: only the box's own numbers were checked, so a box past the
+    image passed and the Skeletonise stage (or one image of a batch) stopped."""
+    from haemolynx.pipeline.checks import check_crop_on_import
+
+    mask = a_segmented_tiff(tmp_path)  # 4 x 4 x 4
+    settings = settings_for(
+        tmp_path, input_path=mask, crop_on_import=True, crop_method="coordinates",
+        crop_start_xyz=[100, 0, 0], crop_end_xyz=[120, 3, 3],
+    )
+
+    (error,) = check_crop_on_import(settings).errors
+    assert "Crop on import" in error and "(4, 4, 4)" in error
+    inside = dict(settings, crop_start_xyz=[0, 0, 0], crop_end_xyz=[2, 2, 2])
+    assert check_crop_on_import(inside).errors == []
