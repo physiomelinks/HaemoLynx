@@ -656,6 +656,27 @@ def test_with_ilastik_the_segmented_input_is_ilastiks_output_not_its_input(tmp_p
     # Once `segment` has run it replaces input_path with that same output.
     settings["input_path"] = expected
     assert segmented_input_path(settings) == expected
+    # ilastik may write the .tif it was asked for as .tiff.
+    settings["input_path"] = tmp_path / "ilastik" / "stack_segmented.tif"
+    assert segmented_input_path(settings) == settings["input_path"]
+
+
+def test_with_ilastik_another_file_in_its_output_folder_is_not_this_images_output(tmp_path):
+    """Regression: any file in ilastik_output_dir counted as ilastik's output,
+    so a resumed run read another raw image's segmentation, or a vessel
+    mask's, from the same folder."""
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    settings = _run_settings(
+        use_ilastik_segmentation=True,
+        raw_image_path=tmp_path / "raw" / "stack.tif",
+        ilastik_output_dir=tmp_path / "ilastik",
+        ilastik_output_suffix=".tif",
+    )
+    expected = tmp_path / "ilastik" / "stack_segmented.tif"
+    for other in ("old_stack_segmented.tif", "stack_large_arteriole_segmented.tif"):
+        settings["input_path"] = tmp_path / "ilastik" / other
+        assert segmented_input_path(settings) == expected, other
 
 
 def test_the_edt_mask_is_the_segmented_input(tmp_path):

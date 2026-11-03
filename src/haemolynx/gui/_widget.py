@@ -180,6 +180,7 @@ from haemolynx.optimisation import (
     OptimisationEvent,
     build_report_text,
     config_filename,
+    finest_factor_fitting_memory,
     full_resolution_search_refusal,
     optimise_fwhm_settings,
     optimise_skeleton_and_graph_settings,
@@ -1333,6 +1334,9 @@ def _scale_layer_from_its_file(
     if found is None:
         return None
     scale = file_axis_spacing_from_xyz(found[0], axis_order)
+    if len(getattr(getattr(layer, "data", None), "shape", ())) == 2:
+        # A 2D image's own axes are (y, x), not reordered.
+        scale = file_axis_spacing_from_xyz(found[0])[1:]
     try:
         layer.scale = scale
     except Exception:  # noqa: BLE001 - a layer that will not take a scale is survivable
@@ -6991,9 +6995,12 @@ class _OptimiseRefused(Exception):
     panel as it is, and not a failure."""
 
 
-def _segmented_image_to_optimise(settings: Mapping[str, Any]) -> tuple["Path | None", str]:
+def _segmented_image_to_optimise(
+    settings: Mapping[str, Any], action: str = "Optimise settings"
+) -> tuple["Path | None", str]:
     """``(path, "")``: the segmented image Optimise settings tries settings
-    on -- the Input tab's, or, while ilastik does the segmenting, its output
+    on, and Check segmented image scores (*action*, the button pressed) --
+    the Input tab's, or, while ilastik does the segmenting, its output
     from the raw image when that output's record says it is the one a run
     would make now (``pipeline.stages.current_ilastik_output``) -- else
     ``(None, why not)``. Ilastik is never run from here: a segmentation can
@@ -7003,13 +7010,13 @@ def _segmented_image_to_optimise(settings: Mapping[str, Any]) -> tuple["Path | N
         if path is None:
             return None, (
                 "ilastik segments this run's raw image, and there is no current output of it "
-                f"to optimise on ({reason}). Run the pipeline once to make it, then press "
-                "Optimise settings."
+                f"to work on ({reason}). Run the pipeline once to make it, then press "
+                f"{action}."
             )
         return path, ""
     input_path = settings.get("input_path")
     if not input_path or not Path(input_path).is_file():
-        return None, "Choose a segmented input image first, then press Optimise settings."
+        return None, f"Choose a segmented input image first, then press {action}."
     return Path(input_path), ""
 
 
@@ -7059,14 +7066,22 @@ def _optimise_settings_for_run(
     volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
     voxel_size_xyz = volume.voxel_size_xyz
     use_memmap = bool(local_settings.get("use_memmap_loading"))
-    if use_memmap and downsample_factor == 1:
+    min_downsample_factor = 1
+    if use_memmap and downsample_factor in (None, 1):
         if available_bytes is None:
             from haemolynx.haemodynamics import available_memory_bytes
 
             available_bytes = available_memory_bytes()
-        refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
-        if refusal is not None:
-            raise _OptimiseRefused(refusal)
+        if downsample_factor == 1:
+            refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
+            if refusal is not None:
+                raise _OptimiseRefused(refusal)
+        else:
+            # Auto chooses no grid finer than fits: its resolution cap alone
+            # could resolve to full resolution on any stack.
+            min_downsample_factor = finest_factor_fitting_memory(
+                volume.image.shape, tuple(reversed(voxel_size_xyz)), available_bytes
+            )
     raw_mask = _to_binary_volume_for_skeletonization(
         volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
     )
@@ -7114,15 +7129,22 @@ def _optimise_settings_for_run(
         raw_image_stain=raw_image_stain,
         max_passes=max_passes,
         thick_restriction_mask=restriction,
+        min_downsample_factor=min_downsample_factor,
     )
     # Voxel counts back from the run's grid to the image as read, as the
     # rows hold them.
-    result = replace(result, settings={
-        **result.settings,
-        **pipeline_stages.skeleton_voxel_settings_from_grid(
-            result.settings, local_settings, volume.downsample
+    result = replace(
+        result,
+        settings={
+            **result.settings,
+            **pipeline_stages.skeleton_voxel_settings_from_grid(
+                result.settings, local_settings, volume.downsample
+            ),
+        },
+        run_grid_factor=(
+            1 if volume.downsample is None or volume.downsample.is_identity else int(volume.downsample.factor)
         ),
-    })
+    )
     return result, local_settings["input_path"], raw_image_error, restriction_error
 
 
@@ -7163,6 +7185,9 @@ def _run_optimisation_in_background(
     from napari.qt.threading import thread_worker
 
     cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
+    # What the search started from: Apply writes only what it changed from
+    # these, so a row edited (or a config loaded) since keeps its new value.
+    started_from = dict(settings)
 
     @thread_worker
     def run():
@@ -7186,9 +7211,11 @@ def _run_optimisation_in_background(
         result, input_path, raw_image_error, restriction_error = payload
 
         def apply_result() -> None:
-            for name, value in result.settings.items():
-                if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+            # Only the search's changes: every setting it kept was written
+            # back as at the press, undoing edits made since.
+            for change in proposed_changes(result.settings, started_from):
+                if change.name in rows:
+                    rows[change.name].value = display_value_for(schema[change.name], change.now)
             apply_prerequisites()
 
         out_path = Path(input_path).parent / config_filename(input_path)
@@ -7607,9 +7634,12 @@ def _run_segmentation_quality_check_in_background(
     button,
     *,
     run_state: RunState,
+    segmented_path: "Path | None" = None,
 ):
     """Score the segmented input image off the GUI thread, printing the
-    breakdown to *report* when done.
+    breakdown to *report* when done. *segmented_path* is the image to score
+    (`_segmented_image_to_optimise`): ilastik's current output while it
+    segments, which is never made here.
 
     Shares *run_state* with "Run pipeline" and "Optimise settings" purely
     for mutual exclusion -- a large volume's EDT/connected-components/
@@ -7638,7 +7668,7 @@ def _run_segmentation_quality_check_in_background(
     @thread_worker
     def run():
         local_settings = dict(settings)
-        inputs = segment(local_settings)
+        inputs = segment(local_settings, segmented_path=segmented_path)
         image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             local_settings, inputs.input_format
         )
@@ -16628,7 +16658,7 @@ def settings_widget(napari_viewer=None):
         report.value = (
             f"Saved the preset {preset.name} ({changes}) in {preset.path}\n"
             "Not kept, as they belong to one image: its files and folders, "
-            "channels, labels, voxel size, axis order, crop box, boundary nodes "
+            "channels, labels, voxel size, axis order, crop on import, boundary nodes "
             "and positions, and the switches reusing its cached outputs"
         )
         return True
@@ -16841,16 +16871,18 @@ def settings_widget(napari_viewer=None):
         if batch_mode.setup is not None:
             report.value = SINGLE_IMAGE_IN_BATCH
             return
-        values = current_values()
-        input_path = values.get("input_path")
-        if not input_path or not Path(input_path).is_file():
-            report.value = "Choose a segmented input image first, then press Check segmented image."
+        segmented_path, refusal = _segmented_image_to_optimise(
+            current_values(), action="Check segmented image"
+        )
+        if segmented_path is None:
+            report.value = refusal
             return
         _run_segmentation_quality_check_in_background(
             _settings(),
             report,
             check_image_button,
             run_state=run_state,
+            segmented_path=segmented_path,
         )
 
     def on_check() -> None:

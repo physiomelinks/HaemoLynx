@@ -99,7 +99,7 @@ from haemolynx.io.downsample import (
     raw_volume_like_graph,
     record_on_graph as record_downsample_on_graph,
 )
-from haemolynx.io.ilastik import ilastik_segmented_path
+from haemolynx.io.ilastik import ilastik_segmented_path, ilastik_segmented_stem
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -469,15 +469,22 @@ def segmented_input_path(settings: dict) -> Path | None:
     With ilastik on, the Input tab's ``input_path`` is not the answer until
     `segment` has replaced it with ilastik's output (it may still hold an
     unrelated file from before ilastik was switched on): it counts only once
-    it lies in ``ilastik_output_dir``. Otherwise the output is derived where
-    `segment` writes it -- that stage's own naming rule. None for a
-    synthetic network, which has no segmented image."""
+    it is the output for this raw image -- in ``ilastik_output_dir``, named
+    ``{raw image stem}_segmented`` (ilastik may have written ``.tif`` as
+    ``.tiff``). Any file in that folder counted, so a resumed run read
+    another raw image's segmentation, or a vessel mask's. Otherwise the
+    output is derived where `segment` writes it -- that stage's own naming
+    rule. None for a synthetic network, which has no segmented image."""
     if graph.network_is_synthetic(settings):
         return None
     produced = settings.get("input_path")
     if ilastik_segments(settings):
         output_dir = Path(settings["ilastik_output_dir"])
-        if produced is not None and Path(produced).parent == output_dir:
+        if (
+            produced is not None
+            and Path(produced).parent == output_dir
+            and Path(produced).stem == ilastik_segmented_stem(settings["raw_image_path"])
+        ):
             return Path(produced)
         return ilastik_segmented_path(
             output_dir, settings["raw_image_path"], settings["ilastik_output_suffix"]
@@ -1126,6 +1133,15 @@ SKELETON_VOXEL_SETTINGS: tuple[str, ...] = (
 )
 
 
+def finest_spacing_ratio(source_voxel_size_zyx, grid_voxel_size_zyx) -> float:
+    """How many voxels of the source's finest axis one voxel of the grid's
+    finest axis spans: what a count of finest-axis voxels (the skeleton
+    clean-up's) is divided by on the grid. Not the source's finest axis's
+    own reduction: a coarse z reduced less can be the grid's finest axis
+    (z 1.5 um, x and y 0.5 um at 4x: a 1.5 um grid voxel, not 2 um)."""
+    return round(float(min(grid_voxel_size_zyx)) / float(min(source_voxel_size_zyx)), 9)
+
+
 def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Downsample | None) -> dict:
     """The :data:`SKELETON_VOXEL_SETTINGS` a run on *downsample*'s grid uses:
     each the same physical length as on the image as read, so divided by the
@@ -1136,8 +1152,7 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     again as many false junctions (2026-10-19)."""
     if downsample is None or downsample.is_identity:
         return {}
-    finest = int(np.argmin(downsample.source_voxel_size_zyx))
-    factor = float(downsample.axis_factors_zyx[finest])
+    factor = finest_spacing_ratio(downsample.source_voxel_size_zyx, downsample.voxel_size_zyx)
     scaled = {}
     for name in SKELETON_VOXEL_SETTINGS:
         value = settings.get(name)
@@ -1176,8 +1191,7 @@ def skeleton_voxel_settings_from_grid(
     optimiser, which searches on the run's grid. Empty without a reduction."""
     if downsample is None or downsample.is_identity:
         return {}
-    finest = int(np.argmin(downsample.source_voxel_size_zyx))
-    factor = int(downsample.axis_factors_zyx[finest])
+    factor = finest_spacing_ratio(downsample.source_voxel_size_zyx, downsample.voxel_size_zyx)
     on_grid = skeleton_voxel_settings_on_grid(settings, downsample)
     restored = {}
     for name in SKELETON_VOXEL_SETTINGS:

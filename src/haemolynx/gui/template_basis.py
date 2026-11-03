@@ -1,6 +1,6 @@
 """Segmentation source follows a synthetic template's diameter basis.
 
-When the user picks a template run (``synthetic_template_path``), or switches
+When the user picks a template run or batch template (``synthetic_template_path``), or switches
 the Input to a synthetic network with one already picked, the panel sets the
 Segmentation source row to the basis the template's diameters were measured on
 (``synthetic.diameter_basis_of_run``, what the template records as
@@ -28,6 +28,9 @@ from haemolynx.graph.boundaries import network_is_synthetic
 TRIGGER_SETTINGS = ("network_source", "synthetic_template_path")
 #: The row set.
 TARGET_SETTING = "segmentation_source"
+#: The files a template is read from: a run, or a batch condition's runs
+#: (whose basis is the one most of them were read on).
+TEMPLATE_SUFFIXES = (".haemorun", ".haemobatch")
 
 
 @dataclass(frozen=True)
@@ -51,7 +54,7 @@ def template_basis_update(before: Mapping[str, Any], values: Mapping[str, Any]) 
     if path in (None, ""):
         return BasisUpdate()
     file = Path(path)
-    if file.suffix.lower() != ".haemorun" or not file.is_file():
+    if file.suffix.lower() not in TEMPLATE_SUFFIXES or not file.is_file():
         return BasisUpdate()
     from haemolynx.gui.run_snapshot import RunSnapshotError
     from haemolynx.synthetic import diameter_basis_of_run

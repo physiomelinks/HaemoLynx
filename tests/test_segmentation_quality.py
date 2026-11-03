@@ -123,6 +123,19 @@ def test_boundary_score_stays_full_marks_for_a_normal_two_ended_vessel():
     assert score.boundary_vessels == pytest.approx(2.0)
 
 
+def test_a_2d_image_read_as_one_slice_has_no_z_faces():
+    """Regression: a 2D image is a stack one slice deep, so both of its z
+    faces are the whole image and every vessel counted twice as touching the
+    edge."""
+    mask = np.zeros((1, 30, 30), dtype=bool)
+    mask[0, 10:13, 5:25] = True  # a vessel off every in-plane edge
+    mask[0, 20:23, 0:12] = True  # one leaving the image at x = 0
+    score = sq.score_segmented_mask(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert score.boundary_patch_count == 1
+    assert score.boundary_vessels == pytest.approx(2.0)
+
+
 def test_boundary_score_drops_as_more_places_touch_the_edge():
     shape = (20, 20, 20)
     trunk = _cylinder_along_x(shape, z=10, y=10, radius=2.0, x0=0, x1=19)

@@ -118,6 +118,7 @@ def load_capillary_block_mask(
         h5_dataset_name=h5_dataset_name,
         axis_order=axis_order,
         description=BLOCK_MASK_DESCRIPTION,
+        objects=True,
     )
     mask = mask_volume_like_graph(np.asarray(mask, dtype=bool), graph, description=BLOCK_MASK_DESCRIPTION)
     voxel_size_xyz, _source = resolve_voxel_size_xyz(

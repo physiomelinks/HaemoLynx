@@ -51,7 +51,7 @@ input_and_segmentation:
   ilastik_vessel_label: null
   # Run this ilastik executable name or path in headless mode
   ilastik_executable: ilastik.exe
-  # Kill an ilastik headless run that takes longer than this. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
+  # Kill an ilastik headless run that takes longer than this, or never with 0. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
   ilastik_timeout_seconds: 7200.0
   # Skip ilastik when its output for an image already exists and its record beside it ({output}.haemolynx.json) says it was made from this image, unchanged, by a project with the same contents, at the same vessel label, and use that output. Turn off to segment again on every run
   ilastik_reuse_existing_output: true

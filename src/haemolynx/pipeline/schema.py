@@ -571,9 +571,10 @@ SCHEMA = Schema(
             kind="float",
             default=7200.0,
             help=(
-                "Kill an ilastik headless run that takes longer than this. A "
-                "hang usually means a bad project file or unreadable input, "
-                "not a slow but working run -- raise it for very large volumes"
+                "Kill an ilastik headless run that takes longer than this, or "
+                "never with 0. A hang usually means a bad project file or "
+                "unreadable input, not a slow but working run -- raise it for "
+                "very large volumes"
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,

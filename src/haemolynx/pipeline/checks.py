@@ -85,12 +85,27 @@ def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     """ilastik is a separate program; if a run needs it, it must be findable."""
     if network_is_synthetic(settings):
         return CheckReport()  # no image: nothing here applies
+    from haemolynx.pipeline.stages import ilastik_segments
+
     report = CheckReport()
-    needed = bool(settings.get("use_ilastik_segmentation")) or ilastik_segments_vessel_masks(
-        settings
-    )
+    needed = ilastik_segments(settings) or ilastik_segments_vessel_masks(settings)
     if not needed:
         return report
+
+    from haemolynx.io.ilastik import OUTPUT_FORMATS
+
+    # What the runner refuses, or cannot name a file in, only once it starts.
+    suffix = settings.get("ilastik_output_suffix")
+    if str(suffix or "").lower() not in OUTPUT_FORMATS:
+        report.add_error(
+            f"ilastik_output_suffix is {suffix!r}; ilastik writes {', '.join(OUTPUT_FORMATS)}. "
+            "Fix: set it to one of them, with its dot."
+        )
+    if settings.get("ilastik_output_dir") in (None, ""):
+        report.add_error(
+            "ilastik segmentation is on but ilastik_output_dir is not set. Fix: set it to "
+            "the folder ilastik's segmentations are written to."
+        )
 
     executable = settings.get("ilastik_executable")
     if not executable:
@@ -279,8 +294,10 @@ def check_input_is_not_a_large_vessel_mask(
     """
     if network_is_synthetic(settings):
         return CheckReport()  # no image: nothing here applies
+    from haemolynx.pipeline.stages import ilastik_segments
+
     report = CheckReport()
-    if settings.get("use_ilastik_segmentation"):
+    if ilastik_segments(settings):
         return report
     input_path = settings.get("input_path")
     if not input_path:
@@ -782,13 +799,31 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
 
     from haemolynx.io import voxel_size_zyx_from_xyz
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
-    from haemolynx.pipeline.stages import load_volume_for_skeletonise, segment
+    from haemolynx.pipeline.stages import (
+        current_ilastik_output,
+        ilastik_segments,
+        load_volume_for_skeletonise,
+        segment,
+    )
     from haemolynx.preprocessing import score_segmented_mask
     from haemolynx.preprocessing.segmentation_quality import RESOLUTION_LIMITING_THRESHOLD
 
     local_settings = dict(settings)
+    segmented = None
+    if ilastik_segments(settings):
+        # Never segment here: preflight runs on the panel's own thread, and
+        # ilastik can take hours. Only an output a run of these settings
+        # already made is scored.
+        segmented, why_not = current_ilastik_output(settings)
+        if segmented is None:
+            report.add_warning(
+                "min_acceptable_segmentation_quality is set, but ilastik has not yet made "
+                f"the segmented image it would score ({why_not}); it is checked once a run "
+                "has segmented the raw image."
+            )
+            return report
     try:
-        inputs = segment(local_settings)
+        inputs = segment(local_settings, segmented_path=segmented)
         image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             local_settings, inputs.input_format
         )
@@ -902,6 +937,14 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
                 )
         return report
     exists, detail = resolve_existing_path(path)
+    if exists and Path(str(path)).suffix.lower() not in {".tif", ".tiff"}:
+        # Only ilastik reads another format; the build's raw evidence, the
+        # diameters and the checks read a TIFF, so a run would stop there.
+        report.add_error(
+            f"raw_image_path: {detail} is not a TIFF; the network build reads the raw image "
+            "whenever it is set, as a TIFF. Fix: save the raw image as a TIFF, or clear it."
+        )
+        return report
     if exists:
         report.add_pass("raw_image_path", detail)
         return report
@@ -1135,6 +1178,39 @@ def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
         report.add_error(f"Crop on import: {problem}")
     if not problems:
         report.add_pass("crop on import", str(settings.get("crop_method")))
+    return report
+
+
+def check_voxel_size_override(settings: Mapping[str, Any]) -> CheckReport:
+    """A ``voxel_size_override_xyz`` that ``auto`` will not read: the
+    segmented image's own metadata gives every axis's spacing, so the run
+    uses that, whatever the override says. Read from a TIFF's header; any
+    other file, or one not there yet, is not checked."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    import numpy as np
+
+    from haemolynx.io import axis_order_for_run
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    report = CheckReport()
+    override = settings.get("voxel_size_override_xyz")
+    if override is None or str(settings.get("voxel_size_policy", "auto")).lower() != "auto":
+        return report
+    image = _tiff_header(segmented_input_path(dict(settings)), axis_order_for_run(settings))
+    if image is None:
+        return report
+    _shape, metadata_xyz, status = image
+    if str((status or {}).get("status", "missing")).lower() != "complete":
+        return report  # auto reads the override
+    if np.allclose([float(v) for v in override], metadata_xyz, rtol=1e-3, atol=0.0):
+        return report
+    report.add_warning(
+        f"voxel_size_override_xyz {tuple(float(v) for v in override)} um is not used: "
+        "voxel_size_policy is auto and the segmented image's metadata gives its voxel size, "
+        f"{tuple(round(float(v), 6) for v in metadata_xyz)} um (x, y, z). Fix: set "
+        "voxel_size_policy to override to use it, or clear it."
+    )
     return report
 
 
@@ -1398,6 +1474,12 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     # a switch the Input tab hides (an ilastik classifier, a vessel mask) is
     # not demanded, since check_settings reads a path's own gate only.
     skip: tuple[str, ...] = ("raw_image_path",)
+    from haemolynx.pipeline.stages import ilastik_segments
+
+    if settings.get("use_ilastik_segmentation") and not ilastik_segments(settings):
+        # Its switch is out of effect without a raw image (segment reads the
+        # segmented image instead), so the project is not read either.
+        skip += ("ilastik_classifier_path",)
     if network_is_synthetic(settings):
         skip += tuple(
             setting.name for setting in schema if setting.must_exist and setting.name != "synthetic_template_path"
@@ -1425,6 +1507,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))
+    report.extend(check_voxel_size_override(settings))
     report.extend(check_downsample_on_import(settings))
     report.extend(check_cell_mask_measurement(settings))
     report.extend(check_pericyte_measurements(settings))

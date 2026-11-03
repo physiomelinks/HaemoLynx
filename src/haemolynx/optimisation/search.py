@@ -378,6 +378,25 @@ def full_resolution_search_refusal(
     )
 
 
+def finest_factor_fitting_memory(
+    shape: Sequence[int], voxel_size_zyx: Optional[Sequence[float]], available_bytes: Optional[int]
+) -> int:
+    """The finest offered factor whose search grid of a mask of *shape*
+    fits in *available_bytes* of free memory
+    (:data:`FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL` a voxel), as
+    :func:`full_resolution_search_refusal` judges the full-resolution grid:
+    "Auto" searches no finer under the low-RAM option. 1 when the free
+    memory is not known; the coarsest when none fits."""
+    if available_bytes is None:
+        return DOWNSAMPLE_FACTORS[0]
+    for factor in DOWNSAMPLE_FACTORS:
+        blocks = axis_downsample_factors(factor, voxel_size_zyx)
+        voxels = int(np.prod([-(-int(n) // int(b)) for n, b in zip(shape, blocks)], dtype=np.int64))
+        if voxels * FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL <= int(available_bytes):
+            return factor
+    return DOWNSAMPLE_FACTORS[-1]
+
+
 #: "Auto" downsampling's own time budget, in seconds, when a caller asks it
 #: to target a runtime instead of (or as well as) a voxel count -- see
 #: :func:`estimate_downsample_factor_for_time_budget`.
@@ -515,11 +534,15 @@ def _auto_downsample(
     target_seconds: float,
     starting_values: Optional[Mapping[str, Any]] = None,
     restriction: Optional[np.ndarray] = None,
+    min_factor: int = 1,
 ) -> _AutoDownsample:
     """:func:`estimate_downsample_factor_for_time_budget`'s factor, with the
     search time it estimated and the resolution cap it applied, for the
     run's report. *starting_values* give the timed steps their settings, and
-    *restriction* the thick-vessel region's confinement (on *raw_mask*'s grid)."""
+    *restriction* the thick-vessel region's confinement (on *raw_mask*'s grid).
+    Never finer than *min_factor* (what fits in memory,
+    :func:`finest_factor_fitting_memory`), nor is the timing probe: it
+    overrides the resolution cap."""
     typical_radius_um = (
         _typical_vessel_radius_um(_densest_crop(raw_mask, _AUTO_RADIUS_CROP_VOXELS), voxel_size_zyx)
         if raw_mask.any()
@@ -532,11 +555,11 @@ def _auto_downsample(
     )
 
     def capped(factor: int) -> int:
-        return factor if cap is None else min(factor, cap)
+        return max(int(min_factor), factor if cap is None else min(factor, cap))
 
     model = _probe_time_model(
         raw_mask, voxel_size_zyx,
-        factor=cap if cap is not None else DOWNSAMPLE_FACTORS[-1],
+        factor=capped(cap if cap is not None else DOWNSAMPLE_FACTORS[-1]),
         starting_values=starting_values,
         restriction=restriction,
     )
@@ -954,6 +977,10 @@ class OptimisationResult:
     #: What the report should say about how the search judged its trials,
     #: one line each.
     notes: tuple[str, ...] = ()
+    #: The run's own downsample on import (``segmented_image_downsample``)
+    #: the search started from, when the caller put :attr:`settings` back on
+    #: the image as read: the trials' voxel counts are then of that grid.
+    run_grid_factor: int = 1
 
 
 def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -975,11 +1002,17 @@ def _thick_vessel_kwargs(
     every thick trial itself (:func:`_raw_skeleton`). Without it a trial's
     thick region was 99.8% of E14.5's mask, the run's 12%.
     """
-    return {
+    kwargs = {
         "voxel_size_zyx": voxel_size_zyx,
         **_stages.thick_region_settings(settings),
         **_stages.thick_vessel_refinement_arguments(settings),
     }
+    if kwargs["large_stack_tree"]:
+        # The large-stack tree is drawn on the low-RAM path alone, and is not
+        # the in-RAM tree: held in RAM, a trial drew another tree from the run's.
+        kwargs["use_memmap"] = True
+        kwargs["memmap_directory"] = settings.get("memmap_directory")
+    return kwargs
 
 
 def _cleanup_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -1001,10 +1034,15 @@ def _graph_kwargs(settings: Mapping[str, Any], voxel_size_zyx: Sequence[float]) 
     }
 
 
+@functools.lru_cache(maxsize=1)
 def _settings_trials_read() -> frozenset[str]:
     """The settings a trial's steps read: what :func:`_cleanup_kwargs`,
     :func:`_skeleton_kwargs`, :func:`_thick_vessel_kwargs` and
-    :func:`_graph_kwargs` look up, and the prefixed settings they hand on."""
+    :func:`_graph_kwargs` look up, the prefixed settings they hand on, and
+    what the steps a run takes after graph building read
+    (``stages.network_context``, ``stages.finish_network_graph``), found by
+    running them once on a short rod. Without those, a trial judged with the
+    interior dead ends removed or the lost skeleton re-traced went unsaid."""
     defaults = _schema_defaults()
     read: set[str] = set()
 
@@ -1026,7 +1064,23 @@ def _settings_trials_read() -> frozenset[str]:
         ("", _graph_kwargs(reading, voxel)),
     ):
         read.update(prefix + name for name in kwargs if prefix + name in defaults)
-    return frozenset(read - _RESOURCE_SETTING_NAMES)
+    rod = np.zeros((9, 9, 40), dtype=bool)
+    rod[3:6, 3:6, 2:38] = True
+    try:
+        skeleton = _skeletonize_loaded_volume(rod)
+        context = _stages.network_context(reading, rod, voxel, None)
+        G = graph_mod.build_graph_from_skeleton(
+            skeleton,
+            stub_radius_at=context.radius_at,
+            segmentation_mask=rod,
+            along_thick_centreline=context.along_thick_centreline,
+            mask_support=context.mask_support,
+            **_graph_kwargs(reading, voxel),
+        )
+        _stages.finish_network_graph(G, skeleton, reading, context)
+    except Exception:  # noqa: BLE001 - a report line must never fail the search it reports on
+        pass
+    return frozenset(read & set(defaults) - _RESOURCE_SETTING_NAMES)
 
 
 def _not_at_their_defaults_note(settings: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1360,9 +1414,18 @@ class _SweepBookkeeping:
         winner itself (a joint sweep over several settings): emits the start
         and every candidate, records every trial, and returns the chosen
         value -- *incumbent* itself when it was kept, or when every
-        candidate failed."""
+        candidate failed.
+
+        *incumbent* is always tried: a value the run uses is one a trial can
+        score, and :func:`_chosen_index` can hold it only if it was among the
+        candidates. A generator's grid or range used to leave it out (a
+        bridge-radius smoothing of 10 um against 0/4/8/16, a scan size outside
+        5-25), and the sweep then moved the setting however it scored. An
+        unset incumbent is added only where the candidates offer unset."""
         self._emit(GROUP_STARTED, group)
         values = list(candidate_values)
+        if incumbent is not None and not any(_same_value(value, incumbent) for value in values):
+            values.append(incumbent)
         outcomes: list[tuple[float, str, float, dict[str, float]]] = []
         for index, value in enumerate(values):
             note = ""
@@ -1395,7 +1458,10 @@ class _SweepBookkeeping:
             OptimisationEvent(
                 kind=kind,
                 group_index=self._group_index,
-                group_total=self._group_total,
+                # An upper bound counted by hand, which a run with every
+                # cleanup step on and every refinement passed (46 of 44):
+                # never shown below the sweeps already run.
+                group_total=max(self._group_total, self._group_index + 1),
                 group_name=group_name,
                 **extra,
             )
@@ -2800,7 +2866,7 @@ class _Search(_SweepBookkeeping):
             self._run_group(name, method)
 
 
-def _to_search_grid(starting_values: Mapping[str, Any], factor: int) -> dict[str, Any]:
+def _to_search_grid(starting_values: Mapping[str, Any], factor: float) -> dict[str, Any]:
     """*starting_values* with every voxel-counted setting
     (:data:`_VOXEL_SCALED_SETTING_NAMES`) in voxels of a search grid
     *factor* times coarser, rounded half up.
@@ -2820,7 +2886,7 @@ def _to_full_resolution(
     settings: Mapping[str, Any],
     starting_values: Mapping[str, Any],
     search_starting_values: Mapping[str, Any],
-    factor: int,
+    factor: float,
     *,
     bundle_refinement_ran: bool,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
@@ -2867,8 +2933,13 @@ def optimise_skeleton_and_graph_settings(
     max_passes: int = 1,
     auto_downsample_target_seconds: float = DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS,
     thick_restriction_mask: Optional[np.ndarray] = None,
+    min_downsample_factor: int = 1,
 ) -> OptimisationResult:
     """Empirically choose every Skeletonise/Graph tab setting for *raw_mask*.
+
+    *min_downsample_factor* is the finest grid "Auto" may choose (what fits
+    in free memory under the low-RAM option, :func:`finest_factor_fitting_memory`);
+    a factor given is used as given.
 
     *starting_values* are the run's settings: an entry for every name in
     :data:`OPTIMISE_SETTING_NAMES`, which the search may change (the ones it
@@ -2954,6 +3025,7 @@ def optimise_skeleton_and_graph_settings(
             target_seconds=auto_downsample_target_seconds,
             starting_values=starting_values,
             restriction=thick_restriction_mask,
+            min_factor=min_downsample_factor,
         )
         factor = auto.factor
     if factor not in DOWNSAMPLE_FACTORS:
@@ -2975,9 +3047,11 @@ def optimise_skeleton_and_graph_settings(
         search_voxel_size_xyz = voxel_size_xyz
         search_raw_image = raw_image
 
-    # Voxel counts of the finest axis, which the search grid reduces by the
-    # full factor: into its voxels on the way in, back out on the way out.
-    search_starting_values = _to_search_grid(starting_values, factor)
+    # Voxel counts of the finest axis: into the search grid's on the way in,
+    # back out on the way out. Its finest axis may be another (a coarse z
+    # reduced less), so by the ratio of the two grids' finest spacings.
+    voxel_ratio = _stages.finest_spacing_ratio(voxel_size_zyx, tuple(reversed(search_voxel_size_xyz)))
+    search_starting_values = _to_search_grid(starting_values, voxel_ratio)
     search_restriction = _downsample_restriction(thick_restriction_mask, factor, voxel_size_zyx)
     search = _Search(
         search_mask, search_voxel_size_xyz, search_starting_values, progress,
@@ -3011,7 +3085,7 @@ def optimise_skeleton_and_graph_settings(
     finer_than_search_grid: tuple[str, ...] = ()
     if factor > 1:
         settings, finer_than_search_grid = _to_full_resolution(
-            settings, starting_values, search_starting_values, factor,
+            settings, starting_values, search_starting_values, voxel_ratio,
             bundle_refinement_ran="bundle_refinement" in search.groups_run,
         )
     return OptimisationResult(

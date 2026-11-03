@@ -62,8 +62,14 @@ _CACHE_PREFIX = "haemolynx_raw_cache_"
 #: OME header -- before, from its tags, which said 1 micron on every axis.
 #: 3: entries are no longer written for a source modified within
 #: ``_RACY_WINDOW_NS``, so an older entry may hold a volume that a same-tick
-#: rewrite has since replaced.
-_CACHE_FORMAT = 3
+#: rewrite has since replaced. 4: the key holds the HDF5 dataset read and a
+#: sample of the file's bytes (:func:`_content_sample_digest`).
+_CACHE_FORMAT = 4
+
+#: The sample of a source's bytes its key holds: this many pieces, spread
+#: evenly through the file, of :data:`_SAMPLE_BYTES` each (4 MiB read).
+_SAMPLE_PIECES = 64
+_SAMPLE_BYTES = 64 * 1024
 
 #: How long after its last modification a source's mtime is trusted to change
 #: on any further write. Longer than the coarsest file clock in use (FAT32's
@@ -75,8 +81,32 @@ def _modified_too_recently(stat_result) -> bool:
     return time.time_ns() - stat_result.st_mtime_ns < _RACY_WINDOW_NS
 
 
-def _cache_key(resolved_path: Path, stat_result, axis_order: str) -> str:
-    payload = f"{resolved_path}|{stat_result.st_mtime_ns}|{stat_result.st_size}|{axis_order}"
+def _content_sample_digest(path: Path, size: int) -> str:
+    """A digest of :data:`_SAMPLE_PIECES` pieces of *path*'s bytes spread
+    through it (the whole file when it is smaller). A copy that keeps the
+    old file's time (``shutil.copy2``, robocopy, unzipping), of a stack the
+    same size, kept the key's mtime and size, and the old volume was served."""
+    digest = hashlib.sha1()
+    with open(path, "rb") as handle:
+        if size <= _SAMPLE_PIECES * _SAMPLE_BYTES:
+            digest.update(handle.read())
+        else:
+            for piece in range(_SAMPLE_PIECES):
+                handle.seek(piece * (size - _SAMPLE_BYTES) // (_SAMPLE_PIECES - 1))
+                digest.update(handle.read(_SAMPLE_BYTES))
+    return digest.hexdigest()
+
+
+def _cache_key(
+    resolved_path: Path, stat_result, axis_order: str, h5_dataset_name: str | None = None
+) -> str:
+    """The entry for the volume read from *resolved_path* as it is now: its
+    time and size, the dataset read (an HDF5 file holds several), the axis
+    order, and a sample of its bytes."""
+    payload = (
+        f"{resolved_path}|{stat_result.st_mtime_ns}|{stat_result.st_size}|{axis_order}"
+        f"|{h5_dataset_name or ''}|{_content_sample_digest(resolved_path, stat_result.st_size)}"
+    )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -134,7 +164,11 @@ def _write_sidecar(
 
 
 def discard_cached_raw_volume(
-    filepath: str | Path, *, axis_order: str, memmap_directory: str | Path
+    filepath: str | Path,
+    *,
+    axis_order: str,
+    memmap_directory: str | Path,
+    h5_dataset_name: str | None = None,
 ) -> tuple[Path, ...]:
     """Delete the entry :func:`load_raw_volume_reusing_cache` keeps in
     *memmap_directory* for *filepath* as it is now; returns the files removed.
@@ -147,7 +181,7 @@ def discard_cached_raw_volume(
         if axis_order_for_file(axis_order, filepath) != CANONICAL_AXIS_ORDER:
             return ()
         resolved = Path(filepath).resolve()
-        key = _cache_key(resolved, resolved.stat(), CANONICAL_AXIS_ORDER)
+        key = _cache_key(resolved, resolved.stat(), CANONICAL_AXIS_ORDER, h5_dataset_name)
     except (OSError, ValueError):
         return ()
     removed = []
@@ -179,7 +213,8 @@ def load_raw_volume_reusing_cache(
     Invalidated by anything that changes what the returned array actually
     contains: the resolved source path, its mtime and size (a changed file --
     including ilastik simply re-running and overwriting its own output --
-    always misses and is rebuilt), and *axis_order*. See the module
+    always misses and is rebuilt), a sample of its bytes, *h5_dataset_name*
+    and *axis_order*. See the module
     docstring for why a non-canonical *axis_order*, or a source modified
     within the last few seconds, always misses too. An auto *axis_order* is
     resolved against the file first, and the order it resolves to is the key's.
@@ -216,7 +251,7 @@ def load_raw_volume_reusing_cache(
         )
         return load_uncached()
 
-    key = _cache_key(resolved, stat_result, axis_order)
+    key = _cache_key(resolved, stat_result, axis_order, h5_dataset_name)
     directory = Path(memmap_directory)
     directory.mkdir(parents=True, exist_ok=True)
     memmap_path, sidecar_path = _cache_file_paths(directory, key)

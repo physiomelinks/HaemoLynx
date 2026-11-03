@@ -685,3 +685,8 @@ def test_optimise_settings_is_refused_only_off_in_low_ram_mode_short_of_memory(
     gui_widget._optimise_settings_for_run(settings, downsample_factor=factor, available_bytes=available)
 
     assert len(searched) == 1 and searched[0]["downsample_factor"] == factor
+    if low_ram and factor is None:
+        # Auto under the low-RAM option chooses no grid finer than fits.
+        assert searched[0]["min_downsample_factor"] == 16
+    else:
+        assert searched[0]["min_downsample_factor"] == 1

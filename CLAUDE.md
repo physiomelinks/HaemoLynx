@@ -329,7 +329,9 @@ an output only when that record matches (`ilastik_output_is_current`); file time
 outputs of a different project copied in with an older time. An output with no record (made
 before this) is segmented again once. ilastik is run `--readonly` with `--output_format` from the
 suffix (without it ilastik writes the project's saved format, HDF5 by default), and it names a
-multipage TIFF `.tiff` whatever it is asked for, which is where the runner looks. Checked by hand
+multipage TIFF `.tiff` whatever it is asked for, which is where the runner looks: in a folder of
+its own (`io.ilastik.export_folder`), since the export is named after its input and, in the raw
+image's folder, was the raw image. Checked by hand
 on Windows with ilastik 1.4.1rc2 and Harvey's claudin project (2026-10-22). The generic loader
 still guesses the minority for a user-supplied mask of two labels, now with a warning once per
 label set (`io.load._warn_minority_guess`).
@@ -555,7 +557,8 @@ RAM, each worker holds its own volumes.
   swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
   (see `tests/test_anisotropic_voxel_size.py`). A TIFF's size is read from its OME header's
   `PhysicalSizeX/Y/Z` first (units converted), then, axis by axis, from the resolution tags and
-  ImageJ's `spacing` (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
+  ImageJ's `spacing`, in ImageJ's `unit` or a centimetre ResolutionUnit, inches read as microns
+  (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
   unit into the tags of a file given no resolution, so an OME-TIFF's tags say 1 µm whatever its
   voxels are. Masks and main image must align in shape and
   physical voxel units. **Drawing a run has the same split the other way round:** node `pos` and
@@ -1290,7 +1293,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   writes the panel's settings, those away from their defaults, to one YAML file per preset in the
   user's settings folder (`saved_preset_dir`, `HAEMOLYNX_PRESET_DIR`; the tests point it at an
   empty folder). `held_by_saved_presets` is the one rule for what a preset leaves out: files and
-  folders, one image's channels, labels, voxel size, axis order, crop box, nodes and vessels, and
+  folders, one image's channels, labels, voxel size, axis order, every crop setting, nodes and vessels, and
   the switches reusing cached outputs. Loading one is a whole set: what it names, every other
   setting it holds back to its default, the rest left as they are.
 ---

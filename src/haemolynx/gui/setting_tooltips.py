@@ -101,8 +101,8 @@ SETTING_TOOLTIPS: dict[str, str] = {
     ),
     "ilastik_executable": "The ilastik program to run without its window, by name or full path",
     "ilastik_timeout_seconds": (
-        "Stop an ilastik run that takes longer than this many seconds. A hang usually means a "
-        "bad project or unreadable image; raise it for very large images"
+        "Stop an ilastik run that takes longer than this many seconds; 0 never stops it. A hang "
+        "usually means a bad project or unreadable image; raise it for very large images"
     ),
     "ilastik_reuse_existing_output": (
         "Reuse an earlier ilastik segmentation made from this unchanged image by the same "
