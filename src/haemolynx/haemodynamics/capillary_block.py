@@ -321,14 +321,23 @@ def stopped_vessels(
     inlets and outlets, every vessel no inlet-to-outlet path runs along once
     those are taken out -- fed only through a block, it carries the block's
     leak and nothing else. Read from :data:`BLOCK_EDGE_ATTRIBUTE` and the
-    network's shape, never from the flows."""
+    network's shape, never from the flows.
+
+    The open ends the baseline's solve gave a boundary condition (kept on
+    the graph, :mod:`haemolynx.haemodynamics.open_ends`) can be either, as
+    they are when the solve marks its vessels: a vessel draining through
+    one is perfused."""
     from haemolynx.graph.connectivity import inlet_to_outlet_vessels
+    from haemolynx.haemodynamics.open_ends import conditions_on_graph
 
     edges = list(G.edges(keys=True, data=True))
     blocked = {(u, v, k) for u, v, k, d in edges if d.get(BLOCK_EDGE_ATTRIBUTE) == "blocked"}
     perfused = None
     if inlets and outlets:
-        perfused = inlet_to_outlet_vessels(nx.restricted_view(G, [], blocked), inlets, outlets)
+        opened = conditions_on_graph(G).nodes
+        perfused = inlet_to_outlet_vessels(
+            nx.restricted_view(G, [], blocked), [*inlets, *opened], [*outlets, *opened]
+        )
     return [
         (u, v, k, d)
         for u, v, k, d in edges

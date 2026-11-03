@@ -329,6 +329,20 @@ def test_no_editor_appears_in_what_the_panel_would_run(panel):
     assert set(widget._haemolynx_values()) == keys_before
 
 
+def test_a_new_entrys_options_start_at_what_the_run_configured(panel):
+    """A config's own constriction length (a row on no tab) is what a new
+    pericyte entry starts from. The editors started at the schema's 40 um,
+    and choosing the type wrote that over the config's 20 um."""
+    widget, _viewer, perturbations = panel
+    rows_of(widget)["constriction_length_um"].value = 20.0
+    perturbations.add()
+
+    perturbations.choose_type(0, "pericyte_diameter_change")
+
+    assert perturbations.entries()[0]["overrides"]["constriction_length_um"] == pytest.approx(20.0)
+    assert widget._haemolynx_values()["constriction_length_um"] == pytest.approx(20.0)
+
+
 def test_what_the_editors_say_reaches_the_run_through_the_one_row(panel):
     widget, _viewer, perturbations = panel
     perturbations.add()

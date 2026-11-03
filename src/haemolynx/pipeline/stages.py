@@ -6590,7 +6590,9 @@ def _solve_network(
 def _solve_with_open_ends(conductance, node_list: list, settings: dict, boundaries: BoundaryNodes, open_ends):
     """:func:`solve_pressure_and_boundary_flow` with the open ends' ghosts
     added, the pressures trimmed back to the graph's own nodes. The boundary
-    flows count the ghosts' too, so the balance closes."""
+    flows count the ghosts' too, so the balance closes; the equivalent
+    resistance is the drop over the designated inlets' inflow, the run's
+    network resistance (`haemodynamics.network_resistance`)."""
     matrix, names, _index, extra_in, extra_out = haemodynamics.open_ends.augment(
         conductance, node_list, open_ends
     )
@@ -6601,6 +6603,7 @@ def _solve_with_open_ends(conductance, node_list: list, settings: dict, boundari
         outlet_p_bc=float(settings["outlet_p_bc"]),
         inlet_nodes=[*boundaries.inlet_nodes, *extra_in],
         outlet_nodes=[*boundaries.outlet_nodes, *extra_out],
+        resistance_inlet_nodes=list(boundaries.inlet_nodes) if extra_in else None,
     )
     solved["pressure"] = solved["pressure"][: len(node_list)]
     return solved
@@ -7337,6 +7340,21 @@ def _perturb_one(
     # because the global flag survived the merge.
     perturbed["do_pericyte_construction"] = False
     perturbed["run_pericyte_resistance_comparison"] = False
+    drawn_seed = None
+    if (
+        places_pericytes(spec.type)
+        and perturbed.get("use_probabilistic_pericyte_constriction")
+        and perturbed.get("pericyte_constriction_seed") is None
+    ):
+        # No seed: a fresh cohort this run, but one cohort for the whole
+        # perturbation. Drawn at every call, each haematocrit pass and each
+        # sweep grid point constricted pericytes of its own.
+        drawn_seed = int(np.random.default_rng().integers(0, 2**31 - 1))
+        perturbed["pericyte_constriction_seed"] = drawn_seed
+        logger.info(
+            f"Perturbation '{spec.name}': no pericyte_constriction_seed, so its cohort "
+            f"is drawn once from seed {drawn_seed}."
+        )
     result.output_dir = root / perturbation_folder_name(spec.name, spec.type)
     result.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -7349,6 +7367,8 @@ def _perturb_one(
     diameter_table = perturbed["diameter_by_branch_order"]
     prefer_measured = bool(perturbed["measure_diameters_from_raw_image"])
     summary: dict[str, Any] = {"overrides": overrides}
+    if drawn_seed is not None:
+        summary["pericyte_constriction_seed_drawn"] = drawn_seed
     #: Sweep helper payload when this type ran a grid; used for Alice plots.
     sweep_payload: dict[str, Any] | None = None
     #: Redoes this perturbation's own resistance computation from its

@@ -673,14 +673,17 @@ def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
                 "or make it a second run"
             )
         problems.extend(_type_problems(spec, values, schema))
-        first = seen.get(spec.name)
+        # Ignoring case: Windows and macOS folders do, so 'A' and 'a' of one
+        # type would write into one folder.
+        first = seen.get(spec.name.casefold())
         if first is not None:
             problems.append(
                 f"perturbations[{index}] repeats the name '{spec.name}' from "
-                f"perturbations[{first}]; each one names its own output"
+                f"perturbations[{first}] (names are compared ignoring case); each "
+                "one names its own output"
             )
         else:
-            seen[spec.name] = index
+            seen[spec.name.casefold()] = index
     return tuple(problems)
 
 

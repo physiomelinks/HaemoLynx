@@ -103,14 +103,20 @@ def solve_pressure_and_boundary_flow(
     outlet_p_bc: float,
     inlet_nodes: list[int],
     outlet_nodes: list[int],
+    resistance_inlet_nodes: list[int] | None = None,
 ) -> dict[str, Any]:
     """Solve nodal pressures and total flow through the boundary node sets.
 
     Returns the pressure field, the flow summed over the inlets and over the
-    outlets, and the network's equivalent resistance.
+    outlets, and the network's equivalent resistance: the drop over the flow
+    in through *resistance_inlet_nodes* (every inlet when None).
     """
     return unit_pressure_solve(
-        conductance, node_list, inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes
+        conductance,
+        node_list,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
+        resistance_inlet_nodes=resistance_inlet_nodes,
     ).at(inlet_p_bc, outlet_p_bc)
 
 
@@ -139,6 +145,10 @@ class UnitPressureSolve:
     connected: bool
     #: Nodes listed as both an inlet and an outlet.
     both_ends: tuple
+    #: Flow per Pa of drop in through the designated inlets alone, which the
+    #: equivalent resistance divides by as the run's network resistance does;
+    #: None when every inlet is designated (no open end's ghost among them).
+    resistance_inlet_flow: float | None = None
 
     def at(self, inlet_p_bc: float, outlet_p_bc: float) -> dict[str, Any]:
         """Pressures, boundary flows and equivalent resistance at these pressures."""
@@ -158,10 +168,15 @@ class UnitPressureSolve:
             )
         pressure = np.where(self.reached, outlet_p_bc + drop * self.pressure, 0.0)
         total_inlet_flow = drop * self.inlet_flow
+        # The totals count the open ends' flows too, so the balance closes;
+        # the resistance is the designated inlets', as the run's own is.
+        resistance_inflow = drop * (
+            self.inlet_flow if self.resistance_inlet_flow is None else self.resistance_inlet_flow
+        )
         # Exact zero only: flows are in m^3/s and physiologically ~1e-14, so any
         # absolute tolerance would swallow every real result.
         equivalent_resistance = (
-            np.inf if total_inlet_flow == 0.0 else drop / total_inlet_flow
+            np.inf if resistance_inflow == 0.0 else drop / resistance_inflow
         )
         return {
             "pressure": pressure,
@@ -177,9 +192,14 @@ def unit_pressure_solve(
     *,
     inlet_nodes: list[int],
     outlet_nodes: list[int],
+    resistance_inlet_nodes: list[int] | None = None,
 ) -> UnitPressureSolve:
     """Solve *conductance* once at a unit pressure drop -- see
     :class:`UnitPressureSolve` for how that answers every other drop.
+
+    *resistance_inlet_nodes* are the inlets whose inflow the equivalent
+    resistance divides by: the designated ones, when *inlet_nodes* also holds
+    an open end's ghost (:func:`haemolynx.haemodynamics.open_ends.augment`).
 
     A ``scipy.sparse`` *conductance* (``haemodynamics_solver="sparse"``) is
     solved by sparse LU, to the same pressures to rounding."""
@@ -274,6 +294,11 @@ def unit_pressure_solve(
         outlet_flow=_boundary_flow(outlet_nodes),
         connected=connected,
         both_ends=tuple(both_ends),
+        resistance_inlet_flow=(
+            None
+            if resistance_inlet_nodes is None
+            else _boundary_flow(n for n in resistance_inlet_nodes if n in node_to_idx)
+        ),
     )
 
 
@@ -333,11 +358,15 @@ def solve_sweep_point(
     conductance, node_list = build_conductance_matrix_from_graph(G, solver=solver)
     matrix, names, _index, extra_in, extra_out = augment(conductance, list(node_list), open_ends)
     unit = unit_pressure_solve(
-        matrix, names, inlet_nodes=[*inlet_nodes, *extra_in], outlet_nodes=[*outlet_nodes, *extra_out]
+        matrix,
+        names,
+        inlet_nodes=[*inlet_nodes, *extra_in],
+        outlet_nodes=[*outlet_nodes, *extra_out],
+        resistance_inlet_nodes=list(inlet_nodes) if extra_in else None,
     )
     if open_ends:
         # The ghosts' flows stay in the totals (every drop of blood in and
-        # out); their pressures are not the graph's.
+        # out), not in the resistance; their pressures are not the graph's.
         n = len(node_list)
         unit = dataclasses.replace(unit, pressure=unit.pressure[:n], reached=unit.reached[:n])
     return unit, list(node_list), iterated

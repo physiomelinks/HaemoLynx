@@ -421,9 +421,10 @@ def name_problems(entries: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
                 f"{name!r} cannot be a directory name, and each perturbation "
                 "writes its output into a {name}_{type} subfolder"
             )
-        elif name in seen:
+        elif name.casefold() in seen:
+            # Ignoring case, as a Windows folder name is.
             problems.append(f"two perturbations are called {name!r}")
-        seen.add(name)
+        seen.add(name.casefold())
     return tuple(problems)
 
 

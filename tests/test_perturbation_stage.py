@@ -1111,6 +1111,37 @@ def test_a_pericyte_sweep_honours_entry_length_and_spacing(tmp_path):
     )
 
 
+def test_an_unseeded_pericyte_sweep_constricts_one_cohort_at_every_grid_point(tmp_path):
+    """With no pericyte_constriction_seed each grid point drew a cohort of
+    its own, so the curve mixed a dilation's effect with which pericytes
+    happened to be on. The perturbation draws one seed and keeps it."""
+    entry = {
+        "name": "unseeded",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {
+            "pericyte_dilation_min_percent": -2,
+            "pericyte_dilation_max_percent": 2,
+            "pericyte_dilation_step_percent": 1,
+            "constriction_length_um": 10.0,
+            "constriction_spacing_um": 20.0,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.5,
+        },
+    }
+    run = _run(tmp_path, [entry], pericyte_constriction_seed=None)
+
+    result = run.results[0]
+    assert result.ok, result.error
+    rows = result.sweep_flows.pericyte_sites
+    assert len(rows) == 5
+    # 40 periodic sites on the two capillaries, about half of them on.
+    assert 0 < len(rows[0]) < 40
+    for sites in rows[1:]:
+        assert np.array_equal(sites.edge_index, rows[0].edge_index)
+        assert np.array_equal(sites.arc_length_um, rows[0].arc_length_um)
+    assert isinstance(result.summary["pericyte_constriction_seed_drawn"], int)
+
+
 def test_the_order_they_are_listed_in_does_not_matter(tmp_path):
     forwards = _run(tmp_path / "forwards", [ARTERIOLE_DILATION, PERICYTE_TONE])
     backwards = _run(tmp_path / "backwards", [PERICYTE_TONE, ARTERIOLE_DILATION])

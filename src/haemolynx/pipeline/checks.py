@@ -31,6 +31,7 @@ from haemolynx.haemodynamics.perturbations import (
     MEASURED_CONSTRICTION_TYPE,
     perturbation_problems,
     perturbations_from_settings,
+    settings_for_perturbation_type,
 )
 from haemolynx.io.vessel_masks import (
     global_vessel_mask_roles,
@@ -726,6 +727,16 @@ def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckRep
     specs = perturbations_from_settings(settings)
     if not specs:
         return report
+    # The stage runs none of them then, and says so: a list it will not run
+    # must not stop the run it rides on.
+    if not settings.get("run_perturbations"):
+        return report
+    if not settings.get("run_haemodynamics"):
+        report.add_warning(
+            f"{len(specs)} perturbation(s) configured, but run_haemodynamics is off: there "
+            "are no resistances to re-solve, so none will run."
+        )
+        return report
 
     for message in perturbation_problems(settings, schema):
         report.add_error(message)
@@ -738,14 +749,22 @@ def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckRep
                 f"{spec.type} perturbation does not read, so they will have no "
                 "effect."
             )
-        # A path named by a perturbation is read once that perturbation runs,
+        if spec.type == "pericyte_spacing_sweep" and {
+            **settings, **spec.applied_overrides(schema)
+        }.get("use_pericyte_mask_constriction"):
+            report.add_warning(
+                f"perturbation '{spec.name}' sweeps the pericytes' spacing but takes them "
+                "from a mask, which places each where it lies whatever the spacing: every "
+                "point of the sweep will be the same."
+            )
+        # A path a perturbation reads is read once that perturbation runs,
         # which is after the pipeline. Check it against the settings as they
-        # will be then -- the overrides are what switch its feature on.
-        overrides = spec.coerced_overrides(schema)
+        # will be then -- the overrides are what switch its feature on, and
+        # the path may be the run's own (a mask switched on by the entry).
         paths = [
             name
-            for name in overrides
-            if schema[name].kind == "path" and schema[name].must_exist
+            for name in settings_for_perturbation_type(spec.type)
+            if name in schema and schema[name].kind == "path" and schema[name].must_exist
         ]
         if not paths:
             continue
@@ -753,7 +772,7 @@ def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckRep
         # own, and a schema missing it will not build at all.
         checked = check_settings(
             schema,
-            {**settings, **overrides},
+            {**settings, **spec.applied_overrides(schema)},
             skip=[name for name in schema.names if name not in set(paths)],
         )
         for message in checked.errors:

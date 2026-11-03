@@ -9985,6 +9985,13 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             )
             if name in configured:
                 widget.value = display_value_for(schema[name], configured[name])
+            elif name in rows:
+                # What the run configured, not the schema's default: the
+                # shown editors become the entry's overrides, and a default
+                # would replace the value a loaded config gave.
+                widget.value = display_value_for(
+                    schema[name], field.to_setting_value(_safe_widget_value(rows[name]))
+                )
             editors[name] = widget
 
         remove_button = PushButton(text="Remove")

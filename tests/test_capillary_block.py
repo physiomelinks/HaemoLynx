@@ -351,6 +351,43 @@ def test_zeroing_the_stopped_vessels_keeps_every_pressure():
     assert again[2][3][0]["flow_abs"] > 0
 
 
+def test_a_vessel_draining_through_an_open_end_is_not_stopped():
+    """0-1-2-3 runs inlet to outlet and 1-4 leaves the image, draining through
+    the baseline's open-end condition. Blocking 2-3 stops 2-3 and 1-2 (fed
+    only through the block); blood still runs 0-1-4 and out, and kept its
+    flow. Judged by the designated inlet and outlet alone, 0-1 and 1-4 were
+    set to 0 too, and 1-4 even when the block was somewhere else."""
+    from haemolynx.haemodynamics import open_ends as oe
+
+    def network():
+        G = nx.MultiGraph()
+        for u, v in ((0, 1), (1, 2), (2, 3), (1, 4)):
+            _vessel(G, u, v)
+        oe.keep_on_graph(G, oe.OpenEndConditions(model=oe.TERMINAL_RESISTANCE, to_outlet={4: 0.1}))
+        return G
+
+    baseline = network()
+    _solve(baseline, [0], [3])
+    blocked = network()
+    block_vessels(blocked, [(2, 3, 0)], 1e6)
+    _solve(blocked, [0], [3])
+    solved = {edge: blocked.edges[edge]["flow_abs"] for edge in ((0, 1, 0), (1, 4, 0))}
+    assert all(flow > 0 for flow in solved.values())
+
+    assert zero_stopped_vessel_flows(blocked, [0], [3]) == [(1, 2, 0), (2, 3, 0)]
+    for edge, flow in solved.items():
+        assert blocked.edges[edge]["flow_abs"] == flow
+    summary, _ = compare_block_to_baseline(baseline, blocked, inlet_nodes=[0], outlet_nodes=[3])
+    assert summary["stopped_vessels"] == 2
+
+    elsewhere = network()
+    _vessel(elsewhere, 3, 5)
+    block_vessels(elsewhere, [(3, 5, 0)], 1e6)
+    _solve(elsewhere, [0], [3])
+    assert zero_stopped_vessel_flows(elsewhere, [0], [3]) == [(3, 5, 0)]
+    assert elsewhere[1][4][0]["flow_abs"] > 0
+
+
 def test_a_vessel_never_solved_is_left_alone_by_the_zeroing():
     G = _two_routes()
     block_vessels(G, [(1, 2, 0)], 1e6)

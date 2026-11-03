@@ -218,6 +218,30 @@ def test_a_perturbation_re_solves_with_the_baselines_open_ends():
     assert solved["total_inlet_flow"] + solved["total_outlet_flow"] == pytest.approx(0.0, abs=1e-25)
 
 
+def test_a_perturbations_resistance_is_the_runs_network_resistance_when_an_open_end_feeds():
+    """The resistance a perturbation and a sweep difference against the
+    baseline is the run's own network resistance: the drop over the
+    designated inlets' inflow. Counting what enters through an open end too
+    put the baseline's at 2.86e15 here against the run's 3.34e15."""
+    from haemolynx.haemodynamics.pericyte_sweep import solve_sweep_point
+
+    settings = _settings("estimated")
+    solution, G, boundaries = _run_solve(settings)
+    assert oe.conditions_on_graph(G).to_inlet, "the open end should feed the network"
+    solved = stages._solve_network(stages._perturbation_copy(G), settings, boundaries)
+    assert solved["equivalent_resistance"] == pytest.approx(solution.network_resistance, rel=1e-9)
+    # The totals still count every drop in and out, open end included.
+    assert solved["total_inlet_flow"] > (P_IN - P_OUT) / solution.network_resistance * (1 + 1e-6)
+    assert solved["total_inlet_flow"] + solved["total_outlet_flow"] == pytest.approx(0.0, abs=1e-25)
+    unit, _nodes, _iterated = solve_sweep_point(
+        stages._perturbation_copy(G), settings, recompute_resistances=lambda: None,
+        inlet_nodes=[0], outlet_nodes=[3],
+    )
+    at_run = unit.at(P_IN, P_OUT)
+    assert at_run["equivalent_resistance"] == pytest.approx(solution.network_resistance, rel=1e-9)
+    assert at_run["total_inlet_flow"] == pytest.approx(solved["total_inlet_flow"], rel=1e-9)
+
+
 def test_a_sweep_point_scales_with_the_drop_and_keeps_the_open_ends():
     from haemolynx.haemodynamics.pericyte_sweep import solve_sweep_point
 

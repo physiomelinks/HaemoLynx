@@ -418,6 +418,12 @@ def test_two_entries_with_one_name_are_reported():
     assert any("two perturbations" in problem for problem in name_problems(entries))
 
 
+def test_two_names_differing_only_in_case_are_reported():
+    """They name one folder on Windows, as the run's checks say."""
+    entries = [{"name": "Same", "type": UNCHOSEN}, {"name": "same", "type": UNCHOSEN}]
+    assert any("two perturbations" in problem for problem in name_problems(entries))
+
+
 def test_ordinary_names_are_left_alone():
     assert name_problems(from_settings({"perturbations": [A_DILATION, A_SWEEP]})) == ()
 
