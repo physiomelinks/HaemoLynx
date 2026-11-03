@@ -25,7 +25,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
     _sample_step,
 )
 
-from ._helpers import densify_polyline, edge_sample_points
+from ._helpers import densify_polyline, edge_sample_points, node_position_key
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 
 logger = logging.getLogger(__name__)
@@ -121,14 +121,20 @@ class _Pairs:
 
     def __init__(self, G: nx.MultiGraph):
         self.G = G
-        self.nodes = list(G.nodes)
+        # Nodes and pairs in position order, not the graph's: breaking one
+        # loop merges it with its neighbour, so which goes first decides the
+        # next, and Dijkstra's ties fall by node index. In edge order, a
+        # change anywhere reordered them and moved which side went elsewhere.
+        position = {node: node_position_key(G, node) for node in G.nodes}
+        self.nodes = sorted(G.nodes, key=position.__getitem__)
         self.at = {node: i for i, node in enumerate(self.nodes)}
         seen: set[frozenset] = set()
         self.pairs: list[tuple[Any, Any]] = []
         for u, v in G.edges():
             if u != v and frozenset((u, v)) not in seen:
                 seen.add(frozenset((u, v)))
-                self.pairs.append((u, v))
+                self.pairs.append((u, v) if position[u] <= position[v] else (v, u))
+        self.pairs.sort(key=lambda pair: (position[pair[0]], position[pair[1]]))
         rows = [self.at[u] for u, v in self.pairs] + [self.at[v] for u, v in self.pairs]
         cols = [self.at[v] for u, v in self.pairs] + [self.at[u] for u, v in self.pairs]
         weights = [self.shortest(u, v)[1] for u, v in self.pairs] * 2

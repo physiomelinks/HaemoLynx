@@ -55,10 +55,16 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
         return report
     output_dir = Path(output_dir)
 
+    # The stages' own answer: ilastik's output's stem only while it segments
+    # (on, with a raw image to segment), else the Input tab's image's. With
+    # ilastik on and no raw image this named "input_graph.pkl", never the
+    # file the run loads.
+    from haemolynx.io.ilastik import ilastik_segmented_stem
+    from haemolynx.pipeline.stages import ilastik_segments
+
     input_path = settings.get("input_path")
-    if settings.get("use_ilastik_segmentation"):
-        unsegmented = settings.get("raw_image_path")
-        stem = f"{Path(unsegmented).stem}_segmented" if unsegmented else "input"
+    if ilastik_segments(settings):
+        stem = ilastik_segmented_stem(settings["raw_image_path"])
     else:
         stem = Path(input_path).stem if input_path else "input"
 

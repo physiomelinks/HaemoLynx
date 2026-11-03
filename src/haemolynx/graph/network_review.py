@@ -713,14 +713,14 @@ def _face_readers(
     (:func:`haemolynx.graph.dead_ends.node_leaves_image`); any other node
     when it sits on a face. *image_face_margin_um*, when given, replaces both
     with a fixed distance."""
-    from .dead_ends import graph_image_extent_um, leaves_image, node_leaves_image
+    from .dead_ends import face_distance, graph_image_extent_um, leaves_image, node_leaves_image
 
     extent = np.asarray(extent_um, dtype=float) if extent_um is not None else graph_image_extent_um(G)
 
     def depth(node) -> float | None:
         if extent is None or node not in pos:
             return None
-        return float(np.min(np.minimum(pos[node], extent - pos[node])))
+        return face_distance(pos[node], extent)[0]
 
     def leaves(node) -> bool | None:
         if image_face_margin_um is not None:

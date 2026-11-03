@@ -1645,3 +1645,21 @@ def test_a_split_of_edited_vessels_leaves_a_bridge_made_before_alone():
     for u, v in (("J", "W"), ("W", "TIP"), ("T0", "J"), ("J", "K")):
         assert split.has_edge(u, v), (u, v)
     assert len(_bridges(split)) == 2  # the old one, and the edited vessel's
+
+
+def test_a_vessel_loop_bridged_to_one_node_from_outside_the_lumen_stays():
+    """Regression: a vessel whose two ends were each one bridge to one node
+    was taken for a strand left in the thick lumen and deleted, though this
+    one, a 64 um capillary leaving the thick vessel and coming back 4 um
+    from where it left, runs 30 um out of it. A strand stays within twice
+    its longer bridge of the node; this does not."""
+    from haemolynx.graph.thick_vessel_junctions import remove_dangling_bridges
+
+    G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "T1", (20, 30, 20), T1),
+               ("A", "B", (20, 30, 29), (20, 30, 50), (20, 34, 50), (20, 34, 29)))
+    for end, at in (("A", (20, 30, 29)), ("B", (20, 34, 29))):
+        G.add_edge(end, "J", voxels=_line(at, (20, 30, 20)),
+                   length=float(np.linalg.norm(np.subtract(at, (20, 30, 20)))), **{IS_ZERO_RESISTANCE: True})
+
+    assert remove_dangling_bridges(G) == 0
+    assert G.has_edge("A", "B") and len(_bridges(G)) == 2
