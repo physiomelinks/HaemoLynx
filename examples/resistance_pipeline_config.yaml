@@ -1057,9 +1057,9 @@ perturbation_runs:
   perturbation_output_dir: null
   # After the pipeline, sweep pericyte constriction/dilation against inlet pressure (whole-brain example script only; prefer a pericyte_dilation_sweep perturbation in the panel)
   run_pericyte_dilation_sweep: true
-  # Start the pericyte constriction/dilation sweep at this percentage (negative = constriction, positive = dilation; scale = 1 + percent/100)  [percent; range -99..100]
+  # Start the pericyte constriction/dilation sweep at this percentage of every capillary's diameter (arterioles and venules keep theirs; negative = constriction, positive = dilation; scale = 1 + percent/100)  [percent; range -99..100]
   pericyte_dilation_min_percent: 1
-  # End the pericyte constriction/dilation sweep at this percentage (negative = constriction, positive = dilation)  [percent; range -99..100]
+  # End the pericyte constriction/dilation sweep at this percentage of every capillary's diameter (negative = constriction, positive = dilation)  [percent; range -99..100]
   pericyte_dilation_max_percent: 30
   # Step size along the pericyte constriction/dilation percent axis (positive step; percent itself may be negative)  [percent; range 1..100]
   pericyte_dilation_step_percent: 1
@@ -1101,7 +1101,7 @@ perturbation_runs:
   capillary_dilation_max_percent: 30
   # Step size along the capillary constriction/dilation percent axis (positive step; percent itself may be negative)  [percent; range 1..100]
   capillary_dilation_step_percent: 1
-  # Fixed whole-network constriction/dilation for a pericyte spacing or length sweep (scale = 1 + percent/100; negative = constriction, positive = dilation); pressure stays at inlet_p_bc  [percent; range -99..100]
+  # Fixed constriction/dilation of every capillary for a pericyte spacing or length sweep, arterioles and venules keeping theirs (scale = 1 + percent/100; negative = constriction, positive = dilation); pressure stays at inlet_p_bc  [percent; range -99..100]
   pericyte_geometry_dilation_percent: 0
   # Start the pericyte spacing sweep at this centre-to-centre inter-site distance  [um; range 0.0..]
   constriction_spacing_min_um: 50.0

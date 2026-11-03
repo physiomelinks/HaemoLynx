@@ -7037,8 +7037,9 @@ SCHEMA = Schema(
             default=1,
             help=(
                 "Start the pericyte constriction/dilation sweep at this "
-                "percentage (negative = constriction, positive = dilation; "
-                "scale = 1 + percent/100)"
+                "percentage of every capillary's diameter (arterioles and "
+                "venules keep theirs; negative = constriction, positive = "
+                "dilation; scale = 1 + percent/100)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -7051,7 +7052,8 @@ SCHEMA = Schema(
             default=30,
             help=(
                 "End the pericyte constriction/dilation sweep at this "
-                "percentage (negative = constriction, positive = dilation)"
+                "percentage of every capillary's diameter (negative = "
+                "constriction, positive = dilation)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -7342,9 +7344,10 @@ SCHEMA = Schema(
             kind="int",
             default=0,
             help=(
-                "Fixed whole-network constriction/dilation for a pericyte "
-                "spacing or length sweep (scale = 1 + percent/100; negative "
-                "= constriction, positive = dilation); pressure stays at "
+                "Fixed constriction/dilation of every capillary for a "
+                "pericyte spacing or length sweep, arterioles and venules "
+                "keeping theirs (scale = 1 + percent/100; negative = "
+                "constriction, positive = dilation); pressure stays at "
                 "inlet_p_bc"
             ),
             section=_PERTURBATION_RUNS,

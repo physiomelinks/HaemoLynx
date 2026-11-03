@@ -1490,12 +1490,14 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "sweep perturbation"
     ),
     "pericyte_dilation_min_percent": (
-        "Start of the pericyte sweep: every vessel's diameter changed by this percentage, with "
-        "the pericyte sites on top. Negative constricts, positive dilates"
+        "Start of the pericyte sweep: every capillary's diameter changed by this percentage, with "
+        "the pericyte sites on top; arterioles and venules keep theirs. Negative constricts, "
+        "positive dilates"
     ),
     "pericyte_dilation_max_percent": (
-        "End of the pericyte sweep: every vessel's diameter changed by this percentage, with the"
-        " pericyte sites on top. Negative constricts, positive dilates"
+        "End of the pericyte sweep: every capillary's diameter changed by this percentage, with "
+        "the pericyte sites on top; arterioles and venules keep theirs. Negative constricts, "
+        "positive dilates"
     ),
     "pericyte_dilation_step_percent": (
         "Step between diameter changes in the pericyte sweep. Always positive, though the range "
@@ -1575,8 +1577,9 @@ SETTING_TOOLTIPS: dict[str, str] = {
         " may run negative"
     ),
     "pericyte_geometry_dilation_percent": (
-        "Diameter change applied to every vessel throughout a pericyte spacing or length sweep, "
-        "with the pericyte sites on top. Negative constricts, positive dilates"
+        "Diameter change applied to every capillary throughout a pericyte spacing or length "
+        "sweep, with the pericyte sites on top; arterioles and venules keep theirs. Negative "
+        "constricts, positive dilates"
     ),
     "constriction_spacing_min_um": "Pericyte spacing the spacing sweep starts at, centre to centre along each capillary",
     "constriction_spacing_max_um": "Pericyte spacing the spacing sweep ends at, centre to centre along each capillary",

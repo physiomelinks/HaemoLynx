@@ -95,13 +95,16 @@ def constriction_strategy_kwargs(
     diameter_by_branch_order: Mapping[str, float],
     constriction_length: float | None = None,
     constriction_spacing: float | None = None,
+    pericyte_mask_placed: pericyte_mask_strategy.PlacedPericyteMask | None = None,
 ) -> dict[str, Any]:
     """Every :func:`set_resistances_for_constriction_strategy` argument a
     perturbation takes from its merged *settings* -- one place, so a pericyte
     diameter change and every pericyte sweep configure the strategy alike.
 
     *constriction_length*/*constriction_spacing* override the settings' own
-    values for a geometry sweep's grid point.
+    values for a geometry sweep's grid point. *pericyte_mask_placed* is the
+    mask :func:`placed_pericyte_mask` read and placed once for the whole
+    perturbation.
     """
     probability = settings.get("pericyte_constriction_probability")
     factor = settings.get("pericyte_constriction_factor")
@@ -137,6 +140,30 @@ def constriction_strategy_kwargs(
         seed=settings.get("pericyte_constriction_seed"),
         voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
         voxel_size_policy=settings.get("voxel_size_policy", "auto"),
+        pericyte_mask_placed=pericyte_mask_placed,
+    )
+
+
+def placed_pericyte_mask(
+    graph: nx.MultiGraph, settings: Mapping[str, Any]
+) -> pericyte_mask_strategy.PlacedPericyteMask | None:
+    """The pericyte mask *settings* constrict from, read and placed on
+    *graph* once (:func:`~haemolynx.haemodynamics.pericyte_mask.place_pericyte_mask`)
+    with the arguments :func:`constriction_strategy_kwargs` gives the
+    strategy; None when the settings take no mask."""
+    arguments = constriction_strategy_kwargs(settings, diameter_by_branch_order={})
+    if not arguments["use_pericyte_mask_constriction"] or arguments["pericyte_mask_path"] in (None, ""):
+        return None
+    return pericyte_mask_strategy.place_pericyte_mask(
+        graph,
+        arguments["pericyte_mask_path"],
+        h5_dataset_name=arguments["pericyte_mask_h5_dataset_name"],
+        axis_order=arguments["axis_order"],
+        voxel_size_override_xyz=arguments["voxel_size_override_xyz"],
+        voxel_size_policy=arguments["voxel_size_policy"],
+        max_assignment_distance_um=arguments["max_assignment_distance_um"],
+        min_pericyte_diameter_um=arguments["min_pericyte_diameter_um"],
+        max_pericyte_diameter_um=arguments["max_pericyte_diameter_um"],
     )
 
 
@@ -167,6 +194,7 @@ def set_resistances_for_constriction_strategy(
     seed: int | None = None,
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
+    pericyte_mask_placed: pericyte_mask_strategy.PlacedPericyteMask | None = None,
 ) -> tuple[nx.MultiGraph, str, dict[str, Any]]:
     """Apply one constriction strategy to ``graph``.
 
@@ -183,6 +211,10 @@ def set_resistances_for_constriction_strategy(
     *default_constriction_factor* (settings: ``pericyte_constriction_factor``)
     applies to every branch order; keys in *constriction_factor_by_branch_order*
     replace that base for the listed orders only.
+
+    *pericyte_mask_placed* is the mask already read and placed on this
+    network (:func:`placed_pericyte_mask`); the mask strategy reads it from
+    disk without one.
     """
     # Every order on the graph, not only the table's: a vessel past
     # max_branch_order still has its own diameter, and it takes the default
@@ -228,6 +260,7 @@ def set_resistances_for_constriction_strategy(
             seed=seed,
             voxel_size_override_xyz=voxel_size_override_xyz,
             voxel_size_policy=voxel_size_policy,
+            placed=pericyte_mask_placed,
         )
         return graph, PERICYTE_MASK_STRATEGY, results
 

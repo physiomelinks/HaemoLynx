@@ -1142,6 +1142,130 @@ def test_an_unseeded_pericyte_sweep_constricts_one_cohort_at_every_grid_point(tm
     assert isinstance(result.summary["pericyte_constriction_seed_drawn"], int)
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {
+            "name": "capillaries_wider",
+            "type": "pericyte_dilation_sweep",
+            "overrides": {
+                "pericyte_dilation_min_percent": 10,
+                "pericyte_dilation_max_percent": 10,
+                "pericyte_dilation_step_percent": 1,
+            },
+        },
+        {
+            "name": "capillaries_wider_spaced",
+            "type": "pericyte_spacing_sweep",
+            "overrides": {
+                "constriction_spacing_min_um": 50.0,
+                "constriction_spacing_max_um": 100.0,
+                "constriction_spacing_step_um": 50.0,
+                "pericyte_geometry_dilation_percent": 10,
+            },
+        },
+    ],
+    ids=["dilation", "spacing"],
+)
+def test_a_pericyte_sweep_dilates_the_capillaries_alone(tmp_path, entry):
+    """Pericytes sit on capillaries, so a pericyte sweep widens them and
+    leaves the arterioles and venules as they were (Harvey, 2026-11-03).
+    With every site's factor 1, the network's resistance is the line's with
+    only its two capillaries 10% wider; every vessel used to widen."""
+    entry = {
+        **entry,
+        "overrides": {
+            **entry["overrides"],
+            "pericyte_constriction_factor": 1.0,
+            "constriction_by_branch_order": {order: 1.0 for order in DIAMETERS},
+        },
+    }
+    run = _run(tmp_path, [entry])
+
+    result = run.results[0]
+    assert result.ok, result.error
+    model = PoiseuilleModel(
+        constriction_length=40.0, constriction_spacing=100.0, viscosity_law="constant"
+    )
+    expected = sum(
+        model.resistance_of_uniform_segment(
+            EDGE_LENGTH_UM, DIAMETERS[order] * (1.1 if order.startswith("B") else 1.0)
+        )
+        for order in BRANCH_ORDERS
+    )
+    rows = _sweep_rows(result)
+    assert rows
+    for row in rows:
+        assert float(row["equivalent_resistance_pa_s_per_m3"]) == pytest.approx(expected, rel=1e-9)
+
+
+def test_a_mask_pericyte_sweep_reads_its_mask_once(tmp_path, monkeypatch):
+    """The mask was read from disk and placed again at every grid point (and
+    every haematocrit pass), then once more for its distribution: six reads
+    for this five-point sweep. One perturbation reads it once."""
+    import functools
+
+    from haemolynx.haemodynamics import pericyte_mask
+
+    reads = []
+    real = pericyte_mask.load_pericyte_mask
+
+    @functools.wraps(real)
+    def counting(*args, **kwargs):
+        reads.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pericyte_mask, "load_pericyte_mask", counting)
+    entry = {
+        "name": "mask_sweep",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {
+            "pericyte_dilation_min_percent": -2,
+            "pericyte_dilation_max_percent": 2,
+            "pericyte_dilation_step_percent": 1,
+            "use_pericyte_mask_constriction": True,
+            "pericyte_mask_path": str(_pericyte_mask_file()),
+        },
+    }
+    run = _run(tmp_path, [entry])
+
+    result = run.results[0]
+    assert result.ok, result.error
+    rows = result.sweep_flows.pericyte_sites
+    assert len(rows) == 5 and all(len(sites) == 1 for sites in rows)
+    assert result.summary["mask_distribution"]["objects_on_vessels"] == 1
+    assert len(reads) == 1
+
+
+def test_a_placed_mask_constricts_as_reading_it_afresh_does(tmp_path):
+    from haemolynx.haemodynamics.constriction_strategy import (
+        constriction_strategy_kwargs,
+        placed_pericyte_mask,
+        set_resistances_for_constriction_strategy,
+    )
+
+    settings = _settings(
+        tmp_path, [],
+        use_pericyte_mask_constriction=True,
+        pericyte_mask_path=str(_pericyte_mask_file()),
+    )
+    fresh, placed = _model().graph, _model().graph
+    kwargs = constriction_strategy_kwargs(settings, diameter_by_branch_order=DIAMETERS)
+    _g, _s, read_here = set_resistances_for_constriction_strategy(fresh, **kwargs)
+    _g, _s, read_once = set_resistances_for_constriction_strategy(
+        placed,
+        **constriction_strategy_kwargs(
+            settings,
+            diameter_by_branch_order=DIAMETERS,
+            pericyte_mask_placed=placed_pericyte_mask(placed, settings),
+        ),
+    )
+
+    assert read_once == read_here
+    assert read_here["active_pericyte_count"] == 1
+    assert _resistances(placed) == _resistances(fresh)
+
+
 def test_the_order_they_are_listed_in_does_not_matter(tmp_path):
     forwards = _run(tmp_path / "forwards", [ARTERIOLE_DILATION, PERICYTE_TONE])
     backwards = _run(tmp_path / "backwards", [PERICYTE_TONE, ARTERIOLE_DILATION])

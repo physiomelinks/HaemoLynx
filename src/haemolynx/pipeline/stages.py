@@ -48,6 +48,7 @@ from haemolynx.haemodynamics.apply import (
 )
 from haemolynx.haemodynamics.constriction_strategy import (
     constriction_strategy_kwargs,
+    placed_pericyte_mask,
     set_resistances_for_constriction_strategy,
 )
 from haemolynx.haemodynamics.haematocrit_distribution import (
@@ -6473,7 +6474,7 @@ def _perturbation_copy(G: nx.MultiGraph) -> nx.MultiGraph:
       capillary block's stopped vessels)
     * `arteriole.scale_arteriole_diameters`,
       `capillary.scale_capillary_diameters` and
-      `pericyte_sweep.dilate_graph_diameters` -- `fwhm_diameter_um`
+      `capillary.dilate_capillaries` -- `fwhm_diameter_um`
     * `constriction.apply_constriction_sites` and
       `PoiseuilleModel.set_poiseuille_resistances_with_constrictions` --
       `pericyte_count_assigned`, and `pericyte_centers_um` rebound to a
@@ -6939,37 +6940,21 @@ def _pericyte_mask_distribution(
     G: nx.MultiGraph,
     settings: Mapping[str, Any],
     *,
-    diameter_by_branch_order: Mapping[str, float],
     output_dir: Path,
     name: str,
+    placed: Any | None = None,
 ) -> tuple[haemodynamics.MaskDistribution, list[Path]]:
     """Where a pericyte perturbation's mask puts its pericytes on *G*, placed
-    as its constriction strategy places them (the same arguments, from
-    `constriction_strategy_kwargs`), and the two CSVs that say so."""
-    from haemolynx.haemodynamics.pericyte_mask import load_pericyte_mask, place_pericytes
-
-    arguments = constriction_strategy_kwargs(settings, diameter_by_branch_order=diameter_by_branch_order)
-    mask, _voxel_size_xyz, voxel_size_zyx = load_pericyte_mask(
-        arguments["pericyte_mask_path"],
-        G,
-        h5_dataset_name=arguments["pericyte_mask_h5_dataset_name"],
-        axis_order=arguments["axis_order"],
-        voxel_size_override_xyz=arguments["voxel_size_override_xyz"],
-        voxel_size_policy=arguments["voxel_size_policy"],
-    )
-    placement = place_pericytes(
-        G,
-        mask,
-        voxel_size_zyx,
-        max_assignment_distance_um=arguments["max_assignment_distance_um"],
-        min_pericyte_diameter_um=arguments["min_pericyte_diameter_um"],
-        max_pericyte_diameter_um=arguments["max_pericyte_diameter_um"],
-    )
+    as its constriction strategy places them (*placed*, the placement the
+    strategy used; else read and placed with the same arguments,
+    `placed_pericyte_mask`), and the two CSVs that say so."""
+    if placed is None:
+        placed = placed_pericyte_mask(G, settings)
     distribution = haemodynamics.pericyte_mask_distribution(
-        G, placement, image_shape=mask.shape, voxel_size_zyx=voxel_size_zyx
+        G, placed.placement, image_shape=placed.image_shape, voxel_size_zyx=placed.voxel_size_zyx
     )
     paths = _write_mask_distribution(
-        distribution, output_dir=output_dir, name=name, mask_path=arguments["pericyte_mask_path"]
+        distribution, output_dir=output_dir, name=name, mask_path=settings["pericyte_mask_path"]
     )
     return distribution, paths
 
@@ -7377,6 +7362,14 @@ def _perturb_one(
     #: geometry. Sweeps leave it None: they iterate per grid point
     #: themselves (see pericyte_sweep.solve_sweep_point).
     recompute_resistances: Callable[[], None] | None = None
+    # The pericyte mask read and placed once, for every strategy call of this
+    # perturbation (each sweep grid point, each haematocrit pass) and its
+    # mask distribution. The measured constriction reads its own.
+    placed = (
+        placed_pericyte_mask(G, perturbed)
+        if places_pericytes(spec.type) and spec.type != MEASURED_CONSTRICTION_TYPE
+        else None
+    )
 
     if spec.type == "pressure_sweep":
         sweep_payload = run_pericyte_dilation_pressure_sweep(
@@ -7397,6 +7390,7 @@ def _perturb_one(
             output_dir=result.output_dir,
             sweep_dilation=True,
             sweep_pressure=True,
+            pericyte_mask_placed=placed,
         )
     elif spec.type == "pericyte_dilation_sweep":
         sweep_payload = run_pericyte_dilation_pressure_sweep(
@@ -7407,6 +7401,7 @@ def _perturb_one(
             output_dir=result.output_dir,
             sweep_dilation=True,
             sweep_pressure=False,
+            pericyte_mask_placed=placed,
         )
     elif spec.type == "arteriole_diameter_change":
         arteriole_model = _poiseuille_model_for(perturbed)
@@ -7483,6 +7478,7 @@ def _perturb_one(
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
             sweep_axis="spacing",
+            pericyte_mask_placed=placed,
         )
     elif spec.type == "pericyte_length_sweep":
         sweep_payload = run_pericyte_geometry_sweep(
@@ -7492,10 +7488,11 @@ def _perturb_one(
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
             sweep_axis="length",
+            pericyte_mask_placed=placed,
         )
     elif spec.type == "pericyte_diameter_change":
         constriction_kwargs = constriction_strategy_kwargs(
-            perturbed, diameter_by_branch_order=diameter_table
+            perturbed, diameter_by_branch_order=diameter_table, pericyte_mask_placed=placed
         )
         G, strategy, strategy_results = set_resistances_for_constriction_strategy(
             G, **constriction_kwargs
@@ -7532,7 +7529,7 @@ def _perturb_one(
             perturbed["arteriole_diameter_change_percent"]
         )
         constriction_kwargs = constriction_strategy_kwargs(
-            perturbed, diameter_by_branch_order=scaled_table
+            perturbed, diameter_by_branch_order=scaled_table, pericyte_mask_placed=placed
         )
         G, strategy, strategy_results = set_resistances_for_constriction_strategy(
             G, **constriction_kwargs
@@ -7718,9 +7715,9 @@ def _perturb_one(
         distribution, mask_paths = _pericyte_mask_distribution(
             model.graph,
             perturbed,
-            diameter_by_branch_order=diameter_table,
             output_dir=result.output_dir,
             name=spec.name,
+            placed=placed,
         )
         result.outputs.extend(mask_paths)
         summary["mask_distribution"] = distribution.summary

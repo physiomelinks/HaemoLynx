@@ -5,8 +5,8 @@ Two complementary sweeps over focal-constriction geometry:
 * ``pericyte_spacing_sweep`` — vary ``constriction_spacing_um``; length fixed
 * ``pericyte_length_sweep`` — vary ``constriction_length_um``; spacing fixed
 
-Both keep a single fixed ``pericyte_geometry_dilation_percent`` (same diameter
-scale as ``dilate_graph_diameters`` / the pericyte dilation sweep) and solve at
+Both keep a single fixed ``pericyte_geometry_dilation_percent`` (the pericyte
+dilation sweep's: the capillaries scaled, ``capillary.dilate_capillaries``) and solve at
 the run's ``inlet_p_bc``. Resistances at each grid point go through
 :func:`~haemolynx.haemodynamics.constriction_strategy.set_resistances_for_constriction_strategy`.
 """
@@ -21,12 +21,14 @@ import numpy as np
 
 from .constriction_strategy import (
     constriction_strategy_kwargs,
+    placed_pericyte_mask,
     set_resistances_for_constriction_strategy,
 )
+from .capillary import dilate_capillaries
 from .pericyte_sweep import (
     apply_baseline_overrides,
-    dilate_graph_diameters,
     haematocrit_sweep_report,
+    is_capillary_custom_edge,
     solve_sweep_point,
     sweep_rows_at_pressures,
     write_sweep_rows,
@@ -100,6 +102,7 @@ def _apply_focal_constrictions(
     constriction_length: float,
     constriction_spacing: float,
     dilation_factor: float,
+    pericyte_mask_placed=None,
 ) -> nx.MultiGraph:
     """Place and apply focal constrictions for one geometry grid point."""
     G, _strategy, _results = set_resistances_for_constriction_strategy(
@@ -109,6 +112,7 @@ def _apply_focal_constrictions(
             diameter_by_branch_order=scaled_diameters,
             constriction_length=constriction_length,
             constriction_spacing=constriction_spacing,
+            pericyte_mask_placed=pericyte_mask_placed,
         ),
     )
     apply_baseline_overrides(
@@ -122,6 +126,7 @@ def _apply_focal_constrictions(
             diameter_basis=run_diameter_basis(settings),
         ),
         custom_edge_diameter_scale=dilation_factor,
+        scaled_custom_edge=is_capillary_custom_edge,
     )
     return G
 
@@ -141,16 +146,19 @@ def run_pericyte_geometry_sweep(
     outlet_nodes: list[int],
     output_dir: Path | str,
     sweep_axis: GeometryAxis,
+    pericyte_mask_placed=None,
 ) -> dict[str, Any]:
     """Sweep spacing or constriction length at fixed dilation and pressure.
 
     *sweep_axis* ``"spacing"`` reads ``constriction_spacing_{min,max,step}_um``
     and holds ``constriction_length_um`` fixed. ``"length"`` does the reverse.
 
-    Fixed tone is ``pericyte_geometry_dilation_percent``: the same
-    ``dilation_factor = 1 + percent/100`` used by
-    :func:`~haemolynx.haemodynamics.pericyte_sweep.dilate_graph_diameters`.
+    Fixed tone is ``pericyte_geometry_dilation_percent``: the capillaries'
+    diameters scaled by ``1 + percent/100``, as the pericyte dilation sweep
+    scales them (:func:`~haemolynx.haemodynamics.capillary.dilate_capillaries`).
     Inlet pressure is the run's ``inlet_p_bc`` (not a pressure sweep).
+    *pericyte_mask_placed* is the pericyte mask read and placed once; without
+    it a mask the settings name is read and placed here, once.
     """
     if sweep_axis not in ("spacing", "length"):
         raise ValueError(
@@ -167,11 +175,11 @@ def run_pericyte_geometry_sweep(
     inlet_pressure_pa = float(settings["inlet_p_bc"])
     outlet_pressure_pa = float(settings["outlet_p_bc"])
     diameter_by_branch_order = settings["diameter_by_branch_order"]
-    scaled_diameters = {
-        branch_order: float(diameter_um) * dilation_factor
-        for branch_order, diameter_um in diameter_by_branch_order.items()
-    }
-    dilated_base = dilate_graph_diameters(G, dilation_factor)
+    dilated_base, scaled_diameters, _capillaries, _measured = dilate_capillaries(
+        G, diameter_by_branch_order, dilation_factor
+    )
+    if pericyte_mask_placed is None:
+        pericyte_mask_placed = placed_pericyte_mask(G, settings)
 
     if sweep_axis == "spacing":
         axis_values = _um_axis_values(
@@ -229,6 +237,7 @@ def run_pericyte_geometry_sweep(
                 constriction_length=length,
                 constriction_spacing=spacing,
                 dilation_factor=dilation_factor,
+                pericyte_mask_placed=pericyte_mask_placed,
             )
 
         recompute_resistances()

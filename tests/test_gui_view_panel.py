@@ -1337,6 +1337,60 @@ def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari
     np.testing.assert_allclose(shown(), expected(0))
 
 
+def test_a_sweeps_nodes_and_arrows_follow_its_slider(make_napari_viewer, tmp_path):
+    """Showing a sweep greyed the Nodes and Flow direction arrows boxes: it
+    drew neither. Its nodes now take each grid point's pressures and its
+    arrows that point's flows as the slider moves."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import OURS as RESULT_OURS
+    from haemolynx.gui.results import (
+        ResultLayers,
+        perturbation_flow_direction_layer_name,
+        perturbation_layer_names,
+    )
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    sweep = result.sweep_flows
+    last = len(sweep.axis_values[sweep.axis_names[0]]) - 1
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    panel._haemolynx_choose_layer_set(result.name)
+    vessels, nodes = perturbation_layer_names(result.name)
+    arrows = perturbation_flow_direction_layer_name(result.name)
+
+    boxes = _show_boxes(panel)
+    assert boxes["nodes"].isEnabled() and boxes["flow direction"].isEnabled()
+    boxes["nodes"].setChecked(True)
+    boxes["flow direction"].setChecked(True)
+    assert viewer.layers[nodes].visible and viewer.layers[arrows].visible
+
+    _key, sliders = panel._haemolynx_sweep_controls[vessels]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+    for point in (last, 0):
+        grid_slider.setValue(point)
+        node_rows = viewer.layers[nodes].metadata[RESULT_OURS]["sweep_rows"]
+        np.testing.assert_array_equal(
+            viewer.layers[nodes].features["pressure"], node_rows.at(point)[1]["pressure"]
+        )
+        arrow_rows = viewer.layers[arrows].metadata[RESULT_OURS]["sweep_rows"]
+        np.testing.assert_array_equal(viewer.layers[arrows].data, arrow_rows.at(point)[0])
+        np.testing.assert_array_equal(
+            viewer.layers[arrows].features["flow_abs"], arrow_rows.at(point)[1]["flow_abs"]
+        )
+    # The inlet's pressure is the grid point's.
+    inlet = list(viewer.layers[nodes].features["node_id"]).index(0)
+    grid_slider.setValue(last)
+    assert viewer.layers[nodes].features["pressure"][inlet] == pytest.approx(
+        float(sweep.axis_values["inlet_pressure_pa"][last])
+    )
+
+
 def _baseline_and_sweep(make_napari_viewer, tmp_path):
     """A panel showing a baseline run beside a pressure-sweep perturbation."""
     from haemolynx.gui.results import ResultLayers, perturbation_layer_names

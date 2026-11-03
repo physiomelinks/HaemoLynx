@@ -1,7 +1,8 @@
 """Pericyte dilation and inlet-pressure sweeps over a vascular network.
 
-Repeatedly re-solves one network while dilating its vessels and/or varying the
-inlet pressure, producing the flow and equivalent-resistance curves used to
+Repeatedly re-solves one network while dilating its capillaries (the vessels
+pericytes sit on: arterioles and venules keep their diameters) and/or varying
+the inlet pressure, producing the flow and equivalent-resistance curves used to
 compare pericyte tone between conditions.
 
 Kept here rather than in an example because both the whole-network solve and
@@ -29,12 +30,14 @@ import numpy as np
 import scipy.sparse as sp
 
 from .apply import apply_final_resistance_overrides
+from .capillary import dilate_capillaries
 from .constriction_strategy import (
     constriction_strategy_kwargs,
+    placed_pericyte_mask,
     set_resistances_for_constriction_strategy,
 )
 from .haematocrit_distribution import JUNCTION_RULE_NO_SEPARATION, iterate_flow_and_haematocrit
-from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
+from .poiseuille import PoiseuilleModel
 from .viscosity import run_diameter_basis, run_viscosity_law
 from .resistance import (
     FLOW_SOLVER_DENSE,
@@ -424,14 +427,14 @@ def haematocrit_sweep_report(iterations: Sequence[dict[str, Any] | None]) -> dic
     }
 
 
-def dilate_graph_diameters(
-    G: nx.MultiGraph, dilation_factor: float
-) -> nx.MultiGraph:
-    """A copy of *G* with every measured FWHM diameter scaled."""
-    dilated = G.copy()
-    for _, _, _, edge_data in dilated.edges(keys=True, data=True):
-        scale_stored_edge_diameters(edge_data, dilation_factor)
-    return dilated
+def is_capillary_custom_edge(G: nx.MultiGraph, pair: Sequence[Any]) -> bool:
+    """Whether a ``custom_edges`` pair ``(u, v)`` names a capillary of *G*,
+    so a pericyte sweep's capillary dilation reaches its fixed diameter."""
+    from .constriction import is_capillary_branch_order
+
+    u, v = pair
+    edges = G.get_edge_data(u, v) or G.get_edge_data(v, u) or {}
+    return any(is_capillary_branch_order(data.get("branch_order")) for data in edges.values())
 
 
 def inclusive_int_range(
@@ -477,6 +480,7 @@ def _apply_sweep_resistances(
     dilation_factor: float,
     sweep_dilation: bool,
     poiseuille_model: PoiseuilleModel,
+    pericyte_mask_placed=None,
 ) -> nx.MultiGraph:
     """Resistances for one sweep grid point.
 
@@ -498,7 +502,9 @@ def _apply_sweep_resistances(
         G, _strategy, _strategy_results = set_resistances_for_constriction_strategy(
             G,
             **constriction_strategy_kwargs(
-                settings, diameter_by_branch_order=scaled_diameters
+                settings,
+                diameter_by_branch_order=scaled_diameters,
+                pericyte_mask_placed=pericyte_mask_placed,
             ),
         )
     else:
@@ -508,7 +514,13 @@ def _apply_sweep_resistances(
             prefer_edge_fwhm_diameter=True,
         )
 
-    apply_baseline_overrides(G, settings, poiseuille_model, custom_edge_diameter_scale=dilation_factor)
+    apply_baseline_overrides(
+        G,
+        settings,
+        poiseuille_model,
+        custom_edge_diameter_scale=dilation_factor,
+        scaled_custom_edge=is_capillary_custom_edge,
+    )
     return G
 
 
@@ -518,16 +530,28 @@ def apply_baseline_overrides(
     poiseuille_model: PoiseuilleModel,
     *,
     custom_edge_diameter_scale: float = 1.0,
+    scaled_custom_edge: Callable[[nx.MultiGraph, Sequence[Any]], bool] | None = None,
 ) -> None:
     """The baseline's own last resistance writes (custom edges, thick-vessel
-    bridges), redone on a perturbed graph so those edges match the baseline."""
-    apply_final_resistance_overrides(
-        G,
-        poiseuille_model,
-        custom_edges=settings.get("custom_edges"),
-        custom_edge_diameter=settings.get("custom_edge_diameter"),
-        custom_edge_diameter_scale=custom_edge_diameter_scale,
-    )
+    bridges), redone on a perturbed graph so those edges match the baseline.
+
+    *custom_edge_diameter_scale* scales the custom edges' fixed diameter with
+    a dilation: every one's, or, given *scaled_custom_edge*, only those it
+    says the dilation reaches (a capillary dilation's capillaries)."""
+    custom = settings.get("custom_edges") or []
+    pairs = list(custom.keys() if isinstance(custom, Mapping) else custom)
+    groups = [(pairs, custom_edge_diameter_scale)]
+    if scaled_custom_edge is not None and custom_edge_diameter_scale != 1.0:
+        scaled = [pair for pair in pairs if scaled_custom_edge(G, pair)]
+        groups = [([pair for pair in pairs if pair not in scaled], 1.0), (scaled, custom_edge_diameter_scale)]
+    for edges, scale in groups:
+        apply_final_resistance_overrides(
+            G,
+            poiseuille_model,
+            custom_edges=edges,
+            custom_edge_diameter=settings.get("custom_edge_diameter"),
+            custom_edge_diameter_scale=scale,
+        )
 
 
 def run_pericyte_dilation_pressure_sweep(
@@ -539,6 +563,7 @@ def run_pericyte_dilation_pressure_sweep(
     output_dir: Path | str,
     sweep_dilation: bool = True,
     sweep_pressure: bool = True,
+    pericyte_mask_placed=None,
 ) -> dict[str, Any]:
     """Sweep dilation and/or inlet pressure, writing a CSV of curves.
 
@@ -548,16 +573,24 @@ def run_pericyte_dilation_pressure_sweep(
     * dilation only — pericyte tone at the run's fixed ``inlet_p_bc``
     * pressure only — inlet pressure on the undilated network
 
-    When dilation is swept, each grid point dilates diameters then applies the
-    existing constriction strategy (periodic / probabilistic / mask) using the
+    When dilation is swept, each grid point dilates the capillaries' diameters
+    (arterioles and venules keep theirs) then applies the existing constriction
+    strategy (periodic / probabilistic / mask) using the
     merged *settings*, so ``constriction_length_um``, ``constriction_spacing_um``
     and probability flags change the resistances. Pressure-only sweeps stay on
     uniform Poiseuille.
+
+    *pericyte_mask_placed* is the pericyte mask read and placed once
+    (:func:`~haemolynx.haemodynamics.constriction_strategy.placed_pericyte_mask`);
+    without it a mask the settings name is read and placed here, once, for
+    every grid point.
     """
     if not sweep_dilation and not sweep_pressure:
         raise ValueError(
             "A sweep must vary dilation, inlet pressure, or both; got neither."
         )
+    if sweep_dilation and pericyte_mask_placed is None:
+        pericyte_mask_placed = placed_pericyte_mask(G, settings)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -582,11 +615,9 @@ def run_pericyte_dilation_pressure_sweep(
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
-        dilated = dilate_graph_diameters(G, dilation_factor)
-        scaled_diameters = {
-            branch_order: float(diameter_um) * dilation_factor
-            for branch_order, diameter_um in diameter_by_branch_order.items()
-        }
+        dilated, scaled_diameters, _capillaries, _measured = dilate_capillaries(
+            G, diameter_by_branch_order, dilation_factor
+        )
 
         def recompute_resistances(
             graph=dilated, scaled=scaled_diameters, factor=dilation_factor
@@ -598,6 +629,7 @@ def run_pericyte_dilation_pressure_sweep(
                 dilation_factor=factor,
                 sweep_dilation=sweep_dilation,
                 poiseuille_model=poiseuille_model,
+                pericyte_mask_placed=pericyte_mask_placed,
             )
 
         recompute_resistances()

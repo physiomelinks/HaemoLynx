@@ -13,15 +13,17 @@ then reversed when the signed flow is negative.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 import numpy as np
 
 from haemolynx.graph.prune import FLOW_SOLVED
-from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+from haemolynx.haemodynamics.resistance import flow_abs_log10_value, flow_abs_log10_values
 from haemolynx.visualization.geometry import edge_polyline
 
 __all__ = [
+    "SweepFlowArrows",
     "edge_flow_direction_sign",
     "flow_arrow_floor",
     "edge_flow_arrow_zyx",
@@ -31,6 +33,7 @@ __all__ = [
     "flow_direction_rgb",
     "flow_direction_rgba",
     "flow_heading_deg",
+    "sweep_flow_arrows",
 ]
 
 
@@ -409,3 +412,116 @@ def flow_direction_vectors(
         "flow_dir_rgb": np.zeros(len(dir_z_col), dtype=float),
     }
     return vectors, features
+
+
+@dataclass(frozen=True, eq=False)
+class SweepFlowArrows:
+    """Each vessel's mid-edge arrow both ways round, for a sweep's arrows to
+    follow its slider: :meth:`at` picks, at one grid point, each vessel's by
+    the sign of its flow and drops those at or below the grid point's
+    :func:`flow_arrow_floor`, as :func:`flow_direction_vectors` draws a solved
+    network. Built once (:func:`sweep_flow_arrows`); a grid point costs a
+    selection, not a walk over the network."""
+
+    #: Each arrow's vessel, by its position in ``edges(keys=True)`` order.
+    edge_index: np.ndarray
+    #: ``(M, 2, 3)`` arrows (origin, displacement) for flow ``u -> v``, and
+    #: for ``v -> u``.
+    forward: np.ndarray
+    backward: np.ndarray
+    #: ``(M, 3)`` signed unit ``(z, y, x)`` directions and ``(M,)`` headings
+    #: of those arrows (:func:`flow_direction_components`, :func:`flow_heading_deg`).
+    forward_direction: np.ndarray
+    backward_direction: np.ndarray
+    forward_heading: np.ndarray
+    backward_heading: np.ndarray
+
+    def at(self, flow_signed: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        """The arrows and their features at one grid point, *flow_signed*
+        being its signed flow on every edge in ``edges(keys=True)`` order."""
+        flows = np.asarray(flow_signed, dtype=float)
+        if flows.size == 0 or len(self.edge_index) == 0:
+            return np.empty((0, 2, 3), dtype=float), {}
+        magnitudes = np.abs(flows)
+        finite = magnitudes[np.isfinite(magnitudes)]
+        from haemolynx.statistics.flux_heterogeneity import CARRYING_FLOOR_FRACTION
+
+        floor = CARRYING_FLOOR_FRACTION * float(finite.max()) if finite.size else 0.0
+        signed = flows[self.edge_index]
+        keep = np.isfinite(signed) & (np.abs(signed) > floor)
+        ahead = (signed > 0)[keep]
+        vectors = np.where(ahead[:, None, None], self.forward[keep], self.backward[keep])
+        directions = np.where(ahead[:, None], self.forward_direction[keep], self.backward_direction[keep])
+        flow_abs = np.abs(signed[keep])
+        features = {
+            "flow_abs": flow_abs,
+            "flow_abs_log10": flow_abs_log10_values(flow_abs),
+            "flow_signed": signed[keep],
+            "flow_dir_z": directions[:, 0],
+            "flow_dir_y": directions[:, 1],
+            "flow_dir_x": directions[:, 2],
+            "flow_heading_deg": np.where(ahead, self.forward_heading[keep], self.backward_heading[keep]),
+            "flow_dir_rgb": np.zeros(int(keep.sum()), dtype=float),
+        }
+        return vectors, features
+
+
+def sweep_flow_arrows(
+    graph: Any,
+    *,
+    arrow_length_scale: float = 0.18,
+    arrow_offset_scale: float = 0.08,
+) -> SweepFlowArrows:
+    """Both arrows of every vessel of *graph* a sweep can give flow: every
+    edge with a centreline that the baseline's solve did not leave unsolved
+    (``FLOW_SOLVED`` False), sized as :func:`flow_direction_vectors` sizes
+    them (the median vessel's length) so the slider moves none of them."""
+    candidates: list[tuple[int, np.ndarray]] = []
+    for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
+        if data.get(FLOW_SOLVED) is False:
+            continue
+        try:
+            points = np.asarray(edge_polyline(graph, u, v, data), dtype=float)
+        except ValueError:
+            continue
+        candidates.append((index, points))
+    lengths = [_polyline_length(points) for _index, points in candidates]
+    valid = [length for length in lengths if length > 0]
+    base_len = float(np.median(valid)) if valid else 1.0
+    arrow_length = max(0.25, base_len * float(arrow_length_scale))
+    lateral_offset = max(0.10, base_len * float(arrow_offset_scale))
+
+    kept: list[int] = []
+    arrows: dict[int, list] = {1: [], -1: []}
+    for index, points in candidates:
+        both = [
+            edge_flow_arrow_zyx(
+                points, direction_sign=sign, arrow_length=arrow_length, lateral_offset=lateral_offset
+            )
+            for sign in (1, -1)
+        ]
+        if any(arrow is None for arrow in both):
+            continue
+        kept.append(index)
+        for sign, (anchor, vector) in zip((1, -1), both):
+            arrows[sign].append((anchor, vector))
+
+    def stacked(sign: int):
+        if not arrows[sign]:
+            return (np.empty((0, 2, 3)), np.empty((0, 3)), np.empty(0))
+        vectors = np.stack([np.stack([a, b]) for a, b in arrows[sign]]).astype(float)
+        directions = np.asarray([flow_direction_components(b) for _a, b in arrows[sign]], dtype=float)
+        headings = np.asarray([flow_heading_deg(b) for _a, b in arrows[sign]], dtype=float)
+        return vectors, directions, headings
+
+    forward, forward_direction, forward_heading = stacked(1)
+    backward, backward_direction, backward_heading = stacked(-1)
+    return SweepFlowArrows(
+        edge_index=np.asarray(kept, dtype=int),
+        forward=forward,
+        backward=backward,
+        forward_direction=forward_direction,
+        backward_direction=backward_direction,
+        forward_heading=forward_heading,
+        backward_heading=backward_heading,
+    )
