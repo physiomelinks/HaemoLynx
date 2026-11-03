@@ -120,6 +120,7 @@ Written to the run's output folder (output_dir). The voxel size the run read and
 | `voxel_size_override_xyz` | `um` | The voxel_size_override_xyz setting, if any. |
 | `downsample` | `-` | The downsample-on-import record, or null. |
 | `crop` | `voxel` | The crop-on-import box the skeleton was cut to, its (z, y, x) start and stop (stop not kept), or null for the whole image. |
+| `large_stack_thick_tree` | `-` | Whether the thick vessels' centreline tree was the large-stack one (true) or the exact one (false); only with thickness-gated skeletonisation. |
 
 ## `{stem}_statistics.csv`
 

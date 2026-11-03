@@ -978,3 +978,208 @@ def test_a_stain_read_from_another_raw_image_is_not_taken(tmp_path):
         assert resolve_raw_image_stain({**settings, **changed}, network)[0] == "plasma_column"
     del G.graph[RAW_IMAGE_STAIN_SOURCE]
     assert resolve_raw_image_stain(settings, network)[0] == "plasma_column"
+
+
+def _tube(mask: np.ndarray, axis: int, centre, radius: float, lo: int, hi: int) -> None:
+    """Fill, in place, a tube of *radius* along *axis* through *centre* from *lo* to *hi*."""
+    idx = np.indices(mask.shape)
+    others = [a for a in range(3) if a != axis]
+    r2 = sum((idx[a] - centre[a]) ** 2 for a in others)
+    mask |= (r2 <= radius**2) & (idx[axis] >= lo) & (idx[axis] <= hi)
+
+
+# --- remove_interior_dead_ends: the recovery after the removal ------------------
+
+
+def _two_trunks_and_a_spur():
+    """Two trunks along x, face to face, at y = 10 and y = 40, and a capillary
+    between them at x = 40 in the mask whose skeleton stops at y = 26: a spur
+    ending 14 um short of the far trunk, its mask running on to it."""
+    mask = np.zeros((20, 50, 80), dtype=bool)
+    _tube(mask, 2, (10, 10, 0), 3, 0, 79)
+    _tube(mask, 2, (10, 40, 0), 3, 0, 79)
+    _tube(mask, 1, (10, 0, 40), 2, 10, 40)
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[10, 10, :] = skeleton[10, 40, :] = True
+    skeleton[10, 11:27, 40] = True
+    return skeleton, mask.astype(np.uint8)
+
+
+def _recovery_patched_out(monkeypatch) -> None:
+    """The interior recovery (two-ended) returns its graph unchanged; graph
+    building's own recovery runs as it is."""
+    import functools
+
+    from haemolynx.graph import mask_recovery
+
+    real = mask_recovery.recover_uncovered_mask_vessels
+
+    @functools.wraps(real)
+    def unchanged_when_two_ended(G, *args, **kwargs):
+        return G if kwargs.get("two_ended") else real(G, *args, **kwargs)
+
+    monkeypatch.setattr(mask_recovery, "recover_uncovered_mask_vessels", unchanged_when_two_ended)
+
+
+@pytest.mark.parametrize("recovery", ["on", "patched out"])
+def test_the_removal_recovers_the_vessel_the_spur_was_part_of_joined_at_both_ends(
+    tmp_path, monkeypatch, recovery
+):
+    """The spur goes as an interior dead end, and the mask it leaves is
+    traced along its own skeleton and joined to both trunks. Every other test
+    of the removal passed with the recovery patched out."""
+    from haemolynx.pipeline.stages import INTERIOR_RECOVERY
+
+    if recovery == "patched out":
+        _recovery_patched_out(monkeypatch)
+    skeleton, mask = _two_trunks_and_a_spur()
+    settings = _settings(tmp_path, remove_interior_dead_ends=True)
+    G = build_network(settings, _volume(tmp_path, skeleton, mask), SCHEMA).graph
+
+    assert G.graph["interior_dead_ends_removed"] >= 1
+    drawn = [d for *_e, d in G.edges(data=True) if d.get(INTERIOR_RECOVERY)]
+    if recovery == "patched out":
+        assert drawn == [] and G.graph["interior_recovery_drawn_um"] == 0
+        assert nx.number_connected_components(G) == 2
+        return
+    assert G.graph["interior_recovery_drawn_um"] > 0
+    # Trunk to trunk, its joins included. The clean-up merges what recovery
+    # drew with its joins: the merge dropped the mark, and the length kept
+    # was reported 0.
+    assert drawn and sum(float(d["length"]) for d in drawn) == pytest.approx(30.0, abs=3.0)
+    assert G.graph["interior_recovery_kept_um"] == pytest.approx(G.graph["interior_recovery_drawn_um"])
+    assert nx.number_connected_components(G) == 1, "joined to both trunks"
+    assert sorted(G.degree(n) for n in G if G.degree(n) == 1) == [1, 1, 1, 1], "the trunks' own ends only"
+
+
+# --- graph_build_arguments: each setting reaches its argument -------------------
+
+#: (setting, build_graph_from_skeleton's argument, a value other than its default)
+GRAPH_BUILD_SETTINGS = [
+    ("graph_reconnect_threshold", "graph_reconnect_threshold", 7.5),
+    ("final_orphan_reconnect_threshold", "final_orphan_reconnect_threshold", 4.5),
+    ("cluster_collapse_distance", "cluster_collapse_distance", 6.5),
+    ("min_stub_length", "min_stub_length", 12.5),
+    ("min_stub_length_radius_multiple", "min_stub_length_radius_multiple", 1.5),
+    ("verbose_logging", "debug", True),
+    ("cluster_collapse_method", "cluster_collapse_method", "persistence"),
+    ("cluster_collapse_max_radial_dispersion", "cluster_collapse_max_radial_dispersion", 0.3),
+    ("cluster_collapse_persistence_search_multiple", "cluster_collapse_persistence_search_multiple", 2.0),
+    ("cartwheel_hub_min_degree", "cluster_collapse_direction_aware_min_degree", 8),
+    ("cartwheel_hub_tangent_length_um", "cluster_collapse_direction_aware_tangent_length_um", 7.0),
+    ("use_memmap_loading", "use_memmap", True),
+    ("bridge_require_mask_support", "bridge_require_mask_support", False),
+    ("bridge_max_background_gap_um", "bridge_max_background_gap_um", 3.5),
+    ("bridge_min_mask_fraction", "bridge_min_mask_fraction", 0.6),
+    ("recover_uncovered_mask_vessels", "recover_uncovered_mask_vessels", False),
+    ("recovery_min_region_volume_um3", "recovery_min_region_volume_um3", 45.0),
+    ("recovery_min_length_um", "recovery_min_length_um", 7.0),
+    ("facing_dead_end_max_gap_um", "facing_dead_end_max_gap_um", 4.0),
+    ("remove_short_loops_under_um", "remove_short_loops_under_um", 150.0),
+    ("short_loop_keep_hole_over_um", "short_loop_keep_hole_over_um", 6.0),
+    ("extend_dead_ends_to_faces", "extend_dead_ends_to_faces", True),
+    ("trace_on_dead_ends", "trace_on_dead_ends", True),
+    ("join_dead_ends_to_vessel_sides", "join_dead_ends_to_vessel_sides", True),
+    ("stub_face_protection", "stub_face_protection", "leaves_image"),
+    ("lumen_cleanup_max_rounds", "lumen_cleanup_max_rounds", 5),
+    ("lumen_cleanup_rewire_pairs", "lumen_cleanup_rewire_pairs", False),
+    ("lumen_cleanup_guard_rejoins", "lumen_cleanup_guard_rejoins", False),
+]
+
+
+@pytest.mark.parametrize(
+    "setting, argument, value", GRAPH_BUILD_SETTINGS, ids=[row[0] for row in GRAPH_BUILD_SETTINGS]
+)
+def test_each_graph_building_setting_reaches_its_argument(setting, argument, value):
+    """The mapping was pinned by name only: hard-coding any one value there
+    (facing_dead_end_max_gap_um=10, say) passed every test."""
+    from haemolynx.pipeline.stages import graph_build_arguments
+
+    assert value != SCHEMA[setting].default
+    settings = SCHEMA.defaults()
+    assert graph_build_arguments(settings)[argument] == SCHEMA[setting].default
+    settings[setting] = value
+    assert graph_build_arguments(settings)[argument] == value
+
+
+def test_every_graph_building_argument_is_pinned_to_its_setting():
+    from haemolynx.pipeline.stages import graph_build_arguments
+
+    assert set(graph_build_arguments(SCHEMA.defaults())) == {row[1] for row in GRAPH_BUILD_SETTINGS}
+
+
+def _line_with_a_gap() -> tuple[np.ndarray, np.ndarray]:
+    """A vessel along x from face to face whose mask has 6 um of background
+    at x = 37 to 42: its skeleton is two lines whose tips face each other
+    7 um apart."""
+    mask = np.zeros((20, 30, 80), dtype=bool)
+    _tube(mask, 2, (10, 15, 0), 2, 0, 79)
+    mask[:, :, 37:43] = False
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[10, 15, :37] = skeleton[10, 15, 43:] = True
+    return skeleton, mask.astype(np.uint8)
+
+
+@pytest.mark.parametrize("max_gap_um, joined", [(10.0, True), (4.0, False)])
+def test_two_dead_ends_facing_across_a_gap_are_joined_within_the_settings_reach(
+    tmp_path, max_gap_um, joined
+):
+    skeleton, mask = _line_with_a_gap()
+    settings = _settings(tmp_path, facing_dead_end_max_gap_um=max_gap_um)
+    G = build_network(settings, _volume(tmp_path, skeleton, mask), SCHEMA).graph
+
+    assert nx.number_connected_components(G) == (1 if joined else 2)
+    assert sum(1 for n in G if G.degree(n) == 1) == (2 if joined else 4)
+
+
+# --- smooth_centrelines off ----------------------------------------------------
+
+
+def _sloping_line() -> np.ndarray:
+    """A digital line at a third of a voxel a step, face to face: its voxel
+    staircase is longer than the line it draws, so smoothing changes it."""
+    skeleton = np.zeros((20, 50, 80), dtype=bool)
+    x = np.arange(80)
+    skeleton[10, 10 + x // 3, x] = True
+    return skeleton
+
+
+@pytest.mark.parametrize("smooth", [False, True])
+def test_with_smoothing_off_every_centreline_is_its_voxel_staircase(tmp_path, monkeypatch, smooth):
+    import functools
+
+    from haemolynx import graph
+
+    calls = {"smooth_graph_centrelines": 0, "smooth_straight_steps": 0}
+    for name in calls:
+        real = getattr(graph, name)
+
+        def spy(*args, _real=real, _name=name, **kwargs):
+            calls[_name] += 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(graph, name, functools.wraps(real)(spy))
+
+    skeleton = _sloping_line()
+    settings = _settings(tmp_path, smooth_centrelines=smooth)
+    G = build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA).graph
+    assert G.number_of_edges() >= 1
+
+    def on_the_skeleton(points: np.ndarray) -> bool:
+        index = np.rint(points).astype(int)
+        return np.allclose(points, index) and bool(skeleton[tuple(index.T)].all())
+
+    def polyline_um(points: np.ndarray) -> float:
+        return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+
+    paths = [np.asarray(d["voxels"], dtype=float) for *_e, d in G.edges(data=True)]
+    if not smooth:
+        assert calls == {"smooth_graph_centrelines": 0, "smooth_straight_steps": 0}
+        assert not any("centreline_smoothing" in d for *_e, d in G.edges(data=True))
+        assert all(on_the_skeleton(path) for path in paths)
+        for (*_e, d), path in zip(G.edges(data=True), paths):
+            assert float(d["length"]) == pytest.approx(polyline_um(path))
+    else:  # the fixture is one smoothing changes
+        assert calls["smooth_graph_centrelines"] >= 1 and calls["smooth_straight_steps"] == 1
+        assert all("centreline_smoothing" in d for *_e, d in G.edges(data=True))
+        assert not all(on_the_skeleton(path) for path in paths)

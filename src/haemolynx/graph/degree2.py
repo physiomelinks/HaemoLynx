@@ -44,6 +44,13 @@ RECOVERED_FRACTION = "recovered_fraction"
 BRIDGED_FRACTION = "bridged_fraction"
 BRIDGE_KINDS = "bridge_kinds"
 
+#: Marks that describe a whole edge, kept by a merge only where both halves
+#: carry them: mask recovery's ``recovered``, and ``interior_recovery``
+#: (``pipeline.stages.INTERIOR_RECOVERY``), on what the recovery after the
+#: interior dead ends' removal drew, whose length it reports kept after the
+#: clean-up. Dropped by every merge, that length was 0 whatever was kept.
+WHOLE_EDGE_MARKS = ("recovered", "interior_recovery")
+
 
 def _drawn_fraction(data: dict, fraction: str, whole: bool) -> float:
     if fraction in data:
@@ -69,11 +76,12 @@ def carry_merged_provenance(merged: dict, d1: dict, d2: dict) -> dict:
     not take a vessel with it. :data:`RECOVERED_FRACTION`,
     :data:`BRIDGED_FRACTION` and :data:`BRIDGE_KINDS` say how much of it
     either drew, however it was merged, weighted by each half's ``length``."""
-    for key in ("recovered", "bridge_kind", "bridge_background_um", RECOVERED_FRACTION, BRIDGED_FRACTION, BRIDGE_KINDS):
+    for key in (*WHOLE_EDGE_MARKS, "bridge_kind", "bridge_background_um", RECOVERED_FRACTION, BRIDGED_FRACTION, BRIDGE_KINDS):
         merged.pop(key, None)
     halves = (d1, d2)
-    if all(d.get("recovered") for d in halves):
-        merged["recovered"] = True
+    for mark in WHOLE_EDGE_MARKS:
+        if all(d.get(mark) for d in halves):
+            merged[mark] = True
     kinds = [d.get("bridge_kind") for d in halves]
     if kinds[0] and kinds[0] == kinds[1]:
         merged["bridge_kind"] = kinds[0]
