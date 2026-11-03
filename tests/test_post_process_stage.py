@@ -1690,6 +1690,26 @@ def test_the_edits_readers_share_one_binarised_segmentation_and_one_support(tmp_
     )
 
 
+def test_the_tabs_review_lists_read_the_segmentation_post_processing_keeps(tmp_path):
+    """The tab's lists binarised the segmentation and built a support of
+    their own beside the one post processing keeps on the volume: two
+    copies of one image. Both are now one."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    network.volume.image = _thick_mask().astype(np.uint8) * 255
+
+    shared = stages.post_process_segmentation_support(run_settings, network.volume)
+    assert shared is not None
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    kept = network.volume.post_process_segmentation
+    assert kept.support() is shared, "post processing read it through the same support"
+    assert stages.post_process_segmentation_support(run_settings, network.volume) is shared
+    assert stages.post_process_segmentation_support({}, network.volume) is None, "no bridge settings"
+    assert stages.post_process_segmentation_support(run_settings, None) is None
+    network.volume.image = None
+    assert stages.post_process_segmentation_support(run_settings, network.volume) is None
+
+
 def test_the_next_regenerate_reads_the_segmentation_it_was_read_as_last(tmp_path, monkeypatch):
     """Every Regenerate binarised the image and built the support's surface
     tree again (E14.5: about 5 of 6 s). A Regenerate is handed the run's
@@ -1756,6 +1776,64 @@ def test_an_outlet_set_by_hand_replaces_the_runs_lists_and_the_resistance_pair(t
     # The lists are taken once: the marks are cleared with the others.
     assert BOUNDARY_ROLES not in out.graph.graph
     assert not has_pending_edits(out.graph)
+
+
+def test_the_lists_handed_on_are_the_resolves_not_post_processings(tmp_path):
+    """An inlet made by hand on a piece with no outlet: the re-solve's
+    network handling (remove_disconnected) removes the piece and the inlet.
+    post_process recorded the lists before that, and the checkpoint handed
+    the removed inlet to the next resume, whose solve then refused it."""
+    run_settings, network, boundaries, model = _diameters_run(
+        tmp_path, boundary_handling="remove_disconnected", run_haemodynamics=True
+    )
+    G = model.graph
+    a, b = max(G.nodes) + 1, max(G.nodes) + 2
+    G.add_node(a, pos=np.asarray((0.0, 80.0, 0.0)))
+    G.add_node(b, pos=np.asarray((0.0, 80.0, 30.0)))
+    add_vessel_between(G, a, b)
+    set_terminal_role(G, _chain_roles(), a, "inlet")
+
+    model = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    assert a in model.results["post_process"]["boundary_nodes"]["inlet_nodes"]
+    solution = stages.solve_post_processed(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert a not in solution.graph
+    handed_on = solution.post_processed["boundary_nodes"]
+    assert handed_on["inlet_nodes"] == boundaries.inlet_nodes == [0]
+    assert all(node in solution.graph for nodes in handed_on.values() for node in nodes)
+
+
+def test_a_dead_end_marked_as_leaving_the_image_is_opened_by_the_resolve(tmp_path, monkeypatch):
+    """A person's mark that a dead end leaves the image is the boundary
+    condition the solve puts on it: closed before the mark, the end drains
+    blood after the re-solve the mark now makes Continue run."""
+    from haemolynx.graph import FLOW_STATE
+    from haemolynx.graph import dead_ends as de
+    from haemolynx.graph.post_processing import mark_dead_end_kind
+
+    network = _stub_early_stages(monkeypatch, tmp_path)
+    G = network.graph
+    tip = LAST + 1
+    start = np.asarray(G.nodes[2]["pos"], dtype=float)
+    end = start + np.asarray([0.0, 300.0, 0.0])
+    G.add_node(tip, pos=end)
+    G.add_edge(2, tip, voxels=[start.tolist(), end.tolist()], length=300.0)
+    paused = run_pipeline_stages(_settings(tmp_path, open_end_model="outlet"), SCHEMA, stop_after="solve")
+    (key,) = paused[2][tip]
+    assert paused.edges[2, tip, key][FLOW_STATE] == "blind_end"
+    assert tip not in de.open_end_nodes(paused)
+    edited = copy.deepcopy(paused)
+    assert mark_dead_end_kind(edited, tip, de.LEAVES_IMAGE)
+
+    solved = run_pipeline_stages(
+        _settings(tmp_path, open_end_model="outlet"), SCHEMA,
+        start_from="post_process", resume=_resume_from_post_processing(edited),
+    )
+
+    data = solved.edges[2, tip, key]
+    assert data[FLOW_STATE] == "solved" and data["flow_abs"] > 0
+    assert tip in de.open_end_nodes(solved)
+    assert solved.nodes[tip][de.DEAD_END_KIND_SOURCE] == de.SOURCE_REVIEW
 
 
 def test_the_network_is_solved_between_the_inlets_and_outlets_set_by_hand(tmp_path, monkeypatch):

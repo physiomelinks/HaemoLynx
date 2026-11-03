@@ -89,6 +89,7 @@ __all__ = [
     "IntensityCostField",
     "JunctionVessel",
     "MIN_ROUTED_INSIDE_FRACTION",
+    "NETWORK_PART",
     "PENDING",
     "RESISTANCE_NODE_PAIR",
     "RESISTANCE_PAIR_ENDS",
@@ -185,6 +186,13 @@ DRAWN_BESIDE_VESSEL = "drawn_beside_vessel"
 #: vessel it made until it is measured. Read with ``diameter_source``
 #: ``"override"``: once the vessel is measured again it is no longer theirs.
 DIAMETER_SET_BY_HAND = "diameter_set_by_hand"
+
+#: Edge attribute: which network a vessel of a surround network is, the
+#: image's or the one drawn round it (``synthetic.surround.NETWORK_PART``;
+#: named here, as graph code does not import the synthetic package). An edit
+#: never makes one vessel of two parts, and a vessel drawn by hand is of the
+#: part of the vessels at its two ends.
+NETWORK_PART = "network_part"
 
 #: Margin round a drawn vessel within which its lumen radius is read from
 #: the mask (:func:`_local_lumen_radius`); doubled while a radius along the
@@ -503,7 +511,7 @@ def delete_vessels(
             continue
         if degree != 2:
             continue
-        merged = merge_pass_through(G, node)
+        merged = merge_pass_through(G, node, same=(NETWORK_PART,))
         if merged is None:
             continue
         mark_edited(G, [merged])
@@ -981,8 +989,9 @@ def add_vessel_between(
     *points_um* defaults to the straight line between the two. Its length is
     measured from the path. With *diameter_um*, the vessel carries it as a
     manual override (``diameter_source="override"``), which the Diameters
-    stage keeps over the branch-order table. Returns the new edge's
-    ``(u, v, key)``.
+    stage keeps over the branch-order table. In a surround network it is of
+    the part (:data:`NETWORK_PART`) every vessel at its two ends is of, and
+    of none where they differ. Returns the new edge's ``(u, v, key)``.
     """
     if a == b:
         raise ValueError("A vessel needs two different nodes")
@@ -999,6 +1008,9 @@ def add_vessel_between(
         "length": float(calculate_path_length(points)),
         "post_processing_added": True,
     }
+    parts = {data.get(NETWORK_PART) for node in (a, b) for *_e, data in G.edges(node, data=True)}
+    if len(parts) == 1 and None not in parts:
+        attrs[NETWORK_PART] = parts.pop()
     if diameter_um is not None:
         from haemolynx.haemodynamics.poiseuille import set_edge_diameter_override
 
@@ -1123,8 +1135,9 @@ class IntensityCostField:
     The raw-image counterpart of :func:`haemolynx.graph.mask_cost_field`, and
     shaped like its windowed form: ``shape`` plus slicing by a tuple of
     unit-step slices, which is all :func:`haemolynx.graph.astar_path` uses.
-    Each window is blurred (:data:`RAW_COST_SMOOTHING_SIGMA_VOX`, with enough
-    context that the blur has no edge), scaled between its own
+    Each window is blurred (:data:`RAW_COST_SMOOTHING_SIGMA_VOX` voxels of the
+    finest axis of *voxel_size_zyx*, the same distance in microns along every
+    axis, with enough context that the blur has no edge), scaled between its own
     :data:`RAW_COST_PERCENTILES` and costed ``1 / max(t, RAW_COST_FLOOR)``:
     1 on the brightest voxels, 100 on the dimmest. A cost relative to the
     window keeps it fair to a vessel that is dim across the whole stack, and
@@ -1138,6 +1151,7 @@ class IntensityCostField:
         sigma_vox: float = RAW_COST_SMOOTHING_SIGMA_VOX,
         percentiles: tuple[float, float] = RAW_COST_PERCENTILES,
         floor: float = RAW_COST_FLOOR,
+        voxel_size_zyx: Sequence[float] | None = None,
     ):
         shape = tuple(int(n) for n in np.shape(raw))
         if len(shape) != 3:
@@ -1146,6 +1160,9 @@ class IntensityCostField:
         self.shape = shape
         self.ndim = 3
         self.sigma_vox = float(sigma_vox)
+        # Per axis: a z step five times the x step blurs a fifth as many z voxels.
+        spacing = np.ones(3) if voxel_size_zyx is None else np.asarray(voxel_size_zyx, dtype=float)
+        self.sigma_zyx = tuple(float(s) for s in self.sigma_vox * spacing.min() / spacing)
         self.percentiles = tuple(float(p) for p in percentiles)
         self.floor = float(floor)
 
@@ -1157,14 +1174,14 @@ class IntensityCostField:
             raise IndexError("IntensityCostField supports unit-step slices only")
         lo = np.array([k.start for k in window])
         hi = np.maximum(np.array([k.stop for k in window]), lo)
-        pad = int(np.ceil(3.0 * self.sigma_vox)) if self.sigma_vox > 0 else 0
+        pad = np.ceil(3.0 * np.asarray(self.sigma_zyx)).astype(int) if self.sigma_vox > 0 else 0
         plo = np.maximum(lo - pad, 0)
         phi = np.minimum(hi + pad, self.shape)
         crop = np.asarray(
             self.raw[tuple(slice(a, b) for a, b in zip(plo, phi))], dtype=np.float32
         )
         if self.sigma_vox > 0 and crop.size:
-            crop = gaussian_filter(crop, self.sigma_vox)
+            crop = gaussian_filter(crop, self.sigma_zyx)
         values = crop[tuple(slice(a - p, b - p) for a, b, p in zip(lo, hi, plo))]
         if not values.size:
             return np.ones(values.shape)
@@ -1654,7 +1671,7 @@ def prune_disconnected_branches(
     keep = {*protected, *boundary}
     merged = []
     for node in [n for n in pruned if pruned.degree(n) == 2 and G.degree(n) > 2 and n not in keep]:
-        edge = merge_pass_through(pruned, node)
+        edge = merge_pass_through(pruned, node, same=(NETWORK_PART,))
         if edge is not None:
             merged.append(edge)
     stats["junctions_merged"] = len(merged)

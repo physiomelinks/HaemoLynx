@@ -198,6 +198,23 @@ def test_a_run_from_post_processing_or_later_loses_nothing():
         assert not edits_lost_by_running_from(start, G, applied)
 
 
+def test_a_run_from_after_post_processing_leaves_the_tabs_edits_out():
+    """A run from Perturbations starts from the network Post processing last
+    took in: its results leave out what the tab edited since."""
+    from haemolynx.graph import add_vessel_between
+    from haemolynx.gui.post_processing import edits_left_out_by_running_from
+
+    G = _network()
+    for start in ("run_perturbations", "export_results"):
+        assert not edits_left_out_by_running_from(start, G), "nothing waiting"
+    add_vessel_between(G, 0, 4)
+    for start in ("run_perturbations", "export_results"):
+        assert edits_left_out_by_running_from(start, G)
+    for start in ("post_process", "build_haemodynamic_model", "assign_diameters", None, "nope"):
+        assert not edits_left_out_by_running_from(start, G), start
+    assert not edits_left_out_by_running_from("run_perturbations", None)
+
+
 def test_describe_vessels_names_branch_id_ends_length_and_diameter():
     G = _network()
     keys = edge_keys(G)
@@ -777,6 +794,25 @@ def test_a_decision_is_a_csv_row_beside_the_run_with_the_items_measures(tmp_path
     # A measure only the later item has is kept, the earlier row blank there.
     assert rows[1]["extra"] == "kept" and rows[0]["extra"] == ""
     assert path.read_text(encoding="utf-8").count("centre_zyx_vox") == 1
+
+
+def test_the_review_lists_read_the_segmentation_as_the_low_ram_option_says(tmp_path):
+    """The lists, the raw panel and the drawn-vessel note binarised the whole
+    segmentation in RAM whatever the low-RAM option said."""
+    from haemolynx.gui.post_processing import review_mask_support
+
+    image = np.zeros((6, 20, 30), dtype=np.uint8)
+    image[2:4, 8:12, 3:27] = 255
+    points = np.asarray([[2.5, 9.0, 10.0], [2.5, 2.0, 10.0], [3.0, 10.0, 26.0]])
+    plain = review_mask_support(image, (2.0, 1.0, 1.0), {})
+    low = review_mask_support(
+        image, (2.0, 1.0, 1.0), {"use_memmap_loading": True, "memmap_directory": str(tmp_path)}
+    )
+
+    assert not isinstance(plain.mask, np.memmap) and not plain.low_memory
+    assert isinstance(low.mask, np.memmap) and low.low_memory
+    assert np.array_equal(low.inside(points), plain.inside(points))
+    assert np.allclose(low.radius(points), plain.radius(points))
 
 
 def test_a_decision_undone_is_taken_back_out_of_its_csv(tmp_path):
