@@ -1231,3 +1231,43 @@ def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
     skeleton_path.write_bytes(b"not a skeleton")
     assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
     assert np.array_equal(np.load(skeleton_path), skeleton)
+
+
+def test_a_resumed_skeleton_is_written_with_the_grid_it_was_made_on(tmp_path):
+    """Written alone, the resumed skeleton had no record: the run loading it
+    checked only its shape, and took one cut from a box moved since, of the
+    same size."""
+    from haemolynx.gui.stage_checkpoints import skeleton_record_path
+    from haemolynx.io.crop import CropBox
+    from haemolynx.pipeline.stages import _check_saved_skeleton_grid, _saved_skeleton_record
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints = StageCheckpoints()
+    results = built(a_graph(resistance=1.0))
+    skeleton = np.zeros((2, 3, 4), dtype=bool)
+    skeleton[1, 1, :] = True
+    box = CropBox((0, 0, 0), (2, 3, 4), (2, 10, 10))
+    checkpoints.record(
+        "skeletonise",
+        StageLayers(
+            stage="skeletonise", title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        ),
+        results, settings=settings, output=SimpleNamespace(crop=box, downsample=None),
+    )
+    for stage in ("build_network", "assign_boundaries", "assign_diameters",
+                  "build_haemodynamic_model", "solve", "post_process"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    assert checkpoints.get("skeletonise").skeleton_grid["crop"] == {
+        "start_zyx": [0, 0, 0], "stop_zyx": [2, 3, 4],
+    }
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    record = _saved_skeleton_record(skeleton_record_path(tmp_path / "out", "stack"), skeleton_path)
+    assert record["crop"] == {"start_zyx": [0, 0, 0], "stop_zyx": [2, 3, 4]} and record["downsample"] is None
+    _check_saved_skeleton_grid(skeleton_path, skeleton.shape, skeleton.shape, record, box, None)
+    moved = CropBox((0, 5, 0), (2, 8, 4), (2, 10, 10))
+    with pytest.raises(ValueError, match="crop_on_import"):
+        _check_saved_skeleton_grid(skeleton_path, skeleton.shape, skeleton.shape, record, moved, None)

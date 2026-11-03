@@ -26,6 +26,7 @@ turned off instead. Starting after diameters also turns off
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pickle
@@ -47,6 +48,7 @@ from haemolynx.pipeline.stages import (
     calibration_sample_rule,
     measures_diameters_from_raw_image,
     recorded_raw_image_stain,
+    saved_skeleton_grid,
     segmented_input_path,
 )
 
@@ -106,10 +108,34 @@ def _saved_skeleton_is(path: Path, skeleton: Any) -> bool:
             mapping.close()  # Windows will not replace a mapped file
 
 
+def skeleton_record_path(output_dir: Path, stem: str) -> Path:
+    """The record skeletonise keeps beside the skeleton (``{stem}_voxel_size.json``)."""
+    return Path(output_dir) / f"{stem}_voxel_size.json"
+
+
+def _write_skeleton_record(output_dir: Path, stem: str, grid: Mapping[str, Any]) -> None:
+    """The grid a skeleton written here was made on, beside it: without it a
+    run loading the skeleton could check only its shape, and took one cut
+    from a box moved since, of the same size."""
+    skeleton_record_path(output_dir, stem).write_text(json.dumps(dict(grid)))
+
+
+def _record_is_current(output_dir: Path, stem: str) -> bool:
+    """Whether a record no older than the skeleton is beside it."""
+    try:
+        return (
+            skeleton_record_path(output_dir, stem).stat().st_mtime_ns
+            >= skeleton_resume_path(output_dir, stem).stat().st_mtime_ns
+        )
+    except OSError:
+        return False
+
+
 def ensure_skeleton_artefact(
     groups: Sequence[Any],
     output_dir: Path,
     stem: str,
+    grid: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Make sure ``{stem}_skeleton.npy`` exists for a resumed Run, and is the
     skeleton the replayed groups show.
@@ -119,11 +145,16 @@ def ensure_skeleton_artefact(
     cannot continue from the next tab after a revert. A file there already
     that is not the groups' skeleton -- a later run's, left in the folder of
     a run loaded back -- is replaced: the resumed run loaded it and built a
-    graph from another skeleton than the one on screen.
+    graph from another skeleton than the one on screen. *grid* is the crop
+    box and downsample the skeleton was made on (the skeletonise
+    checkpoint's ``skeleton_grid``), written beside one written here, or
+    beside one kept with no current record.
     """
     path = skeleton_resume_path(output_dir, stem)
     skeleton = _skeleton_array_from_groups(groups)
     if path.is_file() and (skeleton is None or _saved_skeleton_is(path, skeleton)):
+        if grid is not None and not _record_is_current(output_dir, stem):
+            _write_skeleton_record(output_dir, stem, grid)
         return path
     if skeleton is None:
         return None
@@ -135,6 +166,8 @@ def ensure_skeleton_artefact(
         with open(part, "wb") as handle:
             np.save(handle, np.asarray(skeleton, dtype=bool))
         os.replace(part, path)
+        if grid is not None:
+            _write_skeleton_record(output_dir, stem, grid)
         logger.info("Wrote resumed skeleton for next Run to %s", path)
         return path
     except Exception:  # noqa: BLE001 - leave do_skeletonize on if we cannot write
@@ -219,6 +252,11 @@ class StageCheckpoint:
     #: -- same "carried forward across a resume" reasoning as
     #: thick_vessel_mask, for the raw-vs-corrected debug toggle.
     raw_segmented_image: Any | None = None
+    #: The grid the skeletonise stage's skeleton was made on
+    #: (``stages.saved_skeleton_grid``: its crop box and downsample), written
+    #: beside a skeleton saved for a resumed run. None for every other stage,
+    #: and for a run saved before it was kept.
+    skeleton_grid: Mapping[str, Any] | None = None
     #: What the stage returned, for the stages in RESUMABLE_OUTPUTS: handed
     #: to a resumed run so it is not done again. In memory only -- a saved
     #: run drops it (see run_snapshot.capture_run), so a loaded one falls
@@ -765,6 +803,11 @@ class StageCheckpoints:
             thick_vessel_mask=getattr(results, "_thick_vessel_mask", None),
             raw_segmented_image=getattr(results, "_raw_segmented_image", None),
             output=_stored_output(stage, output) if keep_output else None,
+            skeleton_grid=(
+                saved_skeleton_grid(getattr(output, "crop", None), getattr(output, "downsample", None))
+                if stage == "skeletonise" and output is not None
+                else None
+            ),
         )
         self._by_stage[stage] = checkpoint
         return checkpoint
@@ -941,7 +984,10 @@ class StageCheckpoints:
             # Clear keeps (see discard_cached_artefacts) -- and which a run
             # with the user's own do_skeletonize off still has to load.
             skeleton_existed = skeleton_resume_path(output_dir, stem).is_file()
-            skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
+            made = self._by_stage.get("skeletonise")
+            skeleton_path = ensure_skeleton_artefact(
+                groups, output_dir, stem, grid=getattr(made, "skeleton_grid", None)
+            )
             if skeleton_path is not None and not skeleton_existed:
                 self.remember_path(skeleton_path)
         return skip_settings_for_resume(
