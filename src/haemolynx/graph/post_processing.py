@@ -57,7 +57,9 @@ keeps (the vessels are not marked for measuring again), and
 the lists kept on the graph (:data:`BOUNDARY_ROLES`) until Regenerate takes
 them to the stage -- and :func:`set_resistance_node` chooses the two nodes
 the two-point resistance is found between, kept on the graph
-(:data:`RESISTANCE_NODE_PAIR`) for every regenerate after.
+(:data:`RESISTANCE_NODE_PAIR`) for every regenerate after, and
+:func:`mark_dead_end_kind` keeps a person's verdict on a dead end, which
+Regenerate solves the network again with.
 """
 from __future__ import annotations
 
@@ -107,6 +109,7 @@ __all__ = [
     "has_pending_edits",
     "high_degree_junctions",
     "junction_vessels",
+    "mark_dead_end_kind",
     "mark_edited",
     "mean_incident_diameter",
     "merge_junctions",
@@ -858,6 +861,28 @@ def set_vessel_diameter(G: nx.MultiGraph, edges: Iterable[EdgeKey], diameter_um:
     for edge in selected:
         set_edge_diameter_override(G.edges[edge], width)
     mark_edited(G)
+
+
+def mark_dead_end_kind(G: nx.MultiGraph, node: Any, kind: str) -> bool:
+    """A person's verdict on dead end *node* -- a real blind end, or one
+    leaving the image (:func:`haemolynx.graph.dead_ends.set_dead_end_kind`)
+    -- kept on its node through later reclassifying.
+
+    Whether a dead end leaves the image is the boundary condition the solve
+    puts on it (open, or closed), so a verdict that changes the kind marks
+    *G* :data:`PENDING`, and Regenerate graph solves the network again; the
+    network itself is not changed, and no vessel is marked for measuring.
+    Raises ``ValueError`` for a node that is not a dead end. Returns whether
+    the kind changed.
+    """
+    from .dead_ends import DEAD_END_KIND, set_dead_end_kind
+
+    before = G.nodes[node].get(DEAD_END_KIND) if node in G else None
+    set_dead_end_kind(G, node, kind)
+    if before == kind:
+        return False
+    mark_edited(G)
+    return True
 
 
 def mean_incident_diameter(G: nx.MultiGraph, nodes: Iterable[Any]) -> float | None:

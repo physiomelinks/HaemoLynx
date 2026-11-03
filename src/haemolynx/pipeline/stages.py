@@ -5175,7 +5175,7 @@ def post_process(
        endothelium -- whichever it uses), keeping the diameter the edit gave
        it as a provisional override: a measurement replaces that, the
        branch-order table does not;
-    6. each vessel the edits drew is read against the segmentation as graph
+    7. each vessel the edits drew is read against the segmentation as graph
        building reads every bridge it draws (:func:`_judge_drawn_vessels`:
        the fraction of it in the mask, the longest run of background it
        crosses, whether it runs beside a vessel in the same lumen), written

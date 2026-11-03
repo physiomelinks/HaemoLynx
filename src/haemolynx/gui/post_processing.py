@@ -1205,17 +1205,45 @@ def loop_review_csv_path(values: Any) -> "Path | None":
 def append_loop_review(path: Any, rows: Iterable[dict[str, str]]) -> "Path":
     """Add *rows* to the CSV at *path*, writing its header first when the
     file is new or empty: every session's decisions collect in one file."""
+    return _append_csv_rows(path, rows, LOOP_REVIEW_COLUMNS)
+
+
+def _append_csv_rows(path: Any, rows: Iterable[Mapping[str, Any]], columns: Sequence[str]) -> "Path":
+    """Add *rows* to the CSV at *path* under *columns*.
+
+    A new or empty file gets *columns* as its header. A file whose header
+    lacks some of them -- written by a version whose list measured less, or
+    first by an item without them -- is written again with them added at the
+    end, its earlier rows blank there, so no row loses a measure to the first
+    row's header. A column the file has and *columns* lacks is left blank."""
     import csv
+    import os
     from pathlib import Path
 
     target = Path(path)
-    new = not target.is_file() or target.stat().st_size == 0
-    with target.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(LOOP_REVIEW_COLUMNS))
-        if new:
-            writer.writeheader()
-        for row in rows:
-            writer.writerow({name: row.get(name, "") for name in LOOP_REVIEW_COLUMNS})
+    rows = list(rows)
+    header = list(dict.fromkeys(columns))
+    earlier = None
+    if target.is_file() and target.stat().st_size > 0:
+        with target.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            found = list(reader.fieldnames or ())
+            missing = [name for name in header if name not in found]
+            if missing:
+                earlier = list(reader)
+            header = found + missing
+        if earlier is None:
+            with target.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=header, restval="", extrasaction="ignore")
+                writer.writerows(rows)
+            return target
+    partial = target.with_name(f"{target.name}.part")
+    with partial.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, restval="", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(earlier or ())
+        writer.writerows(rows)
+    os.replace(partial, target)
     return target
 
 
@@ -1897,24 +1925,10 @@ def review_csv_path(values: Any, kind: str) -> "Path | None":
 
 def append_review_record(path: Any, row: dict[str, str]) -> "Path":
     """Add *row* to the CSV at *path*, its header the row's own columns when
-    the file is new, else the file's (a column it lacks is left out)."""
-    import csv
-    from pathlib import Path
-
-    target = Path(path)
-    header = list(row)
-    if target.is_file() and target.stat().st_size > 0:
-        with target.open(newline="", encoding="utf-8") as handle:
-            header = next(csv.reader(handle), header) or header
-        new = False
-    else:
-        new = True
-    with target.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=header, extrasaction="ignore")
-        if new:
-            writer.writeheader()
-        writer.writerow({name: row.get(name, "") for name in header})
-    return target
+    the file is new, else the file's with any of the row's it lacks added
+    (:func:`_append_csv_rows`): a measure only some items have, or one a
+    list gained since the file was begun, is kept."""
+    return _append_csv_rows(path, [row], list(row))
 
 
 # --- Before and after a regenerate ------------------------------------------------

@@ -13433,8 +13433,10 @@ def _post_processing_controls(
 
     def on_review_mark_dead_end(kind: str, words: str) -> None:
         """A person's verdict on the chosen dead end, kept on its node
-        (graph.set_dead_end_kind) and in the decisions."""
-        from haemolynx.graph.dead_ends import set_dead_end_kind
+        (graph.mark_dead_end_kind) and in the decisions. Whether it leaves the
+        image is the solve's boundary condition there, so Regenerate graph
+        solves the network again with it."""
+        from haemolynx.graph.post_processing import mark_dead_end_kind
 
         item = chosen_item()
         if item is None:
@@ -13444,12 +13446,16 @@ def _post_processing_controls(
             review_summary.setText(f"Node {tip} is no longer a dead end: scan the network again.")
             return
         review, row = record_for(item, words)
-        set_dead_end_kind(state.graph, tip, kind)
+        mark_dead_end_kind(state.graph, tip, kind)
         written = keep_record(review, row)
         log_edit(f"Marked dead end {tip} as {words}")
+        # The viewer holds the tab's graph, as after any edit, so a run saved
+        # now keeps the mark.
+        redraw_network()
         state.review_items = [i for i in state.review_items if i is not item]
         fill_review(state.review_row)
         review_summary.setText(review_counts() + written)
+        refresh_buttons()
 
     def on_review_set_terminal_role(role) -> None:
         """Make the chosen terminal node an inlet or an outlet, or neither
@@ -14173,22 +14179,36 @@ def _post_processing_controls(
         log_edit(note)
         # What the regenerated network is compared with when it is scanned.
         state.summary_before = state.summary_scanned
+        drop_working_graph(waiting)
+
+    def drop_working_graph(text: str) -> None:
+        """Forget the tab's working graph and what it lists, saying *text*.
+        The loop and review decisions stay: they are the run's, and are
+        matched to the next network's loops and items by position."""
+        stop_editing()
         clear_review()
         remove_layers()
         state.graph = state.scan = state.node = None
         state.scanned_from = None
         state.vessels = []
         state.added_nodes = []
-        # The loop and review decisions stay: they are the run's, and are
-        # matched to the regenerated network's loops and items by position.
         state.loops, state.loop, state.loop_row = [], None, None
         junction_list.clear()
         table.setRowCount(0)
         loop_list.clear()
         loop_table.setRowCount(0)
         loop_summary.setText("")
-        status.setText(waiting)
+        status.setText(text)
         refresh_buttons()
+
+    def discard_edits() -> None:
+        """A run from an earlier tab starts again from a network without the
+        edits: they go, or Regenerate graph would hand the old network on."""
+        if state.graph is None:
+            return
+        if has_pending_edits(state.graph):
+            log_edit("Discarded the edits not yet regenerated: a run from an earlier tab replaces the network")
+        drop_working_graph("Not scanned yet.")
 
     def on_regenerate_graph() -> None:
         """The edits in line and Haemodynamics rerun; paused, the run stays
@@ -14341,6 +14361,7 @@ def _post_processing_controls(
         scan=on_scan,
         refresh=refresh_buttons,
         forget=forget,
+        discard_edits=discard_edits,
         regenerate_graph_button=regenerate_graph_button,
         continue_button=continue_button,
         commit_status=commit_status,
@@ -17265,16 +17286,19 @@ def settings_widget(napari_viewer=None):
             report.value = SINGLE_IMAGE_IN_BATCH
             return
         post_processed = checkpoints.get(POST_PROCESS)
-        if edits_lost_by_running_from(
+        edits_lost = edits_lost_by_running_from(
             tab_start_stage(tab_title),
             post_processing.state.graph,
             post_processed.graph if post_processed is not None else None,
-        ) and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
+        )
+        if edits_lost and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
             report.value = f"Kept the hand edits on {POST_PROCESSING_TAB}: nothing was run."
             return
         plan = prepare_run_from(tab_title, check=True)
         if plan is None:
             return
+        if edits_lost:
+            post_processing.discard_edits()
         on_run(
             start_from=plan.start_from or None,
             resume=plan.resume,

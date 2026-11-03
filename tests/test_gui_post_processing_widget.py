@@ -1400,7 +1400,7 @@ def _t_network_and_mask():
     return G, mask
 
 
-def _t_page(viewer, tmp_path):
+def _t_page(viewer, tmp_path, regenerate=None):
     G, mask = _t_network_and_mask()
     results = ResultLayers()
     _apply_layers(viewer, results.stage_finished(
@@ -1412,11 +1412,13 @@ def _t_page(viewer, tmp_path):
     c = _post_processing_controls(
         viewer, SimpleNamespace(value=""), results=lambda: results,
         boundary_roles=lambda: {"inlet": (0,), "outlet": (2,)},
-        regenerate=lambda graph, stop_after=None: True, running=lambda: False,
+        regenerate=regenerate or (lambda graph, stop_after=None: True), running=lambda: False,
         settings=lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)},
     )
     c.refresh()
     c.review_choice.setCurrentText(DEAD_ENDS)
+    # What the viewer draws, as the panel's view.results: what Save run keeps.
+    c.shown = results
     return c
 
 
@@ -1477,6 +1479,34 @@ def test_a_dead_end_marked_by_hand_keeps_its_kind_and_leaves_the_list(
     assert [r["decision"] for r in rows] == [words]
     classify_and_mark(c.state.graph)
     assert c.state.graph.nodes[3][DEAD_END_KIND] == kind, "a person's mark outlives reclassifying"
+
+
+@pytest.mark.parametrize("action, kind", [(ACTION_MARK_BLIND, "blind"), (ACTION_MARK_OPEN, "leaves_image")])
+def test_a_dead_end_marked_by_hand_is_handed_on_and_solved_again(make_napari_viewer, qtbot, tmp_path, action, kind):
+    """Whether a dead end leaves the image is the open-end boundary condition
+    the solve puts on it. The mark left Regenerate graph off, Continue did
+    not solve the network again, and the viewer's graph -- what Save run
+    keeps -- went without it."""
+    from haemolynx.graph import has_pending_edits
+    from haemolynx.graph.dead_ends import DEAD_END_KIND
+
+    handed = []
+    c = _t_page(
+        make_napari_viewer(), tmp_path,
+        regenerate=lambda graph, stop_after=None: handed.append(graph) is None,
+    )
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    assert not c.regenerate_graph_button.isEnabled()
+
+    c.review_buttons[action].click()
+
+    assert c.regenerate_graph_button.isEnabled()
+    assert c.shown._graph is c.state.graph
+    assert c.shown._graph.nodes[3][DEAD_END_KIND] == kind
+    c.regenerate_graph_button.click()
+    (graph,) = handed
+    assert graph.nodes[3][DEAD_END_KIND] == kind and has_pending_edits(graph)
 
 
 def _broken_page(viewer, tmp_path, make=None, choice=DEAD_ENDS):

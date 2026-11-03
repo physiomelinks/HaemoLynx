@@ -454,6 +454,41 @@ def test_a_run_from_that_fails_its_checks_keeps_the_later_work(panel):
     assert widget._haemolynx_revert_buttons["8. Perturbations"].enabled is True
 
 
+def test_a_run_from_an_earlier_tab_drops_the_hand_edits_it_was_told_to_discard(panel, monkeypatch):
+    """Running from Haemodynamics starts again from a network without the
+    Post processing tab's edits, as the panel warns. The tab kept its edited
+    graph, and Regenerate graph would then hand that network -- built before
+    the new run -- on in place of the new run's. A run that never starts
+    (its checks fail) or one declined keeps them."""
+    import haemolynx.gui._widget as widget_module
+    from haemolynx.graph import set_vessel_diameter
+
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="post_process")
+    page = widget._haemolynx_post_processing
+    page.scan()
+    set_vessel_diameter(page.state.graph, [next(iter(page.state.graph.edges(keys=True)))], 7.0)
+    page.refresh()
+    assert page.regenerate_graph_button.isEnabled()
+
+    monkeypatch.setattr(widget_module, "_confirm_discard_hand_edits", lambda *_a: False)
+    widget._haemolynx_run_from("6. Haemodynamics")
+    assert page.state.graph is not None, "declined: nothing run, nothing dropped"
+    monkeypatch.setattr(widget_module, "_confirm_discard_hand_edits", lambda *_a: True)
+    widget._haemolynx_run_from("6. Haemodynamics")
+    assert "Checks failed" in widget._haemolynx_report()
+    assert page.regenerate_graph_button.isEnabled(), "a run that never started keeps the edits"
+
+    started = []
+    monkeypatch.setattr(widget_module, "preflight", lambda *_a, **_k: SimpleNamespace(ok=True))
+    monkeypatch.setattr(widget_module, "_run_in_background", lambda *_a, **k: started.append(k["start_from"]))
+    widget._haemolynx_run_from("6. Haemodynamics")
+
+    assert started == ["build_haemodynamic_model"]
+    assert page.state.graph is None
+    assert not page.regenerate_graph_button.isEnabled()
+
+
 def test_revert_with_nothing_saved_says_so_and_does_not_crash(panel):
     widget, _viewer, _tmp = panel
     widget._haemolynx_revert("5. Diameters")

@@ -768,13 +768,60 @@ def test_a_decision_is_a_csv_row_beside_the_run_with_the_items_measures(tmp_path
     assert path == tmp_path / "run_dead_ends_review.csv"
     assert review_csv_path({"input_path": image, "output_dir": str(tmp_path / "missing")}, item.kind) is None
     append_review_record(path, row)
-    append_review_record(path, {**row, "decision": "deleted", "extra": "dropped"})
+    append_review_record(path, {**row, "decision": "deleted", "extra": "kept"})
     import csv
 
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert [r["decision"] for r in rows] == [KEPT, "deleted"]
-    assert "extra" not in rows[1]
+    # A measure only the later item has is kept, the earlier row blank there.
+    assert rows[1]["extra"] == "kept" and rows[0]["extra"] == ""
+    assert path.read_text(encoding="utf-8").count("centre_zyx_vox") == 1
+
+
+def test_a_review_csv_begun_by_a_list_that_measured_less_gains_the_new_measures(tmp_path):
+    """A dead end has ahead_edge only when a vessel lies ahead of it, and the
+    lists gained measures after their CSVs were begun (kind, in_mask_fraction
+    ...): the file's first header used to drop them from every later row."""
+    import csv
+
+    path = tmp_path / "run_dead_ends_review.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        handle.write("time,decision,kind,length_um\r\n2026-10-09T10:00:00,kept,dead_ends,12\r\n")
+
+    append_review_record(path, {"time": "2026-11-03T10:00:00", "decision": "deleted", "kind": "dead_ends",
+                                "length_um": "30", "in_mask_fraction": "0.25", "ahead_edge": "1;5;0"})
+    append_review_record(path, {"time": "2026-11-03T10:01:00", "decision": KEPT, "kind": "dead_ends",
+                                "length_um": "8"})
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert reader.fieldnames == ["time", "decision", "kind", "length_um", "in_mask_fraction", "ahead_edge"]
+    assert [r["decision"] for r in rows] == [KEPT, "deleted", KEPT]
+    assert rows[0]["length_um"] == "12" and rows[0]["in_mask_fraction"] == ""
+    assert rows[1]["in_mask_fraction"] == "0.25" and rows[1]["ahead_edge"] == "1;5;0"
+    assert rows[2]["ahead_edge"] == ""
+    assert not (tmp_path / "run_dead_ends_review.csv.part").exists()
+
+
+def test_a_loop_review_csv_with_fewer_columns_is_extended_not_misaligned(tmp_path):
+    import csv
+
+    path = tmp_path / "run_loop_review.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        handle.write("time,decision,loop_length_um\r\n2026-10-09T10:00:00,kept,40\r\n")
+
+    append_loop_review(path, [{"time": "2026-11-03T10:00:00", "decision": SIDE_DELETED, "loop_length_um": "25",
+                               "bridged_um": "3"}])
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert reader.fieldnames[:3] == ["time", "decision", "loop_length_um"]
+    assert set(reader.fieldnames) == {"time", "decision", "loop_length_um", *LOOP_REVIEW_COLUMNS}
+    assert rows[0]["loop_length_um"] == "40" and rows[0]["bridged_um"] == ""
+    assert rows[1]["loop_length_um"] == "25" and rows[1]["bridged_um"] == "3"
 
 
 def test_an_item_is_zoomed_to_with_room_round_it_and_marked_with_a_ring():
