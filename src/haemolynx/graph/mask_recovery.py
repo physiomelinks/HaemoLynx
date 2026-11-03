@@ -976,7 +976,9 @@ class _Attachments:
             seen.add(node)
             for _, other, key, data in self.G.edges(node, keys=True, data=True):
                 # The join itself, not the recovered centreline it lands on.
-                if data.get("reconnected"):
+                # Not every reconnected edge: a graph-building bridge split
+                # here keeps that mark on both its pieces.
+                if data.get("reconnected") and data.get("recovered"):
                     continue
                 voxels = _voxels_of(data)
                 if len(voxels):

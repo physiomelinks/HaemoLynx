@@ -1292,6 +1292,36 @@ def test_orphan_reconnection_does_not_fold_a_dangling_end_back():
     assert new.degree["N"] == 1
 
 
+def test_an_orphan_reconnect_runs_from_node_to_node_and_its_length_is_that_paths():
+    """Regression: the skeleton path that validates a reconnect runs between
+    voxel centres, and became the edge's voxels as it was, so a node the
+    collapse had moved off the voxel grid was neither the edge's start nor its
+    end: here 10.3 and 12.9 um, bridged by a path from 10 to 13 um, 3 um long."""
+    voxel_size = (2.0, 1.0, 1.0)
+    skeleton = np.zeros((5, 5, 40), dtype=bool)
+    skeleton[2, 2, :] = True
+    G = nx.MultiGraph()
+    G.graph["voxel_size"] = voxel_size
+    ends = {1: np.array([4.0, 2.0, 10.3]), 2: np.array([4.0, 2.0, 12.9])}
+    G.add_node(0, pos=np.array([4.0, 2.0, 0.0]))
+    G.add_node(3, pos=np.array([4.0, 2.0, 30.0]))
+    for node, pos in ends.items():
+        G.add_node(node, pos=pos)
+    G.add_edge(0, 1, voxels=[[4, 2, 0.0], [4, 2, 5.0], ends[1].tolist()], length=10.3)
+    G.add_edge(2, 3, voxels=[ends[2].tolist(), [4, 2, 20.0], [4, 2, 30.0]], length=17.1)
+
+    H = reconnect_orphan_and_dangling_nodes(
+        G, skeleton_data=skeleton, reconnect_threshold=3.0, max_bridge_turn_deg=80.0
+    )
+
+    (bridge,) = [(u, v, d) for u, v, d in H.edges(data=True) if d.get("orphan_reconnect")]
+    u, v, data = bridge
+    voxels = np.asarray(data["voxels"], dtype=float)
+    assert {tuple(voxels[0]), tuple(voxels[-1])} == {tuple(H.nodes[u]["pos"]), tuple(H.nodes[v]["pos"])}
+    assert data["length"] == pytest.approx(np.sum(np.linalg.norm(np.diff(voxels, axis=0), axis=1)))
+    assert data["length"] == pytest.approx(2.6)
+
+
 # --- reconnects held to the segmentation ---------------------------------------
 
 

@@ -264,10 +264,14 @@ def record_image_extent(G: nx.Graph, image_shape: Sequence[int], voxel_size_zyx:
 
 
 def face_distance(point_um: Sequence[float], extent_um: Sequence[float]) -> tuple[float, int]:
-    """``(distance, axis)`` from *point_um* to the nearest image face."""
+    """``(distance, axis)`` from *point_um* to the nearest image face. An image
+    one plane thick along an axis (a 2D image, read as a z=1 volume) has no
+    faces across it: a vessel in that plane leaves through none of them, and
+    every point would lie on both. ``(inf, 0)`` when no axis has faces."""
     point = np.asarray(point_um, dtype=float)[:3]
     extent = np.asarray(extent_um, dtype=float)[:3]
     both = np.concatenate([point, extent - point])
+    both[np.tile(extent <= 0, 2)] = np.inf
     nearest = int(np.argmin(both))
     return float(both[nearest]), nearest % 3
 
@@ -275,6 +279,8 @@ def face_distance(point_um: Sequence[float], extent_um: Sequence[float]) -> tupl
 def _distance_to_box_along(point: np.ndarray, direction: np.ndarray, extent: np.ndarray) -> Optional[float]:
     limits = []
     for axis in range(3):
+        if extent[axis] <= 0:
+            continue  # one plane thick: no faces across it (face_distance)
         if direction[axis] > 1e-8:
             limits.append((extent[axis] - point[axis]) / direction[axis])
         elif direction[axis] < -1e-8:

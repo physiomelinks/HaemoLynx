@@ -34,6 +34,18 @@ def _physical_path_length(points) -> float:
     return float(calculate_path_length(points))
 
 
+def _pinned_to_nodes(points, src_pos, tgt_pos) -> list:
+    """A bridge's path from *src_pos* to *tgt_pos*, its first and last points
+    put on the two nodes: a skeleton path runs between voxel centres, and a
+    node the collapse moved to its cluster's centre is not one, so the edge
+    neither started nor ended at its nodes and its length was not theirs."""
+    points = [[float(v) for v in p] for p in points]
+    ends = [[float(v) for v in src_pos], [float(v) for v in tgt_pos]]
+    if len(points) < 2:
+        return ends
+    return [ends[0], *points[1:-1], ends[1]]
+
+
 def optimise_graph_topology_fixed(
     G,
     skeleton_data=None,
@@ -148,6 +160,7 @@ def optimise_graph_topology_fixed(
                         if found is None:
                             continue
                         phys_path, tags = found[0].tolist(), bridges.attributes(found[1])
+                    phys_path = _pinned_to_nodes(phys_path, src_pos, tgt_pos)
                     path_length = _physical_path_length(phys_path)
                     add_edge_safe(
                         G,
@@ -405,6 +418,7 @@ def reconnect_orphan_and_dangling_nodes(
             if found is None:
                 continue
             phys_path, tags = found[0].tolist(), bridges.attributes(found[1])
+        phys_path = _pinned_to_nodes(phys_path, src_pos, tgt_pos)
 
         length = _physical_path_length(phys_path)
         if length <= 0:

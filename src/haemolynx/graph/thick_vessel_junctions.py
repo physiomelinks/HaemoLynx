@@ -89,11 +89,16 @@ _SAMPLE_STEP_UM = 0.5
 _FACE_MARGIN_UM = 2.0
 
 
-def _at_image_face(pos, extent_um) -> bool:
+def _at_image_face(pos, extent_um, radius_um: float = 0.0) -> bool:
     """Whether *pos* (physical ``(z, y, x)`` µm) lies within
-    :data:`_FACE_MARGIN_UM` of a face of an image *extent_um* across."""
-    p = np.asarray(pos, dtype=float)
-    return bool(np.any(p <= _FACE_MARGIN_UM) or np.any(p >= np.asarray(extent_um, dtype=float) - _FACE_MARGIN_UM))
+    :data:`_FACE_MARGIN_UM`, or the lumen *radius_um* of its vessel there, of
+    a face of an image *extent_um* across, as ``dead_ends.leaves_image``
+    reads a tip: a centreline stops about a radius short of the face its
+    vessel leaves by. A 2D image has no faces across its one plane
+    (``dead_ends.face_distance``)."""
+    from .dead_ends import face_distance
+
+    return face_distance(pos, extent_um)[0] <= max(_FACE_MARGIN_UM, float(radius_um))
 
 #: A stretch shorter than this (2 um) between others is the region's edge or the
 #: tree's tolerance flickering along a centreline, not a vessel leaving or
@@ -989,7 +994,9 @@ def insert_thick_vessel_junction_nodes(
         for r, (i, s, t) in enumerate(inside_runs)
         for end, node in ((0, sampled[i].u), (len(sampled[i].points) - 1, sampled[i].v))
         if (s == end or t == end) and result.degree(node) == 1
-        and _at_image_face(result.nodes[node]["pos"], extent_um)
+        and _at_image_face(
+            result.nodes[node]["pos"], extent_um, finite[tree.query(result.nodes[node]["pos"])[1]]
+        )
     }
     for r in through:
         i, s, t = inside_runs[r]
@@ -2101,7 +2108,11 @@ def _remove_blind_vessels_beyond_bridges(
     and long capillaries -- and the two marked remove 6 and 16 um, all on
     the right side of the prune's 3 lumen radii; so was grid W's 142 um
     capillary chain (13, 14, 24, marked plain-right). Returns how many went,
-    their length (um), and how many were kept as longer than a stub."""
+    their length (um), and how many were kept as longer than a stub.
+
+    Only the bridges this split made are judged: one *G* had already was
+    judged when it was made, and a split of a few edited vessels
+    (post processing's ``edges=``) leaves every other edge as it was."""
     from .degree2 import create_trivial_merged_edge
 
     extent_um = np.asarray(extent_um, dtype=float)
@@ -2109,10 +2120,13 @@ def _remove_blind_vessels_beyond_bridges(
     def at_image_edge(node):
         return _at_image_face(built.nodes[node]["pos"], extent_um)
 
+    def made_here(u, v) -> bool:
+        return not (G.has_edge(u, v) and any(d.get(IS_ZERO_RESISTANCE) for d in G[u][v].values()))
+
     removed, removed_um, kept = 0, 0.0, 0
     for u, v, key in [
         (u, v, key) for u, v, key, d in built.edges(keys=True, data=True)
-        if d.get(IS_ZERO_RESISTANCE)
+        if d.get(IS_ZERO_RESISTANCE) and made_here(u, v)
     ]:
         if not built.has_edge(u, v, key):
             continue

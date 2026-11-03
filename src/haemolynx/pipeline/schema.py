@@ -3906,11 +3906,13 @@ SCHEMA = Schema(
                 "tip within its own pruning threshold of a face (as before). "
                 "leaves_image: only a dead end that leaves the image (it touches a "
                 "face, or the segmented vessel runs on to one), so a spur near a "
-                "face is judged like any other"
+                "face is judged like any other. leaves_image reads the segmented "
+                "mask: without it, or with bridge_require_mask_support off, the "
+                "prune keeps by threshold"
             ),
             section=_PIPELINE_STAGES,
             choices=("threshold", "leaves_image"),
-            requires=("do_graph_building",),
+            requires=("do_graph_building", "bridge_require_mask_support"),
             advanced=True,
         ),
         Setting(
