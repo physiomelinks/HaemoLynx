@@ -4091,11 +4091,13 @@ SCHEMA = Schema(
                 "the segmented-image mask's own voxels sit within their own local radius "
                 "of the skeleton -- see preprocessing.skeleton_consistency for what that "
                 "measures and why. Checked whether the skeleton was just computed or "
-                "loaded from cache, so this is not gated on do_skeletonize"
+                "loaded from cache, so this is not gated on do_skeletonize. Not checked "
+                "under use_memmap_loading, which skips it for its whole-volume arrays"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            requires=("!use_memmap_loading",),
             advanced=True,
         ),
         Setting(
@@ -4107,10 +4109,15 @@ SCHEMA = Schema(
                 "treated as noise, not a genuine vessel, and excluded from both missing-"
                 "vessel checks below -- see "
                 "preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton "
-                "for why that floor matters on real, imperfectly segmented data"
+                "for why that floor matters on real, imperfectly segmented data. Counted "
+                "in voxels of the image as read: on a segmented_image_downsample grid, as "
+                "many as hold the same volume. Not read under use_memmap_loading, which "
+                "skips both checks"
             ),
             section=_PIPELINE_STAGES,
+            unit="voxels",
             minimum=1,
+            requires=("!use_memmap_loading",),
             advanced=True,
         ),
         Setting(
@@ -4125,11 +4132,13 @@ SCHEMA = Schema(
                 "vessel dropped, not just imprecisely traced. See preprocessing."
                 "skeleton_consistency.diagnose_vessels_missing_from_skeleton. Checked "
                 "whether the skeleton was just computed or loaded from cache, so this is "
-                "not gated on do_skeletonize"
+                "not gated on do_skeletonize. Not checked under use_memmap_loading, which "
+                "skips it for its whole-volume arrays"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            requires=("!use_memmap_loading",),
             advanced=True,
         ),
         Setting(
@@ -4421,10 +4430,11 @@ SCHEMA = Schema(
                 "instead. Not provably exact like the per-component split "
                 "itself -- a generous skeletonize_tile_halo_um keeps results "
                 "indistinguishable from the monolithic computation for real "
-                "vessel data, but this is a heuristic margin, not a proof"
+                "vessel data, but this is a heuristic margin, not a proof. Read only "
+                "while do_skeletonize makes the skeleton"
             ),
             section=_PIPELINE_STAGES,
-            requires=("use_memmap_loading",),
+            requires=("use_memmap_loading", "do_skeletonize"),
             advanced=True,
         ),
         Setting(

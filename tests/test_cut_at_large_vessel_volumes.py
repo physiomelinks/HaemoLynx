@@ -1052,7 +1052,11 @@ def test_preflight_thick_vessel_restriction_no_op_when_unset():
 
 def test_preflight_thick_vessel_restriction_errors_for_large_without_its_mask():
     report = check_thick_vessel_restriction_prerequisites(
-        {"skeleton_thick_vessel_restrict_to_mask": "large", "use_large_vessel_masks": False}
+        {
+            "use_thick_vessel_skeletonisation": True,
+            "skeleton_thick_vessel_restrict_to_mask": "large",
+            "use_large_vessel_masks": False,
+        }
     )
     assert report.errors
     assert any("use_large_vessel_masks" in message for message in report.errors)
@@ -1061,6 +1065,7 @@ def test_preflight_thick_vessel_restriction_errors_for_large_without_its_mask():
 def test_preflight_thick_vessel_restriction_errors_for_small_without_its_mask():
     report = check_thick_vessel_restriction_prerequisites(
         {
+            "use_thick_vessel_skeletonisation": True,
             "skeleton_thick_vessel_restrict_to_mask": "small",
             "use_small_vessel_masks_for_boundary_assignment": False,
         }
@@ -1074,6 +1079,7 @@ def test_preflight_thick_vessel_restriction_errors_for_small_without_its_mask():
 
 def test_preflight_thick_vessel_restriction_errors_for_both_missing_either():
     settings = {
+        "use_thick_vessel_skeletonisation": True,
         "skeleton_thick_vessel_restrict_to_mask": "both",
         "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
@@ -1093,6 +1099,7 @@ def test_preflight_thick_vessel_restriction_names_an_unticked_automated_assignme
     left on under it unticked does not count."""
     report = check_thick_vessel_restriction_prerequisites(
         {
+            "use_thick_vessel_skeletonisation": True,
             "skeleton_thick_vessel_restrict_to_mask": "large",
             "automated_vessel_assignment": False,
             "use_large_vessel_masks": True,
@@ -1102,8 +1109,24 @@ def test_preflight_thick_vessel_restriction_names_an_unticked_automated_assignme
     assert not any("use_large_vessel_masks" in message for message in report.errors)
 
 
+def test_preflight_thick_vessel_restriction_no_op_while_thick_skeletonisation_is_off():
+    """Only thickness-gated skeletonisation reads the restriction: with it off
+    the choice is greyed and keeps its value, and a run without the masks it
+    names must still pass. It used to be refused for them."""
+    settings = {
+        "use_thick_vessel_skeletonisation": False,
+        "skeleton_thick_vessel_restrict_to_mask": "both",
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    assert not check_thick_vessel_restriction_prerequisites(settings).errors
+    settings["use_thick_vessel_skeletonisation"] = True
+    assert check_thick_vessel_restriction_prerequisites(settings).errors
+
+
 def test_preflight_thick_vessel_restriction_clean_when_fully_configured():
     settings = {
+        "use_thick_vessel_skeletonisation": True,
         "skeleton_thick_vessel_restrict_to_mask": "both",
         "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,

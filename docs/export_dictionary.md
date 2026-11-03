@@ -112,13 +112,14 @@ Written to the run's output folder (output_dir). The voxel size the run read and
 
 | Column | Unit | Meaning |
 |---|---|---|
-| `voxel_size` | `um` | The image's voxel size as read, (x, y, z). |
+| `voxel_size` | `um` | The voxel size the run resolved for the image as read, before any downsampling, (x, y, z): its metadata, or the override when one was used. |
 | `run_voxel_size` | `um` | The voxel size the run used, (x, y, z) (after any downsampling). |
 | `voxel_size_source` | `-` | Where it came from: OME header, TIFF tags, override, ... |
 | `voxel_metadata_status` | `-` | Whether the metadata was found, and its source. |
 | `voxel_size_policy` | `-` | The voxel_size_policy setting. |
 | `voxel_size_override_xyz` | `um` | The voxel_size_override_xyz setting, if any. |
 | `downsample` | `-` | The downsample-on-import record, or null. |
+| `crop` | `voxel` | The crop-on-import box the skeleton was cut to, its (z, y, x) start and stop (stop not kept), or null for the whole image. |
 
 ## `{stem}_statistics.csv`
 
