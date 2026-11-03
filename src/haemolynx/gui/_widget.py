@@ -7960,7 +7960,6 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         BC_LAYER_NAMES,
         BC_NODE_IDS,
         BC_REGION_NAMES,
-        DISABLED_ROLE_TOOLTIP,
         band_boxes,
         box_colours,
         box_from_view_drag,
@@ -8635,7 +8634,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
                 widget.visible = control in useful
                 if overridden:
                     widget.enabled = False
-                    widget.tooltip = DISABLED_ROLE_TOOLTIP[name]
+                    widget.tooltip = role_disabled_note(name, values)
                 else:
                     widget.enabled = True
                     widget.tooltip = ACTION_TOOLTIPS[control]
@@ -9233,7 +9232,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             report.value = "Click a node in the list of nodes in the box first."
             return
         if not role_manual_controls_enabled(owner, current_values()):
-            report.value = DISABLED_ROLE_TOOLTIP[owner]
+            report.value = role_disabled_note(owner, current_values())
             return
         proposed, message = use_node_for_role(current_values(), owner, chosen.node_id)
         write_rows(proposed)
@@ -9417,7 +9416,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             return
         if not role_manual_controls_enabled(owner, current_values()):
             disarm_nodes()
-            report.value = DISABLED_ROLE_TOOLTIP[owner]
+            report.value = role_disabled_note(owner, current_values())
             return
         dims = list(dims_displayed or ())
         try:

@@ -732,6 +732,33 @@ def test_foreground_labels_read_as_the_label_volume(structure, block):
     assert np.array_equal(labels.coords()[labels.members(some)], np.argwhere(expected == some))
 
 
+def test_foreground_labels_members_are_safe_to_read_from_threads(monkeypatch):
+    """Regression: ``members`` filled its two lookups one after the other, so
+    a thread arriving between them (small-vessel tangential redefinition
+    reads pieces from 8 by default) found the first and not the second, and
+    the Boundaries stage stopped on an AttributeError. Here the second call
+    arrives exactly there."""
+    from haemolynx.preprocessing import slab_labels
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    mask = _blobs((16, 30, 28), 0.15, 1.0, 3)
+    expected = ForegroundLabels(mask, None).members(1)
+    labels = ForegroundLabels(mask, None)
+    real = np.searchsorted
+    interrupted = []
+
+    def searchsorted(*args, **kwargs):
+        if not interrupted:
+            interrupted.append(None)
+            interrupted[0] = labels.members(1)  # another thread, mid-fill
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(slab_labels.np, "searchsorted", searchsorted)
+
+    assert np.array_equal(labels.members(1), expected)
+    assert np.array_equal(interrupted[0], expected)
+
+
 def test_foreground_labels_hold_the_foreground_not_the_volume():
     """The same vessels in four times the stack: the same peak, where a
     label volume's grows with the stack."""

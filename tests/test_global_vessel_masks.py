@@ -530,6 +530,34 @@ def test_assign_boundaries_with_a_global_mask_cuts_nothing_and_tags_vessels(
     assert orders == ["Unknown_Large", "Unknown_Cap", "Unknown_Small", "Unknown_Cap"]
 
 
+def test_the_arteriole_and_venule_lists_are_not_read_with_a_global_mask(tmp_path):
+    """Regression: with a global large mask (the small masks off) nothing
+    reads arteriole or venule boundaries, preflight says so, but the stage
+    still picked from their lists, so node IDs left from an earlier build
+    stopped the run. The panel greys their tabs now, saying why, and a batch
+    refuses no such list."""
+    from haemolynx.gui.boundary_picking import (
+        GLOBAL_MASKS_NOTE,
+        role_disabled_note,
+        role_manual_controls_enabled,
+    )
+    from haemolynx.pipeline.batch import check_batch
+
+    large = np.zeros(SHAPE, dtype=bool)
+    large[4:7, 4:7, 0:8] = True
+    settings = _stage_settings(
+        tmp_path, arteriole_boundary_selection_method="node_ids", arteriole_boundary_node_ids=[999]
+    )
+
+    boundaries = assign_boundaries(settings, _network(_chain([0, 6, 12, 18, 29]), large, None, tmp_path))
+
+    assert boundaries.arteriole_boundary_nodes == []
+    assert not role_manual_controls_enabled("arteriole_boundary", settings)
+    assert role_disabled_note("venule_boundary", settings) == GLOBAL_MASKS_NOTE
+    assert role_manual_controls_enabled("inlet", settings)
+    assert not any("arteriole_boundary" in error for error in check_batch(settings, default_schema()).errors)
+
+
 FIXTURE = Path(__file__).resolve().parent / "data" / "seven_vessel_noisy_3d.tif"
 
 

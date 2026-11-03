@@ -368,7 +368,7 @@ def check_manual_inlets_outlets_while_masks_choose(
     set_by_hand = [
         name
         for role in ("inlet", "outlet")
-        for name in (f"{role}_node_ids", f"{role}_node_volumes")
+        for name in (f"{role}_node_ids", f"{role}_node_volumes", f"{role}_node_coordinates")
         if settings.get(name)
     ]
     if set_by_hand:

@@ -116,6 +116,36 @@ def test_quality_gate_can_trigger_conservative_mode():
     assert float(result["effective_max_dilation_microns"]) == conservative_max
 
 
+def test_the_quality_gate_counts_a_terminal_the_cut_made_as_inside_its_mask():
+    """Regression: the confidence selection measures the gate again on the
+    graph cut at the large masks, where every terminal the cut made sits one
+    sample outside its mask, as every other selector reads it. Read as
+    outside, terminal coverage was 0 whenever the cut ran (its default), and
+    conservative mode was forced however good the masks."""
+    from haemolynx.graph import assess_large_vessel_assignment_quality, cut_graph_at_large_vessel_volumes
+
+    arteriole = np.zeros((12, 40, 100), dtype=bool)
+    venule = np.zeros_like(arteriole)
+    arteriole[3:8, 8:13, 0:20] = True
+    venule[3:8, 28:33, 0:20] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(5.0, 10.0, 5.0))
+    G.add_node(1, pos=(5.0, 20.0, 60.0))
+    G.add_node(2, pos=(5.0, 30.0, 5.0))
+    G.add_edge(0, 1, voxels=[(5.0, 10.0 + 10.0 * t, 5.0 + 55.0 * t) for t in np.linspace(0, 1, 60)])
+    G.add_edge(1, 2, voxels=[(5.0, 20.0 + 10.0 * t, 60.0 - 55.0 * t) for t in np.linspace(0, 1, 60)])
+    cut = cut_graph_at_large_vessel_volumes(G, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0))
+    terminals = [node for node in cut if cut.degree(node) == 1]
+    assert terminals and all(cut.nodes[node].get("cut_from_large_vessel") for node in terminals)
+
+    quality = assess_large_vessel_assignment_quality(
+        cut, large_arteriole_mask=arteriole, large_venule_mask=venule, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+
+    assert quality["terminal_coverage"] == 1.0
+    assert not quality["poor_quality_reasons"]["low_terminal_coverage"]
+
+
 @pytest.mark.parametrize("low_memory", [False, True])
 def test_an_empty_venule_mask_claims_no_terminal_at_the_volumes_corner(tmp_path, low_memory):
     """Dilated, an empty mask used to read as a blob at voxel (0, 0, 0)

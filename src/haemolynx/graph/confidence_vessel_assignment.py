@@ -7,6 +7,7 @@ import networkx as nx
 import numpy as np
 
 from ._helpers import sort_nodes as _sort_nodes
+from .cut_at_large_vessel_volumes import CUT_FROM_LARGE_VESSEL
 from .terminal_node_assignment import (
     _build_dilation_schedule_microns,
     _cut_from,
@@ -82,7 +83,12 @@ def assess_large_vessel_assignment_quality(
 
     terminals = _terminal_nodes_with_position_pairs(G)
     coverage_hits = 0
-    for _node_id, node_pos in terminals:
+    for node_id, node_pos in terminals:
+        # A terminal the cut made sits one sample outside the mask it was cut
+        # from; every selector reads it as inside.
+        if G.nodes[node_id].get(CUT_FROM_LARGE_VESSEL) is not None:
+            coverage_hits += 1
+            continue
         idx = _position_to_mask_index(
             node_pos,
             voxel_size_zyx=voxel_size_zyx,

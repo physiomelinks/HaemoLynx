@@ -259,6 +259,45 @@ def test_component_axis_and_endpoints_are_measured_in_microns():
     assert abs(float((end_b - end_a) @ direction)) == pytest.approx(16.0, abs=1.0)
 
 
+def _bridge_arterioles(art: np.ndarray) -> dict:
+    return enforce_small_vessel_mask_continuity(
+        small_arteriole_mask=art,
+        small_venule_mask=np.zeros_like(art),
+        large_arteriole_mask=None,
+        large_venule_mask=None,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+
+
+@pytest.mark.parametrize("length", [30, 60, 90])
+def test_long_collinear_pieces_are_bridged_across_a_short_gap(length):
+    """Regression: candidates were chosen by centroid distance, within the
+    bridge length plus the corridor (47 um by default), so two pieces longer
+    than about that were never joined however short the gap between them."""
+    art = np.zeros((9, 9, 2 * length + 20), dtype=bool)
+    art[3:6, 3:6, 5:5 + length] = True
+    art[3:6, 3:6, 10 + length:10 + 2 * length] = True  # a 4 um gap
+
+    result = _bridge_arterioles(art)
+
+    assert result["stats"]["arteriole"]["accepted_bridges"] >= 1
+    assert label(result["small_arteriole_mask"])[1] == 1
+
+
+def test_a_bridge_leaving_a_pieces_far_end_along_its_side_is_refused():
+    """Regression: each axis was turned to face along the bridge before the
+    facing test, so a bridge from one piece's far end, back along its side
+    to a parallel piece beside it, passed as facing."""
+    art = np.zeros((9, 20, 60), dtype=bool)
+    art[3:6, 3:6, 5:35] = True     # x 5..34
+    art[3:6, 12:15, 18:50] = True  # x 18..49, 9 um away in y, alongside over x 18..34
+
+    result = _bridge_arterioles(art)
+
+    assert result["stats"]["arteriole"]["accepted_bridges"] == 0
+    assert np.array_equal(result["small_arteriole_mask"], art)
+
+
 def test_continuity_schema_flags_require_small_masks():
     schema = default_schema()
     assert schema["small_vessel_mask_continuity_enable"].default is False
