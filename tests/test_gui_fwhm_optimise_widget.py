@@ -565,6 +565,38 @@ def test_apply_writes_only_the_settings_the_review_listed(panel):
     assert written == [("fwhm_min_fit_r2",)]
 
 
+def test_apply_writes_the_listed_settings_and_leaves_a_row_edited_since(panel, monkeypatch, tmp_path):
+    """The run's own writer, as the finished optimisation hands it to the
+    review: Apply writes what the review listed and nothing else, so a row
+    edited after the review keeps the edit."""
+    from haemolynx.optimisation.search import OptimisationResult
+
+    def finish_at_once(_run, *, run_state, cancel_flag, finished, **_kwargs):
+        run_state.start(worker=None, cancel_flag=cancel_flag)
+        finished((result, raw_file))
+
+    monkeypatch.setattr(widget_mod, "_start_optimisation_worker", finish_at_once)
+    rows = panel._haemolynx_rows()
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    rows["raw_image_path"].value = raw_file
+    rows["measure_diameters_from_raw_image"].value = True
+    panel._haemolynx_view.results = _fake_results(_tiny_graph())
+    unchanged = rows["fwhm_min_accepted_samples"].value
+    result = OptimisationResult(
+        settings={"fwhm_min_fit_r2": 0.5, "fwhm_min_accepted_samples": unchanged}, trials=()
+    )
+
+    panel._haemolynx_optimise_fwhm_settings()
+    review = panel._haemolynx_optimise_fwhm_review
+    assert review.pending
+    rows["fwhm_min_accepted_samples"].value = unchanged + 3  # edited after the review
+    review.apply()
+
+    assert rows["fwhm_min_fit_r2"].value == pytest.approx(0.5)
+    assert rows["fwhm_min_accepted_samples"].value == unchanged + 3
+
+
 def test_loading_a_config_drops_a_pending_fwhm_proposal(panel, tmp_path):
     """Its changes were listed against the settings the config replaces."""
     from types import SimpleNamespace

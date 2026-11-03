@@ -16277,11 +16277,19 @@ def settings_widget(napari_viewer=None):
         graph = getattr(view.results, "_graph", None) if view.results is not None else None
         values = current_values()
         named = (str(values.get("raw_image_path") or ""), values.get("raw_image_channel"))
-        if id(graph) != stain_read["graph"]:
-            # A run's reading is of the raw image named as its graph arrives.
-            stain_read["graph"], stain_read["image"] = id(graph), named
+        known = stain_read["graph"]() if stain_read["graph"] is not None else None
+        if graph is not None and known is not graph:
+            # A run's reading is of the raw image named as its graph arrives
+            # (a graph saved before it recorded its own image).
+            stain_read["graph"], stain_read["image"] = weakref.ref(graph), named
         # Another image or channel named since has not been read yet.
-        record = graph.graph if graph is not None and stain_read["image"] == named else {}
+        if graph is None:
+            same_image = False
+        elif graph.graph.get(pipeline_stages.RAW_STAIN_IMAGE) is not None:
+            same_image = pipeline_stages._recorded_stain(values, graph) is not None
+        else:
+            same_image = stain_read["image"] == named
+        record = graph.graph if same_image else {}
         read = record.get("raw_image_stain")
         before = stain_read["stain"]
         stain_read["stain"] = read if read in ("plasma_column", "endothelial") else None
@@ -16710,6 +16718,11 @@ def settings_widget(napari_viewer=None):
     def _values_for_save(dest: Path) -> dict[str, Any]:
         """Form values with relative loaded paths rebased if *dest* left cwd."""
         values = current_values()
+        # A run from a later tab turns these off for itself (FWHM keeps its
+        # widths); the file says the user's own, which Run pipeline puts back.
+        for name in SKIP_FOR_RESUME:
+            if name in values and name in skip_toggle_snapshot:
+                values[name] = skip_toggle_snapshot[name]
         try:
             dest_dir = dest.parent.resolve()
             keep_relative = dest_dir == Path.cwd().resolve()

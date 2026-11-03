@@ -287,6 +287,25 @@ def test_resume_keeps_measured_and_override_and_does_not_remeasure(monkeypatch):
     assert stamped[2][3][0]["diameter_um"] == pytest.approx(6.0)
 
 
+def test_fwhm_off_with_nothing_measured_to_keep_measures_anyway(monkeypatch):
+    """Regression: a run from Haemodynamics or later turns
+    do_fwhm_measurement off to keep the widths it measured, and the settings
+    it saves say so; a run started from them, on a network FWHM never
+    measured, kept nothing and measured nothing -- every vessel took the
+    class median or the table. It measures now, and says why."""
+    seen = _measurement_spies(monkeypatch)
+    graph = _network()
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": False, "fwhm_decoy_check": False},
+    )
+
+    _graph, summary, _raw = assign_edge_diameters(graph, config)
+
+    assert len(seen["fwhm"]) == 1 and seen["fwhm"][0][0] is None  # every vessel
+    assert "skipped" not in summary["fwhm"]
+
+
 def test_fresh_fwhm_run_wipes_overrides(monkeypatch):
     def fake_measure(G, _config, raw_volume=None, **_kwargs):
         for _u, _v, _key, data in G.edges(keys=True, data=True):
@@ -1604,3 +1623,24 @@ def test_strict_branch_orders_are_out_of_effect_while_vessels_are_classed_by_siz
     values.update(classify_vessels_by_size=by_size, automated_vessel_assignment=masks)
 
     assert bool(unmet_chain(SCHEMA, "strict_branch_order_assignment", values)) is greyed
+
+
+@pytest.mark.parametrize("source", ["synthetic", "synthetic_surround"])
+def test_the_mask_reading_rows_are_out_of_effect_for_a_synthetic_network(source):
+    """A synthetic network has no segmentation for the mask's widths, nor a
+    raw image for FWHM: the rows widened to every run that reads them were
+    shown, and warned unread by nothing, for one that reads none."""
+    from haemolynx.gui.form import unmet_chain
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(network_source=source, run_haemodynamics=True, use_edt_diameter_crosscheck=True)
+
+    for name in (
+        "use_edt_diameter_crosscheck",
+        "fwhm_sample_spacing_along_edge_um",
+        "fwhm_edge_diameter_aggregation",
+        "edt_diameter_method",
+        "edt_min_resolvable_diameter_um",
+        "edt_junction_proximity_exclusion_um",
+    ):
+        assert unmet_chain(SCHEMA, name, values), name

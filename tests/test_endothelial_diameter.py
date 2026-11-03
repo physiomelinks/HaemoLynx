@@ -696,3 +696,35 @@ def test_the_default_worker_count_leaves_a_core_and_stops_at_eight(monkeypatch):
     for cores, expected in ((20, 8), (4, 3), (1, 1), (None, 1)):
         monkeypatch.setattr(os, "cpu_count", lambda cores=cores: cores)
         assert sections.default_worker_count() == expected
+
+
+def test_a_2d_images_rings_are_read_and_calibrated():
+    """Regression: a 2D image (one plane) has no section across a vessel, so
+    every ring fell off the volume, and the rings could never calibrate (no
+    section tilted towards z): a 2D image with a wall stain had no internal
+    diameters at all. The line across each vessel -- its two walls -- is now
+    revolved into a round ring, blurred alike both ways."""
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(1)
+    count, rows, lumen = 14, 24, 8
+    ring = np.zeros((rows * count, 120))
+    graph = nx.MultiGraph()
+    for i in range(count):
+        centre = rows * i + rows // 2
+        ring[centre - lumen // 2 - 1, :] = ring[centre + lumen // 2, :] = 1.0
+        graph.add_edge(2 * i, 2 * i + 1, voxels=[(0.0, centre - 0.5, float(x)) for x in range(20, 100)],
+                       length=80.0, edt_diameter_um=float(lumen))
+    volume = rng.poisson(2 + 60 * gaussian_filter(ring, 1.0))[None].astype(np.float32)
+
+    psf, wall, details = calibrate_from_rings(graph, volume, (1.0, 1.0, 1.0))
+    assert psf is not None, details
+    assert psf[1] == pytest.approx(1.0, rel=0.15) and wall == pytest.approx(1.0, abs=0.3)
+
+    one = nx.MultiGraph(graph.edge_subgraph([(0, 1, 0)]))
+    measure_edge_diameters_from_endothelium(
+        one, endothelial_volume=volume, voxel_size_zyx=(1.0, 1.0, 1.0),
+        psf_sigma_zyx=(3.0, psf[1], psf[2]), wall_um=wall, branch_endpoint_exclusion_um=0.0,
+    )
+    assert one[0][1][0]["endothelial_status"] == "measured"
+    assert one[0][1][0]["endothelial_diameter_um"] == pytest.approx(lumen, rel=0.1)

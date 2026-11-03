@@ -521,6 +521,35 @@ def test_a_trial_derives_the_mask_widths_and_the_psf_its_settings_change(multi_v
     ]
 
 
+def test_each_measured_graph_is_painted_once_a_search_with_the_same_widths(monkeypatch):
+    """Every trial painted a whole-image label volume for its sample, its
+    decoys and its planted vessels -- a third of a second each on E14.5's
+    grid. Each graph is now painted once a search, and a trial reads the
+    same widths as one painting its own."""
+    G = _multi_vessel_graph()
+    builds = []
+    real = s.fwhm_diameter.build_graph_branch_label_volume
+
+    def counting(graph, *args, **kwargs):
+        builds.append(graph.number_of_edges())
+        return real(graph, *args, **kwargs)
+
+    monkeypatch.setattr(s.fwhm_diameter, "build_graph_branch_label_volume", counting)
+    search = _search(G, _multi_vessel_raw_volume(), vessel_mask=_vessel_mask())
+
+    for value in (0.8, 0.85, 0.9):
+        search._checked_trial({"fwhm_min_fit_r2": value})
+    assert len(builds) == 3  # the vessels, the planted ones, the decoys
+
+    cached, _summary = search._run_trial({})
+    painted = search.template.copy()
+    search._measure(painted, search.current, edges=search.sample_edges)
+    assert len(builds) == 4
+    for edge in search.sample_edges:
+        for name in ("fwhm_status", "fwhm_diameter_um", "fwhm_diameter_samples_um"):
+            assert cached.edges[edge].get(name) == painted.edges[edge].get(name), (edge, name)
+
+
 @pytest.mark.parametrize("size", [1, 3])
 def test_the_decoys_follow_the_runs_decoy_sample_size(size):
     """Regression: the decoys were capped at fwhm_decoys.DECOY_SAMPLE_SIZE
@@ -775,6 +804,10 @@ def _scene_graph() -> nx.MultiGraph:
 def scene(tmp_path: Path):
     """The scene's raw image and mask on disk, and the run's settings and
     haemodynamics config for them, made by the pipeline as a run makes them."""
+    return _scene(tmp_path)
+
+
+def _scene(tmp_path: Path, **extra):
     from haemolynx.pipeline import default_schema, resolve_settings
     from haemolynx.pipeline.stages import _haemodynamics_apply_config
 
@@ -795,6 +828,7 @@ def scene(tmp_path: Path):
             "fwhm_transverse_profile_step_um": 0.25,
             "raw_section_psf_sigma_xy_um": 1.0,
             "raw_section_psf_sigma_z_um": 2.0,
+            **extra,
         },
         schema=schema,
         config_path=None,
@@ -846,6 +880,41 @@ def test_a_trials_widths_are_the_runs_on_the_same_vessels(scene, pool):
             "fwhm_diameter_samples_um",
             "fwhm_diameter_r2_samples",
         ):
+            assert trial.edges[edge].get(name) == G_run.edges[edge].get(name), (edge, name)
+
+
+def test_a_trials_widths_are_the_runs_with_the_blur_estimated_and_the_mask_measured(tmp_path):
+    """The comparison above holds the blur at one set in the settings; a run
+    whose blur is estimated from the image, and whose FWHM starts from the
+    mask's own widths (the EDT cross-check), derives both -- and a trial at
+    the run's settings must derive them as the run does."""
+    from haemolynx.haemodynamics.apply import assign_edge_diameters
+
+    raw, mask, raw_path, config, starting_values = _scene(
+        tmp_path,
+        raw_section_psf_sigma_xy_um=None,
+        raw_section_psf_sigma_z_um=None,
+        use_edt_diameter_crosscheck=True,
+    )
+    assert config.use_edt_diameter_crosscheck
+    G_run = _scene_graph()
+    _graph, summary, _raw = assign_edge_diameters(G_run, config, mask_volume=mask, raw_volume=raw)
+    assert summary["fwhm_psf"]["source"] != "settings"
+
+    search, _estimate = s._prepared_search(
+        _scene_graph(),
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values=starting_values,
+        sample_edge_count=4,
+        vessel_mask=mask,
+        config=config,
+    )
+    trial, _summary = search._run_trial({})
+
+    for edge in search.sample_edges:
+        assert trial.edges[edge].get("edt_diameter_um") == G_run.edges[edge].get("edt_diameter_um")
+        for name in ("fwhm_status", "fwhm_diameter_um", "fwhm_diameter_samples_um"):
             assert trial.edges[edge].get(name) == G_run.edges[edge].get(name), (edge, name)
 
 

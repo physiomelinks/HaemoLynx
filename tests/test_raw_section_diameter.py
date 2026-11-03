@@ -536,3 +536,42 @@ def test_a_vessel_fwhm_cannot_read_is_read_by_the_fallback_in_a_run(tmp_path):
     assert data["diameter_source"] == DIAMETER_SOURCE_RAW_SECTION
     assert data["diameter_um"] == pytest.approx(5.0, rel=0.12)
     assert summary["raw_section"]["edges_measured"] == 1
+
+
+def _planar_vessels(count, width=8, *, blur=1.2, seed=1, spacing_rows=24):
+    """A 2D image read as one plane: *count* straight vessels *width* um wide
+    along x, a voxel each, blurred by *blur* um with shot noise."""
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(seed)
+    mask = np.zeros((1, spacing_rows * count, 120), dtype=bool)
+    graph = nx.MultiGraph()
+    for i in range(count):
+        centre = spacing_rows * i + spacing_rows // 2
+        mask[0, centre - width // 2: centre - width // 2 + width, :] = True
+        graph.add_edge(2 * i, 2 * i + 1, voxels=[(0.0, centre - 0.5, float(x)) for x in range(20, 100)],
+                       length=80.0, edt_diameter_um=float(width))
+    raw = rng.poisson(1 + 50 * gaussian_filter(mask[0].astype(float), blur))[None].astype(np.float32)
+    return raw, mask, graph
+
+
+def test_a_2d_images_vessels_are_fitted_and_its_blur_estimated():
+    """Regression: a 2D image (one plane) has no section across a vessel, so
+    every section fell off the volume and the fallback read nothing, nor
+    could the image's blur be estimated. The line across each vessel is now
+    revolved into a round section, blurred alike both ways -- a z blur set
+    for a stack changes nothing."""
+    from haemolynx.haemodynamics.raw_section import estimate_psf_sigma
+
+    raw, mask, graph = _planar_vessels(14)
+
+    psf, details = estimate_psf_sigma(graph, raw, (1.0, 1.0, 1.0), vessel_mask=mask)
+    assert psf is not None, details
+    assert psf[1] == pytest.approx(1.2, rel=0.15)
+
+    one = nx.MultiGraph(graph.edge_subgraph([(0, 1, 0)]))
+    for z_blur in (1.2, 3.0):
+        _measure(one, raw, mask, psf_sigma_zyx=(z_blur, 1.2, 1.2))
+        data = one[0][1][0]
+        assert data["raw_section_status"] == "measured"
+        assert data["raw_section_diameter_um"] == pytest.approx(8.0, rel=0.1)

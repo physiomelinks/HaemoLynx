@@ -142,6 +142,31 @@ def test_another_raw_image_drops_the_last_runs_reading_of_its_stain(panel, tmp_p
     assert panel._haemolynx_optimise_endothelial_button.visible is False
 
 
+def test_a_runs_own_record_of_its_raw_image_decides_its_reading(panel, tmp_path):
+    """Regression: the reading was tied to the graph by id(), which Python
+    reuses once a graph is freed, so a new run's reading could be judged by
+    an older run's image. A graph recording the image it read the stain off
+    is judged by that."""
+    from haemolynx.pipeline import stages
+
+    _on_the_diameters_tab(panel)
+    rows = _endothelial_run(panel, tmp_path, stain="auto")
+    read_off = tmp_path / "claudin.tif"
+    read_off.write_bytes(b"")
+    graph = _tiny_graph()
+    graph.graph["raw_image_stain"] = "endothelial"
+    graph.graph[stages.RAW_STAIN_IMAGE] = stages.raw_image_identity(
+        {"raw_image_path": read_off, "raw_image_channel": rows["raw_image_channel"].value}
+    )
+    panel._haemolynx_view.results = _fake_results(graph)
+
+    panel._haemolynx_refresh_stain_reading()
+    assert panel._haemolynx_optimise_endothelial_button.visible is False  # names another image
+
+    rows["raw_image_path"].value = read_off
+    assert panel._haemolynx_optimise_endothelial_button.visible is True
+
+
 def test_neither_optimiser_shows_while_haemodynamics_is_off(panel, tmp_path):
     """Regression: with haemodynamics off the Diameters stage measures
     nothing and the measuring box is hidden, but either optimiser still

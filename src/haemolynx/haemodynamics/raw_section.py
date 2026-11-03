@@ -68,6 +68,7 @@ from .sections import (
     averaged_section,
     bootstrap_interval,
     calibration_sites,
+    is_planar,
     lumen_image,
     nearest_section,
     projected_sigma,
@@ -220,7 +221,8 @@ def fit_section(
         sigma_a = sigma_b = 0.5
     else:
         sigma_a = projected_sigma(a, psf_sigma_zyx)
-        sigma_b = projected_sigma(b, psf_sigma_zyx)
+        # A single plane's section is its line revolved: blurred alike both ways.
+        sigma_b = sigma_a if is_planar(raw) else projected_sigma(b, psf_sigma_zyx)
     blur = max(sigma_a, sigma_b, 1.0 if free_sigma else 0.0)
     extent = max(5.0, 1.6 * float(guide_um) + 3.0 * blur)
     step = max(_PLANE_STEP_UM, 2.0 * extent / (_PLANE_MAX_POINTS_ACROSS - 1))

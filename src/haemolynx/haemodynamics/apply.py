@@ -433,6 +433,7 @@ def measure_fwhm_diameters(
     psf_sigma_zyx: tuple[float, float, float] | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
     at_positions: Mapping[tuple[Any, Any, Any], Sequence[float]] | None = None,
+    branch_labels: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """FWHM widths of *G*'s edges (or of *edges*, measured among all of *G*'s)
     exactly as a run measures them: *config*'s FWHM settings, axis order and
@@ -442,11 +443,14 @@ def measure_fwhm_diameters(
     settings optimiser's trials to measure through. *at_positions* reads
     the edges it names at those arc lengths instead (the pericyte
     measurements' profiles; see
-    :func:`~haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`)."""
+    :func:`~haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`).
+    *branch_labels* is *G*'s label volume made beforehand (the same
+    function's), for a caller measuring the same vessels many times."""
     return _measure_fwhm_diameters(
         G, config, raw_volume=raw_volume, vessel_mask=vessel_mask,
         psf_sigma_zyx=psf_sigma_zyx, **_subset(edges),
         **({} if at_positions is None else {"at_positions": at_positions}),
+        **({} if branch_labels is None else {"branch_labels": branch_labels}),
     )
 
 
@@ -511,6 +515,7 @@ def _measure_fwhm_diameters(
     psf_sigma_zyx: tuple[float, float, float] | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
     at_positions: Mapping[tuple[Any, Any, Any], Sequence[float]] | None = None,
+    branch_labels: np.ndarray | None = None,
 ) -> dict[str, Any]:
     path = _fwhm_raw_path(config)
     if path is None and raw_volume is None:
@@ -536,6 +541,7 @@ def _measure_fwhm_diameters(
             "profile_psf_sigma_zyx": psf_sigma_zyx,
             **_subset(edges),
             **({} if at_positions is None else {"at_positions": at_positions}),
+            **({} if branch_labels is None else {"branch_labels": branch_labels}),
         },
     )
 
@@ -994,7 +1000,7 @@ def assign_edge_diameters(
         config.use_edt_diameter_crosscheck
         or (
             config.use_fwhm_edge_diameters
-            and (config.do_fwhm_measurement or edges is not None)
+            and (config.do_fwhm_measurement or edges is not None or _no_fwhm_measurement(G))
         )
     )
     if mask_volume is None and wants_mask:
@@ -1010,6 +1016,14 @@ def assign_edge_diameters(
     finally:
         if isinstance(loaded_mask, np.memmap):
             release_memmap_array(loaded_mask)
+
+
+def _no_fwhm_measurement(G: nx.MultiGraph) -> bool:
+    """Whether no vessel of *G* carries an FWHM measurement, so that keeping
+    the ones measured (``do_fwhm_measurement`` off) would keep nothing."""
+    return not any(
+        "fwhm_status" in data or "fwhm_diameter_um" in data for _u, _v, data in G.edges(data=True)
+    )
 
 
 def _stamp_bridge_diameters(
@@ -1083,10 +1097,19 @@ def _assign_edge_diameters_with_mask(
     # An empty subset (only deletions were made) measures nothing: it is here
     # for the re-stamp below, a table diameter following a new branch order.
     measuring = not subset or bool(edges)
+    # do_fwhm_measurement off keeps the FWHM widths a run already measured;
+    # a network FWHM never measured (a fresh run from settings a resumed run
+    # saved with it off) has none to keep, and is measured.
+    nothing_to_keep = not subset and _no_fwhm_measurement(G)
+    if config.use_fwhm_edge_diameters and not config.do_fwhm_measurement and nothing_to_keep:
+        logger.warning(
+            "do_fwhm_measurement is off, but no vessel has an FWHM measurement to keep: "
+            "measuring them."
+        )
     remeasure = bool(
         measuring
         and config.use_fwhm_edge_diameters
-        and (config.do_fwhm_measurement or subset)
+        and (config.do_fwhm_measurement or subset or nothing_to_keep)
     )
     keep_existing = subset or bool(
         config.use_fwhm_edge_diameters and not config.do_fwhm_measurement

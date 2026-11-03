@@ -605,6 +605,10 @@ class _FwhmSearch(_SweepBookkeeping):
         self._starting_psf_key = self._psf_key(starting)
         self._vessels_by_key: dict[Any, nx.MultiGraph] = {}
         self._psf_by_key: dict[Any, Optional[tuple[float, float, float]]] = {}
+        #: Each measured graph's label volume, by the graph it was painted
+        #: from (the template, the decoys, the planted vessels): painted once,
+        #: not for every trial (see `_labels_for`).
+        self._branch_labels: dict[int, np.ndarray] = {}
         self.edt_warn_ratio = float(
             self.config.edt_setting("edt_fwhm_disagreement_warn_ratio") or _DEFAULT_EDT_WARN_RATIO
         )
@@ -730,6 +734,25 @@ class _FwhmSearch(_SweepBookkeeping):
             )
         return self._psf_by_key[key]
 
+    def _labels_for(self, base: nx.MultiGraph) -> np.ndarray:
+        """*base*'s label volume, which FWHM paints from its edges' voxels
+        and every copy of it shares -- painted once (a whole image a time:
+        a third of a second on E14.5's grid however few the edges), not by
+        each trial. *base* is one of this search's own graphs, alive as long
+        as it is."""
+        key = id(base)
+        if key not in self._branch_labels:
+            self._branch_labels[key], _ = fwhm_diameter.build_graph_branch_label_volume(
+                base,
+                tuple(self.raw_volume.shape),
+                tuple(float(v) for v in base.graph.get("image_voxel_size_zyx", self.voxel_size_zyx)),
+                background_label=int(self.config.fwhm_setting("fwhm_background_label", 0)),
+                junction_label=int(self.config.fwhm_setting("fwhm_junction_label", -1)),
+                use_memmap=self.config.use_memmap,
+                memmap_directory=self.config.memmap_directory,
+            )
+        return self._branch_labels[key]
+
     def _measure(
         self,
         graph: nx.MultiGraph,
@@ -737,12 +760,14 @@ class _FwhmSearch(_SweepBookkeeping):
         *,
         volume: Optional[np.ndarray] = None,
         edges: Optional[Iterable[tuple]] = None,
+        copy_of: Optional[nx.MultiGraph] = None,
     ) -> dict[str, Any]:
         """The run's FWHM measurement of *graph* (of its *edges*, among all
         of them, when given) with *settings* on *volume* (the raw image
         unless given), its blur held at the image PSF while
         ``fwhm_fix_blur_to_image_psf`` is on and the profile model has one
-        (see `_psf_for`)."""
+        (see `_psf_for`). *graph* a copy of one of the search's own graphs
+        (*copy_of*), its labels are that graph's, painted once."""
         config = _with_fwhm_settings(self.config, settings)
         return apply.measure_fwhm_diameters(
             graph,
@@ -751,6 +776,7 @@ class _FwhmSearch(_SweepBookkeeping):
             vessel_mask=self.vessel_mask,
             psf_sigma_zyx=self._psf_for(config),
             edges=edges,
+            branch_labels=None if copy_of is None else self._labels_for(copy_of),
         )
 
     def _run_trial(self, overrides: Mapping[str, Any]) -> tuple[nx.MultiGraph, dict[str, Any]]:
@@ -760,7 +786,9 @@ class _FwhmSearch(_SweepBookkeeping):
         output."""
         settings = {**self.current, **overrides}
         graph_trial = self._vessels_for(_with_fwhm_settings(self.config, settings)).copy()
-        summary = self._measure(graph_trial, settings, edges=self.sample_edges)
+        summary = self._measure(
+            graph_trial, settings, edges=self.sample_edges, copy_of=self.template
+        )
         return graph_trial, summary
 
     def _checked_trial(
@@ -779,12 +807,14 @@ class _FwhmSearch(_SweepBookkeeping):
         planted_report = None
         if self.planted is not None:
             planted = self.planted.probe.copy()
-            self._measure(planted, settings, volume=self.planted.volume)
+            self._measure(
+                planted, settings, volume=self.planted.volume, copy_of=self.planted.probe
+            )
             planted_report = fwhm_planted.planted_width_report(planted)
         decoy_report = None
         if self.decoy_probe is not None:
             probe = self.decoy_probe.copy()
-            self._measure(probe, settings)
+            self._measure(probe, settings, copy_of=self.decoy_probe)
             measured = [
                 (u, v, key)
                 for u, v, key, data in sample.edges(keys=True, data=True)

@@ -74,6 +74,47 @@ def test_the_builds_answer_is_taken_without_opening_the_raw_image(monkeypatch):
     assert stages.resolve_raw_image_stain(_settings(), network) == (ENDOTHELIAL, None, None)
 
 
+@pytest.mark.parametrize("change", ["path", "channel", "file"])
+def test_a_stain_read_off_another_raw_image_is_read_again(monkeypatch, tmp_path, change):
+    """Regression: the build's answer was taken whatever raw image the run
+    named now: re-run from Diameters after switching the raw image or its
+    channel (dextran to claudin, say), and it was measured by the old one's
+    method. The graph now records the image it read the stain off, and one
+    named since is read again -- recorded_raw_image_stain, which cannot read,
+    no longer takes the old answer either."""
+    import haemolynx.haemodynamics.fwhm_diameter as fwhm_diameter
+
+    image, lumen = _endothelial_image_and_lumen()
+    monkeypatch.setattr(stages.io, "resolve_image_path_with_optional_zip", lambda path: path)
+    first, second = tmp_path / "dextran.tif", tmp_path / "claudin.tif"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    settings = _settings(raw_image_path=first, raw_image_channel=0)
+    G = nx.MultiGraph()
+    G.graph["image_voxel_size_zyx"] = VS
+    G.graph["raw_image_stain"] = PLASMA_COLUMN
+    G.graph[stages.RAW_STAIN_IMAGE] = stages.raw_image_identity(settings)
+    network = _network(G, lumen)
+
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", _never)
+    assert stages.resolve_raw_image_stain(settings, network) == (PLASMA_COLUMN, None, None)
+    assert stages.recorded_raw_image_stain(settings, G) == PLASMA_COLUMN
+
+    if change == "path":
+        settings = {**settings, "raw_image_path": second}
+    elif change == "channel":
+        settings = {**settings, "raw_image_channel": 1}
+    else:
+        first.write_bytes(b"rewritten, longer")
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", lambda *_a, **_k: image)
+
+    stain, reading, _raw = stages.resolve_raw_image_stain(settings, network)
+
+    assert stain == ENDOTHELIAL and reading.stain == ENDOTHELIAL
+    G.graph["raw_image_stain"] = ENDOTHELIAL  # unread: what recorded_raw_image_stain must not trust
+    assert stages._recorded_stain(settings, G) is None
+
+
 def test_a_run_that_must_read_cuts_the_raw_image_to_its_crop_box(monkeypatch):
     """Read uncut against the cropped mask, this endothelial image came back
     'cannot tell' or plasma, and was then measured by FWHM."""
