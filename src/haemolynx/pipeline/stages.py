@@ -49,6 +49,7 @@ from haemolynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
 )
 from haemolynx.haemodynamics.haematocrit_distribution import (
+    DISCHARGE_HAEMATOCRIT_ATTR,
     JUNCTION_RULE_NO_SEPARATION,
     JUNCTION_RULE_SPLIT_JUNCTIONS,
     iterate_flow_and_haematocrit,
@@ -2050,7 +2051,7 @@ def _log_graph_consistency_diagnostics(
     # after the smoothing and the thick-vessel split.
     artefacts = graph.diagnose_lumen_artefacts(
         G, image, voxel_size_zyx=voxel_size_zyx,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     G.graph[graph.LUMEN_ARTEFACT_COUNTS] = graph.lumen_artefact_counts(artefacts)
     artefacts_report = graph.format_lumen_artefacts_report(artefacts)
@@ -2107,6 +2108,15 @@ def thick_bridge_centreline_tolerance_um(settings: Mapping[str, Any]) -> float:
         "thick_bridge_centreline_tolerance_um", graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM
     )
     return float(graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM if value is None else value)
+
+
+def dead_end_stub_radius_multiple(settings: Mapping[str, Any]) -> float:
+    """``min_stub_length_radius_multiple`` as the dead-end kinds and the
+    lumen-artefact report read it: the stub prune's own rule, so 0 calls no
+    dead end short by its vessel's radius, as the prune then prunes none by
+    it. 3, its default, when a caller's settings predate it."""
+    value = settings.get("min_stub_length_radius_multiple")
+    return 3.0 if value is None else float(value)
 
 
 def lumen_cleanup_switches(settings: Mapping[str, Any]) -> dict[str, bool]:
@@ -2705,6 +2715,8 @@ def build_network(
         if no_vessels is not None:
             raise no_vessels
 
+        # Saved with the box it was built in, so a run loading it can tell.
+        _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         logger.info(f"Saved graph to: {graph_path}")
@@ -2722,6 +2734,10 @@ def build_network(
                 f"The graph loaded from {graph_path} has no vessels. "
                 "Turn do_graph_building on to build it again from the skeleton."
             )
+        _check_saved_graph_fits_image(
+            G, graph_path, image.shape if image is not None else skeleton.shape, voxel_size_zyx,
+            getattr(volume, "crop", None),
+        )
 
     _record_graph_voxel_metadata(
         G, main_voxel_size_xyz, voxel_size_zyx,
@@ -2790,6 +2806,40 @@ def build_network(
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
         mask_split_diameter_um=mask_split_diameter_um,
+    )
+
+
+def _check_saved_graph_fits_image(
+    G: nx.MultiGraph, graph_path: Path, shape, voxel_size_zyx, crop: CropBox | None = None
+) -> None:
+    """Refuse a saved graph built on another image grid, as a saved skeleton
+    is refused: its node positions are microns from that image's corner, so
+    on another crop box, downsample or voxel size they no longer lie on this
+    run's image and masks. Judged by the extent recorded when it was built
+    (``image_extent_um``) and, where it was recorded, the crop box; a graph
+    saved before either was recorded is not judged by it."""
+    saved = graph.dead_ends.graph_image_extent_um(G)
+    now = graph.dead_ends.image_extent_um(shape, voxel_size_zyx)
+    differs = saved is not None and not (
+        saved.shape == now.shape and np.allclose(saved, now, rtol=1e-6, atol=1e-6)
+    )
+    if CROP_GRAPH_ATTRIBUTE in G.graph:
+        box = G.graph[CROP_GRAPH_ATTRIBUTE] or {}
+        whole = crop is None or crop.is_whole_volume
+        differs = differs or whole or (
+            tuple(box.get("start_zyx", ())), tuple(box.get("stop_zyx", ()))
+        ) != (tuple(crop.start_zyx), tuple(crop.stop_zyx))
+    if not differs:
+        return
+    built_on = (
+        "" if saved is None
+        else f" was built on an image {' x '.join(f'{v:g}' for v in saved)} um (z, y, x)"
+    )
+    raise ValueError(
+        f"The saved graph {graph_path}{built_on} does not fit this run's image, "
+        f"{' x '.join(f'{v:g}' for v in now)} um: it was made with a different "
+        "crop_on_import box, segmented_image_downsample or voxel size. Turn "
+        "do_graph_building back on to build it again."
     )
 
 
@@ -2904,7 +2954,7 @@ def _mark_dead_end_kinds(
     )
     ends = graph.dead_ends.classify_and_mark(
         G, support=support,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     census = graph.dead_ends.dead_end_census(ends)
     logger.info(
@@ -5097,7 +5147,7 @@ def _mark_touched_dead_end_kinds(
         touched,
         extent_um=extent,
         support=support,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     census = graph.dead_ends.dead_end_census(ends)
     logger.info(
@@ -5504,7 +5554,10 @@ def apply_network_handling(
     inlet-to-outlet path runs along
     (:func:`haemolynx.graph.remove_vessels_off_inlet_outlet_paths`): each
     graph component without both an inlet and an outlet, and the dead-end
-    branches, trees and loops hanging off one that has both. The
+    branches, trees and loops hanging off one that has both. A vessel
+    leaving the image that ``open_end_model`` may open counts as both
+    (:func:`_open_ends_network_handling_keeps`), as the solve's flow marks
+    count it, so the vessels leading to one stay. The
     boundary-node lists (on *boundaries* and in *settings*) and the
     resistance node pair follow the pruned graph, which becomes *model*'s,
     *boundaries*' and *network*'s. Where a removed branch hung, the two
@@ -5571,16 +5624,32 @@ def edges_network_handling_keeps(
     will keep; ``None`` -- every vessel -- with ``leave_unsolved``.
 
     With ``boundary_handling="remove_disconnected"``, those some
-    inlet-to-outlet path runs along, by the rule the removal itself
-    applies. The diameters stage, which runs first, samples its image
+    inlet-to-outlet path runs along (or a path to a vessel leaving the image
+    that the solve may open), by the rule the removal itself applies. The diameters stage, which runs first, samples its image
     calibrations from these, so a vessel about to be removed cannot shape
     the widths of the ones kept; the removal stays in the haemodynamics
     stage, so a rerun from that tab still applies it.
     """
     if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return None
-    kept = graph.inlet_to_outlet_vessels(G, boundaries.inlet_nodes, boundaries.outlet_nodes)
+    opened = _open_ends_network_handling_keeps(settings, G, boundaries)
+    kept = graph.inlet_to_outlet_vessels(
+        G, [*boundaries.inlet_nodes, *opened], [*boundaries.outlet_nodes, *opened]
+    )
     return [edge for edge in G.edges(keys=True) if edge in kept]
+
+
+def _open_ends_network_handling_keeps(
+    settings: Mapping[str, Any], G: nx.MultiGraph, boundaries: BoundaryNodes
+) -> list[Any]:
+    """The vessels leaving the image the solve may open
+    (:func:`haemolynx.haemodynamics.open_ends.open_ends_in_effect`): the
+    removal counts each as an inlet and an outlet, as the solve's flow marks
+    do, so the vessels leading to one stay. None without haemodynamics."""
+    model = settings.get("open_end_model") if settings.get("run_haemodynamics") else None
+    return haemodynamics.open_ends.open_ends_in_effect(
+        model, G, boundaries.inlet_nodes, boundaries.outlet_nodes
+    )
 
 
 def _remove_vessels_off_inlet_outlet_paths(
@@ -5593,8 +5662,11 @@ def _remove_vessels_off_inlet_outlet_paths(
     if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return
     G_before = model.graph
+    opened = _open_ends_network_handling_keeps(settings, model.graph, boundaries)
     G_pruned, io_prune_stats = graph.remove_vessels_off_inlet_outlet_paths(
-        model.graph, boundaries.inlet_nodes, boundaries.outlet_nodes
+        model.graph,
+        [*boundaries.inlet_nodes, *opened],
+        [*boundaries.outlet_nodes, *opened],
     )
     if G_pruned.number_of_nodes() == model.graph.number_of_nodes() and (
         G_pruned.number_of_edges() == model.graph.number_of_edges()
@@ -5629,6 +5701,12 @@ def _remove_vessels_off_inlet_outlet_paths(
         f"{io_prune_stats['removed_loop_length_um']:.1f} um); "
         f"{int(io_prune_stats['remaining_vessels'])} vessel(s) and "
         f"{int(io_prune_stats['remaining_nodes'])} node(s) remain."
+        + (
+            f" The vessels leading to the {len(opened)} vessel(s) leaving the image that "
+            f"open_end_model={settings.get('open_end_model')} may open were kept: each "
+            "counts as an inlet and an outlet."
+            if opened else ""
+        )
     )
     if not boundaries.inlet_nodes or not boundaries.outlet_nodes:
         raise ValueError(
@@ -5707,9 +5785,16 @@ def build_haemodynamic_model(
     model: HaemodynamicModel,
     schema: Schema | None = None,
 ):
-    """Write Poiseuille resistance from diameters already on the graph."""
+    """Write Poiseuille resistance from diameters already on the graph.
+
+    A haematocrit an earlier solve distributed to each vessel (a solved
+    network post processed, edited or loaded) is dropped first: a fixed
+    model would compute its resistances from it, and a distributed one would
+    start from it rather than from the one value a fresh run starts from."""
     if not settings["run_haemodynamics"]:
         return model
+    for *_edge, data in model.graph.edges(data=True):
+        data.pop(DISCHARGE_HAEMATOCRIT_ATTR, None)
     if schema is None:
         from haemolynx.pipeline.schema import default_schema
 
@@ -5722,6 +5807,7 @@ def build_haemodynamic_model(
         settings,
         schema,
         voxel_size_zyx=voxel_size_zyx,
+        stain=recorded_raw_image_stain(settings, model.graph),
     )
     _graph, resistance_results = apply_poiseuille_resistances(model.graph, haemo_config)
     model.results.update(resistance_results)
@@ -5746,15 +5832,16 @@ def _distributes_haematocrit(settings: dict) -> bool:
 
 
 def _flow_solver(settings: Mapping[str, Any]) -> str:
-    """``haemodynamics_solver``, dense when a hand-built settings dict has none."""
-    return settings.get("haemodynamics_solver") or haemodynamics.FLOW_SOLVER_DENSE
+    """``haemodynamics_solver``, sparse (its default) when a hand-built settings
+    dict has none."""
+    return settings.get("haemodynamics_solver") or haemodynamics.FLOW_SOLVER_SPARSE
 
 
 def _equivalent_resistance_solver(settings: Mapping[str, Any]) -> str:
-    """``equivalent_resistance_solver``, the eigendecomposition when unset."""
+    """``equivalent_resistance_solver``, sparse (its default) when unset."""
     return (
         settings.get("equivalent_resistance_solver")
-        or haemodynamics.EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION
+        or haemodynamics.EQUIVALENT_RESISTANCE_SPARSE
     )
 
 
@@ -5833,6 +5920,8 @@ def solve(
     G = model.graph
     resistance_node_pair = boundaries.resistance_node_pair
     solution = Solution()
+    if not settings["run_haemodynamics"]:
+        _clear_earlier_solve(G)
     distribute_hct = bool(
         settings["run_haemodynamics"] and _distributes_haematocrit(settings)
     )
@@ -5844,7 +5933,7 @@ def solve(
         # beside the law, basis and haematocrit the resistances record.
         G.graph["haematocrit_model"] = "distributed_iterative" if distribute_hct else "fixed"
     open_ends = (
-        _open_end_conditions(settings, G, flow_solver)
+        _open_end_conditions(settings, G)
         if settings["run_haemodynamics"] else haemodynamics.open_ends.OpenEndConditions()
     )
 
@@ -5858,6 +5947,11 @@ def solve(
                 settings["haematocrit_distribution_max_iterations"],
                 settings["haematocrit_distribution_tolerance"],
             )
+            # Which vessels hang behind dead ends, before the loop: each pass
+            # sets their flows to exactly 0 (iterate_flow_and_haematocrit).
+            graph.mark_flow_solved_edges(
+                G, settings["inlet_nodes"], settings["outlet_nodes"], open_ends.nodes
+            )
             if schema is None:
                 from haemolynx.pipeline.schema import default_schema
 
@@ -5867,6 +5961,7 @@ def solve(
             )
             haemo_config = _haemodynamics_apply_config(
                 settings, schema, voxel_size_zyx=voxel_size_zyx,
+                stain=recorded_raw_image_stain(settings, G),
             )
 
             def _recompute_resistances() -> None:
@@ -6032,6 +6127,36 @@ def solve(
     return solution
 
 
+#: What building the model and solving it write on a graph, besides
+#: :data:`haemolynx.graph.SOLVE_DERIVED_EDGE_ATTRIBUTES` and the flow states.
+_MODEL_EDGE_ATTRIBUTES = ("resistance", "conductance")
+_SOLVE_GRAPH_RECORDS = (
+    "viscosity_law",
+    "haematocrit",
+    "diameter_basis",
+    "haematocrit_model",
+    haemodynamics.open_ends.GRAPH_RECORD,
+)
+
+
+def _clear_earlier_solve(G: nx.MultiGraph) -> None:
+    """Take off *G* what an earlier model and solve left on it -- resistances,
+    flows, flow states, node pressures, the law and haematocrit they were
+    found with, the open ends' conditions -- so a network solved before and
+    not now (``run_haemodynamics`` turned off while a run waited at Post
+    processing) is exported as one never solved, not with the old flows."""
+    edge_names = (
+        *graph.SOLVE_DERIVED_EDGE_ATTRIBUTES, graph.FLOW_SOLVED, graph.FLOW_STATE, *_MODEL_EDGE_ATTRIBUTES,
+    )
+    for *_edge, data in G.edges(data=True):
+        for name in edge_names:
+            data.pop(name, None)
+    for _node, data in G.nodes(data=True):
+        data.pop("pressure", None)
+    for name in _SOLVE_GRAPH_RECORDS:
+        G.graph.pop(name, None)
+
+
 def _mark_capillaries_fed_from_open_ends(settings: dict, G: nx.MultiGraph, *, solved: bool) -> None:
     """Mark the capillaries an open end feeding the network through an image
     face reaches in fewer steps than any arteriole in the image does
@@ -6087,27 +6212,36 @@ def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes, open_ends=())
         )
 
 
-def _open_end_conditions(settings: dict, G: nx.MultiGraph, flow_solver: str):
+def _open_end_conditions(settings: dict, G: nx.MultiGraph):
     """The conditions ``open_end_model`` puts on the vessels leaving the
     image (:mod:`haemolynx.haemodynamics.open_ends`), kept on the graph so its
-    perturbations and sweeps solve with them too."""
+    perturbations and sweeps solve with them too. The estimate works on a
+    sparse matrix whatever the flow solver (a dense one was N x N only to be
+    converted), made only when there is an open end to estimate."""
     open_ends = haemodynamics.open_ends
     model = settings.get("open_end_model") or open_ends.CLOSED
     conductance = node_list = None
-    if model == open_ends.ESTIMATED:
-        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G, solver=flow_solver)
+    if model == open_ends.ESTIMATED and open_ends.open_end_candidates(
+        G, settings["inlet_nodes"], settings["outlet_nodes"]
+    ):
+        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
+            G, solver=haemodynamics.FLOW_SOLVER_SPARSE
+        )
+    # Unset is the default; 0 is a value (a shear weight of 0 estimates by
+    # pressure alone), so neither is read with `or`.
+    multiple = _plain_optional_float(settings.get("open_end_terminal_resistance_multiple"))
+    weight = _plain_optional_float(settings.get("open_end_estimate_shear_weight"))
     conditions = open_ends.open_end_conditions(
         model, G,
         inlet_nodes=settings["inlet_nodes"], outlet_nodes=settings["outlet_nodes"],
         inlet_p_bc=float(settings["inlet_p_bc"]), outlet_p_bc=float(settings["outlet_p_bc"]),
         conductance=conductance, node_list=node_list,
-        terminal_resistance_multiple=float(
-            settings.get("open_end_terminal_resistance_multiple")
-            or open_ends.DEFAULT_TERMINAL_RESISTANCE_MULTIPLE
+        terminal_resistance_multiple=(
+            open_ends.DEFAULT_TERMINAL_RESISTANCE_MULTIPLE if multiple is None else multiple
         ),
         pressure_target_pa=_plain_optional_float(settings.get("open_end_estimate_pressure_target_pa")),
         shear_target_pa=_plain_optional_float(settings.get("open_end_estimate_shear_target_pa")),
-        shear_weight=float(settings.get("open_end_estimate_shear_weight") or open_ends.DEFAULT_SHEAR_WEIGHT),
+        shear_weight=open_ends.DEFAULT_SHEAR_WEIGHT if weight is None else weight,
     )
     open_ends.keep_on_graph(G, conditions)
     return conditions
@@ -7559,6 +7693,7 @@ def run_perturbations(
         )
         haemo_config = _haemodynamics_apply_config(
             settings, schema, voxel_size_zyx=voxel_size_zyx,
+            stain=recorded_raw_image_stain(settings, baseline_graph),
         )
 
         def baseline_recompute() -> None:
@@ -8796,7 +8931,9 @@ def _run_stages(
     if stop_after == "build_haemodynamic_model":
         return model.graph
     with run.stage("solve"):
-        if _run_stage_body("solve", start_from):
+        # Off, solving only takes an earlier solve off a resumed network, so
+        # it is not exported with flows this run did not find.
+        if _run_stage_body("solve", start_from) or not settings["run_haemodynamics"]:
             solution = solve(settings, model, boundaries, schema)
         else:
             solution = _solution_from_graph(model.graph)

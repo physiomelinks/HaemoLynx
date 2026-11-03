@@ -1,9 +1,13 @@
 """Network resistance from Laplacian."""
 from __future__ import annotations
 
+import contextvars
 import logging
 import math
 import sys
+from contextlib import contextmanager
+from typing import Iterator
+
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
@@ -11,6 +15,26 @@ from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import splu
 
 logger = logging.getLogger(__name__)
+
+_REPEATED_PASS = contextvars.ContextVar("haemolynx_repeated_pass", default=False)
+
+
+@contextmanager
+def repeated_pass_logs_at_debug() -> Iterator[None]:
+    """Within it, what a resistance pass or a flow solve logs goes out at
+    DEBUG (:func:`pass_log_level`): the haematocrit loop repeats both every
+    pass, and the first of each already said the same at INFO or WARNING."""
+    token = _REPEATED_PASS.set(True)
+    try:
+        yield
+    finally:
+        _REPEATED_PASS.reset(token)
+
+
+def pass_log_level(level: int) -> int:
+    """*level*, or DEBUG inside :func:`repeated_pass_logs_at_debug`."""
+    return logging.DEBUG if _REPEATED_PASS.get() else level
+
 
 #: ``haemodynamics_solver``: how a flow solve holds and solves the network.
 #: ``dense`` is an N x N array and a dense solve -- about 42 N^2 bytes at its
@@ -546,7 +570,8 @@ def _warn_components_pinned_to_one_pressure(
                 pressures_by_label.setdefault(int(labels[idx]), set()).add(bc_idx_to_p[idx])
         for label, pressures in pressures_by_label.items():
             if len(pressures) == 1:
-                logger.warning(
+                logger.log(
+                    pass_log_level(logging.WARNING),
                     f"A conductive component of {int(np.sum(labels == label))} node(s) only "
                     f"reaches boundary nodes at {pressures.pop()} Pa; with no "
                     "pressure difference across it, its every flow solves to zero. "
@@ -564,7 +589,8 @@ def _warn_components_pinned_to_one_pressure(
             bc_idx_to_p[idx] for idx in np.nonzero(component)[0] if idx in bc_idx_to_p
         }
         if len(pressures) == 1:
-            logger.warning(
+            logger.log(
+                pass_log_level(logging.WARNING),
                 f"A conductive component of {int(component.sum())} node(s) only "
                 f"reaches boundary nodes at {pressures.pop()} Pa; with no "
                 "pressure difference across it, its every flow solves to zero. "
@@ -683,7 +709,8 @@ def solve_flow_from_conductance_matrix(
         conductance, known_idx
     )
     if stranded_conductive:
-        logger.warning(
+        logger.log(
+            pass_log_level(logging.WARNING),
             f"{stranded_conductive} node(s) carry conductances but have no "
             "conductive path to any boundary node; their pressure stays 0 "
             "and their edges carry zero flow."
@@ -695,7 +722,8 @@ def solve_flow_from_conductance_matrix(
     n_free = int(len(unknown_idx))
     alpha = 2.5e-9
     t_est = alpha * (max(n_free, 1) ** 3)
-    logger.info(
+    logger.log(
+        pass_log_level(logging.INFO),
         "[flow-solve] Runtime estimate (heuristic): "
         f"t_est = alpha * n_free^3 = {alpha:.2e} * {n_free}^3 = {t_est:.3f} s "
         f"(n={n_nodes}, n_free={n_free})"
@@ -762,14 +790,16 @@ def _solve_free_pressures_sparse(
         raise ValueError(_NOT_CONNECTED_MESSAGE)
     unknown_idx, stranded_conductive = reachable_unknown_node_indices(conductance, known_idx)
     if stranded_conductive:
-        logger.warning(
+        logger.log(
+            pass_log_level(logging.WARNING),
             f"{stranded_conductive} node(s) carry conductances but have no "
             "conductive path to any boundary node; their pressure stays 0 "
             "and their edges carry zero flow."
         )
     if pressure_differs:
         _warn_components_pinned_to_one_pressure(conductance, bc_idx_to_p)
-    logger.info(
+    logger.log(
+        pass_log_level(logging.INFO),
         f"[flow-solve] Sparse solve: n={conductance.shape[0]}, "
         f"n_free={len(unknown_idx)}, stored conductances={conductance.nnz}."
     )

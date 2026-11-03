@@ -774,19 +774,24 @@ def test_a_vessel_stopping_at_the_wall_is_drawn_on_and_bridged():
     assert thin[JOINED_AT_WALL_UM] == pytest.approx(13.0, abs=0.6)
 
 
-def test_a_thick_vessels_end_at_the_image_face_stays_when_a_vessel_joins_beside_it():
+@pytest.mark.parametrize("short_of_face_um", [0.0, 4.0, 6.0])
+def test_a_thick_vessels_end_at_the_image_face_stays_when_a_vessel_joins_beside_it(short_of_face_um):
     """Regression (E14.5, the wall join at 15 um): skeletonisation stops the
     tree short of the image face, and a vessel joins the thick centreline
     13 um in, so the thick vessel's stretch to the face is an edge of its own
     inside the region, off the tree. Met at that node by the joining
     vessel's stretch, it was dropped with it as one connector, and the
     arteriole's inlet at the face went with it. It is the thick vessel's own
-    end: kept, and the joining vessel still gets its one bridge."""
+    end: kept, and the joining vessel still gets its one bridge.
+
+    Regression too: an end within its lumen radius (6 um) of the face leaves
+    the image (``dead_ends.leaves_image``), but the split held the face to
+    2 um, and dropped one stopping 4 or 6 um short."""
     body = _tube((20.0, -5.0, 20.0), (20.0, 63.0, 20.0), RADIUS)
     lumen = body.copy()
     tree = _tube((20.0, 12.0, 20.0), (20.0, 63.0, 20.0), 0.5)
     _thin_vessel(lumen, (20, 13, 20), (20, 13, 63))
-    G = _graph(("F", "N", (20, 0, 20), (20, 13, 20)), ("N", "T1", (20, 13, 20), T1),
+    G = _graph(("F", "N", (20, short_of_face_um, 20), (20, 13, 20)), ("N", "T1", (20, 13, 20), T1),
                ("X", "N", (20, 13, 63), (20, 13, 20)))
 
     result = _split(G, lumen, body, tree)
@@ -794,7 +799,7 @@ def test_a_thick_vessels_end_at_the_image_face_stays_when_a_vessel_joins_beside_
     assert "F" in result and result.degree("F") == 1, "the thick vessel's end at the face stays"
     (face_edge,) = [d for a, b, d in result.edges(data=True) if "F" in (a, b)]
     assert not face_edge.get(IS_ZERO_RESISTANCE)
-    assert face_edge["length"] == pytest.approx(13.0, abs=0.6)
+    assert face_edge["length"] == pytest.approx(13.0 - short_of_face_um, abs=0.6)
     ((_u, _v, bridge),) = _bridges(result)
     assert bridge["length"] == pytest.approx(REACH, abs=1.0), "the joining vessel's one bridge, wall to centreline"
 
@@ -1619,3 +1624,106 @@ def _exact(G):
     nodes = sorted((repr(n), plain(d)) for n, d in G.nodes(data=True))
     edges = sorted((repr(u), repr(v), repr(k), plain(d)) for u, v, k, d in G.edges(keys=True, data=True))
     return nodes, edges
+
+
+def test_a_split_of_edited_vessels_leaves_a_bridge_made_before_alone():
+    """Regression: the removal of blind vessels beyond bridges ran over every
+    bridge in the graph, so post processing's split of one edited vessel
+    (``edges=``) took an older bridge's 12 um vessel 20 um away, and merged
+    the thick centreline where it had hung; every other edge is to stay."""
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 20), (20, 30, 41))
+    _thin_vessel(lumen, (20, 50, 20), (20, 50, 63))
+    G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "K", (20, 30, 20), (20, 50, 20)),
+               ("K", "T1", (20, 50, 20), T1), ("W", "TIP", (20, 30, 29), (20, 30, 41)))
+    G.add_edge("J", "W", voxels=_line((20, 30, 20), (20, 30, 29)), length=9.0, **{IS_ZERO_RESISTANCE: True})
+    G.add_node("X", pos=(20.0, 50.0, 63.0))
+    G.add_edge("X", "K", voxels=_line((20, 50, 63), (20, 50, 20)), length=43.0)
+
+    split = _split(G, lumen, body, tree, edges=[("X", "K", 0)])
+
+    for u, v in (("J", "W"), ("W", "TIP"), ("T0", "J"), ("J", "K")):
+        assert split.has_edge(u, v), (u, v)
+    assert len(_bridges(split)) == 2  # the old one, and the edited vessel's
+
+
+def test_a_vessel_loop_bridged_to_one_node_from_outside_the_lumen_stays():
+    """Regression: a vessel whose two ends were each one bridge to one node
+    was taken for a strand left in the thick lumen and deleted, though this
+    one, a 64 um capillary leaving the thick vessel and coming back 4 um
+    from where it left, runs 30 um out of it. A strand stays within twice
+    its longer bridge of the node; this does not."""
+    from haemolynx.graph.thick_vessel_junctions import remove_dangling_bridges
+
+    G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "T1", (20, 30, 20), T1),
+               ("A", "B", (20, 30, 29), (20, 30, 50), (20, 34, 50), (20, 34, 29)))
+    for end, at in (("A", (20, 30, 29)), ("B", (20, 34, 29))):
+        G.add_edge(end, "J", voxels=_line(at, (20, 30, 20)),
+                   length=float(np.linalg.norm(np.subtract(at, (20, 30, 20)))), **{IS_ZERO_RESISTANCE: True})
+
+    assert remove_dangling_bridges(G) == 0
+    assert G.has_edge("A", "B") and len(_bridges(G)) == 2
+
+
+def _reordered(G, seed):
+    """*G* with its nodes and edges added in a shuffled order, half its
+    edges' paths running the other way."""
+    import random
+
+    rng = random.Random(seed)
+    H = nx.MultiGraph()
+    nodes = list(G.nodes(data=True))
+    rng.shuffle(nodes)
+    for node, data in nodes:
+        H.add_node(node, **dict(data))
+    edges = list(G.edges(data=True))
+    rng.shuffle(edges)
+    for u, v, data in edges:
+        data = dict(data)
+        if rng.random() < 0.5:
+            data["voxels"], u, v = list(reversed(data["voxels"])), v, u
+        H.add_edge(u, v, **data)
+    return H
+
+
+def _drawn(G):
+    """Each edge as its path, read from its lower end, and whether it is a bridge."""
+    out = []
+    for _u, _v, data in G.edges(data=True):
+        path = np.round(np.asarray(data["voxels"], dtype=float), 3)
+        if tuple(path[-1]) < tuple(path[0]):
+            path = path[::-1]
+        out.append((tuple(map(tuple, path)), bool(data.get(IS_ZERO_RESISTANCE))))
+    return sorted(out)
+
+
+@pytest.mark.parametrize("case", ["side_by_side", "stopping"])
+def test_the_split_does_not_depend_on_the_order_of_the_graphs_edges(case):
+    """Regression: two bridges equally near their group's middle shared the
+    node of the first in edge order, and an extended thick end joined the
+    vessel ahead at whichever of two equally near path vertices came first
+    along the way the edge ran: the same network, held another way, came out
+    4 um or 1 um apart."""
+    G, lumen, body, tree = _side_by_side(4.0) if case == "side_by_side" else _stopping()
+    drawn = {
+        repr(_drawn(_split(_reordered(G, seed) if seed else G, lumen, body, tree, extend_thick_ends=True)))
+        for seed in range(5)
+    }
+    assert len(drawn) == 1
+
+
+@pytest.mark.parametrize("short_of_face_um", [2.5, 4.0])
+def test_a_vessel_beyond_a_bridge_stopping_short_of_where_its_mask_leaves_the_image_stays(short_of_face_um):
+    """Regression: the vessel beyond a bridge was blind unless its tip lay
+    within 2 um of a face, so one stopping a few microns short of the face
+    its segmented vessel runs on out through went with its bridge. Read as
+    the dead ends are (``dead_ends.leaves_image``), it leaves the image."""
+    lumen, body, tree = _thick((20.0, 0.0, 44.0), (20.0, 63.0, 44.0))
+    _thin_vessel(lumen, (20, 30, 44), (20, 30, 63))
+    tip = 63.0 - short_of_face_um
+    G = _graph(("T0", "J", (20, 2, 44), (20, 30, 44)), ("J", "T1", (20, 30, 44), (20, 61, 44)),
+               ("TIP", "J", (20, 30, tip), (20, 30, 44)))
+
+    split = _split(G, lumen, body, tree)
+
+    assert "TIP" in split and len(_bridges(split)) == 1

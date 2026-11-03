@@ -692,13 +692,17 @@ def test_preflight_advises_the_sparse_solvers_for_a_network_the_dense_ones_will_
         return [warning for warning in report.warnings if "of memory free now" in warning]
 
     monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 1000)
-    plain = _settings(template_run, tmp_path, synthetic_scale=2.0)
+    # The dense pair, which the defaults (sparse) never warn about.
+    dense = {"haemodynamics_solver": "dense", "equivalent_resistance_solver": "eigendecomposition"}
+    plain = _settings(template_run, tmp_path, synthetic_scale=2.0, **dense)
     nodes = planned_bed(load_template(template_run), synthetic_generation_options(plain)).nodes
     flow, eigen = memory(check_synthetic_template(plain))
     assert f"the {nodes:,} or so nodes this network is planned with" in flow
     assert "set haemodynamics_solver to sparse" in flow and "set equivalent_resistance_solver to sparse" in eigen
     # A surround's: the image run's nodes and its shell's, from the surround's check alone.
-    surround = _settings(image_run_with_open_ends, tmp_path, network_source="synthetic_surround", synthetic_scale=2.0)
+    surround = _settings(
+        image_run_with_open_ends, tmp_path, network_source="synthetic_surround", synthetic_scale=2.0, **dense
+    )
     image, boundaries = load_image_run(image_run_with_open_ends)
     plan, _joins = planned_surround_bed(
         image, load_template(image_run_with_open_ends), inlets=boundaries["inlet"], outlets=boundaries["outlet"],
@@ -710,7 +714,10 @@ def test_preflight_advises_the_sparse_solvers_for_a_network_the_dense_ones_will_
     # Only the dense solvers the run will use.
     sparse = {"haemodynamics_solver": "sparse", "equivalent_resistance_solver": "sparse"}
     assert memory(check_synthetic_template(_settings(template_run, tmp_path, **sparse))) == []
-    (only,) = memory(check_synthetic_template(_settings(template_run, tmp_path, do_equiv_resistance_calculation=False)))
+    assert memory(check_synthetic_template(_settings(template_run, tmp_path))) == []  # the defaults
+    (only,) = memory(check_synthetic_template(
+        _settings(template_run, tmp_path, do_equiv_resistance_calculation=False, **dense)
+    ))
     assert "haemodynamics_solver=dense" in only
     assert memory(check_synthetic_surround({**surround, "run_haemodynamics": False})) == []
     # Nor with the memory to spare.

@@ -906,6 +906,16 @@ def duplicates_existing_vessel(
     )
 
 
+def node_position_key(G: nx.Graph, node) -> tuple:
+    """*node*'s position, ``(z, y, x)``, as a sort key (its id after it):
+    what ties between nodes are broken by, so that the answer does not move
+    when a change elsewhere in the graph renumbers or reorders its nodes, as
+    the order of ids or of insertion does."""
+    pos = G.nodes[node].get("pos")
+    where = (np.inf,) * 3 if pos is None else tuple(float(v) for v in np.asarray(pos, dtype=float)[:3])
+    return (*where, str(node))
+
+
 def next_node_id(G: nx.MultiGraph, reserved: "set[Any]") -> int:
     """A numeric node id not already used by ``G`` or ``reserved``."""
     numeric = [
@@ -914,3 +924,40 @@ def next_node_id(G: nx.MultiGraph, reserved: "set[Any]") -> int:
         if isinstance(n, (int, np.integer))
     ]
     return (max(numeric) if numeric else -1) + 1
+
+def split_self_loops(G: nx.MultiGraph, *, min_length_um: float = 0.0) -> int:
+    """Split, in place, each self-loop of *G* at least *min_length_um* long
+    into two edges between its node and a new one at the point of its path
+    farthest from it: a ring that leaves a junction (or no junction) and
+    comes back to it, as skan traces one. Kept a self-loop, no rule judged
+    it -- the collapse deleted every one, a ring round tissue as surely as a
+    Lee ring inside one lumen -- while two edges between the same two nodes
+    are what degree-2 merging's duplicate test and the loop rules
+    (``lumen_loops``) read. A self-loop whose path has no point off its node
+    is left as it is, and so is every self-loop of a graph that cannot hold
+    two edges between two nodes. Returns how many were split."""
+    if not G.is_multigraph():
+        return 0
+    split = 0
+    for node, _node, key, data in list(nx.selfloop_edges(G, keys=True, data=True)):
+        voxels = np.asarray(data.get("voxels") or [], dtype=float).reshape(-1, 3)
+        if len(voxels) < 3 or G.nodes[node].get("pos") is None:
+            continue
+        length = data.get("length")
+        length = float(calculate_path_length(voxels.tolist()) if length is None else length)
+        if length < float(min_length_um):
+            continue
+        reach = np.linalg.norm(voxels - np.asarray(G.nodes[node]["pos"], dtype=float), axis=1)
+        far = int(np.argmax(reach))
+        if far in (0, len(voxels) - 1) or reach[far] <= 0:
+            continue
+        new = next_node_id(G, set())
+        G.add_node(new, pos=voxels[far].copy())
+        G.remove_edge(node, node, key)
+        for piece in (voxels[: far + 1], voxels[far:][::-1]):
+            half = dict(data)
+            half["voxels"] = piece.tolist()
+            half["length"] = float(calculate_path_length(half["voxels"]))
+            G.add_edge(node, new, **half)
+        split += 1
+    return split

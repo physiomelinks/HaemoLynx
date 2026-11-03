@@ -534,12 +534,17 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
 def find_unsolved_pieces(G: nx.MultiGraph, inlets: Iterable[Any], outlets: Iterable[Any]) -> list[ReviewItem]:
     """The vessels no inlet-to-outlet path runs along, piece by piece
     (:func:`~haemolynx.graph.connectivity.unsolved_pieces`), longest first: a
-    long one is more often a missed connection than debris."""
+    long one is more often a missed connection than debris. The open ends
+    the solve gave a condition count as inlets and outlets, as its flow
+    marks count them."""
+    from haemolynx.haemodynamics.open_ends import conditions_on_graph
+
     from .connectivity import unsolved_pieces
 
+    opened = conditions_on_graph(G).nodes
     pos = _node_pos(G)
     items = []
-    for piece in unsolved_pieces(G, list(inlets), list(outlets)):
+    for piece in unsolved_pieces(G, [*inlets, *opened], [*outlets, *opened]):
         points = _points(G, piece.edges, pos)
         where = (
             f"hangs off node(s) {', '.join(str(n) for n in piece.attached_at)}"
@@ -713,14 +718,14 @@ def _face_readers(
     (:func:`haemolynx.graph.dead_ends.node_leaves_image`); any other node
     when it sits on a face. *image_face_margin_um*, when given, replaces both
     with a fixed distance."""
-    from .dead_ends import graph_image_extent_um, leaves_image, node_leaves_image
+    from .dead_ends import face_distance, graph_image_extent_um, leaves_image, node_leaves_image
 
     extent = np.asarray(extent_um, dtype=float) if extent_um is not None else graph_image_extent_um(G)
 
     def depth(node) -> float | None:
         if extent is None or node not in pos:
             return None
-        return float(np.min(np.minimum(pos[node], extent - pos[node])))
+        return face_distance(pos[node], extent)[0]
 
     def leaves(node) -> bool | None:
         if image_face_margin_um is not None:

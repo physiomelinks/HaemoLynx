@@ -419,9 +419,9 @@ boundary_assignment:
 # Solver and output
 # ------------------------------------------------------------------------
 solver_and_output:
-  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   inlet_p_bc: 1000.0
-  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   outlet_p_bc: 500.0
   # Write IDE plot files (matplotlib PNG and Plotly HTML, including final_graph_3d.html and the skeleton's projections) into base_plot_dir/{image stem}. Off skips all of that production
   visualize_results: true
@@ -528,7 +528,7 @@ pipeline_stages:
   trace_on_dead_ends: false
   # Join a dead end pointing at another vessel's side, within facing_dead_end_max_gap_um across one stretch of background, to that vessel -- unless that vessel is one of its neighbours in the network (one junction away or closer). Off until a marked grid calibrates it (PLAN_dead_ends.md, G3)  [needs do_graph_building and bridge_require_mask_support]
   join_dead_ends_to_vessel_sides: false
-  # Which short stubs the prune keeps at an image face. threshold: a tip within its own pruning threshold of a face (as before). leaves_image: only a dead end that leaves the image (it touches a face, or the segmented vessel runs on to one), so a spur near a face is judged like any other  [one of: threshold, leaves_image; needs do_graph_building]
+  # Which short stubs the prune keeps at an image face. threshold: a tip within its own pruning threshold of a face (as before). leaves_image: only a dead end that leaves the image (it touches a face, or the segmented vessel runs on to one), so a spur near a face is judged like any other. leaves_image reads the segmented mask: without it, or with bridge_require_mask_support off, the prune keeps by threshold  [one of: threshold, leaves_image; needs do_graph_building and bridge_require_mask_support]
   stub_face_protection: threshold
   # Collapse clusters of nodes lying within this distance of each other  [um; range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
@@ -800,7 +800,7 @@ diameters_and_pericytes:
   haematocrit_junction_rule: no_separation
   # Length of each connector split_junctions adds. 0 makes each junction's connectors as long as its vessels are wide (their mean diameter, which is also the connector's diameter): a four-way node is usually two bifurcations graph building merged, about that far apart, and a fixed length would re-plumb a capillary bed while falling inside an arteriole's own junction. The Post processing tab's split defaults to 15  [um; range 0.0..; needs run_haemodynamics and haematocrit_model = distributed_iterative and haematocrit_junction_rule = split_junctions]
   haematocrit_split_connector_length_um: 0.0
-  # Give up on haematocrit distribution convergence after this many flow re-solves. A daughter drawing a flow share just above the plasma-skimming threshold swings between too many red cells and too few on alternate passes; each pass's step is damped (0.8 times smaller every five passes, as Secomb's NetFlow does) so the swing dies out, and a strongly asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles in about 10 iterations within the default tolerance below  [range 1..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
+  # Give up on haematocrit distribution convergence after this many flow re-solves. A daughter drawing a flow share just above the plasma-skimming threshold swings between too many red cells and too few on alternate passes; each pass's step is damped (0.8 times smaller every five passes, as Secomb's NetFlow does) so the swing dies out, and a strongly asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles in about 10 iterations within the default tolerance below. At least 2: the first pass has nothing to compare with  [range 2..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
   haematocrit_distribution_max_iterations: 20
   # Largest per-edge haematocrit change between iterations that counts as converged  [fraction; range 0.0..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
   haematocrit_distribution_tolerance: 0.01
@@ -871,7 +871,7 @@ diameters_and_pericytes:
 # Network handling
 # ------------------------------------------------------------------------
 network_handling:
-  # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept, and joins the two vessels left where a removed branch hung into one vessel, measured afresh with the run's diameter methods, with branch orders assigned again (a boundary node, a thick-vessel bridge and two vessels in different vessel masks stay apart)  [one of: leave_unsolved, remove_disconnected]
+  # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. A vessel leaving the image that open_end_model may open counts as an inlet and an outlet, so the vessels leading to one are on such a path. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept, and joins the two vessels left where a removed branch hung into one vessel, measured afresh with the run's diameter methods, with branch orders assigned again (a boundary node, a thick-vessel bridge and two vessels in different vessel masks stay apart)  [one of: leave_unsolved, remove_disconnected]
   boundary_handling: leave_unsolved
   # The boundary condition on vessels that leave the image (dead ends whose vessel runs out through an image face) and are not inlets or outlets. closed: no blood leaves through them, so every vessel that only leads to them carries no flow. terminal_resistance: each drains to the outlet pressure through open_end_terminal_resistance_multiple times its own vessel's resistance. outlet: each is held at the outlet pressure (biased towards draining; for comparison). estimated (the default): their pressures are chosen so the network's pressures and wall shear stresses stay closest to target values (Fry et al. 2012), the targets taken from the closed solve; open ends may feed the network as well as drain it. Only open ends in a piece of the network with an inlet or outlet are opened. Perturbations and sweeps keep the baseline's conditions, and results under different models are not comparable  [one of: closed, terminal_resistance, outlet, estimated; needs run_haemodynamics]
   open_end_model: closed

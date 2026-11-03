@@ -80,8 +80,18 @@ from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import pdist, squareform
 
-from .collapse import move_node_with_its_edges
-from .direction_aware_collapse import _rewire_edges_deduplicating
+from ._helpers import node_position_key
+from .collapse import (
+    MAX_ABSORBED_EDGE_MULTIPLE,
+    _pick_representative,
+    move_node_with_its_edges,
+    settle_self_loops,
+)
+from .direction_aware_collapse import (
+    _merge_absorbs_a_vessel,
+    _merge_stays_within,
+    _rewire_edges_deduplicating,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +212,11 @@ def collapse_node_clusters_persistence(
     is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     total_merged = 0
     search_radius = distance_threshold * search_radius_multiple
+    # Every original position a node has absorbed, for the extent bound, and
+    # the longest vessel a merge may absorb: the two guards the other
+    # methods hold their clusters to.
+    origins: dict = {}
+    max_absorbed = MAX_ABSORBED_EDGE_MULTIPLE * float(distance_threshold)
 
     for iteration in range(max_iterations):
         nodes_with_pos = [
@@ -240,6 +255,7 @@ def collapse_node_clusters_persistence(
             accept_within = distance_threshold if cutoff is None else cutoff
 
             parent = list(range(len(local_ids)))
+            members = {k: {local_ids[k]} for k in range(len(local_ids))}
 
             def find(x: int) -> int:
                 while parent[x] != x:
@@ -247,26 +263,48 @@ def collapse_node_clusters_persistence(
                     x = parent[x]
                 return x
 
-            for i, j, weight in mst_edges:
+            def origin_points(group) -> np.ndarray:
+                return np.vstack([
+                    origins.get(n, np.asarray(G.nodes[n]["pos"], dtype=float)[None, :]) for n in group
+                ])
+
+            # Shortest first, ties in position order. Below the gap, a merge
+            # is still refused that would move a node further than the
+            # collapse distance, or absorb a vessel longer than the others
+            # absorb: with no gap to cut at, single linkage chained a run of
+            # junctions 4 um apart into one node, and deleted the 60 um arc
+            # of a loop whose two ends were close.
+            position = [node_position_key(G, n) for n in local_ids]
+            for i, j, weight in sorted(
+                mst_edges, key=lambda e: (e[2], min(position[e[0]], position[e[1]]), max(position[e[0]], position[e[1]]))
+            ):
                 if weight > accept_within:
                     continue
                 root_i, root_j = find(i), find(j)
-                if root_i != root_j:
-                    parent[root_j] = root_i
+                if root_i == root_j:
+                    continue
+                if not _merge_stays_within(
+                    origin_points(members[root_i] | members[root_j]), distance_threshold
+                ) or _merge_absorbs_a_vessel(G, members[root_i], members[root_j], max_absorbed):
+                    continue
+                parent[root_j] = root_i
+                members[root_i] |= members.pop(root_j)
 
-            groups: dict[int, list] = {}
-            for local_index, node_id in enumerate(local_ids):
-                groups.setdefault(find(local_index), []).append(node_id)
+            groups = sorted(
+                (sorted(group, key=lambda n: node_position_key(G, n)) for group in members.values()),
+                key=lambda group: node_position_key(G, group[0]),
+            )
 
-            for group in groups.values():
+            for group in groups:
                 if len(group) < 2:
                     continue
                 group = [n for n in group if G.has_node(n)]
                 if len(group) < 2:
                     continue
 
-                rep = max(group, key=lambda n: (G.degree(n), -n))
+                rep = _pick_representative(G, group)
                 others = [n for n in group if n != rep]
+                origins[rep] = origin_points(group)
 
                 if debug:
                     logger.info(
@@ -311,17 +349,7 @@ def collapse_node_clusters_persistence(
         if merged_this_iter == 0:
             break
 
-    self_loops = list(nx.selfloop_edges(G, keys=True)) if is_multi else [
-        (u, v) for u, v in nx.selfloop_edges(G)
-    ]
-    if self_loops:
-        if is_multi:
-            for u, v, k in self_loops:
-                G.remove_edge(u, v, key=k)
-        else:
-            G.remove_edges_from(self_loops)
-        if debug:
-            logger.info("Removed %d self-loops after collapsing", len(self_loops))
+    settle_self_loops(G, distance_threshold, debug)
 
     if debug or total_merged > 0:
         logger.info(

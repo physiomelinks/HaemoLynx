@@ -53,6 +53,7 @@ import numpy as np
 from .resistance import (
     FLOW_SOLVER_DENSE,
     build_conductance_matrix_from_graph,
+    repeated_pass_logs_at_debug,
     set_edge_flows,
     solve_flow_from_conductance_matrix,
 )
@@ -86,7 +87,8 @@ JUNCTION_RULES: tuple[str, ...] = (
 
 #: Below this |flow_signed|, an edge is treated as carrying no RBC transport
 #: (direction is undefined and haematocrit cannot meaningfully propagate
-#: through it) rather than as a genuine bifurcation branch.
+#: through it) rather than as a genuine bifurcation branch. Flows behind dead
+#: ends are exactly 0 already (:func:`iterate_flow_and_haematocrit`).
 _FLOW_EPSILON = 1e-30
 
 #: Under-relaxation of each pass's haematocrit update in
@@ -510,6 +512,14 @@ def iterate_flow_and_haematocrit(
     takes them. An open end feeding the network has no inflow along a vessel,
     so the distribution seeds it at *inlet_haematocrit*, as any source.
 
+    Every solve sets the flows behind dead ends to exactly 0
+    (:func:`haemolynx.graph.zero_flows_behind_dead_ends`, by the flow states
+    the caller marked on *G*: the solve stage marks them before the loop, a
+    perturbation's or sweep's copy carries the baseline's). Left as the
+    pressure solve gives them -- rounding, up to about 1e-20 m^3/s either
+    way -- a blind stub at a bifurcation counted as a third outflow, and the
+    junction was mixed rather than divided by the phase-separation law.
+
     Returns a dict with ``pressure``, ``node_list`` (matching
     :func:`~haemolynx.haemodynamics.resistance.solve_flow_from_conductance_matrix`'s
     own return shape), ``node_to_idx``, ``conductance_matrix`` (the matrix the
@@ -520,7 +530,8 @@ def iterate_flow_and_haematocrit(
     diagnostic's ``dead_edges``/``compound_junctions``/
     ``non_bifurcation_junctions``/``unresolved_edges``.
     """
-    max_iterations = max(1, int(max_iterations))
+    # The first pass has nothing to compare with, so one alone never converges.
+    max_iterations = max(2, int(max_iterations))
     tolerance = float(tolerance)
     previous: dict[tuple, float] | None = None
     relaxation = 1.0
@@ -548,10 +559,13 @@ def iterate_flow_and_haematocrit(
             solver=solver,
         )
 
+    from haemolynx.graph.prune import zero_flows_behind_dead_ends
+
     from .open_ends import augment
 
     def solve_and_set(conductance) -> dict[str, Any]:
-        """Solve with the open ends' ghosts, and keep the graph's own nodes."""
+        """Solve with the open ends' ghosts, keep the graph's own nodes, and
+        set the flows behind dead ends to exactly 0."""
         matrix, names, index, extra_in, extra_out = augment(
             conductance, node_list, open_ends, node_to_idx=node_to_idx
         )
@@ -566,11 +580,17 @@ def iterate_flow_and_haematocrit(
         )
         pressure = solved["pressure"][: len(node_list)]
         set_edge_flows(G, node_list, pressure, node_to_idx=node_to_idx)
+        zero_flows_behind_dead_ends(G)
         return {"node_list": node_list, "pressure": pressure}
 
     for iteration in range(1, max_iterations + 1):
         conductance, node_list = build_matrix()
-        flow = solve_and_set(conductance)
+        if iteration == 1:
+            flow = solve_and_set(conductance)
+        else:
+            # What the first solve logged, every later one would log again.
+            with repeated_pass_logs_at_debug():
+                flow = solve_and_set(conductance)
         diagnostics = distribute_discharge_haematocrit(
             G, inlet_haematocrit=inlet_haematocrit, junction_rule=junction_rule,
         )
@@ -601,13 +621,15 @@ def iterate_flow_and_haematocrit(
         # discharge_haematocrit just distributed, on the converging (or
         # final) pass as much as any other. See this function's own
         # docstring for what stays very slightly stale instead.
-        recompute_resistances()
+        # The model built before the loop logged the same resistances.
+        with repeated_pass_logs_at_debug():
+            recompute_resistances()
 
         if has_converged:
             converged = True
             break
 
-    if not converged and max_iterations > 1:
+    if not converged:
         logger.warning(
             "[haematocrit-distribution] did not converge within %d "
             "iteration(s); largest remaining per-edge change was %.4g "
@@ -618,7 +640,8 @@ def iterate_flow_and_haematocrit(
 
     if final_solve:
         conductance, node_list = build_matrix()
-        flow = solve_and_set(conductance)
+        with repeated_pass_logs_at_debug():
+            flow = solve_and_set(conductance)
 
     return {
         "pressure": flow["pressure"],
@@ -633,6 +656,6 @@ def iterate_flow_and_haematocrit(
         "conductance_matrix": conductance,
         "converged": converged,
         "iterations": iteration,
-        "max_delta": 0.0 if max_delta == float("inf") else max_delta,
+        "max_delta": max_delta,
         **diagnostics,
     }

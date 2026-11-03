@@ -758,7 +758,7 @@ def build_graph_from_skeleton(
     prune_stubs = cleanup.prune
     if debug and mask_support is not None:
         step_callback = _with_lumen_artefact_report(
-            step_callback, mask_support, float(min_stub_length_radius_multiple or 3.0)
+            step_callback, mask_support, float(min_stub_length_radius_multiple or 0.0)
         )
 
     logger.info("Building skan Skeleton object...")

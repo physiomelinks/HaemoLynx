@@ -968,7 +968,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   re-judges boundary nodes and dead ends at the touched nodes, assigns branch orders over the whole
   network, then `solve_post_processed`. `apply_network_handling(settings, model, boundaries, network)`
   is the Haemodynamics tab's "Network handling": `boundary_handling` acts on every vessel no
-  inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`) — `leave_unsolved` (default)
+  inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`; an open end `open_end_model`
+  may open counts as both, `open_ends.open_ends_in_effect`) — `leave_unsolved` (default)
   marks them `FLOW_SOLVED=False`, `remove_disconnected` deletes them and joins the two vessels left
   where a branch hung (`graph.merge_pass_through`; not at boundary nodes, a bridge, or vessels whose
   mask tags differ), assigning branch orders again and measuring the joined vessels as post
@@ -1050,9 +1051,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   more solve (`final_solve=True`), so a vessel's flow is its drop over its reported resistance; a
   caller that re-solves itself passes `final_solve=False`.
 - **`haemodynamics/resistance.py`** — the flow solve and the two-point resistance.
-  `haemodynamics_solver` (`dense` default, or `sparse`) is how *every* flow solve holds the network
+  `haemodynamics_solver` (`sparse` default, or `dense`) is how *every* flow solve holds the network
   (`build_conductance_matrix_from_graph(solver=)`); `equivalent_resistance_solver`
-  (`eigendecomposition` default, or `sparse`, `inf` between unconnected nodes). A dense solver is
+  (`sparse` default, `inf` between unconnected nodes, or `eigendecomposition`). A dense solver is
   warned about when its estimate passes half the free memory (`warn_about_dense_solver_memory`,
   from `build_network` and `solve`), and a synthetic network's or surround's by preflight before
   it is drawn, on the nodes it is planned with (`generate.BedPlan.nodes`,

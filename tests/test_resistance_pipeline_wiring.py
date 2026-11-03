@@ -364,3 +364,30 @@ def test_preflight_requires_a_cached_graph_when_graph_building_is_off(pipeline, 
     )
     report = preflight(settings, pipeline.SCHEMA)
     assert any("do_graph_building" in message for message in report.errors)
+
+
+def test_preflight_looks_for_the_cached_graph_the_run_loads_with_ilastik_on_and_no_raw_image(tmp_path):
+    """Regression: with use_ilastik_segmentation on and no raw image set,
+    ilastik segments nothing and the run loads ``{input stem}_graph.pkl``,
+    but preflight looked for ``input_graph.pkl``. With a raw image it is
+    ilastik's output's: ``{raw stem}_segmented_graph.pkl``."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.checks import check_cached_artefacts
+
+    out = tmp_path / "outputs"
+    out.mkdir()
+    (out / "vessels_graph.pkl").write_bytes(b"x")
+    values = {
+        **default_schema().defaults(),
+        "input_path": tmp_path / "vessels.tif",
+        "output_dir": out,
+        "do_graph_building": False,
+        "use_ilastik_segmentation": True,
+        "raw_image_path": None,
+    }
+    assert check_cached_artefacts(values).ok
+
+    values["raw_image_path"] = tmp_path / "stack.tif"
+    report = check_cached_artefacts(values)
+    assert not report.ok
+    assert any("stack_segmented_graph.pkl" in message for message in report.errors)

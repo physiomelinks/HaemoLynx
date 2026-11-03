@@ -26,6 +26,7 @@ from haemolynx.graph.boundaries import (
 from haemolynx.graph.vessel_size_classes import check_size_thresholds, size_class_range
 from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
 from haemolynx.haemodynamics.viscosity import run_diameter_basis
+from haemolynx.haemodynamics.open_ends import ESTIMATED, TERMINAL_RESISTANCE
 from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
@@ -674,6 +675,40 @@ def check_thick_vessel_restriction_prerequisites(
         report.add_error(
             f"skeleton_thick_vessel_restrict_to_mask={choice!r} requires "
             f"{', '.join(missing)} to also be on."
+        )
+    return report
+
+
+def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
+    """The Haemodynamics tab's values the solve would refuse, or that leave it
+    nothing to do: an open-end value its model cannot use, and boundary
+    pressures that drive no flow or drive it from the outlets."""
+    report = CheckReport()
+    if not settings.get("run_haemodynamics"):
+        return report
+    model = settings.get("open_end_model")
+    multiple = settings.get("open_end_terminal_resistance_multiple")
+    if model == TERMINAL_RESISTANCE and multiple is not None and not float(multiple) > 0:
+        report.add_error(
+            f"open_end_terminal_resistance_multiple is {multiple}: each open end drains through "
+            "that many times its own vessel's resistance, so it must be above 0 "
+            "(open_end_model=outlet holds the open ends at the outlet pressure)."
+        )
+    target = settings.get("open_end_estimate_shear_target_pa")
+    if model == ESTIMATED and target is not None and not float(target) > 0:
+        report.add_error(
+            f"open_end_estimate_shear_target_pa is {target}: the estimate scales its shear term "
+            "by it, so it must be above 0. Leave it unset for the closed solve's median."
+        )
+    inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
+    if inlet is not None and outlet is not None and float(inlet) <= float(outlet):
+        report.add_warning(
+            f"inlet_p_bc ({inlet} Pa) is not above outlet_p_bc ({outlet} Pa): "
+            + (
+                "no pressure difference drives any flow."
+                if float(inlet) == float(outlet)
+                else "blood enters at the outlets and leaves at the inlets, against the branch orders."
+            )
         )
     return report
 
@@ -1454,6 +1489,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_branch_order_steps(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
+    report.extend(check_haemodynamics(settings))
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
     report.extend(check_raw_image(settings))

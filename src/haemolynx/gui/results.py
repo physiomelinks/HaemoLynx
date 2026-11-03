@@ -2330,7 +2330,12 @@ class ResultLayers:
                 f"Network resistance (pressure drop / total inflow) "
                 f"{float(network):.4e} Pa.s/m^3."
             )
-        note = " ".join(parts) if parts else "Solved."
+        if parts:
+            note = " ".join(parts)
+        elif pressure is None:
+            note = "Not solved: haemodynamics are off."
+        else:
+            note = "Solved."
         # Network handling may have removed vessels since Diameters drew their
         # lines, and Post processing (which draws through here) edits them.
         layers.extend(self._fwhm_line_layers())

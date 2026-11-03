@@ -692,6 +692,15 @@ def test_a_solve_with_neither_resistance_just_says_solved():
     assert group.note == "Solved."
 
 
+def test_a_run_without_haemodynamics_does_not_say_solved():
+    """Regression: with run_haemodynamics off the solve stage hands on an empty
+    Solution, and the Haemodynamics tab's note still read "Solved."."""
+    from haemolynx.pipeline.stages import Solution
+
+    group = built().stage_finished("solve", Solution())
+    assert group.note == "Not solved: haemodynamics are off."
+
+
 # --- pericytes ---------------------------------------------------------------
 
 

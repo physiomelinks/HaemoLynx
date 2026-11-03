@@ -3170,6 +3170,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="outlet_p_bc",
@@ -3179,6 +3180,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="visualize_results",
@@ -3345,7 +3347,7 @@ SCHEMA = Schema(
         Setting(
             name="haemodynamics_solver",
             kind="choice",
-            default="dense",
+            default="sparse",
             choices=["dense", "sparse"],
             help=(
                 "How every flow solve holds and solves the network -- the "
@@ -3364,7 +3366,7 @@ SCHEMA = Schema(
         Setting(
             name="equivalent_resistance_solver",
             kind="choice",
-            default="eigendecomposition",
+            default="sparse",
             choices=["eigendecomposition", "sparse"],
             help=(
                 "How the two-point equivalent resistance (first inlet to first "
@@ -3907,11 +3909,13 @@ SCHEMA = Schema(
                 "tip within its own pruning threshold of a face (as before). "
                 "leaves_image: only a dead end that leaves the image (it touches a "
                 "face, or the segmented vessel runs on to one), so a spur near a "
-                "face is judged like any other"
+                "face is judged like any other. leaves_image reads the segmented "
+                "mask: without it, or with bridge_require_mask_support off, the "
+                "prune keeps by threshold"
             ),
             section=_PIPELINE_STAGES,
             choices=("threshold", "leaves_image"),
-            requires=("do_graph_building",),
+            requires=("do_graph_building", "bridge_require_mask_support"),
             advanced=True,
         ),
         Setting(
@@ -5690,10 +5694,13 @@ SCHEMA = Schema(
                 "step is damped (0.8 times smaller every five passes, as "
                 "Secomb's NetFlow does) so the swing dies out, and a strongly "
                 "asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles "
-                "in about 10 iterations within the default tolerance below"
+                "in about 10 iterations within the default tolerance below. At "
+                "least 2: the first pass has nothing to compare with"
             ),
             section=_DIAMETERS_AND_PERICYTES,
-            minimum=1,
+            minimum=2,
+            # One pass could never converge; a config or run saying 1 runs 2.
+            value_aliases={1: 2},
             requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
             advanced=True,
         ),
@@ -5723,7 +5730,9 @@ SCHEMA = Schema(
                 "without both an inlet and an outlet, and every branch, tree or "
                 "loop that leaves a perfused vessel and reaches no outlet (a dead "
                 "end). No pressure difference drives a flow through one, so the "
-                "solve has no answer for it. leave_unsolved keeps them, marked "
+                "solve has no answer for it. A vessel leaving the image that "
+                "open_end_model may open counts as an inlet and an outlet, so the "
+                "vessels leading to one are on such a path. leave_unsolved keeps them, marked "
                 "unsolved: the viewer draws them light grey, leaves them out of "
                 "every flow-based colouring and names each vessel Solved or "
                 "Unsolved on hover. remove_disconnected deletes them, so only "

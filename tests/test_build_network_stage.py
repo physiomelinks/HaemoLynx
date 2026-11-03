@@ -149,7 +149,11 @@ def test_the_built_network_warns_when_its_dense_solve_will_not_fit(
     from haemolynx.haemodynamics import resistance
 
     monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 1000)
-    settings = _settings(tmp_path, run_haemodynamics=run_haemodynamics, visualize_results=False)
+    # The dense pair: the defaults (sparse) have nothing to warn about.
+    settings = _settings(
+        tmp_path, run_haemodynamics=run_haemodynamics, visualize_results=False,
+        haemodynamics_solver="dense", equivalent_resistance_solver="eigendecomposition",
+    )
     with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
         network = build_network(settings, _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
 
@@ -706,3 +710,81 @@ def test_a_low_ram_build_keeps_no_lumen_artefact_counts(tmp_path):
         _volume(tmp_path, LONG_CROSS, mask), SCHEMA,
     )
     assert LUMEN_ARTEFACT_COUNTS not in network.graph.graph
+
+
+def _capped_cross(size: int = 60, start: int = 18, stop: int = 42, half_width: int = 4):
+    """:func:`_cross`'s 12 um arms in square tubes 9 um wide that stop where
+    the arms do, so no tip has mask running on past it: each arm is shorter
+    than three radii of the vessel at the crossing, longer than 2 um."""
+    skeleton = _cross(size, start, stop)
+    centre, r = size // 2, half_width
+    mask = np.zeros(skeleton.shape, dtype=np.uint8)
+    mask[start:stop, centre - r:centre + r + 1, centre - r:centre + r + 1] = 1
+    mask[centre - r:centre + r + 1, centre - r:centre + r + 1, start:stop] = 1
+    return skeleton, mask
+
+
+def test_a_stub_radius_multiple_of_0_calls_no_dead_end_short_by_its_radius(tmp_path):
+    """Regression: min_stub_length_radius_multiple 0 judges every stub by
+    min_stub_length alone, so the prune keeps these arms, but the dead-end
+    kinds read 0 as 3 and called every arm an artefact the prune would take."""
+    from haemolynx.graph.dead_ends import ARTEFACT, DEAD_END_KIND
+
+    skeleton, mask = _capped_cross()
+    settings = _settings(tmp_path, min_stub_length=2.0, min_stub_length_radius_multiple=0.0)
+    G = build_network(settings, _volume(tmp_path, skeleton, mask), SCHEMA).graph
+
+    tips = [n for n in G if G.degree(n) == 1]
+    assert len(tips) == 4
+    assert all(G.nodes[n][DEAD_END_KIND] != ARTEFACT for n in tips)
+    # At 3 radii the prune takes all four, and nothing is left to mark.
+    with pytest.raises(ValueError, match="the last went at the prune_vascular_stubs step"):
+        build_network(
+            _settings(tmp_path, min_stub_length=2.0, min_stub_length_radius_multiple=3.0),
+            _volume(tmp_path, skeleton, mask), SCHEMA,
+        )
+
+
+def test_a_saved_graph_is_refused_on_an_image_of_another_size(tmp_path):
+    """Regression: with do_graph_building off, a graph saved from a larger
+    image (another crop box or downsample) was loaded onto a smaller one,
+    nodes beyond its faces and the old image's extent kept, as the saved
+    skeleton never is."""
+    mask = _mask_under(LONG_CROSS)
+    build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, mask), SCHEMA)
+
+    loaded = build_network(
+        _settings(tmp_path, do_graph_building=False), _volume(tmp_path, LONG_CROSS, mask), SCHEMA
+    )
+    assert loaded.graph.number_of_edges() == 4
+
+    smaller = (slice(0, 30),) * 3
+    with pytest.raises(ValueError, match="does not fit this run's image") as raised:
+        build_network(
+            _settings(tmp_path, do_graph_building=False),
+            _volume(tmp_path, LONG_CROSS[smaller], mask[smaller]),
+            SCHEMA,
+        )
+    assert "39 x 39 x 39 um" in str(raised.value)
+    assert "do_graph_building back on" in str(raised.value)
+
+
+def test_a_saved_graph_is_refused_in_another_crop_box_of_the_same_size(tmp_path):
+    """The box a graph was built in is saved with it: one the same size cut
+    elsewhere from the image, or none, is not where its nodes lie."""
+    from haemolynx.io.crop import CropBox
+
+    mask = _mask_under(LONG_CROSS)
+    whole = (60, 60, 60)
+
+    def cropped(start):
+        volume = _volume(tmp_path, LONG_CROSS, mask)
+        volume.crop = CropBox(start, tuple(a + 40 for a in start), whole)
+        return volume
+
+    build_network(_settings(tmp_path), cropped((0, 0, 0)), SCHEMA)
+    assert build_network(_settings(tmp_path, do_graph_building=False), cropped((0, 0, 0)), SCHEMA)
+
+    for volume in (cropped((10, 0, 0)), _volume(tmp_path, LONG_CROSS, mask)):
+        with pytest.raises(ValueError, match="does not fit this run's image"):
+            build_network(_settings(tmp_path, do_graph_building=False), volume, SCHEMA)

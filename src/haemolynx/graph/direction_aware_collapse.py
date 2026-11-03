@@ -59,8 +59,10 @@ from .collapse import (
     MAX_ABSORBED_EDGE_MULTIPLE,
     _edge_path_length,
     _patch_voxel_endpoint,
+    _pick_representative,
     _remeasure_length,
     move_node_with_its_edges,
+    settle_self_loops,
 )
 
 logger = logging.getLogger(__name__)
@@ -441,7 +443,7 @@ def collapse_node_clusters_direction_aware(
             if len(group) < 2:
                 continue
 
-            rep = max(group, key=lambda n: (G.degree(n), -n))
+            rep = _pick_representative(G, group)
             others = [n for n in group if n != rep]
 
             if debug:
@@ -491,17 +493,7 @@ def collapse_node_clusters_direction_aware(
         if merged_this_iter == 0:
             break
 
-    self_loops = list(nx.selfloop_edges(G, keys=True)) if is_multi else [
-        (u, v) for u, v in nx.selfloop_edges(G)
-    ]
-    if self_loops:
-        if is_multi:
-            for u, v, k in self_loops:
-                G.remove_edge(u, v, key=k)
-        else:
-            G.remove_edges_from(self_loops)
-        if debug:
-            logger.info("Removed %d self-loops after collapsing", len(self_loops))
+    settle_self_loops(G, distance_threshold, debug)
 
     if debug or total_merged > 0:
         logger.info(
