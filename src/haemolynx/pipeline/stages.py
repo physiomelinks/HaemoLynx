@@ -809,6 +809,10 @@ def _assign_synthetic_boundaries(settings: dict, network: VesselNetwork) -> Boun
         name = f"{role}_nodes"
         _reset_run_node_list(settings, name)
         settings[name].extend(roles[role])
+    # The large-vessel network's own inlet and outlet are an image run's,
+    # from its masks' stumps: nodes of another graph here.
+    _reset_run_node_list(settings, "large_vessel_inlet_nodes")
+    _reset_run_node_list(settings, "large_vessel_outlet_nodes")
     if not settings["inlet_nodes"] or not settings["outlet_nodes"]:
         raise ValueError(
             "The synthetic network has no inlet or no outlet to solve between: "
@@ -2747,6 +2751,15 @@ def build_network(
             G, graph_path, image.shape if image is not None else skeleton.shape, voxel_size_zyx,
             getattr(volume, "crop", None),
         )
+        if any(graph.cut_at_large_vessel_volumes.CUT_FROM_LARGE_VESSEL in data for _node, data in G.nodes(data=True)):
+            # Until 2026-11-03 the Boundaries stage wrote its cut network over
+            # this file: the large vessels are gone from it, whatever the
+            # masks and the cut now say.
+            logger.warning(
+                f"The graph loaded from {graph_path} was already cut at the large-vessel "
+                "masks by an earlier run's Boundaries stage, so the vessels inside them are "
+                "missing. Turn do_graph_building on to build it again."
+            )
 
     _record_graph_voxel_metadata(
         G, main_voxel_size_xyz, voxel_size_zyx,
@@ -3507,23 +3520,23 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ),
             )
             network.graph = G
-            stem = run_stem(settings)
-            if stem is not None:
-                graph_path = network.volume.output_dir / f"{stem}_graph.pkl"
-                with graph_path.open("wb") as handle:
-                    pickle.dump(G, handle)
-                logger.info(
-                    "Applied large-vessel volume network cut on filtered masks before "
-                    "automated terminal assignment "
-                    f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain); "
-                    f"rewrote {graph_path}."
-                )
-            else:
-                logger.info(
-                    "Applied large-vessel volume network cut on filtered masks before "
-                    "automated terminal assignment "
-                    f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
-                )
+            # The ends the cut made, judged as graph building judged the rest
+            # (geometry only: the stage holds no mask support), so every dead
+            # end carries its kind.
+            cut_ends = [
+                node for node, data in G.nodes(data=True)
+                if data.get(graph.cut_at_large_vessel_volumes.CUT_FROM_LARGE_VESSEL) is not None and G.degree(node) == 1
+            ]
+            graph.dead_ends.reclassify_dead_ends(
+                G, cut_ends, stub_radius_multiple=dead_end_stub_radius_multiple(settings)
+            )
+            # {stem}_graph.pkl stays graph building's: a run loading it
+            # (do_graph_building off) cuts it again by the masks it then has.
+            logger.info(
+                "Applied large-vessel volume network cut on filtered masks before "
+                "automated terminal assignment "
+                f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
+            )
         if large_vessel_tier:
             # A manual override (e.g. degree_1_from_inlet) reads settings
             # like inlet_nodes through the normal graph.select_boundary_nodes_for_role
@@ -3701,16 +3714,19 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     if io_from_masks:
         # Use direct terminal-node overlap assignment from vessel masks.
         inlet_nodes = auto_inlet_nodes
+        settings["inlet_nodes"].extend(inlet_nodes)
         outlet_nodes = [node_id for node_id in auto_outlet_nodes if node_id not in set(inlet_nodes)]
     else:
         # Each role reads its own three settings; naming the role is enough.
         inlet_nodes = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "inlet"
         )
+        # Written before the outlets are chosen: degree_1_from_inlet measures
+        # from them, and found none when they were written after.
+        settings["inlet_nodes"].extend(inlet_nodes)
         outlet_nodes = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "outlet", exclude_nodes=inlet_nodes
         )
-    settings["inlet_nodes"].extend(inlet_nodes)
     settings["outlet_nodes"].extend(outlet_nodes)
     if large_vessel_tier:
         settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
@@ -4378,7 +4394,8 @@ def _small_vessel_boundary_fallback(
     given *large_masks* (the large vessels kept in the network), in the large
     one, and the nodes ``small_vessel_boundary_fallback_hop_distance``
     vessels from those that the fallback makes boundary nodes (none with it
-    off), inlets and outlets left out. The Boundaries stage adds them to the
+    off), inlets, outlets and the other side's boundary nodes left out. The
+    Boundaries stage adds them to the
     masks' boundary nodes; Post processing judges an edited place by it."""
     enabled = bool(settings["small_vessel_boundary_fallback_to_hop_distance"])
     hops = int(settings["small_vessel_boundary_fallback_hop_distance"])
@@ -4401,8 +4418,13 @@ def _small_vessel_boundary_fallback(
         uncovered = graph.seed_nodes_without_mask_coverage(
             G, list(settings[seed_key]), coverage_mask, voxel_size_zyx=voxel_size_zyx
         )
+        # Nor a node the other side's masks made its boundary: one node on
+        # both lists ended both tiers at once.
+        other_side = "venule_boundary_nodes" if index == 0 else "arteriole_boundary_nodes"
         hop_nodes = (
-            graph.select_nodes_at_hop_distance(G, uncovered, hops, exclude_nodes=exclude_io_nodes)
+            graph.select_nodes_at_hop_distance(
+                G, uncovered, hops, exclude_nodes=exclude_io_nodes | set(settings.get(other_side) or ())
+            )
             if enabled and uncovered
             else []
         )

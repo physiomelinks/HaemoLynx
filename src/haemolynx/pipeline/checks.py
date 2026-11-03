@@ -365,6 +365,49 @@ def check_manual_inlets_outlets_while_masks_choose(
     return report
 
 
+#: The list each listing method reads, by its key in BOUNDARY_ROLE_SETTINGS.
+_LISTED_BY_METHOD = {"coordinates": "coordinates", "volume": "volume_boxes", "node_ids": "node_ids"}
+
+
+def check_boundary_selection(settings: Mapping[str, Any]) -> CheckReport:
+    """The inlet and outlet methods the run reads (and the large-vessel
+    network's, with its tier on): one whose list is empty is refused here, as
+    the Boundaries stage would refuse it once every stage before it had run;
+    and ``edge_percent`` along z on a one-slice image is warned about, since
+    every terminal lies in that one plane and no band holds an outlet."""
+    from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS, inlets_outlets_from_vessel_masks
+    from haemolynx.io import axis_order_for_run
+
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    roles = [] if inlets_outlets_from_vessel_masks(settings) else ["inlet", "outlet"]
+    if assigns_large_vessel_branch_orders(settings):
+        roles += ["large_vessel_inlet", "large_vessel_outlet"]
+    banded = False
+    for role in roles:
+        names = BOUNDARY_ROLE_SETTINGS[role]
+        method = str(settings.get(names["method"]) or "").strip().lower()
+        banded = banded or method == "edge_percent"
+        listed = _LISTED_BY_METHOD.get(method)
+        if listed is not None and not settings.get(names[listed]):
+            report.add_error(
+                f"{names['method']} is '{method}', but {names[listed]} is empty, so the "
+                f"Boundaries stage would find no {role.replace('_', ' ')} node. Fix: fill "
+                f"{names[listed]} (on the Boundaries tab), or choose another method."
+            )
+    if banded and settings.get("boundary_axis") == 0:
+        image = settings.get("raw_image_path") if settings.get("use_ilastik_segmentation") else settings.get("input_path")
+        header = _tiff_header(image, axis_order_for_run(settings))
+        if header is not None and (len(header[0]) == 2 or header[0][0] == 1):
+            report.add_warning(
+                "boundary_axis is 0 (z), but the image is one slice: every terminal lies in "
+                "that plane, so edge_percent finds no outlet. Fix: set boundary_axis to 1 (y) "
+                "or 2 (x)."
+            )
+    return report
+
+
 def check_global_vessel_masks(settings: Mapping[str, Any]) -> CheckReport:
     """Say what a run with global vessel masks does instead, and warn of the
     settings it then leaves unread.
@@ -1400,6 +1443,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_ilastik_vessel_mask_channels(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
+    report.extend(check_boundary_selection(settings))
     report.extend(check_global_vessel_masks(settings))
     report.extend(check_large_vessel_mask_split(settings))
     report.extend(check_vessel_size_classes(settings))

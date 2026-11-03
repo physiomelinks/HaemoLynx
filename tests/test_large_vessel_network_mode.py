@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import networkx as nx
 
+from haemolynx import graph
 from haemolynx.graph.large_vessel_network import (
     find_large_vessel_mask_stump_points,
     select_large_vessel_mask_stump_terminal_nodes_for_role,
@@ -266,9 +267,22 @@ def test_assign_boundaries_large_vessel_network_mode_populates_large_boundary_no
     # Not cut: every original edge (and its interior-mask voxels) survives.
     assert boundaries.graph.number_of_edges() == before_edges
     assert settings["inlet_nodes"] == [0]
+    assert settings["outlet_nodes"] == [9]
     assert settings["large_vessel_inlet_nodes"] == [0], "mask_stump is the default method"
-    assert settings["large_arteriole_boundary_nodes"]
-    assert settings["large_venule_boundary_nodes"]
+    assert settings["large_vessel_outlet_nodes"] == [9]
+    # Where each tier hands off: the arteriole mask's vessels end at node 3,
+    # the venule mask's at node 6 -- not the other way round.
+    assert settings["large_arteriole_boundary_nodes"] == [3]
+    assert settings["large_venule_boundary_nodes"] == [6]
+    tags = {
+        (u, v): data.get(graph.LARGE_MASK_VESSEL_TYPE)
+        for u, v, data in boundaries.graph.edges(data=True)
+    }
+    assert tags == {
+        (0, 1): "arteriole", (1, 2): "arteriole", (2, 3): "arteriole",
+        (3, 4): None, (4, 5): None, (5, 6): None,
+        (6, 7): "venule", (7, 8): "venule", (8, 9): "venule",
+    }
 
 
 def test_assign_boundaries_cuts_and_skips_the_large_tier_when_the_cut_is_on(tmp_path):
@@ -655,6 +669,36 @@ def test_a_stump_takes_the_end_whose_vessel_runs_most_along_its_mask():
     })
 
     assert _stump_inlets(G, mask) == [0]
+
+
+def test_a_stump_on_three_distinct_spacings_is_read_z_first():
+    """Every other stump test runs on 1 um voxels, where reading the voxel
+    size x-first changes nothing. On (2.0, 0.5, 0.4) um the vessel cut by the
+    x = 0 face has its stump at 26 um in z (index 13 times 2 um), and its own
+    end there takes it. Read x-first, the stump sits at z = 5.2 um, beside a
+    capillary tip at z = 6 um that would take it instead."""
+    voxel_size_zyx = (2.0, 0.5, 0.4)
+    mask = np.zeros((20, 40, 150), dtype=bool)
+    mask[12:15, 16:24, 0:120] = True  # along x from the x = 0 face, 47.6 um long
+    G = _vessel_graph({
+        (0, 1): [(26.0, 10.0, 0.4), (26.0, 10.0, 50.0)],  # the vessel's own end at the face
+        (1, 2): [(26.0, 10.0, 50.0), (26.0, 10.0, 58.0)],
+        (1, 3): [(26.0, 10.0, 50.0), (26.0, 19.0, 50.0)],
+        (4, 5): [(6.0, 10.0, 1.0), (6.0, 19.0, 1.0)],  # a capillary by the face, 20 um below it
+    })
+
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=voxel_size_zyx)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # its own end, not a fallback
+        inlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
+            G, mask, node_role="inlet", voxel_size_zyx=voxel_size_zyx, image_shape=mask.shape,
+            coordinates_setting_name="large_arteriole_mask stump",
+        )
+
+    assert len(points) == 1
+    # The footprint's centroid, index (13, 19.5, 0), times (2.0, 0.5, 0.4) um.
+    np.testing.assert_allclose(points[0], (26.0, 9.75, 0.0))
+    assert inlets == [0]
 
 
 # --- one component leaving one face at several places -----------------------------
