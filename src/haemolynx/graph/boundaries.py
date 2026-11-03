@@ -197,12 +197,14 @@ def open_terminal_nodes(
     voxel_size = _voxel_size_zyx(G)
     if voxel_size is None or len(image_shape) != 3:
         return None
+    from .dead_ends import face_distance
+
     extent = (np.asarray(image_shape, dtype=float) - 1.0) * voxel_size
     terminals, pos = _terminal_nodes_and_position_map(G)
     return [
         node
         for node in terminals
-        if float(np.min(np.minimum(pos[node], extent - pos[node]))) <= float(max_distance_um)
+        if face_distance(pos[node], extent)[0] <= float(max_distance_um)
     ]
 
 

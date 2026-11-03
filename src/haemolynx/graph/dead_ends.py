@@ -263,18 +263,37 @@ def record_image_extent(G: nx.Graph, image_shape: Sequence[int], voxel_size_zyx:
     G.graph["image_extent_um"] = tuple(float(v) for v in image_extent_um(image_shape, voxel_size_zyx))
 
 
-def face_distance(point_um: Sequence[float], extent_um: Sequence[float]) -> tuple[float, int]:
-    """``(distance, axis)`` from *point_um* to the nearest image face."""
-    point = np.asarray(point_um, dtype=float)[:3]
+def _distances_to_each_face(points_um, extent_um) -> np.ndarray:
+    """``(n, 6)``: each point's distance to the low then the high face of each
+    axis; inf across an axis one plane thick (:func:`face_distance`)."""
+    points = np.asarray(points_um, dtype=float).reshape(-1, 3)
     extent = np.asarray(extent_um, dtype=float)[:3]
-    both = np.concatenate([point, extent - point])
+    both = np.concatenate([points, extent - points], axis=1)
+    both[:, np.tile(extent <= 0, 2)] = np.inf
+    return both
+
+
+def face_distance(point_um: Sequence[float], extent_um: Sequence[float]) -> tuple[float, int]:
+    """``(distance, axis)`` from *point_um* to the nearest image face. An image
+    one plane thick along an axis (a 2D image, read as a z=1 volume) has no
+    faces across it: a vessel in that plane leaves through none of them, and
+    every point would lie on both. ``(inf, 0)`` when no axis has faces."""
+    both = _distances_to_each_face(np.asarray(point_um, dtype=float)[:3], extent_um)[0]
     nearest = int(np.argmin(both))
     return float(both[nearest]), nearest % 3
+
+
+def face_distances(points_um, extent_um) -> np.ndarray:
+    """Each of *points_um*'s distance to its nearest image face, as
+    :func:`face_distance` reads one: the one face test, for every caller."""
+    return _distances_to_each_face(points_um, extent_um).min(axis=1)
 
 
 def _distance_to_box_along(point: np.ndarray, direction: np.ndarray, extent: np.ndarray) -> Optional[float]:
     limits = []
     for axis in range(3):
+        if extent[axis] <= 0:
+            continue  # one plane thick: no faces across it (face_distance)
         if direction[axis] > 1e-8:
             limits.append((extent[axis] - point[axis]) / direction[axis])
         elif direction[axis] < -1e-8:
@@ -935,6 +954,7 @@ __all__ = [
     "classify_dead_ends",
     "dead_end_census",
     "face_distance",
+    "face_distances",
     "graph_image_extent_um",
     "image_extent_um",
     "leaves_image",

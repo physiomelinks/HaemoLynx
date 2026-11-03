@@ -54,10 +54,13 @@ def _edge_attrs_for_segment(
 
 
 def _closest_vertex_index(points: Sequence[Sequence[float]], target: Sequence[float]) -> int:
-    """Index of the polyline vertex closest to *target*."""
+    """Index of the polyline vertex closest to *target*; of two as close (a
+    point midway between them), the one first in position order, so the
+    split does not depend on which way the edge's path runs."""
     arr = np.asarray(points, dtype=float)
     distances = np.linalg.norm(arr - np.asarray(target, dtype=float), axis=1)
-    return int(np.argmin(distances))
+    tied = np.flatnonzero(distances <= distances.min() + 1e-9)
+    return int(min(tied, key=lambda i: tuple(arr[i])))
 
 
 def insert_node_on_edge(

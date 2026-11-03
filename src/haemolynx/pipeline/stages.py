@@ -2037,7 +2037,7 @@ def _log_graph_consistency_diagnostics(
     # after the smoothing and the thick-vessel split.
     artefacts = graph.diagnose_lumen_artefacts(
         G, image, voxel_size_zyx=voxel_size_zyx,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     G.graph[graph.LUMEN_ARTEFACT_COUNTS] = graph.lumen_artefact_counts(artefacts)
     artefacts_report = graph.format_lumen_artefacts_report(artefacts)
@@ -2094,6 +2094,15 @@ def thick_bridge_centreline_tolerance_um(settings: Mapping[str, Any]) -> float:
         "thick_bridge_centreline_tolerance_um", graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM
     )
     return float(graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM if value is None else value)
+
+
+def dead_end_stub_radius_multiple(settings: Mapping[str, Any]) -> float:
+    """``min_stub_length_radius_multiple`` as the dead-end kinds and the
+    lumen-artefact report read it: the stub prune's own rule, so 0 calls no
+    dead end short by its vessel's radius, as the prune then prunes none by
+    it. 3, its default, when a caller's settings predate it."""
+    value = settings.get("min_stub_length_radius_multiple")
+    return 3.0 if value is None else float(value)
 
 
 def lumen_cleanup_switches(settings: Mapping[str, Any]) -> dict[str, bool]:
@@ -2692,6 +2701,8 @@ def build_network(
         if no_vessels is not None:
             raise no_vessels
 
+        # Saved with the box it was built in, so a run loading it can tell.
+        _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         logger.info(f"Saved graph to: {graph_path}")
@@ -2709,6 +2720,10 @@ def build_network(
                 f"The graph loaded from {graph_path} has no vessels. "
                 "Turn do_graph_building on to build it again from the skeleton."
             )
+        _check_saved_graph_fits_image(
+            G, graph_path, image.shape if image is not None else skeleton.shape, voxel_size_zyx,
+            getattr(volume, "crop", None),
+        )
 
     _record_graph_voxel_metadata(
         G, main_voxel_size_xyz, voxel_size_zyx,
@@ -2777,6 +2792,40 @@ def build_network(
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
         mask_split_diameter_um=mask_split_diameter_um,
+    )
+
+
+def _check_saved_graph_fits_image(
+    G: nx.MultiGraph, graph_path: Path, shape, voxel_size_zyx, crop: CropBox | None = None
+) -> None:
+    """Refuse a saved graph built on another image grid, as a saved skeleton
+    is refused: its node positions are microns from that image's corner, so
+    on another crop box, downsample or voxel size they no longer lie on this
+    run's image and masks. Judged by the extent recorded when it was built
+    (``image_extent_um``) and, where it was recorded, the crop box; a graph
+    saved before either was recorded is not judged by it."""
+    saved = graph.dead_ends.graph_image_extent_um(G)
+    now = graph.dead_ends.image_extent_um(shape, voxel_size_zyx)
+    differs = saved is not None and not (
+        saved.shape == now.shape and np.allclose(saved, now, rtol=1e-6, atol=1e-6)
+    )
+    if CROP_GRAPH_ATTRIBUTE in G.graph:
+        box = G.graph[CROP_GRAPH_ATTRIBUTE] or {}
+        whole = crop is None or crop.is_whole_volume
+        differs = differs or whole or (
+            tuple(box.get("start_zyx", ())), tuple(box.get("stop_zyx", ()))
+        ) != (tuple(crop.start_zyx), tuple(crop.stop_zyx))
+    if not differs:
+        return
+    built_on = (
+        "" if saved is None
+        else f" was built on an image {' x '.join(f'{v:g}' for v in saved)} um (z, y, x)"
+    )
+    raise ValueError(
+        f"The saved graph {graph_path}{built_on} does not fit this run's image, "
+        f"{' x '.join(f'{v:g}' for v in now)} um: it was made with a different "
+        "crop_on_import box, segmented_image_downsample or voxel size. Turn "
+        "do_graph_building back on to build it again."
     )
 
 
@@ -2891,7 +2940,7 @@ def _mark_dead_end_kinds(
     )
     ends = graph.dead_ends.classify_and_mark(
         G, support=support,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     census = graph.dead_ends.dead_end_census(ends)
     logger.info(
@@ -5084,7 +5133,7 @@ def _mark_touched_dead_end_kinds(
         touched,
         extent_um=extent,
         support=support,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     census = graph.dead_ends.dead_end_census(ends)
     logger.info(

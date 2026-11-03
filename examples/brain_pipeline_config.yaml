@@ -546,7 +546,7 @@ pipeline_stages:
   trace_on_dead_ends: false
   # Join a dead end pointing at another vessel's side, within facing_dead_end_max_gap_um across one stretch of background, to that vessel -- unless that vessel is one of its neighbours in the network (one junction away or closer). Off until a marked grid calibrates it (PLAN_dead_ends.md, G3)  [needs do_graph_building and bridge_require_mask_support]
   join_dead_ends_to_vessel_sides: false
-  # Which short stubs the prune keeps at an image face. threshold: a tip within its own pruning threshold of a face (as before). leaves_image: only a dead end that leaves the image (it touches a face, or the segmented vessel runs on to one), so a spur near a face is judged like any other  [one of: threshold, leaves_image; needs do_graph_building]
+  # Which short stubs the prune keeps at an image face. threshold: a tip within its own pruning threshold of a face (as before). leaves_image: only a dead end that leaves the image (it touches a face, or the segmented vessel runs on to one), so a spur near a face is judged like any other. leaves_image reads the segmented mask: without it, or with bridge_require_mask_support off, the prune keeps by threshold  [one of: threshold, leaves_image; needs do_graph_building and bridge_require_mask_support]
   stub_face_protection: threshold
   # Collapse clusters of nodes lying within this distance of each other  [um; range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0

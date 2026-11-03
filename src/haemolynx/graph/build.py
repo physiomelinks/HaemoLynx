@@ -12,6 +12,7 @@ from itertools import product
 from scipy import sparse
 from skan import csr
 
+from ._helpers import split_self_loops
 from ._platform import map_python_work
 from .cartwheel_guard import _incident_edge_items, _spoke_direction_and_length
 from .reconnect import MaskBridges
@@ -353,7 +354,13 @@ def build_graph_segment_skan_stitched_loops(
             segment_id=seg_idx,
         )
 
-    logger.info("Graph built: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
+    # A ring skan traces from a junction back to itself is a self-loop, which
+    # no rule after this judges: split, it is a loop the mask rules read.
+    rings = split_self_loops(G)
+    logger.info(
+        "Graph built: %d nodes, %d edges (%d ring(s) split at their far point)",
+        G.number_of_nodes(), G.number_of_edges(), rings,
+    )
     if reconnect_threshold and reconnect_threshold > 0:
         terminals = [n for n in G.nodes if G.degree[n] == 1]
         if len(terminals) > 1:

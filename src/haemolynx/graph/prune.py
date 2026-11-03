@@ -219,8 +219,9 @@ def prune_vascular_stubs(
     def at_an_image_face(node: Any, threshold: float) -> bool:
         if extent is None or "pos" not in G_pruned.nodes[node]:
             return False
-        position = np.asarray(G_pruned.nodes[node]["pos"], dtype=float)
-        return float(np.min(np.minimum(position, extent - position))) <= threshold
+        from .dead_ends import face_distance
+
+        return face_distance(G_pruned.nodes[node]["pos"], extent)[0] <= threshold
 
     def stub_path(nodes: list, edges: list) -> Optional[np.ndarray]:
         if any("pos" not in G_pruned.nodes[n] for n in nodes):
@@ -578,9 +579,8 @@ def remove_components_without_connected_io(
 
 
 def remove_edges_for_self_connected_nodes(G: Union[nx.Graph, nx.MultiGraph]) -> Union[nx.Graph, nx.MultiGraph]:
-    """Remove edges for nodes that are connected to themselves with no nodes in between."""
+    """Remove edges for nodes that are connected to themselves with no nodes in
+    between: every such edge, though a MultiGraph node can carry several."""
     G_pruned = G.copy()
-    for node in G_pruned.nodes():
-        if node in G_pruned.neighbors(node):
-            G_pruned.remove_edge(node, node)
+    G_pruned.remove_edges_from(list(nx.selfloop_edges(G_pruned, keys=G_pruned.is_multigraph())))
     return G_pruned

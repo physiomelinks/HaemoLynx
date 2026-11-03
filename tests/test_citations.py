@@ -675,6 +675,20 @@ def test_the_centreline_smoother_that_ran_is_cited(tmp_path, method, cited, othe
         assert not _method_names(off) & {TAUBIN, CHAIKIN}
 
 
+PERSISTENCE = "Single-linkage persistence (cluster_collapse_method='persistence')"
+
+
+def test_the_persistence_collapse_is_cited_when_it_ran(tmp_path):
+    """Regression: the persistence method rests on a published result its
+    module cites, and a run that used it cited nothing for it."""
+    assert PERSISTENCE in _method_names(_settings(tmp_path, cluster_collapse_method="persistence"))
+    for off in (
+        _settings(tmp_path, cluster_collapse_method="distance_only"),
+        _settings(tmp_path, cluster_collapse_method="persistence", do_graph_building=False),
+    ):
+        assert PERSISTENCE not in _method_names(off)
+
+
 def test_a_synthetic_run_cites_no_centreline_method_but_cites_murray(tmp_path):
     settings = {
         **SCHEMA.defaults(),

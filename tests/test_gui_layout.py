@@ -319,6 +319,23 @@ def test_the_short_loop_rows_stay_behind_the_graph_building_button():
     assert not _row_usable("cluster_collapse_distance", values)
 
 
+def test_the_thick_vessel_split_rows_sit_behind_the_graph_building_button():
+    """Regression: needing a Skeletonise row and nothing on the Graph tab, the
+    thick-vessel split's three rows fell under the tab's Checks button,
+    though they change the graph. They sit with graph building's own, under
+    a heading of their own, and stay usable with a loaded graph."""
+    _tab, layout = LAYOUTS["build_network"]
+    split = ("thick_vessel_fill_centreline_gaps", "thick_vessel_extend_centreline_ends",
+             "thick_bridge_centreline_tolerance_um")
+    for name in split:
+        disclosure = layout.disclosure_of(name)
+        assert disclosure.anchor == "do_graph_building", name
+        assert dict(disclosure.groups)["Thick vessels"] == split
+    assert not set(split) & set(layout.disclosure_of("detect_cartwheel_hub_artifacts").names)
+    values = {**SCHEMA.defaults(), "do_graph_building": False, "use_thick_vessel_skeletonisation": True}
+    assert all(_row_usable(name, values) for name in split)
+
+
 def test_thick_vessel_mask_restriction_moved_to_skeletonise():
     _tab, skeletonise = LAYOUTS["skeletonise"]
     _tab, boundaries = LAYOUTS["assign_boundaries"]

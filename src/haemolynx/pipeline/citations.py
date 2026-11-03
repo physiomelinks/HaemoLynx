@@ -700,6 +700,20 @@ CENTRELINE_CITATIONS: tuple[Citation, ...] = (
         ),
         applies=_used_centreline_smoothing("chaikin"),
     ),
+    Citation(
+        name="Single-linkage persistence (cluster_collapse_method='persistence')",
+        reason="where nearby junctions were merged into one, each cluster cut at its own gap",
+        reference=(
+            "Carlsson, G., Memoli, F. (2010). Characterization, stability and "
+            "convergence of hierarchical clustering methods. Journal of "
+            "Machine Learning Research, 11, 1425-1470."
+        ),
+        applies=lambda settings: bool(
+            settings.get("do_graph_building", True)
+            and settings.get("cluster_collapse_method") == "persistence"
+            and not _synthetic(settings)
+        ),
+    ),
 )
 
 

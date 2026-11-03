@@ -161,6 +161,27 @@ def test_the_prune_keeps_at_a_face_only_what_leaves_the_image_when_asked(protect
     assert ((10.0, 56.5, 40.0) in pruned) is kept
 
 
+def test_leaves_image_needs_mask_supported_bridging_and_says_so():
+    """Regression: the leaves_image test reads the mask through the
+    clean-up's support, which bridge_require_mask_support off leaves unmade,
+    so the prune kept by threshold whatever the row said. The row now
+    requires it, so the panel greys it and a run flags it as not in effect."""
+    from haemolynx.graph.assemble import lumen_cleanup
+    from haemolynx.pipeline import default_schema
+
+    mask, G = _near_face_stub(56.5)
+    cleanup = lumen_cleanup(
+        mask, VOXEL_SIZE, image_shape=SHAPE, min_stub_length=10.0, min_stub_length_radius_multiple=3.0,
+        stub_face_protection="leaves_image", bridge_require_mask_support=False,
+    )
+    assert (10.0, 56.5, 40.0) in cleanup.prune(G)  # kept, as threshold keeps it
+
+    schema = default_schema()
+    assert "bridge_require_mask_support" in schema["stub_face_protection"].requires
+    values = {**schema.defaults(), "stub_face_protection": "leaves_image", "bridge_require_mask_support": False}
+    assert any("stub_face_protection" in message for message in schema.ineffective_settings(values))
+
+
 def test_boundary_selection_can_read_the_dead_end_definition():
     from haemolynx.graph.boundaries import select_boundary_nodes_by_method
 
