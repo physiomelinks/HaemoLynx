@@ -58,6 +58,9 @@ SKIP_FOR_RESUME = ("do_skeletonize", "do_graph_building", "do_fwhm_measurement")
 #: Stage call -> the PipelineResume field its stored output fills.
 RESUMABLE_OUTPUTS = {"segment": "inputs", "skeletonise": "volume", "build_network": "network"}
 
+#: Planes of a saved skeleton compared with a checkpoint's at a time.
+_COMPARED_PLANES = 64
+
 
 def skeleton_resume_path(output_dir: Path, stem: str) -> Path:
     """The ``.npy`` ``do_skeletonize=False`` already loads (and preflight checks)."""
@@ -73,6 +76,29 @@ def _skeleton_array_from_groups(groups: Sequence[Any]) -> Any | None:
     return None
 
 
+def _saved_skeleton_is(path: Path, skeleton: Any) -> bool:
+    """Whether the ``.npy`` at *path* holds *skeleton*: its shape and voxels,
+    read as skeleton wherever nonzero. A file that cannot be read is not.
+    Compared a slab of planes at a time, so a large stack is not copied."""
+    try:
+        saved = np.load(path, mmap_mode="r")
+    except (OSError, ValueError):
+        return False
+    try:
+        skeleton = np.asarray(skeleton)
+        if saved.shape != skeleton.shape:
+            return False
+        if saved.ndim == 0:
+            return bool((saved != 0) == (skeleton != 0))
+        for start in range(0, saved.shape[0], _COMPARED_PLANES):
+            planes = slice(start, start + _COMPARED_PLANES)
+            if not np.array_equal(saved[planes] != 0, skeleton[planes] != 0):
+                return False
+        return True
+    finally:
+        del saved  # unmapped before the file is written over (Windows)
+
+
 def ensure_skeleton_artefact(
     groups: Sequence[Any],
     output_dir: Path,
@@ -83,12 +109,23 @@ def ensure_skeleton_artefact(
     Returns the path when the file is (or was made) present, else None.
     Without it, turning ``do_skeletonize`` off fails preflight and the user
     cannot continue from the next tab after a revert.
+
+    A file already there is kept when the groups hold no skeleton or it is
+    theirs. One that differs was written by another run in the same folder
+    since, and the run would be rebuilt from it: the groups' own skeleton is
+    written over it.
     """
     path = skeleton_resume_path(output_dir, stem)
-    if path.is_file():
-        return path
     skeleton = _skeleton_array_from_groups(groups)
-    if skeleton is None:
+    if path.is_file():
+        if skeleton is None or _saved_skeleton_is(path, skeleton):
+            return path
+        logger.warning(
+            "%s is not this run's skeleton (another run wrote it since): writing the "
+            "run's own skeleton over it.",
+            path,
+        )
+    elif skeleton is None:
         return None
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -627,6 +664,8 @@ class StageCheckpoints:
         results: Any,
         settings: Mapping[str, Any] | None = None,
         output: Any | None = None,
+        *,
+        keep_output: bool = True,
     ) -> StageCheckpoint | None:
         """Remember *group* (and the graph *results* holds) for *stage*.
 
@@ -636,7 +675,11 @@ class StageCheckpoints:
         come back after discard.
 
         *output* is what the stage returned; it is kept for the stages in
-        :data:`RESUMABLE_OUTPUTS` (see :func:`_stored_output`).
+        :data:`RESUMABLE_OUTPUTS` (see :func:`_stored_output`) unless
+        *keep_output* is off, as for a batch, which never resumes and would
+        hold every image's volumes until it ends. The boundary nodes it
+        carries (the large-vessel hand-offs, post processing's lists) are
+        read either way.
         """
         if not self._recording:
             return None
@@ -704,7 +747,7 @@ class StageCheckpoints:
             **masks,
             thick_vessel_mask=getattr(results, "_thick_vessel_mask", None),
             raw_segmented_image=getattr(results, "_raw_segmented_image", None),
-            output=_stored_output(stage, output),
+            output=_stored_output(stage, output) if keep_output else None,
         )
         self._by_stage[stage] = checkpoint
         return checkpoint

@@ -1836,22 +1836,23 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         
         # save the skeleton
         np.save(skeleton_path, skeleton)
-        voxel_meta_path.write_text(
-            json.dumps(
-                {
-                    "voxel_size": source_voxel_size,
-                    "run_voxel_size": voxel_size,
-                    "voxel_size_source": voxel_size_source,
-                    "voxel_metadata_status": voxel_meta_status,
-                    "voxel_size_policy": settings["voxel_size_policy"],
-                    "voxel_size_override_xyz": settings["voxel_size_override_xyz"],
-                    # For the record: the saved skeleton is on the reduced grid.
-                    "downsample": None if downsample is None else downsample.to_record(),
-                    # And cut to this box: a run loading it checks it is its own.
-                    "crop": _crop_record(crop),
-                }
-            )
-        )
+        record = {
+            "voxel_size": source_voxel_size,
+            "run_voxel_size": voxel_size,
+            "voxel_size_source": voxel_size_source,
+            "voxel_metadata_status": voxel_meta_status,
+            "voxel_size_policy": settings["voxel_size_policy"],
+            "voxel_size_override_xyz": settings["voxel_size_override_xyz"],
+            # For the record: the saved skeleton is on the reduced grid.
+            "downsample": None if downsample is None else downsample.to_record(),
+            # And cut to this box: a run loading it checks it is its own.
+            "crop": _crop_record(crop),
+        }
+        if settings["use_thick_vessel_skeletonisation"]:
+            # Which thick-vessel tree drew it: the region's cache does not
+            # say, and a run loading it bridges to the tree it would draw.
+            record["large_stack_thick_tree"] = large_stack_thick_tree(settings)
+        voxel_meta_path.write_text(json.dumps(record))
         logger.info(f"Saved skeleton to: {skeleton_path}")
     else:
         # load the skeleton
@@ -1896,6 +1897,16 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             )
         image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
         if settings["use_thick_vessel_skeletonisation"]:
+            drawn_by = saved.get("large_stack_thick_tree")
+            if drawn_by is not None and bool(drawn_by) != large_stack_thick_tree(settings):
+                trees = {True: "the large-stack tree", False: "the exact tree"}
+                logger.warning(
+                    "The saved skeleton %s drew its thick vessels with %s; this run "
+                    "draws %s and bridges to it (skeleton_thick_vessel_large_stack_tree "
+                    "applies under use_memmap_loading only). Turn do_skeletonize back "
+                    "on to make it again.",
+                    skeleton_path, trees[bool(drawn_by)], trees[large_stack_thick_tree(settings)],
+                )
             thick_vessel_mask = thick_vessel_mask_from_image(
                 settings, image, voxel_size, crop, cache=region_cache, downsample=downsample
             )

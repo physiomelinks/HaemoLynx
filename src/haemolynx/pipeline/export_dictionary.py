@@ -318,6 +318,11 @@ FILES: tuple[OutputFile, ...] = (
                 "The crop-on-import box the skeleton was cut to, its (z, y, x) start and "
                 "stop (stop not kept), or null for the whole image.",
             ),
+            _c(
+                "large_stack_thick_tree", "-",
+                "Whether the thick vessels' centreline tree was the large-stack one "
+                "(true) or the exact one (false); only with thickness-gated skeletonisation.",
+            ),
         ),
     ),
     # -- statistics ---------------------------------------------------------

@@ -1394,3 +1394,40 @@ def test_the_braid_check_labels_by_slab_under_the_low_ram_option(tmp_path, monke
         )
         skeletonise(settings, segment(settings))
     assert captured == [False, True]
+
+
+def test_a_loaded_skeleton_says_which_thick_vessel_tree_drew_it(tmp_path, caplog):
+    """The large-stack tree is drawn under the low-RAM option only, and the
+    thick region's cache key does not cover it: a skeleton made in low-RAM
+    mode with it, loaded in RAM, was bridged to the exact tree unsaid."""
+    import json
+    import logging
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True,
+        use_memmap_loading=True, memmap_directory=tmp_path / "mm",
+        skeleton_thick_vessel_large_stack_tree=True,
+    )
+    skeletonise(settings, segment(settings))
+    record = json.loads((tmp_path / "run" / "mask_voxel_size.json").read_text())
+    assert record["large_stack_thick_tree"] is True
+
+    def warnings_loading(**changes) -> list[str]:
+        caplog.clear()
+        loading = dict(settings, do_skeletonize=False, **changes)
+        with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+            skeletonise(loading, segment(loading))
+        return [r.getMessage() for r in caplog.records if "drew its thick vessels" in r.getMessage()]
+
+    assert warnings_loading() == []
+    (warning,) = warnings_loading(use_memmap_loading=False)
+    assert "the large-stack tree" in warning and "the exact tree" in warning
+    assert warnings_loading(use_memmap_loading=False, use_thick_vessel_skeletonisation=False) == []
+
+    # Without thickness-gated skeletonisation no tree drew it, and none is recorded.
+    plain = dict(settings, use_thick_vessel_skeletonisation=False, output_dir=tmp_path / "plain")
+    skeletonise(plain, segment(plain))
+    assert "large_stack_thick_tree" not in json.loads(
+        (tmp_path / "plain" / "mask_voxel_size.json").read_text()
+    )

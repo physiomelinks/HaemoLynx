@@ -1019,3 +1019,87 @@ def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_t
     assert plan.resume.small_venule_mask is small_venule
     # Before post processing ran, the solve's checkpoint held Boundaries' own.
     assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)
+
+
+# --- a loaded run's skeleton on disk is its own -------------------------------
+
+
+def _skeleton_groups(skeleton: np.ndarray) -> list[StageLayers]:
+    return [
+        StageLayers(
+            stage="skeletonise",
+            title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        )
+    ]
+
+
+def test_a_skeleton_another_run_wrote_since_is_replaced_by_the_runs_own(tmp_path, caplog):
+    """A loaded run's Run from this stage loads {stem}_skeleton.npy. Any file
+    there was trusted: a later run in the same folder had rewritten it, and the
+    loaded run was rebuilt from that run's skeleton."""
+    import logging
+
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    other = np.zeros((5, 5, 5), dtype=bool)
+    other[2, 2, :] = True
+    np.save(tmp_path / "input_skeleton.npy", other)
+    own = np.zeros((5, 5, 5), dtype=bool)
+    own[:, 2, 2] = True
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx.gui.stage_checkpoints"):
+        path = ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")
+
+    assert path == skeleton_resume_path(tmp_path, "input")
+    assert np.array_equal(np.load(path), own)
+    assert any("not this run's skeleton" in record.getMessage() for record in caplog.records)
+
+    # Another shape is another skeleton too.
+    np.save(path, np.zeros((5, 5, 6), dtype=bool))
+    assert np.array_equal(np.load(ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")), own)
+
+
+def test_a_skeleton_on_disk_that_is_the_runs_own_or_with_none_to_compare_is_left_alone(tmp_path):
+    import os
+
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    own = np.zeros((5, 5, 5), dtype=bool)
+    own[:, 2, 2] = True
+    path = skeleton_resume_path(tmp_path, "input")
+    np.save(path, own.astype(np.uint8))  # the same voxels, saved as another type
+    old_ns = path.stat().st_mtime_ns - 60_000_000_000
+    os.utime(path, ns=(old_ns, old_ns))
+
+    assert ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input") == path
+    assert path.stat().st_mtime_ns == old_ns
+    assert ensure_skeleton_artefact([_group("skeletonise")], tmp_path, "input") == path
+    assert path.stat().st_mtime_ns == old_ns
+    assert ensure_skeleton_artefact([_group("skeletonise")], tmp_path, "missing") is None
+
+
+def test_a_checkpoint_not_keeping_its_output_still_reads_its_boundary_nodes(tmp_path):
+    """A batch keeps no stage outputs (it never resumes), but its .haemorun
+    still needs the large-vessel hand-off nodes only the output carries."""
+    graph = a_graph()
+    results = ResultLayers()
+    output = _boundaries_output(graph)
+    group = results.stage_finished("assign_boundaries", output)
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    checkpoints = StageCheckpoints()
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        output_dir=tmp_path / "out",
+    )
+    checkpoints.record("skeletonise", _group("skeletonise"), results, output=volume)
+    assert checkpoints.get("skeletonise").output is not None  # kept by default
+    checkpoints.record("skeletonise", _group("skeletonise"), results, output=volume, keep_output=False)
+    checkpoints.record("assign_boundaries", group, results, output=output, keep_output=False)
+
+    assert checkpoints.get("skeletonise").output is None
+    recorded = checkpoints.get("assign_boundaries")
+    assert recorded.large_arteriole_boundary_nodes == (1,)
+    assert recorded.large_venule_boundary_nodes == (2,)

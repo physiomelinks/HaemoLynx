@@ -343,7 +343,12 @@ def run_image(
             logger.exception("could not build layers for stage %s", stage)
             return
         try:
-            checkpoints.record(stage, group, results, settings=settings, output=output)
+            # What the stage returned is read for its boundary nodes and not
+            # kept: a batch never resumes, and its volumes would stay in
+            # memory until the image's run ends.
+            checkpoints.record(
+                stage, group, results, settings=settings, output=output, keep_output=False
+            )
         except Exception:  # noqa: BLE001 - a bad snapshot must not end the run
             logger.exception("could not record checkpoint for stage %s", stage)
 
