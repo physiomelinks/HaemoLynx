@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -147,6 +147,7 @@ def run_capillary_dilation_pressure_sweep(
     output_dir: Path | str,
     sweep_dilation: bool = True,
     sweep_pressure: bool = True,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Sweep capillary whole-branch diameter and/or inlet pressure.
 
@@ -155,7 +156,8 @@ def run_capillary_dilation_pressure_sweep(
     focal constriction sites are placed.
 
     *sweep_dilation* and *sweep_pressure* choose which axes move; both True is
-    the combined capillary×pressure sweep.
+    the combined capillary×pressure sweep. *heartbeat* is called at each grid
+    point.
     """
     from .pericyte_sweep import (
         _inlet_pressures,
@@ -194,6 +196,8 @@ def run_capillary_dilation_pressure_sweep(
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
+        if heartbeat is not None:
+            heartbeat()
         scale = percent_change_to_scale(float(dilation_percent))
         scaled, scaled_table, _summary = scale_capillary_diameters(
             G,

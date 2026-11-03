@@ -6823,12 +6823,15 @@ def _capillary_block_replicates(
     seeds: Sequence[int | None],
     baseline_graph: nx.MultiGraph,
     hypoperfusion_fraction: float,
+    heartbeat: Callable[[], None] | None = None,
 ) -> list[tuple[int | None, int, dict[str, Any]]]:
     """``(seed, vessels blocked, comparison with the baseline)`` for each further
     draw of a capillary block: each from its own copy of the baseline, solved
-    the way the first draw is."""
+    the way the first draw is. *heartbeat* is called before each."""
     replicates = []
     for seed in seeds:
+        if heartbeat is not None:
+            heartbeat()
         G = _perturbation_copy(model_graph)
         blocked_edges, _summary, recompute = _block_capillaries(G, settings, schema, seed=seed)
         _solve_network(G, settings, boundaries, recompute_resistances=recompute)
@@ -6989,6 +6992,8 @@ def _capillary_blocks_from_mask(
         axis_order=io.axis_order_for_run(settings),
         voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
         voxel_size_policy=settings.get("voxel_size_policy", "auto"),
+        use_memmap=bool(settings.get("use_memmap_loading")),
+        memmap_directory=settings.get("memmap_directory"),
     )
     if image is None:
         logger.warning(
@@ -7229,6 +7234,8 @@ def measure_around_pericytes(
             "The pericytes' diameter profiles are read off the run's segmented image, and "
             "this run has none in memory (a synthetic network, or a resumed run without it)."
         )
+    use_memmap = bool(settings.get("use_memmap_loading"))
+    memmap_directory = settings.get("memmap_directory")
     mask, _voxel_size_xyz, voxel_size_zyx = load_pericyte_mask(
         mask_path,
         G,
@@ -7236,9 +7243,9 @@ def measure_around_pericytes(
         axis_order=io.axis_order_for_run(settings),
         voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
         voxel_size_policy=settings.get("voxel_size_policy", "auto"),
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
-    use_memmap = bool(settings.get("use_memmap_loading"))
-    memmap_directory = settings.get("memmap_directory")
     vessel_mask = reader = None
     if profiles:
         vessel_mask = _to_binary_volume_for_skeletonization(
@@ -7288,6 +7295,8 @@ def _perturb_one(
     baseline_graph: nx.MultiGraph | None = None,
     voxel_size_zyx: tuple[float, float, float] | None = None,
     tissue_statistics: Mapping[str, Any] | None = None,
+    image_shape: tuple[int, ...] | None = None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> PerturbationResult:
     """Run one perturbation from the baseline network, and write its output.
 
@@ -7298,6 +7307,9 @@ def _perturb_one(
     statistic and plot of this perturbation scales by -- see
     `_baseline_voxel_size_zyx`. *tissue_statistics* is the baseline's tissue
     volume (`tissue_statistics_arguments`), which its vessel density divides by.
+    *image_shape* is the voxel shape of the box the baseline's statistics
+    divide by (`_statistics_image_shape`). *heartbeat* is called once per
+    sweep grid point and block draw: a cancelled run raises from it.
     """
     if voxel_size_zyx is None:
         voxel_size_zyx = _baseline_voxel_size_zyx(model.graph, None)
@@ -7316,6 +7328,12 @@ def _perturb_one(
             "and nothing is written."
         )
         return result
+    mask = haemodynamics.perturbation_mask_setting(spec.type, {**settings, **spec.applied_overrides(schema)})
+    if mask is not None and graph.network_is_synthetic(settings):
+        raise ValueError(
+            f"perturbation '{spec.name}' reads {mask}, which lies on an image's voxel grid, and "
+            "this network is synthetic: nothing places the mask on its vessels."
+        )
 
     overrides = spec.applied_overrides(schema)
     perturbed = {**settings, **overrides}
@@ -7370,6 +7388,12 @@ def _perturb_one(
         if places_pericytes(spec.type) and spec.type != MEASURED_CONSTRICTION_TYPE
         else None
     )
+    if placed is not None and image is not None and tuple(placed.image_shape) != tuple(image.shape):
+        raise ValueError(
+            f"perturbation '{spec.name}': the pericyte mask is {tuple(placed.image_shape)} voxels on "
+            f"the network's grid, and the segmented image {tuple(image.shape)}: it is not a mask "
+            "of this image. Save the mask from the image the network was built from."
+        )
 
     if spec.type == "pressure_sweep":
         sweep_payload = run_pericyte_dilation_pressure_sweep(
@@ -7378,6 +7402,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_dilation=False,
             sweep_pressure=True,
         )
@@ -7388,6 +7413,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_dilation=True,
             sweep_pressure=True,
             pericyte_mask_placed=placed,
@@ -7399,6 +7425,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_dilation=True,
             sweep_pressure=False,
             pericyte_mask_placed=placed,
@@ -7437,6 +7464,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_dilation=True,
             sweep_pressure=False,
         )
@@ -7447,6 +7475,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_dilation=True,
             sweep_pressure=True,
         )
@@ -7457,6 +7486,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_dilation=True,
             sweep_pressure=False,
         )
@@ -7467,6 +7497,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_dilation=True,
             sweep_pressure=True,
         )
@@ -7477,6 +7508,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_axis="spacing",
             pericyte_mask_placed=placed,
         )
@@ -7487,6 +7519,7 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            heartbeat=heartbeat,
             sweep_axis="length",
             pericyte_mask_placed=placed,
         )
@@ -7696,6 +7729,7 @@ def _perturb_one(
                 boundaries,
                 seeds=block_seeds[1:],
                 baseline_graph=compared_against,
+                heartbeat=heartbeat,
                 hypoperfusion_fraction=hypoperfusion,
             )
         summary["comparison"] = _write_capillary_block_comparison(
@@ -7768,6 +7802,7 @@ def _perturb_one(
                 # As the baseline's: only while betweenness or communities are on.
                 betweenness_and_communities=bool(perturbed["statistics"])
                 and bool(perturbation_statistics["enabled_measures"] & WEIGHTED_MEASURES),
+                image_shape=image_shape,
             )
         )
 
@@ -7827,6 +7862,13 @@ def run_perturbations(
         logger.error(f"Perturbation configuration: {message}")
 
     root = perturbation_output_dir(settings)
+    differences = _solved_otherwise(settings, model.graph, boundaries)
+    if differences:
+        raise ValueError(
+            "Perturbations: the network was solved with " + "; ".join(differences)
+            + ". Each perturbation re-solves it with this run's settings, so it would be set "
+            "against a baseline solved some other way. Run again from the 6. Haemodynamics tab."
+        )
     run = PerturbationRun(output_dir=root)
     # On a copy, like every perturbation: `_solve_network` writes pressures and
     # flows onto what it solves, and the number differenced against has to come
@@ -7880,9 +7922,13 @@ def run_perturbations(
         if any(not is_sweep_perturbation(spec.type) for spec in specs)
         else {}
     )
-    for spec in specs:
-        if progress is not None:
-            progress.step(spec.name, total=len(specs))
+    # The box the baseline's statistics divide by (export_results'): the
+    # image's, or a synthetic network's drawn box on its voxel grid.
+    image_shape = _statistics_image_shape(model.graph, image)
+    # Once per sweep grid point and block draw, so a run cancelled mid-sweep
+    # stops there rather than when the sweep has finished.
+    heartbeat = None if progress is None else progress.alive
+    for index, spec in enumerate(specs):
         try:
             run.results.append(
                 _perturb_one(
@@ -7897,9 +7943,15 @@ def run_perturbations(
                     baseline_graph=baseline_graph,
                     voxel_size_zyx=voxel_size_zyx,
                     tissue_statistics=tissue_statistics,
+                    image_shape=image_shape,
+                    heartbeat=heartbeat,
                 )
             )
         except Exception as error:
+            if progress is not None:
+                # A cancel raised by the heartbeat is the run's, not this
+                # perturbation's failure: asked again, it is raised again.
+                progress.alive()
             logger.exception(f"Perturbation '{spec.name}' failed: {error}")
             run.results.append(
                 PerturbationResult(
@@ -7908,7 +7960,56 @@ def run_perturbations(
                     error=f"{type(error).__name__}: {error}",
                 )
             )
+        if progress is not None:
+            # After it ran: a step reports one just finished.
+            following = specs[index + 1].name if index + 1 < len(specs) else None
+            progress.step(spec.name, total=len(specs), next_step=following)
     return run
+
+
+def _statistics_image_shape(G: nx.MultiGraph, image: np.ndarray | None) -> tuple[int, ...] | None:
+    """The voxel shape `export_results` sizes the baseline's box by: the
+    image's, else a synthetic network's (`synthetic_box_shape`); None when
+    the graph records no box either."""
+    if image is not None:
+        return tuple(int(v) for v in image.shape)
+    try:
+        return synthetic_box_shape(G)
+    except ValueError:
+        return None
+
+
+def _solved_otherwise(settings: Mapping[str, Any], G: nx.MultiGraph, boundaries: BoundaryNodes) -> list[str]:
+    """What the solve that left *G* used that *settings* do not, one line
+    each: its blood model as `build_haemodynamic_model` and `solve` stamped it
+    on the graph, its open-end model, and the pressures it held the inlets
+    and outlets at. Empty for a run that solved with these settings; a run
+    resumed from this tab after a setting upstream changed is not."""
+    recorded = G.graph
+    differences: list[str] = []
+    expected = {
+        "viscosity_law": run_viscosity_law(settings),
+        "diameter_basis": run_diameter_basis(settings),
+        "haematocrit_model": "distributed_iterative" if _distributes_haematocrit(settings) else "fixed",
+    }
+    for key, value in expected.items():
+        if recorded.get(key) not in (None, value):
+            differences.append(f"{key} {recorded[key]!r} where these settings give {value!r}")
+    if recorded.get("haematocrit") is not None and not np.isclose(
+        float(recorded["haematocrit"]), float(settings["haematocrit"]), rtol=1e-9, atol=0.0
+    ):
+        differences.append(f"haematocrit {recorded['haematocrit']} where these settings give {settings['haematocrit']}")
+    open_ends = haemodynamics.open_ends.conditions_on_graph(G)
+    if open_ends and open_ends.model != settings.get("open_end_model", open_ends.model):
+        differences.append(
+            f"open_end_model {open_ends.model!r} where these settings give {settings['open_end_model']!r}"
+        )
+    for name, nodes in (("inlet_p_bc", boundaries.inlet_nodes), ("outlet_p_bc", boundaries.outlet_nodes)):
+        held = [G.nodes[node].get("pressure") for node in nodes if node in G]
+        held = [float(value) for value in held if value is not None and np.isfinite(float(value))]
+        if held and not np.allclose(held, float(settings[name]), rtol=1e-9, atol=1e-9):
+            differences.append(f"{name} {held[0]:g} Pa where these settings give {float(settings[name]):g} Pa")
+    return differences
 
 
 def vascular_communities_enabled(settings: dict) -> bool:

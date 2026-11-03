@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -147,6 +147,7 @@ def run_pericyte_geometry_sweep(
     output_dir: Path | str,
     sweep_axis: GeometryAxis,
     pericyte_mask_placed=None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Sweep spacing or constriction length at fixed dilation and pressure.
 
@@ -158,7 +159,8 @@ def run_pericyte_geometry_sweep(
     scales them (:func:`~haemolynx.haemodynamics.capillary.dilate_capillaries`).
     Inlet pressure is the run's ``inlet_p_bc`` (not a pressure sweep).
     *pericyte_mask_placed* is the pericyte mask read and placed once; without
-    it a mask the settings name is read and placed here, once.
+    it a mask the settings name is read and placed here, once. *heartbeat*
+    is called at each grid point: a cancelled run raises from it.
     """
     if sweep_axis not in ("spacing", "length"):
         raise ValueError(
@@ -220,6 +222,8 @@ def run_pericyte_geometry_sweep(
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for axis_value in axis_values:
+        if heartbeat is not None:
+            heartbeat()
         if sweep_axis == "spacing":
             spacing = float(axis_value)
             length = fixed_length

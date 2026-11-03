@@ -222,10 +222,13 @@ def load_pericyte_mask(
     axis_order: str = CANONICAL_AXIS_ORDER,
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float], tuple[float, float, float]]:
     """The pericyte mask as a boolean volume on *graph*'s grid (cut to its
     crop box, reduced by its downsample on import), its voxel size ``(x, y,
-    z)`` and the same ``(z, y, x)``.
+    z)`` and the same ``(z, y, x)``. A 2D mask is a single-slice volume, as a
+    2D image is; *use_memmap* keeps it on disk (the low-RAM option).
 
     The mask's voxel size is resolved with the run's *voxel_size_override_xyz*
     and *voxel_size_policy*, as the main image's and the vessel masks' are,
@@ -240,11 +243,16 @@ def load_pericyte_mask(
         axis_order=axis_order,
         description=PERICYTE_MASK_DESCRIPTION,
         objects=True,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
     # Its centroids are placed against the graph's positions, which are
     # measured from the crop_on_import box's corner when the image was cut,
     # on the grid it was downsampled to.
-    mask_bool = mask_volume_like_graph(mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION)
+    mask_bool = mask_volume_like_graph(
+        mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION,
+        use_memmap=use_memmap, memmap_directory=memmap_directory,
+    )
     downsample = graph_downsample(graph)
     image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
     # Under the auto policy a mask with no voxel size of its own (an ilastik
@@ -388,10 +396,12 @@ def place_pericyte_mask(
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> PlacedPericyteMask:
     """The pericyte mask at *pericyte_mask_path* read onto *graph*'s grid
-    (:func:`load_pericyte_mask`) and its pericytes placed on *graph*'s
-    capillaries (:func:`place_pericytes`)."""
+    (:func:`load_pericyte_mask`; on disk with *use_memmap*) and its
+    pericytes placed on *graph*'s capillaries (:func:`place_pericytes`)."""
     mask_bool, voxel_size_xyz, voxel_size_zyx = load_pericyte_mask(
         pericyte_mask_path,
         graph,
@@ -399,6 +409,8 @@ def place_pericyte_mask(
         axis_order=axis_order,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
     placement = place_pericytes(
         graph,

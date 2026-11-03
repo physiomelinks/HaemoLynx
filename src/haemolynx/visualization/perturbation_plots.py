@@ -262,6 +262,7 @@ def export_non_sweep_perturbation_artifacts(
     statistics_kwargs: Mapping[str, Any] | None = None,
     voxel_size_zyx: tuple[float, float, float] | None = None,
     betweenness_and_communities: bool = False,
+    image_shape: Sequence[int] | None = None,
 ) -> list[Path]:
     """Pipeline-like plots and statistics CSVs for one non-sweep perturbation.
 
@@ -279,6 +280,9 @@ def export_non_sweep_perturbation_artifacts(
     *voxel_size_zyx* is the per-array-axis spacing the volume and density
     measures scale by. *betweenness_and_communities* also writes the three
     weighted betweenness/community JSON reports ``export_results`` writes.
+    *image_shape* is the voxel shape of the box the baseline's statistics
+    divide by; without it, the box the plots are drawn on (the image, or one
+    spanning the graph in 1 um voxels).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -303,7 +307,7 @@ def export_non_sweep_perturbation_artifacts(
     stats = statistics.compute_comprehensive_vessel_statistics(
         G,
         node_positions=node_positions,
-        image_dimensions=plot_image.shape,
+        image_dimensions=plot_image.shape if image_shape is None else tuple(image_shape),
         voxel_size=voxel_size,
         **(
             dict(statistics_kwargs)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -690,6 +691,45 @@ def test_a_spacing_sweep_of_mask_pericytes_is_warned_about(tmp_path):
     assert any("every point of the sweep will be the same" in w for w in report.warnings)
     entry["overrides"] = {}
     assert check_perturbations(_settings(perturbations=[entry]), SCHEMA).warnings == []
+
+
+def test_preflight_refuses_a_mask_perturbation_on_a_synthetic_network(tmp_path):
+    mask = tmp_path / "mask.tif"
+    mask.write_bytes(b"")
+    pericytes = {"use_pericyte_mask_constriction": True, "pericyte_mask_path": str(mask)}
+    for entry in (
+        {"name": "tone", "type": "pericyte_diameter_change", "overrides": pericytes},
+        {"name": "measured", "type": "pericyte_measured_constriction", "overrides": pericytes},
+        {"name": "blocks", "type": "capillary_block_mask", "overrides": {"capillary_block_mask_path": str(mask)}},
+    ):
+        for source in ("synthetic", "synthetic_surround"):
+            report = check_perturbations(_settings(perturbations=[entry], network_source=source), SCHEMA)
+            assert any("network is synthetic" in error for error in report.errors), (entry["name"], source)
+    periodic = {"name": "tone", "type": "pericyte_diameter_change", "overrides": {}}
+    report = check_perturbations(_settings(perturbations=[periodic], network_source="synthetic"), SCHEMA)
+    assert not any("network is synthetic" in error for error in report.errors)
+
+
+def test_preflight_refuses_a_perturbation_mask_of_another_shape(tmp_path):
+    """Read only once the perturbation ran, after the whole pipeline, a mask
+    of another shape than the image is caught from the TIFF headers first."""
+    import tifffile
+
+    image = tmp_path / "image.tif"
+    tifffile.imwrite(str(image), np.zeros((2, 4, 8), dtype=np.uint8))
+    for shape, refused in (((2, 4, 9), True), ((2, 4, 8), False)):
+        mask = tmp_path / f"mask_{shape[-1]}.tif"
+        tifffile.imwrite(str(mask), np.zeros(shape, dtype=np.uint8))
+        for entry in (
+            {
+                "name": "tone",
+                "type": "pericyte_diameter_change",
+                "overrides": {"use_pericyte_mask_constriction": True, "pericyte_mask_path": str(mask)},
+            },
+            {"name": "blocks", "type": "capillary_block_mask", "overrides": {"capillary_block_mask_path": str(mask)}},
+        ):
+            report = check_perturbations(_settings(perturbations=[entry], input_path=image), SCHEMA)
+            assert any("not a mask of this image" in e for e in report.errors) is refused, (shape, entry["name"])
 
 
 def test_preflight_reports_a_bad_perturbation(capsys):

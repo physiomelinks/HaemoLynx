@@ -150,7 +150,8 @@ def placed_pericyte_mask(
     """The pericyte mask *settings* constrict from, read and placed on
     *graph* once (:func:`~haemolynx.haemodynamics.pericyte_mask.place_pericyte_mask`)
     with the arguments :func:`constriction_strategy_kwargs` gives the
-    strategy; None when the settings take no mask."""
+    strategy, and on disk under the low-RAM option (``use_memmap_loading``);
+    None when the settings take no mask."""
     arguments = constriction_strategy_kwargs(settings, diameter_by_branch_order={})
     if not arguments["use_pericyte_mask_constriction"] or arguments["pericyte_mask_path"] in (None, ""):
         return None
@@ -164,6 +165,8 @@ def placed_pericyte_mask(
         max_assignment_distance_um=arguments["max_assignment_distance_um"],
         min_pericyte_diameter_um=arguments["min_pericyte_diameter_um"],
         max_pericyte_diameter_um=arguments["max_pericyte_diameter_um"],
+        use_memmap=bool(settings.get("use_memmap_loading")),
+        memmap_directory=settings.get("memmap_directory"),
     )
 
 

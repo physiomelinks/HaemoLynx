@@ -257,6 +257,34 @@ def test_a_perturbation_leaves_the_weighted_reports_out_with_betweenness_and_com
     assert not [name for name in written if "_betweenness_communities_" in name]
 
 
+def test_a_synthetic_networks_perturbation_divides_by_the_baselines_box(tmp_path):
+    """With no image (a synthetic run), the export sizes the box on the
+    template's voxel grid; a perturbation sized it in 1 um voxels and then
+    scaled by that grid's voxel size, so its vessel density was not the
+    baseline's whenever the voxels were not 1 um."""
+    import numpy as np
+
+    from haemolynx.pipeline import run_perturbations
+    from haemolynx.pipeline.stages import synthetic_box_shape
+
+    from test_perturbation_stage import SCHEMA, _boundaries, _model, _settings, _statistics
+
+    model = _model()
+    voxel = (2.0, 1.0, 2.0)
+    model.graph.graph["image_extent_um"] = (10.0, 10.0, 1600.0)
+    model.graph.graph["image_voxel_size_zyx"] = voxel
+    run = run_perturbations(
+        _settings(tmp_path, [ARTERIOLE_DILATION], statistics=True), model, _boundaries(), SCHEMA
+    )
+    result = run.results[0]
+    assert result.ok, result.error
+
+    rows = _statistics(result.output_dir / f"{ARTERIOLE_DILATION['name']}_statistics.csv")
+    (volume,) = [float(value) for (_section, metric), value in rows.items() if metric.startswith("Total Image Volume")]
+    expected = float(np.prod(np.multiply(synthetic_box_shape(model.graph), voxel)))
+    assert volume == pytest.approx(expected, rel=1e-12)
+
+
 def test_a_perturbation_reassigns_vascular_communities_on_its_own_network(tmp_path):
     run = _run(
         tmp_path,

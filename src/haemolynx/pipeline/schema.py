@@ -7168,7 +7168,9 @@ SCHEMA = Schema(
             help=(
                 "Vessels to block, by the branchID shown when hovering a "
                 "vessel after the Solve stage (e.g. [12, 40]), or as "
-                "[u, v, key]. Read when blocking listed vessels"
+                "[u, v, key]. The panel writes each as [branchID, u, v, key], "
+                "so one listed on a network since built again is refused. "
+                "Read when blocking listed vessels"
             ),
             section=_PERTURBATION_RUNS,
             requires=("capillary_block_selection=vessel_ids",),

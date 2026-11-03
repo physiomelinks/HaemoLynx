@@ -351,6 +351,27 @@ def test_zeroing_the_stopped_vessels_keeps_every_pressure():
     assert again[2][3][0]["flow_abs"] > 0
 
 
+def test_a_listed_vessel_names_its_ends_and_a_network_built_since_is_refused():
+    """A branchID is the vessel's place in the edge order, so one listed on
+    a network since built again blocked another vessel without a word. The
+    panel writes [branchID, u, v, key]; the vessel at that place must still
+    be that one."""
+    G = _many_capillaries(4)
+    edges = list(G.edges(keys=True))
+    listed = [[2, *edges[2]], [3, edges[3][1], edges[3][0], edges[3][2]]]
+
+    blocked, _summary = resolve_blocked_vessels(G, selection="vessel_ids", vessel_ids=listed)
+    assert blocked == [edges[2], edges[3]]
+
+    rebuilt = nx.relabel_nodes(G, {n: n + 100 for n in G.nodes})
+    with pytest.raises(ValueError, match="built again"):
+        resolve_blocked_vessels(rebuilt, selection="vessel_ids", vessel_ids=listed)
+    # A plain branchID still names the vessel at its place.
+    assert resolve_blocked_vessels(rebuilt, selection="vessel_ids", vessel_ids=[2])[0] == [
+        list(rebuilt.edges(keys=True))[2]
+    ]
+
+
 def test_a_vessel_draining_through_an_open_end_is_not_stopped():
     """0-1-2-3 runs inlet to outlet and 1-4 leaves the image, draining through
     the baseline's open-end condition. Blocking 2-3 stops 2-3 and 1-2 (fed

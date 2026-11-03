@@ -9808,6 +9808,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         starting_values_for_type,
         summary,
         to_settings,
+        vessel_ids_with_ends,
         visible_tab_settings,
     )
 
@@ -9880,10 +9881,31 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             if name in editor.editors
         }
         values = entry_values(editor)
+        if "capillary_block_vessel_ids" in read:
+            read["capillary_block_vessel_ids"] = vessel_ids_with_ends(
+                read["capillary_block_vessel_ids"], shown_vessel_ends()
+            )
         return {
             name: value
             for name, value in read.items()
             if value is not None and entry_shows(name, values)
+        }
+
+    def shown_vessel_ends() -> dict[int, tuple]:
+        """The baseline vessels layer's ``branchID -> (u, v, key)``: the
+        network a branchID typed here was read off its hover."""
+        from haemolynx.gui.results import VESSELS
+        from haemolynx.haemodynamics.perturbations import plain
+
+        layer = viewer.layers[VESSELS] if VESSELS in viewer.layers else None
+        features = getattr(layer, "features", None)
+        if features is None or not {"edge_index", "u", "v", "key"} <= set(features.columns):
+            return {}
+        return {
+            int(index): (plain(u), plain(v), plain(key))
+            for index, u, v, key in zip(
+                features["edge_index"], features["u"], features["v"], features["key"]
+            )
         }
 
     def entry_shows(name: str, values: Mapping[str, Any]) -> bool:

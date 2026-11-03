@@ -418,6 +418,19 @@ def test_two_entries_with_one_name_are_reported():
     assert any("two perturbations" in problem for problem in name_problems(entries))
 
 
+def test_a_branchid_is_written_with_the_ends_of_the_vessel_it_named():
+    from haemolynx.gui.perturbation_editing import vessel_ids_with_ends
+
+    ends = {12: (3, 4, 0), 40: (7, 9, 1)}
+    assert vessel_ids_with_ends([12, 40], ends) == [[12, 3, 4, 0], [40, 7, 9, 1]]
+    # One the network does not have, and ones already written out, are kept.
+    assert vessel_ids_with_ends([12, 99, [40, 7, 9, 1], [1, 2, 0]], ends) == [
+        [12, 3, 4, 0], 99, [40, 7, 9, 1], [1, 2, 0]
+    ]
+    assert vessel_ids_with_ends([True], {1: (0, 1, 0)}) == [True]
+    assert vessel_ids_with_ends("12, 40", ends) == "12, 40"
+
+
 def test_two_names_differing_only_in_case_are_reported():
     """They name one folder on Windows, as the run's checks say."""
     entries = [{"name": "Same", "type": UNCHOSEN}, {"name": "same", "type": UNCHOSEN}]

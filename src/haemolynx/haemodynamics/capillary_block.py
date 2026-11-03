@@ -16,7 +16,9 @@ Which vessels are blocked is chosen one of two ways:
   each vessel independently, so 10% of 50 vessels is always 5.
 * ``vessel_ids`` -- listed vessels, by the ``branchID`` the vessels layer's
   hover tooltip shows (the vessel's position in the graph's edge order), or
-  as ``[u, v, key]``.
+  as ``[u, v, key]``. The panel writes each as ``[branchID, u, v, key]``, so
+  one listed on a network since built again (its branchIDs naming other
+  vessels) is refused rather than blocking another vessel.
 
 After the perturbed network is re-solved, its *stopped* vessels -- the
 blocked ones and, once those are taken out, every vessel no inlet-to-outlet
@@ -229,6 +231,19 @@ def _edge_index(vessel_id: Any, edges: list, position: Mapping) -> int:
         if not 0 <= index < len(edges):
             raise ValueError(
                 f"vessel branchID {index} is not in this network (0 to {len(edges) - 1})"
+            )
+        return index
+    if isinstance(vessel_id, (list, tuple)) and len(vessel_id) == 4:
+        # [branchID, u, v, key]: the vessel the panel saw at that branchID.
+        # A network built again since numbers its vessels anew.
+        index = _edge_index(vessel_id[0], edges, position)
+        listed = tuple(_hashable(part) for part in vessel_id[1:])
+        u, v, key = edges[index][:3]
+        if listed not in ((u, v, key), (v, u, key)):
+            raise ValueError(
+                f"vessel branchID {index} was the vessel {list(listed)} (u, v, key) when it "
+                f"was listed and is {[u, v, key]} in this network: it has been built again "
+                "since, and its branchIDs name other vessels. List the vessels to block again"
             )
         return index
     if isinstance(vessel_id, (list, tuple)) and len(vessel_id) == 3:

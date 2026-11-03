@@ -343,6 +343,33 @@ def test_a_new_entrys_options_start_at_what_the_run_configured(panel):
     assert widget._haemolynx_values()["constriction_length_um"] == pytest.approx(20.0)
 
 
+def test_listed_vessels_are_written_with_the_ends_of_the_vessels_shown(panel):
+    """A branchID typed from the hover is written with the vessel it named
+    on the network shown, so a network built again since is caught."""
+    from haemolynx.gui._widget import _apply_layers
+    from haemolynx.gui.results import VESSELS
+    from test_gui_results_widget import a_run
+
+    widget, viewer, perturbations = panel
+    for group in a_run():
+        _apply_layers(viewer, group)
+    features = viewer.layers[VESSELS].features
+    ends = {
+        int(i): [int(u), int(v), int(k)]
+        for i, u, v, k in zip(features["edge_index"], features["u"], features["v"], features["key"])
+    }
+    ids = sorted(ends)
+    assert ids
+    perturbations.add()
+    perturbations.choose_type(0, "capillary_block")
+    editors = perturbations.editors()[0].editors
+    editors["capillary_block_selection"].value = "vessel_ids"
+    editors["capillary_block_vessel_ids"].value = ids
+
+    written = perturbations.entries()[0]["overrides"]["capillary_block_vessel_ids"]
+    assert written == [[index, *ends[index]] for index in ids]
+
+
 def test_what_the_editors_say_reaches_the_run_through_the_one_row(panel):
     widget, _viewer, perturbations = panel
     perturbations.add()

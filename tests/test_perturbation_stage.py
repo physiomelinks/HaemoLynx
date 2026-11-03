@@ -635,6 +635,41 @@ def test_a_pressure_and_capillary_sweep_writes_its_combined_csv(tmp_path):
     assert run.results[0].summary["sweep_points"] == 4
 
 
+def test_the_summary_and_edges_give_the_numbers_worked_by_hand(tmp_path):
+    """Only the headers were checked: a delta of the wrong sign, a percent
+    of the perturbed rather than the baseline, or a ratio upside down would
+    all have passed. A 20% wider arteriole on the line, by hand."""
+    run = _run(tmp_path, [ARTERIOLE_DILATION])
+    model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0, viscosity_law="constant")
+    baseline = sum(model.resistance_of_uniform_segment(EDGE_LENGTH_UM, DIAMETERS[o]) for o in BRANCH_ORDERS)
+    wider = sum(
+        model.resistance_of_uniform_segment(EDGE_LENGTH_UM, DIAMETERS[o] * (1.2 if o == "Art1" else 1.0))
+        for o in BRANCH_ORDERS
+    )
+    folder = run.results[0].output_dir
+
+    with (folder / "art_dilate_20_summary.csv").open(encoding="utf-8") as handle:
+        (row,) = list(csv.DictReader(handle))
+    assert float(row["equivalent_resistance_pa_s_per_m3"]) == pytest.approx(wider, rel=1e-9)
+    assert float(row["baseline_equivalent_resistance_pa_s_per_m3"]) == pytest.approx(baseline, rel=1e-9)
+    assert float(row["delta_vs_baseline_pa_s_per_m3"]) == pytest.approx(wider - baseline, rel=1e-9)
+    assert float(row["percent_change_vs_baseline"]) == pytest.approx((wider - baseline) / baseline * 100, rel=1e-9)
+    flow = float(row["total_inlet_flow_m3_s"])
+    drop = float(row["inlet_pressure_pa"]) - float(row["outlet_pressure_pa"])
+    assert flow == pytest.approx(drop / wider, rel=1e-9)
+    assert abs(float(row["flow_balance_error_m3_s"])) <= 1e-9 * flow
+
+    with (folder / "art_dilate_20_edges.csv").open(encoding="utf-8") as handle:
+        edges = list(csv.DictReader(handle))
+    assert len(edges) == len(BRANCH_ORDERS)
+    for edge, order in zip(edges, BRANCH_ORDERS):
+        expected = 1.2 ** -4 if order == "Art1" else 1.0
+        assert float(edge["resistance_ratio"]) == pytest.approx(expected, rel=1e-12)
+        assert float(edge["baseline_resistance_pa_s_per_m3"]) == pytest.approx(
+            model.resistance_of_uniform_segment(EDGE_LENGTH_UM, DIAMETERS[order]), rel=1e-12
+        )
+
+
 def test_the_summary_says_what_it_did_and_what_it_did_it_to(tmp_path):
     run = _run(tmp_path, [ARTERIOLE_DILATION])
 
@@ -1266,6 +1301,145 @@ def test_a_placed_mask_constricts_as_reading_it_afresh_does(tmp_path):
     assert _resistances(placed) == _resistances(fresh)
 
 
+def test_a_mask_perturbation_on_a_synthetic_network_is_refused(tmp_path):
+    """A mask lies on an image's voxel grid, and a synthetic network has no
+    image (a surround moves the image's own vessels): its pericytes landed
+    off their vessels without a word, and the measured constriction failed
+    only after the whole run."""
+    entries = [
+        {**MEASURED_CONSTRICTION, "name": "measured"},
+        {**CAPILLARY_BLOCK_MASK, "name": "blocks"},
+        {
+            "name": "mask_tone",
+            "type": "pericyte_diameter_change",
+            "overrides": {
+                "use_pericyte_mask_constriction": True,
+                "pericyte_mask_path": MEASURED_CONSTRICTION["overrides"]["pericyte_mask_path"],
+            },
+        },
+    ]
+    run = _run(tmp_path, [*entries, PERICYTE_TONE], network_source="synthetic")
+
+    by_name = {result.name: result for result in run.results}
+    for entry in entries:
+        assert by_name[entry["name"]].error and "synthetic" in by_name[entry["name"]].error
+    # Periodic sites read no mask: they still run.
+    assert by_name[PERICYTE_TONE["name"]].ok
+
+
+def test_a_pericyte_mask_of_another_image_is_refused(tmp_path):
+    """A mask was placed by its coordinates whatever its shape; a run with a
+    segmentation in hand checks they are one grid."""
+    from types import SimpleNamespace
+
+    entry = {
+        "name": "mask_tone",
+        "type": "pericyte_diameter_change",
+        "overrides": {
+            "use_pericyte_mask_constriction": True,
+            "pericyte_mask_path": MEASURED_CONSTRICTION["overrides"]["pericyte_mask_path"],
+        },
+    }
+    other = SimpleNamespace(volume=SimpleNamespace(
+        image=np.zeros((3, 3, 1000), dtype=np.uint8), voxel_size_zyx=(1.0, 1.0, 1.0)
+    ))
+    run = run_perturbations(_settings(tmp_path, [entry]), _model(), _boundaries(), SCHEMA, network=other)
+    assert "not a mask of this image" in run.results[0].error
+
+    same = run_perturbations(
+        _settings(tmp_path / "same", [entry]), _model(), _boundaries(), SCHEMA, network=_segmented_network()
+    )
+    assert same.results[0].ok, same.results[0].error
+
+
+def test_a_2d_runs_masks_are_read_as_one_slice(tmp_path):
+    """A 2D image is read as a single-slice volume, and a mask saved from it
+    was refused ("Expected a 3D pericyte mask"). The fixture's vessels lie
+    in the plane z = 0."""
+    import tifffile
+
+    pericytes = np.zeros(MASK_SHAPE[1:], dtype=np.uint8)
+    pericytes[:3, 590:612] = 1  # one pericyte of a pericyte's size, on the first B01
+    blocks = np.zeros(MASK_SHAPE[1:], dtype=np.uint8)
+    blocks[0, 600:603] = 1
+    pericyte_path, block_path = tmp_path / "pericytes_2d.tif", tmp_path / "blocks_2d.tif"
+    tifffile.imwrite(str(pericyte_path), pericytes)
+    tifffile.imwrite(str(block_path), blocks)
+    entries = [
+        {
+            "name": "mask_tone",
+            "type": "pericyte_diameter_change",
+            "overrides": {"use_pericyte_mask_constriction": True, "pericyte_mask_path": str(pericyte_path)},
+        },
+        {"name": "stall", "type": "capillary_block_mask", "overrides": {"capillary_block_mask_path": str(block_path)}},
+    ]
+    run = _run(tmp_path, entries)
+
+    tone, stall = run.results
+    assert tone.ok, tone.error
+    assert tone.summary["active_pericyte_count"] == 1
+    assert stall.ok, stall.error
+    assert stall.summary["blocked_vessels"] == 1
+
+
+def test_mask_perturbations_read_their_masks_on_disk_under_the_low_ram_option(tmp_path, monkeypatch):
+    """Under the low-RAM option no step copies a whole volume into RAM; both
+    masks were read whole whatever it said. On disk, the answer is the same
+    to the bit."""
+    import functools
+
+    from haemolynx.haemodynamics import capillary_block_mask, pericyte_mask
+
+    seen: list[type] = []
+    for module, name in ((pericyte_mask, "place_pericytes"), (capillary_block_mask, "blocks_from_mask")):
+        real = getattr(module, name)
+
+        def spy(graph, mask, *args, _real=real, **kwargs):
+            seen.append(type(mask))
+            return _real(graph, mask, *args, **kwargs)
+
+        monkeypatch.setattr(module, name, functools.wraps(real)(spy))
+    entries = [
+        {
+            "name": "mask_tone",
+            "type": "pericyte_diameter_change",
+            "overrides": {
+                "use_pericyte_mask_constriction": True,
+                "pericyte_mask_path": MEASURED_CONSTRICTION["overrides"]["pericyte_mask_path"],
+            },
+        },
+        CAPILLARY_BLOCK_MASK,
+    ]
+    in_ram = _run(tmp_path / "ram", entries)
+    assert np.memmap not in seen
+    seen.clear()
+    on_disk = _run(tmp_path / "disk", entries, use_memmap_loading=True)
+
+    assert seen and all(issubclass(kind, np.memmap) for kind in seen)
+    for ram, disk in zip(in_ram.results, on_disk.results):
+        assert ram.ok and disk.ok, (ram.error, disk.error)
+        assert _resistances(disk.graph) == _resistances(ram.graph)
+        assert disk.summary["equivalent_resistance"] == ram.summary["equivalent_resistance"]
+
+
+def test_a_baseline_solved_otherwise_is_refused(tmp_path):
+    """Run again from this tab after a setting upstream changed, the
+    perturbations re-solved the network with the new settings against a
+    baseline solved with the old: refused, naming what differs."""
+    settings, model, boundaries = _hct_baseline(tmp_path, [ARTERIOLE_DILATION])
+    assert run_perturbations(settings, model, boundaries, SCHEMA).results[0].ok
+
+    for change, named in (
+        ({"inlet_p_bc": 2000.0}, "inlet_p_bc"),
+        ({"outlet_p_bc": 10.0}, "outlet_p_bc"),
+        ({"haematocrit_model": "fixed"}, "haematocrit_model"),
+        ({"haematocrit": 0.3}, "haematocrit"),
+        ({"viscosity_law": "constant"}, "viscosity_law"),
+    ):
+        with pytest.raises(ValueError, match=named):
+            run_perturbations({**settings, **change}, model, boundaries, SCHEMA)
+
+
 def test_the_order_they_are_listed_in_does_not_matter(tmp_path):
     forwards = _run(tmp_path / "forwards", [ARTERIOLE_DILATION, PERICYTE_TONE])
     backwards = _run(tmp_path / "backwards", [PERICYTE_TONE, ARTERIOLE_DILATION])
@@ -1363,9 +1537,29 @@ def test_an_override_a_type_does_not_read_is_not_applied(tmp_path):
 # --- progress ----------------------------------------------------------------
 
 
-def test_one_step_is_reported_per_entry(tmp_path):
+def test_one_step_is_reported_per_entry(tmp_path, monkeypatch):
+    """A step reports one just finished: each perturbation's comes after it
+    ran, naming the next. It came before, so the bar was full while the last
+    perturbation, perhaps a long sweep, was still running."""
+    from haemolynx.pipeline import stages
+
+    ran: list[str] = []
+    real = stages._perturb_one
+
+    def counting(spec, *args, **kwargs):
+        ran.append(spec.name)
+        return real(spec, *args, **kwargs)
+
+    monkeypatch.setattr(stages, "_perturb_one", counting)
     events: list[ProgressEvent] = []
-    run = RunProgress(events.append)
+    finished_by_then: list[int] = []
+
+    def record(event: ProgressEvent) -> None:
+        events.append(event)
+        if event.kind == STEP:
+            finished_by_then.append(len(ran))
+
+    run = RunProgress(record)
 
     with run.stage("run_perturbations") as reporter:
         run_perturbations(
@@ -1385,6 +1579,52 @@ def test_one_step_is_reported_per_entry(tmp_path):
     assert [event.step_index for event in steps] == list(range(len(EVERY_TYPE_ONCE)))
     assert {event.step_total for event in steps} == {len(EVERY_TYPE_ONCE)}
     assert {event.stage for event in steps} == {"run_perturbations"}
+    assert finished_by_then == list(range(1, len(EVERY_TYPE_ONCE) + 1))
+    assert [event.next_step for event in steps] == [
+        entry["name"] for entry in EVERY_TYPE_ONCE[1:]
+    ] + [None]
+
+
+def test_a_cancel_inside_a_sweep_stops_the_run_there(tmp_path):
+    """A cancel was seen only between perturbations, so a long sweep ran to
+    its end first; and one raised inside a perturbation was logged as its
+    failure. Each grid point now beats, and the cancel stops the run."""
+    from haemolynx.pipeline.progress import HEARTBEAT
+
+    class Stop(Exception):
+        pass
+
+    beats: list[ProgressEvent] = []
+
+    def cancel_at_the_second_point(event: ProgressEvent) -> None:
+        if event.kind == HEARTBEAT:
+            beats.append(event)
+            if len(beats) >= 2:  # cancelled from then on, as a panel's run is
+                raise Stop()
+
+    sweep = {
+        "name": "long_sweep",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {
+            "pericyte_dilation_min_percent": -2,
+            "pericyte_dilation_max_percent": 2,
+            "pericyte_dilation_step_percent": 1,
+        },
+    }
+    run = RunProgress(cancel_at_the_second_point)
+    with pytest.raises(Stop):
+        with run.stage("run_perturbations") as reporter:
+            run_perturbations(
+                _settings(tmp_path, [sweep, ARTERIOLE_DILATION]),
+                _model(),
+                _boundaries(),
+                SCHEMA,
+                progress=reporter,
+            )
+
+    out = tmp_path / "out"
+    assert not (out / perturbation_folder_name("long_sweep", sweep["type"]) / "pericyte_dilation_sweep.csv").exists()
+    assert not (out / perturbation_folder_name(ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"])).exists()
 
 
 # --- edges CSV reports the resolved diameter, not the raw FWHM attribute -----
@@ -1976,3 +2216,62 @@ def test_a_capillary_block_that_blocks_nothing_stops_nothing(tmp_path):
         assert data["flow_change_vs_baseline"] == pytest.approx(1.0)
     stats = _statistics(result.output_dir / f"{entry['name']}_statistics.csv")
     assert stats[("Core Statistics", "Vessels Carrying Flow")] == str(len(BRANCH_ORDERS))
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_a_run_again_from_this_tab_gives_the_whole_runs_perturbations(tmp_path):
+    """"Run from this stage" on the Perturbations tab, as the panel does it:
+    the earlier stages' outputs handed back, the solved network resumed. Its
+    perturbations are the whole run's, number for number."""
+    from haemolynx.pipeline import PipelineResume, run_pipeline_stages
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(
+        {
+            "input_path": REPO_ROOT / "tests" / "data" / "seven_vessel_noisy_3d.tif",
+            "output_dir": tmp_path / "whole",
+            "plot_dir": tmp_path / "whole" / "plots",
+            "statistics": False,
+            "show_plots_in_ide": False,
+            "interactive_plots": False,
+            "run_perturbations": True,
+            "perturbations": [ARTERIOLE_DILATION, PRESSURE_SWEEP],
+        }
+    )
+    settings = resolve_settings(values, schema=SCHEMA, config_path=None)
+    produced: dict[str, Any] = {}
+    solved = run_pipeline_stages(settings, SCHEMA, on_stage_output=produced.__setitem__)
+    whole = produced["run_perturbations"]
+    boundaries = produced["assign_boundaries"]
+
+    again = dict(settings, output_dir=tmp_path / "again")
+    resumed: dict[str, Any] = {}
+    run_pipeline_stages(
+        again,
+        SCHEMA,
+        resume=PipelineResume(
+            start_from="run_perturbations",
+            graph=solved,
+            inlet_nodes=tuple(boundaries.inlet_nodes),
+            outlet_nodes=tuple(boundaries.outlet_nodes),
+            resistance_node_pair=boundaries.resistance_node_pair,
+            inputs=produced["segment"],
+            volume=produced["skeletonise"],
+            network=produced["build_network"],
+        ),
+        on_stage_output=resumed.__setitem__,
+    )
+    other = resumed["run_perturbations"]
+
+    assert [r.name for r in other.results] == [r.name for r in whole.results]
+    assert other.baseline["equivalent_resistance"] == pytest.approx(whole.baseline["equivalent_resistance"], rel=1e-12)
+    for first, second in zip(whole.results, other.results):
+        assert first.ok and second.ok, (first.error, second.error)
+        assert second.output_dir.parent == tmp_path / "again"
+    assert other.results[0].summary["equivalent_resistance"] == pytest.approx(
+        whole.results[0].summary["equivalent_resistance"], rel=1e-12
+    )
+    np.testing.assert_allclose(
+        other.results[1].sweep_flows.flow_abs, whole.results[1].sweep_flows.flow_abs, rtol=1e-12, atol=0.0
+    )

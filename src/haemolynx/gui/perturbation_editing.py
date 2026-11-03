@@ -73,6 +73,7 @@ __all__ = [
     "summary",
     "to_settings",
     "orphaned_tab_settings",
+    "vessel_ids_with_ends",
     "visible_tab_settings",
 ]
 
@@ -426,6 +427,24 @@ def name_problems(entries: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
             problems.append(f"two perturbations are called {name!r}")
         seen.add(name.casefold())
     return tuple(problems)
+
+
+def vessel_ids_with_ends(ids: Any, ends: Mapping[int, tuple]) -> Any:
+    """A capillary block's listed vessels with each plain branchID that
+    *ends* knows (the shown network's ``branchID -> (u, v, key)``) written as
+    ``[branchID, u, v, key]``: a network built again since numbers its
+    vessels anew, and the run refuses an ID whose vessel has changed rather
+    than block another. Anything else is kept as it is."""
+    if not isinstance(ids, (list, tuple)):
+        return ids
+    kept: list[Any] = []
+    for item in ids:
+        is_id = isinstance(item, int) and not isinstance(item, bool)
+        if is_id and int(item) in ends:
+            kept.append([int(item), *ends[int(item)]])
+        else:
+            kept.append(item)
+    return kept
 
 
 def summary(entries: Sequence[Mapping[str, Any]]) -> str:

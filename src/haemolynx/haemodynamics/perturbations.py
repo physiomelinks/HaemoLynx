@@ -61,6 +61,7 @@ __all__ = [
     "is_sweep_perturbation",
     "places_pericytes",
     "perturbation_folder_name",
+    "perturbation_mask_setting",
     "perturbation_output_dir",
     "perturbation_problems",
     "perturbations_from_settings",
@@ -372,6 +373,22 @@ PERICYTE_PERTURBATION_TYPES: frozenset[str] = frozenset(
 def places_pericytes(perturbation_type: Any) -> bool:
     """Whether a perturbation of *perturbation_type* places pericyte sites."""
     return str(perturbation_type) in PERICYTE_PERTURBATION_TYPES
+
+
+def perturbation_mask_setting(perturbation_type: Any, values: Mapping[str, Any]) -> str | None:
+    """The mask a perturbation of *perturbation_type* reads, as the path
+    setting naming it, on *values* (the run's settings with the entry's
+    overrides): the pericyte mask of a pericyte type taking its sites from
+    one, the block mask of ``capillary_block_mask``; None for one that reads
+    no mask."""
+    text = str(perturbation_type)
+    if text == "capillary_block_mask":
+        return "capillary_block_mask_path"
+    if text == MEASURED_CONSTRICTION_TYPE or (
+        places_pericytes(text) and values.get("use_pericyte_mask_constriction")
+    ):
+        return "pericyte_mask_path"
+    return None
 
 
 def settings_for_perturbation_type(perturbation_type: Any) -> tuple[str, ...]:

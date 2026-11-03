@@ -564,6 +564,7 @@ def run_pericyte_dilation_pressure_sweep(
     sweep_dilation: bool = True,
     sweep_pressure: bool = True,
     pericyte_mask_placed=None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Sweep dilation and/or inlet pressure, writing a CSV of curves.
 
@@ -583,7 +584,8 @@ def run_pericyte_dilation_pressure_sweep(
     *pericyte_mask_placed* is the pericyte mask read and placed once
     (:func:`~haemolynx.haemodynamics.constriction_strategy.placed_pericyte_mask`);
     without it a mask the settings name is read and placed here, once, for
-    every grid point.
+    every grid point. *heartbeat* is called at each grid point: a cancelled
+    run raises from it.
     """
     if not sweep_dilation and not sweep_pressure:
         raise ValueError(
@@ -614,6 +616,8 @@ def run_pericyte_dilation_pressure_sweep(
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
+        if heartbeat is not None:
+            heartbeat()
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
         dilated, scaled_diameters, _capillaries, _measured = dilate_capillaries(
             G, diameter_by_branch_order, dilation_factor
@@ -725,6 +729,7 @@ def run_arteriole_dilation_pressure_sweep(
     output_dir: Path | str,
     sweep_dilation: bool = True,
     sweep_pressure: bool = True,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Sweep arteriole whole-branch diameter and/or inlet pressure.
 
@@ -735,7 +740,8 @@ def run_arteriole_dilation_pressure_sweep(
     placed.
 
     *sweep_dilation* and *sweep_pressure* choose which axes move; both True is
-    the combined arteriole×pressure sweep.
+    the combined arteriole×pressure sweep. *heartbeat* is called at each grid
+    point.
     """
     if not sweep_dilation and not sweep_pressure:
         raise ValueError(
@@ -767,6 +773,8 @@ def run_arteriole_dilation_pressure_sweep(
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
+        if heartbeat is not None:
+            heartbeat()
         scale = percent_change_to_scale(float(dilation_percent))
         scaled, scaled_table, _summary = scale_arteriole_diameters(
             G,

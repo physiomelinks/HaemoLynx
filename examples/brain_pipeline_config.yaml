@@ -1073,7 +1073,7 @@ perturbation_runs:
   capillary_block_seed: 20240917
   # Draw the random block this many times -- from the seed, then the seeds after it -- and report each comparison metric's mean, standard deviation and 2.5-97.5% range over the draws, beside the first draw's own results. One draw is one outcome: which vessels a block happens to hit can matter as much as how many. Read when blocking by branch order and probability  [range 1..; needs capillary_block_selection = branch_order_probability]
   capillary_block_replicates: 1
-  # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
+  # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. The panel writes each as [branchID, u, v, key], so one listed on a network since built again is refused. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
   capillary_block_vessel_ids: []
   # Mask of the blocks: blobs on an otherwise empty volume, on the segmented image's grid; each blob (connected component) is one block, and blocks the vessel it lies in  [must exist if set]
   capillary_block_mask_path: null

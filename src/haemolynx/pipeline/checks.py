@@ -29,6 +29,7 @@ from haemolynx.haemodynamics.viscosity import run_diameter_basis
 from haemolynx.haemodynamics.open_ends import ESTIMATED, TERMINAL_RESISTANCE
 from haemolynx.haemodynamics.perturbations import (
     MEASURED_CONSTRICTION_TYPE,
+    perturbation_mask_setting,
     perturbation_problems,
     perturbations_from_settings,
     settings_for_perturbation_type,
@@ -757,6 +758,16 @@ def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckRep
                 "from a mask, which places each where it lies whatever the spacing: every "
                 "point of the sweep will be the same."
             )
+        mask = perturbation_mask_setting(spec.type, {**settings, **spec.applied_overrides(schema)})
+        if mask is not None and network_is_synthetic(settings):
+            report.add_error(
+                f"perturbation '{spec.name}' reads {mask}, a mask on an image's voxel grid, "
+                "and the network is synthetic: nothing places it on the drawn vessels (a "
+                "surround moves the image's own). Fix: run it on the image's own run"
+            )
+        mismatch = _perturbation_mask_shape_problem(settings, spec, schema)
+        if mismatch:
+            report.add_error(mismatch)
         # A path a perturbation reads is read once that perturbation runs,
         # which is after the pipeline. Check it against the settings as they
         # will be then -- the overrides are what switch its feature on, and
@@ -786,6 +797,31 @@ def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckRep
             f"{len(specs)} configured: " + ", ".join(spec.name for spec in specs),
         )
     return report
+
+
+def _perturbation_mask_shape_problem(settings: Mapping[str, Any], spec, schema: Schema) -> str | None:
+    """A perturbation's mask of another shape than the input image, from the
+    TIFF headers: it would be placed on the wrong voxels, or refused only
+    once the perturbation ran, after the whole pipeline. None when the two
+    agree, or either is not a TIFF that can be read."""
+    if network_is_synthetic(settings):
+        return None  # refused as a whole: perturbation_problems
+    from haemolynx.io import axis_order_for_run
+
+    merged = {**settings, **spec.applied_overrides(schema)}
+    mask = perturbation_mask_setting(spec.type, merged)
+    if mask is None:
+        return None
+    axis_order = axis_order_for_run(settings)
+    mask_header = _tiff_header(merged.get(mask), axis_order)
+    image_header = _tiff_header(settings.get("input_path"), axis_order)
+    if mask_header is None or image_header is None or mask_header[0] == image_header[0]:
+        return None
+    return (
+        f"perturbation '{spec.name}': {mask} is {mask_header[0]} voxels where the input image is "
+        f"{image_header[0]}, so it is not a mask of this image. Fix: save the mask from the "
+        "input image, at its shape"
+    )
 
 
 def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
