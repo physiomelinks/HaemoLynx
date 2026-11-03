@@ -43,6 +43,7 @@ from haemolynx.graph.vessel_size_classes import (
     size_convention_of,
 )
 
+from ._contracted import vessel_span_um
 from .bifurcation import (
     GLOBAL_MASK_CATEGORIES,
     UNASSIGNED_CATEGORY,
@@ -113,9 +114,11 @@ def _median(values: list, missing: str) -> Union[float, str]:
 
 
 def _per_volume(amount: float, volume: Optional[float]) -> Union[float, str]:
-    if volume is None:
+    # A volume of 0 (a flat network's box, a 2D image, no tissue found) is
+    # no volume either: a density of 0 would read as no vessels.
+    if volume is None or not volume > 0:
         return _NO_VOLUME
-    return amount / volume if volume > 0 else 0.0
+    return amount / volume
 
 
 def carries_flow(data: dict) -> bool:
@@ -287,18 +290,19 @@ def _class_rows(
     return rows
 
 
-def _read_vessel(u: Any, v: Any, data: dict, node_positions: Optional[dict]) -> dict:
+def _read_vessel(
+    u: Any, v: Any, data: dict, node_positions: Optional[dict], own_ends: Optional[dict], floor: float
+) -> dict:
     length = _number(data.get("length"))
     length = max(length, 0.0) if length is not None else 0.0
     tortuosity = None
-    if node_positions and u != v and u in node_positions and v in node_positions:
-        straight = float(
-            np.linalg.norm(np.asarray(node_positions[u], float) - np.asarray(node_positions[v], float))
-        )
-        if straight > 0 and length > 0:
-            tortuosity = length / straight
+    straight = vessel_span_um(u, v, data, node_positions, own_ends) if node_positions else None
+    if straight is not None and straight > 0 and length > 0:
+        tortuosity = length / straight
     diameter = _number(data.get("diameter_um"))
-    flowing = carries_flow(data)
+    # The one rule for what carries flow: solved, and above the floor.
+    flow = _number(data.get("flow_abs"))
+    flowing = carries_flow(data) and flow is not None and abs(flow) > floor
     pressure_u, pressure_v = _number(data.get("pressure_u")), _number(data.get("pressure_v"))
     return {
         "label": data.get("branch_order"),
@@ -324,8 +328,15 @@ def compute_vessel_class_statistics(
     image_dimensions=None,
     *,
     tissue_volume_um3: Optional[float] = None,
+    own_ends: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """``{"Vessel Classes": {...}}`` for *G*: see the module docstring.
+
+    A vessel carries flow by the one rule
+    (:func:`~haemolynx.statistics.flux_heterogeneity.is_carrying`): solved,
+    and above :data:`~haemolynx.statistics.flux_heterogeneity.CARRYING_FLOOR_FRACTION`
+    of the largest flow. Its tortuosity spans its own two ends (*own_ends*
+    where contracting the bridges moved one, see :mod:`._contracted`).
 
     Inside it, how the vessels were classed, the volume the densities divide
     by, then one heading per class (:data:`VESSEL_CLASS_TITLES`) with its
@@ -341,8 +352,12 @@ def compute_vessel_class_statistics(
         if is_mg
         else G.edges(data=True)
     )
+    # Here, not at the top: flux_heterogeneity imports this module.
+    from .flux_heterogeneity import carrying_floor
+
+    floor = carrying_floor(G)
     vessels = [
-        _read_vessel(u, v, data, node_positions)
+        _read_vessel(u, v, data, node_positions, own_ends, floor)
         for u, v, data in edges
         if not data.get(IS_ZERO_RESISTANCE)
     ]

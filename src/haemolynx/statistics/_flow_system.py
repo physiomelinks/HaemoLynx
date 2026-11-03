@@ -1,31 +1,71 @@
 """A sparse inlet->outlet flow solve shared by the Laplacian-based analyses.
 
-Inlets are held at pressure 1 and outlets at 0; every other node connected
-to a terminal is solved for. Conductances come from the same
+The designated inlets are held at pressure 1 and outlets at 0, and each open
+end the analyses take as a terminal at the pressure the haemodynamic solve
+gave it on that scale (:func:`solved_open_end_pressures`); every other node
+connected to a terminal is solved for. Conductances come from the same
 ``statistics_route_weighting`` model as the route analyses (see
 :func:`haemolynx.statistics._route_graph._edge_conductance`). The system is
 linear, so every *fraction* derived from it (a vessel's share of the total
 flow, the flow lost when a vessel is blocked) is independent of the
 absolute pressures -- and with ``resistance`` weighting it reproduces the
-solved haemodynamic flow pattern exactly.
+solved haemodynamic flow pattern exactly, open ends and all.
 
 Conductances are rescaled so the largest is 1 before factorising: SI
 conductances are ~1e-16, small enough to hurt a sparse LU's pivoting.
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import splu
 
-from ._route_graph import _edge_conductance, _iter_edges
+from ._route_graph import Terminals, _edge_conductance, _iter_edges
+
+
+def _solved_pressure(G: Any, node: Any) -> Optional[float]:
+    try:
+        pressure = float(G.nodes[node].get("pressure"))
+    except (TypeError, ValueError):
+        return None
+    return pressure if np.isfinite(pressure) else None
+
+
+def solved_open_end_pressures(G: Any, terminals: Terminals) -> dict:
+    """Each open end among *terminals* (``open_inlets``, ``open_outlets``) and
+    the pressure the solve gave it, on the scale that holds the designated
+    inlets at 1 and outlets at 0: ``(p - outlets') / (inlets' - outlets')``,
+    each side's mean. Held at 1 or 0, an open end the solve put in between
+    fed or drained more than it did. Empty -- every open end at 1 or 0 --
+    when the designated inlets and outlets have no solved pressures, or the
+    inlets' are not above the outlets'."""
+    inlets, outlets, _both = terminals
+    open_ends = set(terminals.open_inlets) | set(terminals.open_outlets)
+    if not open_ends:
+        return {}
+    sides = []
+    for designated in (set(inlets) - open_ends, set(outlets) - open_ends):
+        pressures = [_solved_pressure(G, node) for node in designated]
+        if not pressures or any(p is None for p in pressures):
+            return {}
+        sides.append(float(np.mean(pressures)))
+    high, low = sides
+    if not high > low:
+        return {}
+    held = {}
+    for node in open_ends:
+        pressure = _solved_pressure(G, node)
+        if pressure is not None:
+            held[node] = (pressure - low) / (high - low)
+    return held
 
 
 class TerminalFlowSystem:
-    """One factorised inlet(1) -> outlet(0) pressure solve over *G*.
+    """One factorised inlet(1) -> outlet(0) pressure solve over *G*, with
+    each terminal in *held* at its own pressure instead.
 
     Attributes, all indexed over :attr:`edges` (every non-self-loop vessel
     not in *removed*, in :func:`_iter_edges` order):
@@ -46,6 +86,7 @@ class TerminalFlowSystem:
         weighting: str,
         *,
         removed: Optional[set] = None,
+        held: Optional[Mapping[Any, float]] = None,
     ) -> None:
         inlets = set(inlets)
         outlets = set(outlets)
@@ -96,6 +137,9 @@ class TerminalFlowSystem:
         for t in inlets:
             if t in self.index:
                 known[self.index[t]] = 1.0
+        for t, p in (held or {}).items():
+            if t in self.index and (t in inlets or t in outlets):
+                known[self.index[t]] = float(p)
         pressure = np.full(n, np.nan)
         pressure[is_terminal] = known[is_terminal]
 

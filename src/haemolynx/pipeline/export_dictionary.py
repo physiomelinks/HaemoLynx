@@ -363,8 +363,10 @@ FILES: tuple[OutputFile, ...] = (
     ),
     OutputFile(
         "{stem}_betweenness_communities_resistance.json", _RUN,
-        "Weighted betweenness and vascular communities, edges weighted by resistance: "
-        "the Weighted Betweenness and Communities section of the report, as JSON, written "
+        "Weighted betweenness and vascular communities by resistance: betweenness with each "
+        "vessel a distance of its resistance, communities with each vessel tying its ends by "
+        "its conductance (parallel vessels' ties added). "
+        "The Weighted Betweenness and Communities section of the report, as JSON, written "
         "while the betweenness or community statistic is on, with each zero-resistance "
         "bridge's two ends one node as in the statistics. Without haemodynamics every value "
         "is the text 'N/A (haemodynamics disabled)'.",
@@ -372,12 +374,14 @@ FILES: tuple[OutputFile, ...] = (
     ),
     OutputFile(
         "{stem}_betweenness_communities_edge_length.json", _RUN,
-        "The same, edges weighted by length (measured with or without haemodynamics).",
+        "The same by length: betweenness by length, communities tied by 1/length (measured "
+        "with or without haemodynamics).",
         columns_note="Keys as the report's rows; docs/statistics_glossary.md.",
     ),
     OutputFile(
         "{stem}_betweenness_communities_edge_flow.json", _RUN,
-        "The same, edges weighted by flow: 'N/A' values without haemodynamics too.",
+        "The same by flow: betweenness by 1/|flow|, communities tied by |flow|; 'N/A' values "
+        "without haemodynamics too.",
         columns_note="Keys as the report's rows; docs/statistics_glossary.md.",
     ),
     OutputFile(

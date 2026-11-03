@@ -21,7 +21,7 @@ from typing import Any, Dict, Iterable, Optional
 import networkx as nx
 import numpy as np
 
-from ._flow_system import TerminalFlowSystem
+from ._flow_system import TerminalFlowSystem, solved_open_end_pressures
 from ._route_graph import (
     _clear_edge_attributes,
     _effective_weighting,
@@ -143,7 +143,9 @@ def compute_single_vessel_occlusion_impact(
     problem = _terminal_problem(inlets, outlets, _route_graph(G, effective).graph)
     if problem is not None:
         return _unavailable("Occlusion Impact", problem, label, both)
-    system = TerminalFlowSystem(G, inlets, outlets, effective)
+    system = TerminalFlowSystem(
+        G, inlets, outlets, effective, held=solved_open_end_pressures(G, terminals)
+    )
     if system.total_flow <= 0.0:
         return _unavailable("Occlusion Impact", "no inlet-outlet flow", label, both)
 
@@ -288,7 +290,7 @@ def _interpolated_crossing(fractions: list, flows: list, level: float) -> Any:
     return f"> {fractions[-1]:g} (never reached)"
 
 
-def _curve(G, inlets, outlets, weighting, order, fractions, q0, intact) -> tuple[list, list]:
+def _curve(G, inlets, outlets, weighting, order, fractions, q0, intact, held) -> tuple[list, list]:
     flows, reach = [], []
     m = len(order)
     for fraction in fractions:
@@ -298,7 +300,7 @@ def _curve(G, inlets, outlets, weighting, order, fractions, q0, intact) -> tuple
         # Nothing removed is the intact network, already solved: each
         # factorisation is most of this function's cost.
         system = intact if not removed else TerminalFlowSystem(
-            G, inlets, outlets, weighting, removed=removed
+            G, inlets, outlets, weighting, removed=removed, held=held
         )
         flows.append(max(0.0, system.total_flow * system.scale / q0))
         reach.append(system.reachable_outlet_fraction(inlets, outlets))
@@ -335,7 +337,8 @@ def compute_occlusion_curves(
     problem = _terminal_problem(inlets, outlets, _route_graph(G, effective).graph)
     if problem is not None:
         return _unavailable("Occlusion Curves", problem, label, both)
-    base = TerminalFlowSystem(G, inlets, outlets, effective)
+    held = solved_open_end_pressures(G, terminals)
+    base = TerminalFlowSystem(G, inlets, outlets, effective, held=held)
     q0 = base.total_flow * base.scale
     if q0 <= 0.0:
         return _unavailable("Occlusion Curves", "no inlet-outlet flow", label, both)
@@ -365,7 +368,7 @@ def compute_occlusion_curves(
     for r in range(repeats):
         shuffled = list(vessels)
         random.Random(REPRODUCIBILITY_SEED + r).shuffle(shuffled)
-        flows, reach = _curve(G, inlets, outlets, effective, shuffled, fractions, q0, base)
+        flows, reach = _curve(G, inlets, outlets, effective, shuffled, fractions, q0, base, held)
         random_flows.append(flows)
         random_reach.append(reach)
     curves["random"] = (
@@ -373,7 +376,7 @@ def compute_occlusion_curves(
         np.mean(random_reach, axis=0).tolist(),
     )
     for name, order in orders.items():
-        curves[name] = _curve(G, inlets, outlets, effective, order, fractions, q0, base)
+        curves[name] = _curve(G, inlets, outlets, effective, order, fractions, q0, base, held)
 
     for name, (flows, reach) in curves.items():
         area = float(_trapezoid(flows, fractions) / max_fraction)

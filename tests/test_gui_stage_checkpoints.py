@@ -361,6 +361,46 @@ def test_a_run_from_hands_over_what_the_early_stages_returned(tmp_path):
     assert not skeleton_resume_path(tmp_path / "out", "stack").exists()
 
 
+def test_a_run_loaded_from_a_file_keeps_what_its_first_resume_loaded(tmp_path):
+    """A loaded run keeps no stage outputs, so every Regenerate of it loaded
+    the image and skeleton again. The first resume's are now kept for the
+    next, where the checkpoint had none; one it has is never replaced."""
+    from dataclasses import replace
+
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, inputs, volume, _graph = _record_with_outputs(tmp_path, settings)
+    loaded = StageCheckpoints()
+    loaded.replace_all([replace(item, output=None) for item in checkpoints.records()])
+    assert "volume" not in loaded._stored_outputs("post_process")
+
+    again = SkeletonisedVolume(
+        image=np.ones((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=tmp_path / "out",
+    )
+    loaded.keep_output("skeletonise", again)
+    loaded.keep_output("segment", inputs)
+    loaded.keep_output("assign_boundaries", object())  # not a stage a resume is handed
+    loaded.keep_output("solve", again)  # not recorded at all
+
+    stored = loaded._stored_outputs("post_process")
+    assert stored["volume"].image is again.image and stored["inputs"] == inputs
+    assert loaded.get("assign_boundaries").output is None and not loaded.has("solve")
+    assert loaded.get("skeletonise").graph is not None, "its graph and layers stay"
+    loaded.keep_output("skeletonise", volume)
+    assert loaded._stored_outputs("post_process")["volume"].image is again.image, "never replaced"
+    from haemolynx.pipeline.stages import VesselNetwork
+
+    loaded.freeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded.get("build_network").output is None, "nothing kept after Clear"
+    loaded.unfreeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded._stored_outputs("post_process")["network"].volume is again
+
+
 def test_a_run_from_hands_over_only_the_stages_before_it(tmp_path):
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()

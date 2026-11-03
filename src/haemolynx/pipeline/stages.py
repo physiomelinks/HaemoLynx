@@ -27,9 +27,11 @@ import csv
 import json
 import logging
 import pickle
+import threading
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
 import matplotlib.pyplot as plt
@@ -1246,12 +1248,14 @@ def _vessel_mask_sources(settings: Mapping[str, Any]) -> dict[str, tuple]:
 
 
 def _split_large_vessel_masks(
-    settings: Mapping[str, Any], large_arteriole_mask, large_venule_mask, voxel_size_xyz
+    settings: Mapping[str, Any], large_arteriole_mask, large_venule_mask, voxel_size_xyz, segmentation
 ) -> tuple:
     """``(large arteriole, large venule, small arteriole, small venule)``: the
     loaded large masks cut by width (``io.split_large_vessel_masks_by_diameter``),
     for a run whose small masks are cut from them
-    (``graph.small_vessel_masks_split_from_large``)."""
+    (``graph.small_vessel_masks_split_from_large``). The widths are read on
+    *segmentation*, the run's segmented image on the masks' grid, binary or
+    read as the run binarises it (:class:`_SegmentationBoxes`)."""
     if large_arteriole_mask is None:
         return large_arteriole_mask, large_venule_mask, None, None
     return io.split_large_vessel_masks_by_diameter(
@@ -1259,6 +1263,7 @@ def _split_large_vessel_masks(
         large_venule_mask,
         diameter_um=graph.large_vessel_mask_split_diameter_um(settings),
         voxel_size_xyz=voxel_size_xyz,
+        segmentation=segmentation,
         dilation_um=float(settings.get("large_vessel_mask_dilation_microns") or 0.0),
         use_memmap=bool(settings.get("use_memmap_loading", False)),
         memmap_directory=settings.get("memmap_directory"),
@@ -1331,7 +1336,7 @@ def thick_vessel_restriction_mask(
             io.load_and_validate_vessel_masks(**_vessel_mask_arguments(settings, "large"), **load)[:2]
         )
         if split:
-            cut = _split_large_vessel_masks(settings, *pairs["large"], voxel_size_xyz)
+            cut = _split_large_vessel_masks(settings, *pairs["large"], voxel_size_xyz, binary_image)
             pairs = {"large": cut[:2], "small": cut[2:]}
     if "small" in roles and "small" not in pairs:
         pairs["small"] = tuple(
@@ -2583,7 +2588,13 @@ def build_network(
             large_venule_mask,
             small_arteriole_mask,
             small_venule_mask,
-        ) = _split_large_vessel_masks(settings, large_arteriole_mask, large_venule_mask, main_voxel_size_xyz)
+        ) = _split_large_vessel_masks(
+            settings,
+            large_arteriole_mask,
+            large_venule_mask,
+            main_voxel_size_xyz,
+            _SegmentationBoxes(image, settings.get("input_path")),
+        )
     else:
         small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
             **_vessel_mask_arguments(mask_settings, "small"),
@@ -5027,29 +5038,51 @@ class _PostProcessSegmentation:
         volume.post_process_segmentation = made
         return made
 
+    # The Post processing tab's review lists read it on a worker thread while
+    # a run's post processing may: one makes it, the other waits for it.
+    _making = threading.RLock()
+
     @property
     def binary(self) -> np.ndarray | None:
-        if self._binary is None and self.image is not None:
-            self._binary = _to_binary_volume_for_skeletonization(
-                self.image,
-                use_memmap=bool(self.settings.get("use_memmap_loading")),
-                memmap_directory=self.settings.get("memmap_directory"),
-            )
-        return self._binary
+        with self._making:
+            if self._binary is None and self.image is not None:
+                self._binary = _to_binary_volume_for_skeletonization(
+                    self.image,
+                    use_memmap=bool(self.settings.get("use_memmap_loading")),
+                    memmap_directory=self.settings.get("memmap_directory"),
+                )
+            return self._binary
 
     def support(self, voxel_size_zyx=None) -> "preprocessing.MaskSupport | None":
         if self.binary is None:
             return None
-        if self._support is None:
-            self._support = preprocessing.MaskSupport(
-                self.binary,
-                self.voxel_size_zyx if voxel_size_zyx is None else tuple(float(v) for v in voxel_size_zyx),
-                max_background_gap_um=float(self.settings["bridge_max_background_gap_um"]),
-                min_mask_fraction=float(self.settings["bridge_min_mask_fraction"]),
-                low_memory=bool(self.settings.get("use_memmap_loading")),
-                memmap_directory=self.settings.get("memmap_directory"),
-            )
-        return self._support
+        with self._making:
+            if self._support is None:
+                self._support = preprocessing.MaskSupport(
+                    self.binary,
+                    self.voxel_size_zyx if voxel_size_zyx is None else tuple(float(v) for v in voxel_size_zyx),
+                    max_background_gap_um=float(self.settings["bridge_max_background_gap_um"]),
+                    min_mask_fraction=float(self.settings["bridge_min_mask_fraction"]),
+                    low_memory=bool(self.settings.get("use_memmap_loading")),
+                    memmap_directory=self.settings.get("memmap_directory"),
+                )
+            return self._support
+
+
+def post_process_segmentation_support(
+    settings: Mapping[str, Any], volume: "SkeletonisedVolume | None"
+) -> "preprocessing.MaskSupport | None":
+    """The ``MaskSupport`` post processing reads *volume*'s segmentation
+    through (the one kept on it, made here when there is none yet), so the
+    Post processing tab's review lists read the same one rather than
+    binarising a second copy. None without a segmentation, or without the
+    bridge settings it is held to."""
+    if volume is None or getattr(volume, "image", None) is None:
+        return None
+    if any(name not in settings for name in ("bridge_max_background_gap_um", "bridge_min_mask_fraction")):
+        return None
+    holder = SimpleNamespace(volume=volume)
+    return _PostProcessSegmentation.of(dict(settings), holder).support()
 
 
 def _judge_drawn_vessels(
@@ -5467,10 +5500,9 @@ def post_process(
     ):
         _reassign_small_vessel_boundaries(settings, G, boundaries, edited, touched, voxel_size_zyx)
     # What the lists now hold, for the panel's checkpoints to hand a later
-    # regenerate: they keep the Boundaries stage's own otherwise.
-    summary["boundary_nodes"] = {
-        name: list(getattr(boundaries, name)) for name in _BOUNDARY_NODE_LISTS
-    }
+    # regenerate: they keep the Boundaries stage's own otherwise. The re-solve
+    # (solve_post_processed) records them again after its network handling.
+    _record_post_processed_boundaries(summary, boundaries)
     if touched:
         census = _mark_touched_dead_end_kinds(settings, G, network, touched, segmentation)
         if census is not None:
@@ -5609,13 +5641,27 @@ def solve_post_processed(
     so perturbations and the export start from the network as edited. Every
     vessel's resistance is written again, and every flow solved again.
 
-    The returned solution's ``post_processed`` is what was brought in line.
+    The returned solution's ``post_processed`` is what was brought in line,
+    its ``boundary_nodes`` the lists as this solve left them: with
+    ``boundary_handling="remove_disconnected"`` the network handling drops
+    the boundary nodes of the pieces it removes, and a later resume must not
+    be handed them.
     """
     model = apply_network_handling(settings, model, boundaries, network, schema=schema)
     model = build_haemodynamic_model(settings, model, schema)
     solution = solve(settings, model, boundaries, schema)
-    solution.post_processed = model.results.get("post_process")
+    summary = model.results.get("post_process")
+    if isinstance(summary, dict):
+        _record_post_processed_boundaries(summary, boundaries)
+    solution.post_processed = summary
     return solution
+
+
+def _record_post_processed_boundaries(summary: dict, boundaries: BoundaryNodes) -> None:
+    """The boundary-node lists as *boundaries* now holds them, in *summary*."""
+    summary["boundary_nodes"] = {
+        name: list(getattr(boundaries, name)) for name in _BOUNDARY_NODE_LISTS
+    }
 
 
 #: ``boundary_handling``: what happens to a vessel no inlet-to-outlet path
@@ -7822,7 +7868,9 @@ def _perturb_one(
                 name_stem=spec.name,
                 statistics_kwargs=perturbation_statistics,
                 voxel_size_zyx=voxel_size_zyx,
-                betweenness_and_communities=bool(perturbed["statistics"]),
+                # As the baseline's: only while betweenness or communities are on.
+                betweenness_and_communities=bool(perturbed["statistics"])
+                and bool(perturbation_statistics["enabled_measures"] & WEIGHTED_MEASURES),
             )
         )
 
@@ -8108,6 +8156,11 @@ def tissue_measurement(
         )
     resolved = io.resolve_image_path_with_optional_zip(Path(path))
     stat = resolved.stat()
+    # The raw image is read onto the network's grid by the factor its record
+    # holds: recorded as raw_image_downsample says now (the perturbations
+    # measure before the export records it), and part of the key.
+    _record_downsample(network.graph, settings, network.volume)
+    downsample_record = network.graph.graph.get(DOWNSAMPLE_GRAPH_ATTRIBUTE) or {}
     key = (
         str(resolved),
         stat.st_mtime_ns,
@@ -8116,6 +8169,7 @@ def tissue_measurement(
         io.axis_order_for_run(settings),
         tuple(network.volume.voxel_size_zyx),
         tuple(settings[name] for name in _TISSUE_SETTINGS),
+        int(downsample_record.get("raw_factor", 1)),
     )
     segmentation = network.volume.image
     cached = network.tissue
@@ -8912,7 +8966,11 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
         )
         if role == "large" and split is not None:
             loaded_arteriole, loaded_venule, *small = _split_large_vessel_masks(
-                settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz
+                settings,
+                loaded_arteriole,
+                loaded_venule,
+                volume.voxel_size_xyz,
+                _SegmentationBoxes(volume.image, settings.get("input_path")),
             )
             changes["small_arteriole_mask"], changes["small_venule_mask"] = as_read(*small)
         loaded_arteriole, loaded_venule = as_read(loaded_arteriole, loaded_venule)

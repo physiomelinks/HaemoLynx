@@ -673,6 +673,27 @@ def test_intensity_cost_is_cheap_on_bright_voxels_and_dear_on_dark_ones():
         IntensityCostField(np.zeros((5, 5)))
 
 
+def test_the_raw_cost_blurs_the_same_distance_in_microns_on_every_axis():
+    """The blur was 1 voxel on every axis: on a stack whose z step is 4 um
+    and x step 1 um it reached four times as far in z, in microns."""
+    from scipy.ndimage import gaussian_filter
+
+    raw = np.zeros((9, 9, 9), dtype=np.float32)
+    raw[4, 4, 4] = 100.0
+    raw[4, 4, 6] = 50.0  # so the window's percentiles differ
+    anisotropic = IntensityCostField(raw, voxel_size_zyx=(4.0, 1.0, 1.0))
+    assert anisotropic.sigma_zyx == pytest.approx((0.25, 1.0, 1.0))
+    assert IntensityCostField(raw).sigma_zyx == pytest.approx((1.0, 1.0, 1.0)), "cube voxels as before"
+
+    window = anisotropic[0:9, 0:9, 0:9]
+    blurred = gaussian_filter(raw, (0.25, 1.0, 1.0))
+    black, white = np.percentile(blurred, (1.0, 99.5))
+    expected = 1.0 / np.clip((blurred - black) / (white - black), 0.01, 1.0)
+    assert np.allclose(window, expected)
+    # A voxel off the bright one in z (4 um away) is darker, so dearer, than one off in x (1 um).
+    assert window[3, 4, 4] > window[4, 4, 3]
+
+
 def test_trace_path_follows_the_bright_vessel_in_raw_data():
     points = trace_path(IntensityCostField(_bright_l()), (0.0, 0.0, 10.0), (0.0, 20.0, 10.0))
     assert max(p[2] for p in points) >= 29
@@ -1171,6 +1192,53 @@ def test_setting_a_diameter_refuses_a_bad_width_or_vessel_and_changes_nothing():
         set_vessel_diameter(G, [(1, 10, 0), (1, 99, 0)], 4.0)
     assert G.edges[1, 10, 0]["diameter_um"] == 6.0
     assert not has_pending_edits(G)
+
+
+# --- surround networks: the image's vessels and the ones drawn round them -----
+
+
+def _surround_junction() -> nx.MultiGraph:
+    """Junction 1: an image vessel from 0, a synthetic one to 2, an image one to 3."""
+    from haemolynx.synthetic.surround import IMAGE_PART, NETWORK_PART, SYNTHETIC_PART
+
+    G = _network({0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 10, 10)}, [(0, 1), (1, 2), (1, 3)])
+    for (u, v), part in zip([(0, 1), (1, 2), (1, 3)], [IMAGE_PART, SYNTHETIC_PART, IMAGE_PART]):
+        G.edges[u, v, 0][NETWORK_PART] = part
+    return G
+
+
+def test_an_edit_never_makes_one_vessel_of_the_image_and_the_network_round_it():
+    """A deletion merged the two vessels it left at a node into one vessel of
+    whichever part came first: the image flows CSV then counted a synthetic
+    stretch as the image's, or lost an image vessel."""
+    from haemolynx.graph.post_processing import NETWORK_PART
+    from haemolynx.synthetic import surround
+
+    assert NETWORK_PART == surround.NETWORK_PART
+    G = _surround_junction()
+    delete_vessels(G, [(1, 3, 0)])
+    assert G.degree(1) == 2, "an image vessel and a synthetic one stay two"
+    assert {d[NETWORK_PART] for *_e, d in G.edges(1, data=True)} == {surround.IMAGE_PART, surround.SYNTHETIC_PART}
+
+    G = _surround_junction()
+    G.edges[1, 2, 0][NETWORK_PART] = surround.IMAGE_PART
+    delete_vessels(G, [(1, 3, 0)])
+    assert 1 not in G and G.edges[0, 2, 0][NETWORK_PART] == surround.IMAGE_PART
+
+
+def test_a_vessel_drawn_in_a_surround_network_is_of_the_part_at_its_ends():
+    from haemolynx.graph.post_processing import NETWORK_PART
+    from haemolynx.synthetic.surround import IMAGE_PART
+
+    G = _surround_junction()
+    G.add_node(4, pos=np.asarray((0.0, 10.0, 0.0)))
+    G.add_edge(0, 4, voxels=_straight((0, 0, 0), (0, 10, 0)), length=10.0, **{NETWORK_PART: IMAGE_PART})
+    drawn = add_vessel_between(G, 3, 4)
+    assert G.edges[drawn][NETWORK_PART] == IMAGE_PART, "both ends on image vessels"
+    across = add_vessel_between(G, 2, 4)
+    assert NETWORK_PART not in G.edges[across], "one end on each part: neither"
+    plain = add_vessel_between(_network({0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 5, 5)}, [(0, 1)]), 1, 2)
+    assert plain == (1, 2, 0)
 
 
 # --- mark_dead_end_kind (the Dead ends list's verdicts) ----------------------

@@ -138,6 +138,7 @@ from haemolynx.gui.pericyte_mask_search import (
     MEASUREMENT_FIELD as PERICYTE_MEASUREMENT_FIELD,
     REFERENCE_SETTINGS as PERICYTE_REFERENCE_SETTINGS,
     TRIGGER_SETTINGS as PERICYTE_MASK_TRIGGERS,
+    filled_after_renumbering as pericyte_filled_after_renumbering,
     perturbation_field as pericyte_perturbation_field,
     perturbation_index as pericyte_perturbation_index,
     update_pericyte_mask_rows,
@@ -941,6 +942,21 @@ def output_folder_from_settings(values: Mapping[str, Any]) -> Path | None:
     not land in the process cwd.
     """
     return output_dir_from_settings(values)
+
+
+def _confirm_run_without_hand_edits(parent, tab_title: str) -> bool:
+    """Ask before a run from *tab_title* goes ahead without the Post
+    processing tab's edits not yet regenerated."""
+    from qtpy.QtWidgets import QMessageBox
+
+    answer = QMessageBox.question(
+        parent,
+        "Run without the hand edits?",
+        f"The edits on {POST_PROCESSING_TAB} are not in the model yet: running from "
+        f"{tab_title} leaves them out, though the tab keeps them. Regenerate graph "
+        "there takes them in. Run anyway?",
+    )
+    return answer == QMessageBox.Yes
 
 
 def _confirm_discard_hand_edits(parent, tab_title: str) -> bool:
@@ -6467,6 +6483,10 @@ def _run_in_background(
         if stage in restored:
             try:
                 results.stage_restored(stage, output)
+                # A run loaded from a file kept no stage outputs: what this
+                # one loaded is kept, so the next resume is handed it.
+                if checkpoints is not None and not cancel_flag["cancelled"]:
+                    checkpoints.keep_output(stage, output)
             except Exception:  # noqa: BLE001 - reported, never raised at the run
                 logger.exception("could not follow restored stage %s", stage)
             return
@@ -11479,7 +11499,7 @@ def _raw_panel_pixmap(picture, view, pixels: int = _RAW_PANEL_PIXELS):
 
 def _post_processing_controls(
     viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
-    paused=None,
+    paused=None, paused_after=None, segmentation=None,
 ):
     """The "7. Post processing" page: fix the solved network by hand.
 
@@ -11489,8 +11509,13 @@ def _post_processing_controls(
     or the end) and says whether it started, *running* says whether a run is
     under way and *settings* (optional) returns the panel's settings -- where
     Add vessel finds the raw data file and the run's centreline smoothing.
-    *paused* says whether a run is paused here (Mid-run postprocessing).
-    Callables, because the panel builds them before what they read.
+    *paused* says whether a run is paused here (Mid-run postprocessing), and
+    *paused_after* after which stage call (``"solve"``, or ``"post_process"``
+    after a Regenerate graph while paused). *segmentation(image, settings)*
+    returns the MaskSupport post processing keeps for the run's segmented
+    *image*, or None, so the review lists read the segmentation through the
+    same one rather than a second copy. Callables, because the panel builds
+    them before what they read.
 
     Two buttons at the foot of the page take the edits on. Regenerate graph
     brings them in line -- branch orders, lengths, diameters by the run's own
@@ -12161,6 +12186,8 @@ def _post_processing_controls(
             decisions=dict(state.decisions),
             review_decisions=len(state.review_decisions),
             loop_reviews=len(state.loop_reviews),
+            # The list these items are of: put back only while it is still the one made.
+            review_key=state.review_key,
             review_acted=list(state.review_acted),
             review_unfiltered=list(state.review_unfiltered),
         )
@@ -12232,8 +12259,13 @@ def _post_processing_controls(
         state.decisions = before.decisions
         del state.review_decisions[before.review_decisions:]
         del state.loop_reviews[before.loop_reviews:]
-        state.review_acted = before.review_acted
-        state.review_unfiltered = before.review_unfiltered
+        if before.review_key is not None and before.review_key == state.review_key:
+            state.review_acted = before.review_acted
+            state.review_unfiltered = before.review_unfiltered
+        else:
+            # Another list has been made since: its items stay its own, less
+            # the decisions taken back.
+            state.review_acted = [d for d in state.review_acted if d in state.review_decisions]
         withdrawn = 0
         for path, row in reversed(entry.written):
             try:
@@ -12472,16 +12504,22 @@ def _post_processing_controls(
         regenerate_graph_button.setEnabled(not busy and pending)
         continue_button.setEnabled(not busy and held)
         undo_button.setEnabled(not busy and bool(state.undo) and state.graph is not None)
+        # Paused after the first solve, or after a Regenerate graph while paused.
+        where = (
+            "Paused after Regenerate graph"
+            if paused_after is not None and paused_after() == POST_PROCESS
+            else "Paused after Haemodynamics"
+        )
         if busy:
             text = "A run is going."
         elif held and pending:
             text = (
-                "Paused after Haemodynamics, with edits not yet in the model. "
+                f"{where}, with edits not yet in the model. "
                 "Regenerate graph brings them in line, reruns Haemodynamics and "
                 "stays paused; Continue does the same and runs Perturbations onwards."
             )
         elif held:
-            text = "Paused after Haemodynamics. Continue runs Perturbations onwards."
+            text = f"{where}. Continue runs Perturbations onwards."
         elif pending:
             text = (
                 "Edits not yet in the model. Regenerate graph brings them in line, "
@@ -13193,7 +13231,7 @@ def _post_processing_controls(
         z_range = None
         if uses_mask:
             if support is None:
-                support = review_mask_support(image, voxel, values)
+                support = kept_support(image, values) or review_mask_support(image, voxel, values)
             z_range = z_range_around(centre, radius, voxel, int(np.shape(image)[-3]))
         items = find_review_items(
             key, graph, support=support if uses_mask else None, roles=roles, settings=values,
@@ -13822,8 +13860,20 @@ def _post_processing_controls(
         if image is None:
             return None
         if state.support is None or state.support[0] is not image:
-            state.support = (image, review_mask_support(image, voxel_size(), read_settings() or {}))
+            values = read_settings() or {}
+            state.support = (image, kept_support(image, values) or review_mask_support(image, voxel_size(), values))
         return state.support[1]
+
+    def kept_support(image, values):
+        """Post processing's own reading of the segmented *image*, kept on the
+        run's volume, or None: the lists then make one of their own."""
+        if segmentation is None or image is None:
+            return None
+        try:
+            return segmentation(image, values)
+        except Exception:  # noqa: BLE001 - the lists make their own instead
+            logger.exception("Post processing: could not reuse the run's reading of the segmentation")
+            return None
 
     def segmentation_note(edge) -> str:
         """How the vessel just drawn sits in the segmentation, for its log
@@ -13890,12 +13940,12 @@ def _post_processing_controls(
         if fwhm is not None:
             data = fwhm.data
             if state.raw is None or state.raw[0] is not data:
-                state.raw = (data, IntensityCostField(data))
+                state.raw = (data, IntensityCostField(data, voxel_size_zyx=voxel_size()))
             return state.raw, None
         if state.raw is None and state.raw_problem is None:
             data, state.raw_problem = load_raw(say)
             if data is not None:
-                state.raw = (data, IntensityCostField(data))
+                state.raw = (data, IntensityCostField(data, voxel_size_zyx=voxel_size()))
         return state.raw, state.raw_problem
 
     # --- The raw image at the chosen item -----------------------------------------
@@ -14666,6 +14716,8 @@ def settings_widget(napari_viewer=None):
         running=lambda: run_state.running,
         settings=lambda: _settings(),
         paused=lambda: run_state.paused,
+        paused_after=lambda: run_state.paused_after,
+        segmentation=lambda image, values: _kept_segmentation_support(image, values),
     )
     pages[POST_PROCESS] = lambda _summary, _names: post_processing.page
 
@@ -14673,6 +14725,17 @@ def settings_widget(napari_viewer=None):
     #: stage" on a tab needs from the previous tab. Cleared when the layers
     #: are, and replaced when a new run that shows layers starts.
     checkpoints = StageCheckpoints()
+
+    def _kept_segmentation_support(image, values):
+        """The MaskSupport post processing keeps on the run's volume, when the
+        viewer's segmented *image* is that volume's; None otherwise (a run
+        loaded from a file before its first Regenerate)."""
+        checkpoint = checkpoints.get("skeletonise")
+        volume = getattr(checkpoint, "output", None)
+        if volume is None or getattr(volume, "image", None) is not image:
+            return None
+        return pipeline_stages.post_process_segmentation_support(values or {}, volume)
+
     revert_buttons: dict[str, Any] = {}
     from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP, stage_tab_tooltip
 
@@ -15243,9 +15306,10 @@ def settings_widget(napari_viewer=None):
         pericyte_references_seen[0] = reference_key
         if rebuilt:
             # The entries were numbered afresh: what the panel filled an
-            # entry's row with is not known by its index any more.
-            for name in [name for name in pericyte_rows_filled if name != PERICYTE_MEASUREMENT_FIELD]:
-                pericyte_rows_filled.pop(name)
+            # entry's row with is known by the mask it still holds.
+            refilled = pericyte_filled_after_renumbering(pericyte_rows_filled, after)
+            pericyte_rows_filled.clear()
+            pericyte_rows_filled.update(refilled)
         if restoring_settings[0] or rebuilt:
             return
         fill = update_pericyte_mask_rows(
@@ -17379,7 +17443,7 @@ def settings_widget(napari_viewer=None):
 
     def on_revert(tab_title: str) -> None:
         """Prepare the previous tab's work, then rerun from this stage."""
-        from haemolynx.gui.post_processing import edits_lost_by_running_from
+        from haemolynx.gui.post_processing import edits_left_out_by_running_from, edits_lost_by_running_from
         from haemolynx.gui.stage_checkpoints import tab_start_stage
 
         if batch_mode.setup is not None:
@@ -17393,6 +17457,14 @@ def settings_widget(napari_viewer=None):
         )
         if edits_lost and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
             report.value = f"Kept the hand edits on {POST_PROCESSING_TAB}: nothing was run."
+            return
+        if edits_left_out_by_running_from(
+            tab_start_stage(tab_title), post_processing.state.graph
+        ) and not _confirm_run_without_hand_edits(_dialog_parent(viewer), tab_title):
+            report.value = (
+                f"Nothing was run: the edits on {POST_PROCESSING_TAB} are not in the model yet. "
+                "Regenerate graph there takes them in."
+            )
             return
         plan = prepare_run_from(tab_title, check=True)
         if plan is None:

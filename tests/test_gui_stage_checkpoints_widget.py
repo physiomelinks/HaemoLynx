@@ -489,6 +489,72 @@ def test_a_run_from_an_earlier_tab_drops_the_hand_edits_it_was_told_to_discard(p
     assert not page.regenerate_graph_button.isEnabled()
 
 
+def test_a_run_from_perturbations_asks_before_leaving_the_tabs_edits_out(panel, monkeypatch):
+    """A run from Perturbations starts from the network Post processing last
+    took in, and went ahead with the tab's newer edits silently left out."""
+    import haemolynx.gui._widget as widget_module
+    from haemolynx.graph import set_vessel_diameter
+
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="post_process")
+    page = widget._haemolynx_post_processing
+    page.scan()
+    set_vessel_diameter(page.state.graph, [next(iter(page.state.graph.edges(keys=True)))], 7.0)
+    page.refresh()
+    started, asked = [], []
+    monkeypatch.setattr(widget_module, "preflight", lambda *_a, **_k: SimpleNamespace(ok=True))
+    monkeypatch.setattr(widget_module, "_run_in_background", lambda *_a, **k: started.append(k["start_from"]))
+    monkeypatch.setattr(widget_module, "_confirm_run_without_hand_edits", lambda *_a: asked.append(_a[1]) or False)
+
+    widget._haemolynx_run_from("8. Perturbations")
+
+    assert asked == ["8. Perturbations"] and started == []
+    assert "not in the model yet" in widget._haemolynx_report()
+    assert page.regenerate_graph_button.isEnabled(), "the edits stay"
+
+    monkeypatch.setattr(widget_module, "_confirm_run_without_hand_edits", lambda *_a: True)
+    widget._haemolynx_run_from("8. Perturbations")
+    assert started == ["run_perturbations"]
+    assert page.state.graph is not None, "kept: Regenerate graph can still take them in"
+
+
+def test_a_resumed_run_keeps_the_volume_it_loaded_for_the_next(panel, qtbot, monkeypatch):
+    """A run loaded from a file keeps no stage outputs: the stages a resumed
+    run passes through hand theirs to the checkpoints, so the next Regenerate
+    is given the volume instead of loading it again."""
+    import haemolynx.gui._widget as widget_module
+    from haemolynx.gui.stage_checkpoints import stages_before
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    widget, viewer, tmp_path = panel
+    _seed_run(widget, viewer, through="post_process")
+    checkpoints = widget._haemolynx_checkpoints
+    assert checkpoints.get("skeletonise").output is None
+    loaded = SkeletonisedVolume(
+        image=np.zeros((4, 4, 4), dtype=np.uint8), skeleton=np.zeros((4, 4, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=tmp_path / "out",
+    )
+    handed = []
+
+    def fake_run(settings, schema, progress=None, on_stage_output=None, **kwargs):
+        handed.append(on_stage_output)
+        on_stage_output("skeletonise", loaded)
+        return None
+
+    monkeypatch.setattr(widget_module, "run_pipeline_stages", fake_run)
+    monkeypatch.setattr(widget_module, "preflight", lambda *_a, **_k: SimpleNamespace(ok=True))
+    widget._haemolynx_run(
+        start_from="post_process", resume=None, replace_checkpoints=False,
+        restored_stages=stages_before("post_process"),
+    )
+    qtbot.waitUntil(lambda: not widget._haemolynx_run_state.running, timeout=60000)
+
+    assert handed and handed[0] is not None
+    kept = checkpoints.get("skeletonise").output
+    assert kept is not None and kept.image is loaded.image
+    assert checkpoints.get("skeletonise").group is not None, "its layers stay"
+
+
 def test_revert_with_nothing_saved_says_so_and_does_not_crash(panel):
     widget, _viewer, _tmp = panel
     widget._haemolynx_revert("5. Diameters")
@@ -976,8 +1042,9 @@ def test_a_run_pauses_for_post_processing_and_continue_finishes_it(
     make_napari_viewer, qtbot, tmp_path
 ):
     """Mid-run postprocessing: the run stops after Haemodynamics on the Post
-    processing tab, solved and scanned; Continue reruns Haemodynamics on a
-    vessel drawn there; and Regenerate graph after the finished run re-solves."""
+    processing tab, solved and scanned; Regenerate graph there takes a vessel
+    drawn in and solves it, the run still paused; Continue runs on from it;
+    and Regenerate graph after the finished run re-solves."""
     from haemolynx.gui._widget import POST_PROCESSING_TAB
 
     viewer = make_napari_viewer()
@@ -1012,6 +1079,21 @@ def test_a_run_pauses_for_post_processing_and_continue_finishes_it(
     u, v, _key = _add_a_shortcut(page)
     assert page.regenerate_graph_button.isEnabled()
     vessels_after_edit = page.state.graph.number_of_edges()
+
+    # Regenerate graph while paused: the edit in and solved, the run still paused.
+    page.regenerate_graph_button.click()
+    wait()
+    assert running.paused and running.paused_after == "post_process", widget._haemolynx_report()
+    assert checkpoints.get("post_process").graph.number_of_edges() == vessels_after_edit
+    assert page.state.graph is not None, "the regenerated network is scanned"
+    assert not page.regenerate_graph_button.isEnabled() and page.continue_button.isEnabled()
+    assert page.commit_status.text().startswith("Paused after Regenerate graph")
+    kept = checkpoints.get("skeletonise").output.post_process_segmentation
+    assert kept is not None, "the next Regenerate reads the segmentation as this one did"
+    page.review_choice.setCurrentText("Dead ends")
+    page.scan_button.click()
+    qtbot.waitUntil(lambda: not page.state.scanning, timeout=600_000)
+    assert page.state.support[1] is kept.support(), "the lists read it through the same support"
 
     page.continue_button.click()
     wait()

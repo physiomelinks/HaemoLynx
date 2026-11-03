@@ -862,6 +862,19 @@ def edits_lost_by_running_from(
     return bool(graph_attrs.get(APPLIED))
 
 
+def edits_left_out_by_running_from(start_from: str | None, working_graph: Any) -> bool:
+    """Whether a run starting at *start_from* goes ahead without hand edits
+    still waiting in the tab's *working_graph*: a run from Perturbations or
+    later starts from the network Post processing last brought in line, so
+    its results leave out what was edited since, though the tab keeps it."""
+    from haemolynx.pipeline.progress import STAGES
+
+    order = [stage.call for stage in STAGES if stage.call]
+    if start_from not in order or order.index(start_from) <= order.index("post_process"):
+        return False
+    return has_pending_edits(working_graph)
+
+
 def default_connectivity_csv_path(values: Any) -> str:
     """Suggested name for the connectivity CSV: beside the run's other outputs.
 
@@ -2059,7 +2072,9 @@ def review_needs_missing(
 def review_mask_support(image: Any, voxel_size_zyx: Sequence[float], settings: Any = None):
     """The segmented image as the review lists judge vessels against it: a
     ``MaskSupport`` binarised the way the loaders do, held to the run's own
-    bridge settings."""
+    bridge settings. Under the low-RAM option (``use_memmap_loading``) the
+    binarised copy is on disk and the support reads it a block at a time, as
+    the run's own does: a whole copy in RAM of a 16 G-voxel stack is 16 GB."""
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.preprocessing.bridge_mask_support import (
         DEFAULT_MAX_BACKGROUND_GAP_UM,
@@ -2070,11 +2085,17 @@ def review_mask_support(image: Any, voxel_size_zyx: Sequence[float], settings: A
     values = settings or {}
     gap = _optional_number(values.get("bridge_max_background_gap_um"))
     fraction = _optional_number(values.get("bridge_min_mask_fraction"))
+    low_ram = bool(values.get("use_memmap_loading"))
+    memmap_directory = values.get("memmap_directory")
     return MaskSupport(
-        _to_binary_volume_for_skeletonization(np.asanyarray(image)),
+        _to_binary_volume_for_skeletonization(
+            np.asanyarray(image), use_memmap=low_ram, memmap_directory=memmap_directory
+        ),
         tuple(float(v) for v in voxel_size_zyx),
         max_background_gap_um=DEFAULT_MAX_BACKGROUND_GAP_UM if gap is None else gap,
         min_mask_fraction=DEFAULT_MIN_MASK_FRACTION if fraction is None else fraction,
+        low_memory=low_ram,
+        memmap_directory=memmap_directory,
     )
 
 

@@ -330,8 +330,16 @@ def export_non_sweep_perturbation_artifacts(
     if betweenness_and_communities:
         # A perturbation always has resistances and a solved flow, so all
         # three weightings are computable -- the same report the baseline's
-        # export_results writes for a solved run.
-        weighted = statistics.compute_betweenness_and_community_measurements(G)
+        # export_results writes for a solved run, on the network the
+        # statistics measure: each bridge's two ends one node.
+        from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
+
+        measured = (
+            contract_bridges(G)[0]
+            if any(data.get(IS_ZERO_RESISTANCE) for *_e, data in G.edges(data=True))
+            else G
+        )
+        weighted = statistics.compute_betweenness_and_community_measurements(measured)
         for model_name, suffix in (
             ("edge_resistance", "resistance"),
             ("edge_length", "edge_length"),

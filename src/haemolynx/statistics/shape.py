@@ -6,10 +6,10 @@ from typing import Any, Dict, Optional, Union
 import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
-from scipy.spatial.distance import euclidean
 
 from haemolynx.visualization.geometry import edge_polyline
 
+from ._contracted import vessel_span_um
 from ._sampling import REPRODUCIBILITY_SEED
 
 #: Above this many unique node pairs, path efficiency is estimated from a
@@ -17,13 +17,21 @@ from ._sampling import REPRODUCIBILITY_SEED
 #: quadratic in node count on a large network.
 DEFAULT_PATH_EFFICIENCY_MAX_PAIRS = 5000
 
+#: A density over a volume of 0 (a flat network's box, a 2D image, no tissue
+#: found): not 0, which would read as no vessels.
+_NO_VOLUME = "N/A (no volume to divide by)"
+
 
 def compute_tortuosity_measures(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict],
     is_multigraph: bool,
+    *,
+    own_ends: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """Compute tortuosity index and curvature."""
+    """Compute tortuosity index and curvature: each vessel's length over the
+    straight distance between its own two ends (*own_ends* where contracting
+    the bridges moved one, see :mod:`._contracted`)."""
     if node_positions is None:
         return {
             "Average Tortuosity Index": "N/A (no position data)",
@@ -35,10 +43,8 @@ def compute_tortuosity_measures(
     for item in it:
         u, v = item[0], item[1]
         edge_data = item[-1]
-        if u in node_positions and v in node_positions:
-            pos_u = np.array(node_positions[u])
-            pos_v = np.array(node_positions[v])
-            straight = euclidean(pos_u, pos_v)
+        straight = vessel_span_um(u, v, edge_data, node_positions, own_ends)
+        if straight is not None:
             path_length = edge_data.get("length", straight)
             if straight > 0:
                 tortuosity_indices.append(path_length / straight)
@@ -175,7 +181,9 @@ def _centreline_points(
 
 def _fractal_entries(name: str, fit: Dict[str, Any]) -> Dict[str, Any]:
     if not np.isfinite(fit["r_squared"]):
-        return {name: fit["dimension"], f"{name} R^2": "N/A (no scaling range to fit)"}
+        # No line was fitted: a dimension of 0 would read as a measurement.
+        unfitted = "N/A (no scaling range to fit)"
+        return {name: unfitted, f"{name} R^2": unfitted}
     return {
         name: fit["dimension"],
         f"{name} R^2": fit["r_squared"],
@@ -428,7 +436,7 @@ def compute_vessel_density(
                 positions.max(axis=0) - positions.min(axis=0)
             )
             out["Vessel Density in Tissue (microns/micron³)"] = (
-                total_length / vol if vol > 0 else 0
+                total_length / vol if vol > 0 else _NO_VOLUME
             )
             out["Vessel-Occupied Volume (micron³)"] = vol
         else:
@@ -441,13 +449,13 @@ def compute_vessel_density(
         tissue_volume = float(tissue_volume_um3)
         out["Tissue Volume (micron³)"] = tissue_volume
         out["Vessel Density in Tissue (microns/micron³)"] = (
-            total_length / tissue_volume if tissue_volume > 0 else 0
+            total_length / tissue_volume if tissue_volume > 0 else _NO_VOLUME
         )
         out["Tissue Volume Source"] = "tissue surface measured from the raw image"
         if vessel_volume_um3 is not None:
             out["Vessel Volume in Tissue (micron³)"] = float(vessel_volume_um3)
             out["Vascular Volume Fraction in Tissue"] = (
-                float(vessel_volume_um3) / tissue_volume if tissue_volume > 0 else 0
+                float(vessel_volume_um3) / tissue_volume if tissue_volume > 0 else _NO_VOLUME
             )
     elif "Vessel-Occupied Volume (micron³)" in out:
         out["Tissue Volume Source"] = "bounding box of the network's nodes"
@@ -457,7 +465,7 @@ def compute_vessel_density(
             [d * v for d, v in zip(image_dimensions, voxel_size)]
         )
         out["Vessel Density in Whole Image (microns/micron³)"] = (
-            total_length / img_vol if img_vol > 0 else 0
+            total_length / img_vol if img_vol > 0 else _NO_VOLUME
         )
         out["Total Image Volume (micron³)"] = img_vol
     else:

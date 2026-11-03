@@ -231,6 +231,28 @@ def test_flow_hierarchy_detects_a_genuine_flow_recirculation():
     assert s["Flow Hierarchy"] == pytest.approx(0.0)
 
 
+def test_flow_hierarchy_reads_a_vessel_into_a_bridge_the_way_its_flow_runs():
+    """Regression: the statistics contract each bridge, which rebuilds the
+    graph; vessel 0-1 became 1-2, iterated from its other end, so its
+    flow_signed read backwards and closed the cycle 2->1->5->2 (0.4)."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    pressure = {0: 9.0, 1: 10.0, 2: 9.0, 3: 1.0, 4: 2.0, 5: 9.5}
+    G = nx.MultiGraph()
+    for node, p in pressure.items():
+        G.add_node(node, pos=(0.0, float(node), 0.0), pressure=p)
+    for u, v in ((0, 1), (2, 3), (2, 4), (1, 5), (5, 2), (0, 2)):
+        G.add_edge(u, v, length=10.0)
+    G.edges[0, 2, 0][IS_ZERO_RESISTANCE] = True
+    # As the solve writes them: from the end G.edges() gives first.
+    for u, v, data in G.edges(data=True):
+        data.update(flow_signed=pressure[u] - pressure[v], flow_abs=abs(pressure[u] - pressure[v]))
+        data["flow_state"] = "solved"
+
+    sections = st.compute_vessel_statistics_by_measure(G, enabled_measures=frozenset({"flow_hierarchy"}))
+    assert sections["flow_hierarchy"]["Flow Hierarchy"] == pytest.approx(1.0)
+
+
 def test_flow_hierarchy_reads_the_flow_state_and_counts_the_vessels_behind_dead_ends():
     """PLAN_dead_ends.md, inconsistency 10: the statistics read the solve's
     flow state, not a zero test. A vessel behind a dead end or in a piece

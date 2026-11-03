@@ -161,19 +161,19 @@ Columns as {stem}_statistics.csv; rows in docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_resistance.json`
 
-Written to the run's output folder (output_dir). Weighted betweenness and vascular communities, edges weighted by resistance: the Weighted Betweenness and Communities section of the report, as JSON, written while the betweenness or community statistic is on, with each zero-resistance bridge's two ends one node as in the statistics. Without haemodynamics every value is the text 'N/A (haemodynamics disabled)'.
+Written to the run's output folder (output_dir). Weighted betweenness and vascular communities by resistance: betweenness with each vessel a distance of its resistance, communities with each vessel tying its ends by its conductance (parallel vessels' ties added). The Weighted Betweenness and Communities section of the report, as JSON, written while the betweenness or community statistic is on, with each zero-resistance bridge's two ends one node as in the statistics. Without haemodynamics every value is the text 'N/A (haemodynamics disabled)'.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_length.json`
 
-Written to the run's output folder (output_dir). The same, edges weighted by length (measured with or without haemodynamics).
+Written to the run's output folder (output_dir). The same by length: betweenness by length, communities tied by 1/length (measured with or without haemodynamics).
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_flow.json`
 
-Written to the run's output folder (output_dir). The same, edges weighted by flow: 'N/A' values without haemodynamics too.
+Written to the run's output folder (output_dir). The same by flow: betweenness by 1/|flow|, communities tied by |flow|; 'N/A' values without haemodynamics too.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 

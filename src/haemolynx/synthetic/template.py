@@ -1266,12 +1266,19 @@ def template_from_report(
     orders = _read_orders(sections.get(BRANCH_ORDERS_SECTION))
 
     murray = sections.get("murray_law") or {}
-    exponent = _number(murray.get("Median Fitted Murray Exponent"))
+    # The arteriole and venule tiers' own branchings, which the generator
+    # draws to Murray's law: the whole network's median also holds the
+    # capillary bed and the tiers' side branches, and drew the tiers to a
+    # lower exponent than the template's own (2.6 for 3.0 on the fixture).
+    # A report from before the tier rows, or one with no tier, gives the
+    # whole network's.
+    prefix = "Tier " if _number(murray.get("Median Tier Fitted Murray Exponent")) is not None else ""
+    exponent = _number(murray.get(f"Median {prefix}Fitted Murray Exponent"))
     if exponent is None:
         notes_out.append(f"no fitted Murray exponent in the template; {DEFAULT_MURRAY_EXPONENT:g} is used")
     low, high = (
-        _number(murray.get("Fitted Murray Exponent IQR Low")),
-        _number(murray.get("Fitted Murray Exponent IQR High")),
+        _number(murray.get(f"{prefix}Fitted Murray Exponent IQR Low")),
+        _number(murray.get(f"{prefix}Fitted Murray Exponent IQR High")),
     )
     angles = sections.get("daughter_angles") or {}
     daughter = _number(angles.get("Mean Daughter-Daughter Angle (degrees)"))

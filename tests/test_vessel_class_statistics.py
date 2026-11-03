@@ -423,3 +423,24 @@ def test_the_setting_turns_the_section_off(tmp_path):
     _export(tmp_path, statistics_vessel_classes=False)
     csv_text = (tmp_path / "classes_statistics.csv").read_text(encoding="utf-8")
     assert "Vessel Classes" not in csv_text
+
+
+def test_a_vessel_the_solve_balanced_to_nothing_carries_no_flow():
+    """Regression: the classes counted any solved vessel with a flow not
+    exactly 0, where flux heterogeneity, transit time and the intercapillary
+    distances leave out one below 1e-9 of the largest flow (the cross-vessel
+    of a balanced Wheatstone bridge): two counts of the same thing."""
+    from haemolynx.statistics.flux_heterogeneity import carrying_floor, is_carrying
+
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 10, 10), 3: (0, -10, 10)}.items():
+        G.add_node(node, pos=pos)
+    for u, v, order, flow in ((0, 1, "B01", 1e-12), (1, 2, "B02", 1e-12), (1, 3, "B02", 1e-23)):
+        G.add_edge(u, v, branch_order=order, length=10.0, diameter_um=5.0, flow_abs=flow, flow_state="solved")
+
+    rows = compute_vessel_class_statistics(G, nx.get_node_attributes(G, "pos"))["Vessel Classes"]
+    floor = carrying_floor(G)
+    assert rows["Capillaries"]["Vessels Carrying Flow"] == 2
+    assert rows["Capillaries"]["Vessels Carrying Flow"] == sum(
+        is_carrying(data, floor) for *_e, data in G.edges(data=True)
+    )

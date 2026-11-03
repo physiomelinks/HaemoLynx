@@ -713,6 +713,21 @@ class StageCheckpoints:
         self._by_stage[stage] = checkpoint
         return checkpoint
 
+    def keep_output(self, stage: str, output: Any) -> None:
+        """Keep *output* -- what *stage* returned as a resumed run passed
+        through it -- as its checkpoint's stored output, where the checkpoint
+        has none: a run loaded from a file keeps no stage outputs (their
+        volumes are this session's), so every Regenerate of it loaded the
+        image and skeleton again. Its graph, layers and lists stay."""
+        if not self._recording:
+            return
+        checkpoint = self._by_stage.get(stage)
+        if checkpoint is None or checkpoint.output is not None:
+            return
+        stored = _stored_output(stage, output)
+        if stored is not None:
+            self._by_stage[stage] = replace(checkpoint, output=stored)
+
     def _stored_outputs(self, start_from: str) -> dict[str, Any]:
         """PipelineResume fields for the stored outputs ahead of *start_from*."""
         before = set(stages_before(start_from))
