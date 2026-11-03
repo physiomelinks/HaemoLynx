@@ -4287,6 +4287,8 @@ def _haemodynamics_apply_config(
         resistance_node_pair=resistance_node_pair,
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         axis_order=io.axis_order_for_run(settings),
+        voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+        voxel_size_policy=settings.get("voxel_size_policy", "auto"),
         comparison_output_csv_path=None,
         equivalent_resistance_solver=_equivalent_resistance_solver(settings),
         use_memmap=settings["use_memmap_loading"],

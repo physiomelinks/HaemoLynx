@@ -153,6 +153,10 @@ class HaemodynamicsApplyConfig:
     #: Spacing per array axis in canonical (z, y, x) order, not image-metadata (x, y, z).
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
     axis_order: str = CANONICAL_AXIS_ORDER
+    #: The run's voxel-size override and policy, which a pericyte mask's
+    #: voxel size is read under as the image's is.
+    voxel_size_override_xyz: tuple[float, float, float] | None = None
+    voxel_size_policy: str = "auto"
     #: The low-RAM option: volumes loaded or built here live on disk in
     #: *memmap_directory*, and the EDT cross-check reads the mask pointwise.
     use_memmap: bool = False
@@ -1280,6 +1284,8 @@ def _run_pericyte_comparison(
         axis_order=config.axis_order,
         rng=rng,
         equivalent_resistance_solver=config.equivalent_resistance_solver,
+        voxel_size_override_xyz=config.voxel_size_override_xyz,
+        voxel_size_policy=config.voxel_size_policy,
     )
 
     active_pericyte_indices: list[int] | None = None
@@ -1436,6 +1442,8 @@ def _assign_poiseuille_resistances(
             max_pericyte_diameter_um=config.diameter("pericyte_max_diameter_um"),
             axis_order=config.axis_order,
             rng=rng,
+            voxel_size_override_xyz=config.voxel_size_override_xyz,
+            voxel_size_policy=config.voxel_size_policy,
         )
         results[strategy] = strategy_results
     else:

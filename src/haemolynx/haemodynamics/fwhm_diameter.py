@@ -66,7 +66,12 @@ def load_single_channel_tiff_volume(
     axis_order = axis_order_for_file(axis_order, path)
     if channel is not None:
         vol = _read_tiff_channel(path, int(channel))
-        vol = apply_axis_order(vol, axis_order)
+        # A 2D channel comes back as one plane, (1, y, x) -- its singleton
+        # axes squeezed away, only a 2D one is -- and is reordered no more
+        # than a 2D single-channel file or the segmented image is: an xyz
+        # order would stand it on its side, off the mask's grid.
+        if vol.shape[0] != 1:
+            vol = apply_axis_order(vol, axis_order)
         if not use_memmap:
             return np.asarray(vol, dtype=np.float32)
         from haemolynx.preprocessing.memmap_support import map_by_slab, new_memmap_array
