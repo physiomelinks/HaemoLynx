@@ -474,13 +474,18 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
     """Vessels whose diameter is not a measurement of their own -- the class
     median or the branch-order table -- or whose FWHM width a check called
     into doubt (set aside, at odds with the mask's width, or in the range
-    FWHM reads off specks). Largest share of the network's flow first,
-    since that is where a wrong width moves the result most."""
+    FWHM reads off specks). A width a person gave the vessel
+    (``graph.set_vessel_diameter``) is theirs, and it is not listed, though
+    its FWHM flags stay. Largest share of the network's flow first, since
+    that is where a wrong width moves the result most."""
     from haemolynx.haemodynamics.poiseuille import (
         DIAMETER_SOURCE_CLASS_MEDIAN,
+        DIAMETER_SOURCE_OVERRIDE,
         DIAMETER_SOURCE_TABLE,
         fwhm_demotion_reason,
     )
+
+    from .post_processing import DIAMETER_SET_BY_HAND
 
     pos = _node_pos(G)
     reference = flow_reference(G, inlets)
@@ -489,6 +494,8 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
         if data.get(IS_ZERO_RESISTANCE):
             continue
         source = data.get("diameter_source")
+        if source == DIAMETER_SOURCE_OVERRIDE and data.get(DIAMETER_SET_BY_HAND):
+            continue
         reasons = []
         if source == DIAMETER_SOURCE_CLASS_MEDIAN:
             reasons.append("its class's median width")

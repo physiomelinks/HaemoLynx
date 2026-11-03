@@ -779,6 +779,28 @@ def test_a_decision_is_a_csv_row_beside_the_run_with_the_items_measures(tmp_path
     assert path.read_text(encoding="utf-8").count("centre_zyx_vox") == 1
 
 
+def test_a_decision_undone_is_taken_back_out_of_its_csv(tmp_path):
+    import csv
+
+    from haemolynx.gui.post_processing import withdraw_csv_row
+
+    path = tmp_path / "run_dead_ends_review.csv"
+    first = {"time": "t1", "decision": KEPT, "why": "Its width, 3 um, is odd."}
+    second = {**first, "decision": "deleted", "extra": "1;5;0"}
+    for row in (first, second, first):
+        append_review_record(path, row)
+
+    assert withdraw_csv_row(path, first) is True
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["decision"] for r in rows] == [KEPT, "deleted"], "the last such row goes, the earlier stays"
+    assert withdraw_csv_row(path, {**first, "time": "t9"}) is False
+    assert withdraw_csv_row(tmp_path / "missing.csv", first) is False
+    assert withdraw_csv_row(path, second) and withdraw_csv_row(path, first)
+    assert path.read_text(encoding="utf-8").startswith("time,decision,why,extra")
+    assert not withdraw_csv_row(path, first)
+
+
 def test_a_review_csv_begun_by_a_list_that_measured_less_gains_the_new_measures(tmp_path):
     """A dead end has ahead_edge only when a vessel lies ahead of it, and the
     lists gained measures after their CSVs were begun (kind, in_mask_fraction
@@ -1063,6 +1085,20 @@ def test_the_dead_end_list_shows_one_kind_or_all_and_only_islands_get_the_remove
     assert not removes_listed_pieces(nr.UNSOLVED_PIECES, "island_end")
     assert remove_pieces_label(1) == "Remove all 1 listed piece with no junction"
     assert remove_pieces_label(2270) == "Remove all 2270 listed pieces with no junction"
+
+
+def test_a_dead_end_marked_blind_is_listed_under_its_own_kind_not_all_kinds():
+    """A person's verdict is a decision made: it came back under All kinds on
+    every scan, as no kept item does."""
+    from dataclasses import replace
+
+    from haemolynx.gui.post_processing import DEAD_END_SHOW_ALL, dead_ends_shown
+
+    _case, items = _island_items()
+    marked = replace(items[0], measures={**items[0].measures, "kind": "blind"})
+    listed = [marked, *items[1:]]
+    assert dead_ends_shown(listed, DEAD_END_SHOW_ALL) == items[1:]
+    assert dead_ends_shown(listed, "blind") == [marked]
 
 
 def test_removing_listed_pieces_deletes_each_island_and_records_it_and_nothing_else():

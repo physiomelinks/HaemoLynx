@@ -16,7 +16,6 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
     _apply_layers,
-    _GraphEditorWindow,
     _layer_controls,
     about_widget,
     settings_widget,
@@ -85,7 +84,7 @@ def test_a_path_rows_text_box_and_button_show_the_rows_hover_text(qapp):
 
 def test_every_control_in_the_panel_without_a_viewer_has_hover_text(qapp):
     """Every row and button whether shown or not -- both optimisers' options
-    and group lists among them -- and the Edit and About windows."""
+    and group lists among them -- and the About window."""
     from qtpy.QtWidgets import QPushButton
 
     panel = settings_widget(napari_viewer=None)
@@ -94,10 +93,6 @@ def test_every_control_in_the_panel_without_a_viewer_has_hover_text(qapp):
         panel._haemolynx_optimise_fwhm_group_checkboxes
     )
     roots = _beside_the_panel(panel)
-    roots["Edit window"] = _GraphEditorWindow(
-        on_add=lambda: None, on_finish=lambda: None, on_delete=lambda: None,
-        on_regenerate=lambda: None,
-    ).native
     roots["About"] = about_widget()
     assert _scan(roots) == {}
 

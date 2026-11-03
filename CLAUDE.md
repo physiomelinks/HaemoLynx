@@ -167,8 +167,8 @@ haemolynx/
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   statistics_view.py (the left panel's Statistics tab: a
 │   │                       #   button per measure the last run's statistics found, pure),
-│   │                       #   perturbation_editing.py, graph_editor.py
-│   │                       #   + graph_click.py (the Edit window), post_processing.py
+│   │                       #   perturbation_editing.py, graph_click.py
+│   │                       #   (a click -> the vessel under it), post_processing.py
 │   │                       #   (what the "7. Post processing" tab draws, pure), raw_panel.py
 │   │                       #   (its chosen item in its own plane, segmentation beside the
 │   │                       #   raw image, pure), branch_hover.py,

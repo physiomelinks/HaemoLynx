@@ -80,6 +80,7 @@ __all__ = [
     "APPLIED",
     "BOUNDARY_ROLES",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
+    "DIAMETER_SET_BY_HAND",
     "DRAWN_BACKGROUND_RUN_UM",
     "DRAWN_BESIDE_VESSEL",
     "DRAWN_MASK_FRACTION",
@@ -178,6 +179,12 @@ MIN_ROUTED_INSIDE_FRACTION = 0.5
 DRAWN_MASK_FRACTION = "drawn_mask_fraction"
 DRAWN_BACKGROUND_RUN_UM = "drawn_background_run_um"
 DRAWN_BESIDE_VESSEL = "drawn_beside_vessel"
+
+#: Edge attribute: a person gave this vessel its width
+#: (:func:`set_vessel_diameter`), as against the width an edit lends a
+#: vessel it made until it is measured. Read with ``diameter_source``
+#: ``"override"``: once the vessel is measured again it is no longer theirs.
+DIAMETER_SET_BY_HAND = "diameter_set_by_hand"
 
 #: Margin round a drawn vessel within which its lumen radius is read from
 #: the mask (:func:`_local_lumen_radius`); doubled while a radius along the
@@ -841,13 +848,15 @@ def merge_junctions(
 def set_vessel_diameter(G: nx.MultiGraph, edges: Iterable[EdgeKey], diameter_um: float) -> None:
     """Give *edges* the diameter *diameter_um*, by hand.
 
-    A human value (``diameter_source="override"``), which outranks the
-    branch-order table and the class median. The vessels are *not* marked
-    :data:`EDITED` -- the ``post_process`` stage measures an edited vessel
-    afresh, and a measurement replaces an override -- only the graph is
-    marked :data:`PENDING`, so Regenerate graph solves it again with the new
-    width. Raises ``ValueError`` for a width that is not finite and positive,
-    or a vessel the network does not have, before changing anything.
+    A human value (``diameter_source="override"``, and
+    :data:`DIAMETER_SET_BY_HAND`, so the Unmeasured diameters list does not
+    ask about it again), which outranks the branch-order table and the class
+    median. The vessels are *not* marked :data:`EDITED` -- the
+    ``post_process`` stage measures an edited vessel afresh, and a
+    measurement replaces an override -- only the graph is marked
+    :data:`PENDING`, so Regenerate graph solves it again with the new width.
+    Raises ``ValueError`` for a width that is not finite and positive, or a
+    vessel the network does not have, before changing anything.
     """
     from haemolynx.haemodynamics.poiseuille import set_edge_diameter_override
 
@@ -860,6 +869,7 @@ def set_vessel_diameter(G: nx.MultiGraph, edges: Iterable[EdgeKey], diameter_um:
             raise ValueError(f"No vessel {edge!r} to set the diameter of")
     for edge in selected:
         set_edge_diameter_override(G.edges[edge], width)
+        G.edges[edge][DIAMETER_SET_BY_HAND] = True
     mark_edited(G)
 
 

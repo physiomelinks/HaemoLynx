@@ -1698,9 +1698,13 @@ DEAD_END_SHOW_BY_LABEL = {label: key for key, label in DEAD_END_SHOW}
 
 def dead_ends_shown(items: Iterable[Any], show: str) -> list[Any]:
     """The dead-end review *items* of kind *show* (``DEAD_END_SHOW``'s keys),
-    in their order; all of them for :data:`DEAD_END_SHOW_ALL`."""
+    in their order. :data:`DEAD_END_SHOW_ALL` is every kind but the ends a
+    person marked as real blind ends: a decision already made, listed under
+    its own kind, as a kept item is not listed again."""
+    from haemolynx.graph.dead_ends import BLIND
+
     if show == DEAD_END_SHOW_ALL:
-        return list(items)
+        return [item for item in items if (item.measures or {}).get("kind") != BLIND]
     return [item for item in items if (item.measures or {}).get("kind") == show]
 
 
@@ -1921,6 +1925,40 @@ def review_csv_path(values: Any, kind: str) -> "Path | None":
         return None
     stem = path.name[: -len("_loop_review.csv")]
     return path.with_name(f"{stem}_{kind}_review.csv")
+
+
+def withdraw_csv_row(path: Any, row: Mapping[str, Any]) -> bool:
+    """Take the last row of the CSV at *path* that reads as *row* back out of
+    it: a decision undone is no decision, and a rule fitted to the file
+    later must not read it. A column the file has and *row* lacks is not
+    compared. Returns whether such a row was found."""
+    import csv
+    import os
+    from pathlib import Path
+
+    target = Path(path)
+    if not target.is_file():
+        return False
+    with target.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        header = list(reader.fieldnames or ())
+        rows = list(reader)
+    wanted = {name: str(value) for name, value in row.items() if name in header}
+    at = next(
+        (i for i in range(len(rows) - 1, -1, -1)
+         if all((rows[i].get(name) or "") == value for name, value in wanted.items())),
+        None,
+    )
+    if at is None or not wanted:
+        return False
+    del rows[at]
+    partial = target.with_name(f"{target.name}.part")
+    with partial.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, restval="", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(partial, target)
+    return True
 
 
 def append_review_record(path: Any, row: dict[str, str]) -> "Path":

@@ -896,7 +896,8 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
     run's own volume and network and the edit: nothing is skeletonised,
     loaded or built, and graph building's pickle is left as it was. The
     result is the edited network, and the Graph tab keeps the graph as it
-    was built."""
+    was built. (The Post processing tab's Regenerate graph; the Edit window
+    that also had one is retired.)"""
     import haemolynx.pipeline.stages as stages_mod
 
     viewer = make_napari_viewer()
@@ -915,11 +916,13 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
     wait()
     checkpoints = widget._haemolynx_checkpoints
     built_edges = checkpoints.get("build_network").graph.number_of_edges()
+    solved_edges = checkpoints.get("solve").graph.number_of_edges()
 
-    widget._haemolynx_open_graph_editor()
-    edited = widget._haemolynx_graph_editor["state"].graph
-    u, v, key = next(iter(edited.edges(keys=True)))
-    edited.remove_edge(u, v, key)  # what Delete edge does to the graph
+    page = widget._haemolynx_post_processing
+    page.scan()
+    _add_a_shortcut(page)
+    edited = page.state.graph.number_of_edges()
+    assert edited == solved_edges + 1
 
     graph_pkl = next((tmp_path / "out").glob("*_graph.pkl"))
     built_pickle = graph_pkl.read_bytes()
@@ -936,11 +939,12 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
         lambda *a, **k: calls.append("build_graph_from_skeleton") or real_build(*a, **k),
     )
 
-    widget._haemolynx_regenerate_from_edit()
+    page.regenerate_graph_button.click()
     wait()
 
     assert calls == [], f"Regenerate rebuilt what it should have loaded: {calls}"
-    assert checkpoints.get("solve").graph.number_of_edges() == edited.number_of_edges()
+    assert checkpoints.get("post_process").graph.number_of_edges() == edited
+    assert checkpoints.get("solve").graph.number_of_edges() == solved_edges, "Haemodynamics keeps its own"
     assert checkpoints.get("build_network").graph.number_of_edges() == built_edges
     assert graph_pkl.read_bytes() == built_pickle
     assert rows["do_skeletonize"].value is True  # nothing to load, so nothing turned off

@@ -1,14 +1,14 @@
 """Interactive graph edits: split an edge, delete one and collapse, draw a new one.
 
-Pure graph/array operations only -- no Qt, no napari. :mod:`haemolynx.gui.graph_editor`
-is the interactive window that turns mouse clicks into calls here, so the
-editing rules themselves are testable without a viewer.
+Pure graph/array operations only -- no Qt, no napari -- for graph building's
+own steps (mask recovery, the thick-vessel split, the skeleton re-trace) and
+the A* routing behind the Post processing tab's Add vessel
+(:mod:`haemolynx.graph.post_processing`).
 
 A newly added edge here is deliberately left without ``branch_order``/
-``diameter_um``: haemodynamics reads those, not this module, and the "Edit"
-window's Regenerate action re-runs branch-order and diameter assignment over
-the whole (edited) graph rather than having this module guess a value for
-one new edge in isolation (see ``haemodynamics.poiseuille.set_poiseuille_resistances``
+``diameter_um``: haemodynamics reads those, not this module, and the stages
+after it assign both over the whole graph rather than this module guessing
+a value for one new edge in isolation (see ``haemodynamics.poiseuille.set_poiseuille_resistances``
 for what an edge missing either one costs -- a silent zero-conductance edge).
 """
 from __future__ import annotations
