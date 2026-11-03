@@ -328,11 +328,15 @@ def test_preflight_asks_for_no_small_mask_file_under_the_split(tmp_path):
 
 @pytest.mark.parametrize("choice", ["small", "both"])
 def test_the_thick_vessel_restriction_may_name_split_small_masks(choice):
-    settings = _split_settings(skeleton_thick_vessel_restrict_to_mask=choice)
+    settings = _split_settings(
+        use_thick_vessel_skeletonisation=True, skeleton_thick_vessel_restrict_to_mask=choice
+    )
     assert check_thick_vessel_restriction_prerequisites(settings).ok
 
     unsplit = _split_settings(
-        skeleton_thick_vessel_restrict_to_mask=choice, split_large_vessel_masks_by_diameter=False
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_restrict_to_mask=choice,
+        split_large_vessel_masks_by_diameter=False,
     )
     report = check_thick_vessel_restriction_prerequisites(unsplit)
     assert not report.ok and "use_small_vessel_masks_for_boundary_assignment" in report.errors[0]

@@ -55,13 +55,11 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
         return report
     output_dir = Path(output_dir)
 
-    # The stages' own answer: ilastik's output's stem only while it segments
-    # (on, with a raw image to segment), else the Input tab's image's. With
-    # ilastik on and no raw image this named "input_graph.pkl", never the
-    # file the run loads.
     from haemolynx.io.ilastik import ilastik_segmented_stem
     from haemolynx.pipeline.stages import ilastik_segments
 
+    # Named as the stages name them: ilastik's output only while ilastik
+    # segments (its switch on and a raw image to segment).
     input_path = settings.get("input_path")
     if ilastik_segments(settings):
         stem = ilastik_segmented_stem(settings["raw_image_path"])
@@ -636,7 +634,9 @@ def check_thick_vessel_restriction_prerequisites(
     choice = str(
         settings.get("skeleton_thick_vessel_restrict_to_mask", "off")
     ).strip().lower()
-    if choice == "off":
+    # Read only by thickness-gated skeletonisation: with that off the choice
+    # is greyed, keeps its value, and confines nothing.
+    if choice == "off" or not settings.get("use_thick_vessel_skeletonisation"):
         return report
 
     # The masks load only while in use (graph.vessel_masks_in_use), which
@@ -1207,7 +1207,9 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     for name, why in unread:
         if settings.get(name):
             report.add_warning(f"{name} is on but not read for a synthetic network: {why}.")
-    if settings.get("skeleton_thick_vessel_restrict_to_mask", "off") not in ("off", None):
+    if settings.get("use_thick_vessel_skeletonisation") and settings.get(
+        "skeleton_thick_vessel_restrict_to_mask", "off"
+    ) not in ("off", None):
         report.add_warning("skeleton_thick_vessel_restrict_to_mask is not read for a synthetic network: nothing is skeletonised.")
     for name in ("do_skeletonize", "do_graph_building"):
         if settings.get(name, True) is False:

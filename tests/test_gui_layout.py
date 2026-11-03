@@ -683,3 +683,29 @@ def test_the_red_cell_volume_sits_beside_the_haematocrit_as_an_ordinary_row():
     names = list(haemodynamics.box("blood_model").names)
     assert names.index("red_cell_volume_fl") == names.index("haematocrit") + 1
     assert "red_cell_volume_fl" in haemodynamics.box("blood_model").rows
+
+
+def test_the_skeletonise_checks_grey_under_low_ram_and_stay_behind_checks():
+    """The skeleton/mask checks are skipped under the low-RAM option, and
+    tiling is read only while a skeleton is made: their rows were live
+    whatever those said. Greyed now, and still where they were on the tab."""
+    from haemolynx.gui.form import unmet_chain
+
+    _tab, layout = LAYOUTS["skeletonise"]
+    behind = {d.key: set(d.names) for box in layout.boxes for d in box.disclosures}
+    checks = {"skeleton_mask_consistency_warn_below", "missing_vessel_min_voxels",
+              "skeleton_missing_vessel_warn_below"}
+    tiling = {"skeletonize_tile_large_components", "skeletonize_tile_max_voxels",
+              "skeletonize_tile_halo_um"}
+    assert checks <= behind["skeletonise:box:pipeline_stages"]
+    assert tiling <= behind["skeletonise:do_skeletonize"]
+
+    values = SCHEMA.defaults()
+    assert not any(unmet_chain(SCHEMA, name, values) for name in checks)
+    low_ram = {**values, "use_memmap_loading": True}
+    assert all(unmet_chain(SCHEMA, name, low_ram) for name in checks)
+
+    tiled = {**low_ram, "skeletonize_tile_large_components": True}
+    assert not any(unmet_chain(SCHEMA, name, tiled) for name in tiling)
+    loaded = {**tiled, "do_skeletonize": False}
+    assert all("do_skeletonize" in unmet_chain(SCHEMA, name, loaded) for name in tiling)

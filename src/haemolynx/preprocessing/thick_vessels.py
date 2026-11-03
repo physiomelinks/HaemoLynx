@@ -3282,8 +3282,12 @@ def skeletonize_thickness_gated(
     it, the slow part, is skipped. Nothing else reads it.
 
     ``min_radius_um <= 0`` is the current pipeline behaviour: Lee on the whole
-    mask. Capillaries fused into the same object never enter the ridge path
-    unless their own EDT peak crosses the threshold.
+    mask, as a run with the gate off makes it -- Lee of the mask as given,
+    the skeleton's holes then filled (``io.load._skeletonize_loaded_volume``),
+    whatever *fill_mask_holes* says, which fills the mask for the radius test
+    alone -- and so is a mask in which no fat region is found. Capillaries
+    fused into the same object never enter the ridge path unless their own
+    EDT peak crosses the threshold.
 
     *wall_absorption_um* is how far around the fat body's core the wall
     absorbs surface roughness (and, unavoidably, the first stretch of any
@@ -3391,18 +3395,25 @@ def skeletonize_thickness_gated(
         workers_kept.close()
         return skeletonize_by_component(volume, **lee_kwargs)
 
-    def whole_lee(volume: np.ndarray) -> np.ndarray:
-        """Lee of the whole mask; under low-RAM the one
-        ``skeletonize_by_component`` wrote on disk, not a copy in RAM."""
-        return lee(volume) if low_ram else skeletonize_volume(volume).astype(bool)
+    def plain_lee() -> np.ndarray:
+        """The skeleton a run with the gate off makes: Lee of *binary* as
+        given, then its holes filled (``io.load._skeletonize_loaded_volume``).
+        It was Lee of the hole-filled mask with no fill after, another
+        skeleton wherever the mask or Lee's sheets enclose a hole. Under
+        low-RAM on disk, not a copy in RAM."""
+        workers_kept.close()
+        skeleton = skeletonize_by_component(np.asanyarray(binary, dtype=bool), **lee_kwargs)
+        filled = fill_binary_holes(skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory)
+        memmap_support.release_superseded(skeleton, filled, keep=binary)
+        return filled
+
+    if float(min_radius_um) <= 0.0:
+        skeleton = plain_lee()
+        return (skeleton, None) if return_thick_mask else skeleton
 
     with workers_kept, _hole_filled_mask(
         binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
     ) as mask:
-        if float(min_radius_um) <= 0.0:
-            skeleton = whole_lee(mask)
-            return (skeleton, None) if return_thick_mask else skeleton
-
         t0 = time.perf_counter()
         if thick_region is not None:
             thick = np.asarray(thick_region, dtype=bool)
@@ -3435,7 +3446,7 @@ def skeletonize_thickness_gated(
             )
         t_catchment = time.perf_counter() - t0
         if not _any(thick):
-            skeleton = whole_lee(mask)
+            skeleton = plain_lee()
             return (skeleton, None) if return_thick_mask else skeleton
         # thick_vessel_object_mask's own large locals are unreachable now
         # that it has returned, but a big freed block does not always get
