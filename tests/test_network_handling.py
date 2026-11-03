@@ -1326,3 +1326,38 @@ def test_the_open_ends_are_estimated_again_from_the_resistances_the_haematocrit_
         for _n, other, data in G.edges(4, data=True)
     )
     assert flows_at_4 == pytest.approx(0.0, abs=1e-6 * G.edges[0, 1, 0]["flow_abs"])
+
+
+def test_a_surrounds_image_vessel_and_shell_vessel_are_not_joined():
+    """Regression (from the Post processing tab's review): the join took the
+    first vessel's attributes, so one vessel carried one part's network_part
+    (and image_run_flow), and the image-flows CSV counted a stretch of shell
+    as image or dropped one. Vessels of two parts stay two."""
+    settings = dict(SCHEMA.defaults(), run_haemodynamics=True, open_end_model="closed",
+                    inlet_nodes=[0], outlet_nodes=[2], diameter_by_branch_order={"B01": 10.0}, **REMOVE)
+    graph = _drawn_network(("edt_mask", "edt_mask"))
+    for (u, v), part in (((0, 1), "image"), ((1, 2), "synthetic"), ((1, 3), "image")):
+        graph.edges[u, v, 0]["network_part"] = part
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2], graph=graph)
+    model = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries, schema=SCHEMA)
+    assert sorted(model.graph.edges()) == [(0, 1), (1, 2)]
+    assert [model.graph.edges[e]["network_part"] for e in ((0, 1, 0), (1, 2, 0))] == ["image", "synthetic"]
+
+
+def test_the_diameters_stage_records_the_rule_it_calibrated_by(tmp_path, monkeypatch):
+    """What a run from the Haemodynamics tab compares with the settings now
+    (gui.stage_checkpoints): recorded only where Diameters measured from the
+    raw image, the one measurement that calibrates on it."""
+    from haemolynx.pipeline.stages import CALIBRATION_SAMPLE, calibration_sample_rule
+
+    raw = {"raw_image_path": tmp_path / "raw.tif", "measure_diameters_from_raw_image": True,
+           "raw_image_stain": "plasma_column", "open_end_model": "estimated"}
+    model, _calibrated = _diameters_stage(tmp_path, monkeypatch, {**REMOVE, **raw})
+    assert model.graph.graph[CALIBRATION_SAMPLE] == ["remove_disconnected", "estimated"]
+    model, _calibrated = _diameters_stage(tmp_path, monkeypatch, REMOVE)
+    assert CALIBRATION_SAMPLE not in model.graph.graph
+
+    assert calibration_sample_rule({"boundary_handling": "leave_unsolved"}) == ["leave_unsolved"]
+    assert calibration_sample_rule({**REMOVE, "run_haemodynamics": False, "open_end_model": "estimated"}) == [
+        "remove_disconnected", "closed",
+    ]

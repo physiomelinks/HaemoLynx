@@ -139,3 +139,14 @@ per-point flows (`sweep_flows.py`) so the viewer's slider can swap them without 
     viscosity ones.
   - Switching from the power law to Pries in vitro **lowers capillary resistance** (0.59× at
     5 µm). `tests/test_viscosity_laws.py` pins the ratios at each diameter.
+
+## Haemodynamics tab review, second pass (2026-11-03)
+
+Harvey asked for every finding. Two of them move results:
+- Under the 1994 in vivo form (an endothelial basis, or the form held outright) a vessel narrower
+  than the law's fitted floor, 3.3 µm, has its viscosity read at 3.3 µm; its own width still sets
+  the d⁴ of its resistance. Before, a vessel at or under 1.1 µm stopped the run, and one just over
+  it took a viscosity many times larger. The in vitro form and the 2005 form are unchanged.
+- With the distributed haematocrit and `open_end_model=estimated`, the open ends are estimated
+  again from the resistances the loop left, and the flows solved once more; the haematocrit stays
+  the loop's. Before, the conditions came from the resistances of one uniform haematocrit.

@@ -4877,6 +4877,11 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 stain=stain,
             )
             calibration_edges = edges_network_handling_keeps(settings, G, boundaries)
+            # Only a measurement from the raw image calibrates on the image.
+            if measures_diameters_from_raw_image(settings):
+                G.graph[CALIBRATION_SAMPLE] = calibration_sample_rule(settings)
+            else:
+                G.graph.pop(CALIBRATION_SAMPLE, None)
             if calibration_edges is not None and len(calibration_edges) < G.number_of_edges():
                 logger.info(
                     "Image calibrations (PSF, endothelial wall, FWHM decoy check) sample "
@@ -5709,6 +5714,23 @@ def _split_junctions_for_haematocrit(
     )
 
 
+#: Graph record: the rule the Diameters stage's image calibrations chose
+#: their vessels by (:func:`calibration_sample_rule`), so a run from the
+#: Haemodynamics tab can tell when the settings now choose others.
+CALIBRATION_SAMPLE = "calibration_sample"
+
+
+def calibration_sample_rule(settings: Mapping[str, Any]) -> list[str]:
+    """What decides :func:`edges_network_handling_keeps`: ``boundary_handling``,
+    and under ``remove_disconnected`` the open-end model it counts the open
+    ends by (closed without haemodynamics)."""
+    handling = settings.get("boundary_handling") or BOUNDARY_HANDLING_LEAVE_UNSOLVED
+    if handling != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
+        return [handling]
+    model = settings.get("open_end_model") if settings.get("run_haemodynamics") else None
+    return [handling, model or haemodynamics.open_ends.CLOSED]
+
+
 def edges_network_handling_keeps(
     settings: dict, G: nx.MultiGraph, boundaries: BoundaryNodes
 ) -> list[tuple[Any, Any, Any]] | None:
@@ -5814,11 +5836,14 @@ def _remove_vessels_off_inlet_outlet_paths(
 
 #: The vessel-mask tags the Boundaries stage wrote, which the network
 #: handling does not read again: two vessels tagged apart -- one leaving a
-#: mask where a removed branch hung -- stay two.
+#: mask where a removed branch hung -- stay two. So do a surround's image
+#: vessel and its synthetic shell (``synthetic.surround.NETWORK_PART``): one
+#: vessel would carry one part's label, and the image-flows CSV miscount it.
 _MASK_TAGS_KEPT_APART = (
     graph.LARGE_MASK_VESSEL_TYPE,
     graph.SMALL_MASK_VESSEL_TYPE,
     graph.GLOBAL_MASK_CLASS,
+    "network_part",
 )
 
 
@@ -6025,6 +6050,7 @@ def solve(
     model: HaemodynamicModel,
     boundaries: BoundaryNodes,
     schema: Schema | None = None,
+    progress: StageProgress | None = None,
 ):
     """Solve the network: equivalent resistance, then pressures and edge flows.
 
@@ -6034,6 +6060,10 @@ def solve(
     together to a fixed point instead of solving once: haematocrit sets
     viscosity, viscosity sets resistance, resistance sets the flow split,
     and the flow split is what the distribution itself needs.
+
+    *progress* (the stage's reporter) hears each haematocrit pass, and the
+    flow solve before the two-point resistance: a watching panel shows them,
+    and a run asked to stop stops there rather than at the stage's end.
     """
     G = model.graph
     resistance_node_pair = boundaries.resistance_node_pair
@@ -6099,6 +6129,12 @@ def solve(
                 junction_rule=_junction_rule(settings),
                 solver=flow_solver,
                 open_ends=open_ends,
+                on_pass=(
+                    None if progress is None
+                    else lambda done, most: progress.step(
+                        f"Haematocrit pass {done}", next_step=f"Haematocrit pass {done + 1} of up to {most}"
+                    )
+                ),
             )
             node_list = hct_result["node_list"]
             node_to_idx = hct_result["node_to_idx"]
@@ -6145,6 +6181,8 @@ def solve(
     # 7) Compute effective resistance between two selected nodes, from
     # whichever conductance matrix the flow solve above finished with.
     if settings["run_haemodynamics"] and settings["do_equiv_resistance_calculation"]:
+        if progress is not None:
+            progress.step("Conductance matrix", next_step="Two-point resistance")
         if resistance_node_pair is None:
             logger.warning(
                 "Skipped two-point resistance: do_equiv_resistance_calculation "
@@ -9121,11 +9159,11 @@ def _run_stages(
     _produced(on_stage_output, "build_haemodynamic_model", model)
     if stop_after == "build_haemodynamic_model":
         return model.graph
-    with run.stage("solve"):
+    with run.stage("solve") as solving:
         # Off, solving only takes an earlier solve off a resumed network, so
         # it is not exported with flows this run did not find.
         if _run_stage_body("solve", start_from) or not settings.get("run_haemodynamics", True):
-            solution = solve(settings, model, boundaries, schema)
+            solution = solve(settings, model, boundaries, schema, progress=solving)
         else:
             solution = _solution_from_graph(model.graph)
     _produced(on_stage_output, "solve", solution)

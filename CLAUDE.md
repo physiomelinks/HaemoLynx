@@ -613,7 +613,9 @@ RAM, each worker holds its own volumes.
     button under the law) holds every vessel to one form (`in_vivo_1994`, `in_vitro_1992`,
     `in_vivo_2005`) or `auto`; it resolves through `viscosity.run_viscosity_law`, so the graph's
     `viscosity_law` names the form that ran. Plasma is 1.2 mPa·s, with no red-cell-size scaling
-    (unlike Secomb's NetFlow).
+    (unlike Secomb's NetFlow). Under the 1994 form, singular at 1.1 µm, a vessel narrower than
+    3.3 µm has its viscosity read at 3.3 µm, its own width still in the d⁴
+    (`viscosity.reads_in_vivo_1994`, `PoiseuilleModel.calculate_viscosity`).
   - `viscosity_law="capillary_power_law"` is the earlier law, kept for comparison (raises
     `haemodynamics.PlaceholderViscosityWarning` between 7 and 100 µm); `"constant"` is plasma
     everywhere, for separating geometry from viscosity.
