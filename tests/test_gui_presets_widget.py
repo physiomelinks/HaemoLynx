@@ -117,6 +117,9 @@ def test_each_preset_lands_in_the_form_as_it_says(panel):
 def test_a_preset_sets_the_rows_it_names_and_leaves_the_others(panel):
     rows = panel._haemolynx_rows()
     rows["min_stub_length"].value = 42.5
+    # Away from the preset's (the solvers' defaults are sparse too).
+    rows["haemodynamics_solver"].value = "dense"
+    rows["equivalent_resistance_solver"].value = "eigendecomposition"
     before = panel._haemolynx_values()
 
     _choose(panel, "large_image")
@@ -261,7 +264,7 @@ def test_settings_saved_as_a_preset_come_back_whole_in_a_later_session(
         min_stub_length=42.5,
         statistics=True,
         use_thick_vessel_skeletonisation=True,
-        haemodynamics_solver="sparse",
+        haemodynamics_solver="dense",
         raw_image_channel=2,
         output_dir=tmp_path / "first_outputs",
     )
@@ -274,7 +277,7 @@ def test_settings_saved_as_a_preset_come_back_whole_in_a_later_session(
     assert saved.settings == {
         "use_thick_vessel_skeletonisation": True,
         "min_stub_length": 42.5,
-        "haemodynamics_solver": "sparse",
+        "haemodynamics_solver": "dense",
         "statistics": True,
     }
 
@@ -298,7 +301,7 @@ def test_settings_saved_as_a_preset_come_back_whole_in_a_later_session(
     assert values["min_stub_length"] == 42.5
     assert values["statistics"] is True
     assert values["use_thick_vessel_skeletonisation"] is True
-    assert values["haemodynamics_solver"] == "sparse"
+    assert values["haemodynamics_solver"] == "dense"
     assert values["vtk_export"] is SCHEMA["vtk_export"].default
     # Held by the panel itself, never a preset's to set.
     for setting, value in DISPLAY_SETTINGS_OFF_IN_NAPARI.items():
