@@ -1516,6 +1516,8 @@ class ResultLayers:
         self._emitted = []
         self._thick_vessel_mask = None
         self._raw_segmented_image = None
+        # A low-RAM run's skeleton is on disk: kept, its file stayed in use.
+        self._skeleton = None
 
     def export_state(self) -> dict[str, Any]:
         """Pickle-safe copy of the memory a loaded run needs to look finished.

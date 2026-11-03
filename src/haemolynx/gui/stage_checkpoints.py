@@ -27,6 +27,7 @@ turned off instead. Starting after diameters also turns off
 from __future__ import annotations
 
 import logging
+import os
 import pickle
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -73,26 +74,62 @@ def _skeleton_array_from_groups(groups: Sequence[Any]) -> Any | None:
     return None
 
 
+def _saved_skeleton_is(path: Path, skeleton: Any) -> bool:
+    """Whether the skeleton saved at *path* has *skeleton*'s voxels, read a
+    slab of planes at a time; False for a file that will not load."""
+    try:
+        saved = np.load(path, mmap_mode="r")
+    except (OSError, ValueError, EOFError):
+        return False
+    mapping = getattr(saved, "_mmap", None)
+    try:
+        if tuple(saved.shape) != tuple(np.shape(skeleton)):
+            return False
+        from haemolynx.preprocessing.memmap_support import slab_step
+
+        step = slab_step(saved.shape)
+        return all(
+            np.array_equal(
+                np.asarray(saved[z0:z0 + step], dtype=bool),
+                np.asarray(skeleton[z0:z0 + step], dtype=bool),
+            )
+            for z0 in range(0, saved.shape[0], step)
+        )
+    finally:
+        del saved
+        if mapping is not None:
+            mapping.close()  # Windows will not replace a mapped file
+
+
 def ensure_skeleton_artefact(
     groups: Sequence[Any],
     output_dir: Path,
     stem: str,
 ) -> Path | None:
-    """Make sure ``{stem}_skeleton.npy`` exists for a resumed Run.
+    """Make sure ``{stem}_skeleton.npy`` exists for a resumed Run, and is the
+    skeleton the replayed groups show.
 
     Returns the path when the file is (or was made) present, else None.
     Without it, turning ``do_skeletonize`` off fails preflight and the user
-    cannot continue from the next tab after a revert.
+    cannot continue from the next tab after a revert. A file there already
+    that is not the groups' skeleton -- a later run's, left in the folder of
+    a run loaded back -- is replaced: the resumed run loaded it and built a
+    graph from another skeleton than the one on screen.
     """
     path = skeleton_resume_path(output_dir, stem)
-    if path.is_file():
-        return path
     skeleton = _skeleton_array_from_groups(groups)
+    if path.is_file() and (skeleton is None or _saved_skeleton_is(path, skeleton)):
+        return path
     if skeleton is None:
         return None
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        np.save(path, np.asarray(skeleton))
+        if path.is_file():
+            logger.info("Replacing %s: it is not the skeleton of the run resumed.", path)
+        part = path.with_name(f"{path.name}.part")
+        with open(part, "wb") as handle:
+            np.save(handle, np.asarray(skeleton, dtype=bool))
+        os.replace(part, path)
         logger.info("Wrote resumed skeleton for next Run to %s", path)
         return path
     except Exception:  # noqa: BLE001 - leave do_skeletonize on if we cannot write

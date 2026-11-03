@@ -318,6 +318,17 @@ FILES: tuple[OutputFile, ...] = (
                 "The crop-on-import box the skeleton was cut to, its (z, y, x) start and "
                 "stop (stop not kept), or null for the whole image.",
             ),
+            _c(
+                "mask_digest", "-",
+                "A digest of the segmented mask the skeleton was made from, after its "
+                "clean-up: a run loading the skeleton warns when its mask differs.",
+            ),
+            _c(
+                "thick_region_key", "-",
+                "The key of the thick-vessel region the skeleton was made with (the mask and "
+                "the settings deciding the region), or null with thickness-gated "
+                "skeletonisation off.",
+            ),
         ),
     ),
     # -- statistics ---------------------------------------------------------

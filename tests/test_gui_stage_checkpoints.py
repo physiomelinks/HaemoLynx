@@ -1059,3 +1059,32 @@ def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_t
     assert plan.resume.small_venule_mask is small_venule
     # Before post processing ran, the solve's checkpoint held Boundaries' own.
     assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)
+
+
+def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
+    """After Load run, a later run's skeleton left in the folder was loaded
+    instead of the loaded run's: the graph was built from another skeleton
+    than the one on screen. It is replaced by the run's own; the run's own
+    is left alone."""
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    checkpoints, skeleton = _through_post_processing(tmp_path, settings)
+    later = np.zeros_like(skeleton)
+    later[0, :, 1] = True
+    np.save(skeleton_path, later)
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert np.array_equal(np.load(skeleton_path), skeleton)
+    assert not skeleton_path.with_name(f"{skeleton_path.name}.part").exists()
+
+    groups = [checkpoints.get("skeletonise").group]
+    before = skeleton_path.stat().st_mtime_ns
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert skeleton_path.stat().st_mtime_ns == before  # its own: not written again
+
+    skeleton_path.write_bytes(b"not a skeleton")
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert np.array_equal(np.load(skeleton_path), skeleton)

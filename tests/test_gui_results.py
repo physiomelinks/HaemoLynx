@@ -2877,3 +2877,23 @@ def test_the_export_note_names_only_what_was_written():
     )
     assert group.note.startswith("Wrote the statistics.")
     assert "plots" not in group.note
+
+
+def test_reset_lets_go_of_the_last_runs_skeleton():
+    """reset() kept the skeleton: a low-RAM run's stayed in use on disk into
+    the next run."""
+    import gc
+    import weakref
+
+    results = ResultLayers()
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    gone = weakref.ref(skeleton)
+    volume = SimpleNamespace(
+        image=np.zeros((4, 4, 4)), skeleton=skeleton,
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    results.stage_restored("skeletonise", volume)
+    del volume, skeleton
+    results.reset()
+    gc.collect()
+    assert gone() is None

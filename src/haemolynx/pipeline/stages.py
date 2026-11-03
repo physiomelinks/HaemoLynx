@@ -26,6 +26,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import pickle
 import threading
 from collections import Counter
@@ -1479,8 +1480,29 @@ def thick_vessel_mask_from_image(
     (:func:`thick_vessel_region_cache`), the region a previous run found from
     the same mask and settings is read back, and one found here is kept.
     """
+    return _thick_region_and_key(
+        settings, image, voxel_size_xyz, crop, cache=cache, downsample=downsample
+    )[0]
+
+
+def _thick_region_and_key(
+    settings: dict,
+    image: np.ndarray,
+    voxel_size_xyz,
+    crop: CropBox | None = None,
+    *,
+    cache: preprocessing.ThickVesselRegionCache | None = None,
+    downsample: Downsample | None = None,
+    carried: np.ndarray | None = None,
+) -> tuple[np.ndarray | None, str | None]:
+    """:func:`thick_vessel_mask_from_image`, and the key the region is kept
+    under (``thick_vessel_region_key``: the mask and the settings deciding
+    the region), None with thickness-gated skeletonisation off. *carried*, a
+    region of *image*'s shape, is used when none is kept rather than finding
+    it again: a resumed run's (``PipelineResume.thick_vessel_mask``), which a
+    loaded ``.haemorun`` carries, the region its skeleton was made with."""
     if not settings.get("use_thick_vessel_skeletonisation"):
-        return None
+        return None, None
     binary = _to_binary_volume_for_skeletonization(
         image,
         use_memmap=settings["use_memmap_loading"],
@@ -1488,7 +1510,12 @@ def thick_vessel_mask_from_image(
     )
     arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
     key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
-    if not found:
+    if found:
+        pass
+    elif carried is not None and tuple(np.shape(carried)) == tuple(binary.shape):
+        logger.info("No thick-vessel region is kept for this mask and these settings: using the resumed run's.")
+        region = np.asarray(carried, dtype=bool) if np.any(carried) else None
+    else:
         # Without it graph building makes no thick-vessel bridges: the graph
         # of a run resumed on another machine was not the run's it resumed.
         logger.info("No thick-vessel region is kept for this mask and these settings: finding it.")
@@ -1496,7 +1523,7 @@ def thick_vessel_mask_from_image(
         if cache is not None:
             cache.store(key, region, binary.shape)
     preprocessing.release_superseded(binary, image, keep=image)
-    return region
+    return region, key
 
 
 def _skeletonize_loaded_mask(
@@ -1507,6 +1534,7 @@ def _skeletonize_loaded_mask(
     cache: preprocessing.ThickVesselRegionCache | None = None,
     downsample: Downsample | None = None,
     centreline: list | None = None,
+    region_key: list | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on.
 
@@ -1516,7 +1544,8 @@ def _skeletonize_loaded_mask(
     after that. With *cache*, the thick-vessel
     region is read back from the run that last found it in this mask with
     these settings, or kept once found. *centreline*, a list, is given the
-    thick region's centreline tree as drawn (its voxels), when one is.
+    thick region's centreline tree as drawn (its voxels), when one is;
+    *region_key*, a list, the key the thick region is kept under.
     """
     voxel_size_zyx = io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
     if settings["use_thick_vessel_skeletonisation"]:
@@ -1527,6 +1556,8 @@ def _skeletonize_loaded_mask(
         )
         arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
         key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
+        if region_key is not None:
+            region_key.append(key)
         if found and region is None:
             # Found before: there is none. No volume of False for it.
             region = np.broadcast_to(np.False_, binary.shape)
@@ -1704,8 +1735,90 @@ def _check_saved_skeleton_grid(
     )
 
 
-def skeletonise(settings: dict, inputs: SegmentedInputs):
-    """Load the mask, resolve its voxel size, and skeletonise it."""
+def _save_skeleton(path: Path, skeleton: np.ndarray) -> None:
+    """Save *skeleton* at *path* whole or not at all: written to a ``.part``
+    file and moved over *path* once complete, so a run stopped while saving
+    leaves the last skeleton rather than half of one."""
+    part = path.with_name(f"{path.name}.part")
+    with open(part, "wb") as handle:
+        np.save(handle, skeleton)
+    os.replace(part, path)
+
+
+def _load_saved_skeleton(path: Path, settings: Mapping[str, Any]) -> np.ndarray:
+    """The skeleton a run making it saved at *path*. Under the low-RAM option
+    a disk-backed copy, read a slab of planes at a time, not *path* mapped: on
+    Windows a mapped file cannot be written again, so while a loaded skeleton
+    was held (the panel keeps a run's layers) the next run making one failed to
+    save it. A file that will not load is reported as one to make again."""
+    from haemolynx.preprocessing.memmap_support import map_by_slab
+
+    try:
+        if not settings["use_memmap_loading"]:
+            return np.load(path)
+        saved = np.load(path, mmap_mode="r")
+        mapping = getattr(saved, "_mmap", None)
+        try:
+            copy = preprocessing.new_memmap_array(
+                saved.shape, saved.dtype, directory=settings["memmap_directory"]
+            )
+            return map_by_slab(saved, lambda slab: slab, copy)
+        finally:
+            del saved
+            if mapping is not None:
+                mapping.close()
+    except (OSError, ValueError, EOFError) as error:
+        raise ValueError(
+            f"The saved skeleton {path} cannot be read ({error}). Turn do_skeletonize "
+            "back on to make it again."
+        ) from error
+
+
+#: The steps :func:`skeletonise` reports making a skeleton: each one a point
+#: a cancelled panel run stops at, where it used to finish the whole stage.
+SKELETONISE_STEPS = ("Image read", "Skeletonised", "Skeleton cleaned")
+
+
+def _warn_if_made_otherwise(
+    skeleton_path: Path, record: Mapping[str, Any], mask_digest: str, region_key: str | None
+) -> None:
+    """Warn that a loaded skeleton was made from another mask, or with other
+    thick-vessel settings, than this run reads: graph building then reads a
+    mask the skeleton was not made from. A record from before these were kept
+    says nothing."""
+    remake = "Turn do_skeletonize back on to make it again."
+    if record.get("mask_digest") not in (None, mask_digest):
+        logger.warning(
+            "The saved skeleton %s was made from another segmented mask than this run "
+            "reads (the image or its segmentation clean-up changed since). %s",
+            skeleton_path, remake,
+        )
+    elif "thick_region_key" in record and record["thick_region_key"] != region_key:
+        logger.warning(
+            "The saved skeleton %s was made with other thick-vessel settings than this "
+            "run's (thickness-gated skeletonisation, its radius, hole fill, wall or "
+            "restriction to the vessel masks). %s",
+            skeleton_path, remake,
+        )
+
+
+def skeletonise(
+    settings: dict,
+    inputs: SegmentedInputs,
+    *,
+    progress: StageProgress | None = None,
+    thick_region: np.ndarray | None = None,
+):
+    """Load the mask, resolve its voxel size, and skeletonise it.
+
+    *progress* hears each of :data:`SKELETONISE_STEPS` (one step for a
+    skeleton loaded instead). *thick_region* is the region a resumed run
+    carries, used for a loaded skeleton when none is kept beside it."""
+
+    def step(label: str, total: int, next_step: str | None = None) -> None:
+        if progress is not None:
+            progress.step(label, total=total, next_step=next_step)
+
     if inputs.synthetic:
         return _synthetic_volume(settings, inputs)
     output_dir = inputs.output_dir
@@ -1771,10 +1884,14 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
         )
+        made_from = preprocessing.mask_digest(binary)
+        step(SKELETONISE_STEPS[0], len(SKELETONISE_STEPS), "Skeletonising")
+        region_key: list[str] = []
         skeleton, thick_vessel_mask = _skeletonize_loaded_mask(
             binary, settings, voxel_size, crop, cache=region_cache, downsample=downsample,
-            centreline=thick_centreline,
+            centreline=thick_centreline, region_key=region_key,
         )
+        step(SKELETONISE_STEPS[1], len(SKELETONISE_STEPS), "Cleaning the skeleton")
 
         # Purely diagnostic: off by default, and never changes `skeleton` even
         # when on -- see preprocessing.thick_vessel_braid_guard for what this
@@ -1839,8 +1956,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             memmap_directory=settings["memmap_directory"],
         )
         
-        # save the skeleton
-        np.save(skeleton_path, skeleton)
+        step(SKELETONISE_STEPS[2], len(SKELETONISE_STEPS))
+        _save_skeleton(skeleton_path, skeleton)
         voxel_meta_path.write_text(
             json.dumps(
                 {
@@ -1854,18 +1971,19 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                     "downsample": None if downsample is None else downsample.to_record(),
                     # And cut to this box: a run loading it checks it is its own.
                     "crop": _crop_record(crop),
+                    # And made from this mask, with these thick-vessel settings.
+                    "mask_digest": made_from,
+                    "thick_region_key": region_key[0] if region_key else None,
                 }
             )
         )
         logger.info(f"Saved skeleton to: {skeleton_path}")
     else:
-        # load the skeleton
-        if settings["use_memmap_loading"]:
-            # Copy-on-write: read straight from the saved file, and any later
-            # in-place edit stays in RAM for just the pages it touches.
-            skeleton = np.load(skeleton_path, mmap_mode="c")
-        else:
-            skeleton = np.load(skeleton_path)
+        skeleton = _load_saved_skeleton(skeleton_path, settings)
+        step(
+            "Skeleton loaded", 1,
+            "Finding the thick-vessel region" if settings["use_thick_vessel_skeletonisation"] else None,
+        )
         # The image as the run reads it: cut to the crop box and reduced by the
         # downsample, as the skeleton was when it was made.
         image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
@@ -1900,10 +2018,18 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 skeleton_path, tuple(made_at), voxel_size,
             )
         image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
-        if settings["use_thick_vessel_skeletonisation"]:
-            thick_vessel_mask = thick_vessel_mask_from_image(
-                settings, image, voxel_size, crop, cache=region_cache, downsample=downsample
-            )
+        binary = _to_binary_volume_for_skeletonization(
+            image,
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+        )
+        made_from = preprocessing.mask_digest(binary)
+        thick_vessel_mask, region_key = _thick_region_and_key(
+            settings, binary, voxel_size, crop, cache=region_cache, downsample=downsample,
+            carried=thick_region,
+        )
+        preprocessing.release_superseded(binary, image, keep=image)
+        _warn_if_made_otherwise(skeleton_path, saved, made_from, region_key)
 
     if plotting:
         logger.info("Visualizing skeleton projection...")
@@ -9007,10 +9133,13 @@ def _run_stages(
     _produced(on_stage_output, "segment", inputs)
     if stop_after == "segment":
         return None
-    with run.stage("skeletonise"):
+    with run.stage("skeletonise") as skeletonising:
         volume = _earlier_output(resume, start_from, "skeletonise", "volume")
         if volume is None:
-            volume = skeletonise(settings, inputs)
+            volume = skeletonise(
+                settings, inputs, progress=skeletonising,
+                thick_region=resume.thick_vessel_mask if resume is not None else None,
+            )
         else:
             logger.info("Resuming with the image and skeleton already loaded.")
             volume = _volume_writing_to(volume, inputs.output_dir)

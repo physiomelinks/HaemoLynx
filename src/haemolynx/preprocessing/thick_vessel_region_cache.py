@@ -42,6 +42,14 @@ def _digest_mask(digest, mask: np.ndarray) -> None:
         digest.update(np.packbits(slab).tobytes())
 
 
+def mask_digest(mask: np.ndarray) -> str:
+    """A digest of *mask*'s shape and voxels, read a slab of planes at a time:
+    what a saved skeleton records of the mask it was made from."""
+    digest = hashlib.sha1()
+    _digest_mask(digest, mask)
+    return digest.hexdigest()
+
+
 def thick_vessel_region_key(
     binary: np.ndarray,
     *,
