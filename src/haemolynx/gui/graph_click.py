@@ -1,8 +1,8 @@
 """Resolving a click on the vessels/nodes napari layers to a graph element.
 
-Pure -- no Qt, no napari import -- so the "Edit" window's Add branch and
-Delete edge features are testable against a fake click and layer data
-without a live viewer. Reuses :func:`haemolynx.gui.branch_hover.nearest_vector_index`
+Pure -- no Qt, no napari import -- so the Post processing tab's Delete
+vessel and Add vessel clicks are testable against a fake click and layer
+data without a live viewer. Reuses :func:`haemolynx.gui.branch_hover.nearest_vector_index`
 for the vessels (Vectors) layer polyline hit-test, the same one hover
 already uses (see ``_hover_feature_index`` in ``gui/_widget.py``), so click
 and hover cannot silently disagree about which segment is under the cursor.

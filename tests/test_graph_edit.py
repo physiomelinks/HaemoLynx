@@ -1,9 +1,8 @@
 """Interactive graph edits: split, delete+collapse, and mask-preferred A*.
 
-These are the pure primitives behind the "Edit" window's Add branch and
-Delete edge features (see haemolynx.gui.graph_editor, not written yet at the
-time these tests were added) -- no Qt, no napari, just graph/array
-operations, so the editing rules are pinned independently of the UI.
+Pure primitives that graph building's steps and the Post processing tab's
+Add vessel routing use -- no Qt, no napari, just graph/array operations, so
+the rules are pinned independently of the UI.
 """
 from __future__ import annotations
 

@@ -222,6 +222,11 @@ class SkeletonisedVolume:
     #: drawing the tree again (a volume of zeros and a Dijkstra over every
     #: fat voxel). None when this run did not draw it: graph building does.
     thick_vessel_centreline: np.ndarray | None = None
+    #: The segmentation as post processing last read it, binarised with its
+    #: ``MaskSupport`` (:class:`_PostProcessSegmentation`): kept for the next
+    #: Regenerate of this run, which is handed this volume again, while
+    #: ``image`` and the settings that shape it are the same.
+    post_process_segmentation: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -4962,7 +4967,11 @@ class _PostProcessSegmentation:
     through one ``MaskSupport`` at the run's bridge limits. Its three
     readers (the drawn vessels, the edited vessels' thick-vessel bridges and
     the dead ends at the edits) each binarised the whole image in RAM and
-    made a support of their own. Made when first asked for."""
+    made a support of their own. Made when first asked for.
+
+    :meth:`of` keeps it on the network's volume, so the next Regenerate of
+    the run does not binarise the image and build the support's surface tree
+    again: on E14.5 that was about 5 of the 6 s post processing took."""
 
     def __init__(self, settings: dict, network: "VesselNetwork | None"):
         self.settings = settings
@@ -4970,8 +4979,42 @@ class _PostProcessSegmentation:
         self.voxel_size_zyx = (
             None if network is None else tuple(float(v) for v in network.volume.voxel_size_zyx)
         )
+        self.key = self._key(settings, network)
         self._binary = None
         self._support = None
+
+    @staticmethod
+    def _key(settings: Mapping[str, Any], network: "VesselNetwork | None") -> tuple:
+        """What the binarised image and its support are made from."""
+        if network is None:
+            return (None,)
+        return (
+            id(network.volume.image),
+            tuple(float(v) for v in network.volume.voxel_size_zyx),
+            float(settings["bridge_max_background_gap_um"]),
+            float(settings["bridge_min_mask_fraction"]),
+            bool(settings.get("use_memmap_loading")),
+            str(settings.get("memmap_directory")),
+        )
+
+    @classmethod
+    def of(cls, settings: dict, network: "VesselNetwork | None") -> "_PostProcessSegmentation":
+        """The one kept on *network*'s volume while it still reads its image
+        with these settings, else a new one, kept there in its place."""
+        if network is None:
+            return cls(settings, None)
+        volume = network.volume
+        kept = volume.post_process_segmentation
+        if (
+            isinstance(kept, cls)
+            and kept.image is volume.image
+            and kept.key == cls._key(settings, network)
+        ):
+            kept.settings = settings
+            return kept
+        made = cls(settings, network)
+        volume.post_process_segmentation = made
+        return made
 
     @property
     def binary(self) -> np.ndarray | None:
@@ -5027,7 +5070,7 @@ def _judge_drawn_vessels(
     if not drawn or network is None or network.volume.image is None:
         return None
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     support = segmentation.support(voxel_size_zyx)
     records = graph.record_drawn_vessel_support(G, drawn, support)
     off_segmentation = sum(not record.within_bridge_gate for record in records)
@@ -5109,7 +5152,7 @@ def _bridge_edited_vessels(
         )
 
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     before = edited_bridges(G)
     # The tree skeletonisation drew, when this is the region it drew it in.
     tree = None
@@ -5169,7 +5212,7 @@ def _mark_touched_dead_end_kinds(
         )
         return None
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     binary_mask = segmentation.binary
     if not np.any(binary_mask):
         logger.info(
@@ -5325,7 +5368,7 @@ def post_process(
        endothelium -- whichever it uses), keeping the diameter the edit gave
        it as a provisional override: a measurement replaces that, the
        branch-order table does not;
-    6. each vessel the edits drew is read against the segmentation as graph
+    7. each vessel the edits drew is read against the segmentation as graph
        building reads every bridge it draws (:func:`_judge_drawn_vessels`:
        the fraction of it in the mask, the longest run of background it
        crosses, whether it runs beside a vessel in the same lumen), written
@@ -5361,7 +5404,7 @@ def post_process(
         )
     _take_chosen_resistance_pair(boundaries, G)
     # One binarised segmentation and one support for the three readers below.
-    segmentation = _PostProcessSegmentation(settings, network)
+    segmentation = _PostProcessSegmentation.of(settings, network)
     G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask, segmentation)
     model.graph = G
     boundaries.graph = G
