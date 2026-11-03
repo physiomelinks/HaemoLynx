@@ -1138,6 +1138,18 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     return scaled
 
 
+def missing_vessel_min_voxels_on_grid(settings: Mapping[str, Any], downsample: Downsample | None) -> int:
+    """``missing_vessel_min_voxels``, voxels of the image as read, on
+    *downsample*'s grid: as many as hold the same volume, rounded half up and
+    never below 1. Counted on the coarse grid as set, the missing-vessel
+    checks' noise floor was a piece of eight times the volume (at 2x)."""
+    value = int(settings["missing_vessel_min_voxels"])
+    if downsample is None or downsample.is_identity:
+        return value
+    block = int(np.prod(downsample.axis_factors_zyx, dtype=np.int64))
+    return max(1, int(np.floor(value / block + 0.5)))
+
+
 def skeleton_voxel_settings_from_grid(
     chosen: Mapping[str, Any], settings: Mapping[str, Any], downsample: Downsample | None
 ) -> dict:
@@ -1413,7 +1425,8 @@ def thick_vessel_mask_from_image(
     """The thick-vessel region skeletonisation found in *image*, found again.
 
     For a run that needs the region but loaded its skeleton instead of making
-    it (a resume with no stored stage outputs). None when thickness-gated
+    it: ``skeletonise`` with ``do_skeletonize`` off, and post processing on a
+    resume with no stored stage outputs. None when thickness-gated
     skeletonisation is off, or finds no thick vessel. *crop* is the
     ``crop_on_import`` box *image* was cut to, *downsample* how it was reduced
     after that. With *cache*
@@ -1429,41 +1442,14 @@ def thick_vessel_mask_from_image(
     )
     arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
     key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
-    if found:
-        return region
-    region = preprocessing.thick_vessel_region(binary, **arguments)
-    if cache is not None:
-        cache.store(key, region, binary.shape)
-    return region
-
-
-def _thick_vessel_region_if_cached(
-    settings: dict,
-    image: np.ndarray,
-    voxel_size_xyz,
-    crop: CropBox | None,
-    cache: preprocessing.ThickVesselRegionCache,
-    downsample: Downsample | None = None,
-) -> np.ndarray | None:
-    """The thick-vessel region a previous run found in *image*, for a run
-    loading its skeleton rather than making it; None when none is cached
-    (graph building then makes no thick-vessel bridges, as before there
-    was a cache) or that run found none."""
-    binary = _to_binary_volume_for_skeletonization(
-        image,
-        use_memmap=settings["use_memmap_loading"],
-        memmap_directory=settings["memmap_directory"],
-    )
-    _key, found, region = _cached_thick_vessel_region(
-        cache, binary, _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
-    )
-    preprocessing.release_superseded(binary, image, keep=image)
     if not found:
-        logger.info(
-            "No thick-vessel region is cached for the loaded skeleton (%s), so graph "
-            "building makes no thick-vessel bridges; turn do_skeletonize on to find it.",
-            cache.sidecar,
-        )
+        # Without it graph building makes no thick-vessel bridges: the graph
+        # of a run resumed on another machine was not the run's it resumed.
+        logger.info("No thick-vessel region is kept for this mask and these settings: finding it.")
+        region = preprocessing.thick_vessel_region(binary, **arguments)
+        if cache is not None:
+            cache.store(key, region, binary.shape)
+    preprocessing.release_superseded(binary, image, keep=image)
     return region
 
 
@@ -1618,6 +1604,60 @@ def _mask_skeleton_is_made_from(
     )
 
 
+def _crop_record(crop: CropBox | None) -> dict | None:
+    """The ``crop_on_import`` box a skeleton was cut to, as kept beside it:
+    its voxel corners, or None for the whole image."""
+    if crop is None or crop.is_whole_volume:
+        return None
+    return {"start_zyx": [int(v) for v in crop.start_zyx], "stop_zyx": [int(v) for v in crop.stop_zyx]}
+
+
+def _saved_skeleton_record(path: Path, skeleton_path: Path) -> dict:
+    """What a run making its skeleton kept beside it (``{stem}_voxel_size.json``);
+    empty when there is none, it cannot be read, or it is older than the
+    skeleton: written by another run than the one that made it, as when the
+    panel writes a skeleton alone for a resumed run
+    (``gui.stage_checkpoints.ensure_skeleton_artefact``)."""
+    try:
+        if Path(path).stat().st_mtime_ns < Path(skeleton_path).stat().st_mtime_ns:
+            return {}
+        record = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _check_saved_skeleton_grid(
+    skeleton_path: Path, skeleton_shape, image_shape, record: Mapping[str, Any],
+    crop: CropBox | None, downsample: Downsample | None,
+) -> None:
+    """Refuse a saved skeleton made on another grid than the image this run
+    reads: another shape, or the same shape cut from another box or reduced
+    by other blocks (a box moved, or a larger box reduced), which the shape
+    alone let through. A record from before the box was kept is judged by
+    its shape and reduction."""
+    def blocks(factors) -> list[int] | None:
+        factors = None if factors is None else [int(b) for b in factors]
+        return None if factors is None or max(factors) <= 1 else factors
+
+    saved_blocks = blocks((record.get("downsample") or {}).get("axis_factors_zyx"))
+    if tuple(skeleton_shape) != tuple(image_shape):
+        problem = f"is {tuple(skeleton_shape)} voxels but the image is {tuple(image_shape)}"
+    elif "crop" in record and record["crop"] != _crop_record(crop):
+        problem = f"was cut from the box {record['crop']}, this run from {_crop_record(crop)}"
+    elif "downsample" in record and saved_blocks != blocks(
+        None if downsample is None else downsample.axis_factors_zyx
+    ):
+        problem = "was reduced by other blocks than this run's"
+    else:
+        return
+    raise ValueError(
+        f"The saved skeleton {skeleton_path} {problem}: it was made with a different "
+        "crop_on_import box or segmented_image_downsample, or none. Turn do_skeletonize "
+        "back on to make it again."
+    )
+
+
 def skeletonise(settings: dict, inputs: SegmentedInputs):
     """Load the mask, resolve its voxel size, and skeletonise it."""
     if inputs.synthetic:
@@ -1639,7 +1679,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
 
     # A loaded skeleton's image is cleaned as a fresh run's is; the
     # thick-vessel region is kept beside the skeleton, so a loaded skeleton
-    # gets it back when the mask and settings are the run's that found it.
+    # gets it back when the mask and settings are the run's that found it,
+    # and finds it again when they are not.
     thick_vessel_mask: np.ndarray | None = None
     raw_segmented_image: np.ndarray | None = None
     region_cache = thick_vessel_region_cache(settings, output_dir)
@@ -1706,6 +1747,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 min_occupied_slices=int(
                     settings["thick_vessel_braid_min_occupied_slices"]
                 ),
+                low_memory=bool(settings["use_memmap_loading"]),
             )
             if braided:
                 logger.warning(preprocessing.format_braided_thick_vessel_report(braided))
@@ -1764,6 +1806,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                     "voxel_size_override_xyz": settings["voxel_size_override_xyz"],
                     # For the record: the saved skeleton is on the reduced grid.
                     "downsample": None if downsample is None else downsample.to_record(),
+                    # And cut to this box: a run loading it checks it is its own.
+                    "crop": _crop_record(crop),
                 }
             )
         )
@@ -1778,24 +1822,15 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             skeleton = np.load(skeleton_path)
         # The image as the run reads it: cut to the crop box and reduced by the
         # downsample, as the skeleton was when it was made.
-        image, _metadata, _status, crop, downsample = _load_and_crop_volume(settings, input_format)
-        if skeleton.shape != image.shape:
-            raise ValueError(
-                f"The saved skeleton {skeleton_path} is {skeleton.shape} voxels but the "
-                f"image is {image.shape}: it was made with a different crop_on_import "
-                "box or segmented_image_downsample, or none. Turn do_skeletonize back on "
-                "to make it again."
-            )
-        if voxel_meta_path.exists():
-            cached_voxel_meta = json.loads(voxel_meta_path.read_text())
-            metadata_voxel_size = tuple(cached_voxel_meta["voxel_size"])
-            voxel_meta_status = cached_voxel_meta.get(
-                "voxel_metadata_status",
-                {"source": "cache", "status": "unknown"},
-            )
-        else:
-            metadata_voxel_size = (1.0, 1.0, 1.0)
-            voxel_meta_status = {"source": "none", "status": "missing"}
+        image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
+            settings, input_format
+        )
+        saved = _saved_skeleton_record(voxel_meta_path, skeleton_path)
+        _check_saved_skeleton_grid(skeleton_path, skeleton.shape, image.shape, saved, crop, downsample)
+        # Resolved from the image just read, as a run making its skeleton does.
+        # The record beside the skeleton holds what that run resolved -- an
+        # override among it, read back here as metadata -- and is not there at
+        # all for a skeleton the panel wrote for a resumed run (1 um voxels).
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
             metadata_voxel_size_xyz=metadata_voxel_size,
             metadata_status=voxel_meta_status,
@@ -1805,15 +1840,23 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         voxel_size = _run_voxel_size_on_grid(voxel_size, downsample)
         logger.info(f"Loaded skeleton from: {skeleton_path}")
         logger.info(
-            "Voxel-size resolution (from cache/default): "
+            "Voxel-size resolution (skeleton loaded): "
             f"source={voxel_size_source}, "
             f"metadata_status={voxel_meta_status.get('status')}, "
             f"final={voxel_size}"
         )
+        made_at = saved.get("run_voxel_size")
+        if made_at is not None and not np.allclose(np.asarray(made_at, dtype=float), voxel_size):
+            logger.warning(
+                "The saved skeleton %s was made at a voxel size of %s um (x, y, z); this "
+                "run's is %s. Its clean-up was measured at the old size: turn "
+                "do_skeletonize back on to make it again.",
+                skeleton_path, tuple(made_at), voxel_size,
+            )
         image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
         if settings["use_thick_vessel_skeletonisation"]:
-            thick_vessel_mask = _thick_vessel_region_if_cached(
-                settings, image, voxel_size, crop, region_cache, downsample
+            thick_vessel_mask = thick_vessel_mask_from_image(
+                settings, image, voxel_size, crop, cache=region_cache, downsample=downsample
             )
 
     if plotting:
@@ -1835,7 +1878,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         # Both checks from one distance transform of the skeleton.
         mask_consistency, missing_vessels = preprocessing.diagnose_skeleton_against_mask(
             skeleton, image, voxel_size_zyx=voxel_size_zyx,
-            min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+            min_vessel_voxels=missing_vessel_min_voxels_on_grid(settings, downsample),
         )
         consistency_report = preprocessing.format_skeleton_mask_consistency_report(
             mask_consistency
@@ -1936,7 +1979,8 @@ def _write_run_final_graph_3d_html(
 
 
 def _log_graph_consistency_diagnostics(
-    settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx
+    settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx,
+    downsample: Downsample | None = None,
 ) -> None:
     """The four read-only graph checks build_network logs. They never change
     G's nodes or edges; the lumen-artefact report's counts are kept on
@@ -1962,7 +2006,7 @@ def _log_graph_consistency_diagnostics(
     # Both mask checks from one distance transform of the graph's edges.
     graph_mask_consistency, missing_vessels = graph.diagnose_graph_against_mask(
         G, image, voxel_size_zyx=voxel_size_zyx,
-        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+        min_vessel_voxels=missing_vessel_min_voxels_on_grid(settings, downsample),
     )
     graph_mask_consistency_report = graph.format_graph_mask_consistency_report(
         graph_mask_consistency
@@ -2695,7 +2739,9 @@ def build_network(
         # Not measured: a loaded graph's counts are of another build.
         G.graph.pop(graph.LUMEN_ARTEFACT_COUNTS, None)
     else:
-        _log_graph_consistency_diagnostics(settings, G, skeleton, image, voxel_size_zyx)
+        _log_graph_consistency_diagnostics(
+            settings, G, skeleton, image, voxel_size_zyx, downsample=volume.downsample
+        )
 
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:
