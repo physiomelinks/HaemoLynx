@@ -220,6 +220,20 @@ def test_a_voxel_settings_change_on_a_downsampled_search_is_in_search_grid_voxel
     assert "    skeleton_closing_radius: 0 -> 2 [search-grid voxels] (" in build_report_text(result)
 
 
+def test_a_change_on_a_run_downsampled_on_import_is_in_search_grid_voxels():
+    """Regression: with the run's own 2x downsample on import and the search
+    at full resolution, the change line held the run grid's 2 unmarked while
+    the group's line held the image's own 4."""
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": 4},
+        trials=_closing_sweep(chosen_value=2),
+        run_grid_factor=2,
+    )
+    text = build_report_text(result)
+    assert "    skeleton_closing_radius: 0 -> 2 [search-grid voxels] (" in text
+    assert "downsampled 2x on import" in text
+
+
 def test_the_report_heading_can_be_given():
     result = OptimisationResult(settings={}, trials=())
     assert build_report_text(result, heading="FWHM settings:") == "FWHM settings:"

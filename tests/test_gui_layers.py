@@ -40,9 +40,17 @@ def test_a_3d_layer_is_accepted():
     assert rejection_reason(fake_layer()) is None
 
 
-def test_a_2d_layer_is_refused_by_name():
-    reason = rejection_reason(fake_layer(shape=(5, 6)))
-    assert "3D" in reason and "2D" in reason
+def test_a_2d_layer_is_accepted_as_a_2d_file_is():
+    """Regression: a 2D layer was refused, though a 2D file is read as a
+    stack of one."""
+    assert rejection_reason(fake_layer(shape=(5, 6))) is None
+    settings = input_for_layer(fake_layer(shape=(5, 6), scale=(0.5, 0.25))).settings
+    assert settings["voxel_size_override_xyz"] == [0.25, 0.5, 1.0]
+
+
+def test_a_4d_layer_is_refused_by_name():
+    reason = rejection_reason(fake_layer(shape=(2, 4, 5, 6)))
+    assert "3D" in reason and "4D" in reason
 
 
 def test_an_rgb_layer_is_refused():
@@ -55,7 +63,7 @@ def test_a_layer_with_no_data_is_refused():
 
 def test_input_for_layer_raises_the_same_reason():
     with pytest.raises(ValueError, match="3D"):
-        input_for_layer(fake_layer(shape=(5, 6)))
+        input_for_layer(fake_layer(shape=(2, 4, 5, 6)))
 
 
 # --- voxel size: (z, y, x) scale -> (x, y, z) metadata -----------------------
@@ -101,7 +109,8 @@ def test_an_all_ones_scale_carries_no_information():
 
 def test_a_missing_or_wrong_length_scale_is_ignored():
     assert voxel_size_xyz_from_scale(None) is None
-    assert voxel_size_xyz_from_scale((1.0, 2.0)) is None
+    assert voxel_size_xyz_from_scale((1.0, 2.0, 3.0, 4.0)) is None
+    assert voxel_size_xyz_from_scale((1.0, 1.0)) is None
 
 
 def test_an_anisotropic_layer_sets_the_override_and_the_policy():

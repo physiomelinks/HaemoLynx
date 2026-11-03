@@ -135,10 +135,6 @@ SAVED_PRESET_TOOLTIP = (
     "Your own preset, saved on this machine: it puts every setting back as it "
     "was saved, except the files, folders and details of one image"
 )
-EDIT_GRAPH_TOOLTIP = (
-    "Open the graph editor to add or delete vessels by clicking in the "
-    "viewer; Regenerate then brings diameters, flows and outputs up to date"
-)
 REOPEN_VIEW_TOOLTIP = (
     "Reopen any closed tabs of the left-hand panel: the HaemoLynx view, "
     "Statistics, Layer list and Layer controls"
@@ -788,9 +784,9 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "listed again"
     ),
     "dead_end_show": (
-        "List every kind of dead end the scan found, or only one kind; "
-        "pieces with no junction are vessels on their own, both ends dead "
-        "ends"
+        "Every kind of dead end the scan found, or one kind. Ends marked as "
+        "real blind ends appear only under their own kind. Pieces with no "
+        "junction are vessels with both ends dead ends"
     ),
     "remove_pieces": (
         "Remove every piece with no junction in the list, except those holding "
@@ -971,6 +967,11 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "log": (
         "Every change made in this tab, oldest first, with branchIDs as they "
         "were at the time; also written to the napari log"
+    ),
+    "undo": (
+        "Take back the last edit or decision made in this tab, one at a time, "
+        "back to the last Regenerate graph or new run. A decision taken back "
+        "leaves its review file"
     ),
     "regenerate_graph": (
         "Update the edited vessels to match the rest (branch orders, lengths, "

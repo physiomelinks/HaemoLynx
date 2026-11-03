@@ -703,3 +703,34 @@ def test_a_loop_measure_is_taken_once_for_the_same_points_and_kept_for_the_next_
     assert fourth(moved) == -1.0 and fourth(loop) == float(loop.sum())  # what the second call asked
     assert len(calls) == 3
     assert _LoopMeasures(None, "m", lambda points: 7.0)(loop) == 7.0
+
+
+def _theta(order):
+    """Three routes between P and Q through junctions a, s and b (loops of
+    70, 68 and 75 um), their edges added in *order*: breaking one loop
+    merges it with its neighbour, so which goes first decides the rest."""
+    G = nx.MultiGraph()
+    points = {"P": (30.0, 20.0, 20.0), "Q": (30.0, 20.0, 50.0),
+              "a": (30.0, 8.0, 35.0), "s": (30.0, 15.0, 35.0), "b": (30.0, 30.0, 35.0)}
+    for name in ("P", "Q", *order):
+        G.add_node(name, pos=np.array(points[name]))
+    for name in order:
+        for x, y in (("P", name), (name, "Q")):
+            voxels = np.linspace(points[x], points[y], 31)
+            G.add_edge(x, y, voxels=voxels.tolist(), length=float(np.linalg.norm(voxels[-1] - voxels[0])))
+    return G
+
+
+def test_which_loops_break_does_not_depend_on_the_order_of_the_edges():
+    """Regression: loops were broken in the order the graph held its edges,
+    so the same three routes added another way kept another two."""
+    from haemolynx.graph.lumen_loops import remove_short_loops
+
+    mask = np.zeros((61, 60, 80), dtype=bool)
+    mask[5:56, 5:55, 5:75] = True
+    support = MaskSupport(mask, (1.0, 1.0, 1.0))
+    kept = set()
+    for order in (["a", "s", "b"], ["b", "s", "a"], ["s", "b", "a"]):
+        G = remove_short_loops(_theta(order), support, max_length_um=72.0, keep_hole_over_um=10.0)
+        kept.add(tuple(sorted(n for n in G if n in {"a", "s", "b"})))
+    assert len(kept) == 1

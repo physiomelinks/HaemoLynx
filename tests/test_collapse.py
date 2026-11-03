@@ -179,3 +179,118 @@ def test_the_plain_collapse_still_absorbs_a_ring_no_longer_than_twice_the_thresh
     assert out.number_of_nodes() == 3
     assert out.number_of_edges() == 2
     assert not list(nx.selfloop_edges(out))
+
+
+# --- self-loops, tie order and the persistence collapse's guards -------------
+
+COLLAPSES = (
+    collapse_node_clusters, collapse_node_clusters_direction_aware, collapse_node_clusters_persistence,
+)
+
+
+def _total_length(G) -> float:
+    return float(sum(d["length"] for *_e, d in G.edges(data=True)))
+
+
+def _ring_on_a_stem() -> nx.MultiGraph:
+    """A stem from node 0 to junction 1 and a 120 um ring leaving 1 and
+    coming back to it, as skan traces it: one self-loop."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([0.0, 0.0, 30.0]))
+    G.add_edge(0, 1, voxels=[[0.0, 0.0, float(x)] for x in range(31)], length=30.0)
+    angles = np.linspace(np.pi, -np.pi, 121)
+    ring = np.stack([np.zeros_like(angles), 19.1 * np.sin(angles), 49.1 + 19.1 * np.cos(angles)], axis=1)
+    ring[0] = ring[-1] = (0.0, 0.0, 30.0)
+    G.add_edge(1, 1, voxels=ring.tolist(), length=calculate_path_length(ring.tolist()))
+    return G
+
+
+@pytest.mark.parametrize("collapse", COLLAPSES, ids=lambda f: f.__name__)
+def test_a_ring_on_one_junction_is_split_for_the_loop_rules_not_deleted(collapse):
+    """Regression: every collapse deleted every self-loop, so a ring joined
+    to the network at one junction went with no rule judging it, though no
+    node merged. A long one is split at its far point into two edges, which
+    the loop rules read; a short one, the gap a merge closed, still goes."""
+    G = _ring_on_a_stem()
+    G.add_edge(0, 0, voxels=[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]], length=2.0)
+
+    collapsed = collapse(G, 5.0)
+
+    assert nx.number_of_selfloops(collapsed) == 0
+    assert _total_length(collapsed) == pytest.approx(_total_length(_ring_on_a_stem()))
+    (far,) = set(collapsed) - {0, 1}
+    assert collapsed.number_of_edges(1, far) == 2
+    assert np.asarray(collapsed.nodes[far]["pos"])[2] == pytest.approx(49.1 + 19.1, abs=0.6)
+
+
+def test_split_self_loops_puts_each_half_from_its_node_to_the_far_point():
+    from haemolynx.graph._helpers import split_self_loops
+
+    G = _ring_on_a_stem()
+    assert split_self_loops(G, min_length_um=200.0) == 0  # shorter: left as it is
+    assert split_self_loops(G) == 1
+    (far,) = set(G) - {0, 1}
+    for _u, _v, data in G.edges(far, data=True):
+        voxels = np.asarray(data["voxels"])
+        assert np.allclose(voxels[0], G.nodes[1]["pos"]) and np.allclose(voxels[-1], G.nodes[far]["pos"])
+        assert data["length"] == pytest.approx(calculate_path_length(data["voxels"]))
+
+
+def _junction_ladder(ids) -> nx.MultiGraph:
+    """Ten junctions 4 um apart along a vessel, each with a 20 um side
+    branch, the nodes numbered by *ids* (ten for the junctions, then ten)."""
+    G = nx.MultiGraph()
+    for i in range(10):
+        G.add_node(ids[i], pos=np.array([0.0, 0.0, 4.0 * i]))
+        G.add_node(ids[10 + i], pos=np.array([0.0, 20.0, 4.0 * i]))
+        G.add_edge(ids[10 + i], ids[i], voxels=[[0, 20.0, 4.0 * i], [0, 0.0, 4.0 * i]], length=20.0)
+    for i in range(9):
+        G.add_edge(ids[i], ids[i + 1], voxels=[[0, 0, 4.0 * i], [0, 0, 4.0 * (i + 1)]], length=4.0)
+    return G
+
+
+def _shape(G):
+    return sorted(
+        tuple(sorted((tuple(np.round(G.nodes[u]["pos"], 6)), tuple(np.round(G.nodes[v]["pos"], 6)))))
+        for u, v in G.edges()
+    )
+
+
+@pytest.mark.parametrize("collapse", COLLAPSES, ids=lambda f: f.__name__)
+def test_a_collapse_does_not_depend_on_the_nodes_ids(collapse):
+    """Regression: ties between representatives of one degree went to the
+    lowest id, so the same network numbered another way collapsed another
+    way, and a change elsewhere renumbering it moved its junctions. Ties go
+    by position."""
+    ids = list(range(20))
+    shapes = {
+        repr(_shape(collapse(_junction_ladder(order), 5.0)))
+        for order in (ids, ids[::-1], [7, 3, 19, 0, 12, 5, 16, 1, 9, 14, 2, 18, 6, 11, 4, 17, 8, 13, 10, 15])
+    }
+    assert len(shapes) == 1
+
+
+def test_the_persistence_collapse_neither_chains_nor_deletes_a_loops_arc():
+    """Regression: with no gap to cut at, the persistence collapse took every
+    merge within the collapse distance: the ladder of junctions chained into
+    two nodes and one vessel, and a 60 um arc between two nodes 3 um apart
+    was merged away. It holds a cluster to the collapse distance and absorbs
+    no long vessel, as the other two methods do."""
+    ladder = collapse_node_clusters_persistence(_junction_ladder(list(range(20))), 5.0)
+    assert ladder.number_of_nodes() >= 8
+    assert np.ptp([ladder.nodes[n]["pos"][2] for n in ladder]) > 30.0
+
+    G = nx.MultiGraph()
+    points = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 0.0, 23.0), 3: (0.0, 0.0, 43.0)}
+    for node, pos in points.items():
+        G.add_node(node, pos=np.array(pos))
+    t = np.linspace(0.0, 1.0, 40)
+    arc = np.stack([np.zeros_like(t), 30.0 * np.sin(np.pi * t), 20.0 + 3.0 * t], axis=1)
+    for u, v, voxels in ((0, 1, [points[0], points[1]]), (2, 3, [points[2], points[3]]),
+                         (1, 2, arc.tolist()), (1, 2, [points[1], points[2]])):
+        G.add_edge(u, v, voxels=[list(p) for p in voxels], length=calculate_path_length([list(p) for p in voxels]))
+
+    kept = collapse_node_clusters_persistence(G, 5.0)
+
+    assert _total_length(kept) == pytest.approx(_total_length(G))

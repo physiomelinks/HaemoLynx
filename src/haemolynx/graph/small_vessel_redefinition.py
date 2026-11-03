@@ -72,6 +72,8 @@ def redefine_small_masks_from_large_tangential_contact(
     sandwiched_min_facing_cosine: float = 0.82,
     sandwiched_max_axis_angle_degrees: float = 45.0,
     reassignment_parallel_workers: int = 0,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> dict[str, Any]:
     """Relabel small-vessel pieces by tangential contact, then sandwiched pieces.
 
@@ -87,7 +89,14 @@ def redefine_small_masks_from_large_tangential_contact(
     ``tangency_weight`` times its tangency cosine plus
     ``opposite_penalty_weight`` times how far inside
     ``opposite_exclusion_distance_microns`` of the other class it comes.
+
+    *low_memory* (the low-RAM option) writes the relabelled masks on disk
+    (*memmap_directory*) and reads each large mask's surface a slab of planes
+    at a time: the same masks, with no volume copied into RAM.
     """
+    def copy(volume: np.ndarray) -> np.ndarray:
+        return _copy_volume(volume, low_memory=low_memory, memmap_directory=memmap_directory)
+
     art = np.asarray(small_arteriole_mask).astype(bool, copy=False)
     ven = np.asarray(small_venule_mask).astype(bool, copy=False)
     if art.shape != ven.shape:
@@ -99,8 +108,8 @@ def redefine_small_masks_from_large_tangential_contact(
     if not enable_redefinition:
         stats.update(_empty_tangential_stats(0), **_empty_sandwich_stats())
         return {
-            "small_arteriole_mask": art.copy(),
-            "small_venule_mask": ven.copy(),
+            "small_arteriole_mask": copy(art),
+            "small_venule_mask": copy(ven),
             "stats": stats,
         }
     large = {"arteriole": large_arteriole_mask, "venule": large_venule_mask}
@@ -139,9 +148,11 @@ def redefine_small_masks_from_large_tangential_contact(
                 opposite_penalty_weight=float(opposite_penalty_weight),
             ),
             workers=int(reassignment_parallel_workers),
+            copy=copy,
+            low_memory=low_memory,
         )
     else:
-        art, ven = art.copy(), ven.copy()
+        art, ven = copy(art), copy(ven)
         tangential_stats = _empty_tangential_stats(0)
     tangential_done = time.perf_counter()
     stats.update(tangential_stats)
@@ -154,6 +165,7 @@ def redefine_small_masks_from_large_tangential_contact(
             max_gap=float(sandwiched_max_endpoint_distance_microns),
             min_facing=float(sandwiched_min_facing_cosine),
             max_angle_degrees=float(sandwiched_max_axis_angle_degrees),
+            copy=copy,
         )
     else:
         sandwich_stats = _empty_sandwich_stats()
@@ -200,10 +212,12 @@ class _Verdict:
 class _LargeMaskSurface:
     """One large-vessel mask's surface voxels, indexed in microns."""
 
-    def __init__(self, mask: np.ndarray, spacing: np.ndarray, normal_radius: float):
+    def __init__(
+        self, mask: np.ndarray, spacing: np.ndarray, normal_radius: float, *, low_memory: bool = False
+    ):
         self.mask = np.asarray(mask).astype(bool, copy=False)
         self.normal_radius = float(normal_radius)
-        self.points = _surface_voxels(self.mask) * spacing
+        self.points = _surface_voxels(self.mask, low_memory=low_memory) * spacing
         self.tree = cKDTree(self.points)
         self._spacing = spacing
 
@@ -237,6 +251,8 @@ def _tangential_pass(
     limits: _TangentialLimits,
     *,
     workers: int,
+    copy=np.copy,
+    low_memory: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     from haemolynx.preprocessing.slab_labels import ForegroundLabels
 
@@ -250,12 +266,12 @@ def _tangential_pass(
     count = labels.count
     stats = _empty_tangential_stats(int(count))
     if count == 0:
-        return art.copy(), ven.copy(), stats
+        return copy(art), copy(ven), stats
     # A normal needs a patch of surface several voxels across, whatever the
     # coarsest axis; the touch distance is the scale the contact is judged on.
     normal_radius = max(limits.touch, 2.0 * float(spacing.max()))
     surfaces = {
-        name: _LargeMaskSurface(mask, spacing, normal_radius)
+        name: _LargeMaskSurface(mask, spacing, normal_radius, low_memory=low_memory)
         for name, mask in large.items()
         if mask is not None and np.any(mask)
     }
@@ -272,8 +288,8 @@ def _tangential_pass(
     else:
         verdicts = [judge(component_id) for component_id in ids]
 
-    out_art = art.copy()
-    out_ven = ven.copy()
+    out_art = copy(art)
+    out_ven = copy(ven)
     for _component_id, voxels, verdict in verdicts:
         if verdict.target is None:
             stats[verdict.outcome] += 1
@@ -469,6 +485,7 @@ def _sandwich_pass(
     max_gap: float,
     min_facing: float,
     max_angle_degrees: float,
+    copy=np.copy,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     stats = _empty_sandwich_stats()
     pieces = _index_pieces(art, ven, spacing)
@@ -518,8 +535,8 @@ def _sandwich_pass(
     flipped = np.flatnonzero(pieces.kind != started_venule)
     if flipped.size == 0:
         return art, ven, stats
-    out_art = art.copy()
-    out_ven = ven.copy()
+    out_art = copy(art)
+    out_ven = copy(ven)
     for piece in flipped:
         index = tuple(pieces.voxels[pieces.members[piece]].T)
         to_arteriole = bool(pieces.kind[piece] == 0)
@@ -645,19 +662,47 @@ def _plane_normal(points_um: np.ndarray) -> np.ndarray | None:
     return eigenvectors[:, 0]
 
 
-def _surface_voxels(mask: np.ndarray) -> np.ndarray:
+def _surface_voxels(mask: np.ndarray, *, low_memory: bool = False) -> np.ndarray:
     """Voxels of *mask* with a face neighbour outside it; volume edges excepted.
 
     A cut face where a vessel leaves the image is not wall, so it gives no
     normal. The nearest mask voxel to any outside point is always one of these.
+    *low_memory* reads the mask's box a slab of planes at a time, each with
+    the plane either side it erodes against: the same voxels, in the same
+    order, with no copy of the box.
     """
     occupied = [np.flatnonzero(np.any(mask, axis=other)) for other in ((1, 2), (0, 2), (0, 1))]
     low = np.asarray([max(0, int(o[0]) - 1) for o in occupied])
     high = np.asarray([min(n, int(o[-1]) + 2) for o, n in zip(occupied, mask.shape)])
     box = tuple(slice(a, b) for a, b in zip(low, high))
-    local = mask[box]
-    wall = local & ~binary_erosion(local, structure=_FACE_STRUCTURE, border_value=1)
-    return (np.argwhere(wall) + low).astype(float)
+    if not low_memory:
+        local = mask[box]
+        wall = local & ~binary_erosion(local, structure=_FACE_STRUCTURE, border_value=1)
+        return (np.argwhere(wall) + low).astype(float)
+    from haemolynx.preprocessing.memmap_support import slab_step
+
+    depth = int(high[0] - low[0])
+    step = slab_step(tuple(int(b - a) for a, b in zip(low, high)))
+    found = []
+    for z0 in range(0, depth, step):
+        z1 = min(z0 + step, depth)
+        start, stop = max(0, z0 - 1), min(depth, z1 + 1)
+        chunk = np.asarray(mask[(slice(low[0] + start, low[0] + stop),) + box[1:]], dtype=bool)
+        eroded = binary_erosion(chunk, structure=_FACE_STRUCTURE, border_value=1)
+        core = slice(z0 - start, z1 - start)
+        wall = chunk[core] & ~eroded[core]
+        found.append(np.argwhere(wall) + low + np.array([z0, 0, 0]))
+    return np.concatenate(found).astype(float) if found else np.empty((0, 3), dtype=float)
+
+
+def _copy_volume(volume: np.ndarray, *, low_memory: bool, memmap_directory=None) -> np.ndarray:
+    """A writable boolean copy of *volume*: on disk, a slab of planes at a
+    time, under the low-RAM option (*low_memory*)."""
+    if not low_memory:
+        return np.array(volume, dtype=bool)
+    from haemolynx.preprocessing.memmap_support import combine_by_slab
+
+    return combine_by_slab(lambda part: part.astype(bool), volume, directory=memmap_directory)
 
 
 # --- reporting -------------------------------------------------------------------

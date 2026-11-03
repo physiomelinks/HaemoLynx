@@ -49,6 +49,7 @@ from haemolynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
 )
 from haemolynx.haemodynamics.haematocrit_distribution import (
+    DISCHARGE_HAEMATOCRIT_ATTR,
     JUNCTION_RULE_NO_SEPARATION,
     JUNCTION_RULE_SPLIT_JUNCTIONS,
     iterate_flow_and_haematocrit,
@@ -92,7 +93,7 @@ from haemolynx.io.downsample import (
     raw_volume_like_graph,
     record_on_graph as record_downsample_on_graph,
 )
-from haemolynx.io.ilastik import ilastik_segmented_path
+from haemolynx.io.ilastik import ilastik_segmented_path, ilastik_segmented_stem
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -221,6 +222,11 @@ class SkeletonisedVolume:
     #: drawing the tree again (a volume of zeros and a Dijkstra over every
     #: fat voxel). None when this run did not draw it: graph building does.
     thick_vessel_centreline: np.ndarray | None = None
+    #: The segmentation as post processing last read it, binarised with its
+    #: ``MaskSupport`` (:class:`_PostProcessSegmentation`): kept for the next
+    #: Regenerate of this run, which is handed this volume again, while
+    #: ``image`` and the settings that shape it are the same.
+    post_process_segmentation: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -241,6 +247,10 @@ class VesselNetwork:
     #: (`graph.large_vessel_mask_split_diameter_um`), None when they were not:
     #: a run resumed on the Boundaries tab cuts them again when it changed.
     mask_split_diameter_um: float | None = None
+    #: What each role's masks were read from and cleaned with
+    #: (`_vessel_mask_sources`): a run resumed on the Boundaries tab loads a
+    #: role again when it changed. None when not recorded: kept as they are.
+    mask_sources: dict[str, tuple] | None = None
 
 
 @dataclass(frozen=True)
@@ -453,15 +463,22 @@ def segmented_input_path(settings: dict) -> Path | None:
     With ilastik on, the Input tab's ``input_path`` is not the answer until
     `segment` has replaced it with ilastik's output (it may still hold an
     unrelated file from before ilastik was switched on): it counts only once
-    it lies in ``ilastik_output_dir``. Otherwise the output is derived where
-    `segment` writes it -- that stage's own naming rule. None for a
-    synthetic network, which has no segmented image."""
+    it is the output for this raw image -- in ``ilastik_output_dir``, named
+    ``{raw image stem}_segmented`` (ilastik may have written ``.tif`` as
+    ``.tiff``). Any file in that folder counted, so a resumed run read
+    another raw image's segmentation, or a vessel mask's. Otherwise the
+    output is derived where `segment` writes it -- that stage's own naming
+    rule. None for a synthetic network, which has no segmented image."""
     if graph.network_is_synthetic(settings):
         return None
     produced = settings.get("input_path")
     if ilastik_segments(settings):
         output_dir = Path(settings["ilastik_output_dir"])
-        if produced is not None and Path(produced).parent == output_dir:
+        if (
+            produced is not None
+            and Path(produced).parent == output_dir
+            and Path(produced).stem == ilastik_segmented_stem(settings["raw_image_path"])
+        ):
             return Path(produced)
         return ilastik_segmented_path(
             output_dir, settings["raw_image_path"], settings["ilastik_output_suffix"]
@@ -1110,6 +1127,15 @@ SKELETON_VOXEL_SETTINGS: tuple[str, ...] = (
 )
 
 
+def finest_spacing_ratio(source_voxel_size_zyx, grid_voxel_size_zyx) -> float:
+    """How many voxels of the source's finest axis one voxel of the grid's
+    finest axis spans: what a count of finest-axis voxels (the skeleton
+    clean-up's) is divided by on the grid. Not the source's finest axis's
+    own reduction: a coarse z reduced less can be the grid's finest axis
+    (z 1.5 um, x and y 0.5 um at 4x: a 1.5 um grid voxel, not 2 um)."""
+    return round(float(min(grid_voxel_size_zyx)) / float(min(source_voxel_size_zyx)), 9)
+
+
 def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Downsample | None) -> dict:
     """The :data:`SKELETON_VOXEL_SETTINGS` a run on *downsample*'s grid uses:
     each the same physical length as on the image as read, so divided by the
@@ -1120,8 +1146,7 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     again as many false junctions (2026-10-19)."""
     if downsample is None or downsample.is_identity:
         return {}
-    finest = int(np.argmin(downsample.source_voxel_size_zyx))
-    factor = float(downsample.axis_factors_zyx[finest])
+    factor = finest_spacing_ratio(downsample.source_voxel_size_zyx, downsample.voxel_size_zyx)
     scaled = {}
     for name in SKELETON_VOXEL_SETTINGS:
         value = settings.get(name)
@@ -1137,6 +1162,18 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     return scaled
 
 
+def missing_vessel_min_voxels_on_grid(settings: Mapping[str, Any], downsample: Downsample | None) -> int:
+    """``missing_vessel_min_voxels``, voxels of the image as read, on
+    *downsample*'s grid: as many as hold the same volume, rounded half up and
+    never below 1. Counted on the coarse grid as set, the missing-vessel
+    checks' noise floor was a piece of eight times the volume (at 2x)."""
+    value = int(settings["missing_vessel_min_voxels"])
+    if downsample is None or downsample.is_identity:
+        return value
+    block = int(np.prod(downsample.axis_factors_zyx, dtype=np.int64))
+    return max(1, int(np.floor(value / block + 0.5)))
+
+
 def skeleton_voxel_settings_from_grid(
     chosen: Mapping[str, Any], settings: Mapping[str, Any], downsample: Downsample | None
 ) -> dict:
@@ -1148,8 +1185,7 @@ def skeleton_voxel_settings_from_grid(
     optimiser, which searches on the run's grid. Empty without a reduction."""
     if downsample is None or downsample.is_identity:
         return {}
-    finest = int(np.argmin(downsample.source_voxel_size_zyx))
-    factor = int(downsample.axis_factors_zyx[finest])
+    factor = finest_spacing_ratio(downsample.source_voxel_size_zyx, downsample.voxel_size_zyx)
     on_grid = skeleton_voxel_settings_on_grid(settings, downsample)
     restored = {}
     for name in SKELETON_VOXEL_SETTINGS:
@@ -1182,6 +1218,24 @@ def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[
         # Read onto disk and cleaned a slab at a time under the low-RAM option.
         "use_memmap": bool(settings.get("use_memmap_loading", False)),
         "memmap_directory": settings.get("memmap_directory"),
+    }
+
+
+def _vessel_mask_sources(settings: Mapping[str, Any]) -> dict[str, tuple]:
+    """Each role's masks as the settings describe them: the loader's arguments
+    (files, ilastik, voxel size, load-time clean-up), the width they are split
+    at, and whether the run reads every mask as one global mask. The settings
+    sit on the Boundaries tab but the masks load in ``build_network``, so a
+    network keeps this (`VesselNetwork.mask_sources`) for a run resumed there
+    to tell masks it can keep from ones it must load again."""
+    common = (
+        io.vessel_masks_are_global(settings),
+        graph.large_vessel_mask_split_diameter_um(settings),
+    )
+    return {
+        role: common
+        + tuple(sorted((name, repr(value)) for name, value in _vessel_mask_arguments(settings, role).items()))
+        for role in graph.boundaries.VESSEL_MASK_SWITCHES
     }
 
 
@@ -1412,7 +1466,8 @@ def thick_vessel_mask_from_image(
     """The thick-vessel region skeletonisation found in *image*, found again.
 
     For a run that needs the region but loaded its skeleton instead of making
-    it (a resume with no stored stage outputs). None when thickness-gated
+    it: ``skeletonise`` with ``do_skeletonize`` off, and post processing on a
+    resume with no stored stage outputs. None when thickness-gated
     skeletonisation is off, or finds no thick vessel. *crop* is the
     ``crop_on_import`` box *image* was cut to, *downsample* how it was reduced
     after that. With *cache*
@@ -1428,41 +1483,14 @@ def thick_vessel_mask_from_image(
     )
     arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
     key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
-    if found:
-        return region
-    region = preprocessing.thick_vessel_region(binary, **arguments)
-    if cache is not None:
-        cache.store(key, region, binary.shape)
-    return region
-
-
-def _thick_vessel_region_if_cached(
-    settings: dict,
-    image: np.ndarray,
-    voxel_size_xyz,
-    crop: CropBox | None,
-    cache: preprocessing.ThickVesselRegionCache,
-    downsample: Downsample | None = None,
-) -> np.ndarray | None:
-    """The thick-vessel region a previous run found in *image*, for a run
-    loading its skeleton rather than making it; None when none is cached
-    (graph building then makes no thick-vessel bridges, as before there
-    was a cache) or that run found none."""
-    binary = _to_binary_volume_for_skeletonization(
-        image,
-        use_memmap=settings["use_memmap_loading"],
-        memmap_directory=settings["memmap_directory"],
-    )
-    _key, found, region = _cached_thick_vessel_region(
-        cache, binary, _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
-    )
-    preprocessing.release_superseded(binary, image, keep=image)
     if not found:
-        logger.info(
-            "No thick-vessel region is cached for the loaded skeleton (%s), so graph "
-            "building makes no thick-vessel bridges; turn do_skeletonize on to find it.",
-            cache.sidecar,
-        )
+        # Without it graph building makes no thick-vessel bridges: the graph
+        # of a run resumed on another machine was not the run's it resumed.
+        logger.info("No thick-vessel region is kept for this mask and these settings: finding it.")
+        region = preprocessing.thick_vessel_region(binary, **arguments)
+        if cache is not None:
+            cache.store(key, region, binary.shape)
+    preprocessing.release_superseded(binary, image, keep=image)
     return region
 
 
@@ -1617,6 +1645,60 @@ def _mask_skeleton_is_made_from(
     )
 
 
+def _crop_record(crop: CropBox | None) -> dict | None:
+    """The ``crop_on_import`` box a skeleton was cut to, as kept beside it:
+    its voxel corners, or None for the whole image."""
+    if crop is None or crop.is_whole_volume:
+        return None
+    return {"start_zyx": [int(v) for v in crop.start_zyx], "stop_zyx": [int(v) for v in crop.stop_zyx]}
+
+
+def _saved_skeleton_record(path: Path, skeleton_path: Path) -> dict:
+    """What a run making its skeleton kept beside it (``{stem}_voxel_size.json``);
+    empty when there is none, it cannot be read, or it is older than the
+    skeleton: written by another run than the one that made it, as when the
+    panel writes a skeleton alone for a resumed run
+    (``gui.stage_checkpoints.ensure_skeleton_artefact``)."""
+    try:
+        if Path(path).stat().st_mtime_ns < Path(skeleton_path).stat().st_mtime_ns:
+            return {}
+        record = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _check_saved_skeleton_grid(
+    skeleton_path: Path, skeleton_shape, image_shape, record: Mapping[str, Any],
+    crop: CropBox | None, downsample: Downsample | None,
+) -> None:
+    """Refuse a saved skeleton made on another grid than the image this run
+    reads: another shape, or the same shape cut from another box or reduced
+    by other blocks (a box moved, or a larger box reduced), which the shape
+    alone let through. A record from before the box was kept is judged by
+    its shape and reduction."""
+    def blocks(factors) -> list[int] | None:
+        factors = None if factors is None else [int(b) for b in factors]
+        return None if factors is None or max(factors) <= 1 else factors
+
+    saved_blocks = blocks((record.get("downsample") or {}).get("axis_factors_zyx"))
+    if tuple(skeleton_shape) != tuple(image_shape):
+        problem = f"is {tuple(skeleton_shape)} voxels but the image is {tuple(image_shape)}"
+    elif "crop" in record and record["crop"] != _crop_record(crop):
+        problem = f"was cut from the box {record['crop']}, this run from {_crop_record(crop)}"
+    elif "downsample" in record and saved_blocks != blocks(
+        None if downsample is None else downsample.axis_factors_zyx
+    ):
+        problem = "was reduced by other blocks than this run's"
+    else:
+        return
+    raise ValueError(
+        f"The saved skeleton {skeleton_path} {problem}: it was made with a different "
+        "crop_on_import box or segmented_image_downsample, or none. Turn do_skeletonize "
+        "back on to make it again."
+    )
+
+
 def skeletonise(settings: dict, inputs: SegmentedInputs):
     """Load the mask, resolve its voxel size, and skeletonise it."""
     if inputs.synthetic:
@@ -1638,7 +1720,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
 
     # A loaded skeleton's image is cleaned as a fresh run's is; the
     # thick-vessel region is kept beside the skeleton, so a loaded skeleton
-    # gets it back when the mask and settings are the run's that found it.
+    # gets it back when the mask and settings are the run's that found it,
+    # and finds it again when they are not.
     thick_vessel_mask: np.ndarray | None = None
     raw_segmented_image: np.ndarray | None = None
     region_cache = thick_vessel_region_cache(settings, output_dir)
@@ -1705,6 +1788,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 min_occupied_slices=int(
                     settings["thick_vessel_braid_min_occupied_slices"]
                 ),
+                low_memory=bool(settings["use_memmap_loading"]),
             )
             if braided:
                 logger.warning(preprocessing.format_braided_thick_vessel_report(braided))
@@ -1763,6 +1847,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                     "voxel_size_override_xyz": settings["voxel_size_override_xyz"],
                     # For the record: the saved skeleton is on the reduced grid.
                     "downsample": None if downsample is None else downsample.to_record(),
+                    # And cut to this box: a run loading it checks it is its own.
+                    "crop": _crop_record(crop),
                 }
             )
         )
@@ -1777,24 +1863,15 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             skeleton = np.load(skeleton_path)
         # The image as the run reads it: cut to the crop box and reduced by the
         # downsample, as the skeleton was when it was made.
-        image, _metadata, _status, crop, downsample = _load_and_crop_volume(settings, input_format)
-        if skeleton.shape != image.shape:
-            raise ValueError(
-                f"The saved skeleton {skeleton_path} is {skeleton.shape} voxels but the "
-                f"image is {image.shape}: it was made with a different crop_on_import "
-                "box or segmented_image_downsample, or none. Turn do_skeletonize back on "
-                "to make it again."
-            )
-        if voxel_meta_path.exists():
-            cached_voxel_meta = json.loads(voxel_meta_path.read_text())
-            metadata_voxel_size = tuple(cached_voxel_meta["voxel_size"])
-            voxel_meta_status = cached_voxel_meta.get(
-                "voxel_metadata_status",
-                {"source": "cache", "status": "unknown"},
-            )
-        else:
-            metadata_voxel_size = (1.0, 1.0, 1.0)
-            voxel_meta_status = {"source": "none", "status": "missing"}
+        image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
+            settings, input_format
+        )
+        saved = _saved_skeleton_record(voxel_meta_path, skeleton_path)
+        _check_saved_skeleton_grid(skeleton_path, skeleton.shape, image.shape, saved, crop, downsample)
+        # Resolved from the image just read, as a run making its skeleton does.
+        # The record beside the skeleton holds what that run resolved -- an
+        # override among it, read back here as metadata -- and is not there at
+        # all for a skeleton the panel wrote for a resumed run (1 um voxels).
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
             metadata_voxel_size_xyz=metadata_voxel_size,
             metadata_status=voxel_meta_status,
@@ -1804,15 +1881,23 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         voxel_size = _run_voxel_size_on_grid(voxel_size, downsample)
         logger.info(f"Loaded skeleton from: {skeleton_path}")
         logger.info(
-            "Voxel-size resolution (from cache/default): "
+            "Voxel-size resolution (skeleton loaded): "
             f"source={voxel_size_source}, "
             f"metadata_status={voxel_meta_status.get('status')}, "
             f"final={voxel_size}"
         )
+        made_at = saved.get("run_voxel_size")
+        if made_at is not None and not np.allclose(np.asarray(made_at, dtype=float), voxel_size):
+            logger.warning(
+                "The saved skeleton %s was made at a voxel size of %s um (x, y, z); this "
+                "run's is %s. Its clean-up was measured at the old size: turn "
+                "do_skeletonize back on to make it again.",
+                skeleton_path, tuple(made_at), voxel_size,
+            )
         image, raw_segmented_image = _mask_skeleton_is_made_from(settings, image, voxel_size)
         if settings["use_thick_vessel_skeletonisation"]:
-            thick_vessel_mask = _thick_vessel_region_if_cached(
-                settings, image, voxel_size, crop, region_cache, downsample
+            thick_vessel_mask = thick_vessel_mask_from_image(
+                settings, image, voxel_size, crop, cache=region_cache, downsample=downsample
             )
 
     if plotting:
@@ -1834,7 +1919,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         # Both checks from one distance transform of the skeleton.
         mask_consistency, missing_vessels = preprocessing.diagnose_skeleton_against_mask(
             skeleton, image, voxel_size_zyx=voxel_size_zyx,
-            min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+            min_vessel_voxels=missing_vessel_min_voxels_on_grid(settings, downsample),
         )
         consistency_report = preprocessing.format_skeleton_mask_consistency_report(
             mask_consistency
@@ -1935,7 +2020,8 @@ def _write_run_final_graph_3d_html(
 
 
 def _log_graph_consistency_diagnostics(
-    settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx
+    settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx,
+    downsample: Downsample | None = None,
 ) -> None:
     """The four read-only graph checks build_network logs. They never change
     G's nodes or edges; the lumen-artefact report's counts are kept on
@@ -1961,7 +2047,7 @@ def _log_graph_consistency_diagnostics(
     # Both mask checks from one distance transform of the graph's edges.
     graph_mask_consistency, missing_vessels = graph.diagnose_graph_against_mask(
         G, image, voxel_size_zyx=voxel_size_zyx,
-        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+        min_vessel_voxels=missing_vessel_min_voxels_on_grid(settings, downsample),
     )
     graph_mask_consistency_report = graph.format_graph_mask_consistency_report(
         graph_mask_consistency
@@ -1992,7 +2078,7 @@ def _log_graph_consistency_diagnostics(
     # after the smoothing and the thick-vessel split.
     artefacts = graph.diagnose_lumen_artefacts(
         G, image, voxel_size_zyx=voxel_size_zyx,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     G.graph[graph.LUMEN_ARTEFACT_COUNTS] = graph.lumen_artefact_counts(artefacts)
     artefacts_report = graph.format_lumen_artefacts_report(artefacts)
@@ -2049,6 +2135,15 @@ def thick_bridge_centreline_tolerance_um(settings: Mapping[str, Any]) -> float:
         "thick_bridge_centreline_tolerance_um", graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM
     )
     return float(graph.thick_vessel_junctions.CENTRELINE_TOLERANCE_UM if value is None else value)
+
+
+def dead_end_stub_radius_multiple(settings: Mapping[str, Any]) -> float:
+    """``min_stub_length_radius_multiple`` as the dead-end kinds and the
+    lumen-artefact report read it: the stub prune's own rule, so 0 calls no
+    dead end short by its vessel's radius, as the prune then prunes none by
+    it. 3, its default, when a caller's settings predate it."""
+    value = settings.get("min_stub_length_radius_multiple")
+    return 3.0 if value is None else float(value)
 
 
 def lumen_cleanup_switches(settings: Mapping[str, Any]) -> dict[str, bool]:
@@ -2531,6 +2626,7 @@ def build_network(
             small_arteriole_mask=small_arteriole_mask,
             small_venule_mask=small_venule_mask,
             mask_split_diameter_um=mask_split_diameter_um,
+            mask_sources=_vessel_mask_sources(settings),
         )
 
     if settings["do_graph_building"]:
@@ -2647,6 +2743,8 @@ def build_network(
         if no_vessels is not None:
             raise no_vessels
 
+        # Saved with the box it was built in, so a run loading it can tell.
+        _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         logger.info(f"Saved graph to: {graph_path}")
@@ -2664,6 +2762,10 @@ def build_network(
                 f"The graph loaded from {graph_path} has no vessels. "
                 "Turn do_graph_building on to build it again from the skeleton."
             )
+        _check_saved_graph_fits_image(
+            G, graph_path, image.shape if image is not None else skeleton.shape, voxel_size_zyx,
+            getattr(volume, "crop", None),
+        )
 
     _record_graph_voxel_metadata(
         G, main_voxel_size_xyz, voxel_size_zyx,
@@ -2694,7 +2796,9 @@ def build_network(
         # Not measured: a loaded graph's counts are of another build.
         G.graph.pop(graph.LUMEN_ARTEFACT_COUNTS, None)
     else:
-        _log_graph_consistency_diagnostics(settings, G, skeleton, image, voxel_size_zyx)
+        _log_graph_consistency_diagnostics(
+            settings, G, skeleton, image, voxel_size_zyx, downsample=volume.downsample
+        )
 
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:
@@ -2730,6 +2834,41 @@ def build_network(
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
         mask_split_diameter_um=mask_split_diameter_um,
+        mask_sources=_vessel_mask_sources(settings),
+    )
+
+
+def _check_saved_graph_fits_image(
+    G: nx.MultiGraph, graph_path: Path, shape, voxel_size_zyx, crop: CropBox | None = None
+) -> None:
+    """Refuse a saved graph built on another image grid, as a saved skeleton
+    is refused: its node positions are microns from that image's corner, so
+    on another crop box, downsample or voxel size they no longer lie on this
+    run's image and masks. Judged by the extent recorded when it was built
+    (``image_extent_um``) and, where it was recorded, the crop box; a graph
+    saved before either was recorded is not judged by it."""
+    saved = graph.dead_ends.graph_image_extent_um(G)
+    now = graph.dead_ends.image_extent_um(shape, voxel_size_zyx)
+    differs = saved is not None and not (
+        saved.shape == now.shape and np.allclose(saved, now, rtol=1e-6, atol=1e-6)
+    )
+    if CROP_GRAPH_ATTRIBUTE in G.graph:
+        box = G.graph[CROP_GRAPH_ATTRIBUTE] or {}
+        whole = crop is None or crop.is_whole_volume
+        differs = differs or whole or (
+            tuple(box.get("start_zyx", ())), tuple(box.get("stop_zyx", ()))
+        ) != (tuple(crop.start_zyx), tuple(crop.stop_zyx))
+    if not differs:
+        return
+    built_on = (
+        "" if saved is None
+        else f" was built on an image {' x '.join(f'{v:g}' for v in saved)} um (z, y, x)"
+    )
+    raise ValueError(
+        f"The saved graph {graph_path}{built_on} does not fit this run's image, "
+        f"{' x '.join(f'{v:g}' for v in now)} um: it was made with a different "
+        "crop_on_import box, segmented_image_downsample or voxel size. Turn "
+        "do_graph_building back on to build it again."
     )
 
 
@@ -2844,7 +2983,7 @@ def _mark_dead_end_kinds(
     )
     ends = graph.dead_ends.classify_and_mark(
         G, support=support,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     census = graph.dead_ends.dead_end_census(ends)
     logger.info(
@@ -3212,6 +3351,9 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     global_masks = io.vessel_masks_are_global(settings)
     if global_masks:
         large_in_use = small_in_use = large_vessel_tier = False
+    # Whether the masks also choose the inlets and outlets; off, they only
+    # drive the large-vessel treatment and the Inlet/Outlet methods choose.
+    io_from_masks = graph.inlets_outlets_from_vessel_masks(settings)
     auto_inlet_nodes: list[int] = []
     auto_outlet_nodes: list[int] = []
     if large_in_use:
@@ -3322,6 +3464,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 graph.exclude_smaller_overlapping_large_vessel_components(
                     assignment_large_arteriole_mask,
                     assignment_large_venule_mask,
+                    low_memory=bool(settings["use_memmap_loading"]),
+                    memmap_directory=settings["memmap_directory"],
                 )
             )
             if cleaned_arteriole_mask is not None and cleaned_venule_mask is not None:
@@ -3441,6 +3585,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 f"{len(auto_outlet_nodes)} outlet node(s)), instead of "
                 "being cut away."
             )
+        elif not io_from_masks:
+            # Nothing reads the masks' own terminals: the Inlet and Outlet
+            # methods choose, and there is no Large tier to seed.
+            pass
         elif use_legacy_large_vessel_assignment:
             auto_inlet_nodes, auto_outlet_nodes = (
                 graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
@@ -3505,16 +3653,17 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             )
         large_arteriole_mask = assignment_large_arteriole_mask
         large_venule_mask = assignment_large_venule_mask
-    # Whether the masks also choose the inlets and outlets; off, they only
-    # drive the large-vessel treatment and the Inlet/Outlet methods choose.
-    io_from_masks = graph.inlets_outlets_from_vessel_masks(settings)
     if large_in_use and not io_from_masks:
         logger.info(
-            "inlets_outlets_from_vessel_masks is off: the large-vessel masks found "
-            f"{len(auto_inlet_nodes)} arteriole and {len(auto_outlet_nodes)} venule "
-            "terminal(s), but the inlets and outlets come from "
+            "inlets_outlets_from_vessel_masks is off: the inlets and outlets come from "
             f"inlet_node_selection_method={settings['inlet_node_selection_method']!r} "
-            f"and outlet_node_selection_method={settings['outlet_node_selection_method']!r}."
+            f"and outlet_node_selection_method={settings['outlet_node_selection_method']!r}"
+            + (
+                f"; the large masks' stumps seed the Large tier only ({len(auto_inlet_nodes)} "
+                f"arteriole, {len(auto_outlet_nodes)} venule)."
+                if large_vessel_tier
+                else "."
+            )
         )
     if io_from_masks:
         if not auto_inlet_nodes:
@@ -3553,18 +3702,13 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "mask's dilation, or turn inlets_outlets_from_vessel_masks off and "
                 "choose the outlets on the Outlet tab."
             )
-        settings["inlet_node_coordinates"] = [
-            tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
-            for node_id in auto_inlet_nodes
-        ]
-        settings["outlet_node_coordinates"] = [
-            tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
-            for node_id in auto_outlet_nodes
-        ]
+        # The Inlet and Outlet tabs' own coordinates are left as they are:
+        # written here, a settings dict reused for a run with the masks off
+        # took these nodes as hand-picked inlets.
         logger.info(
-            "Automated vessel assignment selected "
-            f"{len(settings['inlet_node_coordinates'])} input coordinates from arteriole-mask overlap "
-            f"and {len(settings['outlet_node_coordinates'])} outlet coordinates from venule-mask overlap."
+            f"Automated vessel assignment selected {len(auto_inlet_nodes)} inlet node(s) "
+            f"from arteriole-mask overlap and {len(auto_outlet_nodes)} outlet node(s) from "
+            "venule-mask overlap."
         )
 
     _reset_run_node_list(settings, "inlet_nodes")
@@ -3591,14 +3735,18 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
         settings["large_vessel_outlet_nodes"][:] = list(auto_outlet_nodes)
     used_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
-    if _vessel_boundary_configured(settings, "arteriole"):
+    # While the small masks are in use, or any mask is global (no branch
+    # orders, so nothing reads them), the panel greys these manual lists and
+    # a batch does not read them: neither does the run.
+    manual_vessel_boundaries = graph.manual_vessel_boundaries_read(settings)
+    if manual_vessel_boundaries and _vessel_boundary_configured(settings, "arteriole"):
         art_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "arteriole_boundary", exclude_nodes=list(used_nodes)
         )
         settings["arteriole_boundary_nodes"].extend(art_boundary)
         used_nodes.update(settings["arteriole_boundary_nodes"])
 
-    if _vessel_boundary_configured(settings, "venule"):
+    if manual_vessel_boundaries and _vessel_boundary_configured(settings, "venule"):
         ven_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "venule_boundary", exclude_nodes=list(used_nodes)
         )
@@ -3680,6 +3828,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 graph.exclude_smaller_overlapping_small_vessel_components(
                     assignment_small_arteriole_mask,
                     assignment_small_venule_mask,
+                    low_memory=bool(settings["use_memmap_loading"]),
+                    memmap_directory=settings["memmap_directory"],
                 )
             )
             if (
@@ -3733,6 +3883,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 reassignment_parallel_workers=int(
                     settings["small_vessel_tangential_redefinition_parallel_workers"]
                 ),
+                low_memory=bool(settings["use_memmap_loading"]),
+                memmap_directory=settings["memmap_directory"],
             )
             assignment_small_arteriole_mask = np.asarray(
                 redefinition_result["small_arteriole_mask"], dtype=bool
@@ -4261,7 +4413,10 @@ def _small_vessel_boundary_fallback(
     ):
         coverage_mask = small_masks[index]
         if large_masks is not None:
-            coverage_mask = coverage_mask | np.asarray(large_masks[index], dtype=bool)
+            from haemolynx.preprocessing.memmap_support import MaskUnion
+
+            # Read where the edges ask, not made as a volume.
+            coverage_mask = MaskUnion(coverage_mask, large_masks[index])
         uncovered = graph.seed_nodes_without_mask_coverage(
             G, list(settings[seed_key]), coverage_mask, voxel_size_zyx=voxel_size_zyx
         )
@@ -4812,7 +4967,11 @@ class _PostProcessSegmentation:
     through one ``MaskSupport`` at the run's bridge limits. Its three
     readers (the drawn vessels, the edited vessels' thick-vessel bridges and
     the dead ends at the edits) each binarised the whole image in RAM and
-    made a support of their own. Made when first asked for."""
+    made a support of their own. Made when first asked for.
+
+    :meth:`of` keeps it on the network's volume, so the next Regenerate of
+    the run does not binarise the image and build the support's surface tree
+    again: on E14.5 that was about 5 of the 6 s post processing took."""
 
     def __init__(self, settings: dict, network: "VesselNetwork | None"):
         self.settings = settings
@@ -4820,8 +4979,42 @@ class _PostProcessSegmentation:
         self.voxel_size_zyx = (
             None if network is None else tuple(float(v) for v in network.volume.voxel_size_zyx)
         )
+        self.key = self._key(settings, network)
         self._binary = None
         self._support = None
+
+    @staticmethod
+    def _key(settings: Mapping[str, Any], network: "VesselNetwork | None") -> tuple:
+        """What the binarised image and its support are made from."""
+        if network is None:
+            return (None,)
+        return (
+            id(network.volume.image),
+            tuple(float(v) for v in network.volume.voxel_size_zyx),
+            float(settings["bridge_max_background_gap_um"]),
+            float(settings["bridge_min_mask_fraction"]),
+            bool(settings.get("use_memmap_loading")),
+            str(settings.get("memmap_directory")),
+        )
+
+    @classmethod
+    def of(cls, settings: dict, network: "VesselNetwork | None") -> "_PostProcessSegmentation":
+        """The one kept on *network*'s volume while it still reads its image
+        with these settings, else a new one, kept there in its place."""
+        if network is None:
+            return cls(settings, None)
+        volume = network.volume
+        kept = volume.post_process_segmentation
+        if (
+            isinstance(kept, cls)
+            and kept.image is volume.image
+            and kept.key == cls._key(settings, network)
+        ):
+            kept.settings = settings
+            return kept
+        made = cls(settings, network)
+        volume.post_process_segmentation = made
+        return made
 
     @property
     def binary(self) -> np.ndarray | None:
@@ -4877,7 +5070,7 @@ def _judge_drawn_vessels(
     if not drawn or network is None or network.volume.image is None:
         return None
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     support = segmentation.support(voxel_size_zyx)
     records = graph.record_drawn_vessel_support(G, drawn, support)
     off_segmentation = sum(not record.within_bridge_gate for record in records)
@@ -4959,7 +5152,7 @@ def _bridge_edited_vessels(
         )
 
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     before = edited_bridges(G)
     # The tree skeletonisation drew, when this is the region it drew it in.
     tree = None
@@ -5019,7 +5212,7 @@ def _mark_touched_dead_end_kinds(
         )
         return None
     if segmentation is None:
-        segmentation = _PostProcessSegmentation(settings, network)
+        segmentation = _PostProcessSegmentation.of(settings, network)
     binary_mask = segmentation.binary
     if not np.any(binary_mask):
         logger.info(
@@ -5037,7 +5230,7 @@ def _mark_touched_dead_end_kinds(
         touched,
         extent_um=extent,
         support=support,
-        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+        stub_radius_multiple=dead_end_stub_radius_multiple(settings),
     )
     census = graph.dead_ends.dead_end_census(ends)
     logger.info(
@@ -5175,7 +5368,7 @@ def post_process(
        endothelium -- whichever it uses), keeping the diameter the edit gave
        it as a provisional override: a measurement replaces that, the
        branch-order table does not;
-    6. each vessel the edits drew is read against the segmentation as graph
+    7. each vessel the edits drew is read against the segmentation as graph
        building reads every bridge it draws (:func:`_judge_drawn_vessels`:
        the fraction of it in the mask, the longest run of background it
        crosses, whether it runs beside a vessel in the same lumen), written
@@ -5211,7 +5404,7 @@ def post_process(
         )
     _take_chosen_resistance_pair(boundaries, G)
     # One binarised segmentation and one support for the three readers below.
-    segmentation = _PostProcessSegmentation(settings, network)
+    segmentation = _PostProcessSegmentation.of(settings, network)
     G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask, segmentation)
     model.graph = G
     boundaries.graph = G
@@ -5444,7 +5637,10 @@ def apply_network_handling(
     inlet-to-outlet path runs along
     (:func:`haemolynx.graph.remove_vessels_off_inlet_outlet_paths`): each
     graph component without both an inlet and an outlet, and the dead-end
-    branches, trees and loops hanging off one that has both. The
+    branches, trees and loops hanging off one that has both. A vessel
+    leaving the image that ``open_end_model`` may open counts as both
+    (:func:`_open_ends_network_handling_keeps`), as the solve's flow marks
+    count it, so the vessels leading to one stay. The
     boundary-node lists (on *boundaries* and in *settings*) and the
     resistance node pair follow the pruned graph, which becomes *model*'s,
     *boundaries*' and *network*'s. Where a removed branch hung, the two
@@ -5511,16 +5707,32 @@ def edges_network_handling_keeps(
     will keep; ``None`` -- every vessel -- with ``leave_unsolved``.
 
     With ``boundary_handling="remove_disconnected"``, those some
-    inlet-to-outlet path runs along, by the rule the removal itself
-    applies. The diameters stage, which runs first, samples its image
+    inlet-to-outlet path runs along (or a path to a vessel leaving the image
+    that the solve may open), by the rule the removal itself applies. The diameters stage, which runs first, samples its image
     calibrations from these, so a vessel about to be removed cannot shape
     the widths of the ones kept; the removal stays in the haemodynamics
     stage, so a rerun from that tab still applies it.
     """
     if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return None
-    kept = graph.inlet_to_outlet_vessels(G, boundaries.inlet_nodes, boundaries.outlet_nodes)
+    opened = _open_ends_network_handling_keeps(settings, G, boundaries)
+    kept = graph.inlet_to_outlet_vessels(
+        G, [*boundaries.inlet_nodes, *opened], [*boundaries.outlet_nodes, *opened]
+    )
     return [edge for edge in G.edges(keys=True) if edge in kept]
+
+
+def _open_ends_network_handling_keeps(
+    settings: Mapping[str, Any], G: nx.MultiGraph, boundaries: BoundaryNodes
+) -> list[Any]:
+    """The vessels leaving the image the solve may open
+    (:func:`haemolynx.haemodynamics.open_ends.open_ends_in_effect`): the
+    removal counts each as an inlet and an outlet, as the solve's flow marks
+    do, so the vessels leading to one stay. None without haemodynamics."""
+    model = settings.get("open_end_model") if settings.get("run_haemodynamics") else None
+    return haemodynamics.open_ends.open_ends_in_effect(
+        model, G, boundaries.inlet_nodes, boundaries.outlet_nodes
+    )
 
 
 def _remove_vessels_off_inlet_outlet_paths(
@@ -5533,8 +5745,11 @@ def _remove_vessels_off_inlet_outlet_paths(
     if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return
     G_before = model.graph
+    opened = _open_ends_network_handling_keeps(settings, model.graph, boundaries)
     G_pruned, io_prune_stats = graph.remove_vessels_off_inlet_outlet_paths(
-        model.graph, boundaries.inlet_nodes, boundaries.outlet_nodes
+        model.graph,
+        [*boundaries.inlet_nodes, *opened],
+        [*boundaries.outlet_nodes, *opened],
     )
     if G_pruned.number_of_nodes() == model.graph.number_of_nodes() and (
         G_pruned.number_of_edges() == model.graph.number_of_edges()
@@ -5569,6 +5784,12 @@ def _remove_vessels_off_inlet_outlet_paths(
         f"{io_prune_stats['removed_loop_length_um']:.1f} um); "
         f"{int(io_prune_stats['remaining_vessels'])} vessel(s) and "
         f"{int(io_prune_stats['remaining_nodes'])} node(s) remain."
+        + (
+            f" The vessels leading to the {len(opened)} vessel(s) leaving the image that "
+            f"open_end_model={settings.get('open_end_model')} may open were kept: each "
+            "counts as an inlet and an outlet."
+            if opened else ""
+        )
     )
     if not boundaries.inlet_nodes or not boundaries.outlet_nodes:
         raise ValueError(
@@ -5647,9 +5868,16 @@ def build_haemodynamic_model(
     model: HaemodynamicModel,
     schema: Schema | None = None,
 ):
-    """Write Poiseuille resistance from diameters already on the graph."""
+    """Write Poiseuille resistance from diameters already on the graph.
+
+    A haematocrit an earlier solve distributed to each vessel (a solved
+    network post processed, edited or loaded) is dropped first: a fixed
+    model would compute its resistances from it, and a distributed one would
+    start from it rather than from the one value a fresh run starts from."""
     if not settings["run_haemodynamics"]:
         return model
+    for *_edge, data in model.graph.edges(data=True):
+        data.pop(DISCHARGE_HAEMATOCRIT_ATTR, None)
     if schema is None:
         from haemolynx.pipeline.schema import default_schema
 
@@ -5662,6 +5890,7 @@ def build_haemodynamic_model(
         settings,
         schema,
         voxel_size_zyx=voxel_size_zyx,
+        stain=recorded_raw_image_stain(settings, model.graph),
     )
     _graph, resistance_results = apply_poiseuille_resistances(model.graph, haemo_config)
     model.results.update(resistance_results)
@@ -5686,15 +5915,16 @@ def _distributes_haematocrit(settings: dict) -> bool:
 
 
 def _flow_solver(settings: Mapping[str, Any]) -> str:
-    """``haemodynamics_solver``, dense when a hand-built settings dict has none."""
-    return settings.get("haemodynamics_solver") or haemodynamics.FLOW_SOLVER_DENSE
+    """``haemodynamics_solver``, sparse (its default) when a hand-built settings
+    dict has none."""
+    return settings.get("haemodynamics_solver") or haemodynamics.FLOW_SOLVER_SPARSE
 
 
 def _equivalent_resistance_solver(settings: Mapping[str, Any]) -> str:
-    """``equivalent_resistance_solver``, the eigendecomposition when unset."""
+    """``equivalent_resistance_solver``, sparse (its default) when unset."""
     return (
         settings.get("equivalent_resistance_solver")
-        or haemodynamics.EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION
+        or haemodynamics.EQUIVALENT_RESISTANCE_SPARSE
     )
 
 
@@ -5773,6 +6003,8 @@ def solve(
     G = model.graph
     resistance_node_pair = boundaries.resistance_node_pair
     solution = Solution()
+    if not settings["run_haemodynamics"]:
+        _clear_earlier_solve(G)
     distribute_hct = bool(
         settings["run_haemodynamics"] and _distributes_haematocrit(settings)
     )
@@ -5784,7 +6016,7 @@ def solve(
         # beside the law, basis and haematocrit the resistances record.
         G.graph["haematocrit_model"] = "distributed_iterative" if distribute_hct else "fixed"
     open_ends = (
-        _open_end_conditions(settings, G, flow_solver)
+        _open_end_conditions(settings, G)
         if settings["run_haemodynamics"] else haemodynamics.open_ends.OpenEndConditions()
     )
 
@@ -5798,6 +6030,11 @@ def solve(
                 settings["haematocrit_distribution_max_iterations"],
                 settings["haematocrit_distribution_tolerance"],
             )
+            # Which vessels hang behind dead ends, before the loop: each pass
+            # sets their flows to exactly 0 (iterate_flow_and_haematocrit).
+            graph.mark_flow_solved_edges(
+                G, settings["inlet_nodes"], settings["outlet_nodes"], open_ends.nodes
+            )
             if schema is None:
                 from haemolynx.pipeline.schema import default_schema
 
@@ -5807,6 +6044,7 @@ def solve(
             )
             haemo_config = _haemodynamics_apply_config(
                 settings, schema, voxel_size_zyx=voxel_size_zyx,
+                stain=recorded_raw_image_stain(settings, G),
             )
 
             def _recompute_resistances() -> None:
@@ -5972,6 +6210,36 @@ def solve(
     return solution
 
 
+#: What building the model and solving it write on a graph, besides
+#: :data:`haemolynx.graph.SOLVE_DERIVED_EDGE_ATTRIBUTES` and the flow states.
+_MODEL_EDGE_ATTRIBUTES = ("resistance", "conductance")
+_SOLVE_GRAPH_RECORDS = (
+    "viscosity_law",
+    "haematocrit",
+    "diameter_basis",
+    "haematocrit_model",
+    haemodynamics.open_ends.GRAPH_RECORD,
+)
+
+
+def _clear_earlier_solve(G: nx.MultiGraph) -> None:
+    """Take off *G* what an earlier model and solve left on it -- resistances,
+    flows, flow states, node pressures, the law and haematocrit they were
+    found with, the open ends' conditions -- so a network solved before and
+    not now (``run_haemodynamics`` turned off while a run waited at Post
+    processing) is exported as one never solved, not with the old flows."""
+    edge_names = (
+        *graph.SOLVE_DERIVED_EDGE_ATTRIBUTES, graph.FLOW_SOLVED, graph.FLOW_STATE, *_MODEL_EDGE_ATTRIBUTES,
+    )
+    for *_edge, data in G.edges(data=True):
+        for name in edge_names:
+            data.pop(name, None)
+    for _node, data in G.nodes(data=True):
+        data.pop("pressure", None)
+    for name in _SOLVE_GRAPH_RECORDS:
+        G.graph.pop(name, None)
+
+
 def _mark_capillaries_fed_from_open_ends(settings: dict, G: nx.MultiGraph, *, solved: bool) -> None:
     """Mark the capillaries an open end feeding the network through an image
     face reaches in fewer steps than any arteriole in the image does
@@ -6027,27 +6295,36 @@ def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes, open_ends=())
         )
 
 
-def _open_end_conditions(settings: dict, G: nx.MultiGraph, flow_solver: str):
+def _open_end_conditions(settings: dict, G: nx.MultiGraph):
     """The conditions ``open_end_model`` puts on the vessels leaving the
     image (:mod:`haemolynx.haemodynamics.open_ends`), kept on the graph so its
-    perturbations and sweeps solve with them too."""
+    perturbations and sweeps solve with them too. The estimate works on a
+    sparse matrix whatever the flow solver (a dense one was N x N only to be
+    converted), made only when there is an open end to estimate."""
     open_ends = haemodynamics.open_ends
     model = settings.get("open_end_model") or open_ends.CLOSED
     conductance = node_list = None
-    if model == open_ends.ESTIMATED:
-        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G, solver=flow_solver)
+    if model == open_ends.ESTIMATED and open_ends.open_end_candidates(
+        G, settings["inlet_nodes"], settings["outlet_nodes"]
+    ):
+        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
+            G, solver=haemodynamics.FLOW_SOLVER_SPARSE
+        )
+    # Unset is the default; 0 is a value (a shear weight of 0 estimates by
+    # pressure alone), so neither is read with `or`.
+    multiple = _plain_optional_float(settings.get("open_end_terminal_resistance_multiple"))
+    weight = _plain_optional_float(settings.get("open_end_estimate_shear_weight"))
     conditions = open_ends.open_end_conditions(
         model, G,
         inlet_nodes=settings["inlet_nodes"], outlet_nodes=settings["outlet_nodes"],
         inlet_p_bc=float(settings["inlet_p_bc"]), outlet_p_bc=float(settings["outlet_p_bc"]),
         conductance=conductance, node_list=node_list,
-        terminal_resistance_multiple=float(
-            settings.get("open_end_terminal_resistance_multiple")
-            or open_ends.DEFAULT_TERMINAL_RESISTANCE_MULTIPLE
+        terminal_resistance_multiple=(
+            open_ends.DEFAULT_TERMINAL_RESISTANCE_MULTIPLE if multiple is None else multiple
         ),
         pressure_target_pa=_plain_optional_float(settings.get("open_end_estimate_pressure_target_pa")),
         shear_target_pa=_plain_optional_float(settings.get("open_end_estimate_shear_target_pa")),
-        shear_weight=float(settings.get("open_end_estimate_shear_weight") or open_ends.DEFAULT_SHEAR_WEIGHT),
+        shear_weight=open_ends.DEFAULT_SHEAR_WEIGHT if weight is None else weight,
     )
     open_ends.keep_on_graph(G, conditions)
     return conditions
@@ -7501,6 +7778,7 @@ def run_perturbations(
         )
         haemo_config = _haemodynamics_apply_config(
             settings, schema, voxel_size_zyx=voxel_size_zyx,
+            stain=recorded_raw_image_stain(settings, baseline_graph),
         )
 
         def baseline_recompute() -> None:
@@ -8464,7 +8742,11 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
     is loaded, so the boundaries are assigned -- and the viewer draws -- what
     the Boundaries tab now says. Masks split by width (``split_large_vessel_masks_by_diameter``)
     at another width than now asked, or split where they now are not, or not
-    where they now are, are loaded and cut again.
+    where they now are, are loaded and cut again; so are a role's masks whose
+    files, load-time clean-up or global reading changed (`_vessel_mask_sources`).
+    They are placed on the network's grid as ``build_network`` places them:
+    cut to its crop box, reduced by its downsample, one global mask each when
+    the run reads them so.
     """
     volume = network.volume
     changes: dict[str, Any] = {}
@@ -8472,6 +8754,17 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
     cut_otherwise = split != network.mask_split_diameter_um
     if cut_otherwise:
         changes["mask_split_diameter_um"] = split
+    sources = _vessel_mask_sources(settings)
+    on_disk = dict(
+        use_memmap=bool(settings.get("use_memmap_loading", False)),
+        memmap_directory=settings.get("memmap_directory"),
+    )
+
+    def as_read(arteriole, venule):
+        if io.vessel_masks_are_global(settings):
+            return io.as_global_vessel_mask(arteriole, venule, **on_disk), None
+        return arteriole, venule
+
     for role in graph.boundaries.VESSEL_MASK_SWITCHES:
         arteriole, venule = f"{role}_arteriole_mask", f"{role}_venule_mask"
         held = getattr(network, arteriole) is not None or getattr(network, venule) is not None
@@ -8483,12 +8776,17 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
                     network.graph.graph.pop("large_arteriole_mask_voxel_size_xyz", None)
                     network.graph.graph.pop("large_venule_mask_voxel_size_xyz", None)
             continue
-        if held and not cut_otherwise:
+        # Without a record (a network not built by build_network) the masks
+        # it holds are taken to be the ones asked for.
+        read_otherwise = network.mask_sources is not None and (
+            network.mask_sources.get(role) != sources[role]
+        )
+        if held and not cut_otherwise and not read_otherwise:
             continue
         if role == "small" and split is not None:
             continue  # cut from the large masks as they loaded
         if held:
-            logger.info(f"The {role}-vessel masks are split otherwise now: loading them again.")
+            logger.info(f"The {role}-vessel masks are read or split otherwise now: loading them again.")
         else:
             logger.info(f"The {role}-vessel masks are on now: loading them.")
         loaded_arteriole, loaded_venule, arteriole_size, venule_size = (
@@ -8497,21 +8795,23 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
                 image_shape=volume.image.shape,
                 main_voxel_size_xyz=volume.voxel_size_xyz,
                 crop=getattr(volume, "crop", None),
+                downsample=getattr(volume, "downsample", None),
             )
         )
         if role == "large" and split is not None:
-            (
-                loaded_arteriole,
-                loaded_venule,
-                changes["small_arteriole_mask"],
-                changes["small_venule_mask"],
-            ) = _split_large_vessel_masks(settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz)
+            loaded_arteriole, loaded_venule, *small = _split_large_vessel_masks(
+                settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz
+            )
+            changes["small_arteriole_mask"], changes["small_venule_mask"] = as_read(*small)
+        loaded_arteriole, loaded_venule = as_read(loaded_arteriole, loaded_venule)
         changes[arteriole], changes[venule] = loaded_arteriole, loaded_venule
         if role == "large":
             _record_graph_voxel_metadata(
                 network.graph, volume.voxel_size_xyz, volume.voxel_size_zyx,
                 loaded_arteriole, loaded_venule, arteriole_size, venule_size,
             )
+    if changes:
+        changes["mask_sources"] = sources
     return replace(network, **changes) if changes else network
 
 
@@ -8744,7 +9044,9 @@ def _run_stages(
     if stop_after == "build_haemodynamic_model":
         return model.graph
     with run.stage("solve"):
-        if _run_stage_body("solve", start_from):
+        # Off, solving only takes an earlier solve off a resumed network, so
+        # it is not exported with flows this run did not find.
+        if _run_stage_body("solve", start_from) or not settings["run_haemodynamics"]:
             solution = solve(settings, model, boundaries, schema)
         else:
             solution = _solution_from_graph(model.graph)

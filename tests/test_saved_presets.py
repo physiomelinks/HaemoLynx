@@ -82,6 +82,11 @@ def test_a_saved_preset_holds_nothing_describing_one_image():
         "cell_mask_h5_dataset_name",
         "voxel_size_override_xyz",
         "image_axis_order",
+        "crop_on_import",
+        "crop_method",
+        "crop_size_xyz",
+        "crop_location",
+        "crop_z_location",
         "crop_start_xyz",
         "crop_end_xyz",
         "custom_edges",
@@ -107,8 +112,6 @@ def test_a_saved_preset_holds_how_images_are_analysed():
         "open_end_model",
         "perturbations",
         "manual_capillary_diameter_by_branch_order",
-        "crop_on_import",
-        "crop_size_xyz",
         "voxel_size_policy",
         "segmented_image_downsample",
         "use_large_vessel_masks",
@@ -128,15 +131,14 @@ def test_only_held_settings_away_from_their_defaults_are_written():
         inlet_node_ids=[3, 4],
         raw_image_channel=2,
         do_skeletonize=False,
+        crop_on_import=True,
         crop_size_xyz=(64, 64, 32),
     )
     saved = saved_preset_values(values, SCHEMA)
     assert set(saved) == {
         "statistics_mode",
         "segmentation_cleanup_close_gaps_radius_um",
-        "crop_size_xyz",
     }
-    assert saved["crop_size_xyz"] == [64, 64, 32]
     # In the schema's order, as the file lists them.
     assert list(saved) == [name for name in SCHEMA.names if name in saved]
 
@@ -159,7 +161,6 @@ def test_every_held_setting_comes_back_as_it_was_saved(tmp_path):
             values[setting.name] = other
             changed[setting.name] = setting.coerce(other)
     values["manual_arteriole_diameter_by_branch_order"] = {"Art1": 12.5, "Art2": 9.0}
-    values["crop_size_xyz"] = [128, 96, 40]
     values["perturbations"] = [
         {"name": "half", "type": "pericyte_diameter_change", "overrides": {"pericyte_constriction_factor": 0.5}}
     ]
@@ -173,7 +174,6 @@ def test_every_held_setting_comes_back_as_it_was_saved(tmp_path):
     for name, value in changed.items():
         assert settings[name] == value, name
     assert settings["manual_arteriole_diameter_by_branch_order"] == {"Art1": 12.5, "Art2": 9.0}
-    assert list(settings["crop_size_xyz"]) == [128, 96, 40]
     assert settings["perturbations"] == values["perturbations"]
     assert set(settings) == {setting.name for setting in SCHEMA if held_by_saved_presets(setting)}
 

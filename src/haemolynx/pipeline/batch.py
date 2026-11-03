@@ -29,6 +29,7 @@ from haemolynx.graph.boundaries import (
     assigns_large_vessel_branch_orders,
     boundary_role_configured,
     inlets_outlets_from_vessel_masks,
+    manual_vessel_boundaries_read,
     network_is_synthetic,
     vessel_classes_by_size,
     vessel_mask_files_in_use,
@@ -295,9 +296,7 @@ def _role_read(schema: Schema, role: str, settings: Mapping[str, Any]) -> bool:
     if role in ("inlet", "outlet"):
         return not inlets_outlets_from_vessel_masks(settings)
     if role in SMALL_MASK_BOUNDARY_ROLES:
-        return not vessel_masks_in_use(settings, "small") and boundary_role_configured(
-            settings, role
-        )
+        return manual_vessel_boundaries_read(settings) and boundary_role_configured(settings, role)
     if role in LARGE_TIER_ROLES:
         return assigns_large_vessel_branch_orders(settings)
     return True

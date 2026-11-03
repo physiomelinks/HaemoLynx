@@ -40,6 +40,8 @@ are made; preflight has no node count. Those per-N² figures are pinned against 
 allocations in `tests/test_flow_solvers.py`, so a solve that gains an N × N copy fails there.
 The solve also reports `Solution.network_resistance`, pressure drop over total inflow through
 every inlet (`network_resistance`); both go in the statistics CSV's Haemodynamics section.
+Both solvers' defaults became `sparse` on 2026-11-03 (Harvey, after the Haemodynamics tab
+review): the same flows and resistance to rounding, without the N² memory or the cubic time.
 Perturbation summaries' `equivalent_resistance` is that network resistance, not the two-point one.
 
 ## haemodynamics/perturbations.py

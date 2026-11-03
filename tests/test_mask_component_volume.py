@@ -144,6 +144,40 @@ def test_remove_small_opposite_attached_large_vessel_components():
     assert int(stats["venule"]["removed_component_count"]) == 1
 
 
+@pytest.mark.parametrize("low_memory", [False, True])
+def test_two_small_pieces_touching_only_each_other_both_stay(tmp_path, low_memory):
+    """Regression: a small arteriole piece and a small venule piece touching
+    only each other each counted as attached to the other class, and both
+    were removed, leaving a gap where a vessel ran. A small piece against the
+    other class's real vessel still goes, and the other way round as well."""
+    arteriole = np.zeros((20, 20, 40), dtype=bool)
+    venule = np.zeros_like(arteriole)
+    arteriole[8:10, 8:10, 2:4] = True   # small, touching only the small venule piece
+    venule[8:10, 8:10, 4:6] = True
+    arteriole[5:15, 5:15, 20:30] = True  # a real arteriole...
+    venule[8:10, 8:10, 30:32] = True     # ...with a small venule piece against it
+    venule[5:15, 5:15, 34:40] = True     # a real venule...
+    arteriole[8:10, 8:10, 32:34] = True  # ...with a small arteriole piece against it
+
+    cleaned_arteriole, cleaned_venule, stats = remove_small_opposite_attached_large_vessel_components(
+        arteriole,
+        venule,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        max_component_volume_um3=20.0,
+        max_attach_distance_microns=1.0,
+        low_memory=low_memory,
+        memmap_directory=tmp_path,
+    )
+
+    cleaned_arteriole, cleaned_venule = np.asarray(cleaned_arteriole), np.asarray(cleaned_venule)
+    assert cleaned_arteriole[8:10, 8:10, 2:4].all() and cleaned_venule[8:10, 8:10, 4:6].all()
+    assert not cleaned_venule[8:10, 8:10, 30:32].any()
+    assert not cleaned_arteriole[8:10, 8:10, 32:34].any()
+    assert cleaned_arteriole[5:15, 5:15, 20:30].all() and cleaned_venule[5:15, 5:15, 34:40].all()
+    assert int(stats["arteriole"]["removed_component_count"]) == 1
+    assert int(stats["venule"]["removed_component_count"]) == 1
+
+
 def test_vessel_mask_volume_settings_exist_with_historical_defaults():
     schema = default_schema()
     assert schema["large_vessel_min_component_volume_um3"].default == 200.0

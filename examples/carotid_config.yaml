@@ -52,7 +52,7 @@ input_and_segmentation:
   ilastik_vessel_label: null
   # Run this ilastik executable name or path in headless mode
   ilastik_executable: ilastik.exe
-  # Kill an ilastik headless run that takes longer than this. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
+  # Kill an ilastik headless run that takes longer than this, or never with 0. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
   ilastik_timeout_seconds: 7200.0
   # Skip ilastik when its output for an image already exists and its record beside it ({output}.haemolynx.json) says it was made from this image, unchanged, by a project with the same contents, at the same vessel label, and use that output. Turn off to segment again on every run
   ilastik_reuse_existing_output: true
@@ -419,9 +419,9 @@ boundary_assignment:
 # Solver and output
 # ------------------------------------------------------------------------
 solver_and_output:
-  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   inlet_p_bc: 1000.0
-  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   outlet_p_bc: 500.0
   # Write IDE plot files (matplotlib PNG and Plotly HTML, including final_graph_3d.html and the skeleton's projections) into base_plot_dir/{image stem}. Off skips all of that production
   visualize_results: true
@@ -528,7 +528,7 @@ pipeline_stages:
   trace_on_dead_ends: false
   # Join a dead end pointing at another vessel's side, within facing_dead_end_max_gap_um across one stretch of background, to that vessel -- unless that vessel is one of its neighbours in the network (one junction away or closer). Off until a marked grid calibrates it (PLAN_dead_ends.md, G3)  [needs do_graph_building and bridge_require_mask_support]
   join_dead_ends_to_vessel_sides: false
-  # Which short stubs the prune keeps at an image face. threshold: a tip within its own pruning threshold of a face (as before). leaves_image: only a dead end that leaves the image (it touches a face, or the segmented vessel runs on to one), so a spur near a face is judged like any other  [one of: threshold, leaves_image; needs do_graph_building]
+  # Which short stubs the prune keeps at an image face. threshold: a tip within its own pruning threshold of a face (as before). leaves_image: only a dead end that leaves the image (it touches a face, or the segmented vessel runs on to one), so a spur near a face is judged like any other. leaves_image reads the segmented mask: without it, or with bridge_require_mask_support off, the prune keeps by threshold  [one of: threshold, leaves_image; needs do_graph_building and bridge_require_mask_support]
   stub_face_protection: threshold
   # Collapse clusters of nodes lying within this distance of each other  [um; range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
@@ -554,11 +554,11 @@ pipeline_stages:
   skeleton_bundle_max_connections_per_hub: 8
   # Minimum spacing between bundle hub centres; 4 matches the automatic half-window spacing used when scan size is 9  [voxels; range 1..; needs do_skeletonize]
   skeleton_bundle_hub_min_spacing: 4
-  # Log a warning instead of an info line when fewer than this fraction of the segmented-image mask's own voxels sit within their own local radius of the skeleton -- see preprocessing.skeleton_consistency for what that measures and why. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize  [range 0.0..1.0]
+  # Log a warning instead of an info line when fewer than this fraction of the segmented-image mask's own voxels sit within their own local radius of the skeleton -- see preprocessing.skeleton_consistency for what that measures and why. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize. Not checked under use_memmap_loading, which skips it for its whole-volume arrays  [range 0.0..1.0; needs use_memmap_loading off]
   skeleton_mask_consistency_warn_below: 0.7
-  # A segmented-image connected component smaller than this many voxels is treated as noise, not a genuine vessel, and excluded from both missing-vessel checks below -- see preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton for why that floor matters on real, imperfectly segmented data  [range 1..]
+  # A segmented-image connected component smaller than this many voxels is treated as noise, not a genuine vessel, and excluded from both missing-vessel checks below -- see preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton for why that floor matters on real, imperfectly segmented data. Counted in voxels of the image as read: on a segmented_image_downsample grid, as many as hold the same volume. Not read under use_memmap_loading, which skips both checks  [voxels; range 1..; needs use_memmap_loading off]
   missing_vessel_min_voxels: 2
-  # Log a warning instead of an info line when fewer than this fraction of the segmented image's genuine vessels (see missing_vessel_min_voxels) have any skeleton voxel at all -- the inverse of skeleton_mask_consistency_warn_below's per-voxel coverage: this catches a whole vessel dropped, not just imprecisely traced. See preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize  [range 0.0..1.0]
+  # Log a warning instead of an info line when fewer than this fraction of the segmented image's genuine vessels (see missing_vessel_min_voxels) have any skeleton voxel at all -- the inverse of skeleton_mask_consistency_warn_below's per-voxel coverage: this catches a whole vessel dropped, not just imprecisely traced. See preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize. Not checked under use_memmap_loading, which skips it for its whole-volume arrays  [range 0.0..1.0; needs use_memmap_loading off]
   skeleton_missing_vessel_warn_below: 1.0
   # Log a warning instead of an info line when fewer than this fraction of the segmented image's genuine vessels (see missing_vessel_min_voxels) have any graph edge at all -- the inverse of graph_mask_consistency_warn_below's per-voxel coverage: this catches a whole vessel a topology-repair pass dropped, not just imprecisely traced. See graph.diagnostics.diagnose_vessels_missing_from_graph. Checked whether the graph was just built or loaded from cache, so this is not gated on do_graph_building  [range 0.0..1.0]
   graph_missing_vessel_warn_below: 1.0
@@ -592,7 +592,7 @@ pipeline_stages:
   thick_vessel_braid_factor_limit: 2.0
   # Only warn about a fat vessel component whose long axis has at least this many occupied slices, so a short stub end does not decide the average on its own  [range 1..; needs use_thick_vessel_skeletonisation and detect_thick_vessel_braiding]
   thick_vessel_braid_min_occupied_slices: 5
-  # When a connected component is still too large to skeletonize as one piece even after splitting the mask into connected components, split it further into overlapping Z slabs instead. Not provably exact like the per-component split itself -- a generous skeletonize_tile_halo_um keeps results indistinguishable from the monolithic computation for real vessel data, but this is a heuristic margin, not a proof  [needs use_memmap_loading]
+  # When a connected component is still too large to skeletonize as one piece even after splitting the mask into connected components, split it further into overlapping Z slabs instead. Not provably exact like the per-component split itself -- a generous skeletonize_tile_halo_um keeps results indistinguishable from the monolithic computation for real vessel data, but this is a heuristic margin, not a proof. Read only while do_skeletonize makes the skeleton  [needs use_memmap_loading and do_skeletonize]
   skeletonize_tile_large_components: false
   # Largest single skeletonize() call this will make while tiling -- roughly this many bytes of peak RAM for the boolean slab, since skeletonize's own internal buffer is at least this size regardless  [range 1..; needs skeletonize_tile_large_components]
   skeletonize_tile_max_voxels: 200000000
@@ -800,7 +800,7 @@ diameters_and_pericytes:
   haematocrit_junction_rule: no_separation
   # Length of each connector split_junctions adds. 0 makes each junction's connectors as long as its vessels are wide (their mean diameter, which is also the connector's diameter): a four-way node is usually two bifurcations graph building merged, about that far apart, and a fixed length would re-plumb a capillary bed while falling inside an arteriole's own junction. The Post processing tab's split defaults to 15  [um; range 0.0..; needs run_haemodynamics and haematocrit_model = distributed_iterative and haematocrit_junction_rule = split_junctions]
   haematocrit_split_connector_length_um: 0.0
-  # Give up on haematocrit distribution convergence after this many flow re-solves. A daughter drawing a flow share just above the plasma-skimming threshold swings between too many red cells and too few on alternate passes; each pass's step is damped (0.8 times smaller every five passes, as Secomb's NetFlow does) so the swing dies out, and a strongly asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles in about 10 iterations within the default tolerance below  [range 1..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
+  # Give up on haematocrit distribution convergence after this many flow re-solves. A daughter drawing a flow share just above the plasma-skimming threshold swings between too many red cells and too few on alternate passes; each pass's step is damped (0.8 times smaller every five passes, as Secomb's NetFlow does) so the swing dies out, and a strongly asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles in about 10 iterations within the default tolerance below. At least 2: the first pass has nothing to compare with  [range 2..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
   haematocrit_distribution_max_iterations: 20
   # Largest per-edge haematocrit change between iterations that counts as converged  [fraction; range 0.0..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
   haematocrit_distribution_tolerance: 0.01
@@ -871,7 +871,7 @@ diameters_and_pericytes:
 # Network handling
 # ------------------------------------------------------------------------
 network_handling:
-  # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept, and joins the two vessels left where a removed branch hung into one vessel, measured afresh with the run's diameter methods, with branch orders assigned again (a boundary node, a thick-vessel bridge and two vessels in different vessel masks stay apart)  [one of: leave_unsolved, remove_disconnected]
+  # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. A vessel leaving the image that open_end_model may open counts as an inlet and an outlet, so the vessels leading to one are on such a path. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept, and joins the two vessels left where a removed branch hung into one vessel, measured afresh with the run's diameter methods, with branch orders assigned again (a boundary node, a thick-vessel bridge and two vessels in different vessel masks stay apart)  [one of: leave_unsolved, remove_disconnected]
   boundary_handling: leave_unsolved
   # The boundary condition on vessels that leave the image (dead ends whose vessel runs out through an image face) and are not inlets or outlets. closed: no blood leaves through them, so every vessel that only leads to them carries no flow. terminal_resistance: each drains to the outlet pressure through open_end_terminal_resistance_multiple times its own vessel's resistance. outlet: each is held at the outlet pressure (biased towards draining; for comparison). estimated (the default): their pressures are chosen so the network's pressures and wall shear stresses stay closest to target values (Fry et al. 2012), the targets taken from the closed solve; open ends may feed the network as well as drain it. Only open ends in a piece of the network with an inlet or outlet are opened. Perturbations and sweeps keep the baseline's conditions, and results under different models are not comparable  [one of: closed, terminal_resistance, outlet, estimated; needs run_haemodynamics]
   open_end_model: closed

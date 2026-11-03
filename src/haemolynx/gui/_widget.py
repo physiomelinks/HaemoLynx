@@ -56,7 +56,6 @@ from haemolynx.gui.results import (
     BRANCH_HOVER,
     BRANCH_ORDER_SIGNED,
     DRAWN_ON_TOP,
-    EDIT_DRAFT,
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
     FLOW_HEADING_COLUMN,
@@ -182,6 +181,7 @@ from haemolynx.optimisation import (
     OptimisationEvent,
     build_report_text,
     config_filename,
+    finest_factor_fitting_memory,
     full_resolution_search_refusal,
     optimise_fwhm_settings,
     optimise_skeleton_and_graph_settings,
@@ -1335,6 +1335,9 @@ def _scale_layer_from_its_file(
     if found is None:
         return None
     scale = file_axis_spacing_from_xyz(found[0], axis_order)
+    if len(getattr(getattr(layer, "data", None), "shape", ())) == 2:
+        # A 2D image's own axes are (y, x), not reordered.
+        scale = file_axis_spacing_from_xyz(found[0])[1:]
     try:
         layer.scale = scale
     except Exception:  # noqa: BLE001 - a layer that will not take a scale is survivable
@@ -6993,9 +6996,12 @@ class _OptimiseRefused(Exception):
     panel as it is, and not a failure."""
 
 
-def _segmented_image_to_optimise(settings: Mapping[str, Any]) -> tuple["Path | None", str]:
+def _segmented_image_to_optimise(
+    settings: Mapping[str, Any], action: str = "Optimise settings"
+) -> tuple["Path | None", str]:
     """``(path, "")``: the segmented image Optimise settings tries settings
-    on -- the Input tab's, or, while ilastik does the segmenting, its output
+    on, and Check segmented image scores (*action*, the button pressed) --
+    the Input tab's, or, while ilastik does the segmenting, its output
     from the raw image when that output's record says it is the one a run
     would make now (``pipeline.stages.current_ilastik_output``) -- else
     ``(None, why not)``. Ilastik is never run from here: a segmentation can
@@ -7005,13 +7011,13 @@ def _segmented_image_to_optimise(settings: Mapping[str, Any]) -> tuple["Path | N
         if path is None:
             return None, (
                 "ilastik segments this run's raw image, and there is no current output of it "
-                f"to optimise on ({reason}). Run the pipeline once to make it, then press "
-                "Optimise settings."
+                f"to work on ({reason}). Run the pipeline once to make it, then press "
+                f"{action}."
             )
         return path, ""
     input_path = settings.get("input_path")
     if not input_path or not Path(input_path).is_file():
-        return None, "Choose a segmented input image first, then press Optimise settings."
+        return None, f"Choose a segmented input image first, then press {action}."
     return Path(input_path), ""
 
 
@@ -7061,14 +7067,22 @@ def _optimise_settings_for_run(
     volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
     voxel_size_xyz = volume.voxel_size_xyz
     use_memmap = bool(local_settings.get("use_memmap_loading"))
-    if use_memmap and downsample_factor == 1:
+    min_downsample_factor = 1
+    if use_memmap and downsample_factor in (None, 1):
         if available_bytes is None:
             from haemolynx.haemodynamics import available_memory_bytes
 
             available_bytes = available_memory_bytes()
-        refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
-        if refusal is not None:
-            raise _OptimiseRefused(refusal)
+        if downsample_factor == 1:
+            refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
+            if refusal is not None:
+                raise _OptimiseRefused(refusal)
+        else:
+            # Auto chooses no grid finer than fits: its resolution cap alone
+            # could resolve to full resolution on any stack.
+            min_downsample_factor = finest_factor_fitting_memory(
+                volume.image.shape, tuple(reversed(voxel_size_xyz)), available_bytes
+            )
     raw_mask = _to_binary_volume_for_skeletonization(
         volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
     )
@@ -7116,15 +7130,22 @@ def _optimise_settings_for_run(
         raw_image_stain=raw_image_stain,
         max_passes=max_passes,
         thick_restriction_mask=restriction,
+        min_downsample_factor=min_downsample_factor,
     )
     # Voxel counts back from the run's grid to the image as read, as the
     # rows hold them.
-    result = replace(result, settings={
-        **result.settings,
-        **pipeline_stages.skeleton_voxel_settings_from_grid(
-            result.settings, local_settings, volume.downsample
+    result = replace(
+        result,
+        settings={
+            **result.settings,
+            **pipeline_stages.skeleton_voxel_settings_from_grid(
+                result.settings, local_settings, volume.downsample
+            ),
+        },
+        run_grid_factor=(
+            1 if volume.downsample is None or volume.downsample.is_identity else int(volume.downsample.factor)
         ),
-    })
+    )
     return result, local_settings["input_path"], raw_image_error, restriction_error
 
 
@@ -7165,6 +7186,9 @@ def _run_optimisation_in_background(
     from napari.qt.threading import thread_worker
 
     cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
+    # What the search started from: Apply writes only what it changed from
+    # these, so a row edited (or a config loaded) since keeps its new value.
+    started_from = dict(settings)
 
     @thread_worker
     def run():
@@ -7188,9 +7212,11 @@ def _run_optimisation_in_background(
         result, input_path, raw_image_error, restriction_error = payload
 
         def apply_result() -> None:
-            for name, value in result.settings.items():
-                if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+            # Only the search's changes: every setting it kept was written
+            # back as at the press, undoing edits made since.
+            for change in proposed_changes(result.settings, started_from):
+                if change.name in rows:
+                    rows[change.name].value = display_value_for(schema[change.name], change.now)
             apply_prerequisites()
 
         out_path = Path(input_path).parent / config_filename(input_path)
@@ -7609,9 +7635,12 @@ def _run_segmentation_quality_check_in_background(
     button,
     *,
     run_state: RunState,
+    segmented_path: "Path | None" = None,
 ):
     """Score the segmented input image off the GUI thread, printing the
-    breakdown to *report* when done.
+    breakdown to *report* when done. *segmented_path* is the image to score
+    (`_segmented_image_to_optimise`): ilastik's current output while it
+    segments, which is never made here.
 
     Shares *run_state* with "Run pipeline" and "Optimise settings" purely
     for mutual exclusion -- a large volume's EDT/connected-components/
@@ -7640,7 +7669,7 @@ def _run_segmentation_quality_check_in_background(
     @thread_worker
     def run():
         local_settings = dict(settings)
-        inputs = segment(local_settings)
+        inputs = segment(local_settings, segmented_path=segmented_path)
         image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             local_settings, inputs.input_format
         )
@@ -7931,7 +7960,6 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         BC_LAYER_NAMES,
         BC_NODE_IDS,
         BC_REGION_NAMES,
-        DISABLED_ROLE_TOOLTIP,
         band_boxes,
         box_colours,
         box_from_view_drag,
@@ -8606,7 +8634,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
                 widget.visible = control in useful
                 if overridden:
                     widget.enabled = False
-                    widget.tooltip = DISABLED_ROLE_TOOLTIP[name]
+                    widget.tooltip = role_disabled_note(name, values)
                 else:
                     widget.enabled = True
                     widget.tooltip = ACTION_TOOLTIPS[control]
@@ -9204,7 +9232,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             report.value = "Click a node in the list of nodes in the box first."
             return
         if not role_manual_controls_enabled(owner, current_values()):
-            report.value = DISABLED_ROLE_TOOLTIP[owner]
+            report.value = role_disabled_note(owner, current_values())
             return
         proposed, message = use_node_for_role(current_values(), owner, chosen.node_id)
         write_rows(proposed)
@@ -9388,7 +9416,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             return
         if not role_manual_controls_enabled(owner, current_values()):
             disarm_nodes()
-            report.value = DISABLED_ROLE_TOOLTIP[owner]
+            report.value = role_disabled_note(owner, current_values())
             return
         dims = list(dims_displayed or ())
         try:
@@ -10223,18 +10251,6 @@ def _wrap_row_labels(native) -> None:
         layout = child.layout()
         if layout is not None:
             layout.invalidate()
-
-
-#: Status text for each GraphEditorState.click_add / mode-arm outcome.
-_GRAPH_EDITOR_STATUS = {
-    "rejected": "First click must land on an existing node or edge.",
-    "started": "Branch started -- click along the vessel to extend it, or Finish.",
-    "extended": "Extended -- click again, or press Finish.",
-    "finished": "Branch finished.",
-    "add-armed": "Add branch: click an existing node or edge to start.",
-    "delete-armed": "Delete edge: click an edge to remove it.",
-    "idle": "Edit graph, then Regenerate to catch up haemodynamics onward.",
-}
 
 
 def _show_batch_row(widget, label, setup, name: str) -> None:
@@ -11335,67 +11351,6 @@ class _BatchRunWindow:
             self._say(f"No .haemorun for this image yet ({path}).")
 
 
-class _GraphEditorWindow:
-    """The floating "Edit" window: Add edge / Finish / Delete edge / Regenerate.
-
-    Plain Qt glue and nothing else -- see :class:`haemolynx.gui.graph_editor.GraphEditorState`
-    for what each button actually does to the graph, and :mod:`haemolynx.gui._widget`'s
-    own ``on_open_graph_editor`` for how a click on the vessels/nodes layers
-    reaches it. A standalone top-level window (not a docked tab), since
-    editing needs the viewer in full view underneath it, not a panel
-    replacing the settings form.
-    """
-
-    def __init__(self, *, on_add, on_finish, on_delete, on_regenerate) -> None:
-        from qtpy.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
-
-        self.native = QWidget()
-        self.native.setWindowTitle("HaemoLynx: Edit graph")
-        self.native.setObjectName("haemolynx_graph_editor")
-        layout = QVBoxLayout(self.native)
-
-        self._status = QLabel(_GRAPH_EDITOR_STATUS["idle"])
-        self._status.setWordWrap(True)
-        layout.addWidget(self._status)
-
-        add_button = QPushButton("Add edge")
-        add_button.setToolTip(
-            "Click a node or vessel to start a new branch, then click along the "
-            "segmentation to draw it. It ends when you click the network or "
-            "press Finish"
-        )
-        finish_button = QPushButton("Finish")
-        finish_button.setToolTip("End the branch being drawn here, as a dead end")
-        delete_button = QPushButton("Delete edge")
-        delete_button.setToolTip("Click a vessel to delete it")
-        regenerate_button = QPushButton("Regenerate")
-        regenerate_button.setToolTip(
-            "Rerun diameters, haemodynamics, perturbations, measurements and "
-            "export on the edited network, and refresh the layers"
-        )
-
-        add_button.clicked.connect(lambda: self._run(on_add, "add-armed"))
-        finish_button.clicked.connect(lambda: self._run(on_finish, "finished"))
-        delete_button.clicked.connect(lambda: self._run(on_delete, "delete-armed"))
-        regenerate_button.clicked.connect(lambda: on_regenerate())
-
-        for button in (add_button, finish_button, delete_button, regenerate_button):
-            layout.addWidget(button)
-
-    def _run(self, action, status_key: str) -> None:
-        action()
-        self.report(status_key)
-
-    def report(self, status_key: str) -> None:
-        self._status.setText(_GRAPH_EDITOR_STATUS.get(status_key, status_key))
-
-    def show(self) -> None:
-        self.native.show()
-
-    def is_open(self) -> bool:
-        return bool(self.native.isVisible())
-
-
 #: The Post processing stage's tab, between Haemodynamics and Perturbations.
 #: Its page is its own (no setting rows), and it has no "Run from this stage": its
 #: Regenerate graph / Continue are that.
@@ -11730,6 +11685,7 @@ def _post_processing_controls(
         status_colours,
         trace_layers,
         vessel_status,
+        withdraw_csv_row,
     )
     from haemolynx.gui.raw_panel import (
         ACROSS_IT,
@@ -11816,6 +11772,13 @@ def _post_processing_controls(
         #: for the next scan to say what changed.
         summary_scanned=None,
         summary_before=None,
+        #: Undo: the network the tab's edits began from (the run's own graph,
+        #: which the tab never edits), and each edit and decision since, oldest
+        #: first. Undo makes the network again from the first by every edit
+        #: but the last: copying the whole graph at every click took longer
+        #: than the click (0.8 s for a 57,000-vessel patella).
+        undo_base=None,
+        undo=[],
     )
 
     page = QWidget()
@@ -11945,6 +11908,10 @@ def _post_processing_controls(
     log_box.setReadOnly(True)
     log_box.setToolTip(tips["log"])
     log_box.setMinimumHeight(110)
+    undo_button = QPushButton("Undo last edit")
+    undo_button.setObjectName("haemolynx_post_processing_undo")
+    undo_button.setToolTip(tips["undo"])
+    undo_button.setEnabled(False)
 
     # Everything the 4+ junction correction needs, nested under its checkbox
     # and hidden until it is ticked.
@@ -12170,6 +12137,7 @@ def _post_processing_controls(
     layout.addWidget(prune_button)
     layout.addWidget(QLabel("What was changed:"))
     layout.addWidget(log_box)
+    layout.addWidget(undo_button)
     layout.addWidget(regenerate_graph_button)
     layout.addWidget(commit_status)
     layout.addWidget(continue_button)
@@ -12181,6 +12149,105 @@ def _post_processing_controls(
         """One line in the tab's own log, and the same in napari's run log."""
         log_box.appendPlainText(f"{datetime.now():%H:%M:%S}  {text}")
         logger.info("Post processing: %s", text)
+
+    # --- Undo -------------------------------------------------------------------
+
+    def undo_state():
+        """What an edit or a decision changes besides the network, as it is now."""
+        return SimpleNamespace(
+            added_nodes=list(state.added_nodes),
+            inlets=state.inlets,
+            outlets=state.outlets,
+            protected=state.protected,
+            decisions=dict(state.decisions),
+            review_decisions=len(state.review_decisions),
+            loop_reviews=len(state.loop_reviews),
+            review_acted=list(state.review_acted),
+            review_unfiltered=list(state.review_unfiltered),
+        )
+
+    def remember(what: str, replay=None, before=None) -> None:
+        """Keep *what* was just done for Undo. *replay* makes the same edit on
+        a graph and returns the graph after it; None for a decision, which
+        leaves the network as it was. *before* is :func:`undo_state` from
+        before it, by default now: a decision is remembered before it is kept."""
+        state.undo.append(SimpleNamespace(
+            what=what, replay=replay, before=undo_state() if before is None else before, written=[],
+        ))
+        refresh_buttons()
+
+    def edit(what: str, change, *args, **kwargs):
+        """``change(graph, *args, **kwargs)`` on the working graph, kept for
+        Undo; returns what *change* returns. A refused edit raises before it
+        changes anything, and leaves nothing to undo."""
+        before = undo_state()
+        result = change(state.graph, *args, **kwargs)
+
+        def replay(graph):
+            change(graph, *args, **kwargs)
+            return graph
+
+        remember(what, replay, before)
+        return result
+
+    def note_written(path, row) -> None:
+        """A decisions CSV row the latest edit or decision wrote, for Undo to take back."""
+        if state.undo:
+            state.undo[-1].written.append((path, row))
+
+    def forget_undo(base=None) -> None:
+        """Nothing to undo: the network edits begin from is *base*."""
+        state.undo = []
+        state.undo_base = base
+
+    def on_undo() -> None:
+        """Take the last edit or decision back: the network made again from
+        the one the edits began from, by every edit before it, and the tab's
+        lists, its decisions and the rows it wrote to a decisions CSV as they
+        were before it."""
+        if not state.undo or state.graph is None:
+            return
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        entry = state.undo[-1]
+        graph = state.graph
+        if entry.replay is not None:
+            try:
+                graph = copy_graph(state.undo_base)
+                if graph is None:
+                    raise ValueError("the network the edits began from could not be copied")
+                for earlier in state.undo[:-1]:
+                    if earlier.replay is not None:
+                        graph = earlier.replay(graph)
+            except Exception as error:  # noqa: BLE001 - the network stays as it is
+                logger.exception("Post processing: could not undo %s", entry.what)
+                status.setText(f"Could not undo {entry.what}: {error}")
+                return
+        state.undo.pop()
+        stop_editing()
+        before = entry.before
+        state.graph = graph
+        state.added_nodes = before.added_nodes
+        state.inlets, state.outlets, state.protected = before.inlets, before.outlets, before.protected
+        state.decisions = before.decisions
+        del state.review_decisions[before.review_decisions:]
+        del state.loop_reviews[before.loop_reviews:]
+        state.review_acted = before.review_acted
+        state.review_unfiltered = before.review_unfiltered
+        withdrawn = 0
+        for path, row in reversed(entry.written):
+            try:
+                withdrawn += withdraw_csv_row(path, row)
+            except OSError:
+                logger.exception("Post processing: could not take a row back out of %s", path)
+        text = f"Undid: {entry.what}" + (
+            f"; {withdrawn} row(s) taken back out of the decisions CSV" if withdrawn else ""
+        )
+        log_edit(text)
+        rescan(prefer=state.node)
+        status.setText(f"{text}.")
+        report.value = f"Post processing: {text}."
 
     def selected_rows() -> list[int]:
         rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
@@ -12405,6 +12472,7 @@ def _post_processing_controls(
         pending = has_pending_edits(state.graph)
         regenerate_graph_button.setEnabled(not busy and pending)
         continue_button.setEnabled(not busy and held)
+        undo_button.setEnabled(not busy and bool(state.undo) and state.graph is not None)
         if busy:
             text = "A run is going."
         elif held and pending:
@@ -12480,6 +12548,8 @@ def _post_processing_controls(
         new_run = graph is not state.graph
         if new_run:
             state.added_nodes = []
+            # The tab edits a copy: the run's own graph is what Undo starts from.
+            forget_undo(graph)
         state.raw = state.raw_problem = None
         state.graph = copy_graph(graph)
         state.scanned_from = weakref.ref(graph) if state.graph is not None else None
@@ -12657,7 +12727,7 @@ def _post_processing_controls(
         degree = state.graph.degree(node)
         described = describe_vessels(state.graph, edges)
         try:
-            delete_vessels(state.graph, edges, protected=state.protected)
+            edit(f"deleting {described} at node {node}", delete_vessels, edges, protected=state.protected)
         except ValueError as error:
             status.setText(str(error))
             log_edit(f"Node {node} ({degree} vessels): delete refused, {error}")
@@ -12678,8 +12748,9 @@ def _post_processing_controls(
         degree = state.graph.degree(node)
         length = float(connector.value())
         try:
-            new_nodes = split_junction(
-                state.graph,
+            new_nodes = edit(
+                f"splitting node {node}",
+                split_junction,
                 node,
                 connector_length_um=length,
                 reserved_ids=state.protected,
@@ -12720,9 +12791,11 @@ def _post_processing_controls(
                 "tell a connected branch from a disconnected one."
             )
             return
+        inlets, outlets, protected = state.inlets, state.outlets, state.protected
+        before = undo_state()
         try:
             pruned, stats = prune_disconnected_branches(
-                state.graph, state.inlets, state.outlets, protected=state.protected
+                state.graph, inlets, outlets, protected=protected
             )
         except ValueError as error:
             status.setText(str(error))
@@ -12732,6 +12805,11 @@ def _post_processing_controls(
             status.setText("Nothing to prune: every vessel is on an inlet-to-outlet path.")
             log_edit("Prune: nothing to remove, every vessel is on an inlet-to-outlet path")
             return
+        remember(
+            "the prune",
+            lambda graph: prune_disconnected_branches(graph, inlets, outlets, protected=protected)[0],
+            before,
+        )
         removed = stats["removed_edges"]
         lost = stats["removed_boundary_nodes"]
         what = (
@@ -12763,6 +12841,7 @@ def _post_processing_controls(
     def on_leave() -> None:
         if state.scan is None or state.node is None:
             return
+        remember(f"leaving node {state.node} as it is")
         state.decisions[state.node] = "left as is"
         log_edit(f"Node {state.node} ({state.graph.degree(state.node)} vessels): left as is")
         fill_list()
@@ -12878,6 +12957,7 @@ def _post_processing_controls(
             state.loop_csv = append_loop_review(path, [row])
         except OSError as error:
             return f" Could not write {path}: {error.strerror or error}."
+        note_written(state.loop_csv, row)
         return f" Recorded in {state.loop_csv.name}."
 
     def now() -> str:
@@ -12890,6 +12970,7 @@ def _post_processing_controls(
         loop = state.loop
         described = describe_vessels(state.graph, loop.edges)
         review = LoopReview.of(loop, KEPT, time=now())
+        remember(f"keeping the {loop.length_um:.3g} µm loop")
         written = write_loop_review(loop_review_record(loop, review))
         state.loop_reviews.append(review)
         log_edit(f"Loop of {loop.length_um:.3g} µm round kept: {described}")
@@ -12909,7 +12990,10 @@ def _post_processing_controls(
         review = LoopReview.of(loop, SIDE_DELETED, side=side + 1, time=now())
         record = loop_review_record(loop, review)
         try:
-            delete_loop_side(state.graph, loop, side, protected=state.protected)
+            edit(
+                f"deleting side {side + 1} of the {loop.length_um:.3g} µm loop",
+                delete_loop_side, loop, side, protected=state.protected,
+            )
         except ValueError as error:
             loop_summary.setText(str(error))
             log_edit(f"Loop of {loop.length_um:.3g} µm round: delete of side {side + 1} refused, {error}")
@@ -13245,6 +13329,7 @@ def _post_processing_controls(
             written = append_review_record(path, row)
         except OSError as error:
             return f" Could not write {path}: {error.strerror or error}."
+        note_written(written, row)
         return f" Recorded in {written.name}."
 
     def chosen_item():
@@ -13263,6 +13348,7 @@ def _post_processing_controls(
         item = chosen_item()
         if item is None:
             return
+        remember(f"keeping {item.why}")
         written = keep_record(*record_for(item, KEPT))
         log_edit(f"Kept: {item.why}")
         state.review_items = [i for i in state.review_items if i is not item]
@@ -13284,7 +13370,7 @@ def _post_processing_controls(
         described = describe_vessels(state.graph, edges)
         review, row = record_for(item, "deleted")
         try:
-            delete_vessels(state.graph, edges, protected=state.protected)
+            edit(f"deleting {described}", delete_vessels, edges, protected=state.protected)
         except ValueError as error:
             review_summary.setText(str(error))
             log_edit(f"Delete of {described} refused, {error}")
@@ -13298,8 +13384,9 @@ def _post_processing_controls(
         as Delete all its vessels would, one decision and CSV row per piece."""
         if state.graph is None or not removes_listed_pieces(state.review_key, state.dead_end_show):
             return
-        done = remove_listed_pieces(
-            state.graph, state.review_items, protected=state.protected, time=now(), voxel_size_zyx=voxel_size()
+        done = edit(
+            "removing the listed pieces with no junction", remove_listed_pieces,
+            list(state.review_items), protected=state.protected, time=now(), voxel_size_zyx=voxel_size(),
         )
         written = record_dead_end_removals(done.decisions, done.rows)
         text = (
@@ -13319,8 +13406,9 @@ def _post_processing_controls(
         and CSV row per dead end."""
         if state.graph is None or not removes_listed_interior_dead_ends(state.review_key, state.dead_end_show):
             return
-        done = remove_listed_interior_dead_ends(
-            state.graph, state.review_items, protected=state.protected, time=now(), voxel_size_zyx=voxel_size()
+        done = edit(
+            "removing the listed interior dead ends", remove_listed_interior_dead_ends,
+            list(state.review_items), protected=state.protected, time=now(), voxel_size_zyx=voxel_size(),
         )
         written = record_dead_end_removals(done.decisions, done.rows)
         text = (
@@ -13350,6 +13438,7 @@ def _post_processing_controls(
         try:
             for row in rows:
                 append_review_record(path, row)
+                note_written(path, row)
         except OSError as error:
             return f" Could not write {path}: {error.strerror or error}."
         return f" Recorded in {path.name}."
@@ -13361,7 +13450,9 @@ def _post_processing_controls(
         u, v, key = item.edges[0]
         review, row = record_for(item, "merged")
         try:
-            merged = merge_junctions(state.graph, u, v, key, protected=state.protected)
+            merged = edit(
+                f"merging junctions {u} and {v}", merge_junctions, u, v, key, protected=state.protected
+            )
         except ValueError as error:
             review_summary.setText(str(error))
             log_edit(f"Merge of junctions {u} and {v} refused, {error}")
@@ -13415,8 +13506,9 @@ def _post_processing_controls(
         )
         review, row = record_for(item, "joined")
         try:
-            added = add_traced_vessel(
-                state.graph, VesselEnd.at_node(a), VesselEnd.at_node(b), path,
+            added = edit(
+                f"joining dead ends {a} and {b}", add_traced_vessel,
+                VesselEnd.at_node(a), VesselEnd.at_node(b), path,
                 reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
                 smoothing=smoothing_settings(),
             )
@@ -13434,8 +13526,10 @@ def _post_processing_controls(
 
     def on_review_mark_dead_end(kind: str, words: str) -> None:
         """A person's verdict on the chosen dead end, kept on its node
-        (graph.set_dead_end_kind) and in the decisions."""
-        from haemolynx.graph.dead_ends import set_dead_end_kind
+        (graph.mark_dead_end_kind) and in the decisions. Whether it leaves the
+        image is the solve's boundary condition there, so Regenerate graph
+        solves the network again with it."""
+        from haemolynx.graph.post_processing import mark_dead_end_kind
 
         item = chosen_item()
         if item is None:
@@ -13445,12 +13539,16 @@ def _post_processing_controls(
             review_summary.setText(f"Node {tip} is no longer a dead end: scan the network again.")
             return
         review, row = record_for(item, words)
-        set_dead_end_kind(state.graph, tip, kind)
+        edit(f"marking dead end {tip} as {words}", mark_dead_end_kind, tip, kind)
         written = keep_record(review, row)
         log_edit(f"Marked dead end {tip} as {words}")
+        # The viewer holds the tab's graph, as after any edit, so a run saved
+        # now keeps the mark.
+        redraw_network()
         state.review_items = [i for i in state.review_items if i is not item]
         fill_review(state.review_row)
         review_summary.setText(review_counts() + written)
+        refresh_buttons()
 
     def on_review_set_terminal_role(role) -> None:
         """Make the chosen terminal node an inlet or an outlet, or neither
@@ -13466,7 +13564,7 @@ def _post_processing_controls(
         words = f"made an {role}" if role else "taken off the inlets and outlets"
         review, row = record_for(item, words)
         try:
-            roles = set_terminal_role(state.graph, review_roles(), node, role)
+            roles = edit(f"node {node} {words}", set_terminal_role, review_roles(), node, role)
         except ValueError as error:
             review_summary.setText(str(error))
             return
@@ -13494,8 +13592,9 @@ def _post_processing_controls(
             review_summary.setText(f"Node {node} is no longer in the network: scan the network again.")
             return
         try:
-            pair = set_resistance_node(
-                state.graph, resistance_pair_shown(state.graph, state.inlets, state.outlets), node, end
+            pair = edit(
+                f"node {node} as the two-point {end}", set_resistance_node,
+                resistance_pair_shown(state.graph, state.inlets, state.outlets), node, end,
             )
         except ValueError as error:
             review_summary.setText(str(error))
@@ -13531,8 +13630,9 @@ def _post_processing_controls(
         )
         review, row = record_for(item, "joined to the vessel ahead")
         try:
-            added = add_traced_vessel(
-                state.graph, VesselEnd.at_node(tip), VesselEnd.on_vessel(edge, point), path,
+            added = edit(
+                f"joining dead end {tip} to the vessel ahead", add_traced_vessel,
+                VesselEnd.at_node(tip), VesselEnd.on_vessel(edge, point), path,
                 reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
                 smoothing=smoothing_settings(),
             )
@@ -13567,8 +13667,8 @@ def _post_processing_controls(
             return
         review, row = record_for(item, "drawn along the skeleton")
         try:
-            added = add_traced_vessel(
-                state.graph, ends[0], ends[1], path,
+            added = edit(
+                "drawing a vessel along the skeleton", add_traced_vessel, ends[0], ends[1], path,
                 reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
                 smoothing=smoothing_settings(),
             )
@@ -13600,7 +13700,7 @@ def _post_processing_controls(
         described = describe_vessels(state.graph, edges)
         review, row = record_for(item, f"diameter set to {width:g} um")
         try:
-            set_vessel_diameter(state.graph, edges, width)
+            edit(f"setting {described} to {width:g} µm across", set_vessel_diameter, edges, width)
         except ValueError as error:
             review_summary.setText(str(error))
             return
@@ -13925,7 +14025,7 @@ def _post_processing_controls(
         edge = (hit.u, hit.v, hit.key)
         described = describe_vessels(state.graph, [edge])
         try:
-            delete_vessels(state.graph, [edge], protected=state.protected)
+            edit(f"deleting {described}", delete_vessels, [edge], protected=state.protected)
         except ValueError as error:
             set_edit_status(str(error))
             log_edit(f"Delete of {described} (clicked) refused, {error}")
@@ -13995,8 +14095,8 @@ def _post_processing_controls(
         cut = [e.edge for e in (trace.start, end) if e.on_a_vessel]
         described_cut = describe_vessels(graph, cut)
         try:
-            added = add_traced_vessel(
-                graph, trace.start, end, trace.extended(leg),
+            added = edit(
+                "the vessel added", add_traced_vessel, trace.start, end, trace.extended(leg),
                 reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
                 smoothing=smoothing_settings(),
             )
@@ -14047,7 +14147,10 @@ def _post_processing_controls(
             return
         described = describe_vessels(state.graph, [keys[i] for i in ids])
         try:
-            delete_vessels(state.graph, [keys[i] for i in ids], protected=state.protected)
+            edit(
+                f"deleting branchID(s) {', '.join(str(i) for i in ids)}", delete_vessels,
+                [keys[i] for i in ids], protected=state.protected,
+            )
         except ValueError as error:
             set_edit_status(str(error))
             log_edit(f"Delete by branch ID of {described} refused, {error}")
@@ -14174,22 +14277,37 @@ def _post_processing_controls(
         log_edit(note)
         # What the regenerated network is compared with when it is scanned.
         state.summary_before = state.summary_scanned
+        drop_working_graph(waiting)
+
+    def drop_working_graph(text: str) -> None:
+        """Forget the tab's working graph and what it lists, saying *text*.
+        The loop and review decisions stay: they are the run's, and are
+        matched to the next network's loops and items by position."""
+        stop_editing()
         clear_review()
         remove_layers()
         state.graph = state.scan = state.node = None
         state.scanned_from = None
         state.vessels = []
         state.added_nodes = []
-        # The loop and review decisions stay: they are the run's, and are
-        # matched to the regenerated network's loops and items by position.
         state.loops, state.loop, state.loop_row = [], None, None
+        forget_undo()
         junction_list.clear()
         table.setRowCount(0)
         loop_list.clear()
         loop_table.setRowCount(0)
         loop_summary.setText("")
-        status.setText(waiting)
+        status.setText(text)
         refresh_buttons()
+
+    def discard_edits() -> None:
+        """A run from an earlier tab starts again from a network without the
+        edits: they go, or Regenerate graph would hand the old network on."""
+        if state.graph is None:
+            return
+        if has_pending_edits(state.graph):
+            log_edit("Discarded the edits not yet regenerated: a run from an earlier tab replaces the network")
+        drop_working_graph("Not scanned yet.")
 
     def on_regenerate_graph() -> None:
         """The edits in line and Haemodynamics rerun; paused, the run stays
@@ -14301,6 +14419,7 @@ def _post_processing_controls(
     branch_ids.returnPressed.connect(on_delete_ids)
     regenerate_graph_button.clicked.connect(on_regenerate_graph)
     continue_button.clicked.connect(on_continue)
+    undo_button.clicked.connect(on_undo)
     # Off until there is something to take on; the panel refreshes them once
     # what `running` and `paused` read exists.
     for button in (regenerate_graph_button, continue_button):
@@ -14313,6 +14432,7 @@ def _post_processing_controls(
         state.vessels = []
         state.added_nodes = []
         state.decisions = {}
+        forget_undo()
         state.raw = state.raw_problem = None
         state.raw_panel_centrelines = None
         state.loops, state.loop, state.loop_row = [], None, None
@@ -14342,8 +14462,10 @@ def _post_processing_controls(
         scan=on_scan,
         refresh=refresh_buttons,
         forget=forget,
+        discard_edits=discard_edits,
         regenerate_graph_button=regenerate_graph_button,
         continue_button=continue_button,
+        undo_button=undo_button,
         commit_status=commit_status,
         scan_button=scan_button,
         review_choice=review_choice,
@@ -14540,7 +14662,7 @@ def settings_widget(napari_viewer=None):
         results=lambda: view.results,
         boundary_roles=lambda: checkpoints._carried_boundary_roles(),
         regenerate=lambda graph, stop_after=None: regenerate_from_graph(
-            graph, from_post_processing=True, stop_after=stop_after
+            graph, stop_after=stop_after
         ),
         running=lambda: run_state.running,
         settings=lambda: _settings(),
@@ -15642,7 +15764,6 @@ def settings_widget(napari_viewer=None):
 
     load_button = PushButton(text="Load config...")
     view_button = PushButton(text="View controls")
-    edit_button = PushButton(text="Edit")
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
     run_button = PushButton(text="Run pipeline")
@@ -15653,7 +15774,6 @@ def settings_widget(napari_viewer=None):
     from haemolynx.gui.chrome_tooltips import (
         ARROW_LENGTH_TOOLTIP,
         CLEAR_LAYERS_TOOLTIP,
-        EDIT_GRAPH_TOOLTIP,
         LOAD_CONFIG_TOOLTIP,
         LOAD_RUN_TOOLTIP,
         DELETE_PRESET_TOOLTIP,
@@ -15684,7 +15804,6 @@ def settings_widget(napari_viewer=None):
     load_button.tooltip = LOAD_CONFIG_TOOLTIP
     view_button.tooltip = REOPEN_VIEW_TOOLTIP
     view_button.enabled = viewer is not None
-    edit_button.tooltip = EDIT_GRAPH_TOOLTIP
     save_button.tooltip = SAVE_CONFIG_TOOLTIP
     check_button.tooltip = RUN_CHECKS_TOOLTIP
     run_button.tooltip = RUN_PIPELINE_TOOLTIP
@@ -16541,7 +16660,7 @@ def settings_widget(napari_viewer=None):
         report.value = (
             f"Saved the preset {preset.name} ({changes}) in {preset.path}\n"
             "Not kept, as they belong to one image: its files and folders, "
-            "channels, labels, voxel size, axis order, crop box, boundary nodes "
+            "channels, labels, voxel size, axis order, crop on import, boundary nodes "
             "and positions, and the switches reusing its cached outputs"
         )
         return True
@@ -16754,16 +16873,18 @@ def settings_widget(napari_viewer=None):
         if batch_mode.setup is not None:
             report.value = SINGLE_IMAGE_IN_BATCH
             return
-        values = current_values()
-        input_path = values.get("input_path")
-        if not input_path or not Path(input_path).is_file():
-            report.value = "Choose a segmented input image first, then press Check segmented image."
+        segmented_path, refusal = _segmented_image_to_optimise(
+            current_values(), action="Check segmented image"
+        )
+        if segmented_path is None:
+            report.value = refusal
             return
         _run_segmentation_quality_check_in_background(
             _settings(),
             report,
             check_image_button,
             run_state=run_state,
+            segmented_path=segmented_path,
         )
 
     def on_check() -> None:
@@ -17267,16 +17388,19 @@ def settings_widget(napari_viewer=None):
             report.value = SINGLE_IMAGE_IN_BATCH
             return
         post_processed = checkpoints.get(POST_PROCESS)
-        if edits_lost_by_running_from(
+        edits_lost = edits_lost_by_running_from(
             tab_start_stage(tab_title),
             post_processing.state.graph,
             post_processed.graph if post_processed is not None else None,
-        ) and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
+        )
+        if edits_lost and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
             report.value = f"Kept the hand edits on {POST_PROCESSING_TAB}: nothing was run."
             return
         plan = prepare_run_from(tab_title, check=True)
         if plan is None:
             return
+        if edits_lost:
+            post_processing.discard_edits()
         on_run(
             start_from=plan.start_from or None,
             resume=plan.resume,
@@ -17284,142 +17408,17 @@ def settings_widget(napari_viewer=None):
             restored_stages=stages_before(plan.start_from),
         )
 
-    # --- "Edit": add or delete a vessel by hand, then Regenerate to catch
-    # haemodynamics/perturbations/measurements/export up to the edit. The
-    # editing rules live in gui.graph_editor.GraphEditorState (pure, tested
-    # without a viewer); everything here is just wiring a click on the
-    # vessels/nodes layers to it and pushing the layers it changes back.
-    graph_editor: dict[str, Any] = {"state": None, "window": None}
+    def regenerate_from_graph(graph, *, stop_after=None) -> bool:
+        """Run the Post processing stage on the hand-edited *graph*, and on to
+        *stop_after*, or to the end. Returns whether a run started (a failed
+        check says why in the report box).
 
-    def _graph_editor_layer(name: str):
-        return viewer.layers[name] if viewer is not None and name in viewer.layers else None
-
-    def _attach_graph_editor_click_callbacks() -> None:
-        """(Re-)attach the click handler to the current VESSELS/NODES layer
-        objects. `_add_or_update` replaces a Vectors/Points layer outright
-        rather than shrinking it in place whenever an edit (e.g. Delete
-        edge) reduces its count -- idempotent, so safe to call after every
-        refresh, which is what makes that swap harmless instead of silently
-        detaching the handler from the layer now on screen."""
-        for name in (VESSELS, NODES):
-            layer = _graph_editor_layer(name)
-            if layer is not None and _graph_editor_click not in layer.mouse_drag_callbacks:
-                layer.mouse_drag_callbacks.append(_graph_editor_click)
-
-    def _refresh_graph_editor_layers() -> None:
-        state = graph_editor["state"]
-        if state is None or view.results is None:
-            return
-        draft_points = state.draft.points_um if state.draft is not None else None
-        _apply_layers(
-            viewer, view.results.layers_for_graph(state.graph, draft_points_um=draft_points)
-        )
-        # `_apply_layers` only ever adds or updates layers it was given --
-        # once a draft is finished/committed there is nothing to draw, but
-        # the last drawn segment would otherwise stay on screen forever.
-        if draft_points is None and EDIT_DRAFT in viewer.layers:
-            viewer.layers.remove(viewer.layers[EDIT_DRAFT])
-        _attach_graph_editor_click_callbacks()
-
-    def _graph_editor_click_impl(_layer, event) -> None:
-        window = graph_editor["window"]
-        state = graph_editor["state"]
-        if window is None or state is None or not window.is_open() or state.mode == "idle":
-            return
-        from haemolynx.gui.graph_click import hit_test_nodes, hit_test_vessels
-
-        position = event.position
-        dims = list(getattr(event, "dims_displayed", ()) or ())
-        view_direction = getattr(event, "view_direction", None)
-
-        edge_hit = None
-        vessels = _graph_editor_layer(VESSELS)
-        if vessels is not None:
-            edge_hit = hit_test_vessels(
-                vessels.data, _layer_features(vessels), position,
-                view_direction=view_direction, dims=dims,
-            )
-        node_hit = None
-        if edge_hit is None:
-            nodes_layer = _graph_editor_layer(NODES)
-            if nodes_layer is not None:
-                try:
-                    index = nodes_layer.get_value(
-                        position, view_direction=view_direction,
-                        dims_displayed=dims, world=True,
-                    )
-                except TypeError:
-                    index = nodes_layer.get_value(position, world=True)
-                node_hit = hit_test_nodes(index, _layer_features(nodes_layer))
-        hit = edge_hit if edge_hit is not None else node_hit
-
-        if state.mode == "delete":
-            if edge_hit is None:
-                return
-            state.click_delete(edge_hit)
-            _refresh_graph_editor_layers()
-            window.report("delete-armed")
-            return
-
-        raw_point = tuple(float(c) for c in position[-3:])
-        result = state.click_add(raw_point, hit)
-        if result != "rejected":
-            _refresh_graph_editor_layers()
-        window.report(result)
-
-    def _graph_editor_click(_layer, event) -> None:
-        # A napari mouse_drag_callback runs on the GUI thread with no
-        # surrounding try/except of its own -- an uncaught exception here
-        # previously surfaced as the editor just "crashing" mid-click rather
-        # than a message the user could act on.
-        try:
-            _graph_editor_click_impl(_layer, event)
-        except Exception as exc:  # noqa: BLE001 - report it, don't crash the viewer
-            logger.exception("graph editor click failed")
-            window = graph_editor["window"]
-            message = f"error: {exc}"
-            if window is not None:
-                window.report(message)
-            report.value = f"Edit: {message}"
-
-    def _arm_graph_editor(mode: str) -> None:
-        state = graph_editor["state"]
-        if state is None:
-            return
-        if mode == "add":
-            state.start_add()
-        else:
-            state.start_delete()
-
-    def _finish_graph_editor_branch() -> None:
-        state = graph_editor["state"]
-        if state is None:
-            return
-        state.finish_add()
-        _refresh_graph_editor_layers()
-
-    def on_regenerate_from_edit() -> None:
-        state = graph_editor["state"]
-        if state is None:
-            return
-        regenerate_from_graph(state.graph)
-
-    def regenerate_from_graph(
-        graph, *, from_post_processing: bool = False, stop_after=None
-    ) -> bool:
-        """Run the later stages on the hand-edited *graph*. Returns whether a
-        run started (a failed check says why in the report box).
-
-        From the Post processing tab (*from_post_processing*) the run starts
-        at its ``post_process`` stage, which brings the edits in line --
-        boundary lists cut to the nodes left (the tab's Prune drops inlets on
-        purpose), bridges into thick vessels, lengths, branch orders, and the
-        edited vessels measured by the run's own diameter methods -- then
-        solves the haemodynamics again on the edited network, and goes on to
-        *stop_after*, or to the end. Haemodynamics and everything before it
-        keep what they recorded: the tab comes after them.
-
-        From the Edit window the run starts at Diameters, as it always has.
+        The stage brings the edits in line -- boundary lists cut to the nodes
+        left (the tab's Prune drops inlets on purpose), bridges into thick
+        vessels, lengths, branch orders, and the edited vessels measured by
+        the run's own diameter methods -- then solves the haemodynamics again
+        on the edited network. Haemodynamics and everything before it keep
+        what they recorded: the tab comes after them.
         """
         if run_state.running:
             report.value = ALREADY_RUNNING
@@ -17433,9 +17432,8 @@ def settings_widget(napari_viewer=None):
         except Exception as error:
             report.value = f"Could not read settings:\n{error}"
             return False
-        start_from = POST_PROCESS if from_post_processing else "assign_diameters"
         plan = checkpoints.plan_regenerate(
-            graph, settings=settings, start_from=start_from, drop=False
+            graph, settings=settings, start_from=POST_PROCESS, drop=False
         )
         if plan is None:
             report.value = (
@@ -17451,47 +17449,10 @@ def settings_widget(napari_viewer=None):
             start_from=plan.start_from,
             resume=plan.resume,
             replace_checkpoints=False,
-            # From the Edit window, Boundaries is recorded again, from the
-            # edited graph, so a later "Run from this stage" on Diameters keeps
-            # the edit. From Post processing the edit comes after
-            # Haemodynamics: every stage before it keeps its own record.
-            restored_stages=stages_before(
-                start_from if from_post_processing else "assign_boundaries"
-            ),
+            restored_stages=stages_before(POST_PROCESS),
             stop_after=stop_after,
         )
         return bool(run_state.running)
-
-    def on_open_graph_editor() -> None:
-        if view.results is None or getattr(view.results, "_graph", None) is None:
-            report.value = "Nothing to edit yet: run the pipeline through at least Graph first."
-            return
-        from haemolynx.gui.graph_editor import GraphEditorState
-
-        results = view.results
-        state = GraphEditorState(
-            graph=copy_graph(results._graph),
-            voxel_size_zyx=tuple(
-                float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
-            ),
-        )
-        image_layer = _graph_editor_layer(IMAGE)
-        if image_layer is not None:
-            state.cost_field_from_mask(
-                np.asanyarray(image_layer.data),
-                use_memmap=bool(_settings().get("use_memmap_loading")),
-            )
-        graph_editor["state"] = state
-
-        window = _GraphEditorWindow(
-            on_add=lambda: _arm_graph_editor("add"),
-            on_finish=_finish_graph_editor_branch,
-            on_delete=lambda: _arm_graph_editor("delete"),
-            on_regenerate=on_regenerate_from_edit,
-        )
-        graph_editor["window"] = window
-        _attach_graph_editor_click_callbacks()
-        window.show()
 
     def _run_saved(dest: Path) -> None:
         last_run_path[0] = str(dest)
@@ -17743,7 +17704,6 @@ def settings_widget(napari_viewer=None):
         )
 
     load_button.changed.connect(on_load)
-    edit_button.changed.connect(lambda *_args: on_open_graph_editor())
     save_button.changed.connect(on_save)
     optimise_button.changed.connect(lambda *_args: on_optimise_settings())
     check_image_button.changed.connect(lambda *_args: on_check_segmented_image())
@@ -17766,11 +17726,6 @@ def settings_widget(napari_viewer=None):
     run_file_layout.addWidget(preset_label)
     run_file_layout.addWidget(preset_dropdown, 1)
     run_file_layout.addWidget(view_button.native)
-    run_file_layout.addWidget(edit_button.native)
-    # Editing lives in the "7. Post processing" tab now: the button keeps
-    # its place in the row (and the floating Edit window its code) but is
-    # hidden.
-    edit_button.visible = False
     run_file_layout.addWidget(save_run_button.native)
     run_file_layout.addWidget(load_run_button.native)
     # The two checkboxes stay stacked. The ? sits at the panel's right edge on
@@ -18238,11 +18193,6 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_shared_ilastik_block = shared_ilastik_block
     panel._haemolynx_input_boxes = input_boxes
     panel._haemolynx_check_segmented_image = on_check_segmented_image
-    panel._haemolynx_edit_button = edit_button
-    panel._haemolynx_graph_editor = graph_editor
-    panel._haemolynx_open_graph_editor = on_open_graph_editor
-    panel._haemolynx_regenerate_from_edit = on_regenerate_from_edit
-    panel._haemolynx_finish_graph_editor_branch = _finish_graph_editor_branch
     panel._haemolynx_post_processing = post_processing
     layout = QVBoxLayout(panel)
     if layer_row is not None:

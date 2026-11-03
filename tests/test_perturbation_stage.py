@@ -679,7 +679,9 @@ def test_perturbations_re_solve_with_the_runs_haemodynamics_solver(tmp_path, mon
     """haemodynamics_solver reaches every perturbation's re-solve, and the
     sparse one reports the dense one's resistances to rounding."""
     kinds = _record_matrix_kinds(monkeypatch)
-    dense = _run(tmp_path / "dense", [ARTERIOLE_DILATION, ARTERIOLE_CONSTRICTION])
+    dense = _run(
+        tmp_path / "dense", [ARTERIOLE_DILATION, ARTERIOLE_CONSTRICTION], haemodynamics_solver="dense"
+    )
     assert kinds and not any(kinds)
     kinds.clear()
     sparse = _run(

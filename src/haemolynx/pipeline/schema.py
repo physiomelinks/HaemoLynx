@@ -571,9 +571,10 @@ SCHEMA = Schema(
             kind="float",
             default=7200.0,
             help=(
-                "Kill an ilastik headless run that takes longer than this. A "
-                "hang usually means a bad project file or unreadable input, "
-                "not a slow but working run -- raise it for very large volumes"
+                "Kill an ilastik headless run that takes longer than this, or "
+                "never with 0. A hang usually means a bad project file or "
+                "unreadable input, not a slow but working run -- raise it for "
+                "very large volumes"
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
@@ -2718,7 +2719,7 @@ SCHEMA = Schema(
             unit="um",
             requires=("classify_vessels_by_size", "!automated_vessel_assignment"),
         ),
-                                                        # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # Boundary assignment
         # ------------------------------------------------------------------
         Setting(
@@ -3169,6 +3170,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="outlet_p_bc",
@@ -3178,6 +3180,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="visualize_results",
@@ -3344,7 +3347,7 @@ SCHEMA = Schema(
         Setting(
             name="haemodynamics_solver",
             kind="choice",
-            default="dense",
+            default="sparse",
             choices=["dense", "sparse"],
             help=(
                 "How every flow solve holds and solves the network -- the "
@@ -3363,7 +3366,7 @@ SCHEMA = Schema(
         Setting(
             name="equivalent_resistance_solver",
             kind="choice",
-            default="eigendecomposition",
+            default="sparse",
             choices=["eigendecomposition", "sparse"],
             help=(
                 "How the two-point equivalent resistance (first inlet to first "
@@ -3906,11 +3909,13 @@ SCHEMA = Schema(
                 "tip within its own pruning threshold of a face (as before). "
                 "leaves_image: only a dead end that leaves the image (it touches a "
                 "face, or the segmented vessel runs on to one), so a spur near a "
-                "face is judged like any other"
+                "face is judged like any other. leaves_image reads the segmented "
+                "mask: without it, or with bridge_require_mask_support off, the "
+                "prune keeps by threshold"
             ),
             section=_PIPELINE_STAGES,
             choices=("threshold", "leaves_image"),
-            requires=("do_graph_building",),
+            requires=("do_graph_building", "bridge_require_mask_support"),
             advanced=True,
         ),
         Setting(
@@ -4090,11 +4095,13 @@ SCHEMA = Schema(
                 "the segmented-image mask's own voxels sit within their own local radius "
                 "of the skeleton -- see preprocessing.skeleton_consistency for what that "
                 "measures and why. Checked whether the skeleton was just computed or "
-                "loaded from cache, so this is not gated on do_skeletonize"
+                "loaded from cache, so this is not gated on do_skeletonize. Not checked "
+                "under use_memmap_loading, which skips it for its whole-volume arrays"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            requires=("!use_memmap_loading",),
             advanced=True,
         ),
         Setting(
@@ -4106,10 +4113,15 @@ SCHEMA = Schema(
                 "treated as noise, not a genuine vessel, and excluded from both missing-"
                 "vessel checks below -- see "
                 "preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton "
-                "for why that floor matters on real, imperfectly segmented data"
+                "for why that floor matters on real, imperfectly segmented data. Counted "
+                "in voxels of the image as read: on a segmented_image_downsample grid, as "
+                "many as hold the same volume. Not read under use_memmap_loading, which "
+                "skips both checks"
             ),
             section=_PIPELINE_STAGES,
+            unit="voxels",
             minimum=1,
+            requires=("!use_memmap_loading",),
             advanced=True,
         ),
         Setting(
@@ -4124,11 +4136,13 @@ SCHEMA = Schema(
                 "vessel dropped, not just imprecisely traced. See preprocessing."
                 "skeleton_consistency.diagnose_vessels_missing_from_skeleton. Checked "
                 "whether the skeleton was just computed or loaded from cache, so this is "
-                "not gated on do_skeletonize"
+                "not gated on do_skeletonize. Not checked under use_memmap_loading, which "
+                "skips it for its whole-volume arrays"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            requires=("!use_memmap_loading",),
             advanced=True,
         ),
         Setting(
@@ -4420,10 +4434,11 @@ SCHEMA = Schema(
                 "instead. Not provably exact like the per-component split "
                 "itself -- a generous skeletonize_tile_halo_um keeps results "
                 "indistinguishable from the monolithic computation for real "
-                "vessel data, but this is a heuristic margin, not a proof"
+                "vessel data, but this is a heuristic margin, not a proof. Read only "
+                "while do_skeletonize makes the skeleton"
             ),
             section=_PIPELINE_STAGES,
-            requires=("use_memmap_loading",),
+            requires=("use_memmap_loading", "do_skeletonize"),
             advanced=True,
         ),
         Setting(
@@ -5680,10 +5695,13 @@ SCHEMA = Schema(
                 "step is damped (0.8 times smaller every five passes, as "
                 "Secomb's NetFlow does) so the swing dies out, and a strongly "
                 "asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles "
-                "in about 10 iterations within the default tolerance below"
+                "in about 10 iterations within the default tolerance below. At "
+                "least 2: the first pass has nothing to compare with"
             ),
             section=_DIAMETERS_AND_PERICYTES,
-            minimum=1,
+            minimum=2,
+            # One pass could never converge; a config or run saying 1 runs 2.
+            value_aliases={1: 2},
             requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
             advanced=True,
         ),
@@ -5713,7 +5731,9 @@ SCHEMA = Schema(
                 "without both an inlet and an outlet, and every branch, tree or "
                 "loop that leaves a perfused vessel and reaches no outlet (a dead "
                 "end). No pressure difference drives a flow through one, so the "
-                "solve has no answer for it. leave_unsolved keeps them, marked "
+                "solve has no answer for it. A vessel leaving the image that "
+                "open_end_model may open counts as an inlet and an outlet, so the "
+                "vessels leading to one are on such a path. leave_unsolved keeps them, marked "
                 "unsolved: the viewer draws them light grey, leaves them out of "
                 "every flow-based colouring and names each vessel Solved or "
                 "Unsolved on hover. remove_disconnected deletes them, so only "

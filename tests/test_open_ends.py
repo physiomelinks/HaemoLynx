@@ -354,3 +354,105 @@ def test_an_unsolved_graph_has_no_open_end_directions():
     G = nx.MultiGraph(open_end_conditions={"model": "outlet", "as_outlets": [1]})
     G.add_edge(0, 1)
     assert open_end_directions(G) == {}
+
+
+# --- the settings' values as given, and preflight --------------------------------
+
+
+def test_a_shear_weight_of_0_estimates_by_pressure_alone():
+    """Regression: the solve stage read the weight with ``or``, so 0 -- the
+    pressure target alone -- ran as the default 1."""
+    _s, by_pressure, _b = _run_solve(_settings("estimated", open_end_estimate_shear_weight=0.0))
+    _s, weighted, _b = _run_solve(_settings("estimated"))
+    record, default = by_pressure.graph[oe.GRAPH_RECORD]["info"], weighted.graph[oe.GRAPH_RECORD]["info"]
+    assert (record["shear_weight"], default["shear_weight"]) == (0.0, 1.0)
+    assert record["pressure_range_pa"] != pytest.approx(default["pressure_range_pa"])
+
+
+def test_a_terminal_multiple_of_0_is_refused_rather_than_run_at_10():
+    """Regression: 0 passes the schema's minimum, and the solve stage read it
+    with ``or``, so it drained every open end through 10 times its vessel's
+    resistance. Preflight refuses it, and the solve no longer swaps it."""
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    settings = _settings("terminal_resistance", open_end_terminal_resistance_multiple=0.0)
+    (error,) = check_haemodynamics(settings).errors
+    assert "open_end_terminal_resistance_multiple" in error
+    with pytest.raises(ValueError, match="must be positive"):
+        _run_solve(settings)
+
+
+def test_a_shear_target_of_0_is_refused_rather_than_closing_the_open_ends():
+    """Regression: a target set to 0 closed every open end, with a warning
+    blaming the closed solve for perfusing no vessel."""
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    settings = _settings("estimated", open_end_estimate_shear_target_pa=0.0)
+    (error,) = check_haemodynamics(settings).errors
+    assert "open_end_estimate_shear_target_pa" in error
+    with pytest.raises(ValueError, match="above 0"):
+        _run_solve(settings)
+
+
+def test_post_processings_prune_and_unsolved_list_keep_the_opened_open_ends():
+    """The Post processing tab's prune applies remove_disconnected's rule, and
+    its Unsolved pieces list the vessels the solve marks unsolved: a vessel
+    leading to an open end the solve opened is neither pruned nor listed.
+    Regression: both read the inlets and outlets alone, so the prune deleted
+    vessel 1-4 the estimate gave flow, and the list called it unsolved."""
+    from haemolynx.graph.network_review import find_unsolved_pieces
+
+    _s, G, _b = _run_solve(_settings("estimated"))
+    assert G.edges[1, 4, 0][graph_module.FLOW_SOLVED] is True
+    pruned, _stats = graph_module.prune_disconnected_branches(G, [0], [3], protected=[2])
+    assert pruned.has_edge(1, 4) and not pruned.has_edge(2, 5) and 6 not in pruned
+    listed = {frozenset(e[:2]) for item in find_unsolved_pieces(G, [0], [3]) for e in item.edges}
+    assert listed == {frozenset((2, 5)), frozenset((6, 7))}
+
+    _s, closed, _b = _run_solve(_settings("closed"))
+    pruned, _stats = graph_module.prune_disconnected_branches(closed, [0], [3], protected=[1, 2])
+    assert not pruned.has_edge(1, 4)
+    listed = {frozenset(e[:2]) for item in find_unsolved_pieces(closed, [0], [3]) for e in item.edges}
+    assert frozenset((1, 4)) in listed
+
+
+def test_the_estimate_is_handed_a_sparse_matrix_whatever_the_flow_solver(monkeypatch):
+    """The estimate converts its conductance matrix to sparse, so under the
+    dense flow solver it was handed an N x N array only to convert it. It is
+    handed the sparse one, and estimates the same conditions."""
+    import scipy.sparse as sp
+
+    real = oe.estimate_open_end_conditions
+    handed = []
+
+    def spy(G, conductance, node_list, **kwargs):
+        handed.append(sp.issparse(conductance))
+        return real(G, conductance, node_list, **kwargs)
+
+    monkeypatch.setattr(oe, "estimate_open_end_conditions", spy)
+    _s, G, _b = _run_solve(_settings("estimated"))  # the dense flow solver
+    assert handed == [True]
+    conductance, nodes = hd.build_conductance_matrix_from_graph(_network(), solver="dense")
+    from_dense = real(_network(), conductance, nodes, inlet_nodes=[0], outlet_nodes=[3],
+                      inlet_p_bc=P_IN, outlet_p_bc=P_OUT, ends=[4])
+    record = oe.OpenEndConditions.from_record(G.graph[oe.GRAPH_RECORD])
+    assert record.to_inlet == pytest.approx(from_dense.to_inlet, rel=1e-12)
+    assert record.to_outlet == pytest.approx(from_dense.to_outlet, rel=1e-12)
+
+
+def test_no_matrix_is_built_for_an_estimate_with_no_open_end(monkeypatch):
+    """With no vessel leaving the image, the estimated model builds nothing:
+    the flow solve's own matrix is the only one."""
+    real = hd.build_conductance_matrix_from_graph
+    built = []
+
+    def count(*args, **kwargs):
+        built.append(kwargs.get("solver"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hd, "build_conductance_matrix_from_graph", count)
+    G = _network()
+    G.nodes[4][DEAD_END_KIND] = "unknown"
+    stages.solve(_settings("estimated"), stages.HaemodynamicModel(graph=G),
+                 stages.BoundaryNodes(inlet_nodes=[0], outlet_nodes=[3], graph=G))
+    assert built == ["dense"]

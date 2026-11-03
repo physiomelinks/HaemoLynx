@@ -197,12 +197,14 @@ def open_terminal_nodes(
     voxel_size = _voxel_size_zyx(G)
     if voxel_size is None or len(image_shape) != 3:
         return None
+    from .dead_ends import face_distance
+
     extent = (np.asarray(image_shape, dtype=float) - 1.0) * voxel_size
     terminals, pos = _terminal_nodes_and_position_map(G)
     return [
         node
         for node in terminals
-        if float(np.min(np.minimum(pos[node], extent - pos[node]))) <= float(max_distance_um)
+        if face_distance(pos[node], extent)[0] <= float(max_distance_um)
     ]
 
 
@@ -643,6 +645,18 @@ def inlets_outlets_from_vessel_masks(settings: Mapping[str, Any]) -> bool:
         and bool(settings.get("inlets_outlets_from_vessel_masks", True))
         and not vessel_masks_are_global(settings)
     )
+
+
+def manual_vessel_boundaries_read(settings: Mapping[str, Any]) -> bool:
+    """Whether the run reads the Arteriole and Venule tabs' own lists: not
+    while the small masks choose those boundaries (:func:`vessel_masks_in_use`),
+    nor with global vessel masks (``io.vessel_masks_are_global``), which give
+    no branch orders for a boundary to end. The one place this is decided:
+    the Boundaries stage, the panel's greying and a batch's checks ask here.
+    """
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
+
+    return not vessel_masks_in_use(settings, "small") and not vessel_masks_are_global(settings)
 
 
 def assigns_large_vessel_branch_orders(settings: Mapping[str, Any]) -> bool:

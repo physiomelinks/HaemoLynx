@@ -631,3 +631,73 @@ def test_a_dead_end_at_a_thick_wall_is_an_interior_kind_and_not_an_open_end():
     assert de.THICK_WALL in de.INTERIOR_DEAD_END_KINDS
     assert case.tip not in de.open_end_nodes(case.graph)
     assert de.dead_end_census(de.classify_dead_ends(case.graph, support=support))[de.THICK_WALL] == 1
+
+
+def _plane_t(tip_x: float = 50.0):
+    """A T of vessels in a 2D image read as a z=1 volume, 60 um square: a
+    horizontal vessel along y=30 from x=10 to *tip_x*, and a branch up from
+    its middle to y=10. Every tip lies 10 um or more inside the x and y faces."""
+    import networkx as nx
+
+    mask = np.zeros((1, 60, 60), dtype=bool)
+    mask[0, 28:33, 5:55] = True
+    mask[0, 5:30, 28:33] = True
+    G = nx.MultiGraph()
+    points = {0: (0, 30, 10), 1: (0, 30, 30), 2: (0, 30, tip_x), 3: (0, 10, 30)}
+    for node, pos in points.items():
+        G.add_node(node, pos=np.array(pos, dtype=float))
+    for a, b in ((0, 1), (1, 2), (1, 3)):
+        line = np.linspace(points[a], points[b], 21)
+        G.add_edge(a, b, voxels=line.tolist(), length=float(np.linalg.norm(line[-1] - line[0])))
+    return mask, G
+
+
+def test_a_2d_image_has_no_faces_across_its_one_plane():
+    """Regression: a z=1 volume's z extent is 0, so every tip lay on both z
+    faces: every dead end of a 2D image left it, took an open end's boundary
+    condition and had its length censored."""
+    mask, G = _plane_t()
+    extent = de.image_extent_um(mask.shape, (1.0, 1.0, 1.0))
+    ends = de.classify_dead_ends(G, extent_um=extent, support=MaskSupport(mask, (1.0, 1.0, 1.0)))
+
+    assert {tip: end.kind for tip, end in ends.items() if end.kind == de.LEAVES_IMAGE} == {}
+    assert {end.face_axis for end in ends.values()} <= {1, 2}
+    assert de.face_distance((0, 30, 10), extent) == (10.0, 2)
+    de.record_image_extent(G, mask.shape, (1.0, 1.0, 1.0))
+    assert de.open_end_nodes(G) == []
+    # A tip on an x face of the plane still leaves it.
+    assert de.leaves_image((0, 30, 59), extent)[0]
+
+
+def test_the_stub_prune_takes_a_short_stub_in_a_2d_image():
+    """Regression: the prune keeps a short stub at an image face, and in a
+    2D image every stub lay on its z faces, so none was ever pruned."""
+    from haemolynx.graph.prune import prune_vascular_stubs
+
+    mask, G = _plane_t(tip_x=34.0)  # a 4 um stub off the junction
+    pruned = prune_vascular_stubs(
+        G, min_stub_length=10.0, image_extent_um=tuple(de.image_extent_um(mask.shape, (1.0, 1.0, 1.0))),
+    )
+    assert 2 not in pruned
+    assert {0, 3} <= set(pruned)
+
+
+def test_every_face_test_reads_a_2d_image_as_having_no_z_faces():
+    """Regression: three more callers measured a point's depth in the image
+    by hand, every axis's two faces included, so in a 2D image every point lay
+    on a z face: every terminal was an open end for boundary selection, the
+    review lists read every node at depth 0, and the statistics' face margin
+    left every vessel out of the flow rows. They read the one face test."""
+    from haemolynx.graph.boundaries import open_terminal_nodes
+    from haemolynx.statistics.comprehensive import _vessels_within_face_margin
+
+    mask, G = _plane_t()
+    G.graph["voxel_size"] = (1.0, 1.0, 1.0)
+    de.record_image_extent(G, mask.shape, (1.0, 1.0, 1.0))
+
+    assert open_terminal_nodes(G, mask.shape, max_distance_um=5.0) == []
+    assert open_terminal_nodes(G, mask.shape, max_distance_um=12.0) == [0, 2, 3]  # 9-10 um from x / y faces
+    pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in G}
+    depth, _leaves = nr._face_readers(G, pos, None, None)
+    assert depth(1) == pytest.approx(29.0)  # x = 30 in a 60 um plane: 29 um from the x = 59 face
+    assert _vessels_within_face_margin(G, 5.0) == []

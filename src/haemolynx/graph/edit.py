@@ -1,14 +1,14 @@
 """Interactive graph edits: split an edge, delete one and collapse, draw a new one.
 
-Pure graph/array operations only -- no Qt, no napari. :mod:`haemolynx.gui.graph_editor`
-is the interactive window that turns mouse clicks into calls here, so the
-editing rules themselves are testable without a viewer.
+Pure graph/array operations only -- no Qt, no napari -- for graph building's
+own steps (mask recovery, the thick-vessel split, the skeleton re-trace) and
+the A* routing behind the Post processing tab's Add vessel
+(:mod:`haemolynx.graph.post_processing`).
 
 A newly added edge here is deliberately left without ``branch_order``/
-``diameter_um``: haemodynamics reads those, not this module, and the "Edit"
-window's Regenerate action re-runs branch-order and diameter assignment over
-the whole (edited) graph rather than having this module guess a value for
-one new edge in isolation (see ``haemodynamics.poiseuille.set_poiseuille_resistances``
+``diameter_um``: haemodynamics reads those, not this module, and the stages
+after it assign both over the whole graph rather than this module guessing
+a value for one new edge in isolation (see ``haemodynamics.poiseuille.set_poiseuille_resistances``
 for what an edge missing either one costs -- a silent zero-conductance edge).
 """
 from __future__ import annotations
@@ -54,10 +54,13 @@ def _edge_attrs_for_segment(
 
 
 def _closest_vertex_index(points: Sequence[Sequence[float]], target: Sequence[float]) -> int:
-    """Index of the polyline vertex closest to *target*."""
+    """Index of the polyline vertex closest to *target*; of two as close (a
+    point midway between them), the one first in position order, so the
+    split does not depend on which way the edge's path runs."""
     arr = np.asarray(points, dtype=float)
     distances = np.linalg.norm(arr - np.asarray(target, dtype=float), axis=1)
-    return int(np.argmin(distances))
+    tied = np.flatnonzero(distances <= distances.min() + 1e-9)
+    return int(min(tied, key=lambda i: tuple(arr[i])))
 
 
 def insert_node_on_edge(

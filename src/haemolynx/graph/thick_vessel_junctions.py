@@ -56,6 +56,7 @@ from ._helpers import (
     densify_polyline,
     edge_sample_points,
     next_node_id,
+    node_position_key,
     points_inside_mask,
 )
 
@@ -89,11 +90,16 @@ _SAMPLE_STEP_UM = 0.5
 _FACE_MARGIN_UM = 2.0
 
 
-def _at_image_face(pos, extent_um) -> bool:
+def _at_image_face(pos, extent_um, radius_um: float = 0.0) -> bool:
     """Whether *pos* (physical ``(z, y, x)`` µm) lies within
-    :data:`_FACE_MARGIN_UM` of a face of an image *extent_um* across."""
-    p = np.asarray(pos, dtype=float)
-    return bool(np.any(p <= _FACE_MARGIN_UM) or np.any(p >= np.asarray(extent_um, dtype=float) - _FACE_MARGIN_UM))
+    :data:`_FACE_MARGIN_UM`, or the lumen *radius_um* of its vessel there, of
+    a face of an image *extent_um* across, as ``dead_ends.leaves_image``
+    reads a tip: a centreline stops about a radius short of the face its
+    vessel leaves by. A 2D image has no faces across its one plane
+    (``dead_ends.face_distance``)."""
+    from .dead_ends import face_distance
+
+    return face_distance(pos, extent_um)[0] <= max(_FACE_MARGIN_UM, float(radius_um))
 
 #: A stretch shorter than this (2 um) between others is the region's edge or the
 #: tree's tolerance flickering along a centreline, not a vessel leaving or
@@ -989,7 +995,9 @@ def insert_thick_vessel_junction_nodes(
         for r, (i, s, t) in enumerate(inside_runs)
         for end, node in ((0, sampled[i].u), (len(sampled[i].points) - 1, sampled[i].v))
         if (s == end or t == end) and result.degree(node) == 1
-        and _at_image_face(result.nodes[node]["pos"], extent_um)
+        and _at_image_face(
+            result.nodes[node]["pos"], extent_um, finite[tree.query(result.nodes[node]["pos"])[1]]
+        )
     }
     for r in through:
         i, s, t = inside_runs[r]
@@ -1050,6 +1058,7 @@ def insert_thick_vessel_junction_nodes(
 
     blind, blind_um, blind_kept = _remove_blind_vessels_beyond_bridges(
         built, G, tree, extent_um=(np.asarray(thick.shape) - 1) * vs, stub_length_um=stub_length_um,
+        segmentation=None if segmentation is None else lumen, voxel_size_zyx=vs, support=mask_support,
     )
     if blind or blind_kept:
         logger.info(
@@ -1185,7 +1194,9 @@ def _share_centreline_nodes(bridges, sampled, graph, reach_um):
             continue
         middle = points[group].mean(axis=0)
         at_junction = [b for b in group if junction(b)]
-        chosen = min(at_junction or group, key=lambda b: (float(np.linalg.norm(points[b] - middle)), b))
+        # Equally near the middle (two ends always are): the first in position
+        # order, not in the order the graph holds its edges.
+        chosen = min(at_junction or group, key=lambda b: (float(np.linalg.norm(points[b] - middle)), tuple(points[b])))
         for b in group:
             if targets[b] != targets[chosen]:
                 targets[b] = targets[chosen]
@@ -1698,7 +1709,7 @@ def _extend_thick_centreline_ends(
     if samples is None:
         return 0
     extended = 0
-    for n in sorted([n for n in G.nodes if G.degree(n) == 1], key=str):
+    for n in sorted([n for n in G.nodes if G.degree(n) == 1], key=lambda n: node_position_key(G, n)):
         if not G.has_node(n):
             continue
         end = thick_end(n)
@@ -1795,7 +1806,9 @@ def _extend_thick_centreline_ends(
                     targets.append((float(c[best]), tuple(int(x) for x in voxel), None))
         if not targets:
             continue
-        _c, voxel, j = min(targets, key=lambda t: t[0])
+        # Ties (samples rounding to one voxel at one cost) by where they lie,
+        # not by the order the graph holds the edges they are on.
+        _c, voxel, j = min(targets, key=lambda t: (t[0], t[1], () if t[2] is None else tuple(points[t[2]])))
         if j is None:
             continue  # the vessel leaves the image: an open end, not drawn on
         way = (np.asarray(router.traceback(voxel), dtype=float) + lo) * vs
@@ -2089,6 +2102,7 @@ def _bridge_thick_forks(G, near_tree, lumen, vs, chosen) -> int:
 
 def _remove_blind_vessels_beyond_bridges(
     built, G, tree, *, extent_um, stub_length_um: Callable[[np.ndarray], float] | None = None,
+    segmentation: np.ndarray | None = None, voxel_size_zyx=(1.0, 1.0, 1.0), support=None,
 ) -> tuple[int, float, int]:
     """Remove each bridge whose vessel ends blind inside the image, with
     that vessel: followed from the bridge through nodes only it passes, it
@@ -2101,18 +2115,55 @@ def _remove_blind_vessels_beyond_bridges(
     and long capillaries -- and the two marked remove 6 and 16 um, all on
     the right side of the prune's 3 lumen radii; so was grid W's 142 um
     capillary chain (13, 14, 24, marked plain-right). Returns how many went,
-    their length (um), and how many were kept as longer than a stub."""
+    their length (um), and how many were kept as longer than a stub.
+
+    Only the bridges this split made are judged: one *G* had already was
+    judged when it was made, and a split of a few edited vessels
+    (post processing's ``edges=``) leaves every other edge as it was.
+
+    With the *segmentation* (its ``MaskSupport``, *support*, when given), a
+    vessel leaves the image as ``dead_ends.leaves_image`` says: within its
+    lumen radius of a face, or its segmented vessel running on to one ahead
+    of its tip. Held to 2 um of a face, a vessel stopping a few microns short
+    of where its mask leaves the image was taken for a blind one."""
+    from .dead_ends import leaves_image, tip_heading
     from .degree2 import create_trivial_merged_edge
 
     extent_um = np.asarray(extent_um, dtype=float)
+    vs = np.asarray(voxel_size_zyx, dtype=float)
+    reading = []
 
-    def at_image_edge(node):
-        return _at_image_face(built.nodes[node]["pos"], extent_um)
+    def read_mask():
+        if not reading:
+            from haemolynx.preprocessing.bridge_mask_support import MaskSupport
+
+            usable = support is not None and np.shape(support.mask) == np.shape(segmentation)
+            reading.append(support if usable else MaskSupport(segmentation, tuple(vs)))
+        return reading[0]
+
+    def at_image_edge(node, last_edge):
+        pos = np.asarray(built.nodes[node]["pos"], dtype=float)
+        if _at_image_face(pos, extent_um):
+            return True
+        if segmentation is None:
+            return False
+        mask = read_mask()
+        a, b, k = last_edge
+        other = b if a == node else a
+        ends = {n: np.asarray(built.nodes[n]["pos"], dtype=float) for n in (node, other)}
+        path = edge_sample_points(node, other, built.edges[a, b, k], ends)
+        return leaves_image(
+            pos, extent_um, heading=tip_heading(path), support=mask,
+            tip_radius_um=float(mask.radius(pos.reshape(1, 3))[0]), voxel_size_zyx=vs,
+        )[0]
+
+    def made_here(u, v) -> bool:
+        return not (G.has_edge(u, v) and any(d.get(IS_ZERO_RESISTANCE) for d in G[u][v].values()))
 
     removed, removed_um, kept = 0, 0.0, 0
     for u, v, key in [
         (u, v, key) for u, v, key, d in built.edges(keys=True, data=True)
-        if d.get(IS_ZERO_RESISTANCE)
+        if d.get(IS_ZERO_RESISTANCE) and made_here(u, v)
     ]:
         if not built.has_edge(u, v, key):
             continue
@@ -2132,7 +2183,7 @@ def _remove_blind_vessels_beyond_bridges(
             if node in seen:
                 break
             seen.add(node)
-        if built.degree(node) != 1 or at_image_edge(node):
+        if built.degree(node) != 1 or at_image_edge(node, chain[-1]):
             continue
         length = sum(float(built.edges[e].get("length", 0.0)) for e in chain[1:])
         if stub_length_um is not None and length >= stub_length_um(built.nodes[inner]["pos"]):
@@ -2188,8 +2239,11 @@ def remove_dangling_bridges(G: nx.MultiGraph) -> int:
     piece of strand left in the thick vessel's lumen (where the thick
     centreline drawn from the tree replaced the graph's own, on E14.5), not
     a vessel opening into it; contracted for the statistics, it would be a
-    loop on one node. Repeated until none is left, with the nodes left bare.
-    Returns how many bridges went."""
+    loop on one node. Only one lying round that node, though
+    (:func:`_lies_round_its_bridges_node`): a vessel that leaves the thick
+    vessel and comes back to it beside where it left, both its bridges on
+    one shared node, is a loop of vessel and stays. Repeated until none is
+    left, with the nodes left bare. Returns how many bridges went."""
     removed = 0
     while True:
         dangling = [
@@ -2207,7 +2261,7 @@ def remove_dangling_bridges(G: nx.MultiGraph) -> int:
                 ]
                 if len(other) == 1 and other[0][3].get(IS_ZERO_RESISTANCE):
                     ends.append(other[0])
-            if len(ends) == 2 and ends[0][1] == ends[1][1]:
+            if len(ends) == 2 and ends[0][1] == ends[1][1] and _lies_round_its_bridges_node(G, u, v, key, ends):
                 G.remove_edge(u, v, key)
                 dangling.extend((a, b, k) for a, b, k, _d in ends)
         if not dangling:
@@ -2219,6 +2273,25 @@ def remove_dangling_bridges(G: nx.MultiGraph) -> int:
             for node in (u, v):
                 if G.has_node(node) and G.degree[node] == 0:
                     G.remove_node(node)
+
+
+def _lies_round_its_bridges_node(G: nx.MultiGraph, u, v, key, bridges) -> bool:
+    """Whether vessel *u*-*v* (*key*) lies within twice its longer bridge of
+    the node both its *bridges* end on. A bridge spans the thick vessel from
+    where a vessel enters it to its centreline, so a strand left inside the
+    lumen, both ends a bridge from one node, stays that close to it; a 64 um
+    capillary leaving the thick vessel and coming back 4 um from where it left
+    went 30 um out, and was taken for one."""
+    hub = np.asarray(G.nodes[bridges[0][1]]["pos"], dtype=float)
+    longest = 0.0
+    for a, b, _k, data in bridges:
+        length = data.get("length")
+        if length is None:
+            length = np.linalg.norm(np.asarray(G.nodes[a]["pos"], dtype=float) - np.asarray(G.nodes[b]["pos"], dtype=float))
+        longest = max(longest, float(length))
+    positions = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v)}
+    path = edge_sample_points(u, v, G.edges[u, v, key], positions)
+    return float(np.max(np.linalg.norm(path - hub, axis=1))) <= 2.0 * longest
 
 
 def contract_bridges(G: nx.MultiGraph) -> tuple[nx.MultiGraph, dict[Any, Any]]:

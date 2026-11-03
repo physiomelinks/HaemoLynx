@@ -167,8 +167,8 @@ haemolynx/
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   statistics_view.py (the left panel's Statistics tab: a
 │   │                       #   button per measure the last run's statistics found, pure),
-│   │                       #   perturbation_editing.py, graph_editor.py
-│   │                       #   + graph_click.py (the Edit window), post_processing.py
+│   │                       #   perturbation_editing.py, graph_click.py
+│   │                       #   (a click -> the vessel under it), post_processing.py
 │   │                       #   (what the "7. Post processing" tab draws, pure), raw_panel.py
 │   │                       #   (its chosen item in its own plane, segmentation beside the
 │   │                       #   raw image, pure), branch_hover.py,
@@ -329,7 +329,9 @@ an output only when that record matches (`ilastik_output_is_current`); file time
 outputs of a different project copied in with an older time. An output with no record (made
 before this) is segmented again once. ilastik is run `--readonly` with `--output_format` from the
 suffix (without it ilastik writes the project's saved format, HDF5 by default), and it names a
-multipage TIFF `.tiff` whatever it is asked for, which is where the runner looks. Checked by hand
+multipage TIFF `.tiff` whatever it is asked for, which is where the runner looks: in a folder of
+its own (`io.ilastik.export_folder`), since the export is named after its input and, in the raw
+image's folder, was the raw image. Checked by hand
 on Windows with ilastik 1.4.1rc2 and Harvey's claudin project (2026-10-22). The generic loader
 still guesses the minority for a user-supplied mask of two labels, now with a warning once per
 label set (`io.load._warn_minority_guess`).
@@ -555,7 +557,8 @@ RAM, each worker holds its own volumes.
   swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
   (see `tests/test_anisotropic_voxel_size.py`). A TIFF's size is read from its OME header's
   `PhysicalSizeX/Y/Z` first (units converted), then, axis by axis, from the resolution tags and
-  ImageJ's `spacing` (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
+  ImageJ's `spacing`, in ImageJ's `unit` or a centimetre ResolutionUnit, inches read as microns
+  (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
   unit into the tags of a file given no resolution, so an OME-TIFF's tags say 1 µm whatever its
   voxels are. Masks and main image must align in shape and
   physical voxel units. **Drawing a run has the same split the other way round:** node `pos` and
@@ -715,7 +718,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   load-time dilation added back to the width; no default width (preflight:
   `check_large_vessel_mask_split`). The small-mask assignment settings stay hidden at their
   values. `VesselNetwork.mask_split_diameter_um` lets a run resumed on the Boundaries tab cut
-  again when the width changes. Not checked on a marked grid.
+  again when the width changes, and `mask_sources` load a role again when its files, load-time
+  clean-up or global reading change (`stages._vessel_masks_now_in_use`). Not checked on a marked grid.
 - **Branch-order tiers** (`graph/branch_order.py`) — the Large_Art/Large_Ven tier is the vessels
   tagged in a large mask (`graph.LARGE_MASK_VESSEL_TYPE`) that connect to an inlet/outlet through
   tagged vessels. Art/Ven start at the hand-off nodes where a vessel leaves that tier, and run on
@@ -965,7 +969,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   re-judges boundary nodes and dead ends at the touched nodes, assigns branch orders over the whole
   network, then `solve_post_processed`. `apply_network_handling(settings, model, boundaries, network)`
   is the Haemodynamics tab's "Network handling": `boundary_handling` acts on every vessel no
-  inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`) — `leave_unsolved` (default)
+  inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`; an open end `open_end_model`
+  may open counts as both, `open_ends.open_ends_in_effect`) — `leave_unsolved` (default)
   marks them `FLOW_SOLVED=False`, `remove_disconnected` deletes them and joins the two vessels left
   where a branch hung (`graph.merge_pass_through`; not at boundary nodes, a bridge, or vessels whose
   mask tags differ), assigning branch orders again and measuring the joined vessels as post
@@ -1047,9 +1052,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   more solve (`final_solve=True`), so a vessel's flow is its drop over its reported resistance; a
   caller that re-solves itself passes `final_solve=False`.
 - **`haemodynamics/resistance.py`** — the flow solve and the two-point resistance.
-  `haemodynamics_solver` (`dense` default, or `sparse`) is how *every* flow solve holds the network
+  `haemodynamics_solver` (`sparse` default, or `dense`) is how *every* flow solve holds the network
   (`build_conductance_matrix_from_graph(solver=)`); `equivalent_resistance_solver`
-  (`eigendecomposition` default, or `sparse`, `inf` between unconnected nodes). A dense solver is
+  (`sparse` default, `inf` between unconnected nodes, or `eigendecomposition`). A dense solver is
   warned about when its estimate passes half the free memory (`warn_about_dense_solver_memory`,
   from `build_network` and `solve`), and a synthetic network's or surround's by preflight before
   it is drawn, on the nodes it is planned with (`generate.BedPlan.nodes`,
@@ -1288,7 +1293,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   writes the panel's settings, those away from their defaults, to one YAML file per preset in the
   user's settings folder (`saved_preset_dir`, `HAEMOLYNX_PRESET_DIR`; the tests point it at an
   empty folder). `held_by_saved_presets` is the one rule for what a preset leaves out: files and
-  folders, one image's channels, labels, voxel size, axis order, crop box, nodes and vessels, and
+  folders, one image's channels, labels, voxel size, axis order, every crop setting, nodes and vessels, and
   the switches reusing cached outputs. Loading one is a whole set: what it names, every other
   setting it holds back to its default, the rest left as they are.
 ---

@@ -36,6 +36,7 @@ from typing import Sequence
 import numpy as np
 from scipy.ndimage import find_objects, generate_binary_structure, label
 
+from .slab_labels import ForegroundLabels
 from .thick_vessels import BRAID_FACTOR_LIMIT, _principal_axis, braid_factor
 
 __all__ = [
@@ -94,6 +95,7 @@ def detect_braided_thick_vessel_components(
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     braid_factor_limit: float = BRAID_FACTOR_LIMIT,
     min_occupied_slices: int = DEFAULT_MIN_OCCUPIED_SLICES,
+    low_memory: bool = False,
 ) -> list[BraidedThickVesselComponent]:
     """Every connected fat-catchment component whose own skeleton braids.
 
@@ -115,6 +117,11 @@ def detect_braided_thick_vessel_components(
     every axis. A component with no axis clearing *min_occupied_slices* is
     skipped rather than guessed at either way. Returned worst-first (highest
     braid factor first).
+
+    *low_memory* (the low-RAM option) labels the components a slab of planes
+    at a time (:class:`~haemolynx.preprocessing.slab_labels.ForegroundLabels`)
+    instead of in a label volume of four bytes a voxel; the same components,
+    numbered alike, so the same answer.
     """
     if braid_factor_limit < 0.0:
         raise ValueError("braid_factor_limit must be >= 0")
@@ -132,14 +139,19 @@ def detect_braided_thick_vessel_components(
         return []
 
     structure = generate_binary_structure(mask.ndim, mask.ndim)
-    labeled, n_labels = label(mask, structure=structure)
+    if low_memory:
+        labeled = ForegroundLabels(mask, structure)
+        boxes = labeled.find_objects()
+    else:
+        labeled, _n_labels = label(mask, structure=structure)
+        boxes = find_objects(labeled)
     scale = np.asarray(voxel_size_zyx, dtype=float)
 
     flagged: list[BraidedThickVesselComponent] = []
-    for component_id, bbox in enumerate(find_objects(labeled), start=1):
+    for component_id, bbox in enumerate(boxes, start=1):
         if bbox is None:
             continue
-        component_mask = labeled[bbox] == component_id
+        component_mask = np.asarray(labeled[bbox]) == component_id
         component_skeleton = skel[bbox] & component_mask
 
         best_axis: int | None = None

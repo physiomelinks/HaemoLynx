@@ -132,6 +132,44 @@ def test_a_row_still_holding_what_the_panel_filled_is_replaced(tmp_path):
     assert fill_vessel_mask_rows(settings, ("large",)).values == {}
 
 
+def _last_image_filled(tmp_path, *beside_b):
+    """Image A's pair, filled by the panel; image B now the input, with
+    *beside_b* the masks beside it."""
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    _image_a, art_a, ven_a = _files(first, "A.tif", "A_large_arteriole.tif", "A_large_venule.tif")
+    image_b, *found = _files(second, "B.tif", *beside_b)
+    filled = {"large_arteriole_mask_path": art_a, "large_venule_mask_path": ven_a}
+    return {**LARGE_ON, "input_path": image_b, **filled}, filled, found
+
+
+def test_a_new_image_with_only_an_arteriole_mask_empties_the_last_images_venule_row(tmp_path):
+    """Regression: the venule row the panel filled for the last image was
+    kept, so the run paired the new image's arteriole mask with the last
+    image's venule mask."""
+    settings, filled, (art_b,) = _last_image_filled(tmp_path, "B_large_arteriole.tif")
+
+    fill = fill_vessel_mask_rows(settings, ("large",), filled)
+
+    assert fill.values == {"large_arteriole_mask_path": art_b, "large_venule_mask_path": None}
+    assert "reads it as a global mask of every large vessel" in "\n".join(fill.lines)
+
+
+def test_a_new_image_with_no_masks_empties_the_rows_filled_for_the_last_one(tmp_path):
+    """Regression: with nothing found beside the new image, the rows still
+    held the last image's masks, which the run then read for this one."""
+    settings, filled, _found = _last_image_filled(tmp_path)
+
+    fill = fill_vessel_mask_rows(settings, ("large",), filled)
+
+    assert fill.values == {"large_arteriole_mask_path": None, "large_venule_mask_path": None}
+    report = "\n".join(fill.lines)
+    assert "No large vessel masks found" in report and "A_large_arteriole.tif" in report
+    # The same rows chosen by the user, not filled, stay as they are.
+    assert fill_vessel_mask_rows(settings, ("large",)).values == {}
+
+
 def test_a_row_already_holding_the_found_file_is_no_conflict(tmp_path):
     image, art, ven = _files(
         tmp_path, "E14.tif", "E14_large_arteriole.tif", "E14_large_venule.tif"

@@ -73,6 +73,26 @@ def test_ome_channel_names_are_read(tmp_path):
     assert [c.name for c in tiff_channels(path)] == ["plasma", "claudin-5"]
 
 
+def test_an_unnamed_ome_channel_does_not_take_the_next_ones_name(tmp_path):
+    """Regression: only the named Channel elements were collected and handed
+    out in order, so with C1 unnamed the panel listed C1 as claudin-5."""
+    path = tmp_path / "half_named.ome.tif"
+    ome = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06">'
+        '<Image ID="Image:0"><Pixels ID="Pixels:0" DimensionOrder="XYCZT" Type="uint16" '
+        'SizeX="8" SizeY="8" SizeC="2" SizeZ="3" SizeT="1">'
+        '<Channel ID="Channel:0:0" SamplesPerPixel="1"/>'
+        '<Channel ID="Channel:0:1" Name="claudin-5" SamplesPerPixel="1"/>'
+        '<TiffData/></Pixels></Image></OME>'
+    )
+    tifffile.imwrite(str(path), np.zeros((6, 8, 8), dtype=np.uint16), description=ome, metadata=None)
+
+    channels = tiff_channels(path)
+
+    assert [c.label for c in channels] == ["C1", "C2 (claudin-5)"]
+
+
 def test_a_channel_with_nothing_said_about_it_is_just_its_fiji_name(tmp_path):
     path = tmp_path / "plain.tif"
     _composite(path, channels=3)
@@ -108,6 +128,34 @@ def test_a_single_plane_colour_composite_does_list_its_channels(tmp_path):
     )
 
     assert [c.label for c in tiff_channels(path)] == ["C1 (red)", "C2 (green)"]
+
+
+def test_a_single_plane_ome_composite_lists_its_channels_and_reads_one(tmp_path):
+    """Regression: a 2D two-channel OME file (CYX, its channels named) was
+    offered no channels and read as a stack of its two channels."""
+    from haemolynx.haemodynamics.fwhm_diameter import _read_tiff_channel
+
+    path = tmp_path / "plane.ome.tif"
+    plane = np.stack([np.full((8, 8), 1, np.uint16), np.full((8, 8), 2, np.uint16)])
+    tifffile.imwrite(
+        str(path), plane, ome=True,
+        metadata={"axes": "CYX", "Channel": {"Name": ["plasma", "claudin-5"]}},
+    )
+
+    assert [c.label for c in tiff_channels(path)] == ["C1 (plasma)", "C2 (claudin-5)"]
+    second = _read_tiff_channel(path, 1)
+    assert second.shape == (1, 8, 8) and (second == 2).all()
+
+
+def test_an_ome_z_stack_tifffile_labels_as_channels_is_still_a_z_stack(tmp_path):
+    """tifffile writes a plain 3D array as OME "CYX", its channels described
+    by nothing: still the z-stack it is."""
+    path = tmp_path / "stack.ome.tif"
+    tifffile.imwrite(str(path), np.zeros((40, 8, 8), dtype=np.uint16), ome=True)
+    with tifffile.TiffFile(str(path)) as tif:
+        assert tif.series[0].axes == "CYX"  # the premise
+
+    assert tiff_channels(path) == []
 
 
 @pytest.mark.parametrize(

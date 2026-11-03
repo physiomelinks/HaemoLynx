@@ -410,6 +410,25 @@ def test_the_skeleton_voxel_counts_keep_their_physical_size_on_the_reduced_grid(
     assert stages.skeleton_voxel_settings_on_grid(settings, anisotropic)["skeleton_bundle_scan_size"] == 2
 
 
+def test_voxel_counts_follow_the_grids_finest_axis_when_a_coarse_z_becomes_it():
+    """Regression: counts are voxels of the grid's finest axis, and they were
+    divided by the reduction of the image's finest axis. At 4x, 1.5 x 0.5 x
+    0.5 um voxels reduce z by 1 and x, y by 4: the grid's finest axis is z, at
+    1.5 um, so 9 voxels of 0.5 um (4.5 um) are 3 of the grid's, not 2 (3 um)."""
+    flipped = downsample_for(4, STACK, (1.5, 0.5, 0.5))
+    assert flipped.axis_factors_zyx == (1, 4, 4)
+    settings = {"skeleton_bundle_scan_size": 9, "skeleton_closing_radius": 6}
+
+    on_grid = stages.skeleton_voxel_settings_on_grid(settings, flipped)
+
+    assert on_grid == {"skeleton_bundle_scan_size": 3, "skeleton_closing_radius": 2}
+    for name, count in on_grid.items():
+        assert count * min(flipped.voxel_size_zyx) == pytest.approx(settings[name] * 0.5)
+    assert stages.skeleton_voxel_settings_from_grid(
+        {"skeleton_bundle_scan_size": 4}, settings, flipped
+    ) == {"skeleton_bundle_scan_size": 12}
+
+
 def test_voxel_counts_chosen_on_the_reduced_grid_come_back_as_the_image_as_read_counts_them():
     """The settings optimiser searches on the run's grid: a count it kept is
     the user's own again (1 on the 2x grid is the 1 or 2 set, never 2 for a
@@ -979,3 +998,42 @@ def test_preflight_warns_when_the_raw_choice_differs_and_says_what_happens():
     # Without a raw image the raw choice is out of effect: no warning.
     assert not check_downsample_on_import({SEGMENTED_SETTING: "4x", RAW_SETTING: "16x"}).warnings
     assert not check_downsample_on_import(base).errors
+
+
+def test_the_missing_vessel_floor_keeps_its_volume_on_the_reduced_grid():
+    """missing_vessel_min_voxels counts voxels of the image as read: on a
+    grid reduced 2x on every axis a piece of 2 voxels of it is a quarter of
+    one, so the floor is 1, not 2 (a piece of 16 of the image's)."""
+    from haemolynx.io.downsample import downsample_for
+    from haemolynx.pipeline.stages import missing_vessel_min_voxels_on_grid
+
+    settings = {"missing_vessel_min_voxels": 20}
+    assert missing_vessel_min_voxels_on_grid(settings, None) == 20
+    assert missing_vessel_min_voxels_on_grid(
+        settings, downsample_for(1, (8, 8, 8), (1.0, 1.0, 1.0))
+    ) == 20
+    every_axis = downsample_for(2, (8, 8, 8), (1.0, 1.0, 1.0))
+    assert every_axis.axis_factors_zyx == (2, 2, 2)
+    assert missing_vessel_min_voxels_on_grid(settings, every_axis) == 3  # 20 / 8, half up
+    in_plane = downsample_for(2, (8, 8, 8), (2.0, 0.5, 0.5))
+    assert in_plane.axis_factors_zyx == (1, 2, 2)
+    assert missing_vessel_min_voxels_on_grid(settings, in_plane) == 5
+    assert missing_vessel_min_voxels_on_grid({"missing_vessel_min_voxels": 2}, every_axis) == 1
+
+
+def test_the_stage_checks_against_the_floor_on_its_grid(tmp_path, monkeypatch):
+    from haemolynx import preprocessing as preprocessing_module
+
+    captured = []
+    real = preprocessing_module.diagnose_skeleton_against_mask
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs["min_vessel_voxels"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "diagnose_skeleton_against_mask", spy)
+    settings = _run_settings(tmp_path, missing_vessel_min_voxels=40)
+    volume = stages.skeletonise(settings, stages.segment(settings))
+    block = int(np.prod(volume.downsample.axis_factors_zyx))
+    assert block > 1
+    assert captured == [max(1, int(np.floor(40 / block + 0.5)))]

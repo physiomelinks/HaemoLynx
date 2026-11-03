@@ -274,3 +274,23 @@ def test_the_centreline_index_reads_no_radius_again_for_an_unchanged_edge():
     third = _centreline_index(G, radius_at, memo=memo)
     moved = int(np.sum(third[4][:, 2] == 20.5))
     assert 0 < moved < len(third[4]) and sum(asked) == moved
+
+
+def test_every_self_loop_goes_not_one_a_node():
+    """Regression: on a MultiGraph ``remove_edge(node, node)`` takes one key,
+    so a node with two self-loops kept one."""
+    import networkx as nx
+
+    from haemolynx.graph.prune import remove_edges_for_self_connected_nodes
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.add_edge(1, 1)
+    G.add_edge(1, 1)
+    G.add_edge(0, 0)
+
+    pruned = remove_edges_for_self_connected_nodes(G)
+
+    assert nx.number_of_selfloops(pruned) == 0
+    assert list(pruned.edges()) == [(0, 1)]
+    assert nx.number_of_selfloops(G) == 3  # the input is left as it was

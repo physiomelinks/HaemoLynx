@@ -143,6 +143,35 @@ def test_worst_first_when_more_than_one_component_is_flagged():
     assert flagged[0].bounding_box[2] == (40, 60), "the 5-strand component is worse"
 
 
+def test_low_memory_finds_the_same_components_without_a_label_volume(monkeypatch):
+    """Under the low-RAM option the components are labelled a slab at a time,
+    never in a label volume of the whole thick region (four bytes a voxel):
+    the same components, numbered alike, so the same report."""
+    import haemolynx.preprocessing.thick_vessel_braid_guard as guard
+
+    mask = np.zeros((6, 9, 70), dtype=bool)
+    mask[1:4, 1:4, 0:20] = True
+    mask[1:4, 5:8, 25:45] = True  # a second component, touching neither
+    mask[2:5, 1:4, 50:70] = True
+    skeleton = np.zeros_like(mask)
+    skeleton[2, 2, 0:20] = True  # clean
+    for y in (5, 6, 7):  # braided, three strands
+        skeleton[2, y, 25:45] = True
+    for y in (1, 2, 3):
+        skeleton[3, y, 50:70] = True
+    expected = detect_braided_thick_vessel_components(mask, skeleton, voxel_size_zyx=(2.0, 1.0, 0.5))
+    assert [c.bounding_box[2] for c in expected] == [(25, 45), (50, 70)]
+
+    def no_label_volume(*_args, **_kwargs):
+        raise AssertionError("the whole thick region was labelled into one volume")
+
+    monkeypatch.setattr(guard, "label", no_label_volume)
+    low_memory = detect_braided_thick_vessel_components(
+        mask, skeleton, voxel_size_zyx=(2.0, 1.0, 0.5), low_memory=True
+    )
+    assert low_memory == expected
+
+
 def test_centroid_is_reported_in_physical_microns():
     mask = np.ones((1, 3, 4), dtype=bool)
     skeleton = np.zeros_like(mask)

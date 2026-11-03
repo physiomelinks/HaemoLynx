@@ -303,16 +303,24 @@ def test_the_network_resistance_needs_a_pressure_drop_and_a_flow():
 # --- the settings and the panel ---------------------------------------------------
 
 
-def test_both_dropdowns_default_to_what_the_pipeline_always_did():
+def test_both_dropdowns_default_to_sparse():
+    """Sparse since 2026-11-03 (Harvey): the same answers to rounding, without
+    the dense solvers' N^2 memory and cubic time. A settings dict without
+    them (a hand-built one) is solved sparse too."""
+    from haemolynx.pipeline import stages
+
     flow = SCHEMA["haemodynamics_solver"]
     equivalent = SCHEMA["equivalent_resistance_solver"]
-    assert (flow.kind, flow.default, tuple(flow.choices)) == ("choice", "dense", FLOW_SOLVERS)
+    assert (flow.kind, flow.default, tuple(flow.choices)) == ("choice", "sparse", FLOW_SOLVERS)
     assert (equivalent.kind, equivalent.default, tuple(equivalent.choices)) == (
         "choice",
-        "eigendecomposition",
+        "sparse",
         EQUIVALENT_RESISTANCE_SOLVERS,
     )
     assert flow.advanced and equivalent.advanced
+    assert stages.solvers_run({"do_equiv_resistance_calculation": True}) == {
+        "flow_solver": "sparse", "equivalent_resistance_solver": "sparse",
+    }
 
 
 def test_the_dropdowns_read_as_the_panel_names_them():
@@ -381,6 +389,9 @@ def _solve_stage(**overrides):
             "diameter_by_branch_order": {"B01": 15.0, "B02": 20.0, "B03": 8.0},
             "haematocrit_distribution_max_iterations": 30,
             "haematocrit_distribution_tolerance": 1e-4,
+            # The dense pair, which the sparse defaults are compared with.
+            "haemodynamics_solver": "dense",
+            "equivalent_resistance_solver": "eigendecomposition",
         }
     )
     values.update(overrides)
@@ -392,17 +403,17 @@ def _solve_stage(**overrides):
 
 @pytest.mark.parametrize("haematocrit_model", ["fixed", "distributed_iterative"])
 def test_the_solve_stage_gives_the_same_answer_with_either_solver(haematocrit_model):
-    default = _solve_stage(haematocrit_model=haematocrit_model)
+    dense = _solve_stage(haematocrit_model=haematocrit_model)
     sparse = _solve_stage(
         haematocrit_model=haematocrit_model,
         haemodynamics_solver="sparse",
         equivalent_resistance_solver="sparse",
     )
-    assert sparse.node_list == default.node_list
-    np.testing.assert_allclose(sparse.pressure, default.pressure, rtol=1e-10)
-    assert sparse.equivalent_resistance == pytest.approx(default.equivalent_resistance, rel=1e-9)
-    assert sparse.network_resistance == pytest.approx(default.network_resistance, rel=1e-10)
-    for u, v, key, data in default.graph.edges(keys=True, data=True):
+    assert sparse.node_list == dense.node_list
+    np.testing.assert_allclose(sparse.pressure, dense.pressure, rtol=1e-10)
+    assert sparse.equivalent_resistance == pytest.approx(dense.equivalent_resistance, rel=1e-9)
+    assert sparse.network_resistance == pytest.approx(dense.network_resistance, rel=1e-10)
+    for u, v, key, data in dense.graph.edges(keys=True, data=True):
         assert sparse.graph.edges[u, v, key]["flow_signed"] == pytest.approx(
             data["flow_signed"], rel=1e-9
         )

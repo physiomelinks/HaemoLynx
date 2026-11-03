@@ -301,6 +301,11 @@ ANCHOR_OVERRIDES: Mapping[str, str] = {
     # vessel's loops), so not under do_graph_building: kept beside the rest.
     "remove_short_loops_under_um": "do_graph_building",
     "short_loop_keep_hole_over_um": "do_graph_building",
+    # The thick-vessel split, graph building's last step, read by post
+    # processing too; its prerequisite is on Skeletonise. Not one of Checks.
+    "thick_vessel_fill_centreline_gaps": "do_graph_building",
+    "thick_vessel_extend_centreline_ends": "do_graph_building",
+    "thick_bridge_centreline_tolerance_um": "do_graph_building",
 }
 
 #: What each button says, keyed by its anchor, or ``box:<key>`` for a box's
@@ -466,6 +471,14 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "remove_interior_dead_ends",
                 "recovery_short_loop_keep_hole_over_um",
                 "remove_interior_dead_ends_and_merge",
+            ),
+        ),
+        (
+            "Thick vessels",
+            (
+                "thick_vessel_fill_centreline_gaps",
+                "thick_vessel_extend_centreline_ends",
+                "thick_bridge_centreline_tolerance_um",
             ),
         ),
         ("Debugging", ("save_step_artifacts",)),

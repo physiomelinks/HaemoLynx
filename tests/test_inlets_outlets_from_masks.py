@@ -73,6 +73,15 @@ def test_preflight_warns_when_hand_picked_inlets_would_be_ignored():
     assert not check_manual_inlets_outlets_while_masks_choose(picked).warnings
 
 
+def test_preflight_warns_of_hand_picked_inlet_coordinates_too():
+    picked = {"automated_vessel_assignment": True,
+              "use_large_vessel_masks": True,
+              "inlets_outlets_from_vessel_masks": True,
+              "inlet_node_coordinates": [(1.0, 2.0, 3.0)]}
+    warnings = check_manual_inlets_outlets_while_masks_choose(picked).warnings
+    assert len(warnings) == 1 and "inlet_node_coordinates" in warnings[0]
+
+
 def test_with_the_switch_on_the_masks_still_choose(tmp_path):
     G, arteriole, venule = _chain_with_large_vessel_masks()
     settings = _assign_boundaries_settings(plot_dir=tmp_path)
@@ -80,6 +89,51 @@ def test_with_the_switch_on_the_masks_still_choose(tmp_path):
     assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
 
     assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
+
+
+def test_the_masks_choosing_leave_the_inlet_and_outlet_tabs_coordinates_as_they_are(tmp_path):
+    """Regression: the nodes the masks chose were written into the Inlet and
+    Outlet tabs' coordinates, so the same settings run again with the masks
+    off took them as hand-picked inlets and outlets."""
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    mine = {"inlet_node_coordinates": [(3.0, 5.0, 5.0)], "outlet_node_coordinates": [(6.0, 5.0, 5.0)]}
+    settings = _assign_boundaries_settings(plot_dir=tmp_path, **mine)
+
+    assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
+
+    assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
+    assert {name: settings[name] for name in mine} == mine
+
+
+def test_with_the_switch_off_and_no_large_tier_the_masks_choose_no_terminals(tmp_path, monkeypatch):
+    """Their terminals were found, through every dilation step, only to be
+    counted in the log."""
+    import haemolynx.graph as graph_package
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the masks' terminals were chosen though nothing reads them")
+
+    for name in (
+        "select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
+        "select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence",
+    ):
+        monkeypatch.setattr(graph_package, name, refuse)
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    for legacy in (True, False):
+        settings = _assign_boundaries_settings(
+            plot_dir=tmp_path,
+            assign_large_vessel_branch_orders=False,
+            automated_vessel_assignment_use_legacy_mode=legacy,
+            inlets_outlets_from_vessel_masks=False,
+            inlet_node_selection_method="node_ids",
+            inlet_node_ids=[3],
+            outlet_node_selection_method="node_ids",
+            outlet_node_ids=[6],
+        )
+
+        assign_boundaries(settings, _network_for_large_vessel_mode(G.copy(), arteriole, venule, tmp_path))
+
+        assert settings["inlet_nodes"] == [3] and settings["outlet_nodes"] == [6]
 
 
 def test_with_the_switch_off_the_hand_picked_inlets_are_used_and_the_masks_kept(tmp_path):

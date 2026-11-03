@@ -398,6 +398,33 @@ def test_a_split_vessel_is_searched_without_the_joins_hanging_off_it():
     assert {u, v} == {1, 2}
 
 
+def test_a_second_join_onto_a_split_graph_building_bridge_lands_where_it_was_aimed():
+    """Regression: the search for the piece now holding a point passed over
+    every reconnected edge, meaning recovery's own joins. A bridge graph
+    building drew carries that mark too, so once one join had split it, the
+    next join aimed at it went to the bridge's far end, 3 um off."""
+    from haemolynx.graph._helpers import EdgeSampleIndex
+    from haemolynx.graph.mask_recovery import _Attachments, _NodeIds
+
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 10, 0)}.items():
+        G.add_node(node, pos=np.array(pos, dtype=float))
+    line = lambda a, b: [list(p) for p in np.linspace(a, b, 11)]  # noqa: E731
+    G.add_edge(0, 1, voxels=line((0, 0, 0), (0, 0, 10)), length=10.0, reconnected=True)
+    G.add_edge(1, 2, voxels=line((0, 0, 10), (0, 0, 20)), length=10.0)
+    G.add_edge(0, 3, voxels=line((0, 0, 0), (0, 10, 0)), length=10.0)
+    index = EdgeSampleIndex(G, step_um=1.0)
+    attachments = _Attachments(G, index, np.full(len(index.points), 2.0), 5.0)
+    ids = _NodeIds(G)
+
+    first = attachments.attach_node((0, 1, 0), np.array([0.0, 0.0, 3.0]), ids)
+    second = attachments.attach_node((0, 1, 0), np.array([0.0, 0.0, 7.0]), ids)
+
+    assert np.allclose(G.nodes[first]["pos"], (0, 0, 3))
+    assert np.allclose(G.nodes[second]["pos"], (0, 0, 7))
+    assert second not in (0, 1)
+
+
 def test_new_node_ids_follow_on_from_the_graph_and_are_never_reused():
     from haemolynx.graph._helpers import next_node_id
     from haemolynx.graph.mask_recovery import _NodeIds

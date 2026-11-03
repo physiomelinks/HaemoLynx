@@ -1690,6 +1690,46 @@ def test_the_edits_readers_share_one_binarised_segmentation_and_one_support(tmp_
     )
 
 
+def test_the_next_regenerate_reads_the_segmentation_it_was_read_as_last(tmp_path, monkeypatch):
+    """Every Regenerate binarised the image and built the support's surface
+    tree again (E14.5: about 5 of 6 s). A Regenerate is handed the run's
+    volume again, which keeps them, until the image or a setting that shapes
+    them changes."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    network.volume.image = _thick_mask().astype(np.uint8) * 255
+    binarised = []
+    real_binary = stages._to_binary_volume_for_skeletonization
+    monkeypatch.setattr(
+        stages, "_to_binary_volume_for_skeletonization",
+        lambda image, **kwargs: binarised.append(id(image)) or real_binary(image, **kwargs),
+    )
+
+    def regenerate(**changed):
+        settings = {**run_settings, **changed}
+        G = model.graph
+        tip = max(G.nodes) + 1
+        G.add_node(tip, pos=np.asarray((5.0, 5.0, 2.0)))
+        add_vessel_between(G, 0, tip)
+        post_process(settings, model, boundaries, SCHEMA, network=network)
+        return network.volume.post_process_segmentation
+
+    first = regenerate()
+    tree = first.support()._distance
+    assert binarised and tree is not None
+    second = regenerate()
+    assert second is first and len(binarised) == 1
+    assert second.support()._distance is tree, "the surface tree is not built again"
+
+    wider = regenerate(bridge_max_background_gap_um=float(run_settings["bridge_max_background_gap_um"]) + 1.0)
+    assert wider is not first and len(binarised) == 2
+    network.volume.image = network.volume.image.copy()
+    again = regenerate(bridge_max_background_gap_um=float(run_settings["bridge_max_background_gap_um"]) + 1.0)
+    assert again is not wider and len(binarised) == 3
+    # The volume a checkpoint stores for the next resume is a copy of it
+    # (dataclasses.replace), which shares the reader.
+    assert stages.replace(network.volume).post_process_segmentation is again
+
+
 # --- inlets and outlets set by hand (the Terminal nodes list) -----------------
 
 from haemolynx.graph import set_terminal_role  # noqa: E402

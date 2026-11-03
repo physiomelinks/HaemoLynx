@@ -123,7 +123,9 @@ def _read_tiff_channel(path: Path, channel: int) -> np.ndarray:
         series = tif.series[0]
         axes = series.axes.upper()
         shape = series.shape
-        channel_axis = tiff_channel_axis(axes, shape, tif.imagej_metadata)
+        channel_axis = tiff_channel_axis(
+            axes, shape, tif.imagej_metadata, tif.ome_metadata if tif.is_ome else None
+        )
         if channel_axis is None:
             if channel != 0:
                 raise ValueError(

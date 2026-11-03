@@ -16,9 +16,9 @@ from .load import (
     h5_binarization_rule,
     h5_volume_shape,
     load_3d_h5_with_voxel_size,
-    load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
 )
+from .load_2d import load_image_with_voxel_size_2d_aware
 from .raw_volume_cache import _modified_too_recently
 from ..preprocessing.memmap_support import release_memmap_array, slab_step
 from .voxel_validation import resolve_voxel_size_xyz
@@ -77,15 +77,11 @@ def _load_mask_image(
         if isinstance(region, np.memmap):
             release_memmap_array(region)
         return mask, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status, True
-    if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_tif_with_voxel_size(
+    if suffix in {".tif", ".tiff", ".h5"}:
+        # A 2D mask is a stack of one, as a 2D image is.
+        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_image_with_voxel_size_2d_aware(
             str(path),
-            axis_order=axis_order,
-            **low_ram,
-        )
-    elif suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(path),
+            input_format=suffix[1:],
             axis_order=axis_order,
             **low_ram,
         )

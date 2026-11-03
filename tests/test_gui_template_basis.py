@@ -74,3 +74,19 @@ def test_a_template_naming_no_basis_changes_nothing(tmp_path):
     # run's basis is unknown: the row is left as it is.
     path = write_fixture_run(tmp_path, settings={"segmentation_source": None})
     assert template_basis_update(_values(None), _values(path)).value is None
+
+
+def test_picking_a_batch_template_sets_the_segmentation_source_to_its_runs_basis(tmp_path):
+    # A .haemobatch is a template too (its condition's runs averaged); the
+    # row follows the basis most of its runs were read on, as for a run.
+    from haemolynx.synthetic import write_batch_template
+    from synthetic_fixtures import write_generated_run
+
+    runs = [
+        write_generated_run(tmp_path / "a", seed=11, name="WT_1.haemorun", settings={"segmentation_source": "endothelial"}),
+        write_generated_run(tmp_path / "b", seed=12, name="WT_2.haemorun", settings={"segmentation_source": "endothelial"}),
+    ]
+    batch = write_batch_template(tmp_path / "wt.haemobatch", [("WT_1", runs[0]), ("WT_2", runs[1])], condition="wt")
+    update = template_basis_update(_values(None), _values(batch))
+    assert update.value == "endothelial"
+    assert "Segmentation source set to endothelial" in update.line

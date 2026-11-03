@@ -197,7 +197,7 @@ def _vessels_within_face_margin(G: nx.Graph, margin_um: float) -> list:
     import numpy as np
 
     from haemolynx.graph._helpers import edge_sample_points
-    from haemolynx.graph.dead_ends import graph_image_extent_um
+    from haemolynx.graph.dead_ends import face_distances, graph_image_extent_um
 
     if not margin_um or margin_um <= 0:
         return []
@@ -215,7 +215,7 @@ def _vessels_within_face_margin(G: nx.Graph, margin_um: float) -> list:
             continue
         pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v)}
         points = np.asarray(edge_sample_points(u, v, data, pos), dtype=float).reshape(-1, 3)
-        if float(np.min(np.minimum(points, extent - points))) <= margin_um:
+        if float(face_distances(points, extent).min()) <= margin_um:
             near.append((u, v, key))
     return near
 

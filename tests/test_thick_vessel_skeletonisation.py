@@ -405,11 +405,45 @@ def test_gated_fat_ridge_connects_to_each_fused_thin_vessel():
 
 
 def test_min_radius_zero_is_plain_lee():
+    """Plain Lee as a run with the gate off makes it: Lee, then the
+    skeleton's holes filled (io.load._skeletonize_loaded_volume)."""
+    from haemolynx.io.load import _skeletonize_loaded_volume
+
     mask, _ = plasma_labelled_object(6.0)
     assert np.array_equal(
         skeletonize_thickness_gated(mask, min_radius_um=0.0),
-        skeletonize_volume(mask),
+        _skeletonize_loaded_volume(mask),
     )
+
+
+def _hollow_box() -> np.ndarray:
+    """A closed shell two voxels thick round a cavity: Lee of it is a closed
+    surface, which plain Lee's fill makes solid, while Lee of the shell with
+    its cavity filled first thins to a short line."""
+    mask = np.zeros((14, 14, 14), dtype=bool)
+    mask[2:12, 2:12, 2:12] = True
+    mask[4:10, 4:10, 4:10] = False
+    return mask
+
+
+@pytest.mark.parametrize("low_ram", [False, True])
+@pytest.mark.parametrize("kwargs", [dict(min_radius_um=0.0), dict(min_radius_um=50.0)])
+def test_a_mask_with_no_thick_region_gets_the_skeleton_the_gate_off_makes(tmp_path, low_ram, kwargs):
+    """With no thick vessel found (or the radius 0) the gate fell back to Lee
+    of the hole-filled mask, with no fill after: not the skeleton a run with
+    the gate off makes, however the help put it."""
+    from haemolynx.io.load import _skeletonize_loaded_volume
+
+    mask = _hollow_box()
+    plain = _skeletonize_loaded_volume(mask)
+    gated, thick = skeletonize_thickness_gated(
+        mask, return_thick_mask=True, use_memmap=low_ram,
+        memmap_directory=tmp_path if low_ram else None, **kwargs,
+    )
+    assert thick is None
+    assert np.array_equal(np.asarray(gated), plain)
+    filled_first = skeletonize_volume(_hollow_box() | np.pad(np.ones((6, 6, 6), bool), 4))
+    assert not np.array_equal(plain, filled_first), "the fixture tells the two apart"
 
 
 def test_edt_ridge_on_the_fat_catchment_is_not_a_sheet():
