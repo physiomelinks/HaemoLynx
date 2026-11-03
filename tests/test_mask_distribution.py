@@ -17,8 +17,9 @@ the arteriole alone).
 
 Branch angles (each daughter's emergence from its unique lower-order parent):
 at n1 the arteriole is the parent, so top carries straight on (0 degrees) and
-left turns off it (90); at n4 right (B01) is the parent of bottom (B02) and
-the venule, both at 90. Right and the arteriole are no junction's daughter.
+left turns off it (90); at n4 the venule, nearer the outlet, is the parent
+of the two capillaries draining into it: right turns off it (90) and bottom
+carries straight on (0). The venule and the arteriole are no junction's daughter.
 """
 from __future__ import annotations
 
@@ -74,7 +75,9 @@ VESSELS = {
 DIAMETERS = {"Art1": 10.0, "B01": 5.0, "B02": 5.0, "Ven1": 10.0}
 #: Each vessel's own measured diameter, so the widths the pericytes sit on differ.
 VESSEL_DIAMETERS = {"art": 10.0, "top": 4.0, "right": 5.0, "left": 6.0, "bottom": 7.0, "ven": 10.0}
-BRANCH_ANGLES = {"top": 0.0, "left": 90.0, "bottom": 90.0, "ven": 90.0}
+#: At node 4 the venule, nearer the outlet, is the parent of the two
+#: capillaries draining into it (statistics.bifurcation._parent_rank).
+BRANCH_ANGLES = {"top": 0.0, "left": 90.0, "right": 90.0, "bottom": 0.0}
 
 #: Each pericyte as (centre, half width): a cube of 2 * half + 1 voxels a side.
 #: A 5-voxel cube is 6.2 um across as a sphere of its volume, a pericyte's size.
@@ -317,13 +320,13 @@ def test_each_object_is_listed_with_its_vessels_length_width_and_angle():
     ] == [
         (edges.index(top), "BO1", True, 40.0, 4.0, pytest.approx(0.0)),
         (edges.index(left), "BO2", True, 20.0, 6.0, pytest.approx(90.0)),
-        (edges.index(bottom), "BO2", True, 40.0, 7.0, pytest.approx(90.0)),
-        (edges.index(bottom), "BO2", True, 40.0, 7.0, pytest.approx(90.0)),
+        (edges.index(bottom), "BO2", True, 40.0, 7.0, pytest.approx(0.0)),
+        (edges.index(bottom), "BO2", True, 40.0, 7.0, pytest.approx(0.0)),
     ]
     assert rows[0]["centroid_z_um"] == 10.0 and rows[4]["volume_um3"] == 8.0
     assert rows[4]["on_vessel"] is False and "branch_id" not in rows[4]
     summary = distribution.summary
-    # Lengths 40, 20, 40, 40; diameters 4, 6, 7, 7; angles 0, 90, 90, 90.
+    # Lengths 40, 20, 40, 40; diameters 4, 6, 7, 7; angles 0, 90, 0, 0.
     assert summary["vessel_length_n"] == 4
     assert summary["vessel_length_mean_um"] == 35.0
     assert summary["vessel_length_sd_um"] == pytest.approx(10.0)
@@ -333,25 +336,25 @@ def test_each_object_is_listed_with_its_vessels_length_width_and_angle():
     assert summary["vessel_diameter_sd_um"] == pytest.approx(math.sqrt(2.0))
     assert summary["vessel_diameter_median_um"] == 6.5
     assert summary["vessel_branch_angle_n"] == 4
-    assert summary["vessel_branch_angle_mean_deg"] == pytest.approx(67.5)
+    assert summary["vessel_branch_angle_mean_deg"] == pytest.approx(22.5)
     assert summary["vessel_branch_angle_sd_deg"] == pytest.approx(45.0)
-    assert summary["vessel_branch_angle_median_deg"] == pytest.approx(90.0)
+    assert summary["vessel_branch_angle_median_deg"] == pytest.approx(0.0)
 
 
 def test_a_vessel_with_no_angle_or_width_leaves_it_blank_and_out_of_the_summary():
-    """Right is no junction's daughter; a vessel with no diameter has no width."""
+    """The venule is no junction's daughter; a vessel with no diameter has no width."""
     G = _graph()
-    right, top = _edge(G, "right"), _edge(G, "top")
+    ven, top = _edge(G, "ven"), _edge(G, "top")
     del G.edges[top]["diameter_um"]
 
-    distribution = mask_distribution(G, [right, top], _at(10.0, 20.0), image_depth_um=39.0)
+    distribution = mask_distribution(G, [ven, top], _at(10.0, 20.0), image_depth_um=39.0)
 
     first, second = distribution.objects
-    assert first["vessel_branch_angle_deg"] is None and first["vessel_diameter_um"] == 5.0
+    assert first["vessel_branch_angle_deg"] is None and first["vessel_diameter_um"] == 10.0
     assert second["vessel_diameter_um"] is None
     summary = distribution.summary
     assert summary["vessel_branch_angle_n"] == 1 and summary["vessel_diameter_n"] == 1
-    assert summary["vessel_diameter_mean_um"] == 5.0
+    assert summary["vessel_diameter_mean_um"] == 10.0
     # One value has no SD.
     assert math.isnan(summary["vessel_diameter_sd_um"])
     assert summary["vessel_length_n"] == 2
@@ -411,14 +414,14 @@ def test_a_pericyte_masks_density_counts_the_pericytes_placed_on_capillaries():
     assert placed == [
         (10.0, "BO1", 40.0, 4.0, pytest.approx(0.0)),
         (20.0, "BO2", 20.0, 6.0, pytest.approx(90.0)),
-        (30.0, "BO2", 40.0, 7.0, pytest.approx(90.0)),
-        (30.0, "BO2", 40.0, 7.0, pytest.approx(90.0)),
+        (30.0, "BO2", 40.0, 7.0, pytest.approx(0.0)),
+        (30.0, "BO2", 40.0, 7.0, pytest.approx(0.0)),
     ]
     cubes = [row["volume_um3"] for row in distribution.objects if row["on_vessel"]]
     assert cubes == pytest.approx([125.0] * 4)
     assert summary["vessel_length_mean_um"] == 35.0
     assert summary["vessel_diameter_mean_um"] == 6.0
-    assert summary["vessel_branch_angle_mean_deg"] == pytest.approx(67.5)
+    assert summary["vessel_branch_angle_mean_deg"] == pytest.approx(22.5)
 
 
 def test_the_strategy_places_the_pericytes_the_density_counts(tmp_path):
@@ -575,7 +578,7 @@ def test_a_pericyte_perturbation_with_a_mask_writes_where_its_pericytes_lie(tmp_
         assert (row["u"], row["v"], row["key"]) == (str(u), str(v), str(key))
         assert float(row["vessel_length_um"]) == data["length"]
         assert float(row["vessel_diameter_um"]) == data["diameter_um"]
-    assert sorted(float(row["vessel_branch_angle_deg"]) for row in placed) == pytest.approx([0.0, 90.0, 90.0, 90.0])
+    assert sorted(float(row["vessel_branch_angle_deg"]) for row in placed) == pytest.approx([0.0, 0.0, 0.0, 90.0])
     rows = {row["metric"]: row["value"] for row in _read(result.output_dir / "tone_mask_distribution.csv")}
     assert undocumented("{name}_mask_distribution.csv", list(rows)) == []
     assert rows["mask"] == "pericyte_mask"
