@@ -62,6 +62,28 @@ def test_unequal_parallel_branches_give_the_flow_weighted_spread():
     assert result["Capillary Transit Time Status"].startswith("N/A")
 
 
+def test_a_vessel_carrying_no_flow_has_no_transit_time():
+    """Regression: transit time kept its own floor (1e-12 of the largest
+    flow) and read no flow state, so the cross-vessel of a balanced
+    Wheatstone bridge, carrying no flow everywhere else, got an endless
+    transit time, and a vessel behind a dead end with flow written got one."""
+    G = nx.MultiGraph()
+    for node, p in ((0, 3.0), (1, 2.0), (2, 2.0), (3, 1.0)):
+        G.add_node(node, pressure=p)
+    for u, v in ((0, 1), (0, 2), (1, 3), (2, 3)):
+        _flow_vessel(G, u, v, 1e-12, flow_state="solved", branch_order="B01")
+    _flow_vessel(G, 1, 2, 1e-23, flow_state="solved", branch_order="B01")  # 1e-11 of the largest
+    _flow_vessel(G, 1, 4, 1e-12, flow_state="blind_end", branch_order="B01")
+    G.nodes[4]["pressure"] = 2.0
+
+    result = compute_transit_times(G, [0], [3])
+
+    for u, v in ((1, 2), (1, 4)):
+        assert not G[u][v][0].get("transit_time_s", math.nan) < math.inf
+    tau = _tau(10.0, 100.0, 1e-12)
+    assert result["Mean Transit Time (s)"] == pytest.approx(2 * tau)
+
+
 def test_transit_time_needs_a_solved_flow():
     G = nx.MultiGraph()
     G.add_edge(0, 1, length=10.0, diameter_um=5.0)
@@ -334,10 +356,62 @@ def test_an_open_end_feeding_or_draining_counts_as_an_inlet_or_an_outlet(analysi
     with_open_ends = run(_network_with_open_ends(), [0], [2])
     designated = run(_network_with_open_ends(record=False), [0, 3], [2, 5])
 
-    assert _without_open_end_rows(with_open_ends) == designated
+    if analysis not in ("current_flow", "occlusion_impact", "occlusion_curves"):
+        # The Laplacian ones hold an open end at its own solved pressure, not
+        # at an inlet's or an outlet's: the test below.
+        assert _without_open_end_rows(with_open_ends) == designated
     prefix = next(k for k in with_open_ends if k.endswith("Open Ends Taken As Inlets"))[: -len(" Open Ends Taken As Inlets")]
     assert with_open_ends[f"{prefix} Open Ends Taken As Inlets"] == 1
     assert with_open_ends[f"{prefix} Open Ends Taken As Outlets"] == 1
+
+
+def _solved_network_with_open_ends():
+    """The network above with resistances that give its flows exactly
+    (flow = pressure drop / resistance), as a solve would leave it."""
+    G = _network_with_open_ends()
+    for (u, v), resistance in {
+        (0, 1): 1e13, (3, 1): 1e13, (1, 4): 20.0 / 6e-12, (4, 5): 2e13, (4, 2): 8e12,
+    }.items():
+        data = G[u][v][0]
+        data.update(resistance=resistance, conductance=1.0 / resistance)
+        assert data["flow_abs"] == pytest.approx(
+            (G.nodes[u]["pressure"] - G.nodes[v]["pressure"]) / resistance
+        )
+    return G
+
+
+def test_the_laplacian_analyses_hold_each_open_end_at_its_solved_pressure():
+    """Regression: an open end taken as a terminal was held at 1 (feeding) or
+    0 (draining), as a designated inlet or outlet is, where the solve put it
+    in between (0.8 and 0.2 here): it fed and drained more than it did, and
+    resistance weighting no longer reproduced the solved flows."""
+    from haemolynx.statistics.current_flow import compute_current_flow
+    from haemolynx.statistics.occlusion import compute_single_vessel_occlusion_impact
+
+    G = _solved_network_with_open_ends()
+    compute_current_flow(G, [0], [2], weighting="resistance")
+
+    inflow = 4e-12 + 2e-12  # through inlet 0 and the open end 3 feeding
+    for u, v, _key, data in G.edges(keys=True, data=True):
+        assert data["current_flow_share"] == pytest.approx(data["flow_abs"] / inflow), (u, v)
+
+    # Blocking the drain 4-5, by hand: inlet 0 at 1, open end 3 at 0.8, the
+    # outlet at 0, conductances 1, 1, 3 and 1.25 (x 1e-13) on 0-1, 3-1, 1-4,
+    # 4-2. Then p4 = 21.6/49, p1 = 30.6/49, and the inflow 1.8 - 2 p1 = 27/49
+    # of the intact 0.6: a loss of 4/49.
+    compute_single_vessel_occlusion_impact(G, [0], [2], weighting="resistance")
+    assert G[4][5][0]["occlusion_flow_loss"] == pytest.approx(4.0 / 49.0)
+
+
+def test_an_open_end_is_held_at_1_or_0_without_solved_pressures():
+    from haemolynx.statistics._flow_system import solved_open_end_pressures
+    from haemolynx.statistics._route_graph import _resolve_terminals
+
+    G = _solved_network_with_open_ends()
+    terminals = _resolve_terminals(G, [0], [2])
+    assert solved_open_end_pressures(G, terminals) == pytest.approx({3: 0.8, 5: 0.2})
+    del G.nodes[0]["pressure"]
+    assert solved_open_end_pressures(G, terminals) == {}
 
 
 def test_an_open_end_with_no_flow_or_on_an_unsolved_graph_is_no_terminal():

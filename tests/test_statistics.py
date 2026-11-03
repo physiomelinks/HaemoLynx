@@ -72,6 +72,18 @@ def test_compute_branching_statistics_counts_junctions():
     assert s == {"Number of Branching Points": 2}
 
 
+def test_the_report_counts_a_junction_formed_by_two_parallel_vessels():
+    """Regression: the report counted on the graph with parallel vessels
+    collapsed, so nodes 0 and 1 (three vessel ends each) were no junction,
+    where junction shape counted them."""
+    from haemolynx.statistics import compute_vessel_statistics_by_measure
+
+    G = nx.MultiGraph()
+    G.add_edges_from([(0, 1), (0, 1), (1, 2), (0, 3)], length=10.0)
+    sections = compute_vessel_statistics_by_measure(G, enabled_measures=frozenset({"branching"}))
+    assert sections["branching"] == {"Number of Branching Points": 2}
+
+
 def test_compute_tree_asymmetry(simple_graph):
     s = compute_tree_asymmetry(simple_graph)
     assert "Tree Asymmetry Index" in s
@@ -153,8 +165,62 @@ def test_compute_fractal_dimension_with_coincident_node_positions_does_not_raise
 
     result = compute_fractal_dimension(G, pos)
 
-    assert result["Fractal Dimension (Node Positions)"] == 0.0
-    assert result["Fractal Dimension (Centreline)"] == 0.0
+    # Nothing to fit: N/A, not a dimension of 0.
+    assert result["Fractal Dimension (Node Positions)"] == "N/A (no scaling range to fit)"
+    assert result["Fractal Dimension (Centreline)"] == "N/A (no scaling range to fit)"
+
+
+def test_a_network_too_small_to_fit_reports_no_fractal_dimension():
+    """Regression: a single 15 um vessel has no scaling range to fit, and its
+    dimension was written as 0.0 beside an R^2 of N/A."""
+    G = nx.Graph()
+    G.add_edge(0, 1, length=15.0, voxels=[(0.0, 0.0, float(x)) for x in range(16)])
+    pos = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 15.0)}
+
+    result = compute_fractal_dimension(G, pos)
+
+    for name in ("Fractal Dimension (Node Positions)", "Fractal Dimension (Centreline)"):
+        assert result[name] == "N/A (no scaling range to fit)"
+        assert result[f"{name} R^2"] == "N/A (no scaling range to fit)"
+
+
+def test_a_flat_network_reports_no_density_rather_than_none():
+    """Regression: a network whose nodes span no volume (a 2D image's, or a
+    measured tissue of 0) had a vessel density of 0, as though it had no
+    vessels; every class's densities likewise."""
+    from haemolynx.statistics import compute_vessel_statistics_by_measure
+
+    G = nx.MultiGraph()
+    pos = {0: (0.0, 0.0, 0.0), 1: (0.0, 10.0, 0.0), 2: (0.0, 0.0, 10.0)}
+    for node, p in pos.items():
+        G.add_node(node, pos=p)
+    G.add_edge(0, 1, length=10.0, branch_order="B01", diameter=5.0)
+    G.add_edge(0, 2, length=10.0, branch_order="B01", diameter=5.0)
+    sections = compute_vessel_statistics_by_measure(
+        G, node_positions=pos, enabled_measures=frozenset({"vessel_density", "vessel_classes"})
+    )
+    assert sections["vessel_density"]["Vessel Density in Tissue (microns/micron³)"].startswith("N/A")
+    densities = [
+        value
+        for name, value in _leaves(sections["vessel_classes"])
+        if "Density in Tissue" in name
+    ]
+    assert densities and all(isinstance(value, str) and value.startswith("N/A") for value in densities)
+
+    measured = compute_vessel_statistics_by_measure(
+        G, node_positions=pos, enabled_measures=frozenset({"vessel_density"}),
+        tissue_volume_um3=0.0, vessel_volume_um3=0.0,
+    )["vessel_density"]
+    assert measured["Vessel Density in Tissue (microns/micron³)"].startswith("N/A")
+    assert measured["Vascular Volume Fraction in Tissue"].startswith("N/A")
+
+
+def _leaves(rows, prefix=""):
+    for name, value in rows.items():
+        if isinstance(value, dict):
+            yield from _leaves(value, f"{prefix}{name} > ")
+        else:
+            yield f"{prefix}{name}", value
 
 
 def test_fractal_dimension_centreline_sees_the_polyline_the_node_only_one_misses():
@@ -398,17 +464,39 @@ def test_sampled_path_efficiency_matches_a_search_per_sampled_pair(monkeypatch, 
 
 
 def _critical_points_by_removal(G, inlets, outlets):
-    """What robustness used to do: copy the graph once per point, remove it."""
+    """Copy the graph once per point and remove it: critical when an inlet
+    and an outlet of the point's own component (the point itself among them)
+    end up apart. A pair already in different components is no point's doing."""
     count = 0
     for point in nx.articulation_points(G):
+        component = nx.node_connected_component(G, point)
+        own_in, own_out = inlets & component, outlets & component
         H = G.copy()
         H.remove_node(point)
         if any(
-            ((inlets & c) and (outlets - c)) or ((outlets & c) and (inlets - c))
-            for c in nx.connected_components(H)
+            ((own_in & c) and (own_out - c)) or ((own_out & c) and (own_in - c))
+            for c in nx.connected_components(H) if c <= component
         ):
             count += 1
     return count
+
+
+def test_a_point_or_bridge_separates_only_an_inlet_and_outlet_it_joined():
+    """Regression: with an inlet on an island, every articulation point and
+    bridge elsewhere counted as critical, the island's inlet being apart from
+    the outlet already."""
+    G = nx.MultiGraph()
+    G.add_edges_from(
+        [("i1", "j"), ("j", "o1"), ("j", "s"), ("s", "t"), ("i2", "q")], length=1.0
+    )
+
+    result = compute_network_robustness(G, inlet_nodes={"i1", "i2"}, outlet_nodes={"o1"})
+
+    # Only j stands between i1 and o1; s only cuts off the spur to t.
+    assert result["Critical Articulation Point Count"] == 1
+    assert result["Critical Articulation Point Fraction"] == pytest.approx(0.5)
+    # Of the bridges, i1-j and j-o1 do; j-s, s-t and the island's own do not.
+    assert result["Critical Bridge Edge Count"] == 2
 
 
 @pytest.mark.parametrize("seed", range(60))
@@ -1465,7 +1553,9 @@ def test_emergence_angle_uses_local_centreline_not_node_span():
 
 
 def test_emergence_angle_skipped_when_parent_order_is_tied():
-    """Two equal-order stems at a confluence are not a unique parent."""
+    """Two equal-order stems at a confluence are not a unique parent. (Two
+    capillaries draining into a venule are not that: the venule is their
+    parent, test_a_capillary_draining_into_a_venule_is_its_daughter.)"""
     G = nx.MultiGraph()
     G.add_node(0, pos=(0.0, 10.0, 0.0))
     G.add_node(1, pos=(0.0, -10.0, 0.0))
@@ -1473,7 +1563,7 @@ def test_emergence_angle_skipped_when_parent_order_is_tied():
     G.add_node(3, pos=(0.0, 0.0, 10.0))
     _straight_edge(G, 0, 2, "B02")
     _straight_edge(G, 1, 2, "B02")
-    _straight_edge(G, 2, 3, "Ven1")
+    _straight_edge(G, 2, 3, "B05")
 
     angles = compute_emergence_angles_by_branch_order(G)
     assert angles == {}
@@ -1509,6 +1599,88 @@ def test_emergence_angle_counts_a_bridging_edge_only_once():
     assert angles["Ven2"]["Emergence Angle Sample Count"] == 1
 
 
+def test_a_venous_junctions_parent_is_the_vessel_nearest_the_outlet():
+    """Regression: the parent was the lowest in the display order (Large_Art
+    to Large_Ven), so a venule draining into a large vein was the parent of
+    both large-vein vessels: a Murray ratio of 16 and its angle never read.
+    Venous orders run from the outlet, so Large_Ven1 is the parent."""
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 20.0, 0.0), 3: (0.0, 0.0, -20.0)}.items():
+        G.add_node(node, pos=pos)
+    _straight_edge(G, 0, 1, "Large_Ven1")
+    _straight_edge(G, 0, 3, "Large_Ven2")
+    _straight_edge(G, 0, 2, "Ven1")
+    for u, v, diameter in ((0, 1, 40.0), (0, 3, 40.0), (0, 2, 20.0)):
+        G.edges[u, v, 0]["diameter_um"] = diameter
+
+    murray = compute_murray_law_compliance(G)
+    angles = compute_emergence_angles_by_branch_order(G)
+
+    assert murray["Mean Murray Ratio"] == pytest.approx((20.0**3 + 40.0**3) / 40.0**3)
+    assert angles["Ven1"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0)
+    assert angles["Large_Ven2"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert "Large_Ven1" not in angles
+
+
+def test_the_tier_murray_exponent_fits_only_a_tiers_own_branchings():
+    """A branching of Art into two Art daughters drawn to exponent 3 fits 3;
+    an arteriole handing a capillary to the bed beside the vessel it runs on
+    as (a side branch, no Murray split) fits far lower, and is in the whole
+    network's rows but not the tier's."""
+    G = nx.MultiGraph()
+    for node, pos in {
+        0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 15.0, 35.0), 3: (0.0, -15.0, 35.0),
+        4: (0.0, 15.0, 60.0), 5: (0.0, 30.0, 35.0),
+    }.items():
+        G.add_node(node, pos=pos)
+    _straight_edge(G, 0, 1, "Art1")
+    _straight_edge(G, 1, 2, "Art2")
+    _straight_edge(G, 1, 3, "Art2")
+    _straight_edge(G, 2, 4, "Art3")
+    _straight_edge(G, 2, 5, "B01")
+    daughter = 10.0 / 2.0 ** (1.0 / 3.0)
+    for (u, v), diameter in {(0, 1): 10.0, (1, 2): daughter, (1, 3): daughter, (2, 4): 7.5, (2, 5): 4.0}.items():
+        G.edges[u, v, 0]["diameter_um"] = diameter
+
+    rows = compute_murray_law_compliance(G)
+
+    assert rows["Fitted Murray Exponent Sample Count"] == 2
+    assert rows["Tier Fitted Murray Exponent Sample Count"] == 1
+    assert rows["Median Tier Fitted Murray Exponent"] == pytest.approx(3.0, abs=1e-3)
+    assert rows["Median Fitted Murray Exponent"] < 3.0
+
+
+def test_with_no_tier_branching_the_tier_rows_say_so():
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 15.0, 35.0), 3: (0.0, -15.0, 35.0)}.items():
+        G.add_node(node, pos=pos)
+    for u, v, order, diameter in ((0, 1, "B01", 6.0), (1, 2, "B02", 4.5), (1, 3, "B02", 4.5)):
+        _straight_edge(G, u, v, order)
+        G.edges[u, v, 0]["diameter_um"] = diameter
+
+    rows = compute_murray_law_compliance(G)
+
+    assert rows["Fitted Murray Exponent Sample Count"] == 1
+    assert rows["Tier Fitted Murray Exponent Sample Count"] == 0
+    assert rows["Median Tier Fitted Murray Exponent"].startswith("N/A")
+
+
+def test_a_capillary_draining_into_a_venule_is_its_daughter():
+    """The capillary bed sits furthest from both roots: at a venule taking in
+    two capillaries, the venule is the parent (no unique parent before)."""
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 20.0), 2: (0.0, 20.0, 0.0), 3: (0.0, -20.0, 0.0)}.items():
+        G.add_node(node, pos=pos)
+    _straight_edge(G, 0, 1, "Ven2")
+    _straight_edge(G, 0, 2, "BO4")
+    _straight_edge(G, 0, 3, "BO4")
+
+    angles = compute_emergence_angles_by_branch_order(G)
+
+    assert angles["BO4"]["Emergence Angle Sample Count"] == 2
+    assert "Ven2" not in angles
+
+
 def test_statistics_leave_zero_resistance_bridges_out():
     """A bridge is not a vessel: not counted, not in the length, and a vessel
     opening into a thick vessel meets its centreline directly; the bridges
@@ -1533,6 +1705,50 @@ def test_statistics_leave_zero_resistance_bridges_out():
     assert stats["Zero-resistance Bridge Length (microns)"] == pytest.approx(9.0)
     assert "strahler_order" in G.edges[3, 4, 0]
     assert "strahler_order" not in G.edges[1, 3, 0]
+    assert G.number_of_edges() == 4, "the graph itself keeps its bridge"
+
+
+def _vessel_into_a_thick_vessel_through_a_bridge():
+    """Centreline 0-1-2 (Large_Art1, Large_Art2) along z; vessel 3-4 (Art1),
+    31 um straight along y, opening into it at 1 through the 9 um bridge 1-3."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 40), 2: (0, 0, 80), 3: (0, 9, 40), 4: (0, 40, 40)}.items():
+        G.add_node(node, pos=np.asarray(pos, float))
+    for u, v, order in ((0, 1, "Large_Art1"), (1, 2, "Large_Art2"), (3, 4, "Art1")):
+        _straight_edge(G, u, v, order)
+    G.add_edge(1, 3, length=9.0, voxels=[[0, 0, 40], [0, 9, 40]], **{IS_ZERO_RESISTANCE: True})
+    return G
+
+
+def test_a_vessel_opening_into_a_thick_vessel_spans_its_own_two_ends():
+    """Regression: with the bridge contracted, the vessel's straight span ran
+    to the centreline node (40 um) while its length (31 um) leaves the bridge
+    out: a tortuosity of 0.775, below what any vessel can have."""
+    G = _vessel_into_a_thick_vessel_through_a_bridge()
+    pos = nx.get_node_attributes(G, "pos")
+
+    sections = compute_vessel_statistics_by_measure(
+        G, node_positions=pos, enabled_measures=frozenset({"tortuosity", "vessel_classes"})
+    )
+
+    assert sections["tortuosity"]["Average Tortuosity Index"] == pytest.approx(1.0)
+    classes = sections["vessel_classes"]["Vessel Classes"]
+    assert classes["Small Arterioles"]["Mean Tortuosity Index"] == pytest.approx(1.0)
+
+
+def test_the_branch_order_statistics_contract_the_bridges_as_the_report_does():
+    """Regression: measured with the bridge in, the vessel's end at it had two
+    vessels, no junction, so a vessel opening into a thick vessel never had an
+    emergence angle, where Murray's law (contracted) took it as a daughter."""
+    G = _vessel_into_a_thick_vessel_through_a_bridge()
+
+    stats = compute_branch_order_statistics(G, node_positions=nx.get_node_attributes(G, "pos"))
+
+    assert stats["Art1"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0)
+    assert stats["Large_Art2"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert stats["Art1"]["Mean Tortuosity Index"] == pytest.approx(1.0)
     assert G.number_of_edges() == 4, "the graph itself keeps its bridge"
 
 

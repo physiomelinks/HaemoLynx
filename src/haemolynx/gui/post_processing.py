@@ -862,6 +862,19 @@ def edits_lost_by_running_from(
     return bool(graph_attrs.get(APPLIED))
 
 
+def edits_left_out_by_running_from(start_from: str | None, working_graph: Any) -> bool:
+    """Whether a run starting at *start_from* goes ahead without hand edits
+    still waiting in the tab's *working_graph*: a run from Perturbations or
+    later starts from the network Post processing last brought in line, so
+    its results leave out what was edited since, though the tab keeps it."""
+    from haemolynx.pipeline.progress import STAGES
+
+    order = [stage.call for stage in STAGES if stage.call]
+    if start_from not in order or order.index(start_from) <= order.index("post_process"):
+        return False
+    return has_pending_edits(working_graph)
+
+
 def default_connectivity_csv_path(values: Any) -> str:
     """Suggested name for the connectivity CSV: beside the run's other outputs.
 
@@ -1205,17 +1218,45 @@ def loop_review_csv_path(values: Any) -> "Path | None":
 def append_loop_review(path: Any, rows: Iterable[dict[str, str]]) -> "Path":
     """Add *rows* to the CSV at *path*, writing its header first when the
     file is new or empty: every session's decisions collect in one file."""
+    return _append_csv_rows(path, rows, LOOP_REVIEW_COLUMNS)
+
+
+def _append_csv_rows(path: Any, rows: Iterable[Mapping[str, Any]], columns: Sequence[str]) -> "Path":
+    """Add *rows* to the CSV at *path* under *columns*.
+
+    A new or empty file gets *columns* as its header. A file whose header
+    lacks some of them -- written by a version whose list measured less, or
+    first by an item without them -- is written again with them added at the
+    end, its earlier rows blank there, so no row loses a measure to the first
+    row's header. A column the file has and *columns* lacks is left blank."""
     import csv
+    import os
     from pathlib import Path
 
     target = Path(path)
-    new = not target.is_file() or target.stat().st_size == 0
-    with target.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(LOOP_REVIEW_COLUMNS))
-        if new:
-            writer.writeheader()
-        for row in rows:
-            writer.writerow({name: row.get(name, "") for name in LOOP_REVIEW_COLUMNS})
+    rows = list(rows)
+    header = list(dict.fromkeys(columns))
+    earlier = None
+    if target.is_file() and target.stat().st_size > 0:
+        with target.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            found = list(reader.fieldnames or ())
+            missing = [name for name in header if name not in found]
+            if missing:
+                earlier = list(reader)
+            header = found + missing
+        if earlier is None:
+            with target.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=header, restval="", extrasaction="ignore")
+                writer.writerows(rows)
+            return target
+    partial = target.with_name(f"{target.name}.part")
+    with partial.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, restval="", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(earlier or ())
+        writer.writerows(rows)
+    os.replace(partial, target)
     return target
 
 
@@ -1670,9 +1711,13 @@ DEAD_END_SHOW_BY_LABEL = {label: key for key, label in DEAD_END_SHOW}
 
 def dead_ends_shown(items: Iterable[Any], show: str) -> list[Any]:
     """The dead-end review *items* of kind *show* (``DEAD_END_SHOW``'s keys),
-    in their order; all of them for :data:`DEAD_END_SHOW_ALL`."""
+    in their order. :data:`DEAD_END_SHOW_ALL` is every kind but the ends a
+    person marked as real blind ends: a decision already made, listed under
+    its own kind, as a kept item is not listed again."""
+    from haemolynx.graph.dead_ends import BLIND
+
     if show == DEAD_END_SHOW_ALL:
-        return list(items)
+        return [item for item in items if (item.measures or {}).get("kind") != BLIND]
     return [item for item in items if (item.measures or {}).get("kind") == show]
 
 
@@ -1895,26 +1940,46 @@ def review_csv_path(values: Any, kind: str) -> "Path | None":
     return path.with_name(f"{stem}_{kind}_review.csv")
 
 
-def append_review_record(path: Any, row: dict[str, str]) -> "Path":
-    """Add *row* to the CSV at *path*, its header the row's own columns when
-    the file is new, else the file's (a column it lacks is left out)."""
+def withdraw_csv_row(path: Any, row: Mapping[str, Any]) -> bool:
+    """Take the last row of the CSV at *path* that reads as *row* back out of
+    it: a decision undone is no decision, and a rule fitted to the file
+    later must not read it. A column the file has and *row* lacks is not
+    compared. Returns whether such a row was found."""
     import csv
+    import os
     from pathlib import Path
 
     target = Path(path)
-    header = list(row)
-    if target.is_file() and target.stat().st_size > 0:
-        with target.open(newline="", encoding="utf-8") as handle:
-            header = next(csv.reader(handle), header) or header
-        new = False
-    else:
-        new = True
-    with target.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=header, extrasaction="ignore")
-        if new:
-            writer.writeheader()
-        writer.writerow({name: row.get(name, "") for name in header})
-    return target
+    if not target.is_file():
+        return False
+    with target.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        header = list(reader.fieldnames or ())
+        rows = list(reader)
+    wanted = {name: str(value) for name, value in row.items() if name in header}
+    at = next(
+        (i for i in range(len(rows) - 1, -1, -1)
+         if all((rows[i].get(name) or "") == value for name, value in wanted.items())),
+        None,
+    )
+    if at is None or not wanted:
+        return False
+    del rows[at]
+    partial = target.with_name(f"{target.name}.part")
+    with partial.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, restval="", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(partial, target)
+    return True
+
+
+def append_review_record(path: Any, row: dict[str, str]) -> "Path":
+    """Add *row* to the CSV at *path*, its header the row's own columns when
+    the file is new, else the file's with any of the row's it lacks added
+    (:func:`_append_csv_rows`): a measure only some items have, or one a
+    list gained since the file was begun, is kept."""
+    return _append_csv_rows(path, [row], list(row))
 
 
 # --- Before and after a regenerate ------------------------------------------------
@@ -2007,7 +2072,9 @@ def review_needs_missing(
 def review_mask_support(image: Any, voxel_size_zyx: Sequence[float], settings: Any = None):
     """The segmented image as the review lists judge vessels against it: a
     ``MaskSupport`` binarised the way the loaders do, held to the run's own
-    bridge settings."""
+    bridge settings. Under the low-RAM option (``use_memmap_loading``) the
+    binarised copy is on disk and the support reads it a block at a time, as
+    the run's own does: a whole copy in RAM of a 16 G-voxel stack is 16 GB."""
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.preprocessing.bridge_mask_support import (
         DEFAULT_MAX_BACKGROUND_GAP_UM,
@@ -2018,11 +2085,17 @@ def review_mask_support(image: Any, voxel_size_zyx: Sequence[float], settings: A
     values = settings or {}
     gap = _optional_number(values.get("bridge_max_background_gap_um"))
     fraction = _optional_number(values.get("bridge_min_mask_fraction"))
+    low_ram = bool(values.get("use_memmap_loading"))
+    memmap_directory = values.get("memmap_directory")
     return MaskSupport(
-        _to_binary_volume_for_skeletonization(np.asanyarray(image)),
+        _to_binary_volume_for_skeletonization(
+            np.asanyarray(image), use_memmap=low_ram, memmap_directory=memmap_directory
+        ),
         tuple(float(v) for v in voxel_size_zyx),
         max_background_gap_um=DEFAULT_MAX_BACKGROUND_GAP_UM if gap is None else gap,
         min_mask_fraction=DEFAULT_MIN_MASK_FRACTION if fraction is None else fraction,
+        low_memory=low_ram,
+        memmap_directory=memmap_directory,
     )
 
 

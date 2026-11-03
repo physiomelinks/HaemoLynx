@@ -33,6 +33,7 @@ from haemolynx.haemodynamics.poiseuille import (
     positive_diameter_um,
     stamp_edge_diameters,
 )
+from haemolynx.haemodynamics.resistance import pass_log_level
 from haemolynx.haemodynamics.viscosity import (
     PRIES_FORM_SETTING,
     describe_law,
@@ -1342,7 +1343,8 @@ def _zero_out_thick_vessel_bridge_resistances(G: nx.MultiGraph) -> int:
     for u, v, key in tagged_edges:
         G[u][v][key]["resistance"] = zero_value
         G[u][v][key]["conductance"] = 1.0 / zero_value
-    logger.info(
+    logger.log(
+        pass_log_level(logging.INFO),
         "Thin-vessel-to-fat-vessel bridges: gave %d edge(s) a negligible "
         "resistance (%.3e Pa.s/m^3, %.0e x the network's own smallest) "
         "instead of a Poiseuille one.",

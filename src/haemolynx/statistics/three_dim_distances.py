@@ -913,9 +913,14 @@ def _load_mask_in_network_frame(
     use_memmap: bool,
     memmap_directory: str | Path | None,
     disk_backed: list[np.ndarray],
+    objects: bool = False,
+    reduce: str = "max",
 ) -> tuple[np.ndarray, tuple[int, ...]]:
     """``(mask cut to the network's crop box, the whole mask's shape)``, its
-    voxel size held to the run's."""
+    voxel size held to the run's. *objects*: a labelled mask's every object.
+    On a downsampled network a cell mask is reduced by block max, a vessel
+    mask (*reduce* ``"majority"``) by block majority, as the segmentation it
+    stands in for was."""
     mask, metadata_xyz, status = load_binary_mask_voxel_size_and_status(
         path,
         h5_dataset_name=h5_dataset_name,
@@ -923,6 +928,7 @@ def _load_mask_in_network_frame(
         description=description,
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
+        objects=objects,
     )
     disk_backed.append(mask)
     # The mask is on the image's grid as read; the run's voxel size is the
@@ -957,7 +963,7 @@ def _load_mask_in_network_frame(
     # same box and reduced by the same blocks.
     cropped = mask_volume_like_graph(
         mask, graph, description=description,
-        use_memmap=use_memmap, memmap_directory=memmap_directory,
+        use_memmap=use_memmap, memmap_directory=memmap_directory, reduce=reduce,
     )
     if cropped is not mask:
         disk_backed.append(cropped)
@@ -999,6 +1005,7 @@ def _run_3d_measurement_records(
         cell_mask_path,
         description="cell mask",
         h5_dataset_name=cell_mask_h5_dataset_name,
+        objects=True,
         **loading,
     )
 
@@ -1007,6 +1014,7 @@ def _run_3d_measurement_records(
             vessel_mask_path,
             description="3D-distance vessel mask",
             h5_dataset_name=vessel_mask_h5_dataset_name,
+            reduce="majority",
             **loading,
         )
         if whole_vessel_shape != whole_cell_shape:

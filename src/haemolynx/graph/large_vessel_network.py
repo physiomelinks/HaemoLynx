@@ -111,6 +111,14 @@ def _footprint_shape(
 
     if not footprint.any():
         return float("inf"), 0.0
+    if 1 in footprint.shape:
+        # A face of a one-slice image is a line: the footprint is a run
+        # across the vessel, its own cross-section, whatever its length.
+        along = 0 if footprint.shape[1] == 1 else 1
+        run = np.pad(footprint.reshape(-1), 1)
+        radius = float(distance_transform_edt(run, sampling=in_plane_spacing[along])[1:-1].max())
+        length = float(np.count_nonzero(footprint)) * float(in_plane_spacing[along])
+        return (length / (2.0 * radius) if radius > 0 else float("inf")), radius
     # Padded, so the array's own edge counts as outside the footprint.
     inscribed = distance_transform_edt(np.pad(footprint, 1), sampling=in_plane_spacing)
     radius = float(inscribed[1:-1, 1:-1][footprint].max())
@@ -230,6 +238,8 @@ def _mask_stumps(
     skipped_flank = 0
     skipped_graze = 0
     for axis in range(mask_bool.ndim):
+        if labeled.shape[axis] == 1:
+            continue  # a one-slice image's own plane is no face: it cuts nothing
         in_plane = tuple(float(scale[a]) for a in range(mask_bool.ndim) if a != axis)
         for face in (0, -1):
             face_index = [slice(None)] * mask_bool.ndim
@@ -635,25 +645,34 @@ def select_large_vessel_stump_terminal_nodes(
     large_venule_mask: np.ndarray,
     voxel_size_zyx: tuple[float, float, float],
     image_shape: tuple[int, ...],
+    min_component_fraction: float = 0.0,
+    segmentation: np.ndarray | None = None,
 ) -> tuple[list[Any], list[Any]]:
     """Inlet/outlet nodes at the large-vessel masks' own image-edge stumps.
 
-    Both sides of :func:`select_large_vessel_mask_stump_terminal_nodes_for_role`.
+    Both sides of :func:`select_large_vessel_mask_stump_terminal_nodes_for_role`,
+    the outlets chosen from the nodes the inlets did not take, as the
+    Boundaries stage chooses them.
     """
+    shared = dict(
+        voxel_size_zyx=voxel_size_zyx,
+        image_shape=image_shape,
+        min_component_fraction=min_component_fraction,
+        segmentation=segmentation,
+    )
     inlet_nodes = select_large_vessel_mask_stump_terminal_nodes_for_role(
         G,
         large_arteriole_mask,
         node_role="inlet",
-        voxel_size_zyx=voxel_size_zyx,
-        image_shape=image_shape,
         coordinates_setting_name="large_arteriole_mask stump",
+        **shared,
     )
     outlet_nodes = select_large_vessel_mask_stump_terminal_nodes_for_role(
         G,
         large_venule_mask,
         node_role="outlet",
-        voxel_size_zyx=voxel_size_zyx,
-        image_shape=image_shape,
         coordinates_setting_name="large_venule_mask stump",
+        exclude_nodes=inlet_nodes,
+        **shared,
     )
     return inlet_nodes, outlet_nodes

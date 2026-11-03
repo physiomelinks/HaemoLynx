@@ -8,6 +8,7 @@ import pytest
 
 from haemolynx.gui.pericyte_mask_search import (
     MEASUREMENT_FIELD,
+    filled_after_renumbering,
     find_pericyte_mask,
     perturbation_field,
     perturbation_index,
@@ -156,6 +157,21 @@ def test_a_new_input_image_replaces_what_the_panel_filled(tmp_path):
     rows = {MEASUREMENT_FIELD: old_mask, ENTRY: old_mask}
     fill = update_pericyte_mask_rows(rows, rows, dict(rows), references=[new_image], references_changed=True)
     assert fill.values == {MEASUREMENT_FIELD: new_mask, ENTRY: new_mask}
+
+
+def test_an_entry_still_holding_the_mask_the_panel_found_stays_the_panels_once_renumbered(tmp_path):
+    """Regression: an entry added or removed dropped every entry's record, so
+    the masks the panel had found read as the user's and a new input image's
+    folder no longer replaced them."""
+    found, mine = _touch(tmp_path, "a_pericytes.tif", "elsewhere/mine.tif")
+    filled = {MEASUREMENT_FIELD: found, ENTRY: found}
+    # Entry 0 was removed: the old entry 1 (the user's) is entry 0 now, the
+    # old entry 0 (the panel's) entry 1.
+    rows = {MEASUREMENT_FIELD: found, ENTRY: mine, OTHER_ENTRY: str(found)}
+    assert filled_after_renumbering(filled, rows) == {
+        MEASUREMENT_FIELD: found, OTHER_ENTRY: str(found),
+    }
+    assert filled_after_renumbering({MEASUREMENT_FIELD: found}, rows) == {MEASUREMENT_FIELD: found}
 
 
 def test_every_entry_in_use_follows_a_mask_entered_into_one(folder):

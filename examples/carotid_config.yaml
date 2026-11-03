@@ -52,7 +52,7 @@ input_and_segmentation:
   ilastik_vessel_label: null
   # Run this ilastik executable name or path in headless mode
   ilastik_executable: ilastik.exe
-  # Kill an ilastik headless run that takes longer than this. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
+  # Kill an ilastik headless run that takes longer than this, or never with 0. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
   ilastik_timeout_seconds: 7200.0
   # Skip ilastik when its output for an image already exists and its record beside it ({output}.haemolynx.json) says it was made from this image, unchanged, by a project with the same contents, at the same vessel label, and use that output. Turn off to segment again on every run
   ilastik_reuse_existing_output: true
@@ -163,9 +163,9 @@ vessel_masks:
   ilastik_venule_vessel_label: null
   # Give the venule classifier these channels of the raw image (raw_image_path), kept separate and in this order, e.g. [2]: the channels it was trained on, counting from 0 as raw_image_channel does (C1 is 0). Leave unset for the whole file  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation and ilastik_venule_classifier_path and raw_image_path]
   ilastik_venule_channels: null
-  # Cut each large mask in two by vessel width: the part at least large_vessel_mask_split_diameter_um wide stays the large arteriole (or venule) mask, and the rest becomes the small arteriole (or venule) mask, used as small vessel masks are for the arteriole and venule boundaries. A voxel is wide where a ball that wide fits in the mask around it. Only while no small vessel masks are given; a global mask splits into a global large and small mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_small_vessel_masks_for_boundary_assignment off]
+  # Cut each large mask in two by vessel width: the part at least large_vessel_mask_split_diameter_um wide stays the large arteriole (or venule) mask, and the rest becomes the small arteriole (or venule) mask, used as small vessel masks are for the arteriole and venule boundaries. A voxel is wide where a ball that wide fits in the segmented image around it, centred in the same mask: the mask says only which side a vessel is on, since a classifier's mask may be thinner than the vessel. Only while no small vessel masks are given; a global mask splits into a global large and small mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_small_vessel_masks_for_boundary_assignment off]
   split_large_vessel_masks_by_diameter: false
-  # Split the large masks at this vessel width: wider stays large, narrower becomes small. Read from each mask's own distance transform before its load-time dilation (large_vessel_mask_dilation_microns)  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and use_small_vessel_masks_for_boundary_assignment off and split_large_vessel_masks_by_diameter]
+  # Split the large masks at this vessel width: wider stays large, narrower becomes small. Read on the segmented image the skeleton is made from, so neither the masks' own thickness nor their load-time dilation (large_vessel_mask_dilation_microns) moves it  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and use_small_vessel_masks_for_boundary_assignment off and split_large_vessel_masks_by_diameter]
   large_vessel_mask_split_diameter_um: null
   # Choose the inlet and outlet nodes where the large arteriole and venule masks meet the network's open ends. Off: set them on the Inlet and Outlet tabs, while the masks still drive the large-vessel treatment  [needs use_large_vessel_masks and automated_vessel_assignment]
   inlets_outlets_from_vessel_masks: true
@@ -419,9 +419,9 @@ boundary_assignment:
 # Solver and output
 # ------------------------------------------------------------------------
 solver_and_output:
-  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   inlet_p_bc: 1000.0
-  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   outlet_p_bc: 500.0
   # Write IDE plot files (matplotlib PNG and Plotly HTML, including final_graph_3d.html and the skeleton's projections) into base_plot_dir/{image stem}. Off skips all of that production
   visualize_results: true
@@ -779,7 +779,7 @@ connectivity/network_analysis:
 vascular_communities:
   # Partition the network into vascular communities/domains by modularity (Blinder et al.'s 'cortical angiome' style) and add 'vascular_community' as a colour option in the vessels layer's colour-by dropdown. Independent of Statistics; reuses the statistics report's own partition when it computes the same one
   compute_vascular_communities: false
-  # Distance model the vascular-community partition is weighted by: plain topology, or the same resistance/length/flow-weighted models the statistics report's community counts use. Resistance and flow are only meaningful once haemodynamics has run  [one of: topology, resistance, length, flow; needs compute_vascular_communities]
+  # What the vascular-community partition weighs each vessel by: plain topology, or how strongly the vessel ties its two ends -- its conductance (resistance), 1/length (length) or |flow| (flow), parallel vessels' ties added -- as the statistics report's weighted community counts do. Resistance and flow are only meaningful once haemodynamics has run  [one of: topology, resistance, length, flow; needs compute_vascular_communities]
   vascular_community_weighting: topology
 
 # ------------------------------------------------------------------------
@@ -800,7 +800,7 @@ diameters_and_pericytes:
   haematocrit_junction_rule: no_separation
   # Length of each connector split_junctions adds. 0 makes each junction's connectors as long as its vessels are wide (their mean diameter, which is also the connector's diameter): a four-way node is usually two bifurcations graph building merged, about that far apart, and a fixed length would re-plumb a capillary bed while falling inside an arteriole's own junction. The Post processing tab's split defaults to 15  [um; range 0.0..; needs run_haemodynamics and haematocrit_model = distributed_iterative and haematocrit_junction_rule = split_junctions]
   haematocrit_split_connector_length_um: 0.0
-  # Give up on haematocrit distribution convergence after this many flow re-solves. A daughter drawing a flow share just above the plasma-skimming threshold swings between too many red cells and too few on alternate passes; each pass's step is damped (0.8 times smaller every five passes, as Secomb's NetFlow does) so the swing dies out, and a strongly asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles in about 10 iterations within the default tolerance below  [range 1..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
+  # Give up on haematocrit distribution convergence after this many flow re-solves. A daughter drawing a flow share just above the plasma-skimming threshold swings between too many red cells and too few on alternate passes; each pass's step is damped (0.8 times smaller every five passes, as Secomb's NetFlow does) so the swing dies out, and a strongly asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles in about 10 iterations within the default tolerance below. At least 2: the first pass has nothing to compare with  [range 2..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
   haematocrit_distribution_max_iterations: 20
   # Largest per-edge haematocrit change between iterations that counts as converged  [fraction; range 0.0..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
   haematocrit_distribution_tolerance: 0.01
@@ -871,7 +871,7 @@ diameters_and_pericytes:
 # Network handling
 # ------------------------------------------------------------------------
 network_handling:
-  # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept, and joins the two vessels left where a removed branch hung into one vessel, measured afresh with the run's diameter methods, with branch orders assigned again (a boundary node, a thick-vessel bridge and two vessels in different vessel masks stay apart)  [one of: leave_unsolved, remove_disconnected]
+  # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. A vessel leaving the image that open_end_model may open counts as an inlet and an outlet, so the vessels leading to one are on such a path. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept, and joins the two vessels left where a removed branch hung into one vessel, measured afresh with the run's diameter methods, with branch orders assigned again (a boundary node, a thick-vessel bridge and two vessels in different vessel masks stay apart)  [one of: leave_unsolved, remove_disconnected]
   boundary_handling: leave_unsolved
   # The boundary condition on vessels that leave the image (dead ends whose vessel runs out through an image face) and are not inlets or outlets. closed: no blood leaves through them, so every vessel that only leads to them carries no flow. terminal_resistance: each drains to the outlet pressure through open_end_terminal_resistance_multiple times its own vessel's resistance. outlet: each is held at the outlet pressure (biased towards draining; for comparison). estimated (the default): their pressures are chosen so the network's pressures and wall shear stresses stay closest to target values (Fry et al. 2012), the targets taken from the closed solve; open ends may feed the network as well as drain it. Only open ends in a piece of the network with an inlet or outlet are opened. Perturbations and sweeps keep the baseline's conditions, and results under different models are not comparable  [one of: closed, terminal_resistance, outlet, estimated; needs run_haemodynamics]
   open_end_model: closed

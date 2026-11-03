@@ -17,7 +17,6 @@ import re
 
 import numpy as np
 import networkx as nx
-from scipy.spatial.distance import euclidean
 
 from haemolynx.geometry import cumulative_lengths
 from haemolynx.graph.branch_order import (
@@ -31,6 +30,7 @@ from haemolynx.graph.branch_order import (
 )
 from haemolynx.visualization.geometry import edge_polyline
 
+from ._contracted import contracted_for_statistics, vessel_span_um
 from .csv_export import _numeric_csv_text
 
 
@@ -136,6 +136,28 @@ def _branch_order_sort_key(tag: str) -> tuple[int, int, str]:
     return (group, n, str(tag))
 
 
+#: How far a branch-order tier lies from the root of its own tree: the large
+#: tier at the inlet or outlet, the arteriole or venule tier, then the
+#: capillary bed. Both trees number their orders from their root (Large_Ven1
+#: at the outlet as Large_Art1 at the inlet; graph.branch_order).
+_TIER_DEPTH = {"large_art": 0, "large_ven": 0, "art": 1, "ven": 1, "bo": 2}
+
+
+def _parent_rank(tag: str) -> tuple[int, int, int, str]:
+    """A vessel's place in its own tree, a junction's parent lowest: its
+    tier's depth from the tree's root, then its order, then the arterial
+    side before the venous where the two meet. Not the display order
+    (:func:`_branch_order_sort_key`), which runs Large_Art to Large_Ven and so
+    took a venous junction's smallest vessel for its parent."""
+    m = re.match(
+        r"^(large_art|large_ven|art|ven|bo)\s*(\d+)$", str(tag), flags=re.IGNORECASE
+    )
+    if not m:
+        return (len(_TIER_DEPTH), 0, 0, str(tag))
+    prefix = m.group(1).lower()
+    return (_TIER_DEPTH[prefix], int(m.group(2)), int(prefix in ("ven", "large_ven")), str(tag))
+
+
 def _incident_edge_items(
     G: Union[nx.Graph, nx.MultiGraph], node: Any
 ) -> list[tuple[Any, Any, Any, dict]]:
@@ -148,12 +170,12 @@ def _incident_edge_items(
 def _iter_parent_daughter_junctions(
     G: Union[nx.Graph, nx.MultiGraph],
 ):
-    """Junctions with a unique lowest-branch-order-rank parent and >=1 daughter.
+    """Junctions with a unique parent (:func:`_parent_rank`) and >=1 daughter.
 
     Yields ``(node, parent_item, daughter_items)`` where each item is
     ``(u, v, key, data, tag)``. This is the same junction definition
     :func:`compute_emergence_angles_by_branch_order` uses (the unique
-    lowest-rank incident edge is the parent, every other labelled edge a
+    incident edge nearest its tree's root is the parent, every other labelled edge a
     daughter; tied ranks, unlabelled-only, or degree < 3 contribute
     nothing) -- shared here so a second and third junction-level statistic
     (Murray's law, daughter-daughter angle) do not each redefine "parent"
@@ -172,7 +194,7 @@ def _iter_parent_daughter_junctions(
             labelled.append((u, v, key, data, tag))
         if len(labelled) < 2:
             continue
-        ranks = [_branch_order_sort_key(item[4]) for item in labelled]
+        ranks = [_parent_rank(item[4]) for item in labelled]
         min_rank = min(ranks)
         parent_indices = [i for i, rank in enumerate(ranks) if rank == min_rank]
         if len(parent_indices) != 1:
@@ -354,7 +376,7 @@ def _emergence_angles(G: Union[nx.Graph, nx.MultiGraph], tangent_length_um: floa
             labelled.append((u, v, key, data, tag))
         if len(labelled) < 2:
             continue
-        ranks = [_branch_order_sort_key(item[4]) for item in labelled]
+        ranks = [_parent_rank(item[4]) for item in labelled]
         min_rank = min(ranks)
         parent_indices = [i for i, rank in enumerate(ranks) if rank == min_rank]
         if len(parent_indices) != 1:
@@ -448,8 +470,8 @@ def compute_murray_law_compliance(
     bifurcation; a ratio of 1.0 is ideal, and systematic deviation from it
     is a standard marker of abnormal (e.g. tumour) vasculature. Uses the
     same junction definition as :func:`compute_emergence_angles_by_branch_order`
-    (see :func:`_iter_parent_daughter_junctions`): the unique lowest-rank
-    incident edge is the parent, every other labelled edge a daughter.
+    (see :func:`_iter_parent_daughter_junctions`): the unique incident edge
+    nearest its tree's root is the parent, every other labelled edge a daughter.
 
     Only measured diameters count (see :func:`_measured_diameter_or_none`): a
     vessel given its branch order's table diameter says nothing about the
@@ -467,6 +489,7 @@ def compute_murray_law_compliance(
     """
     ratios: list[float] = []
     exponents: list[float] = []
+    tier_exponents: list[float] = []
     skipped = 0
     for _node, parent_item, daughter_items in _iter_parent_daughter_junctions(G):
         if not daughter_items:
@@ -480,6 +503,9 @@ def compute_murray_law_compliance(
         fitted = fitted_murray_exponent(parent_d, daughter_ds)
         if fitted is not None:
             exponents.append(fitted)
+            tier = _murray_tier(parent_item[4])
+            if tier is not None and all(_murray_tier(item[4]) == tier for item in daughter_items):
+                tier_exponents.append(fitted)
 
     result: Dict[str, Any] = {
         "Murray Ratio Sample Count": len(ratios),
@@ -503,7 +529,29 @@ def compute_murray_law_compliance(
         result["Median Fitted Murray Exponent"] = note
         result["Fitted Murray Exponent IQR Low"] = note
         result["Fitted Murray Exponent IQR High"] = note
+    # The same over the arteriole and venule tiers' own branchings alone,
+    # where Murray's law is the rule: the rows above also hold the capillary
+    # bed's junctions and the side branches a tier hands to it.
+    result["Tier Fitted Murray Exponent Sample Count"] = len(tier_exponents)
+    if tier_exponents:
+        low, median, high = np.percentile(tier_exponents, [25, 50, 75])
+        result["Median Tier Fitted Murray Exponent"] = float(median)
+        result["Tier Fitted Murray Exponent IQR Low"] = float(low)
+        result["Tier Fitted Murray Exponent IQR High"] = float(high)
+    else:
+        note = "N/A (no arteriole or venule branching of two or more narrower measured daughters)"
+        result["Median Tier Fitted Murray Exponent"] = note
+        result["Tier Fitted Murray Exponent IQR Low"] = note
+        result["Tier Fitted Murray Exponent IQR High"] = note
     return result
+
+
+def _murray_tier(tag: str) -> Optional[str]:
+    """``"art"`` or ``"ven"`` for a vessel of the arteriole or venule tier
+    (its normalised branch order), else None: the tiers whose branchings
+    Murray's law describes."""
+    m = re.match(r"^(art|ven)\s*\d+$", str(tag), flags=re.IGNORECASE)
+    return m.group(1).lower() if m else None
 
 
 def compute_daughter_daughter_angles(
@@ -563,7 +611,13 @@ def compute_branch_order_statistics(
     arteriole in the image (:data:`BASIS_COUNTS`): capillaries counted from the
     venous side, and those an open end feeding through an image face reaches
     in fewer steps. They are among its Edge Count, not apart from it.
+
+    Measured as the report's sections are, with each zero-resistance bridge's
+    two ends one node: a vessel opening into a thick vessel meets its
+    centreline there, a daughter with an emergence angle, and its tortuosity
+    spans its own two ends (:mod:`._contracted`).
     """
+    G, _became, own_ends = contracted_for_statistics(G)
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     edge_iter = G.edges(keys=True, data=True) if is_mg else G.edges(data=True)
 
@@ -592,14 +646,12 @@ def compute_branch_order_statistics(
         if basis is not None:
             rec[basis] += 1
 
-        if (
-            node_positions is not None
-            and u in node_positions
-            and v in node_positions
-        ):
-            pos_u = np.array(node_positions[u], dtype=float)
-            pos_v = np.array(node_positions[v], dtype=float)
-            straight = euclidean(pos_u, pos_v)
+        straight = (
+            vessel_span_um(u, v, data, node_positions, own_ends)
+            if node_positions is not None
+            else None
+        )
+        if straight is not None:
             if straight > 0:
                 tort = length_f / straight
                 if rec["Mean Tortuosity Index"] == "N/A (no position data)":

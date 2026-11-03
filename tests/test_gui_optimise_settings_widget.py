@@ -1008,3 +1008,42 @@ def test_the_optimiser_reads_ilastiks_output_and_never_runs_ilastik(monkeypatch,
     )
     with pytest.raises(widget_mod._OptimiseRefused, match="stale"):
         widget_mod._optimise_settings_for_run(settings, downsample_factor=2)
+
+
+def test_apply_writes_only_what_the_search_changed(panel, monkeypatch, tmp_path):
+    """Regression: Apply wrote every searched setting back as it was when
+    Optimise was pressed, so a row edited (or a config loaded) while the
+    proposal waited lost its new value, which the review never listed."""
+    import time
+
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.optimisation.search import OptimisationResult
+
+    rows = panel._haemolynx_rows()
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+    closing = int(rows["skeleton_closing_radius"].value)
+    branch = int(rows["skeleton_min_branch_length"].value)
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": closing + 1, "skeleton_min_branch_length": branch},
+        trials=(),
+    )
+    monkeypatch.setattr(
+        widget_mod, "_optimise_settings_for_run", lambda *a, **k: (result, real_input, None, None)
+    )
+
+    panel._haemolynx_optimise_settings()
+    app = QApplication.instance()
+    deadline = time.time() + 30
+    while not panel._haemolynx_optimise_review.pending and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert panel._haemolynx_optimise_review.pending, panel._haemolynx_report()
+
+    rows["skeleton_min_branch_length"].value = branch + 5  # edited while it waits
+    panel._haemolynx_optimise_review.apply()
+
+    assert rows["skeleton_closing_radius"].value == closing + 1
+    assert rows["skeleton_min_branch_length"].value == branch + 5

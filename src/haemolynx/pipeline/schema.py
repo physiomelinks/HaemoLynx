@@ -571,9 +571,10 @@ SCHEMA = Schema(
             kind="float",
             default=7200.0,
             help=(
-                "Kill an ilastik headless run that takes longer than this. A "
-                "hang usually means a bad project file or unreadable input, "
-                "not a slow but working run -- raise it for very large volumes"
+                "Kill an ilastik headless run that takes longer than this, or "
+                "never with 0. A hang usually means a bad project file or "
+                "unreadable input, not a slow but working run -- raise it for "
+                "very large volumes"
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
@@ -1329,8 +1330,10 @@ SCHEMA = Schema(
                 "(or venule) mask, and the rest becomes the small arteriole (or "
                 "venule) mask, used as small vessel masks are for the arteriole and "
                 "venule boundaries. A voxel is wide where a ball that wide fits in the "
-                "mask around it. Only while no small vessel masks are given; a global "
-                "mask splits into a global large and small mask"
+                "segmented image around it, centred in the same mask: the mask says "
+                "only which side a vessel is on, since a classifier's mask may be "
+                "thinner than the vessel. Only while no small vessel masks are given; "
+                "a global mask splits into a global large and small mask"
             ),
             section=_VESSEL_MASKS,
             requires=(
@@ -1348,9 +1351,9 @@ SCHEMA = Schema(
             placeholder="no default: state the width",
             help=(
                 "Split the large masks at this vessel width: wider stays large, "
-                "narrower becomes small. Read from each mask's own distance "
-                "transform before its load-time dilation "
-                "(large_vessel_mask_dilation_microns)"
+                "narrower becomes small. Read on the segmented image the skeleton "
+                "is made from, so neither the masks' own thickness nor their "
+                "load-time dilation (large_vessel_mask_dilation_microns) moves it"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -2718,7 +2721,7 @@ SCHEMA = Schema(
             unit="um",
             requires=("classify_vessels_by_size", "!automated_vessel_assignment"),
         ),
-                                                        # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # Boundary assignment
         # ------------------------------------------------------------------
         Setting(
@@ -3171,6 +3174,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="outlet_p_bc",
@@ -3180,6 +3184,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="visualize_results",
@@ -3346,7 +3351,7 @@ SCHEMA = Schema(
         Setting(
             name="haemodynamics_solver",
             kind="choice",
-            default="dense",
+            default="sparse",
             choices=["dense", "sparse"],
             help=(
                 "How every flow solve holds and solves the network -- the "
@@ -3365,7 +3370,7 @@ SCHEMA = Schema(
         Setting(
             name="equivalent_resistance_solver",
             kind="choice",
-            default="eigendecomposition",
+            default="sparse",
             choices=["eigendecomposition", "sparse"],
             help=(
                 "How the two-point equivalent resistance (first inlet to first "
@@ -5526,11 +5531,12 @@ SCHEMA = Schema(
             kind="choice",
             default="topology",
             help=(
-                "Distance model the vascular-community partition is weighted "
-                "by: plain topology, or the same resistance/length/flow-"
-                "weighted models the statistics report's community counts "
-                "use. Resistance and flow are only meaningful once "
-                "haemodynamics has run"
+                "What the vascular-community partition weighs each vessel "
+                "by: plain topology, or how strongly the vessel ties its two "
+                "ends -- its conductance (resistance), 1/length (length) or "
+                "|flow| (flow), parallel vessels' ties added -- as the "
+                "statistics report's weighted community counts do. Resistance "
+                "and flow are only meaningful once haemodynamics has run"
             ),
             section=_VASCULAR_COMMUNITIES,
             choices=("topology", "resistance", "length", "flow"),
@@ -5693,10 +5699,13 @@ SCHEMA = Schema(
                 "step is damped (0.8 times smaller every five passes, as "
                 "Secomb's NetFlow does) so the swing dies out, and a strongly "
                 "asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles "
-                "in about 10 iterations within the default tolerance below"
+                "in about 10 iterations within the default tolerance below. At "
+                "least 2: the first pass has nothing to compare with"
             ),
             section=_DIAMETERS_AND_PERICYTES,
-            minimum=1,
+            minimum=2,
+            # One pass could never converge; a config or run saying 1 runs 2.
+            value_aliases={1: 2},
             requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
             advanced=True,
         ),
@@ -5726,7 +5735,9 @@ SCHEMA = Schema(
                 "without both an inlet and an outlet, and every branch, tree or "
                 "loop that leaves a perfused vessel and reaches no outlet (a dead "
                 "end). No pressure difference drives a flow through one, so the "
-                "solve has no answer for it. leave_unsolved keeps them, marked "
+                "solve has no answer for it. A vessel leaving the image that "
+                "open_end_model may open counts as an inlet and an outlet, so the "
+                "vessels leading to one are on such a path. leave_unsolved keeps them, marked "
                 "unsolved: the viewer draws them light grey, leaves them out of "
                 "every flow-based colouring and names each vessel Solved or "
                 "Unsolved on hover. remove_disconnected deletes them, so only "

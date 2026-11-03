@@ -529,12 +529,14 @@ def mask_volume_like_graph(
     description: str,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    reduce: str = "max",
 ) -> np.ndarray:
     """A mask read whole from disk beside the main image, placed on the
     network *G*'s grid: cut to the ``crop_on_import`` box the network was
     built in (:func:`haemolynx.io.crop.crop_volume_like_graph`), then reduced
-    by the network's downsample on import (block max). *volume* itself when
-    the network was built on the image as read; a volume of another shape is
+    by the network's downsample on import (block max, or ``"majority"`` for a
+    mask of vessels, as the segmentation was). *volume* itself when the
+    network was built on the image as read; a volume of another shape is
     refused as the crop refuses one."""
     cropped = crop_volume_like_graph(
         volume, G, description=description, use_memmap=use_memmap, memmap_directory=memmap_directory
@@ -543,7 +545,7 @@ def mask_volume_like_graph(
     if not record:
         return cropped
     reduced = downsample_volume(
-        cropped, Downsample.from_record(record), reduce="max", description=description,
+        cropped, Downsample.from_record(record), reduce=reduce, description=description,
         use_memmap=use_memmap, memmap_directory=memmap_directory,
     )
     _release_if_replaced(reduced, cropped, volume)

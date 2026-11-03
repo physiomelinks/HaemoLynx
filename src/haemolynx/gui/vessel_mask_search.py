@@ -6,8 +6,10 @@ input image changes while one is in use, the panel looks in the input image's
 folder for that role's masks (`io.vessel_mask_discovery.find_vessel_masks`)
 and fills its mask rows. A row holding a file the user chose is never
 replaced: only an empty row, one naming no file that exists, or one still
-holding what the panel filled in itself. A role whose masks ilastik makes is
-not searched, since its mask rows are not read.
+holding what the panel filled in itself; a row the panel filled for the last
+input image that this search leaves is emptied, so no mask of another image is
+read for this one. A role whose masks ilastik makes is not searched, since its
+mask rows are not read.
 
 Nothing here imports Qt: settings in, the rows to set and the report out.
 """
@@ -94,6 +96,16 @@ def _replaceable(name: str, settings: Mapping[str, Any], filled_before: Mapping[
     return name in filled_before and _path_key(filled_before[name]) == _path_key(value)
 
 
+def _still_filled(name: str, settings: Mapping[str, Any], filled_before: Mapping[str, Any]) -> bool:
+    """Whether row *name* still holds a file an earlier search filled it with."""
+    value = settings.get(name)
+    return (
+        value not in (None, "")
+        and name in filled_before
+        and _path_key(filled_before[name]) == _path_key(value)
+    )
+
+
 def _found_lines(found: FoundVesselMasks, settings: Mapping[str, Any]) -> list[str]:
     size = found.size
     names = VESSEL_MASK_SETTINGS[size]
@@ -153,6 +165,22 @@ def fill_vessel_mask_rows(
             if _path_key(value) != _path_key(settings.get(name))
             and not _replaceable(name, settings, filled_before)
         ]
+        rows = (VESSEL_MASK_SETTINGS[role]["arteriole_mask_path"], VESSEL_MASK_SETTINGS[role]["venule_mask_path"])
+        # The rows an earlier search filled that this one leaves hold another
+        # image's masks: emptied, unless the user chose a file in the role.
+        chosen = any(not _replaceable(name, settings, filled_before) for name in rows)
+        stale = (
+            {}
+            if kept or chosen
+            else {name: None for name in rows if name not in proposed and _still_filled(name, settings, filled_before)}
+        )
+        if stale:
+            values.update(stale)
+            lines.append(
+                f"Emptied the {role} vessel mask rows filled for the last input image ("
+                + ", ".join(Path(settings[name]).name for name in stale)
+                + ")."
+            )
         if kept:
             lines.append(
                 f"Kept the {role} vessel masks already chosen rather than those "
@@ -162,7 +190,7 @@ def fill_vessel_mask_rows(
             )
         elif proposed:
             values.update(proposed)
-            lines.extend(_found_lines(found, {**settings, **proposed}))
+            lines.extend(_found_lines(found, {**settings, **stale, **proposed}))
             if not found.size_named:
                 lines.append(
                     "No file beside it says 'large' or 'small', so the masks naming "

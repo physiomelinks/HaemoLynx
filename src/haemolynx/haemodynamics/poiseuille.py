@@ -897,6 +897,10 @@ class PoiseuilleModel:
         --------
         dict : Summary of resistance assignments
         """
+        from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+        from .resistance import pass_log_level
+
         results = {
             'edges_set': 0,
             'missing_branch_order': [],
@@ -906,20 +910,23 @@ class PoiseuilleModel:
             'invalid_diameter': [],
             'viscosity_calculations': {},  # Track viscosity for each diameter
             'used_fwhm_edge_diameter': 0,
+            'zero_resistance_bridges': 0,
         }
 
-        logger.info("=== Poiseuille Resistance Calculation (Branch Order Based) ===")
-        logger.info("Formula: resistance = (128 * viscosity * length) / (pi * diameter^4)")
+        # Inside the haematocrit loop, which repeats this every pass, at DEBUG.
+        info, warning = pass_log_level(logging.INFO), pass_log_level(logging.WARNING)
+        logger.log(info, "=== Poiseuille Resistance Calculation (Branch Order Based) ===")
+        logger.log(info, "Formula: resistance = (128 * viscosity * length) / (pi * diameter^4)")
         # The law is a setting, so the log has to name the one that actually
         # ran: reading a fixed formula here made every run look identical.
-        logger.info(f"Viscosity: {self.describe_viscosity_law()}")
-        logger.info("Units: diameter and length in um; resistance in Pa.s/m^3")
+        logger.log(info, f"Viscosity: {self.describe_viscosity_law()}")
+        logger.log(info, "Units: diameter and length in um; resistance in Pa.s/m^3")
 
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
         diameter_viscosity_map = {}
         for branch_order, diameter in diameter_by_branch_order.items():
             if diameter <= 0:
-                logger.warning(f"Invalid diameter {diameter} for {branch_order}")
+                logger.log(warning, f"Invalid diameter {diameter} for {branch_order}")
                 continue
             viscosity = self.calculate_viscosity(diameter)
             diameter_viscosity_map[diameter] = viscosity
@@ -927,11 +934,16 @@ class PoiseuilleModel:
                 'diameter': diameter,
                 'viscosity': viscosity
             }
-            logger.info(
+            logger.log(info, 
                 f"{branch_order}: diameter={diameter}um, calculated viscosity={viscosity:.6f}"
             )
 
         for u, v, key, data in G.edges(keys=True, data=True):
+            if data.get(IS_ZERO_RESISTANCE):
+                # A thick-vessel bridge has no branch order and is no vessel:
+                # apply_final_resistance_overrides gives it its resistance.
+                results['zero_resistance_bridges'] += 1
+                continue
             # Check for branch order
             branch_order = data.get('branch_order', None)
             if branch_order is None:
@@ -1005,29 +1017,29 @@ class PoiseuilleModel:
                         f"resistance={resistance:.3e} Pa.s/m^3")
 
         # Log summary
-        logger.info("=== Summary ===")
-        logger.info(f"Edges assigned resistance: {results['edges_set']}")
+        logger.log(info, "=== Summary ===")
+        logger.log(info, f"Edges assigned resistance: {results['edges_set']}")
         if prefer_edge_fwhm_diameter:
-            logger.info(
+            logger.log(info, 
                 f"Edges using per-edge fwhm_diameter_um: "
                 f"{results.get('used_fwhm_edge_diameter', 0)}"
             )
         # Every count below is an edge that was skipped, so it left the graph
         # without a resistance: a problem the run recovered from, not progress.
         if results['missing_branch_order']:
-            logger.warning(
+            logger.log(warning, 
                 f"Edges missing branch_order: {len(results['missing_branch_order'])}"
             )
         if results['missing_length']:
-            logger.warning(f"Edges missing length: {len(results['missing_length'])}")
+            logger.log(warning, f"Edges missing length: {len(results['missing_length'])}")
         if results['unknown_branch_order']:
-            logger.warning(
+            logger.log(warning, 
                 f"Edges with unknown branch_order: {len(results['unknown_branch_order'])}"
             )
         if results['invalid_length']:
-            logger.warning(f"Edges with invalid length: {len(results['invalid_length'])}")
+            logger.log(warning, f"Edges with invalid length: {len(results['invalid_length'])}")
         if results['invalid_diameter']:
-            logger.warning(
+            logger.log(warning, 
                 f"Edges with invalid diameter: {len(results['invalid_diameter'])}"
             )
 

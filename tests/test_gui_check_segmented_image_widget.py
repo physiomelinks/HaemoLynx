@@ -180,6 +180,67 @@ def test_clicking_the_native_button_triggers_the_check(panel, monkeypatch, tmp_p
     assert len(started) == 1
 
 
+# --- with ilastik on: its current output, never a new segmentation ----------
+
+
+def _ilastik_rows(panel, tmp_path):
+    raw = tmp_path / "raw.tif"
+    raw.write_bytes(b"")
+    rows = panel._haemolynx_rows()
+    rows["raw_image_path"].value = raw
+    rows["use_ilastik_segmentation"].value = True
+    rows["ilastik_classifier_path"].value = tmp_path / "classifier.ilp"
+    rows["ilastik_output_dir"].value = tmp_path / "segmentations"
+    return rows
+
+
+def test_with_ilastik_check_segmented_image_scores_its_current_output(panel, monkeypatch, tmp_path):
+    """Regression: the check ran ``segment`` itself, so with ilastik on it
+    segmented the raw image -- hours, on the button press."""
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_segmentation_quality_check_in_background",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+    produced = tmp_path / "segmentations" / "raw_segmented.tif"
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "current_ilastik_output", lambda settings: (produced, "")
+    )
+    _ilastik_rows(panel, tmp_path)
+
+    panel._haemolynx_check_segmented_image()
+
+    assert len(started) == 1
+    assert started[0][1]["segmented_path"] == produced
+
+
+def test_with_ilastik_check_segmented_image_refuses_without_a_current_output(
+    panel, monkeypatch, tmp_path
+):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_segmentation_quality_check_in_background",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages,
+        "current_ilastik_output",
+        lambda settings: (None, "raw_segmented.tif: there is no output yet"),
+    )
+    rows = _ilastik_rows(panel, tmp_path)
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+
+    panel._haemolynx_check_segmented_image()
+
+    assert not started
+    report = panel._haemolynx_report()
+    assert "there is no output yet" in report and "Check segmented image" in report
+
+
 # --- a real, slow, end-to-end run --------------------------------------------
 
 

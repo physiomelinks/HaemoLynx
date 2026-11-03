@@ -596,6 +596,27 @@ def test_a_vessel_mask_of_its_own_takes_the_place_of_the_segmentation(tmp_path):
     assert row["Edge-to-Vessel Distance (um)"] == "3"
 
 
+def test_a_vessel_mask_of_its_own_is_reduced_by_majority_as_the_segmentation_was(
+    tmp_path, monkeypatch
+):
+    """Regression: on a downsampled network the vessel mask was reduced by
+    block max, so its vessels grew by up to a block over the segmentation it
+    stands in for (reduced by majority); a cell mask stays block max."""
+    from haemolynx.statistics import three_dim_distances
+
+    seen = {}
+    real = three_dim_distances.mask_volume_like_graph
+
+    def recording(volume, G, *, description, reduce="max", **kwargs):
+        seen[description] = reduce
+        return real(volume, G, description=description, reduce=reduce, **kwargs)
+
+    monkeypatch.setattr(three_dim_distances, "mask_volume_like_graph", recording)
+    thin = _tube((21, 21, 30), (10, 10), 1.0)
+    _stage(tmp_path, measurement_3d_vessel_mask_path=_write_mask(tmp_path / "thin_vessels.tif", thin))
+    assert seen == {"cell mask": "max", "3D-distance vessel mask": "majority"}
+
+
 # --- preflight -----------------------------------------------------------------
 
 

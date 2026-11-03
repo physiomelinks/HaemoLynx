@@ -198,6 +198,23 @@ def test_a_run_from_post_processing_or_later_loses_nothing():
         assert not edits_lost_by_running_from(start, G, applied)
 
 
+def test_a_run_from_after_post_processing_leaves_the_tabs_edits_out():
+    """A run from Perturbations starts from the network Post processing last
+    took in: its results leave out what the tab edited since."""
+    from haemolynx.graph import add_vessel_between
+    from haemolynx.gui.post_processing import edits_left_out_by_running_from
+
+    G = _network()
+    for start in ("run_perturbations", "export_results"):
+        assert not edits_left_out_by_running_from(start, G), "nothing waiting"
+    add_vessel_between(G, 0, 4)
+    for start in ("run_perturbations", "export_results"):
+        assert edits_left_out_by_running_from(start, G)
+    for start in ("post_process", "build_haemodynamic_model", "assign_diameters", None, "nope"):
+        assert not edits_left_out_by_running_from(start, G), start
+    assert not edits_left_out_by_running_from("run_perturbations", None)
+
+
 def test_describe_vessels_names_branch_id_ends_length_and_diameter():
     G = _network()
     keys = edge_keys(G)
@@ -768,13 +785,101 @@ def test_a_decision_is_a_csv_row_beside_the_run_with_the_items_measures(tmp_path
     assert path == tmp_path / "run_dead_ends_review.csv"
     assert review_csv_path({"input_path": image, "output_dir": str(tmp_path / "missing")}, item.kind) is None
     append_review_record(path, row)
-    append_review_record(path, {**row, "decision": "deleted", "extra": "dropped"})
+    append_review_record(path, {**row, "decision": "deleted", "extra": "kept"})
     import csv
 
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert [r["decision"] for r in rows] == [KEPT, "deleted"]
-    assert "extra" not in rows[1]
+    # A measure only the later item has is kept, the earlier row blank there.
+    assert rows[1]["extra"] == "kept" and rows[0]["extra"] == ""
+    assert path.read_text(encoding="utf-8").count("centre_zyx_vox") == 1
+
+
+def test_the_review_lists_read_the_segmentation_as_the_low_ram_option_says(tmp_path):
+    """The lists, the raw panel and the drawn-vessel note binarised the whole
+    segmentation in RAM whatever the low-RAM option said."""
+    from haemolynx.gui.post_processing import review_mask_support
+
+    image = np.zeros((6, 20, 30), dtype=np.uint8)
+    image[2:4, 8:12, 3:27] = 255
+    points = np.asarray([[2.5, 9.0, 10.0], [2.5, 2.0, 10.0], [3.0, 10.0, 26.0]])
+    plain = review_mask_support(image, (2.0, 1.0, 1.0), {})
+    low = review_mask_support(
+        image, (2.0, 1.0, 1.0), {"use_memmap_loading": True, "memmap_directory": str(tmp_path)}
+    )
+
+    assert not isinstance(plain.mask, np.memmap) and not plain.low_memory
+    assert isinstance(low.mask, np.memmap) and low.low_memory
+    assert np.array_equal(low.inside(points), plain.inside(points))
+    assert np.allclose(low.radius(points), plain.radius(points))
+
+
+def test_a_decision_undone_is_taken_back_out_of_its_csv(tmp_path):
+    import csv
+
+    from haemolynx.gui.post_processing import withdraw_csv_row
+
+    path = tmp_path / "run_dead_ends_review.csv"
+    first = {"time": "t1", "decision": KEPT, "why": "Its width, 3 um, is odd."}
+    second = {**first, "decision": "deleted", "extra": "1;5;0"}
+    for row in (first, second, first):
+        append_review_record(path, row)
+
+    assert withdraw_csv_row(path, first) is True
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["decision"] for r in rows] == [KEPT, "deleted"], "the last such row goes, the earlier stays"
+    assert withdraw_csv_row(path, {**first, "time": "t9"}) is False
+    assert withdraw_csv_row(tmp_path / "missing.csv", first) is False
+    assert withdraw_csv_row(path, second) and withdraw_csv_row(path, first)
+    assert path.read_text(encoding="utf-8").startswith("time,decision,why,extra")
+    assert not withdraw_csv_row(path, first)
+
+
+def test_a_review_csv_begun_by_a_list_that_measured_less_gains_the_new_measures(tmp_path):
+    """A dead end has ahead_edge only when a vessel lies ahead of it, and the
+    lists gained measures after their CSVs were begun (kind, in_mask_fraction
+    ...): the file's first header used to drop them from every later row."""
+    import csv
+
+    path = tmp_path / "run_dead_ends_review.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        handle.write("time,decision,kind,length_um\r\n2026-10-09T10:00:00,kept,dead_ends,12\r\n")
+
+    append_review_record(path, {"time": "2026-11-03T10:00:00", "decision": "deleted", "kind": "dead_ends",
+                                "length_um": "30", "in_mask_fraction": "0.25", "ahead_edge": "1;5;0"})
+    append_review_record(path, {"time": "2026-11-03T10:01:00", "decision": KEPT, "kind": "dead_ends",
+                                "length_um": "8"})
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert reader.fieldnames == ["time", "decision", "kind", "length_um", "in_mask_fraction", "ahead_edge"]
+    assert [r["decision"] for r in rows] == [KEPT, "deleted", KEPT]
+    assert rows[0]["length_um"] == "12" and rows[0]["in_mask_fraction"] == ""
+    assert rows[1]["in_mask_fraction"] == "0.25" and rows[1]["ahead_edge"] == "1;5;0"
+    assert rows[2]["ahead_edge"] == ""
+    assert not (tmp_path / "run_dead_ends_review.csv.part").exists()
+
+
+def test_a_loop_review_csv_with_fewer_columns_is_extended_not_misaligned(tmp_path):
+    import csv
+
+    path = tmp_path / "run_loop_review.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        handle.write("time,decision,loop_length_um\r\n2026-10-09T10:00:00,kept,40\r\n")
+
+    append_loop_review(path, [{"time": "2026-11-03T10:00:00", "decision": SIDE_DELETED, "loop_length_um": "25",
+                               "bridged_um": "3"}])
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert reader.fieldnames[:3] == ["time", "decision", "loop_length_um"]
+    assert set(reader.fieldnames) == {"time", "decision", "loop_length_um", *LOOP_REVIEW_COLUMNS}
+    assert rows[0]["loop_length_um"] == "40" and rows[0]["bridged_um"] == ""
+    assert rows[1]["loop_length_um"] == "25" and rows[1]["bridged_um"] == "3"
 
 
 def test_an_item_is_zoomed_to_with_room_round_it_and_marked_with_a_ring():
@@ -1016,6 +1121,20 @@ def test_the_dead_end_list_shows_one_kind_or_all_and_only_islands_get_the_remove
     assert not removes_listed_pieces(nr.UNSOLVED_PIECES, "island_end")
     assert remove_pieces_label(1) == "Remove all 1 listed piece with no junction"
     assert remove_pieces_label(2270) == "Remove all 2270 listed pieces with no junction"
+
+
+def test_a_dead_end_marked_blind_is_listed_under_its_own_kind_not_all_kinds():
+    """A person's verdict is a decision made: it came back under All kinds on
+    every scan, as no kept item does."""
+    from dataclasses import replace
+
+    from haemolynx.gui.post_processing import DEAD_END_SHOW_ALL, dead_ends_shown
+
+    _case, items = _island_items()
+    marked = replace(items[0], measures={**items[0].measures, "kind": "blind"})
+    listed = [marked, *items[1:]]
+    assert dead_ends_shown(listed, DEAD_END_SHOW_ALL) == items[1:]
+    assert dead_ends_shown(listed, "blind") == [marked]
 
 
 def test_removing_listed_pieces_deletes_each_island_and_records_it_and_nothing_else():

@@ -101,8 +101,8 @@ SETTING_TOOLTIPS: dict[str, str] = {
     ),
     "ilastik_executable": "The ilastik program to run without its window, by name or full path",
     "ilastik_timeout_seconds": (
-        "Stop an ilastik run that takes longer than this many seconds. A hang usually means a "
-        "bad project or unreadable image; raise it for very large images"
+        "Stop an ilastik run that takes longer than this many seconds; 0 never stops it. A hang "
+        "usually means a bad project or unreadable image; raise it for very large images"
     ),
     "ilastik_reuse_existing_output": (
         "Reuse an earlier ilastik segmentation made from this unchanged image by the same "
@@ -1342,13 +1342,13 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "unless Post processing picked two others"
     ),
     "haemodynamics_solver": (
-        "How each flow solve handles the network. Dense solver (default) suits small networks; "
-        "Sparse solver gives the same flows far faster and with far less memory on large ones"
+        "How each flow solve handles the network. Sparse solver (default) is fast with little "
+        "memory; Dense solver gives the same flows but slows and fills memory on large networks"
     ),
     "equivalent_resistance_solver": (
-        "How the resistance between the two chosen nodes is found. Eigendecomposition solver "
-        "(default) is slow and memory-hungry on large networks; Sparse solver gives the same "
-        "answer much faster"
+        "How the resistance between the two chosen nodes is found. Sparse solver (default) is "
+        "fast on any network; Eigendecomposition solver gives the same answer but is slow and "
+        "memory-hungry on large networks"
     ),
     "viscosity_law": (
         "Law that sets blood viscosity from vessel width. pries (default) is the standard "
@@ -1843,8 +1843,9 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "other than to the rest, and offer them as a vessel colour option"
     ),
     "vascular_community_weighting": (
-        "What the community split weighs vessels by: topology (default, connections only), "
-        "length, resistance or flow. Resistance and flow need a solved network"
+        "What the community split weighs vessels by: topology (default, connections only), or "
+        "how strongly each vessel links its ends: short, low-resistance and high-flow vessels "
+        "link most. Resistance and flow need a solved network"
     ),
     # 10. Export
     "base_plot_dir": (

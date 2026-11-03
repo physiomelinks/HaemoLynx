@@ -361,6 +361,46 @@ def test_a_run_from_hands_over_what_the_early_stages_returned(tmp_path):
     assert not skeleton_resume_path(tmp_path / "out", "stack").exists()
 
 
+def test_a_run_loaded_from_a_file_keeps_what_its_first_resume_loaded(tmp_path):
+    """A loaded run keeps no stage outputs, so every Regenerate of it loaded
+    the image and skeleton again. The first resume's are now kept for the
+    next, where the checkpoint had none; one it has is never replaced."""
+    from dataclasses import replace
+
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, inputs, volume, _graph = _record_with_outputs(tmp_path, settings)
+    loaded = StageCheckpoints()
+    loaded.replace_all([replace(item, output=None) for item in checkpoints.records()])
+    assert "volume" not in loaded._stored_outputs("post_process")
+
+    again = SkeletonisedVolume(
+        image=np.ones((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=tmp_path / "out",
+    )
+    loaded.keep_output("skeletonise", again)
+    loaded.keep_output("segment", inputs)
+    loaded.keep_output("assign_boundaries", object())  # not a stage a resume is handed
+    loaded.keep_output("solve", again)  # not recorded at all
+
+    stored = loaded._stored_outputs("post_process")
+    assert stored["volume"].image is again.image and stored["inputs"] == inputs
+    assert loaded.get("assign_boundaries").output is None and not loaded.has("solve")
+    assert loaded.get("skeletonise").graph is not None, "its graph and layers stay"
+    loaded.keep_output("skeletonise", volume)
+    assert loaded._stored_outputs("post_process")["volume"].image is again.image, "never replaced"
+    from haemolynx.pipeline.stages import VesselNetwork
+
+    loaded.freeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded.get("build_network").output is None, "nothing kept after Clear"
+    loaded.unfreeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded._stored_outputs("post_process")["network"].volume is again
+
+
 def test_a_run_from_hands_over_only_the_stages_before_it(tmp_path):
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()
@@ -1019,3 +1059,32 @@ def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_t
     assert plan.resume.small_venule_mask is small_venule
     # Before post processing ran, the solve's checkpoint held Boundaries' own.
     assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)
+
+
+def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
+    """After Load run, a later run's skeleton left in the folder was loaded
+    instead of the loaded run's: the graph was built from another skeleton
+    than the one on screen. It is replaced by the run's own; the run's own
+    is left alone."""
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    checkpoints, skeleton = _through_post_processing(tmp_path, settings)
+    later = np.zeros_like(skeleton)
+    later[0, :, 1] = True
+    np.save(skeleton_path, later)
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert np.array_equal(np.load(skeleton_path), skeleton)
+    assert not skeleton_path.with_name(f"{skeleton_path.name}.part").exists()
+
+    groups = [checkpoints.get("skeletonise").group]
+    before = skeleton_path.stat().st_mtime_ns
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert skeleton_path.stat().st_mtime_ns == before  # its own: not written again
+
+    skeleton_path.write_bytes(b"not a skeleton")
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert np.array_equal(np.load(skeleton_path), skeleton)

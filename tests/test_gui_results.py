@@ -692,6 +692,15 @@ def test_a_solve_with_neither_resistance_just_says_solved():
     assert group.note == "Solved."
 
 
+def test_a_run_without_haemodynamics_does_not_say_solved():
+    """Regression: with run_haemodynamics off the solve stage hands on an empty
+    Solution, and the Haemodynamics tab's note still read "Solved."."""
+    from haemolynx.pipeline.stages import Solution
+
+    group = built().stage_finished("solve", Solution())
+    assert group.note == "Not solved: haemodynamics are off."
+
+
 # --- pericytes ---------------------------------------------------------------
 
 
@@ -2868,3 +2877,23 @@ def test_the_export_note_names_only_what_was_written():
     )
     assert group.note.startswith("Wrote the statistics.")
     assert "plots" not in group.note
+
+
+def test_reset_lets_go_of_the_last_runs_skeleton():
+    """reset() kept the skeleton: a low-RAM run's stayed in use on disk into
+    the next run."""
+    import gc
+    import weakref
+
+    results = ResultLayers()
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    gone = weakref.ref(skeleton)
+    volume = SimpleNamespace(
+        image=np.zeros((4, 4, 4)), skeleton=skeleton,
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    results.stage_restored("skeletonise", volume)
+    del volume, skeleton
+    results.reset()
+    gc.collect()
+    assert gone() is None

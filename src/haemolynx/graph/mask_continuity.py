@@ -400,25 +400,21 @@ def _attempt_cylinder_bridge(
         if float(target["linearity"]) < float(min_cylindricality):
             return False, None, "target_not_cylindrical"
 
-    source_endpoints = source["endpoints_zyx"]
-    target_endpoints = target["endpoints_zyx"]
-    pairs = [
-        (np.asarray(source_endpoints[0], dtype=int), np.asarray(target_endpoints[0], dtype=int)),
-        (np.asarray(source_endpoints[0], dtype=int), np.asarray(target_endpoints[1], dtype=int)),
-        (np.asarray(source_endpoints[1], dtype=int), np.asarray(target_endpoints[0], dtype=int)),
-        (np.asarray(source_endpoints[1], dtype=int), np.asarray(target_endpoints[1], dtype=int)),
-    ]
+    source_endpoints = [np.asarray(end, dtype=int) for end in source["endpoints_zyx"]]
+    target_endpoints = [np.asarray(end, dtype=int) for end in target["endpoints_zyx"]]
     best_pair = None
     best_distance = np.inf
     spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
-    for p0, p1 in pairs:
-        dist_microns = float(np.linalg.norm((p1 - p0).astype(float) * spacing))
-        if dist_microns < best_distance:
-            best_distance = dist_microns
-            best_pair = (p0, p1)
+    for i in (0, 1):
+        for j in (0, 1):
+            p0, p1 = source_endpoints[i], target_endpoints[j]
+            dist_microns = float(np.linalg.norm((p1 - p0).astype(float) * spacing))
+            if dist_microns < best_distance:
+                best_distance = dist_microns
+                best_pair = (i, j)
     if best_pair is None:
         return False, None, "no_endpoint_pair"
-    p0_best, p1_best = best_pair
+    p0_best, p1_best = source_endpoints[best_pair[0]], target_endpoints[best_pair[1]]
     if best_distance > float(max_bridge_distance_microns):
         return False, None, "bridge_too_long"
 
@@ -429,15 +425,19 @@ def _attempt_cylinder_bridge(
         if v_norm <= 1e-9:
             return False, None, "degenerate_endpoint_vector"
         v_hat = v / v_norm
-        source_axis = np.asarray(source["principal_axis_zyx"], dtype=float)
-        target_axis = np.asarray(target["principal_axis_zyx"], dtype=float)
-        # Orient source axis to point toward target, and target axis to point away from target.
-        if float(np.dot(source_axis, v_hat)) < 0.0:
-            source_axis = -source_axis
-        if float(np.dot(target_axis, v_hat)) > 0.0:
-            target_axis = -target_axis
-        source_facing = float(np.dot(source_axis, v_hat))
-        target_facing = float(np.dot(target_axis, -v_hat))
+        def facing(piece, ends, end, toward):
+            """The cosine between *toward* (the bridge leaving the piece) and
+            the piece's axis pointing out of it at *end*: oriented by its
+            ends, not by the bridge, or a bridge leaving a piece's far end
+            and running back along its side faced the way it went."""
+            axis = np.asarray(piece["principal_axis_zyx"], dtype=float)
+            along = float(np.dot(axis, (ends[end] - ends[1 - end]).astype(float) * spacing[0]))
+            if along == 0.0:  # its ends one point: no way out to tell
+                return abs(float(np.dot(axis, toward)))
+            return float(np.dot(axis if along > 0.0 else -axis, toward))
+
+        source_facing = facing(source, source_endpoints, best_pair[0], v_hat)
+        target_facing = facing(target, target_endpoints, best_pair[1], -v_hat)
         facing_threshold = float(min_facing_cosine)
         if source_facing < facing_threshold or target_facing < facing_threshold:
             return False, None, "endpoint_facing_mismatch"
@@ -560,82 +560,57 @@ def _enforce_type_locked_continuity_for_small_mask(
 
     updated_small = _copy_mask(small_binary, low_memory=low_memory, memmap_directory=memmap_directory)
     source_candidates: dict[int, list[dict[str, Any]]] = {}
-    centroid_prefilter_radius = float(max_bridge_distance_microns) + float(
-        corridor_max_distance_microns
-    )
     spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
-    large_tree: cKDTree | None = None
-    large_ids: list[int] = []
-    if large_desc:
-        large_ids = sorted(large_desc.keys())
-        large_centroids = np.asarray(
-            [np.asarray(large_desc[cid]["centroid_zyx"], dtype=float) for cid in large_ids],
-            dtype=float,
-        )
-        large_tree = cKDTree(large_centroids * spacing)
-    small_tree: cKDTree | None = None
-    small_ids = sorted(small_desc.keys())
-    if small_ids:
-        small_centroids = np.asarray(
-            [np.asarray(small_desc[cid]["centroid_zyx"], dtype=float) for cid in small_ids],
-            dtype=float,
-        )
-        small_tree = cKDTree(small_centroids * spacing)
+    reach = float(max_bridge_distance_microns)
+
+    def end_index(descriptors: dict[int, dict[str, Any]]) -> tuple[cKDTree | None, list[int]]:
+        """Every component's two ends (microns) in a tree, and whose each is."""
+        ids = sorted(descriptors)
+        if not ids:
+            return None, []
+        ends = [np.asarray(end, dtype=float) for cid in ids for end in descriptors[cid]["endpoints_zyx"]]
+        return cKDTree(np.asarray(ends) * spacing), [cid for cid in ids for _end in (0, 1)]
+
+    # Candidates by the gap between ends, which is what a bridge spans and
+    # max_bridge_distance_microns limits; by centroid, two pieces longer
+    # than about the bridge length were never joined however small the gap.
+    large_tree, large_owners = end_index(large_desc) if allow_small_to_large else (None, [])
+    small_tree, small_owners = end_index(small_desc) if allow_small_to_small else (None, [])
     source_build_start_s = time.perf_counter()
     source_ids = sorted(small_desc.keys())
     for source_id in source_ids:
         source = small_desc[source_id]
-        source_centroid = np.asarray(source["centroid_zyx"], dtype=float)
-        source_point = source_centroid.reshape(1, 3) * spacing
-        candidate_targets: list[dict[str, Any]] = []
-        if allow_small_to_large and large_tree is not None:
-            idxs = large_tree.query_ball_point(source_point.ravel(), r=centroid_prefilter_radius)
-            for idx in idxs:
-                cid = int(large_ids[int(idx)])
-                candidate_targets.append(large_desc[cid])
-        if allow_small_to_small and small_tree is not None:
-            idxs = small_tree.query_ball_point(source_point.ravel(), r=centroid_prefilter_radius)
-            for idx in idxs:
-                cid = int(small_ids[int(idx)])
-                if cid == int(source_id):
-                    continue
-                candidate = small_desc[cid]
-                if int(candidate["size_voxels"]) >= int(source["size_voxels"]):
-                    candidate_targets.append(candidate)
-        if not candidate_targets:
+        source_ends = np.asarray(source["endpoints_zyx"], dtype=float) * spacing
+        # Keyed by pool too: the large and small components are numbered apart.
+        found: dict[tuple[str, int], dict[str, Any]] = {}
+        for pool, tree, owners, descriptors in (
+            ("large", large_tree, large_owners, large_desc),
+            ("small", small_tree, small_owners, small_desc),
+        ):
+            if tree is None:
+                continue
+            for near in tree.query_ball_point(source_ends, r=reach):
+                for index in near:
+                    cid = int(owners[int(index)])
+                    if pool == "small" and (
+                        cid == int(source_id)
+                        or int(descriptors[cid]["size_voxels"]) < int(source["size_voxels"])
+                    ):
+                        continue
+                    found[(pool, cid)] = descriptors[cid]
+        if not found:
             continue
-
-        # Guard against duplicate targets when queried from multiple pools.
-        uniq: dict[int, dict[str, Any]] = {}
-        for candidate in candidate_targets:
-            uniq[int(candidate["component_id"])] = candidate
-        candidate_targets = list(uniq.values())
-
-        # Keep an explicit radius gate for safety and deterministic behavior.
+        # Nearest end to end first, in microns: the first target accepted wins.
         candidate_targets = [
-            c
-            for c in candidate_targets
-            if float(
-                np.linalg.norm(
-                    (np.asarray(c["centroid_zyx"], dtype=float) - source_centroid)
-                    * np.asarray(sampling_zyx, dtype=float)
-                )
+            found[key]
+            for key in sorted(
+                found,
+                key=lambda key: (
+                    _min_endpoint_distance_microns(source, found[key], sampling_zyx=sampling_zyx),
+                    key,
+                ),
             )
-            <= centroid_prefilter_radius
         ]
-        if not candidate_targets:
-            continue
-
-        # Nearest in microns first: the first target accepted wins.
-        candidate_targets = sorted(
-            candidate_targets,
-            key=lambda c: float(
-                np.linalg.norm(
-                    (np.asarray(c["centroid_zyx"], dtype=float) - source_centroid)
-                    * np.asarray(sampling_zyx, dtype=float)
-                )
-            ),
-        )
 
         # Skip if source small component already touches any large component.
         if allow_small_to_large and has_large:

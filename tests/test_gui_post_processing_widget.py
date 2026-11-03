@@ -93,7 +93,7 @@ def _four_way_page(viewer, *, junction_correction: bool, graph=None, settings=No
     stops: list = []
     #: What the panel would say: a run paused here, whether a run started
     #: when asked.
-    run = SimpleNamespace(paused=False, starts=True)
+    run = SimpleNamespace(paused=False, starts=True, paused_after="solve")
 
     def regenerate(graph, stop_after=None):
         regenerated.append(graph)
@@ -109,6 +109,7 @@ def _four_way_page(viewer, *, junction_correction: bool, graph=None, settings=No
         running=lambda: False,
         settings=settings,
         paused=lambda: run.paused,
+        paused_after=lambda: run.paused_after,
     )
     controls.refresh()
     controls.review_choice.setCurrentText(JUNCTIONS if junction_correction else NO_LIST)
@@ -168,8 +169,9 @@ def test_the_post_processing_tab_sits_between_haemodynamics_and_perturbations(ma
     stack = panel.findChild(QStackedWidget, "haemolynx_revert_stack")
     assert stack.count() == tabs.count()
     assert panel._haemolynx_post_processing.scan_button.toolTip()
-    # Editing moved into the tab: the old Edit button is no longer shown.
-    assert not panel._haemolynx_edit_button.visible
+    # Editing is the tab's alone: the old Edit button and its window are gone.
+    assert not hasattr(panel, "_haemolynx_edit_button")
+    assert not hasattr(panel, "_haemolynx_open_graph_editor")
     controls = panel._haemolynx_post_processing
     assert controls.add_button.toolTip() and controls.trace_source.toolTip()
     # Add vessel finishes by itself and both modes are toggles: no Stop button.
@@ -813,6 +815,22 @@ def test_regenerate_graph_while_paused_keeps_the_run_paused(page):
     assert c.state.graph is None
 
 
+def test_the_status_line_says_which_pause_the_run_is_in(page):
+    """After a Regenerate graph while paused it said "Paused after
+    Haemodynamics", though the edits had been taken in since."""
+    c = page.controls
+    page.run.paused = True
+    c.refresh()
+    assert c.commit_status.text() == "Paused after Haemodynamics. Continue runs Perturbations onwards."
+
+    page.run.paused_after = "post_process"
+    c.refresh()
+    assert c.commit_status.text() == "Paused after Regenerate graph. Continue runs Perturbations onwards."
+    c.scan_button.click()
+    c.split_button.click()
+    assert c.commit_status.text().startswith("Paused after Regenerate graph, with edits not yet in the model.")
+
+
 def test_regenerate_graph_after_a_finished_run_re_solves_to_the_end(page):
     c = page.controls
     c.scan_button.click()
@@ -1400,7 +1418,7 @@ def _t_network_and_mask():
     return G, mask
 
 
-def _t_page(viewer, tmp_path):
+def _t_page(viewer, tmp_path, regenerate=None, segmentation=None):
     G, mask = _t_network_and_mask()
     results = ResultLayers()
     _apply_layers(viewer, results.stage_finished(
@@ -1412,11 +1430,14 @@ def _t_page(viewer, tmp_path):
     c = _post_processing_controls(
         viewer, SimpleNamespace(value=""), results=lambda: results,
         boundary_roles=lambda: {"inlet": (0,), "outlet": (2,)},
-        regenerate=lambda graph, stop_after=None: True, running=lambda: False,
+        regenerate=regenerate or (lambda graph, stop_after=None: True), running=lambda: False,
         settings=lambda: {"input_path": str(tmp_path / "run.tif"), "output_dir": str(tmp_path)},
+        segmentation=segmentation,
     )
     c.refresh()
     c.review_choice.setCurrentText(DEAD_ENDS)
+    # What the viewer draws, as the panel's view.results: what Save run keeps.
+    c.shown = results
     return c
 
 
@@ -1477,6 +1498,50 @@ def test_a_dead_end_marked_by_hand_keeps_its_kind_and_leaves_the_list(
     assert [r["decision"] for r in rows] == [words]
     classify_and_mark(c.state.graph)
     assert c.state.graph.nodes[3][DEAD_END_KIND] == kind, "a person's mark outlives reclassifying"
+
+
+@pytest.mark.parametrize("action, kind", [(ACTION_MARK_BLIND, "blind"), (ACTION_MARK_OPEN, "leaves_image")])
+def test_a_dead_end_marked_by_hand_is_handed_on_and_solved_again(make_napari_viewer, qtbot, tmp_path, action, kind):
+    """Whether a dead end leaves the image is the open-end boundary condition
+    the solve puts on it. The mark left Regenerate graph off, Continue did
+    not solve the network again, and the viewer's graph -- what Save run
+    keeps -- went without it."""
+    from haemolynx.graph import has_pending_edits
+    from haemolynx.graph.dead_ends import DEAD_END_KIND
+
+    handed = []
+    c = _t_page(
+        make_napari_viewer(), tmp_path,
+        regenerate=lambda graph, stop_after=None: handed.append(graph) is None,
+    )
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    assert not c.regenerate_graph_button.isEnabled()
+
+    c.review_buttons[action].click()
+
+    assert c.regenerate_graph_button.isEnabled()
+    assert c.shown._graph is c.state.graph
+    assert c.shown._graph.nodes[3][DEAD_END_KIND] == kind
+    c.regenerate_graph_button.click()
+    (graph,) = handed
+    assert graph.nodes[3][DEAD_END_KIND] == kind and has_pending_edits(graph)
+
+
+def test_a_dead_end_marked_blind_is_not_listed_again_under_all_kinds(make_napari_viewer, qtbot, tmp_path):
+    c = _t_page(make_napari_viewer(), tmp_path)
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    c.review_buttons[ACTION_MARK_BLIND].click()
+
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+
+    assert c.dead_end_show.currentText() == "All kinds"
+    assert c.review_items.count() == 0
+    c.dead_end_show.setCurrentText("Marked as real blind ends")
+    assert c.review_items.count() == 1
+    assert c.review_items.item(0).text().startswith("1. Node 3: ")
 
 
 def _broken_page(viewer, tmp_path, make=None, choice=DEAD_ENDS):
@@ -2016,3 +2081,193 @@ def test_the_raw_panel_draws_the_chosen_item_of_any_other_list(make_napari_viewe
     assert c.state.review_item is not None
     assert all(not label.pixmap().isNull() for label in c.raw_pictures.values())
     assert "the chosen item cyan" in c.raw_status.text()
+
+
+# --- Undo ------------------------------------------------------------------------------
+
+
+def _vessel_pairs(graph) -> list:
+    return sorted(tuple(sorted((str(u), str(v)))) for u, v in graph.edges())
+
+
+def test_undo_takes_the_last_edit_back_and_keeps_the_ones_before(page):
+    from haemolynx.graph import has_pending_edits
+
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    scanned = _vessel_pairs(c.state.graph)
+    assert not c.undo_button.isEnabled(), "nothing to undo yet"
+
+    c.connector.setValue(12.0)
+    c.split_button.click()
+    split = _vessel_pairs(c.state.graph)
+    branch_id = next(i for i, (u, v, _k) in enumerate(edge_keys(c.state.graph)) if {u, v} == {2, 4})
+    c.branch_ids.setText(str(branch_id))
+    c.delete_ids_button.click()
+    assert _vessel_pairs(c.state.graph) != split
+    assert c.undo_button.isEnabled()
+
+    c.undo_button.click()
+    assert _vessel_pairs(c.state.graph) == split, "the split stays"
+    assert c.state.graph.degree(1) == 3
+    assert page.results._graph is c.state.graph, "the viewer draws the network as it now is"
+    assert len(viewer.layers[VESSELS].data) == c.state.graph.number_of_edges()
+    assert f"Undid: deleting branchID(s) {branch_id}" in c.log_box.toPlainText()
+
+    c.undo_button.click()
+    assert _vessel_pairs(c.state.graph) == scanned and c.state.graph.degree(1) == 4
+    assert not has_pending_edits(c.state.graph)
+    assert not c.undo_button.isEnabled() and not c.regenerate_graph_button.isEnabled()
+    assert c.junction_list.count() == 1, "the junction is listed again"
+
+
+def test_a_refused_edit_leaves_nothing_to_undo_and_a_regenerate_ends_undo(page):
+    c = page.controls
+    c.scan_button.click()
+    _select_rows(c.table, [_row_to(c.table, "0")])
+    c.delete_button.click()
+    assert "boundary node" in c.status.text()
+    assert not c.undo_button.isEnabled()
+
+    c.leave_button.click()
+    assert c.undo_button.isEnabled(), "a decision is taken back too"
+    c.undo_button.click()
+    assert c.junction_list.item(0).text() == "Node 1 - 4 vessels"
+
+    c.split_button.click()
+    c.regenerate_graph_button.click()
+    assert page.regenerated and c.state.undo == []
+    assert not c.undo_button.isEnabled()
+
+
+def test_undoing_a_review_decision_takes_its_row_out_of_the_csv(make_napari_viewer, tmp_path):
+    page = _review_page(make_napari_viewer(), tmp_path)
+    c = page.controls
+    c.review_choice.setCurrentText(UNSOLVED)
+    c.scan_button.click()
+    c.review_buttons[ACTION_DELETE_ITEM].click()
+    assert 5 not in c.state.graph
+    assert len(_csv_rows(tmp_path / "run_unsolved_pieces_review.csv")) == 1
+
+    c.undo_button.click()
+
+    assert 5 in c.state.graph and c.state.graph.number_of_edges() == 6
+    assert c.state.review_decisions == []
+    assert _csv_rows(tmp_path / "run_unsolved_pieces_review.csv") == []
+    assert c.review_items.count() == 1, "the piece is listed again"
+    assert "1 row(s) taken back out of the decisions CSV" in c.log_box.toPlainText()
+
+    c.review_buttons[ACTION_KEEP].click()
+    assert c.review_items.count() == 0
+    c.undo_button.click()
+    assert c.review_items.count() == 1 and c.state.review_decisions == []
+
+
+def test_undo_after_another_list_is_made_leaves_that_list_its_own(make_napari_viewer, qtbot, tmp_path):
+    """Undo put back the items of the list the edit was made on: after a
+    dead end marked on Dead ends, Two vessels in one lumen made, then Undo,
+    the second list showed the dead end."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND
+
+    c = _t_page(make_napari_viewer(), tmp_path)
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    c.review_buttons[ACTION_MARK_BLIND].click()
+    c.review_choice.setCurrentText("Two vessels in one lumen")
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    assert c.review_items.count() == 0
+
+    c.undo_button.click()
+
+    assert c.review_items.count() == 0 and c.state.review_items == []
+    assert c.state.graph.nodes[3].get(DEAD_END_KIND) != "blind", "the mark is taken back"
+    assert c.state.review_decisions == []
+    c.review_choice.setCurrentText(DEAD_ENDS)
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    assert c.review_items.count() == 1, "the dead end is listed again"
+
+
+def test_a_mask_list_reads_the_segmentation_through_the_runs_own_support(make_napari_viewer, qtbot, tmp_path):
+    """The lists built a support of their own beside the one post processing
+    keeps for the run's segmentation: now they are handed that one, and make
+    their own only when there is none."""
+    from haemolynx.gui.post_processing import review_mask_support
+    from haemolynx.gui.results import IMAGE
+
+    asked = []
+    runs = {}
+
+    def run_support(image, values):
+        asked.append(image)
+        if "support" not in runs:
+            runs["support"] = review_mask_support(image, (1.0, 1.0, 1.0), values)
+        return runs["support"]
+
+    viewer = make_napari_viewer()
+    c = _t_page(viewer, tmp_path, segmentation=run_support)
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+
+    assert asked and asked[0] is viewer.layers[IMAGE].data
+    assert c.state.support[1] is runs["support"]
+    assert c.review_items.count() == 1
+
+    own = _t_page(make_napari_viewer(), tmp_path, segmentation=lambda image, values: None)
+    own.scan_button.click()
+    qtbot.waitUntil(lambda: not own.state.scanning, timeout=60000)
+    assert own.state.support is not None and own.state.support[1] is not runs["support"]
+    assert own.review_items.count() == 1
+
+
+def test_undo_replays_a_traced_vessel_an_outlet_and_the_two_point_nodes(make_napari_viewer, tmp_path):
+    """Undo makes the network again from the run's own by every edit before
+    the last: each kind of edit must come out the same the second time."""
+    page = _review_page(make_napari_viewer(), tmp_path)
+    c = page.controls
+    c.review_choice.setCurrentText(TERMINALS)
+    c.scan_button.click()
+    scanned = _vessel_pairs(c.state.graph)
+
+    c.review_items.setCurrentRow(2)  # node 5, a dead end
+    c.review_buttons[ACTION_MAKE_OUTLET].click()
+    assert c.state.outlets == (4, 5)
+    c.review_choice.setCurrentText(TWO_POINT)
+    c.scan_button.click()
+    c.review_items.setCurrentRow(next(i for i, item in enumerate(c.state.review_items) if item.nodes == (5,)))
+    c.review_buttons[ACTION_RESISTANCE_END].click()
+    assert c.state.graph.graph[RESISTANCE_NODE_PAIR] == (0, 5)
+    c.add_button.click()
+    _click(page, (20.0, 10.0, 0.0))  # node 2
+    _click(page, (20.0, -10.0, 0.0))  # node 3: a vessel between them
+    traced = _vessel_pairs(c.state.graph)
+    assert len(traced) == len(scanned) + 1
+
+    c.undo_button.click()
+    assert _vessel_pairs(c.state.graph) == scanned
+    assert c.state.graph.graph[RESISTANCE_NODE_PAIR] == (0, 5), "the edits before it are made again"
+    assert c.state.graph.graph[BOUNDARY_ROLES] == {"inlet": [0], "outlet": [4, 5]}
+
+    c.undo_button.click()
+    assert RESISTANCE_NODE_PAIR not in c.state.graph.graph
+    assert c.state.outlets == (4, 5) and 5 in c.state.protected
+
+    c.undo_button.click()
+    assert BOUNDARY_ROLES not in c.state.graph.graph and c.state.outlets == (4,)
+    assert _csv_rows(tmp_path / "run_terminal_nodes_review.csv") == [], "the outlet's decision is taken back"
+    assert not c.undo_button.isEnabled() and not c.regenerate_graph_button.isEnabled()
+
+
+def test_undo_puts_back_what_a_prune_removed(page):
+    c = page.controls
+    c.scan_button.click()
+    scanned = _vessel_pairs(c.state.graph)
+    c.prune_button.click()
+    assert 5 not in c.state.graph
+
+    c.undo_button.click()
+
+    assert _vessel_pairs(c.state.graph) == scanned and 5 in c.state.graph
+    assert c.state.graph.degree(1) == 4
+    assert "Undid: the prune" in c.log_box.toPlainText()

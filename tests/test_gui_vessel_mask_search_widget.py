@@ -86,6 +86,31 @@ def test_a_new_input_image_replaces_what_the_panel_filled_but_not_a_chosen_file(
     assert "Kept the large vessel masks already chosen" in panel._haemolynx_report()
 
 
+def test_a_new_input_image_with_fewer_masks_leaves_none_of_the_last_images_in_the_rows(
+    make_napari_viewer, tmp_path
+):
+    """Regression: the venule row the panel filled for image A stayed beside
+    image B's arteriole mask, a pair of two images' masks."""
+    make_napari_viewer()
+    panel = settings_widget()
+    rows = panel._haemolynx_rows()
+    image_a, _art_a, ven_a = _files(
+        tmp_path / "a", "A.tif", "A_large_arteriole.tif", "A_large_venule.tif"
+    )
+    image_b, art_b = _files(tmp_path / "b", "B.tif", "B_large_arteriole.tif")
+    rows["input_path"].value = image_a
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    assert _path(panel._haemolynx_values()["large_venule_mask_path"]) == ven_a
+
+    rows["input_path"].value = image_b
+
+    values = panel._haemolynx_values()
+    assert _path(values["large_arteriole_mask_path"]) == art_b
+    assert _path(values["large_venule_mask_path"]) is None
+    assert "A_large_venule.tif" in panel._haemolynx_report()
+
+
 def test_loading_a_config_keeps_the_mask_paths_it_names(make_napari_viewer, tmp_path):
     """Even paths naming no file, which a search would fill: the config's
     ilastik switch is set after its mask paths, so without the pause the rows

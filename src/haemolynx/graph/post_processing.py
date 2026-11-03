@@ -57,7 +57,9 @@ keeps (the vessels are not marked for measuring again), and
 the lists kept on the graph (:data:`BOUNDARY_ROLES`) until Regenerate takes
 them to the stage -- and :func:`set_resistance_node` chooses the two nodes
 the two-point resistance is found between, kept on the graph
-(:data:`RESISTANCE_NODE_PAIR`) for every regenerate after.
+(:data:`RESISTANCE_NODE_PAIR`) for every regenerate after, and
+:func:`mark_dead_end_kind` keeps a person's verdict on a dead end, which
+Regenerate solves the network again with.
 """
 from __future__ import annotations
 
@@ -78,6 +80,7 @@ __all__ = [
     "APPLIED",
     "BOUNDARY_ROLES",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
+    "DIAMETER_SET_BY_HAND",
     "DRAWN_BACKGROUND_RUN_UM",
     "DRAWN_BESIDE_VESSEL",
     "DRAWN_MASK_FRACTION",
@@ -86,6 +89,7 @@ __all__ = [
     "IntensityCostField",
     "JunctionVessel",
     "MIN_ROUTED_INSIDE_FRACTION",
+    "NETWORK_PART",
     "PENDING",
     "RESISTANCE_NODE_PAIR",
     "RESISTANCE_PAIR_ENDS",
@@ -107,6 +111,7 @@ __all__ = [
     "has_pending_edits",
     "high_degree_junctions",
     "junction_vessels",
+    "mark_dead_end_kind",
     "mark_edited",
     "mean_incident_diameter",
     "merge_junctions",
@@ -175,6 +180,19 @@ MIN_ROUTED_INSIDE_FRACTION = 0.5
 DRAWN_MASK_FRACTION = "drawn_mask_fraction"
 DRAWN_BACKGROUND_RUN_UM = "drawn_background_run_um"
 DRAWN_BESIDE_VESSEL = "drawn_beside_vessel"
+
+#: Edge attribute: a person gave this vessel its width
+#: (:func:`set_vessel_diameter`), as against the width an edit lends a
+#: vessel it made until it is measured. Read with ``diameter_source``
+#: ``"override"``: once the vessel is measured again it is no longer theirs.
+DIAMETER_SET_BY_HAND = "diameter_set_by_hand"
+
+#: Edge attribute: which network a vessel of a surround network is, the
+#: image's or the one drawn round it (``synthetic.surround.NETWORK_PART``;
+#: named here, as graph code does not import the synthetic package). An edit
+#: never makes one vessel of two parts, and a vessel drawn by hand is of the
+#: part of the vessels at its two ends.
+NETWORK_PART = "network_part"
 
 #: Margin round a drawn vessel within which its lumen radius is read from
 #: the mask (:func:`_local_lumen_radius`); doubled while a radius along the
@@ -493,7 +511,7 @@ def delete_vessels(
             continue
         if degree != 2:
             continue
-        merged = merge_pass_through(G, node)
+        merged = merge_pass_through(G, node, same=(NETWORK_PART,))
         if merged is None:
             continue
         mark_edited(G, [merged])
@@ -745,7 +763,8 @@ def split_high_degree_junctions(
     each connector also takes a ``branch_order`` here -- without one it would
     get no resistance. It takes the order the two vessels peeled onto it
     share, else the wider one's: the connector is the first stretch of their
-    common trunk.
+    common trunk. A connector peeling off thick-vessel bridges alone has no
+    order to take, and is a bridge itself.
 
     Without *connector_length_um*, each junction's connectors are as long as
     its vessels are wide (:func:`mean_incident_diameter`, which is also the
@@ -774,6 +793,11 @@ def split_high_degree_junctions(
                     connector = data
                 else:
                     peeled.append(data)
+            if connector is not None and peeled and all(_is_bridge(data) for data in peeled):
+                # Bridges alone, into a thick vessel's lumen: their common
+                # trunk is one too, given its resistance as theirs is.
+                connector[IS_ZERO_RESISTANCE] = True
+                continue
             labelled = [data for data in peeled if data.get("branch_order") is not None]
             if connector is None or not labelled:
                 continue
@@ -838,13 +862,15 @@ def merge_junctions(
 def set_vessel_diameter(G: nx.MultiGraph, edges: Iterable[EdgeKey], diameter_um: float) -> None:
     """Give *edges* the diameter *diameter_um*, by hand.
 
-    A human value (``diameter_source="override"``), which outranks the
-    branch-order table and the class median. The vessels are *not* marked
-    :data:`EDITED` -- the ``post_process`` stage measures an edited vessel
-    afresh, and a measurement replaces an override -- only the graph is
-    marked :data:`PENDING`, so Regenerate graph solves it again with the new
-    width. Raises ``ValueError`` for a width that is not finite and positive,
-    or a vessel the network does not have, before changing anything.
+    A human value (``diameter_source="override"``, and
+    :data:`DIAMETER_SET_BY_HAND`, so the Unmeasured diameters list does not
+    ask about it again), which outranks the branch-order table and the class
+    median. The vessels are *not* marked :data:`EDITED` -- the
+    ``post_process`` stage measures an edited vessel afresh, and a
+    measurement replaces an override -- only the graph is marked
+    :data:`PENDING`, so Regenerate graph solves it again with the new width.
+    Raises ``ValueError`` for a width that is not finite and positive, or a
+    vessel the network does not have, before changing anything.
     """
     from haemolynx.haemodynamics.poiseuille import set_edge_diameter_override
 
@@ -857,7 +883,30 @@ def set_vessel_diameter(G: nx.MultiGraph, edges: Iterable[EdgeKey], diameter_um:
             raise ValueError(f"No vessel {edge!r} to set the diameter of")
     for edge in selected:
         set_edge_diameter_override(G.edges[edge], width)
+        G.edges[edge][DIAMETER_SET_BY_HAND] = True
     mark_edited(G)
+
+
+def mark_dead_end_kind(G: nx.MultiGraph, node: Any, kind: str) -> bool:
+    """A person's verdict on dead end *node* -- a real blind end, or one
+    leaving the image (:func:`haemolynx.graph.dead_ends.set_dead_end_kind`)
+    -- kept on its node through later reclassifying.
+
+    Whether a dead end leaves the image is the boundary condition the solve
+    puts on it (open, or closed), so a verdict that changes the kind marks
+    *G* :data:`PENDING`, and Regenerate graph solves the network again; the
+    network itself is not changed, and no vessel is marked for measuring.
+    Raises ``ValueError`` for a node that is not a dead end. Returns whether
+    the kind changed.
+    """
+    from .dead_ends import DEAD_END_KIND, set_dead_end_kind
+
+    before = G.nodes[node].get(DEAD_END_KIND) if node in G else None
+    set_dead_end_kind(G, node, kind)
+    if before == kind:
+        return False
+    mark_edited(G)
+    return True
 
 
 def mean_incident_diameter(G: nx.MultiGraph, nodes: Iterable[Any]) -> float | None:
@@ -940,8 +989,9 @@ def add_vessel_between(
     *points_um* defaults to the straight line between the two. Its length is
     measured from the path. With *diameter_um*, the vessel carries it as a
     manual override (``diameter_source="override"``), which the Diameters
-    stage keeps over the branch-order table. Returns the new edge's
-    ``(u, v, key)``.
+    stage keeps over the branch-order table. In a surround network it is of
+    the part (:data:`NETWORK_PART`) every vessel at its two ends is of, and
+    of none where they differ. Returns the new edge's ``(u, v, key)``.
     """
     if a == b:
         raise ValueError("A vessel needs two different nodes")
@@ -958,6 +1008,9 @@ def add_vessel_between(
         "length": float(calculate_path_length(points)),
         "post_processing_added": True,
     }
+    parts = {data.get(NETWORK_PART) for node in (a, b) for *_e, data in G.edges(node, data=True)}
+    if len(parts) == 1 and None not in parts:
+        attrs[NETWORK_PART] = parts.pop()
     if diameter_um is not None:
         from haemolynx.haemodynamics.poiseuille import set_edge_diameter_override
 
@@ -1082,8 +1135,9 @@ class IntensityCostField:
     The raw-image counterpart of :func:`haemolynx.graph.mask_cost_field`, and
     shaped like its windowed form: ``shape`` plus slicing by a tuple of
     unit-step slices, which is all :func:`haemolynx.graph.astar_path` uses.
-    Each window is blurred (:data:`RAW_COST_SMOOTHING_SIGMA_VOX`, with enough
-    context that the blur has no edge), scaled between its own
+    Each window is blurred (:data:`RAW_COST_SMOOTHING_SIGMA_VOX` voxels of the
+    finest axis of *voxel_size_zyx*, the same distance in microns along every
+    axis, with enough context that the blur has no edge), scaled between its own
     :data:`RAW_COST_PERCENTILES` and costed ``1 / max(t, RAW_COST_FLOOR)``:
     1 on the brightest voxels, 100 on the dimmest. A cost relative to the
     window keeps it fair to a vessel that is dim across the whole stack, and
@@ -1097,6 +1151,7 @@ class IntensityCostField:
         sigma_vox: float = RAW_COST_SMOOTHING_SIGMA_VOX,
         percentiles: tuple[float, float] = RAW_COST_PERCENTILES,
         floor: float = RAW_COST_FLOOR,
+        voxel_size_zyx: Sequence[float] | None = None,
     ):
         shape = tuple(int(n) for n in np.shape(raw))
         if len(shape) != 3:
@@ -1105,6 +1160,9 @@ class IntensityCostField:
         self.shape = shape
         self.ndim = 3
         self.sigma_vox = float(sigma_vox)
+        # Per axis: a z step five times the x step blurs a fifth as many z voxels.
+        spacing = np.ones(3) if voxel_size_zyx is None else np.asarray(voxel_size_zyx, dtype=float)
+        self.sigma_zyx = tuple(float(s) for s in self.sigma_vox * spacing.min() / spacing)
         self.percentiles = tuple(float(p) for p in percentiles)
         self.floor = float(floor)
 
@@ -1116,14 +1174,14 @@ class IntensityCostField:
             raise IndexError("IntensityCostField supports unit-step slices only")
         lo = np.array([k.start for k in window])
         hi = np.maximum(np.array([k.stop for k in window]), lo)
-        pad = int(np.ceil(3.0 * self.sigma_vox)) if self.sigma_vox > 0 else 0
+        pad = np.ceil(3.0 * np.asarray(self.sigma_zyx)).astype(int) if self.sigma_vox > 0 else 0
         plo = np.maximum(lo - pad, 0)
         phi = np.minimum(hi + pad, self.shape)
         crop = np.asarray(
             self.raw[tuple(slice(a, b) for a, b in zip(plo, phi))], dtype=np.float32
         )
         if self.sigma_vox > 0 and crop.size:
-            crop = gaussian_filter(crop, self.sigma_vox)
+            crop = gaussian_filter(crop, self.sigma_zyx)
         values = crop[tuple(slice(a - p, b - p) for a, b, p in zip(lo, hi, plo))]
         if not values.size:
             return np.ones(values.shape)
@@ -1589,8 +1647,16 @@ def prune_disconnected_branches(
     measure, as :func:`delete_vessels` merges one. Inlets, outlets and the
     other *protected* (boundary) nodes are never merged; ``junctions_merged``
     counts the rest.
+
+    The vessels leaving the image that the last solve's ``open_end_model``
+    may open count as inlets and outlets, as they do for the removal.
     """
-    pruned, stats = remove_vessels_off_inlet_outlet_paths(G, inlet_nodes, outlet_nodes)
+    from haemolynx.haemodynamics.open_ends import conditions_on_graph, open_ends_in_effect
+
+    opened = open_ends_in_effect(conditions_on_graph(G).model, G, inlet_nodes, outlet_nodes)
+    pruned, stats = remove_vessels_off_inlet_outlet_paths(
+        G, [*inlet_nodes, *opened], [*outlet_nodes, *opened]
+    )
     if G.number_of_edges() and not pruned.number_of_edges():
         raise ValueError(
             "No piece of the network has both an inlet and an outlet; pruning "
@@ -1605,7 +1671,7 @@ def prune_disconnected_branches(
     keep = {*protected, *boundary}
     merged = []
     for node in [n for n in pruned if pruned.degree(n) == 2 and G.degree(n) > 2 and n not in keep]:
-        edge = merge_pass_through(pruned, node)
+        edge = merge_pass_through(pruned, node, same=(NETWORK_PART,))
         if edge is not None:
             merged.append(edge)
     stats["junctions_merged"] = len(merged)

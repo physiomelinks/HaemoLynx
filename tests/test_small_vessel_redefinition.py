@@ -231,6 +231,31 @@ def test_worker_threads_give_the_same_answer() -> None:
     assert np.array_equal(serial["small_venule_mask"], threaded["small_venule_mask"])
 
 
+def test_the_low_ram_option_relabels_on_disk_bit_for_bit(tmp_path, monkeypatch) -> None:
+    """Regression: under the low-RAM option the relabelled masks were copies
+    in RAM, and each large mask's surface was eroded over its whole box. Now
+    both are on disk or read a few planes at a time, the same masks."""
+    from haemolynx.graph import small_vessel_redefinition as redefinition
+    from haemolynx.preprocessing import memmap_support
+
+    monkeypatch.setattr(memmap_support, "slab_step", lambda shape, block_voxels=None: 3)
+    small_venule = _alongside() | _end_on()
+    small_arteriole = _tube(SHAPE, (4, 25, 30), (4, 25, 50), 1.5)
+    in_ram = _redefine(small_arteriole, small_venule, LARGE_ARTERIOLE)
+    on_disk = _redefine(
+        small_arteriole, small_venule, LARGE_ARTERIOLE, low_memory=True, memmap_directory=tmp_path
+    )
+
+    for name in ("small_arteriole_mask", "small_venule_mask"):
+        assert isinstance(on_disk[name], np.memmap)
+        assert np.array_equal(np.asarray(on_disk[name]), in_ram[name])
+    assert on_disk["stats"]["changes"] == in_ram["stats"]["changes"]
+    assert np.array_equal(
+        redefinition._surface_voxels(LARGE_ARTERIOLE, low_memory=True),
+        redefinition._surface_voxels(LARGE_ARTERIOLE),
+    )
+
+
 @pytest.mark.parametrize("name", ["tangency_cosine_max", "min_contact_fraction"])
 def test_out_of_range_fractions_are_refused(name: str) -> None:
     with pytest.raises(ValueError, match=name):
@@ -448,5 +473,7 @@ def test_assign_boundaries_passes_the_settings_and_shows_the_relabelled_masks(
     assert received["sandwiched_max_endpoint_distance_microns"] == 7.0
     assert received["sandwiched_min_facing_cosine"] == 0.5
     assert received["sandwiched_max_axis_angle_degrees"] == 30.0
+    assert received["low_memory"] is bool(settings["use_memmap_loading"])
+    assert received["memmap_directory"] == settings["memmap_directory"]
     assert np.array_equal(boundaries.small_arteriole_mask, relabelled)
     assert np.array_equal(boundaries.small_venule_mask, small_venule)

@@ -104,3 +104,20 @@ def test_a_mask_the_user_chose_in_a_perturbation_is_kept(panel, tmp_path):
     rows["pericyte_measurement_mask_path"].value = theirs
     # The perturbation's mask was the user's own: it is not replaced.
     assert _entry_mask(perturbations) == mine
+
+
+def test_a_mask_the_panel_found_is_still_the_panels_after_an_entry_is_added(panel, tmp_path):
+    """Regression: adding an entry numbers them afresh, and the mask the panel
+    had found became the user's own: a new input image's folder did not
+    replace it, and the measurement row took it as "already chosen"."""
+    widget, rows, perturbations, mask = panel
+    perturbations.add()
+    perturbations.choose_type(0, MEASURED)
+    assert _entry_mask(perturbations) == mask
+    perturbations.add()
+
+    image, other = _files(tmp_path / "next", "E15_MCA_segmented.tif", "E15_MCA_pericytes.tif")
+    rows["input_path"].value = image
+    assert _entry_mask(perturbations) == other
+    rows["measure_pericytes"].value = True
+    assert _path(widget._haemolynx_values()["pericyte_measurement_mask_path"]) == other

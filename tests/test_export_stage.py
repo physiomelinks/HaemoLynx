@@ -227,6 +227,31 @@ def test_the_weighted_reports_measure_the_network_the_statistics_measure(tmp_pat
     ]
 
 
+def test_a_perturbations_weighted_reports_measure_the_network_its_statistics_measure(tmp_path):
+    """Regression: a perturbation's JSONs still saw the bridge the baseline's
+    no longer did."""
+    from haemolynx.visualization.perturbation_plots import (
+        export_non_sweep_perturbation_artifacts,
+    )
+
+    G = _forked_graph_with_a_bridge()
+    export_non_sweep_perturbation_artifacts(
+        G, tmp_path, _settings(tmp_path), name_stem="dilated", betweenness_and_communities=True,
+    )
+
+    written = json.loads((tmp_path / "dilated_betweenness_communities_edge_length.json").read_text())
+    contracted = contract_bridges(_forked_graph_with_a_bridge())[0]
+    expected = statistics.compute_weighted_betweenness_summary(
+        contracted, source_attr="length", inverse_source_attr=False
+    )
+    assert written["Betweenness"]["Betweenness Max"] == pytest.approx(expected["Betweenness Max"])
+    assert [entry["node"] for entry in written["Betweenness"]["Betweenness Top Nodes"]] == [
+        entry["node"] for entry in expected["Betweenness Top Nodes"]
+    ]
+    # The bridge itself is left on the perturbation's graph.
+    assert G.edges[3, 4, 0][IS_ZERO_RESISTANCE]
+
+
 def test_no_partition_is_shared_across_a_bridge(tmp_path):
     """The vessels layer partitions the graph with its bridges, the statistics
     without; one shared partition counted bridge ends the statistics lack."""

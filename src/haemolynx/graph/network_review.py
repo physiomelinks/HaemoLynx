@@ -474,13 +474,18 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
     """Vessels whose diameter is not a measurement of their own -- the class
     median or the branch-order table -- or whose FWHM width a check called
     into doubt (set aside, at odds with the mask's width, or in the range
-    FWHM reads off specks). Largest share of the network's flow first,
-    since that is where a wrong width moves the result most."""
+    FWHM reads off specks). A width a person gave the vessel
+    (``graph.set_vessel_diameter``) is theirs, and it is not listed, though
+    its FWHM flags stay. Largest share of the network's flow first, since
+    that is where a wrong width moves the result most."""
     from haemolynx.haemodynamics.poiseuille import (
         DIAMETER_SOURCE_CLASS_MEDIAN,
+        DIAMETER_SOURCE_OVERRIDE,
         DIAMETER_SOURCE_TABLE,
         fwhm_demotion_reason,
     )
+
+    from .post_processing import DIAMETER_SET_BY_HAND
 
     pos = _node_pos(G)
     reference = flow_reference(G, inlets)
@@ -489,6 +494,8 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
         if data.get(IS_ZERO_RESISTANCE):
             continue
         source = data.get("diameter_source")
+        if source == DIAMETER_SOURCE_OVERRIDE and data.get(DIAMETER_SET_BY_HAND):
+            continue
         reasons = []
         if source == DIAMETER_SOURCE_CLASS_MEDIAN:
             reasons.append("its class's median width")
@@ -534,12 +541,17 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
 def find_unsolved_pieces(G: nx.MultiGraph, inlets: Iterable[Any], outlets: Iterable[Any]) -> list[ReviewItem]:
     """The vessels no inlet-to-outlet path runs along, piece by piece
     (:func:`~haemolynx.graph.connectivity.unsolved_pieces`), longest first: a
-    long one is more often a missed connection than debris."""
+    long one is more often a missed connection than debris. The open ends
+    the solve gave a condition count as inlets and outlets, as its flow
+    marks count them."""
+    from haemolynx.haemodynamics.open_ends import conditions_on_graph
+
     from .connectivity import unsolved_pieces
 
+    opened = conditions_on_graph(G).nodes
     pos = _node_pos(G)
     items = []
-    for piece in unsolved_pieces(G, list(inlets), list(outlets)):
+    for piece in unsolved_pieces(G, [*inlets, *opened], [*outlets, *opened]):
         points = _points(G, piece.edges, pos)
         where = (
             f"hangs off node(s) {', '.join(str(n) for n in piece.attached_at)}"

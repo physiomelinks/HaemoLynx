@@ -732,6 +732,33 @@ def test_foreground_labels_read_as_the_label_volume(structure, block):
     assert np.array_equal(labels.coords()[labels.members(some)], np.argwhere(expected == some))
 
 
+def test_foreground_labels_members_are_safe_to_read_from_threads(monkeypatch):
+    """Regression: ``members`` filled its two lookups one after the other, so
+    a thread arriving between them (small-vessel tangential redefinition
+    reads pieces from 8 by default) found the first and not the second, and
+    the Boundaries stage stopped on an AttributeError. Here the second call
+    arrives exactly there."""
+    from haemolynx.preprocessing import slab_labels
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    mask = _blobs((16, 30, 28), 0.15, 1.0, 3)
+    expected = ForegroundLabels(mask, None).members(1)
+    labels = ForegroundLabels(mask, None)
+    real = np.searchsorted
+    interrupted = []
+
+    def searchsorted(*args, **kwargs):
+        if not interrupted:
+            interrupted.append(None)
+            interrupted[0] = labels.members(1)  # another thread, mid-fill
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(slab_labels.np, "searchsorted", searchsorted)
+
+    assert np.array_equal(labels.members(1), expected)
+    assert np.array_equal(interrupted[0], expected)
+
+
 def test_foreground_labels_hold_the_foreground_not_the_volume():
     """The same vessels in four times the stack: the same peak, where a
     label volume's grows with the stack."""
@@ -1361,3 +1388,33 @@ def test_low_ram_cleanup_reconnect_labels_no_volume(tmp_path, monkeypatch):
     assert plain_stats["accepted_bridges"] > 0
     assert np.array_equal(np.asarray(low), plain) and low_stats == plain_stats
     assert np.dtype(np.int32) not in made
+
+
+def test_the_restriction_alignment_check_counts_a_slab_at_a_time(tmp_path, monkeypatch):
+    """`mask & segmented` of the whole volume was a byte a voxel in RAM for
+    each restriction mask, under the low-RAM option too. The same counts."""
+    import tracemalloc
+
+    from haemolynx.preprocessing.thick_vessels import diagnose_mask_restriction_alignment
+
+    shape = (24, 60, 60)
+    segmented = memmap_support.new_memmap_array(shape, bool, directory=tmp_path)
+    segmented[:, 10:50, 10:50] = True
+    mask = memmap_support.new_memmap_array(shape, bool, directory=tmp_path)
+    mask[3:20, 5:45, 5:45] = True
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 60 * 60 * 2)
+
+    tracemalloc.start()
+    try:
+        reports = diagnose_mask_restriction_alignment({"large_arteriole_mask": mask, "empty": None}, segmented)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    whole = np.asarray(mask) & np.asarray(segmented)
+    assert reports == [{
+        "role": "large_arteriole_mask",
+        "mask_voxels": int(np.asarray(mask).sum()),
+        "overlap_voxels": int(whole.sum()),
+        "overlap_fraction": int(whole.sum()) / int(np.asarray(mask).sum()),
+    }]
+    assert peak < whole.size // 4

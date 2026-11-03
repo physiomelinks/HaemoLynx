@@ -167,8 +167,8 @@ haemolynx/
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   statistics_view.py (the left panel's Statistics tab: a
 │   │                       #   button per measure the last run's statistics found, pure),
-│   │                       #   perturbation_editing.py, graph_editor.py
-│   │                       #   + graph_click.py (the Edit window), post_processing.py
+│   │                       #   perturbation_editing.py, graph_click.py
+│   │                       #   (a click -> the vessel under it), post_processing.py
 │   │                       #   (what the "7. Post processing" tab draws, pure), raw_panel.py
 │   │                       #   (its chosen item in its own plane, segmentation beside the
 │   │                       #   raw image, pure), branch_hover.py,
@@ -329,7 +329,9 @@ an output only when that record matches (`ilastik_output_is_current`); file time
 outputs of a different project copied in with an older time. An output with no record (made
 before this) is segmented again once. ilastik is run `--readonly` with `--output_format` from the
 suffix (without it ilastik writes the project's saved format, HDF5 by default), and it names a
-multipage TIFF `.tiff` whatever it is asked for, which is where the runner looks. Checked by hand
+multipage TIFF `.tiff` whatever it is asked for, which is where the runner looks: in a folder of
+its own (`io.ilastik.export_folder`), since the export is named after its input and, in the raw
+image's folder, was the raw image. Checked by hand
 on Windows with ilastik 1.4.1rc2 and Harvey's claudin project (2026-10-22). The generic loader
 still guesses the minority for a user-supplied mask of two labels, now with a warning once per
 label set (`io.load._warn_minority_guess`).
@@ -456,7 +458,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 | Change area | Typical test location |
 |-------------|----------------------|
-| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_vessel_mask_split.py` (the large masks cut by width: tubes of known width, anisotropic grids, the dilation, low-RAM bit for bit, the switches and preflight, a run's tiers, a resumed run cut again), `test_ilastik_vessel_mask_channels.py` (the vessel masks' classifiers given their channels of the raw image: the channel file, reuse, the loader, preflight, the retired input files), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties, a batch of raw images, each image's other files) |
+| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_vessel_mask_split.py` (the large masks cut by width: tubes of known width, anisotropic grids, the dilation, thin masks read on the segmentation, a touching vessel lending no width, low-RAM bit for bit, the switches and preflight, a run's tiers with full and thin masks, a resumed run cut again), `test_ilastik_vessel_mask_channels.py` (the vessel masks' classifiers given their channels of the raw image: the channel file, reuse, the loader, preflight, the retired input files), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties, a batch of raw images, each image's other files) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_tree.py` (the large-stack tree and the join's bounded last resort; digests of the in-RAM skeleton), `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py` (the split, and one fixture per bridge shape of `thick_vessel_bridge_shapes`), `test_thick_bridge_review_grid.py` (the Phase 5 grid's cases), `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_doubled_stretches.py` (trim, zip, rejoin, a pair rewired, a join closing a loop inside one lumen refused), `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), `test_vessel_size_classes.py` (the size convention: the rule, the tagging, the diameter chain's hook, the stages and post processing on `tests/vessel_class_fixtures.py`'s tubes of known width, preflight, the outputs, a whole run), `test_graph_artefacts_tool.py` (the comparison harness, its re-trace and the census by place), `test_graph_crop.py` (vessels clipped at a box's faces, the pieces' sources), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_endothelial_planted.py` (planted vessels read at their lumen at several voxel sizes, walls and blurs), `test_pericyte_measurements.py` (profiles, junction distances and branch resistances on a tube of known width, the export stage, the measured-constriction perturbation, its batch and preflight), `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
@@ -555,7 +557,8 @@ RAM, each worker holds its own volumes.
   swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
   (see `tests/test_anisotropic_voxel_size.py`). A TIFF's size is read from its OME header's
   `PhysicalSizeX/Y/Z` first (units converted), then, axis by axis, from the resolution tags and
-  ImageJ's `spacing` (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
+  ImageJ's `spacing`, in ImageJ's `unit` or a centimetre ResolutionUnit, inches read as microns
+  (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
   unit into the tags of a file given no resolution, so an OME-TIFF's tags say 1 µm whatever its
   voxels are. Masks and main image must align in shape and
   physical voxel units. **Drawing a run has the same split the other way round:** node `pos` and
@@ -709,13 +712,17 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **Large masks split by width** (`io/vessel_mask_split.py`, Harvey's request 2026-11-02) — with
   only large masks given, `split_large_vessel_masks_by_diameter` (shown only while the small-mask
   switch is off; `graph.small_vessel_masks_split_from_large`) cuts each into the part where a ball
-  `large_vessel_mask_split_diameter_um` wide fits (an opening, read with half the coarsest voxel
-  spacing of slack), kept large, and the rest, the small mask of its side; a global mask splits
-  into a global pair. Done after the large masks load (`stages._split_large_vessel_masks`), the
-  load-time dilation added back to the width; no default width (preflight:
+  `large_vessel_mask_split_diameter_um` wide fits **in the run's segmentation**, centred in the
+  same mask (read with half the coarsest voxel spacing of slack), kept large, and the rest, the
+  small mask of its side; a global mask splits into a global pair. The mask gives only the side: a
+  classifier's mask may be far thinner than the vessel (E14.5's). Every caller hands
+  `stages._split_large_vessel_masks` the segmentation (`_SegmentationBoxes`, or the skeletonise
+  stage's binary image). Done after the large masks load, the wide part reaching the load-time
+  dilation past the balls; no default width (preflight:
   `check_large_vessel_mask_split`). The small-mask assignment settings stay hidden at their
   values. `VesselNetwork.mask_split_diameter_um` lets a run resumed on the Boundaries tab cut
-  again when the width changes. Not checked on a marked grid.
+  again when the width changes, and `mask_sources` load a role again when its files, load-time
+  clean-up or global reading change (`stages._vessel_masks_now_in_use`). Not checked on a marked grid.
 - **Branch-order tiers** (`graph/branch_order.py`) — the Large_Art/Large_Ven tier is the vessels
   tagged in a large mask (`graph.LARGE_MASK_VESSEL_TYPE`) that connect to an inlet/outlet through
   tagged vessels. Art/Ven start at the hand-off nodes where a vessel leaves that tier, and run on
@@ -965,7 +972,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   re-judges boundary nodes and dead ends at the touched nodes, assigns branch orders over the whole
   network, then `solve_post_processed`. `apply_network_handling(settings, model, boundaries, network)`
   is the Haemodynamics tab's "Network handling": `boundary_handling` acts on every vessel no
-  inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`) — `leave_unsolved` (default)
+  inlet-to-outlet path runs along (`graph.inlet_to_outlet_vessels`; an open end `open_end_model`
+  may open counts as both, `open_ends.open_ends_in_effect`) — `leave_unsolved` (default)
   marks them `FLOW_SOLVED=False`, `remove_disconnected` deletes them and joins the two vessels left
   where a branch hung (`graph.merge_pass_through`; not at boundary nodes, a bridge, or vessels whose
   mask tags differ), assigning branch orders again and measuring the joined vessels as post
@@ -1047,9 +1055,9 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   more solve (`final_solve=True`), so a vessel's flow is its drop over its reported resistance; a
   caller that re-solves itself passes `final_solve=False`.
 - **`haemodynamics/resistance.py`** — the flow solve and the two-point resistance.
-  `haemodynamics_solver` (`dense` default, or `sparse`) is how *every* flow solve holds the network
+  `haemodynamics_solver` (`sparse` default, or `dense`) is how *every* flow solve holds the network
   (`build_conductance_matrix_from_graph(solver=)`); `equivalent_resistance_solver`
-  (`eigendecomposition` default, or `sparse`, `inf` between unconnected nodes). A dense solver is
+  (`sparse` default, `inf` between unconnected nodes, or `eigendecomposition`). A dense solver is
   warned about when its estimate passes half the free memory (`warn_about_dense_solver_memory`,
   from `build_network` and `solve`), and a synthetic network's or surround's by preflight before
   it is drawn, on the nodes it is planned with (`generate.BedPlan.nodes`,
@@ -1234,7 +1242,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   as set for greying (`BatchSetup.gates`); Load run leaves it, and is refused while a batch runs.
   The Batch run button greys under a synthetic network and while one image runs, never while a
   batch is set or running (`batch_button_greyed`, `RunState.on_change`). Each image's on-disk caches (its decompressed input, checkpoint
-  pickles, thick-vessel region) are deleted once it ends (`batch_run.clear_image_caches`).
+  pickles) are deleted once it ends (`batch_run.clear_image_caches`); its thick-vessel region stays,
+  as a later run loading its skeleton would find it again.
 - **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic,
@@ -1288,7 +1297,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   writes the panel's settings, those away from their defaults, to one YAML file per preset in the
   user's settings folder (`saved_preset_dir`, `HAEMOLYNX_PRESET_DIR`; the tests point it at an
   empty folder). `held_by_saved_presets` is the one rule for what a preset leaves out: files and
-  folders, one image's channels, labels, voxel size, axis order, crop box, nodes and vessels, and
+  folders, one image's channels, labels, voxel size, axis order, every crop setting, nodes and vessels, and
   the switches reusing cached outputs. Loading one is a whole set: what it names, every other
   setting it holds back to its default, the rest left as they are.
 ---

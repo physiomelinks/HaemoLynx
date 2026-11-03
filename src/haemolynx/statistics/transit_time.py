@@ -31,6 +31,7 @@ from ._route_graph import (
     _unavailable,
 )
 from .bifurcation import branch_order_category
+from .flux_heterogeneity import carrying_floor, is_carrying
 
 __all__ = ["TRANSIT_TIME_EDGE_ATTRIBUTES", "compute_transit_times"]
 
@@ -79,14 +80,15 @@ def compute_transit_times(
         return _unavailable("Transit Time", "needs a diameter and length on every vessel", both=both)
 
     pressure = {n: float(G.nodes[n].get("pressure", math.nan)) for n in G.nodes}
-    flow_max = max((float(d["flow_abs"]) for *_r, d in edges), default=0.0)
-    tiny = 1e-12 * flow_max
+    # The one rule for what carries flow: solved, and above the floor (a
+    # vessel the solve balanced to nothing would take forever to cross).
+    floor = carrying_floor(G)
     inflows: dict = defaultdict(list)  # downstream node -> [(upstream, tau, tau_cap, q, edge)]
     outflow: dict = defaultdict(float)  # upstream node -> flow leaving it through vessels
     transit = {}
     for u, v, key, data in edges:
         q = float(data["flow_abs"])
-        if u == v or q <= tiny or math.isnan(pressure[u]) or math.isnan(pressure[v]):
+        if u == v or not is_carrying(data, floor) or math.isnan(pressure[u]) or math.isnan(pressure[v]):
             continue
         upstream, downstream = (u, v) if pressure[u] >= pressure[v] else (v, u)
         radius_m = float(data["diameter_um"]) * 0.5e-6

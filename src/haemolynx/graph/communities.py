@@ -32,16 +32,18 @@ from networkx.algorithms.community import greedy_modularity_communities
 #: apart.
 COMMUNITY_WEIGHTINGS: tuple[str, ...] = ("topology", "resistance", "length", "flow")
 
-#: (source edge attribute, whether to invert it before treating it as a
-#: shortest-path-style distance) for each weighting other than "topology" --
-#: identical to the three distance models
-#: :func:`haemolynx.statistics.network_measures.compute_betweenness_and_community_measurements`
-#: already uses, so a vessel's domain here matches the community count that
-#: report quotes for the same weighting.
+#: (source edge attribute, whether to invert it) for each weighting other
+#: than "topology": how strongly a vessel ties its two ends together, which
+#: modularity reads as an edge's weight (more is a closer tie). Resistance and
+#: length are distances, so a vessel ties by its conductance or 1/length; flow
+#: ties by |flow|. Parallel vessels' ties add, as conductances do. The same
+#: partition the statistics report's community counts quote for the weighting
+#: (:func:`haemolynx.statistics.network_measures.compute_betweenness_and_community_measurements`),
+#: whose betweenness reads the three as distances instead.
 _WEIGHTING_SOURCE_ATTR: dict[str, tuple[str, bool]] = {
-    "resistance": ("resistance", False),
-    "length": ("length", False),
-    "flow": ("flow_abs", True),
+    "resistance": ("resistance", True),
+    "length": ("length", True),
+    "flow": ("flow_abs", False),
 }
 
 #: Above this many nodes, exact greedy-modularity partitioning is replaced by
@@ -72,12 +74,17 @@ def simple_graph_with_edge_attr(
     source_attr: str,
     transform: Optional[Callable[[float], float]] = None,
     target_attr: str = "analysis_weight",
+    combine: str = "min",
 ) -> nx.Graph:
     """Build a simple graph carrying one transformed edge attribute.
 
-    For MultiGraph inputs, parallel edges are collapsed by taking the smallest
-    transformed value, which is appropriate for path-based distance weights.
+    Parallel edges are collapsed by *combine*: ``"min"``, the smallest
+    transformed value, for a path-based distance; ``"sum"``, their total, for
+    a strength (two parallel vessels tie their ends as their conductances
+    add).
     """
+    if combine not in ("min", "sum"):
+        raise ValueError(f"combine must be 'min' or 'sum'; got {combine!r}.")
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     G_s = nx.Graph()
     G_s.add_nodes_from(G.nodes())
@@ -85,31 +92,28 @@ def simple_graph_with_edge_attr(
     if transform is None:
         transform = lambda x: x  # noqa: E731
 
-    if is_mg:
-        best = {}
-        for u, v, _, data in G.edges(keys=True, data=True):
-            raw = data.get(source_attr)
-            if raw is None or raw <= 0:
-                continue
-            transformed = transform(raw)
-            if transformed is None or transformed <= 0:
-                continue
-            uv = tuple(sorted((u, v)))
-            if uv not in best or transformed < best[uv]:
-                best[uv] = float(transformed)
-        for (u, v), val in best.items():
-            G_s.add_edge(u, v, **{target_attr: val})
-    else:
-        for u, v, data in G.edges(data=True):
-            raw = data.get(source_attr)
-            if raw is None or raw <= 0:
-                continue
-            transformed = transform(raw)
-            if transformed is None or transformed <= 0:
-                continue
-            existing = G_s.get_edge_data(u, v, default={}).get(target_attr)
-            if existing is None or transformed < existing:
-                G_s.add_edge(u, v, **{target_attr: float(transformed)})
+    edges = (
+        ((u, v, data) for u, v, _, data in G.edges(keys=True, data=True))
+        if is_mg
+        else G.edges(data=True)
+    )
+    best: dict = {}
+    for u, v, data in edges:
+        raw = data.get(source_attr)
+        if raw is None or raw <= 0:
+            continue
+        transformed = transform(raw)
+        if transformed is None or transformed <= 0:
+            continue
+        uv = (v, u) if (v, u) in best else (u, v)
+        if uv not in best:
+            best[uv] = float(transformed)
+        elif combine == "sum":
+            best[uv] += float(transformed)
+        elif transformed < best[uv]:
+            best[uv] = float(transformed)
+    for (u, v), val in best.items():
+        G_s.add_edge(u, v, **{target_attr: val})
     return G_s
 
 
@@ -125,8 +129,9 @@ def communities_for_weighting(
     is first collapsed to a simple graph -- ``greedy_modularity_communities``
     needs one, and parallel edges carry no extra topological information for
     it anyway). ``"resistance"``/``"length"``/``"flow"`` build a simple graph
-    carrying that one transformed edge attribute (see
-    :func:`simple_graph_with_edge_attr`) and run weighted modularity on it.
+    carrying each vessel's tie -- its conductance, 1/length or |flow|, summed
+    over parallel vessels (see :func:`simple_graph_with_edge_attr`) -- and
+    run weighted modularity on it.
 
     Above *max_nodes_exact*, falls back to connected components (fast and
     stable, if not modular) -- same guard already used for the statistics
@@ -150,7 +155,8 @@ def communities_for_weighting(
         source_attr, inverse = _WEIGHTING_SOURCE_ATTR[weighting]
         transform = (lambda x: 1.0 / x) if inverse else None
         G_s = simple_graph_with_edge_attr(
-            G, source_attr=source_attr, transform=transform, target_attr="analysis_weight"
+            G, source_attr=source_attr, transform=transform, target_attr="analysis_weight",
+            combine="sum",
         )
         weight_kwargs = {"weight": "analysis_weight"}
         exact_method = "greedy_modularity_weighted"

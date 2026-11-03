@@ -296,11 +296,10 @@ def test_naparis_layer_docks_are_titled_with_a_capital(make_napari_viewer):
         assert dock.title.title.text() == title
 
 
-def test_the_view_button_sits_left_of_edit_and_has_a_tooltip(make_napari_viewer):
+def test_the_view_button_sits_left_of_the_run_file_buttons_and_has_a_tooltip(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     view_button = panel._haemolynx_view_button
-    edit_button = panel._haemolynx_edit_button
 
     assert view_button.text == "View controls"
     assert view_button.tooltip == REOPEN_VIEW_TOOLTIP
@@ -308,7 +307,7 @@ def test_the_view_button_sits_left_of_edit_and_has_a_tooltip(make_napari_viewer)
 
     row = panel._haemolynx_run_file_row
     layout = row.layout()
-    assert layout.indexOf(view_button.native) < layout.indexOf(edit_button.native)
+    assert layout.indexOf(view_button.native) < layout.indexOf(panel._haemolynx_save_run_button.native)
 
 
 def test_the_view_button_is_disabled_with_no_viewer():

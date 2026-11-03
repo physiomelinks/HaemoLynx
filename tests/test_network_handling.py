@@ -481,6 +481,32 @@ def test_run_from_the_haemodynamics_tab_applies_the_pruning(monkeypatch):
     assert seen["solve_boundaries"].inlet_nodes == [0]
 
 
+def test_continuing_with_the_haemodynamics_off_exports_no_earlier_flows(monkeypatch):
+    """Regression: unticking run_haemodynamics while a run waited at Post
+    processing, then Continue, left the earlier solve's resistances, flows,
+    flow states and pressures on the network, and the export wrote them. The
+    solve stage runs whenever the haemodynamics are off, and takes them off."""
+    solved = _solve_with_strays(**LEAVE).graph
+    assert all("flow_abs" in data and "resistance" in data for *_e, data in solved.edges(data=True))
+    real_solve = stages.solve
+    _stub_stages(monkeypatch)
+    monkeypatch.setattr(stages, "solve", real_solve)
+    resume = PipelineResume(
+        start_from="post_process", graph=solved, inlet_nodes=(0, 10), outlet_nodes=(2, 3)
+    )
+
+    run_pipeline_stages(
+        dict(run_haemodynamics=False), schema=None, start_from="post_process", resume=resume
+    )
+
+    left = {"flow_abs", "flow_signed", "pressure_drop", "resistance", "conductance",
+            graph_module.FLOW_SOLVED, graph_module.FLOW_STATE}
+    for *_edge, data in solved.edges(data=True):
+        assert not left & set(data)
+    assert all("pressure" not in data for _node, data in solved.nodes(data=True))
+    assert not {"haematocrit_model", "viscosity_law"} & set(solved.graph)
+
+
 # --- the diameters stage calibrates on what will be kept ---------------------
 
 
@@ -634,6 +660,57 @@ def test_the_connector_length_only_shows_with_split_junctions():
     assert setting.default == 0.0 and setting.unit == "um" and setting.advanced
 
 
+def _thick_vessel_with_two_bridges() -> nx.MultiGraph:
+    """Thick vessel 0-1-2 (inlet 0, outlet 2); two bridges leave its
+    centreline node 1 side by side, to capillaries draining to outlets 5 and
+    6: node 1 is a four-way junction, as bridges sharing one centreline node
+    make (thick_vessel_junctions._share_centreline_nodes)."""
+    import numpy as np
+
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    positions = {0: (0, 0, 0), 1: (0, 0, 50), 2: (0, 0, 100), 3: (0, 10, 48), 4: (0, 10, 52),
+                 5: (0, 40, 40), 6: (0, 40, 60)}
+    graph = nx.MultiGraph(image_voxel_size_zyx=(1.0, 1.0, 1.0))
+    for node, pos in positions.items():
+        graph.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v, order, diameter in ((0, 1, "B01", 30.0), (1, 2, "B01", 30.0), (1, 3, None, 30.0),
+                                  (1, 4, None, 30.0), (3, 5, "B02", 5.0), (4, 6, "B02", 5.0)):
+        extra = {"branch_order": order} if order else {IS_ZERO_RESISTANCE: True}
+        length = float(np.linalg.norm(graph.nodes[u]["pos"] - graph.nodes[v]["pos"]))
+        graph.add_edge(u, v, length=length, diameter_um=diameter,
+                       voxels=[list(graph.nodes[u]["pos"]), list(graph.nodes[v]["pos"])], **extra)
+    return graph
+
+
+def test_split_junctions_keeps_two_bridges_joined_to_their_thick_vessel():
+    """Regression: a connector peeling off two thick-vessel bridges took no
+    branch order -- a bridge has none -- so it got no resistance, and the
+    vessels beyond the bridges were cut off from the thick vessel: no flow.
+    Such a connector is a bridge too."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.pipeline import resolve_settings
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(SPLIT, inlet_p_bc=1000.0, outlet_p_bc=0.0, inlet_nodes=[0], outlet_nodes=[2, 5, 6],
+                  all_diams_const=False, diameter_by_branch_order={"B01": 30.0, "B02": 5.0},
+                  do_equiv_resistance_calculation=False)
+    settings = resolve_settings(values, schema=SCHEMA, config_path=None)
+    graph = _thick_vessel_with_two_bridges()
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 5, 6], graph=graph)
+    model = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries)
+    solved = solve(settings, build_haemodynamic_model(settings, model, SCHEMA), boundaries, SCHEMA).graph
+    for end in (5, 6):
+        (data,) = [d for _u, _v, d in solved.edges(end, data=True)]
+        assert data["flow_abs"] > 0, end
+    assert all(data.get("conductance") for _u, _v, data in solved.edges(data=True))
+    (connector,) = [
+        data for _u, _v, data in solved.edges(data=True) if data.get("junction_split_connector")
+    ]
+    assert connector.get(IS_ZERO_RESISTANCE) and connector.get("branch_order") is None
+
+
 def test_split_junctions_leaves_a_network_of_bifurcations_alone():
     graph = _four_way()
     graph.remove_edge(1, 4)
@@ -782,6 +859,58 @@ def test_remove_disconnected_solves_the_network_without_its_dead_ends(haematocri
     assert inflow == pytest.approx(
         solution.graph.edges[1, 2, 0]["flow_abs"] + solution.graph.edges[1, 3, 0]["flow_abs"]
     )
+
+
+def _solve_with_an_open_end(model: str, handling: dict):
+    """The bifurcation with vessel 1-8 running out through the image's y = 0
+    face (node 8 leaves the image), solved under *model* and *handling*."""
+    import numpy as np
+
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE
+    from haemolynx.pipeline import resolve_settings
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(
+        handling, run_haemodynamics=True, open_end_model=model, inlet_p_bc=1000.0, outlet_p_bc=0.0,
+        inlet_nodes=[0], outlet_nodes=[2, 3], all_diams_const=False,
+        diameter_by_branch_order={"B01": 15.0, "B02": 20.0, "B03": 8.0},
+        do_equiv_resistance_calculation=False,
+    )
+    settings = resolve_settings(values, schema=SCHEMA, config_path=None)
+    graph = _bifurcation_and_strays()
+    graph.remove_nodes_from([10, 11, 12, 20, 21])
+    graph.add_node(8, pos=np.asarray((0.0, -50.0, 50.0)), **{DEAD_END_KIND: LEAVES_IMAGE})
+    graph.add_edge(1, 8, key=0, length=50.0, branch_order="B03", diameter_um=8.0,
+                   voxels=[list(graph.nodes[1]["pos"]), [0.0, -50.0, 50.0]])
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3], resistance_node_pair=(0, 2), graph=graph)
+    calibrated = stages.edges_network_handling_keeps(settings, graph, boundaries)
+    model_ = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries)
+    solution = solve(settings, build_haemodynamic_model(settings, model_, SCHEMA), boundaries, SCHEMA)
+    return solution, calibrated
+
+
+@pytest.mark.parametrize("model", ["estimated", "terminal_resistance", "outlet"])
+def test_remove_disconnected_keeps_a_vessel_leaving_the_image_the_solve_opens(model):
+    """Regression: remove_disconnected deleted every vessel leading out of the
+    image -- a dead end that reaches no outlet -- before the open ends were
+    opened, so open_end_model did nothing under it. A vessel leaving the image
+    the model may open counts as an inlet and an outlet, as the solve's flow
+    marks count it: kept, opened and solved, and calibrated on by Diameters."""
+    removed, calibrated = _solve_with_an_open_end(model, REMOVE)
+    assert removed.graph.has_edge(1, 8)
+    assert (1, 8, 0) in calibrated
+    assert removed.statistics["open_ends"]["open_ends"] == 1
+    assert removed.graph.edges[1, 8, 0][graph_module.FLOW_SOLVED] is True
+    assert removed.graph.edges[1, 8, 0]["flow_abs"] > 0
+    left, _calibrated = _solve_with_an_open_end(model, LEAVE)
+    assert left.graph.edges[1, 8, 0]["flow_abs"] == pytest.approx(removed.graph.edges[1, 8, 0]["flow_abs"])
+
+
+def test_remove_disconnected_still_removes_a_vessel_leaving_the_image_when_closed():
+    removed, calibrated = _solve_with_an_open_end("closed", REMOVE)
+    assert not removed.graph.has_edge(1, 8) and 8 not in removed.graph
+    assert (1, 8, 0) not in calibrated
 
 
 DEAD_ENDS = [(1, 4), (4, 5), (2, 6), (6, 7), (2, 7)]

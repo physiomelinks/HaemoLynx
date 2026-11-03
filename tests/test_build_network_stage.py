@@ -149,7 +149,11 @@ def test_the_built_network_warns_when_its_dense_solve_will_not_fit(
     from haemolynx.haemodynamics import resistance
 
     monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 1000)
-    settings = _settings(tmp_path, run_haemodynamics=run_haemodynamics, visualize_results=False)
+    # The dense pair: the defaults (sparse) have nothing to warn about.
+    settings = _settings(
+        tmp_path, run_haemodynamics=run_haemodynamics, visualize_results=False,
+        haemodynamics_solver="dense", equivalent_resistance_solver="eigendecomposition",
+    )
     with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
         network = build_network(settings, _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
 

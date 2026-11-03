@@ -78,9 +78,6 @@ SKELETON = f"{PREFIX}skeleton"
 FWHM_RAW = f"{PREFIX}FWHM image"
 FWHM_PROFILES = f"{PREFIX}FWHM profiles"
 FWHM_WIDTHS = f"{PREFIX}FWHM measured widths"
-#: The "Edit" window's in-progress "Add branch" path, drawn separately from
-#: VESSELS since it is not part of the graph until the draft is committed.
-EDIT_DRAFT = f"{PREFIX}edit draft"
 #: The tissue surface ``measure_tissue_volume`` found in the raw image; from Export.
 TISSUE_SURFACE = f"{PREFIX}tissue surface"
 
@@ -1519,6 +1516,8 @@ class ResultLayers:
         self._emitted = []
         self._thick_vessel_mask = None
         self._raw_segmented_image = None
+        # A low-RAM run's skeleton is on disk: kept, its file stayed in use.
+        self._skeleton = None
 
     def export_state(self) -> dict[str, Any]:
         """Pickle-safe copy of the memory a loaded run needs to look finished.
@@ -1744,40 +1743,20 @@ class ResultLayers:
         graph: Any,
         *,
         stage: str = "edit",
-        draft_points_um: Sequence[Sequence[float]] | None = None,
     ) -> StageLayers:
         """Rebuild the vessels/nodes layers straight from *graph*.
 
         Every other builder here reads a real stage's ``output`` object; the
-        "Edit" window has no such object -- just a graph it just mutated --
-        so this is the one entry point that takes a graph directly instead.
-        The NODES layer built here mirrors :meth:`_from_build_network`'s own
-        (``node_id``/``degree`` features, coloured by degree), since an edit
-        is closest in spirit to a freshly built network, not a haemodynamics
-        result the node layer would otherwise carry.
-
-        *draft_points_um* is the "Add branch" draft's own path so far, if
-        any -- shown as a distinct :data:`EDIT_DRAFT` layer, since the draft
-        is not part of *graph* until it commits. The caller is responsible
-        for removing that layer once there is no longer a draft to show (see
-        ``gui._widget``'s own handling); this only ever adds or updates it.
+        Post processing tab has no such object -- just a graph it just
+        edited -- so this is the one entry point that takes a graph directly
+        instead. The NODES layer built here mirrors
+        :meth:`_from_build_network`'s own (``node_id``/``degree`` features,
+        coloured by degree), since an edit is closest in spirit to a freshly
+        built network, not a haemodynamics result the node layer would
+        otherwise carry.
         """
         self._graph = graph
         layers: list[LayerSpec] = list(self._vessel_layers(stage))
-        if draft_points_um is not None and len(draft_points_um) >= 2:
-            layers.append(
-                LayerSpec(
-                    kind="shapes",
-                    name=EDIT_DRAFT,
-                    data=[np.asarray(draft_points_um, dtype=float)],
-                    options={
-                        "shape_type": ["path"],
-                        "edge_color": "yellow",
-                        "edge_width": 2.0,
-                        "opacity": 0.9,
-                    },
-                )
-            )
         points, ids = node_points(graph)
         degrees = np.asarray([graph.degree(node_id) for node_id in ids], dtype=float)
         layers.append(
@@ -2330,7 +2309,12 @@ class ResultLayers:
                 f"Network resistance (pressure drop / total inflow) "
                 f"{float(network):.4e} Pa.s/m^3."
             )
-        note = " ".join(parts) if parts else "Solved."
+        if parts:
+            note = " ".join(parts)
+        elif pressure is None:
+            note = "Not solved: haemodynamics are off."
+        else:
+            note = "Solved."
         # Network handling may have removed vessels since Diameters drew their
         # lines, and Post processing (which draws through here) edits them.
         layers.extend(self._fwhm_line_layers())

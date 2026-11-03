@@ -26,7 +26,9 @@ from haemolynx.graph.boundaries import (
 from haemolynx.graph.vessel_size_classes import check_size_thresholds, size_class_range
 from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
 from haemolynx.haemodynamics.viscosity import run_diameter_basis
+from haemolynx.haemodynamics.open_ends import ESTIMATED, TERMINAL_RESISTANCE
 from haemolynx.haemodynamics.perturbations import (
+    MEASURED_CONSTRICTION_TYPE,
     perturbation_problems,
     perturbations_from_settings,
 )
@@ -84,12 +86,27 @@ def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     """ilastik is a separate program; if a run needs it, it must be findable."""
     if network_is_synthetic(settings):
         return CheckReport()  # no image: nothing here applies
+    from haemolynx.pipeline.stages import ilastik_segments
+
     report = CheckReport()
-    needed = bool(settings.get("use_ilastik_segmentation")) or ilastik_segments_vessel_masks(
-        settings
-    )
+    needed = ilastik_segments(settings) or ilastik_segments_vessel_masks(settings)
     if not needed:
         return report
+
+    from haemolynx.io.ilastik import OUTPUT_FORMATS
+
+    # What the runner refuses, or cannot name a file in, only once it starts.
+    suffix = settings.get("ilastik_output_suffix")
+    if str(suffix or "").lower() not in OUTPUT_FORMATS:
+        report.add_error(
+            f"ilastik_output_suffix is {suffix!r}; ilastik writes {', '.join(OUTPUT_FORMATS)}. "
+            "Fix: set it to one of them, with its dot."
+        )
+    if settings.get("ilastik_output_dir") in (None, ""):
+        report.add_error(
+            "ilastik segmentation is on but ilastik_output_dir is not set. Fix: set it to "
+            "the folder ilastik's segmentations are written to."
+        )
 
     executable = settings.get("ilastik_executable")
     if not executable:
@@ -278,8 +295,10 @@ def check_input_is_not_a_large_vessel_mask(
     """
     if network_is_synthetic(settings):
         return CheckReport()  # no image: nothing here applies
+    from haemolynx.pipeline.stages import ilastik_segments
+
     report = CheckReport()
-    if settings.get("use_ilastik_segmentation"):
+    if ilastik_segments(settings):
         return report
     input_path = settings.get("input_path")
     if not input_path:
@@ -350,7 +369,7 @@ def check_manual_inlets_outlets_while_masks_choose(
     set_by_hand = [
         name
         for role in ("inlet", "outlet")
-        for name in (f"{role}_node_ids", f"{role}_node_volumes")
+        for name in (f"{role}_node_ids", f"{role}_node_volumes", f"{role}_node_coordinates")
         if settings.get(name)
     ]
     if set_by_hand:
@@ -427,10 +446,10 @@ def check_large_vessel_mask_split(settings: Mapping[str, Any]) -> CheckReport:
         return report
     report.add_pass(
         "large vessel masks split by width",
-        f"each large mask's part at least {diameter:g} um wide stays large, and the "
-        "rest is the small mask of its side, which assigns the arteriole and venule "
-        "boundaries as given small masks would, with the small-vessel settings as "
-        "they stand",
+        f"each large mask's part at least {diameter:g} um wide, read on the segmented "
+        "image, stays large, and the rest is the small mask of its side, which assigns "
+        "the arteriole and venule boundaries as given small masks would, with the "
+        "small-vessel settings as they stand",
     )
     return report
 
@@ -661,6 +680,40 @@ def check_thick_vessel_restriction_prerequisites(
     return report
 
 
+def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
+    """The Haemodynamics tab's values the solve would refuse, or that leave it
+    nothing to do: an open-end value its model cannot use, and boundary
+    pressures that drive no flow or drive it from the outlets."""
+    report = CheckReport()
+    if not settings.get("run_haemodynamics"):
+        return report
+    model = settings.get("open_end_model")
+    multiple = settings.get("open_end_terminal_resistance_multiple")
+    if model == TERMINAL_RESISTANCE and multiple is not None and not float(multiple) > 0:
+        report.add_error(
+            f"open_end_terminal_resistance_multiple is {multiple}: each open end drains through "
+            "that many times its own vessel's resistance, so it must be above 0 "
+            "(open_end_model=outlet holds the open ends at the outlet pressure)."
+        )
+    target = settings.get("open_end_estimate_shear_target_pa")
+    if model == ESTIMATED and target is not None and not float(target) > 0:
+        report.add_error(
+            f"open_end_estimate_shear_target_pa is {target}: the estimate scales its shear term "
+            "by it, so it must be above 0. Leave it unset for the closed solve's median."
+        )
+    inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
+    if inlet is not None and outlet is not None and float(inlet) <= float(outlet):
+        report.add_warning(
+            f"inlet_p_bc ({inlet} Pa) is not above outlet_p_bc ({outlet} Pa): "
+            + (
+                "no pressure difference drives any flow."
+                if float(inlet) == float(outlet)
+                else "blood enters at the outlets and leaves at the inlets, against the branch orders."
+            )
+        )
+    return report
+
+
 def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every configured perturbation must name a type and settings that exist.
 
@@ -736,13 +789,31 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
 
     from haemolynx.io import voxel_size_zyx_from_xyz
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
-    from haemolynx.pipeline.stages import load_volume_for_skeletonise, segment
+    from haemolynx.pipeline.stages import (
+        current_ilastik_output,
+        ilastik_segments,
+        load_volume_for_skeletonise,
+        segment,
+    )
     from haemolynx.preprocessing import score_segmented_mask
     from haemolynx.preprocessing.segmentation_quality import RESOLUTION_LIMITING_THRESHOLD
 
     local_settings = dict(settings)
+    segmented = None
+    if ilastik_segments(settings):
+        # Never segment here: preflight runs on the panel's own thread, and
+        # ilastik can take hours. Only an output a run of these settings
+        # already made is scored.
+        segmented, why_not = current_ilastik_output(settings)
+        if segmented is None:
+            report.add_warning(
+                "min_acceptable_segmentation_quality is set, but ilastik has not yet made "
+                f"the segmented image it would score ({why_not}); it is checked once a run "
+                "has segmented the raw image."
+            )
+            return report
     try:
-        inputs = segment(local_settings)
+        inputs = segment(local_settings, segmented_path=segmented)
         image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             local_settings, inputs.input_format
         )
@@ -856,6 +927,14 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
                 )
         return report
     exists, detail = resolve_existing_path(path)
+    if exists and Path(str(path)).suffix.lower() not in {".tif", ".tiff"}:
+        # Only ilastik reads another format; the build's raw evidence, the
+        # diameters and the checks read a TIFF, so a run would stop there.
+        report.add_error(
+            f"raw_image_path: {detail} is not a TIFF; the network build reads the raw image "
+            "whenever it is set, as a TIFF. Fix: save the raw image as a TIFF, or clear it."
+        )
+        return report
     if exists:
         report.add_pass("raw_image_path", detail)
         return report
@@ -1005,9 +1084,21 @@ def check_pericyte_measurements(settings: Mapping[str, Any]) -> CheckReport:
     """``measure_pericytes`` runs in the export stage, so what would stop it
     there is checked here: a pericyte size range that admits nothing, or
     nothing for it to measure. Whether the mask is there is check_settings'
-    (it must_exist); a synthetic network is check_synthetic_template's."""
+    (it must_exist); a synthetic network is check_synthetic_template's.
+
+    The ``pericyte_measured_constriction`` perturbation reads its pericytes'
+    diameter profiles the same way, whether ``measure_pericytes`` is on or
+    not, so its raw image is checked here too."""
     report = CheckReport()
-    if not settings.get("measure_pericytes") or network_is_synthetic(settings):
+    if network_is_synthetic(settings):
+        return report
+    if settings.get("run_perturbations"):
+        for spec in perturbations_from_settings(settings):
+            if spec.type == MEASURED_CONSTRICTION_TYPE:
+                _check_raw_image_profiles(
+                    report, {**settings, **spec.overrides}, f"The {spec.name} perturbation's "
+                )
+    if not settings.get("measure_pericytes"):
         return report
     low = settings.get("pericyte_measurement_min_diameter_um")
     high = settings.get("pericyte_measurement_max_diameter_um")
@@ -1018,25 +1109,34 @@ def check_pericyte_measurements(settings: Mapping[str, Any]) -> CheckReport:
             "Fix: lower the first or raise the second."
         )
     profiles = bool(settings.get("measure_pericyte_diameter_profiles"))
-    if profiles and settings.get("pericyte_profile_reading") == "raw_image_fwhm":
-        if settings.get("raw_image_path") in (None, ""):
-            report.add_error(
-                "pericyte_profile_reading is raw_image_fwhm, which fits a FWHM across each "
-                "vessel in the raw image, and raw_image_path is not set. Fix: set the raw "
-                "image, or read the profiles off the segmentation."
-            )
-        elif settings.get("raw_image_stain") == "endothelial":
-            report.add_warning(
-                "pericyte_profile_reading is raw_image_fwhm but the raw image stains the vessel "
-                "wall (raw_image_stain: endothelial): a FWHM across a wall stain is not the "
-                "lumen's width."
-            )
+    if profiles:
+        _check_raw_image_profiles(report, settings)
     if not (profiles or settings.get("measure_pericyte_junction_distances")):
         report.add_warning(
             "measure_pericytes is on with both its measurements off: the run lists where each "
             "pericyte sits and measures nothing else."
         )
     return report
+
+
+def _check_raw_image_profiles(report: CheckReport, settings: Mapping[str, Any], reader: str = "") -> None:
+    """Diameter profiles read off the raw image (``pericyte_profile_reading``
+    raw_image_fwhm) need a raw image, and a FWHM across a wall stain is not a
+    lumen. *reader* starts each message when it is not measure_pericytes."""
+    if settings.get("pericyte_profile_reading") != "raw_image_fwhm":
+        return
+    if settings.get("raw_image_path") in (None, ""):
+        report.add_error(
+            f"{reader}pericyte_profile_reading is raw_image_fwhm, which fits a FWHM across each "
+            "vessel in the raw image, and raw_image_path is not set. Fix: set the raw "
+            "image, or read the profiles off the segmentation."
+        )
+    elif settings.get("raw_image_stain") == "endothelial":
+        report.add_warning(
+            f"{reader}pericyte_profile_reading is raw_image_fwhm but the raw image stains the vessel "
+            "wall (raw_image_stain: endothelial): a FWHM across a wall stain is not the "
+            "lumen's width."
+        )
 
 
 def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
@@ -1123,6 +1223,39 @@ def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
         report.add_error(f"Crop on import: {problem}")
     if not problems:
         report.add_pass("crop on import", str(settings.get("crop_method")))
+    return report
+
+
+def check_voxel_size_override(settings: Mapping[str, Any]) -> CheckReport:
+    """A ``voxel_size_override_xyz`` that ``auto`` will not read: the
+    segmented image's own metadata gives every axis's spacing, so the run
+    uses that, whatever the override says. Read from a TIFF's header; any
+    other file, or one not there yet, is not checked."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    import numpy as np
+
+    from haemolynx.io import axis_order_for_run
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    report = CheckReport()
+    override = settings.get("voxel_size_override_xyz")
+    if override is None or str(settings.get("voxel_size_policy", "auto")).lower() != "auto":
+        return report
+    image = _tiff_header(segmented_input_path(dict(settings)), axis_order_for_run(settings))
+    if image is None:
+        return report
+    _shape, metadata_xyz, status = image
+    if str((status or {}).get("status", "missing")).lower() != "complete":
+        return report  # auto reads the override
+    if np.allclose([float(v) for v in override], metadata_xyz, rtol=1e-3, atol=0.0):
+        return report
+    report.add_warning(
+        f"voxel_size_override_xyz {tuple(float(v) for v in override)} um is not used: "
+        "voxel_size_policy is auto and the segmented image's metadata gives its voxel size, "
+        f"{tuple(round(float(v), 6) for v in metadata_xyz)} um (x, y, z). Fix: set "
+        "voxel_size_policy to override to use it, or clear it."
+    )
     return report
 
 
@@ -1386,6 +1519,12 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     # a switch the Input tab hides (an ilastik classifier, a vessel mask) is
     # not demanded, since check_settings reads a path's own gate only.
     skip: tuple[str, ...] = ("raw_image_path",)
+    from haemolynx.pipeline.stages import ilastik_segments
+
+    if settings.get("use_ilastik_segmentation") and not ilastik_segments(settings):
+        # Its switch is out of effect without a raw image (segment reads the
+        # segmented image instead), so the project is not read either.
+        skip += ("ilastik_classifier_path",)
     if network_is_synthetic(settings):
         skip += tuple(
             setting.name for setting in schema if setting.must_exist and setting.name != "synthetic_template_path"
@@ -1406,6 +1545,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_branch_order_steps(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
+    report.extend(check_haemodynamics(settings))
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
     report.extend(check_raw_image(settings))
@@ -1413,6 +1553,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))
+    report.extend(check_voxel_size_override(settings))
     report.extend(check_downsample_on_import(settings))
     report.extend(check_cell_mask_measurement(settings))
     report.extend(check_pericyte_measurements(settings))

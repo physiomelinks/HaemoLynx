@@ -463,6 +463,19 @@ def test_run_scales_the_progress_total_by_max_passes():
     assert search._group_total == _GROUP_TOTAL_UPPER_BOUND * 3
 
 
+def test_the_progress_total_is_never_below_the_sweeps_run():
+    """Regression: a pass with every cleanup step on and every refinement
+    run does more sweeps than the hand-counted bound, and the bar read 46/44."""
+    events = []
+    search = _bare_search()
+    search.progress = events.append
+    search._group_total = 2
+    for _ in range(4):
+        search._sweep("g", "test_setting", [1.0, 2.0], lambda value: value)
+
+    assert all(event.group_index < event.group_total for event in events)
+
+
 def test_optimise_settings_forwards_max_passes_and_reports_passes_run(y_shaped_mask):
     result = optimise_skeleton_and_graph_settings(
         y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
@@ -1171,8 +1184,9 @@ def test_optimise_settings_auto_downsample_uses_the_time_budget_resolver(monkeyp
 
     recorded = {}
 
-    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, starting_values, restriction=None):
+    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, starting_values, restriction=None, min_factor=1):
         recorded["target_seconds"] = target_seconds
+        recorded["min_factor"] = min_factor
         recorded["use_thick_vessel_skeletonisation"] = starting_values["use_thick_vessel_skeletonisation"]
         return search_module._AutoDownsample(
             4, estimated_seconds=123.0, typical_radius_um=9.0, resolution_cap=4,
@@ -1314,6 +1328,34 @@ def test_optimise_settings_runs_for_real_at_an_explicit_downsample_factor(y_shap
     assert result.settings["skeleton_bundle_hub_min_spacing"] == max(
         1, result.settings["skeleton_bundle_scan_size"] // 2
     )
+
+
+def test_the_search_grid_counts_voxels_of_its_own_finest_axis(y_shaped_mask, monkeypatch):
+    """Regression: voxel counts went onto the search grid divided by the
+    reduction of the image's finest axis. At 4x, 0.5 x 0.5 x 1.5 um voxels
+    reduce x and y by 4 and z by 1, so the grid's finest axis is z, at 1.5 um:
+    a scan of 9 voxels of 0.5 um is 3 of the grid's, not 2."""
+    import haemolynx.optimisation.search as search_mod
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def capture(mask, voxel_size_xyz, starting_values, *_args, **_kwargs):
+        seen.update(voxel_size_xyz=voxel_size_xyz, values=dict(starting_values))
+        raise Stop
+
+    monkeypatch.setattr(search_mod, "_Search", capture)
+    with pytest.raises(Stop):
+        optimise_skeleton_and_graph_settings(
+            y_shaped_mask, voxel_size_xyz=(0.5, 0.5, 1.5),
+            starting_values={**_DEFAULT_STARTING_VALUES, "skeleton_bundle_scan_size": 9},
+            downsample_factor=4,
+        )
+
+    assert min(seen["voxel_size_xyz"]) == pytest.approx(1.5)
+    assert seen["values"]["skeleton_bundle_scan_size"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -1730,6 +1772,28 @@ def test_a_sweep_moves_only_for_an_improvement_beyond_the_margin():
 
     assert kept == 2.0
     assert moved == 3.0
+
+
+def test_a_sweep_always_tries_the_current_value():
+    """Regression: a generator's grid could leave the current value out (a
+    bridge-radius smoothing of 10 um against 0/4/8/16), and the sweep then
+    moved it whatever it scored: every candidate tying, it took the first."""
+    search = _bare_search()
+    search.current["test_setting"] = 10.0
+
+    kept = search._sweep("g", "test_setting", [0.0, 4.0, 8.0, 16.0], lambda value: 1.0)
+
+    assert kept == 10.0
+    tried = [t for t in search.trials if t.setting == "test_setting"]
+    assert [t.value for t in tried] == [0.0, 4.0, 8.0, 16.0, 10.0]
+    assert [t.incumbent for t in tried] == [False, False, False, False, True]
+    # It can still be beaten, by more than the margin.
+    search.current["test_setting"] = 10.0
+    assert search._sweep("g", "test_setting", [4.0], {4.0: 0.5, 10.0: 1.0}.get) == 4.0
+    # An unset value is not offered where the candidates offer none.
+    search.current["test_setting"] = None
+    search._sweep("g", "test_setting", [1.0, 2.0], lambda value: 1.0)
+    assert [t.value for t in search.trials if t.setting == "test_setting"][-2:] == [1.0, 2.0]
 
 
 def test_chosen_index_rules():
@@ -2757,3 +2821,69 @@ def test_a_full_resolution_search_is_refused_only_when_it_would_not_fit():
     assert "100 x 200 x 300" in refusal
     assert f"about {needed / 1e9:.1f} GB" in refusal
     assert "Optimisation downsampling is Off" in refusal and "Auto" in refusal
+
+
+def test_the_finest_grid_fitting_in_memory():
+    from haemolynx.optimisation import finest_factor_fitting_memory
+    from haemolynx.optimisation.search import FULL_RESOLUTION_SEARCH_BYTES_PER_VOXEL as PER_VOXEL
+
+    shape, voxel = (100, 100, 100), (1.0, 1.0, 1.0)
+    assert finest_factor_fitting_memory(shape, voxel, None) == 1  # free memory unknown
+    assert finest_factor_fitting_memory(shape, voxel, 100**3 * PER_VOXEL) == 1
+    assert finest_factor_fitting_memory(shape, voxel, 100**3 * PER_VOXEL - 1) == 2
+    assert finest_factor_fitting_memory(shape, voxel, 50**3 * PER_VOXEL - 1) == 4
+    assert finest_factor_fitting_memory(shape, voxel, 1) == 16  # none fits: the coarsest
+
+
+def test_auto_never_searches_finer_than_its_floor(y_shaped_mask):
+    """Regression: under the low-RAM option Auto's resolution cap could
+    resolve to full resolution, and the memory refusal only stopped "Off"."""
+    result = optimise_skeleton_and_graph_settings(
+        y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
+        groups=(), min_downsample_factor=4,
+    )
+    assert result.downsample_factor >= 4
+
+
+def test_a_thick_trial_takes_the_low_ram_path_when_the_run_draws_the_large_stack_tree(tmp_path):
+    """Regression: the large-stack tree is drawn on the low-RAM path alone,
+    and a trial held in RAM drew the in-RAM tree instead of the run's."""
+    from haemolynx.optimisation.search import _thick_vessel_kwargs
+    from haemolynx.pipeline import default_schema
+
+    settings = {setting.name: setting.default for setting in default_schema()}
+    voxel = (1.0, 1.0, 1.0)
+
+    plain = _thick_vessel_kwargs(settings, voxel)
+    assert not plain["large_stack_tree"] and "use_memmap" not in plain
+
+    large = _thick_vessel_kwargs(
+        {
+            **settings,
+            "use_memmap_loading": True,
+            "memmap_directory": tmp_path,
+            "skeleton_thick_vessel_large_stack_tree": True,
+        },
+        voxel,
+    )
+    assert large["large_stack_tree"] and large["use_memmap"] is True
+    assert large["memmap_directory"] == tmp_path
+
+
+def test_the_report_names_the_finishing_steps_settings_not_at_their_defaults():
+    """Regression: only the four argument builders were read for the note,
+    so a search judged with the interior dead ends removed or the lost
+    skeleton re-traced did not say so."""
+    from haemolynx.optimisation.search import _not_at_their_defaults_note
+    from haemolynx.pipeline import default_schema
+
+    defaults = {setting.name: setting.default for setting in default_schema()}
+    settings = {
+        **defaults,
+        "remove_interior_dead_ends": not defaults["remove_interior_dead_ends"],
+        "retrace_lost_skeleton": not defaults["retrace_lost_skeleton"],
+    }
+
+    (note,) = _not_at_their_defaults_note(settings)
+
+    assert "remove_interior_dead_ends=" in note and "retrace_lost_skeleton=" in note
