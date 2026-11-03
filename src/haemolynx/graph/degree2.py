@@ -347,6 +347,7 @@ def create_trivial_merged_edge(
 def duplicate_parallel_edges(
     G: nx.MultiGraph,
     inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    nodes: Optional[Iterable[Any]] = None,
 ) -> List[Tuple[Any, Any, Any]]:
     """The ``(u, v, key)`` edges that repeat another edge between the same two
     nodes: the same vessel twice (``are_paths_similar``: within 3 um of each
@@ -360,7 +361,7 @@ def duplicate_parallel_edges(
     """
     duplicates: List[Tuple[Any, Any, Any]] = []
     seen = set()
-    for u, v in G.edges():
+    for u, v in (G.edges() if nodes is None else G.edges([n for n in nodes if n in G])):
         if u == v or (u, v) in seen or G.number_of_edges(u, v) < 2:
             continue
         seen.update({(u, v), (v, u)})
@@ -387,12 +388,14 @@ def duplicate_parallel_edges(
 def remove_duplicate_parallel_edges(
     G: nx.MultiGraph,
     inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    nodes: Optional[Iterable[Any]] = None,
 ) -> int:
-    """Remove every edge :func:`duplicate_parallel_edges` names; how many.
+    """Remove every edge :func:`duplicate_parallel_edges` names (of those at
+    *nodes*, when given); how many.
 
     Never disconnects anything: each removed edge leaves the one it repeats.
     """
-    duplicates = duplicate_parallel_edges(G, inside_lumen)
+    duplicates = duplicate_parallel_edges(G, inside_lumen, nodes)
     for u, v, key in duplicates:
         G.remove_edge(u, v, key=key)
     return len(duplicates)
@@ -475,7 +478,9 @@ def smart_multigraph_degree2_removal(
     total_removed = duplicates_removed = 0
     only = None if nodes is None else list(dict.fromkeys(nodes))
     for iteration in range(max_iterations):
-        duplicates_removed += remove_duplicate_parallel_edges(G, inside_lumen)
+        # With *nodes*, only the edges at them: a merge asked for there took a
+        # loop's arc anywhere in the graph (the re-trace's loops included).
+        duplicates_removed += remove_duplicate_parallel_edges(G, inside_lumen, only)
         removed_this_iter = 0
 
         for node in list(G.nodes()) if only is None else only:

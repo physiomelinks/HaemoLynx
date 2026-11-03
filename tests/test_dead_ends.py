@@ -701,3 +701,25 @@ def test_every_face_test_reads_a_2d_image_as_having_no_z_faces():
     depth, _leaves = nr._face_readers(G, pos, None, None)
     assert depth(1) == pytest.approx(29.0)  # x = 30 in a 60 um plane: 29 um from the x = 59 face
     assert _vessels_within_face_margin(G, 5.0) == []
+
+
+def test_merging_the_junctions_a_removal_left_touches_no_loop_elsewhere():
+    """Regression: the merge's duplicate pass ran over the whole graph, so a
+    removal far away took one arc of every two-edge loop in it (the
+    re-trace's restored loops included)."""
+    import networkx as nx
+
+    from haemolynx.graph.degree2 import smart_multigraph_degree2_removal
+
+    G = nx.MultiGraph()
+    for node, pos in {"A": (0, 0, 0), "B": (0, 0, 20), "C": (0, 50, 0), "D": (0, 50, 10), "E": (0, 50, 20)}.items():
+        G.add_node(node, pos=np.array(pos, dtype=float))
+    G.add_edge("A", "B", voxels=[[0, 0, 0], [0, 1, 10], [0, 0, 20]], length=20.1)
+    G.add_edge("A", "B", voxels=[[0, 0, 0], [0, -1, 10], [0, 0, 20]], length=20.1)
+    G.add_edge("C", "D", voxels=[[0, 50, 0], [0, 50, 10]], length=10.0)
+    G.add_edge("D", "E", voxels=[[0, 50, 10], [0, 50, 20]], length=10.0)
+
+    smart_multigraph_degree2_removal(G, None, max_degree=None, nodes=["D"])
+
+    assert "D" not in G and G.has_edge("C", "E")
+    assert G.number_of_edges("A", "B") == 2
