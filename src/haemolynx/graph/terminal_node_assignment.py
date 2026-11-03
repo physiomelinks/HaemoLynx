@@ -512,7 +512,10 @@ def _fill_label_gaps(
                 if touching[name].get(u, set()) - {edge_id} and touching[name].get(v, set()) - {edge_id}:
                     options.append((fraction, name))
             if options:
-                added.append((max(options)[1], edge_id))
+                # The larger fraction; on a tie the first of *names* (the
+                # arteriole, or the large mask), as _apply_edge_labels does.
+                best = max(options, key=lambda option: (option[0], -names.index(option[1])))
+                added.append((best[1], edge_id))
         if not added:
             return filled
         for name, edge_id in added:

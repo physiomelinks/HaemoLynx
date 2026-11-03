@@ -279,6 +279,30 @@ def test_the_small_masks_alone_assign_the_boundaries(tmp_path):
     assert boundaries.large_arteriole_mask is None
 
 
+@pytest.mark.parametrize("method, listed", [("node_ids", [999]), ("coordinates", [(5.0, 5.0, 5.0)])])
+def test_a_manual_vessel_boundary_list_is_not_read_while_the_small_masks_choose(
+    tmp_path, method, listed
+):
+    """Regression: the panel greys the Arteriole and Venule tabs while the
+    small masks choose those boundaries, and a batch does not read them; but
+    the stage still picked from their lists first, so node IDs left from an
+    earlier build stopped the run, before the masks' boundaries replaced them."""
+    names = {"node_ids": "arteriole_boundary_node_ids", "coordinates": "arteriole_boundary_node_coordinates"}
+    settings = _small_mask_settings(
+        tmp_path,
+        automated_vessel_assignment=True,
+        arteriole_boundary_selection_method=method,
+        **{names[method]: listed},
+    )
+    expected = _small_mask_settings(tmp_path, automated_vessel_assignment=True)
+    assign_boundaries(expected, _network_with_small_masks(tmp_path))
+
+    assign_boundaries(settings, _network_with_small_masks(tmp_path))
+
+    assert settings["arteriole_boundary_nodes"] == expected["arteriole_boundary_nodes"]
+    assert settings["venule_boundary_nodes"] == expected["venule_boundary_nodes"]
+
+
 # --- a run resumed on the Boundaries tab ------------------------------------
 
 
@@ -325,6 +349,127 @@ def test_a_resumed_network_loads_the_masks_of_a_role_switched_on(tmp_path):
     np.testing.assert_array_equal(np.asarray(now.small_arteriole_mask) != 0, arteriole != 0)
     np.testing.assert_array_equal(np.asarray(now.small_venule_mask) != 0, venule != 0)
     assert now.large_arteriole_mask is None
+
+
+def _mask_file(path, shape, box):
+    mask = np.zeros(shape, dtype=np.uint8)
+    mask[box] = 255
+    tifffile.imwrite(path, mask)
+    return path, mask != 0
+
+
+def _large_mask_run(tmp_path, **overrides):
+    """A run's settings with the large masks in use and every load-time
+    clean-up off, so a loaded mask is its file."""
+    return {
+        **SCHEMA.defaults(),
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "large_vessel_mask_dilation_microns": 0.0,
+        "large_vessel_min_component_volume_um3": 0.0,
+        "large_vessel_swap_minority_components": False,
+        "large_vessel_remove_small_opposite_attached_components": False,
+        "exclude_smaller_overlapping_volumes": False,
+        "plot_dir": tmp_path,
+        **overrides,
+    }
+
+
+def _volume(tmp_path, shape=(10, 10, 10), voxel=1.0, downsample=None):
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    image = np.zeros(shape, dtype=np.uint8)
+    return SkeletonisedVolume(
+        image=image,
+        skeleton=image.copy(),
+        voxel_size_xyz=(voxel,) * 3,
+        voxel_size_zyx=(voxel,) * 3,
+        output_dir=tmp_path,
+        downsample=downsample,
+    )
+
+
+def test_masks_switched_on_in_a_resumed_downsampled_run_are_reduced_onto_its_grid(tmp_path):
+    """Regression: the masks loaded for a role ticked since the run it resumes
+    were read without the image's reduction, so on a downsampled image the
+    run stopped: the mask's whole shape is not the reduced image's."""
+    from haemolynx.io import clear_vessel_mask_cache
+    from haemolynx.io.downsample import Downsample, block_reduce_volume
+
+    clear_vessel_mask_cache()
+    whole = (10, 10, 10)
+    arteriole_path, arteriole = _mask_file(tmp_path / "a.tif", whole, np.s_[0:4, 4:8, 4:8])
+    venule_path, venule = _mask_file(tmp_path / "v.tif", whole, np.s_[6:10, 4:8, 4:8])
+    downsample = Downsample(2, (2, 2, 2), whole, (1.0, 1.0, 1.0))
+    network = VesselNetwork(
+        graph=_chain_with_large_vessel_masks()[0],
+        volume=_volume(tmp_path, shape=downsample.shape_zyx, voxel=2.0, downsample=downsample),
+    )
+    settings = _large_mask_run(
+        tmp_path, large_arteriole_mask_path=arteriole_path, large_venule_mask_path=venule_path
+    )
+
+    try:
+        now = _vessel_masks_now_in_use(settings, network)
+    finally:
+        clear_vessel_mask_cache()
+
+    assert np.array_equal(now.large_arteriole_mask, block_reduce_volume(arteriole, (2, 2, 2), "majority"))
+    assert np.array_equal(now.large_venule_mask, block_reduce_volume(venule, (2, 2, 2), "majority"))
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["another arteriole file", "a venule file entered", "a load-time dilation"],
+)
+def test_a_resumed_network_loads_its_masks_again_when_what_they_are_read_from_changed(
+    tmp_path, change
+):
+    """Regression: a run resumed on the Boundaries tab kept the masks of the
+    run it resumed whenever their role was still in use, so another mask file,
+    a load-time clean-up setting changed, or a venule mask entered beside a
+    global one went unread -- the last stopping the run for want of a venule
+    mask, the others assigning the boundaries from the old masks."""
+    from haemolynx.io import clear_vessel_mask_cache
+    from haemolynx.pipeline.stages import build_network
+
+    clear_vessel_mask_cache()
+    shape = (10, 10, 10)
+    first_path, first = _mask_file(tmp_path / "a1.tif", shape, np.s_[0:3, 4:6, 4:6])
+    second_path, second = _mask_file(tmp_path / "a2.tif", shape, np.s_[0:5, 3:7, 3:7])
+    venule_path, venule = _mask_file(tmp_path / "v.tif", shape, np.s_[7:10, 4:6, 4:6])
+    before = _large_mask_run(
+        tmp_path,
+        large_arteriole_mask_path=first_path,
+        large_venule_mask_path=None if change == "a venule file entered" else venule_path,
+    )
+    after = {
+        "another arteriole file": {"large_arteriole_mask_path": second_path},
+        "a venule file entered": {"large_venule_mask_path": venule_path},
+        "a load-time dilation": {"large_vessel_mask_dilation_microns": 1.0},
+    }[change]
+    try:
+        network = build_network(
+            before, _volume(tmp_path), SCHEMA, resumed_graph=_chain_with_large_vessel_masks()[0]
+        )
+        now = _vessel_masks_now_in_use({**before, **after}, network)
+        unchanged = _vessel_masks_now_in_use(before, network)
+    finally:
+        clear_vessel_mask_cache()
+
+    expected = {
+        "another arteriole file": second,
+        "a venule file entered": first,
+        "a load-time dilation": None,
+    }[change]
+    if expected is None:
+        assert np.count_nonzero(now.large_arteriole_mask) > np.count_nonzero(first)
+    else:
+        assert np.array_equal(np.asarray(now.large_arteriole_mask) != 0, expected)
+    assert now.large_venule_mask is not None
+    assert np.array_equal(np.asarray(now.large_venule_mask) != 0, venule) or change == "a load-time dilation"
+    # Nothing changed: the masks the network holds are handed on as they are.
+    assert unchanged is network
 
 
 def test_a_synthetic_network_uses_no_vessel_masks_whatever_the_switches_hold():

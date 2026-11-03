@@ -178,6 +178,26 @@ def test_an_under_covered_edge_between_two_arteriole_edges_is_arteriole():
     assert result["arteriole_boundary_nodes"] == [4]
 
 
+@pytest.mark.parametrize(
+    "names, first",
+    [(("arteriole", "venule"), "arteriole"), (("large", "small"), "large")],
+)
+def test_a_gap_equally_in_both_masks_goes_to_the_first_as_a_labelled_edge_does(names, first):
+    """Regression: the gap fill broke a tie by name, so the venule (and in the
+    global tagging the small mask) took an edge equally in both, where an edge
+    over the threshold in both goes to the arteriole (the large mask)."""
+    from haemolynx.graph.terminal_node_assignment import _fill_label_gaps
+
+    # 0-1 and 2-3 one type, 1-5 and 2-6 the other; the gap 1-2 between them.
+    edges = [(u, v, (u, v, 0), {}) for u, v in ((0, 1), (1, 5), (1, 2), (2, 3), (2, 6))]
+    labelled = {names[0]: {(0, 1, 0), (2, 3, 0)}, names[1]: {(1, 5, 0), (2, 6, 0)}}
+
+    _fill_label_gaps(edges, {(1, 2, 0): (0.4, 0.4)}, labelled, low_fraction=0.25, names=names)
+
+    assert edges[2][3]["mask_vessel_type"] == first
+    assert (1, 2, 0) in labelled[first]
+
+
 def test_an_uncovered_edge_between_two_arteriole_edges_is_left_a_gap():
     """Hysteresis, not a blanket fill: an edge with too little of itself in
     the mask -- a capillary linking two arteriole branches -- keeps no type."""

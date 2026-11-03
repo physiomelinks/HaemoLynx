@@ -635,25 +635,34 @@ def select_large_vessel_stump_terminal_nodes(
     large_venule_mask: np.ndarray,
     voxel_size_zyx: tuple[float, float, float],
     image_shape: tuple[int, ...],
+    min_component_fraction: float = 0.0,
+    segmentation: np.ndarray | None = None,
 ) -> tuple[list[Any], list[Any]]:
     """Inlet/outlet nodes at the large-vessel masks' own image-edge stumps.
 
-    Both sides of :func:`select_large_vessel_mask_stump_terminal_nodes_for_role`.
+    Both sides of :func:`select_large_vessel_mask_stump_terminal_nodes_for_role`,
+    the outlets chosen from the nodes the inlets did not take, as the
+    Boundaries stage chooses them.
     """
+    shared = dict(
+        voxel_size_zyx=voxel_size_zyx,
+        image_shape=image_shape,
+        min_component_fraction=min_component_fraction,
+        segmentation=segmentation,
+    )
     inlet_nodes = select_large_vessel_mask_stump_terminal_nodes_for_role(
         G,
         large_arteriole_mask,
         node_role="inlet",
-        voxel_size_zyx=voxel_size_zyx,
-        image_shape=image_shape,
         coordinates_setting_name="large_arteriole_mask stump",
+        **shared,
     )
     outlet_nodes = select_large_vessel_mask_stump_terminal_nodes_for_role(
         G,
         large_venule_mask,
         node_role="outlet",
-        voxel_size_zyx=voxel_size_zyx,
-        image_shape=image_shape,
         coordinates_setting_name="large_venule_mask stump",
+        exclude_nodes=inlet_nodes,
+        **shared,
     )
     return inlet_nodes, outlet_nodes

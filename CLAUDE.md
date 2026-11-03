@@ -715,7 +715,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   load-time dilation added back to the width; no default width (preflight:
   `check_large_vessel_mask_split`). The small-mask assignment settings stay hidden at their
   values. `VesselNetwork.mask_split_diameter_um` lets a run resumed on the Boundaries tab cut
-  again when the width changes. Not checked on a marked grid.
+  again when the width changes, and `mask_sources` load a role again when its files, load-time
+  clean-up or global reading change (`stages._vessel_masks_now_in_use`). Not checked on a marked grid.
 - **Branch-order tiers** (`graph/branch_order.py`) — the Large_Art/Large_Ven tier is the vessels
   tagged in a large mask (`graph.LARGE_MASK_VESSEL_TYPE`) that connect to an inlet/outlet through
   tagged vessels. Art/Ven start at the hand-off nodes where a vessel leaves that tier, and run on

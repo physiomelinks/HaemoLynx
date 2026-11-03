@@ -241,6 +241,10 @@ class VesselNetwork:
     #: (`graph.large_vessel_mask_split_diameter_um`), None when they were not:
     #: a run resumed on the Boundaries tab cuts them again when it changed.
     mask_split_diameter_um: float | None = None
+    #: What each role's masks were read from and cleaned with
+    #: (`_vessel_mask_sources`): a run resumed on the Boundaries tab loads a
+    #: role again when it changed. None when not recorded: kept as they are.
+    mask_sources: dict[str, tuple] | None = None
 
 
 @dataclass(frozen=True)
@@ -1182,6 +1186,24 @@ def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[
         # Read onto disk and cleaned a slab at a time under the low-RAM option.
         "use_memmap": bool(settings.get("use_memmap_loading", False)),
         "memmap_directory": settings.get("memmap_directory"),
+    }
+
+
+def _vessel_mask_sources(settings: Mapping[str, Any]) -> dict[str, tuple]:
+    """Each role's masks as the settings describe them: the loader's arguments
+    (files, ilastik, voxel size, load-time clean-up), the width they are split
+    at, and whether the run reads every mask as one global mask. The settings
+    sit on the Boundaries tab but the masks load in ``build_network``, so a
+    network keeps this (`VesselNetwork.mask_sources`) for a run resumed there
+    to tell masks it can keep from ones it must load again."""
+    common = (
+        io.vessel_masks_are_global(settings),
+        graph.large_vessel_mask_split_diameter_um(settings),
+    )
+    return {
+        role: common
+        + tuple(sorted((name, repr(value)) for name, value in _vessel_mask_arguments(settings, role).items()))
+        for role in graph.boundaries.VESSEL_MASK_SWITCHES
     }
 
 
@@ -2531,6 +2553,7 @@ def build_network(
             small_arteriole_mask=small_arteriole_mask,
             small_venule_mask=small_venule_mask,
             mask_split_diameter_um=mask_split_diameter_um,
+            mask_sources=_vessel_mask_sources(settings),
         )
 
     if settings["do_graph_building"]:
@@ -2730,6 +2753,7 @@ def build_network(
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
         mask_split_diameter_um=mask_split_diameter_um,
+        mask_sources=_vessel_mask_sources(settings),
     )
 
 
@@ -3591,14 +3615,17 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
         settings["large_vessel_outlet_nodes"][:] = list(auto_outlet_nodes)
     used_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
-    if _vessel_boundary_configured(settings, "arteriole"):
+    # While the small masks are in use (global ones included) the panel greys
+    # these manual lists and a batch does not read them: neither does the run.
+    manual_vessel_boundaries = not graph.vessel_masks_in_use(settings, "small")
+    if manual_vessel_boundaries and _vessel_boundary_configured(settings, "arteriole"):
         art_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "arteriole_boundary", exclude_nodes=list(used_nodes)
         )
         settings["arteriole_boundary_nodes"].extend(art_boundary)
         used_nodes.update(settings["arteriole_boundary_nodes"])
 
-    if _vessel_boundary_configured(settings, "venule"):
+    if manual_vessel_boundaries and _vessel_boundary_configured(settings, "venule"):
         ven_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "venule_boundary", exclude_nodes=list(used_nodes)
         )
@@ -8456,7 +8483,11 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
     is loaded, so the boundaries are assigned -- and the viewer draws -- what
     the Boundaries tab now says. Masks split by width (``split_large_vessel_masks_by_diameter``)
     at another width than now asked, or split where they now are not, or not
-    where they now are, are loaded and cut again.
+    where they now are, are loaded and cut again; so are a role's masks whose
+    files, load-time clean-up or global reading changed (`_vessel_mask_sources`).
+    They are placed on the network's grid as ``build_network`` places them:
+    cut to its crop box, reduced by its downsample, one global mask each when
+    the run reads them so.
     """
     volume = network.volume
     changes: dict[str, Any] = {}
@@ -8464,6 +8495,17 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
     cut_otherwise = split != network.mask_split_diameter_um
     if cut_otherwise:
         changes["mask_split_diameter_um"] = split
+    sources = _vessel_mask_sources(settings)
+    on_disk = dict(
+        use_memmap=bool(settings.get("use_memmap_loading", False)),
+        memmap_directory=settings.get("memmap_directory"),
+    )
+
+    def as_read(arteriole, venule):
+        if io.vessel_masks_are_global(settings):
+            return io.as_global_vessel_mask(arteriole, venule, **on_disk), None
+        return arteriole, venule
+
     for role in graph.boundaries.VESSEL_MASK_SWITCHES:
         arteriole, venule = f"{role}_arteriole_mask", f"{role}_venule_mask"
         held = getattr(network, arteriole) is not None or getattr(network, venule) is not None
@@ -8475,12 +8517,17 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
                     network.graph.graph.pop("large_arteriole_mask_voxel_size_xyz", None)
                     network.graph.graph.pop("large_venule_mask_voxel_size_xyz", None)
             continue
-        if held and not cut_otherwise:
+        # Without a record (a network not built by build_network) the masks
+        # it holds are taken to be the ones asked for.
+        read_otherwise = network.mask_sources is not None and (
+            network.mask_sources.get(role) != sources[role]
+        )
+        if held and not cut_otherwise and not read_otherwise:
             continue
         if role == "small" and split is not None:
             continue  # cut from the large masks as they loaded
         if held:
-            logger.info(f"The {role}-vessel masks are split otherwise now: loading them again.")
+            logger.info(f"The {role}-vessel masks are read or split otherwise now: loading them again.")
         else:
             logger.info(f"The {role}-vessel masks are on now: loading them.")
         loaded_arteriole, loaded_venule, arteriole_size, venule_size = (
@@ -8489,21 +8536,23 @@ def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNe
                 image_shape=volume.image.shape,
                 main_voxel_size_xyz=volume.voxel_size_xyz,
                 crop=getattr(volume, "crop", None),
+                downsample=getattr(volume, "downsample", None),
             )
         )
         if role == "large" and split is not None:
-            (
-                loaded_arteriole,
-                loaded_venule,
-                changes["small_arteriole_mask"],
-                changes["small_venule_mask"],
-            ) = _split_large_vessel_masks(settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz)
+            loaded_arteriole, loaded_venule, *small = _split_large_vessel_masks(
+                settings, loaded_arteriole, loaded_venule, volume.voxel_size_xyz
+            )
+            changes["small_arteriole_mask"], changes["small_venule_mask"] = as_read(*small)
+        loaded_arteriole, loaded_venule = as_read(loaded_arteriole, loaded_venule)
         changes[arteriole], changes[venule] = loaded_arteriole, loaded_venule
         if role == "large":
             _record_graph_voxel_metadata(
                 network.graph, volume.voxel_size_xyz, volume.voxel_size_zyx,
                 loaded_arteriole, loaded_venule, arteriole_size, venule_size,
             )
+    if changes:
+        changes["mask_sources"] = sources
     return replace(network, **changes) if changes else network
 
 

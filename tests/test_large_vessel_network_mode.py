@@ -97,6 +97,32 @@ def test_select_large_vessel_stump_terminal_nodes_ignores_interior_dead_end():
     assert outlets == []
 
 
+def test_the_two_sided_stump_call_never_gives_one_node_both_roles():
+    """Regression: the outlet side was not told the inlet side's nodes, which
+    the per-role call's *exclude_nodes* is for, so two stumps whose nearest
+    terminal was the same one made it both the inlet and the outlet."""
+    arteriole = np.zeros((12, 40, 100), dtype=bool)
+    venule = np.zeros_like(arteriole)
+    arteriole[3:8, 8:13, 0:20] = True
+    venule[3:8, 18:23, 0:20] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(5.0, 15.0, 40.0))
+    G.add_node(1, pos=(5.0, 15.0, 90.0))
+    G.add_edge(0, 1, voxels=[(5.0, 15.0, float(x)) for x in range(40, 91)])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # both stumps fall back to a distant end
+        inlets, outlets = select_large_vessel_stump_terminal_nodes(
+            G,
+            large_arteriole_mask=arteriole,
+            large_venule_mask=venule,
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            image_shape=arteriole.shape,
+        )
+
+    assert inlets and not set(inlets) & set(outlets)
+
+
 def test_select_large_vessel_mask_stump_terminal_nodes_for_role_matches_the_two_sided_call():
     """select_large_vessel_stump_terminal_nodes is now a thin wrapper calling
     this once per side -- pinned equal for one side, on the same fixture."""
