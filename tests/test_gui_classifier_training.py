@@ -40,12 +40,12 @@ def _rgb(name):
     return np.array(LABEL_COLOURS[name][:3])
 
 
-def test_large_vessels_are_dark_and_small_ones_light_arterioles_red_venules_green():
+def test_large_vessels_are_dark_and_small_ones_light_arterioles_red_venules_blue():
     for size in ("Large", "Small"):
         r, g, b = _rgb(f"{size} arteriole")
         assert r > g and r > b
         r, g, b = _rgb(f"{size} venule")
-        assert g > r and g > b
+        assert b > r and b > g
     assert _rgb("Large arteriole").sum() < _rgb("Small arteriole").sum()
     assert _rgb("Large venule").sum() < _rgb("Small venule").sum()
     r, g, b = _rgb("Capillary")
