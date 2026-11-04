@@ -80,7 +80,7 @@ from haemolynx.io.load import _to_binary_volume_for_skeletonization
 from .fwhm_search import _fresh_template, _has_mask_widths, _representative_edges
 from .progress import GROUP_FINISHED, ProgressCallback
 from .scorecard import ScoreRow
-from .search import OptimisationResult, _SweepBookkeeping
+from .search import OptimisationResult, _SweepBookkeeping, _schema_defaults
 from .trial_cache import TrialCache
 
 #: The groups this search runs, in order: the gate first, since it decides
@@ -365,6 +365,8 @@ def _measurement_config(
         for name, value in starting_values.items()
         if name.startswith("edt_") or name == "use_edt_diameter_crosscheck"
     }
+    # Unset, the cross-check is a run's: its default, as the Diameters stage reads it.
+    edt.setdefault("use_edt_diameter_crosscheck", _schema_defaults()["use_edt_diameter_crosscheck"])
     walls = {
         name: value for name, value in starting_values.items() if name.startswith("endothelial_")
     }

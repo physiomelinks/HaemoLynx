@@ -6934,7 +6934,11 @@ SCHEMA = Schema(
         Setting(
             name="use_edt_diameter_crosscheck",
             kind="bool",
-            default=False,
+            # On (Harvey, 2026-11-04): FWHM then starts from each vessel's mask
+            # width, and the FWHM optimiser's trials with it. Off, they had
+            # none, and the search traded the planted vessels' accuracy for
+            # two of five decoys (docs/notes/diameters_and_haemodynamics.md).
+            default=True,
             help="Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against the raw-image measurement (FWHM, or the endothelial wall fit)",
             section=_EDT_DIAMETER,
             # Seeding FWHM's own first-pass guess and flagging disagreement

@@ -150,3 +150,36 @@ Harvey asked for every finding. Two of them move results:
 - With the distributed haematocrit and `open_end_model=estimated`, the open ends are estimated
   again from the resistances the loop left, and the flows solved once more; the haematocrit stays
   the loop's. Before, the conditions came from the resistances of one uniform haematocrit.
+
+## The mask cross-check on by default (2026-11-04)
+
+Harvey's choice, of four, once the FWHM optimiser's accuracy test
+(`tests/test_fwhm_optimisation_accuracy.py`) had failed on every Linux job since `152a17fb`. With
+`use_edt_diameter_crosscheck` off, the default until then, a run measured no mask widths before
+FWHM, so FWHM started every vessel from one global guess; `152a17fb` made the optimiser's trials do
+the same, as they had kept mask widths no such run has. Without a first guess, the averaging sweep
+on the test's scene (five tubes, so five decoys) scored no averaging along the vessel best: it gave
+no decoy a width, against two of five at 4 and 8 um, and that term (1.0 x 0.4) outweighed the
+planted vessels' worse width error (2.0 x 0.101 against 2.0 x 0.080). The real vessels then read
+0.089 -> 0.116 off (0.088 -> 0.111 scored without a first guess, as such a run measures them).
+Keeping the mask widths in the trials passed, 0.089 -> 0.083, but made trials and run differ
+again; reweighting the score and more decoys were the other options.
+
+On, a run measures each vessel's width in its segmentation before FWHM. FWHM starts from it
+(`fwhm_diameter_guess_edge_attribute`), a FWHM width far from it is flagged
+(`edt_fwhm_disagreement_warn_ratio`), and where FWHM fails the mask width stands in before the
+class median and the table (`edt_diameter_prefer_over_table_on_fwhm_failure`). Both optimisers read
+an unset cross-check as the default (`_measurement_config`), and the example configs say true. On
+the test's scene the search now takes a good start from 0.089 to 0.083 (averaging 4 -> 8 um,
+sample spacing 2 -> 4 um, three accepted samples, half-extent 8.5 um). The cost is the mask
+measurement, about 37 s on E14.5 with workers (2026-10-22). A default run's diameters, and so its
+resistances, differ from one before this wherever FWHM failed or started from the global guess.
+
+Turning it on by default showed three places that read it where nothing had: a synthetic
+network now reads it as off (it has no segmentation to measure; `_haemodynamics_apply_config`),
+a run resumed without its segmentation warns and measures no mask widths instead of stopping
+(`load_edt_mask_volume`), and the mask measurement shares FWHM's sample spacing and aggregation,
+which are shown whenever the network is a segmented image. Its workers also start on most runs
+now (64 vessels or more): on Windows a script that runs the pipeline at its top level, as the
+exported tutorial does, is re-run by each one, and under Python 3.10 the pool then hangs. A
+script needs a `__main__` guard, as the examples have.

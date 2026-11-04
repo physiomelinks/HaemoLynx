@@ -973,7 +973,7 @@ def test_mask_widths_a_run_no_longer_measures_are_not_the_trials_first_guess(mul
         G,
         raw_tiff_path=raw_path,
         voxel_size_zyx=(1.0, 1.0, 1.0),
-        starting_values=_fwhm_starting_values(),
+        starting_values=_fwhm_starting_values(use_edt_diameter_crosscheck=False),
         sample_edge_count=4,
     )
 

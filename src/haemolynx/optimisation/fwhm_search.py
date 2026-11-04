@@ -70,7 +70,7 @@ from . import fwhm_candidates as cand
 from . import fwhm_metrics as met
 from .progress import ProgressCallback
 from .scorecard import ScoreRow
-from .search import OptimisationResult, _SweepBookkeeping
+from .search import OptimisationResult, _SweepBookkeeping, _schema_defaults
 from .trial_cache import TrialCache
 
 #: The eight independently selectable groups this search runs, in the order
@@ -351,6 +351,8 @@ def _measurement_config(
         for name, value in starting_values.items()
         if name.startswith("edt_") or name == "use_edt_diameter_crosscheck"
     }
+    # Unset, the cross-check is a run's: its default, as the Diameters stage reads it.
+    edt.setdefault("use_edt_diameter_crosscheck", _schema_defaults()["use_edt_diameter_crosscheck"])
     fwhm = {name: value for name, value in starting_values.items() if name not in edt}
     fwhm.update(use_fwhm_edge_diameters=True, fwhm_raw_tiff_path=raw_tiff_path, fwhm_raw_channel=raw_channel)
     return HaemodynamicsApplyConfig(
