@@ -335,9 +335,11 @@ def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
 
 def test_use_memmap_loading_row_reads_as_a_low_ram_option():
     """The setting name says how it works (memory-mapped files); the row says
-    what a user picks it for, and that it costs speed."""
+    what a user picks it for, and that it costs disk space."""
     fields = {f.name: f for f in fields_for(SCHEMA)}
-    assert fields["use_memmap_loading"].label == "Low RAM option for large networks (Slow)"
+    assert fields["use_memmap_loading"].label == (
+        "Low RAM option for large networks (High disk space usage)"
+    )
 
 
 def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():

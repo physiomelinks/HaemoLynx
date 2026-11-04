@@ -544,7 +544,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "ide_plot_mode": "IDE plot mode",
     "hold_ide_plots_open": "Hold IDE plots open",
     "use_thick_vessel_skeletonisation": "Use alternate skeletonisation for thick vessels",
-    "use_memmap_loading": "Low RAM option for large networks (Slow)",
+    "use_memmap_loading": "Low RAM option for large networks (High disk space usage)",
     "measurement_3d_to_cell_mask": "Measure distance between vessels and 3D object mask",
     "measure_tissue_volume": "Measure tissue volume from the raw image (for vessel density)",
     "mid_run_postprocessing": "Mid-run postprocessing",
