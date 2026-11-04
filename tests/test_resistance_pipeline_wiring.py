@@ -99,9 +99,21 @@ def test_empty_constriction_map_leaves_global_factor_alone(pipeline):
 
 def test_an_explicit_diameter_table_is_left_alone(pipeline):
     settings = pipeline.resolve_settings(
-        overrides={"diameter_by_branch_order": {"B01": 3.0}}
+        overrides={"all_diams_const": False, "diameter_by_branch_order": {"B01": 3.0}}
     )
     assert settings["diameter_by_branch_order"] == {"B01": 3.0}
+
+
+def test_a_ticked_constant_box_replaces_an_explicit_diameter_table(pipeline):
+    """The committed config ticks "all diameters constant", which hides the
+    table's row: every order then takes the default diameter."""
+    settings = pipeline.resolve_settings(
+        overrides={"diameter_by_branch_order": {"B01": 3.0}}
+    )
+    assert settings["all_diams_const"] is True
+    table = settings["diameter_by_branch_order"]
+    assert set(table.values()) == {settings["default_diameter"]}
+    assert len(table) > 1
 
 
 def test_the_plot_directory_is_derived_from_the_base_plot_directory(pipeline):
