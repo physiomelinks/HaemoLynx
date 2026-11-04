@@ -137,13 +137,16 @@ def decoy_probe_graph(
     rng: np.random.Generator,
     guide_attribute: str | None = "edt_diameter_um",
     copy_attributes=(),
+    seed_guess: bool = True,
 ) -> nx.MultiGraph | None:
     """A graph of one edge per decoy of *edges* (see :func:`decoy_centrelines`),
     ready to measure, or ``None`` when none fits beside its vessel.
 
-    Each decoy edge carries its guide width as *guide_attribute* and a copy of
-    its own edge's *copy_attributes*, so a measurement guided by any of those
-    reads it as it would the vessel.
+    Each decoy edge carries a copy of its own edge's *copy_attributes*, and
+    its guide width as *guide_attribute* where its vessel has one of its own
+    (and *seed_guess*), so a measurement guided by any of those reads it as
+    it would the vessel: FWHM's first guess at a vessel with no mask width
+    is the run's one global guess, and so is its decoy's.
     """
     decoys = decoy_centrelines(
         G, edges, vessel_mask, voxel_size_zyx, rng=rng, guide_attribute=guide_attribute
@@ -157,7 +160,7 @@ def decoy_probe_graph(
                  "length": float(np.sum(np.linalg.norm(np.diff(line, axis=0), axis=1)))}
         source = G.edges[edge]
         attrs.update({name: source[name] for name in copy_attributes if name in source})
-        if guide_attribute:
+        if guide_attribute and seed_guess and _positive(source.get(guide_attribute)):
             attrs[guide_attribute] = guide
         probe.add_edge(2 * index, 2 * index + 1, key=0, **attrs)
     return probe

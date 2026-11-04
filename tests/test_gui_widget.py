@@ -1060,7 +1060,7 @@ def test_scaling_the_layer_does_not_change_what_the_run_is_told(
     assert values["voxel_size_policy"] != "override"
 
 
-def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
+def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel, tmp_path):
     """Shared ilastik rows move between Input and Boundaries.
 
     Showing a magicgui row with no Qt parent opens a top-level window next to
@@ -1106,6 +1106,13 @@ def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
 
     # The block's own Advanced button open, so every shared row can show.
     widget._haemolynx_advanced["shared:ilastik"].toggle(True)
+    # The main ilastik hosts the rows only with a raw image to segment.
+    import numpy as np
+    import tifffile
+
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, np.zeros((4, 8, 8), dtype=np.uint8))
+    rows["raw_image_path"].value = raw
     rows["use_ilastik_segmentation"].value = True
     QApplication.processEvents()
     select_tab("Input")
@@ -1481,3 +1488,64 @@ def test_the_raw_image_rows_grey_out_on_every_tab_while_no_raw_image_is_entered(
         assert "'raw_image_path'" not in rows[name].tooltip, name
     assert shown("input_path") is False
     assert shown("ilastik_classifier_path") is True
+
+
+# --- the checks off the panel's thread ------------------------------------------
+
+
+def test_run_checks_runs_off_the_panels_thread_and_reports(panel, qtbot, monkeypatch):
+    """Regression: the checks ran on the panel's thread, which froze while
+    the quality score read the whole image or a template was loaded."""
+    import threading
+    from types import SimpleNamespace
+
+    import haemolynx.gui._widget as widget_module
+
+    widget, _viewer = panel
+    threads = []
+
+    def checks(settings, schema):
+        threads.append(threading.current_thread())
+        return SimpleNamespace(ok=False, errors=["input_path does not exist"], warnings=["one warning"])
+
+    monkeypatch.setattr(widget_module, "preflight", checks)
+    widget._haemolynx_run_checks()
+    qtbot.waitUntil(lambda: "FAILED" in widget._haemolynx_report(), timeout=20000)
+
+    assert threads and threads[0] is not threading.main_thread()
+    assert widget._haemolynx_report() == "FAILED: input_path does not exist\nwarning: one warning"
+    qtbot.waitUntil(lambda: widget._haemolynx_check_button.enabled, timeout=5000)
+
+
+def test_a_run_whose_checks_read_the_image_checks_off_the_panels_thread(panel, qtbot, monkeypatch, tmp_path):
+    import threading
+    from types import SimpleNamespace
+
+    import haemolynx.gui._widget as widget_module
+    from haemolynx.gui.run_state import CHECKS_FAILED_NOTHING_RUN
+
+    widget, _viewer = panel
+    rows = widget._haemolynx_rows()
+    rows["input_path"].value = tmp_path / "stack.tif"
+    rows["output_dir"].value = tmp_path / "out"
+    rows["min_acceptable_segmentation_quality"].value = 5.0
+    threads, ran = [], []
+    verdict = {"ok": False}
+
+    def checks(settings, schema):
+        threads.append(threading.current_thread())
+        return SimpleNamespace(ok=verdict["ok"], errors=[], warnings=[])
+
+    monkeypatch.setattr(widget_module, "preflight", checks)
+    monkeypatch.setattr(widget_module, "run_pipeline_stages", lambda *a, **k: ran.append(1))
+
+    widget._haemolynx_run()
+    qtbot.waitUntil(lambda: widget._haemolynx_report() == CHECKS_FAILED_NOTHING_RUN, timeout=20000)
+    assert threads[-1] is not threading.main_thread() and not ran
+    qtbot.waitUntil(lambda: widget._haemolynx_run_button.enabled, timeout=5000)
+
+    verdict["ok"] = True
+    widget._haemolynx_run()
+    qtbot.waitUntil(lambda: bool(ran), timeout=20000)
+    qtbot.waitUntil(lambda: not widget._haemolynx_run_state.running, timeout=20000)
+    assert threads[-1] is not threading.main_thread()

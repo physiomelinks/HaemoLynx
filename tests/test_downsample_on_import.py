@@ -1037,3 +1037,35 @@ def test_the_stage_checks_against_the_floor_on_its_grid(tmp_path, monkeypatch):
     block = int(np.prod(volume.downsample.axis_factors_zyx))
     assert block > 1
     assert captured == [max(1, int(np.floor(40 / block + 0.5)))]
+
+
+@pytest.mark.parametrize("raw_factor", [2, 4])
+def test_the_segmentation_read_again_from_disk_is_reduced_as_import_reduced_it(tmp_path, raw_factor):
+    """Regression: a Diameters stage without the segmentation in memory read
+    it from disk and placed it on the network's grid as a raw image is
+    placed -- block mean, at the raw image's factor -- so any block a vessel
+    touched became vessel and the mask's widths came out wide. It is now
+    reduced by block majority, as import reduced it, whatever the raw
+    image's factor."""
+    import networkx as nx
+    import tifffile
+
+    from haemolynx.haemodynamics.apply import (
+        HaemodynamicsApplyConfig,
+        load_edt_mask_volume_like_graph,
+    )
+    from haemolynx.io.downsample import block_reduce_volume, downsample_for, record_on_graph
+
+    rng = np.random.default_rng(3)
+    mask = rng.random((8, 8, 8)) < 0.3
+    path = tmp_path / "segmented.tif"
+    tifffile.imwrite(path, mask.astype(np.uint8))
+    G = nx.MultiGraph()
+    record_on_graph(G, downsample_for(2, mask.shape, (1.0, 1.0, 1.0)), raw_factor=raw_factor)
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": {"B01": 4.0}}, edt={"edt_mask_path": path}
+    )
+
+    read = load_edt_mask_volume_like_graph(config, G)
+
+    np.testing.assert_array_equal(read, block_reduce_volume(mask, (2, 2, 2), "majority"))

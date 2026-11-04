@@ -179,7 +179,7 @@ def test_optimise_fwhm_settings_hands_the_worker_the_runs_segmented_image(
 ):
     """The segmented image the skeletonise stage kept is what the optimiser
     places decoys and reads the mask's own widths from; a run with no such
-    checkpoint (a loaded one) optimises without them."""
+    checkpoint (a loaded one) hands none, and the worker reads it from disk."""
     import numpy as np
 
     from haemolynx.gui.stage_checkpoints import StageCheckpoint
@@ -266,6 +266,7 @@ def test_the_fwhm_optimiser_measures_with_the_runs_config_and_calibration_edges(
     monkeypatch.setattr(
         widget_mod, "optimise_fwhm_settings", lambda graph, **kwargs: calls.append(kwargs) or "done"
     )
+    monkeypatch.setattr(widget_mod, "_run_segmentation_on_its_grid", lambda _settings: None)
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
     schema = default_schema()
@@ -302,6 +303,53 @@ def test_the_settings_the_fwhm_optimiser_reads_are_real_settings():
     from haemolynx.pipeline.schema import SCHEMA
 
     assert set(widget_mod._FWHM_OPTIMISER_READS) <= {setting.name for setting in SCHEMA}
+
+
+@pytest.mark.parametrize("optimiser", ["optimise_fwhm_settings", "optimise_endothelial_settings"])
+def test_after_load_run_the_diameter_optimisers_read_the_runs_segmentation(
+    monkeypatch, tmp_path, optimiser
+):
+    """Regression: a loaded run keeps no segmented image in memory, so both
+    optimisers ran their trials without one -- no line stopped at the vessel
+    beside, and no decoys or planted vessels -- where a run resumed there
+    reads it from disk. They now read it as the run's skeletonise does: cut
+    and reduced onto its grid, binarised."""
+    import numpy as np
+    import tifffile
+
+    from haemolynx.pipeline import default_schema, resolve_settings
+
+    calls = []
+    monkeypatch.setattr(widget_mod, optimiser, lambda graph, **kwargs: calls.append(kwargs) or "done")
+    segmented = np.zeros((4, 6, 8), dtype=np.uint8)
+    segmented[1:3, 2:4, 1:7] = 255
+    segmented_file = tmp_path / "segmented.tif"
+    tifffile.imwrite(segmented_file, segmented)
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    schema = default_schema()
+    endothelial = optimiser == "optimise_endothelial_settings"
+    settings = resolve_settings(
+        {
+            "input_path": segmented_file,
+            "raw_image_path": raw_file,
+            "raw_image_stain": "endothelial" if endothelial else "plasma_column",
+            "measure_diameters_from_raw_image": True,
+        },
+        schema=schema,
+        config_path=None,
+    )
+    run_for = (
+        widget_mod._optimise_endothelial_settings_for_run if endothelial
+        else widget_mod._optimise_fwhm_settings_for_run
+    )
+
+    run_for(
+        _branched_graph(), (1.0, 1.0, 1.0), settings, schema, boundaries=None, progress=None,
+        groups=None, vessel_mask=None, sample_edge_count=None, max_passes=1,
+    )
+
+    np.testing.assert_array_equal(calls[0]["vessel_mask"], segmented > 0)
 
 
 def test_clicking_the_native_fwhm_button_triggers_optimisation(panel, monkeypatch, tmp_path):
@@ -487,21 +535,87 @@ def test_an_fwhm_proposal_applies_only_on_apply(panel):
     review = panel._haemolynx_optimise_fwhm_review
     applied = []
     message = review.propose(
-        SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda: applied.append(1)
+        SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), applied.append
     )
 
     assert message.startswith("Optimised FWHM settings ready to review below: 1 change.")
     assert applied == []
     review.apply()
-    assert applied == [1]
+    assert applied == [("fwhm_min_fit_r2",)]
     assert panel._haemolynx_report() == "Applied the optimised FWHM settings."
+
+
+def test_apply_writes_only_the_settings_the_review_listed(panel):
+    """Regression: Apply wrote every setting the optimiser returned, so a
+    row the review said would not change, edited since, was put back."""
+    from types import SimpleNamespace
+
+    review = panel._haemolynx_optimise_fwhm_review
+    model = panel._haemolynx_rows()["fwhm_profile_model"].value
+    written = []
+    review.propose(
+        SimpleNamespace(
+            settings={"fwhm_min_fit_r2": 0.5, "fwhm_profile_model": model}, scorecard=()
+        ),
+        written.append,
+    )
+
+    review.apply()
+
+    assert written == [("fwhm_min_fit_r2",)]
+
+
+def test_apply_writes_the_listed_settings_and_leaves_a_row_edited_since(panel, monkeypatch, tmp_path):
+    """The run's own writer, as the finished optimisation hands it to the
+    review: Apply writes what the review listed and nothing else, so a row
+    edited after the review keeps the edit."""
+    from haemolynx.optimisation.search import OptimisationResult
+
+    def finish_at_once(_run, *, run_state, cancel_flag, finished, **_kwargs):
+        run_state.start(worker=None, cancel_flag=cancel_flag)
+        finished((result, raw_file))
+
+    monkeypatch.setattr(widget_mod, "_start_optimisation_worker", finish_at_once)
+    rows = panel._haemolynx_rows()
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    rows["raw_image_path"].value = raw_file
+    rows["measure_diameters_from_raw_image"].value = True
+    panel._haemolynx_view.results = _fake_results(_tiny_graph())
+    unchanged = rows["fwhm_min_accepted_samples"].value
+    result = OptimisationResult(
+        settings={"fwhm_min_fit_r2": 0.5, "fwhm_min_accepted_samples": unchanged}, trials=()
+    )
+
+    panel._haemolynx_optimise_fwhm_settings()
+    review = panel._haemolynx_optimise_fwhm_review
+    assert review.pending
+    rows["fwhm_min_accepted_samples"].value = unchanged + 3  # edited after the review
+    review.apply()
+
+    assert rows["fwhm_min_fit_r2"].value == pytest.approx(0.5)
+    assert rows["fwhm_min_accepted_samples"].value == unchanged + 3
+
+
+def test_loading_a_config_drops_a_pending_fwhm_proposal(panel, tmp_path):
+    """Its changes were listed against the settings the config replaces."""
+    from types import SimpleNamespace
+
+    review = panel._haemolynx_optimise_fwhm_review
+    review.propose(SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda _names: None)
+    config = tmp_path / "config.yaml"
+    config.write_text("fwhm_min_fit_r2: 0.9\n", encoding="utf-8")
+
+    panel._haemolynx_load_config(config)
+
+    assert not review.pending
 
 
 def test_on_clear_drops_a_pending_fwhm_proposal(panel):
     from types import SimpleNamespace
 
     review = panel._haemolynx_optimise_fwhm_review
-    review.propose(SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda: None)
+    review.propose(SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda _names: None)
 
     panel._haemolynx_clear(ask=False)
 

@@ -665,7 +665,7 @@ def test_bifurcating_network_produces_a_pinned_median_haematocrit_signature():
 # --- end to end through the pipeline stages ---------------------------------
 
 
-def _solve_bifurcation(distribute: bool, graph: nx.MultiGraph | None = None):
+def _solve_bifurcation(distribute: bool, graph: nx.MultiGraph | None = None, progress=None, **extra):
     """`stages.build_haemodynamic_model` + `stages.solve` on the bifurcation
     (or on *graph*, one an earlier solve left), with haematocrit_model
     distributed_iterative or fixed."""
@@ -699,9 +699,10 @@ def _solve_bifurcation(distribute: bool, graph: nx.MultiGraph | None = None):
             "diameter_by_branch_order": {"B01": 15.0, "B02": 20.0, "B03": 8.0},
         }
     )
+    values.update(extra)
     settings = resolve_settings(values, schema=schema, config_path=None)
     model = build_haemodynamic_model(settings, model, schema)
-    return solve(settings, model, boundaries, schema)
+    return solve(settings, model, boundaries, schema, progress=progress)
 
 
 def test_solve_stage_with_the_toggle_on_converges_and_changes_resistances():
@@ -1110,3 +1111,84 @@ def test_the_haematocrit_loop_logs_its_repeated_passes_at_debug(caplog):
     # Each pass after the first, and the final solve.
     assert said("[flow-solve]", logging.DEBUG) == passes
     assert said("[haematocrit-distribution] iteration", logging.INFO) == passes - 1
+
+
+
+class _Reporter:
+    """A stage's progress reporter: records each step, and raises as a
+    watching panel's callback does once its run is asked to stop."""
+
+    def __init__(self, stop_at: str | None = None):
+        self.steps, self.stop_at = [], stop_at
+
+    def step(self, label, total=None, next_step=None):
+        self.steps.append(label)
+        if label == self.stop_at:
+            raise KeyboardInterrupt(label)
+
+
+def test_the_solve_reports_each_haematocrit_pass_and_can_be_stopped_between_them():
+    """The haematocrit loop, and the two-point resistance after it, ran
+    inside one stage with nothing reported: the panel showed no progress, and
+    could stop a run only once the whole stage had finished. Each pass is
+    reported, and a stop asked for during one ends the loop there."""
+    reporter = _Reporter()
+    solution = _solve_bifurcation(True, progress=reporter)
+    passes = solution.statistics["haematocrit_distribution"]["iterations"]
+    assert reporter.steps == [f"Haematocrit pass {n}" for n in range(1, passes + 1)]
+
+    stopping = _Reporter(stop_at="Haematocrit pass 2")
+    with pytest.raises(KeyboardInterrupt):
+        _solve_bifurcation(True, progress=stopping)
+    assert stopping.steps == ["Haematocrit pass 1", "Haematocrit pass 2"]
+
+
+def test_a_run_hands_the_solve_its_stage_reporter(monkeypatch):
+    """run_pipeline_stages gives the solve the reporter of its own stage, so
+    the steps above reach the progress callback as the solve's."""
+    from types import SimpleNamespace
+
+    from haemolynx.pipeline import run_pipeline_stages, stages
+    from haemolynx.pipeline.progress import STAGES, STEP
+
+    for stage in STAGES:
+        if stage.call and stage.call != "solve":
+            monkeypatch.setattr(stages, stage.call, lambda *a, **k: SimpleNamespace(
+                graph=None, large_arteriole_mask=None, large_venule_mask=None))
+
+    def solve(settings, model, boundaries, schema, progress=None):
+        progress.step("Haematocrit pass 1")
+        return SimpleNamespace(graph=None)
+
+    monkeypatch.setattr(stages, "solve", solve)
+    events = []
+    run_pipeline_stages({}, schema=None, progress=events.append)
+    assert [(e.stage, e.step) for e in events if e.kind == STEP] == [("solve", "Haematocrit pass 1")]
+
+
+
+def test_custom_edges_and_bridges_keep_their_resistances_through_the_haematocrit_loop():
+    """Every resistance pass of the loop must end with the final overrides,
+    as the build before it does: a custom edge at its fixed width (with the
+    haematocrit the loop gave it) and a thick-vessel bridge at the negligible
+    value. Without them the loop reverted the custom edge to its own width,
+    and no test noticed."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.haemodynamics.apply import ZERO_RESISTANCE_FRACTION
+
+    G = _bifurcating_network()
+    del G.edges[0, 1, 0]["branch_order"]
+    G.edges[0, 1, 0][IS_ZERO_RESISTANCE] = True  # the inlet's vessel, as a bridge
+    # A custom edge is always 6 um wide (DIAMETER_DEFAULTS); its own is 8.
+    solution = _solve_bifurcation(True, graph=G, custom_edges=[(1, 3)])
+    assert solution.statistics["haematocrit_distribution"]["iterations"] > 1
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    custom = G.edges[1, 3, 0]
+    assert custom["resistance"] == pytest.approx(
+        model.resistance_of_uniform_segment(
+            custom["length"], 6.0, haematocrit=custom["discharge_haematocrit"]
+        ),
+        rel=1e-12,
+    )
+    vessels = [d["resistance"] for *_e, d in G.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)]
+    assert G.edges[0, 1, 0]["resistance"] == pytest.approx(min(vessels) * ZERO_RESISTANCE_FRACTION, rel=1e-12)

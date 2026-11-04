@@ -69,6 +69,10 @@ def resolve_voxel_size_xyz(
         return override_xyz, "manual_override"
     # The one outcome where a 1.0 default reaches the run, so the one place to
     # warn: the loader cannot, as it does not know an override is coming.
+    # Not for a 2D image's z, its finest in-plane spacing (io.load_2d): a
+    # stack of one has no extent along it to be wrong.
+    if (metadata_status or {}).get("z_from_in_plane") and _axes_without_metadata(metadata_status) == ["z"]:
+        return metadata_voxel_size_xyz, "metadata_fallback"
     axes = ", ".join(_axes_without_metadata(metadata_status))
     logger.warning(
         "No voxel spacing in the image metadata for %s; running on 1.0 micron there "

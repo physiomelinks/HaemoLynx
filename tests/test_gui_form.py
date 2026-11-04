@@ -312,7 +312,9 @@ def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
         assert shared.hide_when_unmet, name
         assert name in SHARED_ILASTIK_SETTING_SET
         assert not shared.is_visible({"use_ilastik_segmentation": False}), name
-        assert shared.is_visible({"use_ilastik_segmentation": True}), name
+        assert shared.is_visible({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}), name
+        # Ticked with no raw image, it segments nothing: no rows for it.
+        assert not shared.is_visible({"use_ilastik_segmentation": True}), name
 
 
 def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
@@ -366,7 +368,21 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
 def test_shared_ilastik_host_prefers_input_then_boundaries():
     assert shared_ilastik_host({}) is None
     assert shared_ilastik_host({"use_ilastik_segmentation": False}) is None
-    assert shared_ilastik_host({"use_ilastik_segmentation": True}) == "input"
+    assert shared_ilastik_host({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}) == "input"
+    # Ticked with no raw image, main ilastik segments nothing: no host for it,
+    # and a vessel-mask classifier's rows go to Boundaries (below).
+    assert shared_ilastik_host({"use_ilastik_segmentation": True}) is None
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": True,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": True,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        == "boundaries"
+    )
     assert (
         shared_ilastik_host(
             {
@@ -407,6 +423,7 @@ def test_shared_ilastik_host_prefers_input_then_boundaries():
         shared_ilastik_host(
             {
                 "use_ilastik_segmentation": True,
+                "raw_image_path": "raw.tif",
                 "use_ilastik_large_vessel_segmentation": True,
             }
         )
@@ -455,6 +472,7 @@ def test_shared_ilastik_shows_on_boundaries_when_hidden_on_input():
     # Both main and vessel: Input hosts; Boundaries does not duplicate.
     both = {
         "use_ilastik_segmentation": True,
+        "raw_image_path": "raw.tif",
         "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
         "use_ilastik_large_vessel_segmentation": True,
@@ -697,7 +715,8 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     assert "diameter_by_branch_order" not in shown
     assert "measure_diameters_from_raw_image" in shown
     assert "do_fwhm_measurement" not in shown
-    assert "fwhm_sample_spacing_along_edge_um" not in shown
+    # The mask's widths sample at FWHM's spacing too, so it shows with FWHM off.
+    assert "fwhm_sample_spacing_along_edge_um" in shown
 
     const_off = {**const_on, "all_diams_const": False}
     shown = visible_diameter_settings(SCHEMA, const_off)
@@ -736,8 +755,13 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
 # entirely (stamp_edge_diameters falls back to the EDT estimate for every
 # edge, not just ones FWHM measured and failed on) -- only
 # use_edt_diameter_crosscheck itself gates them.
-_EDT_CHILDREN = (
-    "edt_diameter_prefer_over_table_on_fwhm_failure",
+_EDT_CHILDREN = ("edt_diameter_prefer_over_table_on_fwhm_failure",)
+# How the mask is read: by the cross-check, and also by the endothelial ring
+# fit (its junction zones) and the size convention without haemodynamics, so
+# no prerequisite.
+_EDT_READING = (
+    "edt_diameter_method",
+    "edt_min_resolvable_diameter_um",
     "edt_junction_proximity_exclusion_um",
 )
 # Unlike the above, comparing FWHM against EDT genuinely needs both
@@ -786,6 +810,11 @@ def test_edt_diameter_crosscheck_works_standalone_or_nested_under_fwhm():
     for name in (*_EDT_CHILDREN, _EDT_FWHM_ONLY_CHILD):
         assert name not in shown
 
+    # How the mask is read shows whatever the cross-check says.
+    for values in (no_haemo, edt_on_fwhm_off, both_on, fwhm_on_edt_off):
+        shown = visible_diameter_settings(SCHEMA, values)
+        assert all(name in shown for name in _EDT_READING)
+
 
 _MEASUREMENT_3D_CHILDREN = (
     "cell_mask_path",
@@ -826,8 +855,10 @@ def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
     parent = fields["measurement_3d_to_cell_mask"]
-    assert not parent.hide_when_unmet
     assert parent.is_visible({})
+    # Lined up with the run's image: gone for a synthetic network, which
+    # preflight refused it on after showing it.
+    assert not parent.is_visible({"network_source": "synthetic"})
     assert parent.section == "Statistics and measurements"
 
     for name in _MEASUREMENT_3D_CHILDREN:
@@ -1553,3 +1584,12 @@ def test_shared_ilastik_rows_host_nowhere_under_a_synthetic_network():
     values = {"network_source": "synthetic", "use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}
     assert shared_ilastik_host(values) is None
     assert shared_ilastik_host({**values, "network_source": "segmented_image"}) == "input"
+
+
+def test_the_image_measurements_are_gone_for_a_synthetic_network():
+    """Regression: the tissue volume, cell distance and pericyte rows showed
+    under a synthetic network, then preflight refused them."""
+    for name in ("measure_tissue_volume", "measurement_3d_to_cell_mask", "measure_pericytes"):
+        assert not unmet_chain(SCHEMA, name, {"network_source": "segmented_image"}), name
+        for source in ("synthetic", "synthetic_surround"):
+            assert unmet_chain(SCHEMA, name, {"network_source": source}), (name, source)

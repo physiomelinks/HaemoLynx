@@ -15,8 +15,9 @@ import gzip
 import logging
 import os
 import pickle
+import re
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Mapping, Sequence
 
 from haemolynx.gui.post_processing import LoopReview, ReviewDecision
@@ -59,6 +60,7 @@ class RunSnapshotError(ValueError):
 class RunSnapshot:
     """Everything a panel needs to look like a finished run."""
 
+    #: The panel's settings the run was made with.
     settings: dict[str, Any]
     skip_toggle_snapshot: dict[str, bool] = field(default_factory=dict)
     show_results: bool = True
@@ -73,6 +75,15 @@ class RunSnapshot:
     loop_reviews: tuple[LoopReview, ...] = ()
     #: The other review lists' decisions (Post processing), likewise.
     review_decisions: tuple[ReviewDecision, ...] = ()
+    #: The rows changed after the run and not run since, as they were when
+    #: it was saved: shown again on loading, kept apart from :attr:`settings`
+    #: so the file says what the run was made with.
+    edited_since_run: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def panel_values(self) -> dict[str, Any]:
+        """The panel's rows as they were when the run was saved."""
+        return {**self.settings, **self.edited_since_run}
 
     @property
     def stages(self) -> tuple[str, ...]:
@@ -131,8 +142,15 @@ def capture_run(
     paused_after: str | None = None,
     loop_reviews: Sequence[LoopReview] = (),
     review_decisions: Sequence[ReviewDecision] = (),
+    panel_values: Mapping[str, Any] | None = None,
 ) -> RunSnapshot:
-    """Copy the live panel's run into a snapshot. Raises if there is none."""
+    """Copy the live panel's run into a snapshot. Raises if there is none.
+
+    *settings* are the panel's settings the run was made with, and
+    *panel_values* its rows now, when they have changed since: what differs
+    is kept apart (:attr:`RunSnapshot.edited_since_run`). The file kept the
+    rows alone, so a row changed after the run -- the next image's path,
+    say -- was saved as what made it."""
     if not can_capture(checkpoints):
         raise RunSnapshotError(NOTHING_TO_SAVE)
     # Stage outputs stay behind: they are this session's live volumes, and a
@@ -146,6 +164,7 @@ def capture_run(
     results_state = results.export_state() if results is not None else None
     return RunSnapshot(
         settings=dict(settings),
+        edited_since_run=edited_since(settings, panel_values),
         skip_toggle_snapshot=dict(skip_toggle_snapshot or {}),
         show_results=bool(show_results),
         show_steps=bool(show_steps),
@@ -182,6 +201,7 @@ def write_run_snapshot(path: Path | str, snapshot: RunSnapshot) -> Path:
         # class it was saved from.
         "loop_reviews": [review.as_dict() for review in snapshot.loop_reviews],
         "review_decisions": [decision.as_dict() for decision in snapshot.review_decisions],
+        "edited_since_run": snapshot.edited_since_run,
     }
     partial = dest.with_name(f"{dest.name}.part")
     try:
@@ -243,7 +263,28 @@ def read_run_snapshot(path: Path | str) -> RunSnapshot:
         paused_after=_paused_after(payload.get("paused_after"), checkpoints),
         loop_reviews=_loop_reviews(payload.get("loop_reviews")),
         review_decisions=_review_decisions(payload.get("review_decisions")),
+        edited_since_run=dict(payload.get("edited_since_run") or {}),
     )
+
+
+def _same_row_value(a: Any, b: Any) -> bool:
+    try:
+        return bool(a == b)
+    except Exception:  # noqa: BLE001 - arrays and the like: compare as text
+        return repr(a) == repr(b)
+
+
+def edited_since(
+    settings: Mapping[str, Any], panel_values: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """The rows of *panel_values* that differ from *settings*, the run's."""
+    if not panel_values:
+        return {}
+    return {
+        name: value
+        for name, value in panel_values.items()
+        if name not in settings or not _same_row_value(settings[name], value)
+    }
 
 
 def _loop_reviews(saved: Any) -> tuple[LoopReview, ...]:
@@ -440,19 +481,62 @@ def _find_by_name(name: str, root: Path) -> Path | None:
     return None
 
 
+#: Whether a Windows path (``C:\...``, ``\\server\...``) names another
+#: machine's files: anywhere but on Windows.
+_WINDOWS_PATHS_ARE_FOREIGN = os.name != "nt"
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _saved_path(value: Any) -> PurePath:
+    """*value* as the path it was saved as. A Windows path read on Linux or a
+    Mac was one name, backslashes and all, so no file of its name was found."""
+    text = str(value)
+    if _WINDOWS_PATHS_ARE_FOREIGN and (_WINDOWS_DRIVE.match(text) or text.startswith("\\\\")):
+        return PureWindowsPath(text)
+    return Path(text).expanduser()
+
+
 def _relocate_one(name: str, value: Any, run_dir: Path) -> Path | None:
     if value is None or not str(value).strip():
         return None
-    path = Path(str(value)).expanduser()
+    path = _saved_path(value)
+    foreign = not isinstance(path, Path)
     if name.endswith(_OUTPUT_SUFFIXES):
         folder = path.parent if name.endswith("_prefix") else path
-        if _can_create(folder):
+        if not foreign and _can_create(folder):
             return None
         outputs = run_dir / "outputs"
         return outputs if path.name == "outputs" else outputs / path.name
-    if path.exists():
+    if not foreign and path.exists():
         return None
     return _find_by_name(path.name, run_dir)
+
+
+#: An input that lives in an output folder, moved with it: ilastik's
+#: segmentation, the run's input, in ilastik's folder.
+_KEPT_TOGETHER = (("input_path", "ilastik_output_dir"),)
+
+
+def _keep_together(settings: dict, moved: dict[str, "RelocatedPath"], original: Mapping[str, Any]) -> None:
+    """Point an input that lay in an output folder at that folder's new
+    place, or the folder at the input's: moved apart, the run no longer took
+    the input for ilastik's output and segmented the raw image again."""
+    for inner, folder in _KEPT_TOGETHER:
+        old_inner, old_folder = original.get(inner), original.get(folder)
+        if old_inner in (None, "") or old_folder in (None, ""):
+            continue
+        if _saved_path(old_inner).parent != _saved_path(old_folder):
+            continue
+        name = _saved_path(old_inner).name
+        if folder in moved:
+            candidate = Path(str(settings[folder])) / name
+            if candidate.exists():
+                settings[inner] = candidate if isinstance(old_inner, PurePath) else str(candidate)
+                moved[inner] = RelocatedPath(inner, str(old_inner), str(candidate))
+        elif inner in moved:
+            parent = Path(str(settings[inner])).parent
+            settings[folder] = parent if isinstance(old_folder, PurePath) else str(parent)
+            moved[folder] = RelocatedPath(folder, str(old_folder), str(parent))
 
 
 def relocate_run_paths(snapshot: RunSnapshot, run_path: Path | str) -> list[RelocatedPath]:
@@ -474,10 +558,12 @@ def relocate_run_paths(snapshot: RunSnapshot, run_path: Path | str) -> list[Relo
     run_dir = Path(run_path).expanduser().resolve().parent
     moved: dict[str, RelocatedPath] = {}
     state = snapshot.results_state
-    copies = [snapshot.settings]
+    copies = [snapshot.settings, snapshot.edited_since_run]
     if isinstance(state, dict) and isinstance(state.get("settings"), dict):
         copies.append(state["settings"])
     for settings in copies:
+        original = dict(settings)
+        here: dict[str, RelocatedPath] = {}
         for name, value in list(settings.items()):
             is_path_setting = "path" in name or name.endswith(_OUTPUT_SUFFIXES)
             if not isinstance(value, (str, PurePath)) or not is_path_setting:
@@ -486,5 +572,8 @@ def relocate_run_paths(snapshot: RunSnapshot, run_path: Path | str) -> list[Relo
             if new is None:
                 continue
             settings[name] = new if isinstance(value, PurePath) else str(new)
-            moved.setdefault(name, RelocatedPath(name, str(value), str(new)))
+            here[name] = RelocatedPath(name, str(value), str(new))
+        _keep_together(settings, here, original)
+        for name, relocated in here.items():
+            moved.setdefault(name, relocated)
     return list(moved.values())

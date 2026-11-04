@@ -457,6 +457,8 @@ def test_build_network_records_an_auto_stain_for_the_diameters_stage(tmp_path, m
     assert record["raw_image_stain"] == record[GRAPH_ATTRIBUTE]["stain"] == PLASMA_COLUMN
     assert record["raw_image_stain_reading"]["stain"] == PLASMA_COLUMN
     assert record["raw_image_stain_reading"] == record[GRAPH_ATTRIBUTE]["reading"]
+    # ... and which raw image it read, so a changed one is read again.
+    assert record[stages.RAW_STAIN_IMAGE] == stages.raw_image_identity(settings)
 
     def no_load(*_args, **_kwargs):
         raise AssertionError("the Diameters stage opened the raw image again")

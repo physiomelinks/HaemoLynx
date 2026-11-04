@@ -561,9 +561,11 @@ class _EndothelialSearch(_SweepBookkeeping):
         """Place the sampled vessels' decoys and plant their known-lumen
         vessels -- once, before any trial -- each guided by its vessel's mask
         width: the run's own, or, where the run measures none, one measured
-        here as a run would, on a copy no trial reads."""
+        here as a run would, on a copy no trial reads. They carry it as the
+        ring fit's guide only where the trials' vessels carry theirs."""
         guide = self.template.edge_subgraph(self.sample_edges)
-        if not _has_mask_widths(guide, self.sample_edges):
+        seeded = _has_mask_widths(guide, self.sample_edges)
+        if not seeded:
             guide = guide.copy()
             apply.measure_edt_diameters(guide, self.config, mask_volume=vessel_mask)
         voxel_size_zyx = tuple(
@@ -574,7 +576,7 @@ class _EndothelialSearch(_SweepBookkeeping):
         ordered = [self.sample_edges[i] for i in order]
         self.decoy_probe = fwhm_decoys.decoy_probe_graph(
             guide, ordered[: max(0, int(decoy_sample_size))], vessel_mask, voxel_size_zyx,
-            rng=rng, guide_attribute="edt_diameter_um",
+            rng=rng, guide_attribute="edt_diameter_um", seed_guess=seeded,
         )
         psf, wall, source = self._planting_blur_and_wall()
         if psf is None:
@@ -588,7 +590,8 @@ class _EndothelialSearch(_SweepBookkeeping):
         self.planted = endothelial_planted.plant_rings(
             self.raw_volume, guide, ordered, vessel_mask, voxel_size_zyx,
             psf_sigma_zyx=psf, wall_um=wall, rng=np.random.default_rng(1),
-            sample_size=planted_sample_size,
+            sample_size=planted_sample_size, seed_guess=seeded,
+            use_memmap=self.config.use_memmap, memmap_directory=self.config.memmap_directory,
         )
         if self.planted is None:
             self.unplanted_reason = (

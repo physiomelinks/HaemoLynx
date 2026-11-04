@@ -1192,14 +1192,17 @@ def required_statistics_for(sections: Iterable[str]) -> tuple[str, ...]:
 def _run_manifest(path: Optional[Path], settings: Mapping[str, Any]) -> tuple[Optional[str], Optional[str]]:
     """``(haemolynx version, git commit)`` from the run manifest beside the
     template run's outputs, when it is there."""
+    from haemolynx.pipeline.naming import run_stem
+
     folder = settings.get("output_dir")
-    image = settings.get("input_path")
+    # The run's own stem: ilastik's output's, not a stale input_path's.
+    stem = run_stem(settings)
     if not folder and settings.get("vtk_output_prefix"):
         # A template run saved before the output folder.
         folder = Path(settings["vtk_output_prefix"]).parent
-    if not folder or not image:
+    if not folder or not stem:
         return None, None
-    manifest = Path(folder) / f"{Path(image).stem}_run_manifest.json"
+    manifest = Path(folder) / f"{stem}_run_manifest.json"
     if path is not None and not manifest.exists():
         manifest = Path(path).parent / manifest.name
     if not manifest.exists():

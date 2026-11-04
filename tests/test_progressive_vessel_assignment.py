@@ -257,6 +257,43 @@ def test_a_masks_long_axis_is_measured_in_microns():
     assert midpoint[2] == pytest.approx(74.5 / 2)
 
 
+def test_the_first_dilation_step_reaches_terminals_in_microns_on_three_distinct_spacings():
+    """The tests above use y and x spacings that are equal, where reading them
+    the wrong way round changes nothing. On (2.0, 0.6, 0.3) um voxels the
+    3 um step reaches the terminal 9 voxels along x from the arteriole
+    (2.7 um) and the one 8 voxels along x from the venule (2.4 um), but not
+    the one 6 voxels along y from the venule (3.6 um). With y and x swapped
+    the first two lie 5.4 and 4.8 um off and the third 1.8 um."""
+    voxel_size = np.asarray((2.0, 0.6, 0.3))
+    shape = (10, 40, 40)
+    art = np.zeros(shape, dtype=bool)
+    ven = np.zeros(shape, dtype=bool)
+    art[5, 10:12, 10:12] = True
+    ven[5, 28:30, 28:30] = True
+    G = nx.MultiGraph()
+    for node, index in {
+        0: (5, 20, 5),  # the hub, no terminal
+        1: (5, 11, 20),  # 9 voxels along x from the arteriole
+        2: (5, 22, 29),  # 6 voxels along y from the venule
+        3: (5, 29, 20),  # 8 voxels along x from the venule
+    }.items():
+        G.add_node(node, pos=np.asarray(index, dtype=float) * voxel_size)
+    for node in (1, 2, 3):
+        G.add_edge(0, node)
+
+    at_zero = select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=tuple(voxel_size), max_dilation_microns=0.0,
+    )
+    inputs, outputs = select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=tuple(voxel_size), max_dilation_microns=3.0,
+        dilation_step_microns=3.0,
+    )
+
+    assert at_zero == ([], []), "no terminal lies in a mask: the first step reaches them"
+    assert inputs == [1]
+    assert outputs == [3]
+
+
 # --- each edge keeps the first step that reaches it ------------------------------
 
 

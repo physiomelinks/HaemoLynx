@@ -1648,12 +1648,13 @@ def prune_disconnected_branches(
     other *protected* (boundary) nodes are never merged; ``junctions_merged``
     counts the rest.
 
-    The vessels leaving the image that the last solve's ``open_end_model``
-    may open count as inlets and outlets, as they do for the removal.
+    The vessels leaving the image that the last solve gave a condition count
+    as inlets and outlets, as its flow marks and the Unsolved pieces list
+    count them: one it left closed is pruned with the rest.
     """
-    from haemolynx.haemodynamics.open_ends import conditions_on_graph, open_ends_in_effect
+    from haemolynx.haemodynamics.open_ends import conditions_on_graph
 
-    opened = open_ends_in_effect(conditions_on_graph(G).model, G, inlet_nodes, outlet_nodes)
+    opened = conditions_on_graph(G).nodes
     pruned, stats = remove_vessels_off_inlet_outlet_paths(
         G, [*inlet_nodes, *opened], [*outlet_nodes, *opened]
     )
