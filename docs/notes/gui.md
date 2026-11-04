@@ -66,7 +66,8 @@ sweep survives its slider (`USER_CONTRAST_LIMITS`), and the canvas bar sits on w
 draws the shown network -- in Tubes mode the tube Surface, given the vessels' colormap and range
 (`_sync_canvas_colour_bar`), since napari draws no bar for a hidden layer. Under it,
 five "Show" checkboxes (`VIEW_TOGGLES`: flow-direction arrows, nodes, terminal nodes, skeleton,
-segmented image) turn one layer each on and off without finding it in the layer list:
+segmented image; two to a row, the segmented image under the skeleton: `VIEW_TOGGLE_CELLS`)
+turn one layer each on and off without finding it in the layer list:
 `toggle_layer_name` says which -- arrows and nodes are the shown network's, terminal nodes is
 the run's boundary-nodes layer (inlets, outlets, arteriole/venule boundary nodes), skeleton its
 skeleton and segmented image its `IMAGE` layer -- and

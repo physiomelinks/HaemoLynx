@@ -50,6 +50,7 @@ __all__ = [
     "BASELINE_LABEL",
     "ROLES",
     "VIEW_TOGGLES",
+    "VIEW_TOGGLE_CELLS",
     "carried_roles",
     "layer_set",
     "layer_set_choices",
@@ -78,6 +79,16 @@ VIEW_TOGGLES = (
     ("skeleton", "Skeleton"),
     ("segmented image", "Segmented image"),
 )
+
+#: Where each "Show" checkbox sits in the panel's grid, ``(row, column)``:
+#: two to a row, with the segmented image under the skeleton.
+VIEW_TOGGLE_CELLS = {
+    "flow direction": (0, 0),
+    "nodes": (0, 1),
+    "terminal nodes": (1, 0),
+    "skeleton": (1, 1),
+    "segmented image": (2, 1),
+}
 
 #: The toggles that are one layer for the whole run, whatever is shown.
 _RUN_TOGGLE_LAYERS = {
