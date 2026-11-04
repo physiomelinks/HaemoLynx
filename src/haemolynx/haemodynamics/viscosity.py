@@ -230,6 +230,18 @@ class PlaceholderViscosityWarning(UserWarning):
     """
 
 
+def reads_in_vivo_1994(law: str, diameter_basis: str) -> bool:
+    """Whether *law* on *diameter_basis* answers with the 1994 in vivo form:
+    ``pries`` on wall-to-wall diameters, or the form held outright. That form
+    is singular at 1.1 um and climbs steeply long before it, so a vessel
+    narrower than its fitted floor (:data:`PRIES_MIN_DIAMETER_UM`) is read at
+    that floor (``PoiseuilleModel.calculate_viscosity``); the law itself is
+    as published."""
+    return law == PRIES_IN_VIVO_1994 or (
+        law == "pries" and normalise_diameter_basis(diameter_basis) == "endothelial"
+    )
+
+
 def capillary_power_law_viscosity(diameter: float) -> float:
     """The calibrated capillary law, with a constant placeholder above 7 um."""
     if diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM:

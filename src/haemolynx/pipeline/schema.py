@@ -5821,6 +5821,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_HANDLING,
             unit="Pa",
+            minimum=0.0,
             requires=("run_haemodynamics", "open_end_model=estimated"),
             advanced=True,
             placeholder="auto",

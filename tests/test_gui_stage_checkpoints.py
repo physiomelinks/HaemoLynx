@@ -1061,6 +1061,43 @@ def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_t
     assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)
 
 
+@pytest.mark.parametrize(
+    "now, starts_at",
+    [
+        ({"boundary_handling": "leave_unsolved"}, "6. Haemodynamics"),
+        ({"boundary_handling": "remove_disconnected", "run_haemodynamics": True,
+          "open_end_model": "closed"}, "5. Diameters"),
+    ],
+)
+def test_a_run_from_haemodynamics_starts_at_diameters_when_its_calibration_sample_changed(
+    tmp_path, now, starts_at
+):
+    """The Diameters stage samples its image calibrations (blur, wall, decoy
+    check) from the vessels the network handling keeps. Changing
+    boundary_handling or open_end_model and running from Haemodynamics kept
+    the old sample, where a fresh run takes the new one: the run starts at
+    Diameters instead, and says why."""
+    from haemolynx.gui.stage_checkpoints import restore_message
+    from haemolynx.pipeline.stages import CALIBRATION_SAMPLE
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, *_rest = _record_with_outputs(tmp_path, settings)
+    measured = built(a_graph(resistance=1.0))
+    measured._graph.graph[CALIBRATION_SAMPLE] = ["leave_unsolved"]
+    checkpoints.record("assign_diameters", _group("assign_diameters"), measured, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings={**settings, **now})
+
+    assert plan.tab_title == starts_at
+    if starts_at == "5. Diameters":
+        assert plan.start_from == "assign_diameters"
+        assert "leave_unsolved keeps" in restore_message(plan)
+        assert "remove_disconnected / closed keeps" in restore_message(plan)
+    else:
+        assert plan.start_from == "build_haemodynamic_model" and plan.note == ""
+
+
 def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
     """After Load run, a later run's skeleton left in the folder was loaded
     instead of the loaded run's: the graph was built from another skeleton

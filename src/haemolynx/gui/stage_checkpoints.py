@@ -41,8 +41,10 @@ from haemolynx.graph.boundaries import network_is_synthetic
 from haemolynx.pipeline.naming import run_stem
 from haemolynx.pipeline.progress import STAGES
 from haemolynx.pipeline.stages import (
+    CALIBRATION_SAMPLE,
     TOPOLOGY_STEP,
     PipelineResume,
+    calibration_sample_rule,
     measures_diameters_from_raw_image,
     recorded_raw_image_stain,
     segmented_input_path,
@@ -240,6 +242,8 @@ class RestorePlan:
     start_from: str = ""
     #: Earlier-stage outputs the pipeline should not recompute.
     resume: PipelineResume | None = None
+    #: Why the run starts at another tab than the one asked for.
+    note: str = ""
 
 
 def tab_end_stage(title: str, stages: Sequence = STAGES) -> str | None:
@@ -816,6 +820,15 @@ class StageCheckpoints:
         checkpoint = self._by_stage[target]
         previous = previous_tab(current_tab)
         assert previous is not None
+        changed = (
+            _calibration_sample_changed(checkpoint, settings)
+            if start_from == "build_haemodynamic_model"
+            else ""
+        )
+        if changed:
+            earlier = self.plan_run_from(previous, settings=settings, drop=drop)
+            if earlier is not None:
+                return replace(earlier, note=changed)
 
         groups = [
             self._by_stage[name].group
@@ -933,10 +946,30 @@ class StageCheckpoints:
                 del self._by_stage[name]
 
 
+def _calibration_sample_changed(checkpoint: "StageCheckpoint", settings: Mapping[str, Any] | None) -> str:
+    """Why a run from Haemodynamics must start at Diameters, or ``""``: the
+    Diameters stage sampled its image calibrations (the blur, the wall, the
+    decoy check) from the vessels one network-handling rule keeps, and the
+    settings now keep others -- a fresh run would calibrate on those."""
+    graph = getattr(checkpoint, "graph", None)
+    recorded = getattr(graph, "graph", {}).get(CALIBRATION_SAMPLE) if graph is not None else None
+    if recorded is None or settings is None:
+        return ""
+    now = calibration_sample_rule(settings)
+    if list(recorded) == now:
+        return ""
+    return (
+        f"Started at Diameters: its image calibrations sampled the vessels "
+        f"{' / '.join(recorded)} keeps, and the settings now keep those {' / '.join(now)} keeps."
+    )
+
+
 def restore_message(plan: RestorePlan) -> str:
     """What the report box says after preparing a run from this stage."""
     start = plan.start_from or "this stage"
     note = f"Running from {plan.tab_title or start} (using {plan.title})."
     if plan.skip_settings:
         note += f" Turned off {', '.join(plan.skip_settings)}."
+    if getattr(plan, "note", ""):
+        note += f" {plan.note}"
     return note
