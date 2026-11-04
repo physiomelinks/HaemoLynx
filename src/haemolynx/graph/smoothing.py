@@ -302,6 +302,73 @@ def _accept(
     return original, "kept_raw"
 
 
+def _coarse_steps_smoothed(
+    points: np.ndarray, spacing: np.ndarray, method: str, iterations: int
+) -> np.ndarray:
+    """*points* with each coordinate along an axis coarser than the finest
+    smoothed over that axis's own voxels; the finest axes' left as they are.
+
+    A path crossing a 2 um z plane every few 0.5 um steps in-plane is a
+    staircase a z voxel high, a few microns from step to step: smoothed over
+    the finest step it stays (a 41.6 um oblique vessel on 2 x 0.5 x 0.5 um
+    voxels measured 47.1 um, on 3 x 0.5 x 0.5 um 50.5 um). Counted in voxel
+    steps (each step one, as a 26-connected skeleton walks), the other
+    coordinates of a straight vessel run evenly, so a coarse coordinate
+    averaged and filtered over as many steps as one of its voxels spans of
+    the axis leading the path (the one the path crosses most voxels of)
+    comes out straight with them. Along a path the coarse axis leads, that
+    coordinate is straight already, so what the path does across it is left
+    to the fine pass: smoothed over no more distance than a path in-plane
+    is."""
+    voxel_steps = np.abs(np.diff(points / spacing, axis=0))
+    steps = voxel_steps.max(axis=1)
+    along = np.concatenate([[0.0], np.cumsum(steps)])
+    keep = np.concatenate([[True], steps > 0.0])
+    if along[-1] <= 0.0:
+        return points
+    out = points.copy()
+    finest = float(spacing.min())
+    leading = float(spacing[int(np.argmax(voxel_steps.sum(axis=0)))])
+    for axis in np.flatnonzero(~np.isclose(spacing, finest)):
+        width = max(1.0, float(spacing[axis]) / leading)
+        count = int(np.ceil(along[-1] / width)) + 1
+        if count < 3:
+            continue
+        at = np.linspace(0.0, along[-1], count)
+        # Each sample the mean over the coarse voxel's worth of steps round
+        # it, not the value at it: read at a point, the staircase aliased
+        # into a slow wave 0.3 um off the vessel.
+        # Smoothed as a polyline with the parameter along (three columns,
+        # as Chaikin's corner cutting writes), so every method keeps it.
+        means = _window_means(along[keep], points[keep, axis], at, width / 2.0)
+        curve = np.column_stack([at, means, np.zeros_like(at)])
+        smoothed = smooth_polyline(curve, method=method, iterations=iterations)
+        out[:, axis] = np.interp(along, smoothed[:, 0], smoothed[:, 1])
+    return out
+
+
+def _window_means(knots: np.ndarray, values: np.ndarray, at: np.ndarray, half: float) -> np.ndarray:
+    """The mean of the piecewise-linear function through ``(knots, values)``
+    (*knots* increasing) over ``at +- half``, the window narrowed evenly to
+    fit inside the knots -- so a straight line comes back as itself, its ends
+    included."""
+    width = np.diff(knots)
+    integral = np.concatenate([[0.0], np.cumsum(0.5 * (values[1:] + values[:-1]) * width)])
+
+    def integral_to(x: np.ndarray) -> np.ndarray:
+        i = np.clip(np.searchsorted(knots, x, side="right") - 1, 0, len(knots) - 2)
+        u = x - knots[i]
+        return integral[i] + values[i] * u + 0.5 * (values[i + 1] - values[i]) / width[i] * u * u
+
+    reach = np.minimum(half, np.minimum(at - knots[0], knots[-1] - at))
+    means = np.interp(at, knots, values)
+    inside = reach > 0.0
+    means[inside] = (integral_to(at[inside] + reach[inside]) - integral_to(at[inside] - reach[inside])) / (
+        2.0 * reach[inside]
+    )
+    return means
+
+
 def edge_tolerance_um(
     voxels: np.ndarray,
     *,
@@ -346,7 +413,8 @@ def smooth_graph_centrelines(
     step, as one on anisotropic voxels always is: a long straight step is two
     points far apart, and the filter, which moves points, only pulls its two
     ends in (on cube voxels a 6.4 um chord kept a 2.75 um step; resampled,
-    1 um).
+    1 um). On anisotropic voxels the coordinates along the coarser axes are
+    smoothed over their own voxels first (:func:`_coarse_steps_smoothed`).
 
     ``length`` is rewritten from every edge's path -- smoothed or not -- so the
     number the haemodynamics uses describes the same curve the exports draw,
@@ -402,7 +470,13 @@ def smooth_graph_centrelines(
         # filter averages neighbouring vertices, so z runs were smoothed over
         # four times the distance. Evenly spaced points first.
         even = resample_at_step(original, finest_step) if (anisotropic or always_resample) else original
-        smoothed = smooth_polyline(even, method=method, iterations=iterations)
+        # The coarse axis's own staircase first (_coarse_steps_smoothed):
+        # smoothed over the fine step alone it stayed.
+        source = (
+            resample_at_step(_coarse_steps_smoothed(original, spacing, method, iterations), finest_step)
+            if anisotropic else even
+        )
+        smoothed = smooth_polyline(source, method=method, iterations=iterations)
         tolerance = edge_tolerance_um(
             original, max_deviation=max_deviation, voxel_size_zyx=voxel_size_zyx, radius_at=radius_at
         )

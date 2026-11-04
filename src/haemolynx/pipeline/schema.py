@@ -3613,7 +3613,8 @@ SCHEMA = Schema(
             help=(
                 "At the end of graph building, remove every piece of the network "
                 "with no junction: a vessel on its own, both its ends dead ends "
-                "(the dead ends counted as ends of pieces without a junction), "
+                "(the dead ends counted as ends of pieces without a junction, or as "
+                "leaving the image where they do), "
                 "whatever its length or where it lies. On a speckled segmentation "
                 "most of these are specks, but some are pieces of real vessel the "
                 "segmentation cut off, and those go too"
