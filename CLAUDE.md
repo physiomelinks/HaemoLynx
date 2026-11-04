@@ -458,7 +458,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 | Change area | Typical test location |
 |-------------|----------------------|
-| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_vessel_mask_split.py` (the large masks cut by width: tubes of known width, anisotropic grids, the dilation, low-RAM bit for bit, the switches and preflight, a run's tiers, a resumed run cut again), `test_ilastik_vessel_mask_channels.py` (the vessel masks' classifiers given their channels of the raw image: the channel file, reuse, the loader, preflight, the retired input files), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties, a batch of raw images, each image's other files) |
+| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_vessel_mask_split.py` (the large masks cut by width: tubes of known width, anisotropic grids, the dilation, thin masks read on the segmentation, a touching vessel lending no width, low-RAM bit for bit, the switches and preflight, a run's tiers with full and thin masks, a resumed run cut again), `test_ilastik_vessel_mask_channels.py` (the vessel masks' classifiers given their channels of the raw image: the channel file, reuse, the loader, preflight, the retired input files), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties, a batch of raw images, each image's other files) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_tree.py` (the large-stack tree and the join's bounded last resort; digests of the in-RAM skeleton), `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py` (the split, and one fixture per bridge shape of `thick_vessel_bridge_shapes`), `test_thick_bridge_review_grid.py` (the Phase 5 grid's cases), `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_doubled_stretches.py` (trim, zip, rejoin, a pair rewired, a join closing a loop inside one lumen refused), `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), `test_vessel_size_classes.py` (the size convention: the rule, the tagging, the diameter chain's hook, the stages and post processing on `tests/vessel_class_fixtures.py`'s tubes of known width, preflight, the outputs, a whole run), `test_graph_artefacts_tool.py` (the comparison harness, its re-trace and the census by place), `test_graph_crop.py` (vessels clipped at a box's faces, the pieces' sources), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_endothelial_planted.py` (planted vessels read at their lumen at several voxel sizes, walls and blurs), `test_pericyte_measurements.py` (profiles, junction distances and branch resistances on a tube of known width, the export stage, the measured-constriction perturbation, its batch and preflight), `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
@@ -613,7 +613,9 @@ RAM, each worker holds its own volumes.
     button under the law) holds every vessel to one form (`in_vivo_1994`, `in_vitro_1992`,
     `in_vivo_2005`) or `auto`; it resolves through `viscosity.run_viscosity_law`, so the graph's
     `viscosity_law` names the form that ran. Plasma is 1.2 mPa·s, with no red-cell-size scaling
-    (unlike Secomb's NetFlow).
+    (unlike Secomb's NetFlow). Under the 1994 form, singular at 1.1 µm, a vessel narrower than
+    3.3 µm has its viscosity read at 3.3 µm, its own width still in the d⁴
+    (`viscosity.reads_in_vivo_1994`, `PoiseuilleModel.calculate_viscosity`).
   - `viscosity_law="capillary_power_law"` is the earlier law, kept for comparison (raises
     `haemodynamics.PlaceholderViscosityWarning` between 7 and 100 µm); `"constant"` is plasma
     everywhere, for separating geometry from viscosity.
@@ -712,10 +714,13 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
 - **Large masks split by width** (`io/vessel_mask_split.py`, Harvey's request 2026-11-02) — with
   only large masks given, `split_large_vessel_masks_by_diameter` (shown only while the small-mask
   switch is off; `graph.small_vessel_masks_split_from_large`) cuts each into the part where a ball
-  `large_vessel_mask_split_diameter_um` wide fits (an opening, read with half the coarsest voxel
-  spacing of slack), kept large, and the rest, the small mask of its side; a global mask splits
-  into a global pair. Done after the large masks load (`stages._split_large_vessel_masks`), the
-  load-time dilation added back to the width; no default width (preflight:
+  `large_vessel_mask_split_diameter_um` wide fits **in the run's segmentation**, centred in the
+  same mask (read with half the coarsest voxel spacing of slack), kept large, and the rest, the
+  small mask of its side; a global mask splits into a global pair. The mask gives only the side: a
+  classifier's mask may be far thinner than the vessel (E14.5's). Every caller hands
+  `stages._split_large_vessel_masks` the segmentation (`_SegmentationBoxes`, or the skeletonise
+  stage's binary image). Done after the large masks load, the wide part reaching the load-time
+  dilation past the balls; no default width (preflight:
   `check_large_vessel_mask_split`). The small-mask assignment settings stay hidden at their
   values. `VesselNetwork.mask_split_diameter_um` lets a run resumed on the Boundaries tab cut
   again when the width changes, and `mask_sources` load a role again when its files, load-time
@@ -1239,7 +1244,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   as set for greying (`BatchSetup.gates`); Load run leaves it, and is refused while a batch runs.
   The Batch run button greys under a synthetic network and while one image runs, never while a
   batch is set or running (`batch_button_greyed`, `RunState.on_change`). Each image's on-disk caches (its decompressed input, checkpoint
-  pickles, thick-vessel region) are deleted once it ends (`batch_run.clear_image_caches`).
+  pickles) are deleted once it ends (`batch_run.clear_image_caches`); its thick-vessel region stays,
+  as a later run loading its skeleton would find it again.
 - **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic,

@@ -48,6 +48,28 @@ ALREADY_RUNNING = (
     "A run is already going. Press 'Clear layers and state' to stop it."
 )
 
+#: What the report says when the checks stop a run before it starts.
+CHECKS_FAILED_NOTHING_RUN = "Checks failed; nothing was run. Press 'Run checks' for detail."
+#: What it says while the checks run off the panel's thread.
+RUNNING_CHECKS = "Running the checks..."
+
+
+def slow_checks(settings, start_from: str | None = None) -> bool:
+    """Whether a full run's checks read more than files' headers, so the
+    panel runs them off its own thread, which froze for them: the quality
+    score (``min_acceptable_segmentation_quality``) reads the whole image,
+    and a synthetic run loads its template. A run from a tab checks on the
+    panel's thread, as its caller expects it started on return; by then a
+    template is loaded already."""
+    if start_from is not None or not settings:
+        return False
+    from haemolynx.graph import network_is_synthetic
+
+    return settings.get("min_acceptable_segmentation_quality") is not None or network_is_synthetic(
+        settings
+    )
+
+
 #: The stage a run pauses after when ``mid_run_postprocessing`` is on: the one
 #: before Post processing -- the solve -- so the network is edited with its
 #: flows on screen.

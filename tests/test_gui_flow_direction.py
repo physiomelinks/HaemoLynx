@@ -9,7 +9,17 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.gui.results import FLOW_DIRECTION, VESSEL_LABELS, VESSELS, ResultLayers
+from haemolynx.gui.results import (
+    FLOW_ARROW_COLOUR,
+    FLOW_ARROW_DIAMETERS,
+    FLOW_ARROW_MIN_WIDTH_UM,
+    FLOW_DIRECTION,
+    VESSEL_LABELS,
+    VESSELS,
+    ResultLayers,
+    drawn_on_top,
+    perturbation_flow_direction_layer_name,
+)
 from haemolynx.gui.tabs import assign_to_stages
 from haemolynx.pipeline import default_schema
 from haemolynx.visualization.flow_direction import (
@@ -257,8 +267,10 @@ def test_flow_direction_layer_always_renders_when_flows_exist():
     assert spec.name == FLOW_DIRECTION
     assert spec.kind == "vectors"
     assert len(spec.data) == 1
-    assert spec.colour_by == "flow_dir_rgb"
-    assert spec.colour_kind == "direct"
+    # One colour, over a network coloured by flow; the 3D direction map is
+    # still there to colour by.
+    assert spec.colour_by is None
+    assert spec.options["edge_color"] == FLOW_ARROW_COLOUR
     assert spec.contrast_limits is None
     assert spec.features["flow_abs"].tolist() == [1.25]
     assert "flow_dir_rgb" in spec.features
@@ -281,6 +293,89 @@ def test_flow_direction_layer_uses_flow_arrow_scale_setting():
     assert [s.name for s in group.layers] == [VESSELS, VESSEL_LABELS, FLOW_DIRECTION]
     spec = next(s for s in group.layers if s.name == FLOW_DIRECTION)
     assert spec.options["length"] == 2.5
+
+
+def _vessels_of_widths(widths, *, length: float = 100.0) -> nx.MultiGraph:
+    """One vessel per width, each *length* µm along +z and carrying flow."""
+    graph = nx.MultiGraph()
+    for index, width in enumerate(widths):
+        start = np.array([0.0, 20.0 * index, 0.0])
+        end = start + np.array([length, 0.0, 0.0])
+        graph.add_node(2 * index, pos=start)
+        graph.add_node(2 * index + 1, pos=end)
+        graph.add_edge(2 * index, 2 * index + 1, key=0, voxels=[start.tolist(), end.tolist()],
+                       length=length, flow_signed=1e-12, flow_abs=1e-12, diameter_um=width)
+    return graph
+
+
+def _arrow_lengths(vectors) -> np.ndarray:
+    return np.linalg.norm(np.asarray(vectors)[:, 1], axis=1)
+
+
+def test_an_arrow_is_as_long_as_its_vessel_is_wide_up_to_half_its_length():
+    """Every arrow was a fifth of the median vessel's length (18 µm here)
+    whatever its vessel's width; drawn over tubes, a capillary-sized arrow on
+    an artery was a speck. Each now runs FLOW_ARROW_DIAMETERS of its own
+    vessel's diameters where that is longer, but never past half the vessel."""
+    graph = _vessels_of_widths([4.0, 20.0, 80.0])
+    uniform, _features = flow_direction_vectors(graph)
+    np.testing.assert_allclose(_arrow_lengths(uniform), [18.0, 18.0, 18.0])
+
+    sized, _features = flow_direction_vectors(graph, arrow_diameter_scale=2.0)
+    # 4 um: 8 < 18, the uniform length; 20 um: 40; 80 um: 160, cut to 50.
+    np.testing.assert_allclose(_arrow_lengths(sized), [18.0, 40.0, 50.0])
+    # Same anchors and directions: only the lengths change.
+    np.testing.assert_allclose(np.asarray(sized)[:, 0], np.asarray(uniform)[:, 0])
+
+
+def test_a_vessel_with_no_width_keeps_the_uniform_arrow():
+    graph = _vessels_of_widths([20.0, 20.0])
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["diameter_um"] = None
+        break
+    sized, _features = flow_direction_vectors(graph, arrow_diameter_scale=2.0)
+    np.testing.assert_allclose(sorted(_arrow_lengths(sized)), [18.0, 40.0])
+
+
+def test_flow_arrows_follow_the_vessels_widths_and_go_over_the_tubes():
+    """The layer asks for arrows FLOW_ARROW_DIAMETERS of their vessels long,
+    heads half the median vessel's width wide (never under the width they had
+    before), drawn without a depth test -- the tubes hid every one -- and kept
+    over the tubes, a perturbation's arrows too."""
+    graph = _vessels_of_widths([4.0, 20.0, 80.0])
+    spec = next(
+        s for s in _built_with_flows(graph).stage_finished("export_results", SimpleNamespace()).layers
+        if s.name == FLOW_DIRECTION
+    )
+    np.testing.assert_allclose(_arrow_lengths(spec.data), [18.0, FLOW_ARROW_DIAMETERS * 20.0, 50.0])
+    assert spec.options["edge_width"] == pytest.approx(10.0), "half the median width, 20 um"
+    assert spec.options["blending"] == "translucent_no_depth"
+
+    capillaries = _vessels_of_widths([1.0, 1.0])
+    spec = next(
+        s for s in _built_with_flows(capillaries).stage_finished("export_results", SimpleNamespace()).layers
+        if s.name == FLOW_DIRECTION
+    )
+    assert spec.options["edge_width"] == FLOW_ARROW_MIN_WIDTH_UM
+
+    assert drawn_on_top(FLOW_DIRECTION)
+    assert drawn_on_top(perturbation_flow_direction_layer_name("art_dilate_20"))
+    assert not drawn_on_top(VESSELS)
+    assert not drawn_on_top("flow direction"), "a user's layer is not ours"
+
+
+def test_the_flow_arrows_start_hidden_and_then_keep_what_the_user_chose():
+    """Over every tube, a network's thousand arrows are a lot to open a run
+    with: hidden the first time, and afterwards each export keeps the
+    layer as the user left it (a spec shown keeps what is on screen)."""
+    results = _built_with_flows(_two_node_edge(flow_signed=1.0))
+
+    def arrows():
+        group = results.stage_finished("export_results", SimpleNamespace())
+        return next(s for s in group.layers if s.name == FLOW_DIRECTION)
+
+    assert arrows().visible is False
+    assert arrows().visible is True
 
 
 def test_flow_direction_layer_emits_nothing_without_flows():
@@ -548,7 +643,7 @@ def test_flow_direction_combo_colours_by_flow_dir_z(make_napari_viewer):
 
 
 def _rgb_for_axis_graph(make_napari_viewer, along: str, flow_sign: int) -> np.ndarray:
-    from haemolynx.gui._widget import _apply_layers
+    from haemolynx.gui._widget import _apply_layers, _colour_layer
 
     graph = _axis_arrow_graph(along=along, flow_sign=flow_sign)
     results = _built_with_flows(graph)
@@ -556,30 +651,65 @@ def _rgb_for_axis_graph(make_napari_viewer, along: str, flow_sign: int) -> np.nd
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
     layer = viewer.layers[FLOW_DIRECTION]
+    _colour_layer(layer, "flow_dir_rgb", "direct")
     assert layer.edge_color_mode == "direct"
     return np.asarray(layer.edge_color, dtype=float)[0]
 
 
 @_builds_a_viewer
-def test_flow_direction_layer_defaults_to_3d_rgb(make_napari_viewer):
-    """Default colour-by is the 3D RGB map, not 2D heading or a 1D LUT."""
-    from haemolynx.gui._widget import _active_column, _apply_layers
+def test_flow_direction_layer_defaults_to_one_colour_with_rgb_a_pick_away(make_napari_viewer):
+    """Over a network coloured by flow the arrows are one colour, saying which
+    way and nothing else; the 3D RGB map (R=x, G=y, B=z) is a pick away."""
+    from haemolynx.gui._widget import _active_column, _apply_layers, _colour_layer
 
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     spec = next(s for s in group.layers if s.name == FLOW_DIRECTION)
-    assert spec.colour_by == "flow_dir_rgb"
-    assert spec.colour_kind == "direct"
+    assert spec.colour_by is None
 
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
     layer = viewer.layers[FLOW_DIRECTION]
+    assert _active_column(layer) is None
+    np.testing.assert_allclose(np.asarray(layer.edge_color, dtype=float)[0], (1.0, 1.0, 1.0, 1.0))
+
+    _colour_layer(layer, "flow_dir_rgb", "direct")
     assert _active_column(layer) == "flow_dir_rgb"
-    assert layer.edge_color_mode == "direct"
     colour = np.asarray(layer.edge_color, dtype=float)[0, :3]
     # +z → blue-ish (R=x, G=y, B=z).
     np.testing.assert_allclose(colour, (0.5, 0.5, 1.0), atol=0.05)
+
+
+@_builds_a_viewer
+def test_flow_arrows_are_drawn_over_the_vessel_tubes(make_napari_viewer):
+    """Each arrow lies along its vessel's centreline, inside the tube, which
+    hid every one of them while they were depth-tested: they go without the
+    depth test and after the tubes in the layer list, under the terminal
+    nodes."""
+    from haemolynx.gui._widget import _apply_layers
+    from haemolynx.gui.results import BOUNDARY_NODES, VESSEL_TUBES
+
+    graph = _two_node_edge(flow_signed=1.0)
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["diameter_um"] = 4.0
+    results = _built_with_flows(graph)
+    results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(inlet_nodes=[0], outlet_nodes=[1], arteriole_boundary_nodes=[],
+                        venule_boundary_nodes=[], graph=graph),
+    )
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, results.stage_finished("solve", SimpleNamespace(
+        graph=graph, node_list=[0, 1], pressure=np.array([10.0, 0.0]))))
+    _apply_layers(viewer, results.stage_finished("export_results", SimpleNamespace()))
+
+    names = [layer.name for layer in viewer.layers]
+    assert VESSEL_TUBES in names
+    assert names.index(FLOW_DIRECTION) > names.index(VESSEL_TUBES)
+    if BOUNDARY_NODES in names:
+        assert names.index(BOUNDARY_NODES) > names.index(FLOW_DIRECTION)
+    assert viewer.layers[FLOW_DIRECTION].blending == "translucent_no_depth"
 
 
 @_builds_a_viewer
@@ -624,7 +754,6 @@ def test_flow_dir_rgb_combo_switch_to_flow_abs_uses_colormap(make_napari_viewer)
     layer = viewer.layers[FLOW_DIRECTION]
     _attach_colour_scale(viewer, layer)
 
-    assert layer.edge_color_mode == "direct"
     controls = _layer_controls(viewer, layer)
     offered = [
         controls._haemolynx_feature.native.itemText(i)
@@ -633,7 +762,13 @@ def test_flow_dir_rgb_combo_switch_to_flow_abs_uses_colormap(make_napari_viewer)
     assert "flow_dir_rgb" in offered
     assert "flow_heading_deg" in offered
     assert "flow_abs" in offered
+    # One colour, no column: the combo names none, rather than its first item,
+    # a colouring not on screen that choosing then did nothing for.
+    assert controls._haemolynx_feature.native.currentText() == ""
 
+    controls._haemolynx_feature.native.setCurrentText("flow_dir_rgb")
+    assert _active_column(layer) == "flow_dir_rgb"
+    assert layer.edge_color_mode == "direct"
     controls._haemolynx_feature.native.setCurrentText("flow_abs")
     assert _active_column(layer) == "flow_abs"
     assert layer.edge_color_mode == "colormap"

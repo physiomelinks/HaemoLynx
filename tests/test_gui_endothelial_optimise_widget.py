@@ -125,6 +125,83 @@ def test_an_auto_stain_shows_it_only_once_a_run_read_it_as_endothelial(panel, tm
     assert panel._haemolynx_optimise_endothelial_button.visible is False
 
 
+def test_another_raw_image_drops_the_last_runs_reading_of_its_stain(panel, tmp_path):
+    """Regression: an auto stain's reading stayed after another raw image
+    was named, so the rows and optimiser followed the old image's stain."""
+    _on_the_diameters_tab(panel)
+    rows = _endothelial_run(panel, tmp_path, stain="auto")
+    graph = _tiny_graph()
+    graph.graph["raw_image_stain"] = "endothelial"
+    panel._haemolynx_view.results = _fake_results(graph)
+    panel._haemolynx_refresh_stain_reading()
+    assert panel._haemolynx_optimise_endothelial_button.visible is True
+
+    other = tmp_path / "dextran.tif"
+    other.write_bytes(b"")
+    rows["raw_image_path"].value = other
+    assert panel._haemolynx_optimise_endothelial_button.visible is False
+
+
+def test_a_runs_own_record_of_its_raw_image_decides_its_reading(panel, tmp_path):
+    """Regression: the reading was tied to the graph by id(), which Python
+    reuses once a graph is freed, so a new run's reading could be judged by
+    an older run's image. A graph recording the image it read the stain off
+    is judged by that."""
+    from haemolynx.pipeline import stages
+
+    _on_the_diameters_tab(panel)
+    rows = _endothelial_run(panel, tmp_path, stain="auto")
+    read_off = tmp_path / "claudin.tif"
+    read_off.write_bytes(b"")
+    graph = _tiny_graph()
+    graph.graph["raw_image_stain"] = "endothelial"
+    graph.graph[stages.RAW_STAIN_IMAGE] = stages.raw_image_identity(
+        {"raw_image_path": read_off, "raw_image_channel": rows["raw_image_channel"].value}
+    )
+    panel._haemolynx_view.results = _fake_results(graph)
+
+    panel._haemolynx_refresh_stain_reading()
+    assert panel._haemolynx_optimise_endothelial_button.visible is False  # names another image
+
+    rows["raw_image_path"].value = read_off
+    assert panel._haemolynx_optimise_endothelial_button.visible is True
+
+
+def test_neither_optimiser_shows_while_haemodynamics_is_off(panel, tmp_path):
+    """Regression: with haemodynamics off the Diameters stage measures
+    nothing and the measuring box is hidden, but either optimiser still
+    showed and ran on what the hidden box held."""
+    _on_the_diameters_tab(panel)
+    rows = _endothelial_run(panel, tmp_path)
+    for stain, button in (
+        ("endothelial", panel._haemolynx_optimise_endothelial_button),
+        ("plasma_column", panel._haemolynx_optimise_fwhm_button),
+    ):
+        rows["raw_image_stain"].value = stain
+        rows["run_haemodynamics"].value = True
+        assert button.visible is True
+        rows["run_haemodynamics"].value = False
+        assert button.visible is False
+
+
+def test_the_advanced_buttons_follow_an_auto_stain_as_a_run_read_it(panel, tmp_path):
+    """Regression: the rows follow what a run read an auto stain as, but
+    their Advanced buttons and headings were judged on the word "auto": read
+    as endothelial, the FWHM rows hid and their button stayed, opening onto
+    nothing."""
+    _on_the_diameters_tab(panel)
+    rows = _endothelial_run(panel, tmp_path, stain="auto")
+    rows["do_fwhm_measurement"].value = True
+    checks = panel._haemolynx_advanced["assign_diameters:do_fwhm_measurement"]
+    graph = _tiny_graph()
+    panel._haemolynx_view.results = _fake_results(graph)
+
+    for read, shown in (("plasma_column", True), ("endothelial", False), ("plasma_column", True)):
+        graph.graph["raw_image_stain"] = read
+        panel._haemolynx_refresh_stain_reading()
+        assert checks.container.visible is shown
+
+
 def test_it_is_hidden_and_refuses_for_a_synthetic_network(panel, tmp_path, monkeypatch):
     started = _capture_starts(monkeypatch)
     _on_the_diameters_tab(panel)
@@ -268,6 +345,7 @@ def test_it_reads_with_the_runs_config_and_calibration_vessels(monkeypatch, tmp_
         widget_mod, "optimise_endothelial_settings",
         lambda graph, **kwargs: calls.append(kwargs) or "done",
     )
+    monkeypatch.setattr(widget_mod, "_run_segmentation_on_its_grid", lambda _settings: None)
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
     schema = default_schema()
@@ -326,20 +404,20 @@ def test_a_proposal_applies_only_on_apply_and_writes_unset_as_unset(panel):
         scorecard=(),
     )
 
-    message = review.propose(proposal, lambda: applied.append(1))
+    message = review.propose(proposal, applied.append)
 
     assert message.startswith("Optimised endothelial settings ready to review below: 2 changes.")
     assert "endothelial_wall_thickness_um: 1.5 -> unset" in review.text.value
     assert applied == []
     review.apply()
-    assert applied == [1]
+    assert applied == [("endothelial_wall_thickness_um", "endothelial_min_ring_contrast")]
     assert panel._haemolynx_report() == "Applied the optimised endothelial settings."
 
 
 def test_clear_resets_the_button_and_drops_a_pending_proposal(panel):
     review = panel._haemolynx_optimise_endothelial_review
     review.propose(
-        SimpleNamespace(settings={"endothelial_min_ring_contrast": 3.0}, scorecard=()), lambda: None
+        SimpleNamespace(settings={"endothelial_min_ring_contrast": 3.0}, scorecard=()), lambda _names: None
     )
     panel._haemolynx_optimise_endothelial_button.enabled = False
     panel._haemolynx_run_state.start(worker=None, cancel_flag={"cancelled": False})

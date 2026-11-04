@@ -736,6 +736,7 @@ def test_start_from_skips_earlier_stage_bodies_but_still_reports_them(stubbed, m
 
 def _recording_stages(monkeypatch):
     """The three early stages replaced by stubs that record their arguments."""
+    from pathlib import Path
     from types import SimpleNamespace
 
     calls: dict[str, dict] = {}
@@ -745,7 +746,9 @@ def _recording_stages(monkeypatch):
         # what these tests check is which segmented image a resume hands on.
         assert kwargs.pop("progress") is not None
         calls["segment"] = kwargs
-        return SimpleNamespace(image_path=kwargs.get("segmented_path"))
+        # The run's output folder, as SegmentedInputs carries it: a resumed
+        # volume is written to it (stages._volume_writing_to).
+        return SimpleNamespace(image_path=kwargs.get("segmented_path"), output_dir=Path("out"))
 
     def skeletonise(*_args, **_kwargs):
         calls["skeletonise"] = {}
@@ -792,7 +795,7 @@ def test_a_resumed_run_is_handed_the_early_stages_instead_of_redoing_them(stubbe
     )
 
     run_pipeline_stages(
-        {}, schema=None, resume=resume,
+        {"run_haemodynamics": True}, schema=None, resume=resume,
         on_stage_output=lambda stage, output: outputs.setdefault(stage, output),
     )
 
@@ -827,12 +830,18 @@ def test_a_resume_without_stored_outputs_hands_build_network_the_graph(stubbed, 
 def test_a_resume_reuses_ilastiks_existing_output_instead_of_segmenting_again(
     stubbed, monkeypatch, tmp_path
 ):
+    import haemolynx.pipeline.stages as stages_module
     from haemolynx.pipeline.stages import PipelineResume
 
     stubbed()
     calls = _recording_stages(monkeypatch)
     produced = tmp_path / "raw_segmented.h5"
     produced.write_bytes(b"")
+    # Reused only as its record vouches for it (current_ilastik_output).
+    monkeypatch.setattr(
+        stages_module, "current_ilastik_output",
+        lambda settings: (produced, "") if produced.is_file() else (None, "there is no output yet"),
+    )
     settings = {
         "use_ilastik_segmentation": True,
         "raw_image_path": tmp_path / "raw.tif",

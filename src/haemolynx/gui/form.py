@@ -151,7 +151,10 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
 
     if network_is_synthetic(values):
         return None  # nothing is segmented: no image to run ilastik on
-    if values.get("use_ilastik_segmentation"):
+    # Main ilastik only while it can run (pipeline.stages.ilastik_segments):
+    # its switch ticked with no raw image segments nothing, and kept the
+    # rows on Input though a vessel-mask classifier read them.
+    if values.get("use_ilastik_segmentation") and values.get("raw_image_path") not in (None, ""):
         return "input"
     if (
         values.get("use_ilastik_large_vessel_segmentation")

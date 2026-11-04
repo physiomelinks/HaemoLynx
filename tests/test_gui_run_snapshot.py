@@ -755,3 +755,109 @@ def test_a_save_that_fails_leaves_the_run_already_saved_there(tmp_path):
 
     assert read_run_snapshot(path).report == "the good one"
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith("run")] == ["run.haemorun"]
+
+
+# --- what the run was made with, and the rows changed since --------------------
+
+
+def test_a_saved_run_keeps_the_settings_it_was_made_with_and_the_rows_changed_since(tmp_path):
+    """Regression: the file kept the rows as they were when it was saved, so
+    a row changed after the run -- the next image's path -- was saved as what
+    made it, and a template or a Run-from read it so."""
+    checkpoints, results, settings = _recorded(tmp_path)
+    rows = {**settings, "input_path": tmp_path / "next_image.tif", "verbose_logging": True}
+
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings, panel_values=rows
+    )
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "saved", snapshot))
+
+    assert loaded.settings == settings
+    assert loaded.edited_since_run == {
+        "input_path": tmp_path / "next_image.tif", "verbose_logging": True,
+    }
+    assert loaded.panel_values == rows
+    # Saved with no changes since the run, it records none.
+    unchanged = capture_run(checkpoints=checkpoints, results=results, settings=settings, panel_values=dict(settings))
+    assert unchanged.edited_since_run == {}
+
+
+def test_a_windows_path_is_relocated_on_linux_and_a_mac(tmp_path, monkeypatch):
+    r"""Regression: read on Linux or a Mac, C:\...\raw.tif was one file name,
+    backslashes and all, so the raw image beside the run was never found and
+    an output folder on C: was made under the working folder."""
+    from haemolynx.gui import run_snapshot
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    monkeypatch.setattr(run_snapshot, "_WINDOWS_PATHS_ARE_FOREIGN", True)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "raw.tif").write_bytes(b"raw")
+    snapshot = RunSnapshot(
+        settings={
+            "raw_image_path": r"C:\Users\harvey\data\raw.tif",
+            "large_arteriole_mask_path": r"\\server\share\masks\raw.tif",
+            "output_dir": r"C:\Users\harvey\outputs",
+        },
+    )
+
+    moved = relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert snapshot.settings["raw_image_path"] == str(tmp_path / "data" / "raw.tif")
+    assert snapshot.settings["large_arteriole_mask_path"] == str(tmp_path / "data" / "raw.tif")
+    assert snapshot.settings["output_dir"] == str(tmp_path / "outputs")
+    assert {m.name for m in moved} == {"raw_image_path", "large_arteriole_mask_path", "output_dir"}
+
+
+def test_ilastiks_output_is_relocated_with_ilastiks_folder(tmp_path):
+    """Regression: input_path (ilastik's segmentation) and ilastik_output_dir
+    were moved apart -- the input found by name under the run's folder, the
+    folder moved into outputs/ -- so the run no longer took the input for
+    ilastik's output and segmented the raw image again."""
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    (tmp_path / "outputs" / "ilastik").mkdir(parents=True)
+    (tmp_path / "outputs" / "ilastik" / "claudin_segmented.tif").write_bytes(b"mask")
+    (tmp_path / "old_copy").mkdir()
+    (tmp_path / "old_copy" / "claudin_segmented.tif").write_bytes(b"another")
+    server = blocker / "harvey"
+    snapshot = RunSnapshot(
+        settings={
+            "input_path": str(server / "ilastik" / "claudin_segmented.tif"),
+            "ilastik_output_dir": str(server / "ilastik"),
+        },
+    )
+
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert snapshot.settings["ilastik_output_dir"] == str(tmp_path / "outputs" / "ilastik")
+    assert snapshot.settings["input_path"] == str(tmp_path / "outputs" / "ilastik" / "claudin_segmented.tif")
+
+
+def test_an_input_found_beside_the_run_takes_ilastiks_folder_with_it(tmp_path):
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    (tmp_path / "segmentations").mkdir()
+    (tmp_path / "segmentations" / "claudin_segmented.tif").write_bytes(b"mask")
+    snapshot = RunSnapshot(
+        settings={
+            "input_path": str(tmp_path / "gone" / "segmentations" / "claudin_segmented.tif"),
+            # A folder that can be made here, so not moved by itself.
+            "ilastik_output_dir": str(tmp_path / "gone" / "segmentations"),
+        },
+    )
+
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert snapshot.settings["input_path"] == str(tmp_path / "segmentations" / "claudin_segmented.tif")
+    assert snapshot.settings["ilastik_output_dir"] == str(tmp_path / "segmentations")
+
+
+def test_the_rows_changed_since_the_run_are_relocated_too(tmp_path):
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    (tmp_path / "next.tif").write_bytes(b"next")
+    snapshot = RunSnapshot(settings={}, edited_since_run={"input_path": "/home/harvey/next.tif"})
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+    assert snapshot.edited_since_run["input_path"] == str(tmp_path / "next.tif")

@@ -180,3 +180,40 @@ def test_load_3d_tif_with_voxel_size_still_rejects_2d_with_non_default_axis_orde
 
     with pytest.raises(ValueError, match="requires a 3D volume"):
         load_3d_tif_with_voxel_size(str(path), axis_order="xyz")
+
+
+def test_a_2d_images_z_spacing_is_its_finest_in_plane_one(tmp_path):
+    """Regression: a 2D image read as a stack of one kept 1 um of z when its
+    file gave none, so with 2 um pixels the single plane was the finest
+    axis: a downsample spent its factor on z (2x reduced nothing) and every
+    skeleton voxel count meant half a pixel."""
+    from haemolynx.io.downsample import axis_downsample_factors
+    from haemolynx.io.load_2d import load_image_with_voxel_size_2d_aware
+
+    path = tmp_path / "plane.tif"
+    tifffile.imwrite(path, np.zeros((40, 40), dtype=np.uint8), resolution=(1 / 2.0, 1 / 3.0))
+
+    image, x, y, z, status = load_image_with_voxel_size_2d_aware(str(path), input_format="tif")
+
+    assert image.shape == (1, 40, 40)
+    assert (x, y, z) == pytest.approx((2.0, 3.0, 2.0))
+    # Still missing, so auto takes an override; and no 1 um warning for it.
+    assert status["missing_axes"] == ["z"] and status["z_from_in_plane"]
+    from haemolynx.io import resolve_voxel_size_xyz
+
+    assert resolve_voxel_size_xyz((x, y, z), status, [5.0, 5.0, 5.0], "auto")[0] == (5.0, 5.0, 5.0)
+    assert resolve_voxel_size_xyz((x, y, z), status, None, "auto")[0] == pytest.approx((2.0, 3.0, 2.0))
+    # x is reduced by the whole factor, as on a 3D image of these pixels.
+    assert axis_downsample_factors(2, (z, y, x))[2] == 2
+
+
+def test_a_2d_image_with_no_pixel_size_keeps_its_fallback(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "plane.h5"
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("data", data=np.zeros((10, 12), dtype=np.uint8))
+
+    _image, x, y, z, status = load_image_with_voxel_size_2d_aware(str(path), input_format="h5")
+
+    assert (x, y, z) == (1.0, 1.0, 1.0)
+    assert "z_from_in_plane" not in status

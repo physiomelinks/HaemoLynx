@@ -27,6 +27,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = REPO_ROOT / "tests" / "data" / "bundled_vessels_8_to_2.h5"
 
 
+def _run_grid(image):
+    """What the run's loader gives for *image*: 1 um voxels, no crop or downsample."""
+    from haemolynx.pipeline.stages import RunGridVolume
+
+    return RunGridVolume(
+        image=image, voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_source="metadata",
+        crop=None, downsample=None,
+    )
+
+
 @pytest.fixture
 def panel(qapp):
     """The panel, built without a viewer -- this feature needs none."""
@@ -312,9 +322,9 @@ def test_check_segmented_image_binarizes_a_normalized_float_probability_mask(
     image[5:15, 5:15, 5:15] = 0.9
 
     monkeypatch.setattr(
-        widget_mod,
-        "load_volume_for_skeletonise",
-        lambda settings, input_format: (image, (1.0, 1.0, 1.0), {"status": "complete"}),
+        widget_mod.pipeline_stages,
+        "load_volume_on_run_grid",
+        lambda settings, input_format: _run_grid(image),
     )
 
     real_input = tmp_path / "mask.tif"
@@ -370,9 +380,9 @@ def test_check_segmented_image_reports_raw_vs_after_cleanup_when_cleanup_is_on(
     mask[1, 1, 1] = True  # an isolated single-voxel speck, far from the body
 
     monkeypatch.setattr(
-        widget_mod,
-        "load_volume_for_skeletonise",
-        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+        widget_mod.pipeline_stages,
+        "load_volume_on_run_grid",
+        lambda settings, input_format: _run_grid(mask),
     )
 
     rows = panel._haemolynx_rows()
@@ -419,9 +429,9 @@ def test_check_segmented_image_cross_checks_against_a_raw_file_when_set(
     raw_image = np.where(mask, 200.0, 10.0).astype(np.float32)
 
     monkeypatch.setattr(
-        widget_mod,
-        "load_volume_for_skeletonise",
-        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+        widget_mod.pipeline_stages,
+        "load_volume_on_run_grid",
+        lambda settings, input_format: _run_grid(mask),
     )
     monkeypatch.setattr(
         automated_mod,
@@ -478,9 +488,9 @@ def test_check_segmented_image_reads_the_chosen_raw_channel(panel, tmp_path, mon
         return np.where(mask, 200.0, 10.0).astype(np.float32)
 
     monkeypatch.setattr(
-        widget_mod,
-        "load_volume_for_skeletonise",
-        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+        widget_mod.pipeline_stages,
+        "load_volume_on_run_grid",
+        lambda settings, input_format: _run_grid(mask),
     )
     monkeypatch.setattr(automated_mod, "load_single_channel_tiff_volume", load)
 
@@ -522,9 +532,9 @@ def test_check_segmented_image_degrades_gracefully_when_raw_file_is_missing(
     mask = (np.sqrt((zz - 7) ** 2 + (yy - 7) ** 2) <= 3.0) & (xx >= 2) & (xx <= 12)
 
     monkeypatch.setattr(
-        widget_mod,
-        "load_volume_for_skeletonise",
-        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+        widget_mod.pipeline_stages,
+        "load_volume_on_run_grid",
+        lambda settings, input_format: _run_grid(mask),
     )
 
     real_input = tmp_path / "mask.tif"
@@ -549,3 +559,101 @@ def test_check_segmented_image_degrades_gracefully_when_raw_file_is_missing(
     report = panel._haemolynx_report()
     assert "Segmented image quality:" in report, report
     assert "Raw-image cross-check skipped:" in report, report
+
+
+# --- a synthetic network, a cropped raw image, the low-RAM option -------------
+
+
+def test_check_segmented_image_is_greyed_and_refused_for_a_synthetic_network(panel, monkeypatch, tmp_path):
+    """Regression: only the optimisers were greyed; with a segmented image left
+    in its row, the check read the template as the image and failed with
+    "INPUT_FORMAT must be 'tif', 'tiff', or 'h5'"."""
+    from haemolynx.gui.chrome_tooltips import CHECK_SYNTHETIC_TOOLTIP
+
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_segmentation_quality_check_in_background",
+        lambda *args, **kwargs: started.append(args),
+    )
+    rows = panel._haemolynx_rows()
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+    rows["network_source"].value = "synthetic"
+
+    button = panel._haemolynx_check_image_button
+    assert not button.enabled and button.tooltip == CHECK_SYNTHETIC_TOOLTIP
+    panel._haemolynx_check_segmented_image()
+    assert not started and panel._haemolynx_report() == CHECK_SYNTHETIC_TOOLTIP
+
+    rows["network_source"].value = "segmented_image"
+    assert button.enabled
+
+
+def test_a_raw_image_of_another_size_is_refused_whatever_the_crop(tmp_path):
+    """Regression: with a crop box, the raw image was cut at its own place,
+    worked out from its own shape, and passed the shape check after: a
+    120 x 120 raw image beside a 100 x 100 mask sat 10 voxels off."""
+    import numpy as np
+    import tifffile
+
+    from haemolynx.io.crop import crop_box_from_settings
+    from haemolynx.pipeline import default_schema, resolve_settings
+
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, np.zeros((10, 120, 120), dtype=np.uint16))
+    values = default_schema().defaults()
+    values.update(
+        raw_image_path=raw, crop_on_import=True, crop_method="size", crop_size_xyz=[50, 50, 10],
+        output_dir=tmp_path / "out",
+    )
+    settings = resolve_settings(values, schema=default_schema(), config_path=None)
+    box = crop_box_from_settings(settings, (10, 100, 100))
+
+    image, error = widget_mod._load_raw_reference_image_or_none(
+        settings, expected_shape=box.shape_zyx, crop=box
+    )
+    assert image is None and "(10, 120, 120) != (10, 100, 100)" in error
+
+    tifffile.imwrite(raw, np.arange(10 * 100 * 100, dtype=np.uint32).reshape(10, 100, 100))
+    image, error = widget_mod._load_raw_reference_image_or_none(
+        settings, expected_shape=box.shape_zyx, crop=box
+    )
+    assert error is None
+    whole = np.arange(10 * 100 * 100, dtype=np.uint32).reshape(10, 100, 100)
+    assert np.array_equal(image, whole[box.slices])
+
+
+def test_the_check_reads_the_raw_image_with_the_masks_box_and_the_low_ram_option(panel, monkeypatch, tmp_path):
+    """The check reads the raw image as the run does: cut by the mask's own
+    box, and under the low-RAM option onto disk (it read it into RAM)."""
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    mask = np.zeros((10, 20, 20), dtype=bool)
+    mask[4:7, 8:12, 2:18] = True
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "load_volume_on_run_grid",
+        lambda settings, input_format: _run_grid(mask),
+    )
+    asked = []
+    monkeypatch.setattr(
+        widget_mod, "_load_raw_reference_image_or_none",
+        lambda settings, **kwargs: asked.append(kwargs) or (None, None),
+    )
+    rows = panel._haemolynx_rows()
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+    rows["use_memmap_loading"].value = True
+
+    panel._haemolynx_check_segmented_image()
+    app = QApplication.instance()
+    deadline = time.time() + 20
+    while not asked and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+
+    assert asked and asked[0]["use_memmap"] is True and "crop" in asked[0]

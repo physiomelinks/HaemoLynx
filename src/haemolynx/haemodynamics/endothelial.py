@@ -62,6 +62,7 @@ from .sections import (
     averaged_section,
     bootstrap_interval,
     calibration_sites,
+    is_planar,
     projected_sigma,
     psf_from_section_blurs,
     relative_half_width,
@@ -218,6 +219,9 @@ def fit_ring_section(
         sigma_a, sigma_b = 0.5, 1.0
     else:
         sigma_a, sigma_b = projected_sigma(a, psf_sigma_zyx), projected_sigma(b, psf_sigma_zyx)
+        if is_planar(volume):
+            # A single plane's section is its line revolved: blurred alike both ways.
+            sigma_b = sigma_a
     blur = max(sigma_a, sigma_b)
     extent = max(6.0, 1.2 * float(guide_um) + 3.0 + 3.0 * blur)
     # Half the finer blur is as fine as the section needs sampling: the

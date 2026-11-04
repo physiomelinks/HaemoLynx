@@ -183,7 +183,7 @@ def test_results_builder_emits_one_vectors_layer_for_a_sweep():
     sweep_spec = next(spec for spec in group.layers if spec.name == sweep_vessels)
     assert sweep_spec.sweep is not None
     assert sweep_spec.kind == "vectors"
-    assert sweep_spec.colour_by == "flow_abs"
+    assert sweep_spec.colour_by == "flow_abs_log10", "as the baseline's vessels are"
 
 
 def test_sweep_layer_initial_flow_matches_grid_point_zero():

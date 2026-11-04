@@ -422,6 +422,10 @@ OPTIMISE_SYNTHETIC_TOOLTIP = (
     "Unavailable for a synthetic network, which has no image to optimise on. "
     "Set \"Input\" on the Input tab to Segmented image to use it"
 )
+CHECK_SYNTHETIC_TOOLTIP = (
+    "Unavailable for a synthetic network, which has no segmented image to check. "
+    "Set \"Input\" on the Input tab to Segmented image to use it"
+)
 CHECK_SEGMENTED_IMAGE_TOOLTIP = (
     "Score the segmented image out of 10 on fragmentation, connectivity, "
     "vessels leaving the image, surface noise and resolution, with the "

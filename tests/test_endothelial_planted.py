@@ -117,6 +117,30 @@ def test_planted_vessels_keep_clear_of_the_vessels_and_the_faces():
     assert np.allclose(planted.volume[scene.mask], scene.volume[scene.mask], atol=1.0)
 
 
+def test_under_the_low_ram_option_rings_are_planted_on_disk_alike(tmp_path):
+    """Regression: planting copied the whole channel and mask into RAM
+    whatever use_memmap_loading said. Under the option both copies are on
+    disk, the rings drawn the same to the bit, and with *seed_guess* off they
+    carry no mask width for the ring fit's guide, as a run's vessels with
+    none measured do not."""
+    scene = _scene(*IMAGES[0])
+    in_ram = _planted(scene)
+    on_disk = endothelial_planted.plant_rings(
+        scene.volume, scene.graph, list(scene.graph.edges(keys=True)), scene.mask,
+        scene.voxel_size_zyx, psf_sigma_zyx=scene.psf_seen_zyx, wall_um=scene.wall_um,
+        rng=np.random.default_rng(1), sample_size=4, seed_guess=False,
+        use_memmap=True, memmap_directory=tmp_path,
+    )
+
+    assert isinstance(on_disk.volume, np.memmap) and not isinstance(in_ram.volume, np.memmap)
+    np.testing.assert_array_equal(on_disk.volume, in_ram.volume)
+    for (_a, _b, kept), (_c, _d, unseeded) in zip(
+        in_ram.probe.edges(data=True), on_disk.probe.edges(data=True)
+    ):
+        assert "edt_diameter_um" in kept and "edt_diameter_um" not in unseeded
+        assert {k: v for k, v in kept.items() if k != "edt_diameter_um"} == unseeded
+
+
 def test_nothing_is_planted_where_no_vessel_shows_a_ring():
     scene = _scene(*IMAGES[0])
     flat = np.full_like(scene.volume, 5.0)

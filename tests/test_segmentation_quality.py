@@ -457,3 +457,25 @@ def test_report_without_after_cleanup_keeps_the_original_single_headline():
 
     assert "Segmented image quality:" in text
     assert "Raw segmentation:" not in text
+
+
+def test_an_empty_mask_is_said_to_hold_no_vessel_not_to_need_re_imaging():
+    """Regression: an empty mask (or a crop box missing every vessel) scored
+    0 for resolution, so the report said to re-image, naming z's spacing
+    as the in-plane sampling."""
+    score = sq.score_segmented_mask(np.zeros((6, 20, 20), dtype=bool), voxel_size_zyx=(2.0, 0.4, 0.4))
+
+    report = sq.format_segmentation_quality_report(score)
+
+    assert report.splitlines()[0].startswith("⚠ The segmented image holds no vessel")
+    assert "Re-image" not in report
+    assert "vs 0.40um in-plane sampling" in report
+
+
+def test_a_2d_image_gets_no_z_steps_note():
+    mask = np.zeros((1, 60, 60), dtype=bool)
+    mask[0, 25:35, 5:55] = True
+    score = sq.score_segmented_mask(mask, voxel_size_zyx=(2.0, 1.0, 1.0))
+
+    assert score.single_plane
+    assert "z step" not in sq.format_segmentation_quality_report(score)
