@@ -541,3 +541,81 @@ def test_preflight_refuses_a_crop_box_outside_the_image(tmp_path):
     assert "Crop on import" in error and "(4, 4, 4)" in error
     inside = dict(settings, crop_start_xyz=[0, 0, 0], crop_end_xyz=[2, 2, 2])
     assert check_crop_on_import(inside).errors == []
+
+
+# -- a run resumed after the Input tab's settings changed ----------------------
+
+
+def test_a_resumed_run_reads_the_segmented_image_the_settings_name_now(tmp_path):
+    """Regression: Run from the Skeletonise tab kept the resumed run's own
+    segmented image though input_path had changed, while every other Input
+    change took effect."""
+    from haemolynx.pipeline.stages import PipelineResume, SegmentedInputs, _resumed_segmented_path
+
+    first = a_segmented_tiff(tmp_path)
+    second = tmp_path / "other.tif"
+    second.write_bytes(first.read_bytes())
+    resume = PipelineResume(
+        start_from="skeletonise", inputs=SegmentedInputs(image_path=first, output_dir=tmp_path)
+    )
+
+    same = settings_for(tmp_path, input_path=first)
+    assert _resumed_segmented_path(same, resume, "skeletonise") == first
+    changed = settings_for(tmp_path, input_path=second)
+    assert _resumed_segmented_path(changed, resume, "skeletonise") is None
+
+
+def test_a_resumed_run_takes_only_an_ilastik_output_its_record_vouches_for(tmp_path, no_ilastik):
+    """Regression: any ilastik output on disk was taken as the run's, one
+    left without its record (a binarisation that raised) too."""
+    from haemolynx.io.ilastik import sidecar_path
+    from haemolynx.pipeline.stages import PipelineResume, _resumed_segmented_path
+
+    settings, output, _project = _ilastik_run(tmp_path)
+    resume = PipelineResume(start_from="build_network")
+    assert _resumed_segmented_path(settings, resume, "build_network") == output
+    sidecar_path(output).unlink()
+    assert _resumed_segmented_path(settings, resume, "build_network") is None
+
+
+def test_a_run_resumed_on_a_volume_made_with_other_input_settings_is_refused(tmp_path):
+    """Regression: a run from the Graph tab on with the crop box, downsample,
+    axis order, voxel size or clean-up changed was built on the old volume
+    without a word, and its manifest and settings file named the new values."""
+    from haemolynx.pipeline.stages import (
+        INPUT_SETTINGS_RECORD,
+        PipelineResume,
+        run_pipeline_stages,
+        segment,
+        skeletonise,
+    )
+
+    mask = tmp_path / "rod.tif"
+    volume = np.zeros((7, 7, 20), dtype=np.uint8)
+    volume[2:5, 2:5, 2:18] = 255
+    tifffile.imwrite(mask, volume)
+    before = settings_for(tmp_path, input_path=mask, run_haemodynamics=False, visualize_results=False)
+    inputs = segment(dict(before))
+    from dataclasses import replace
+
+    from haemolynx.pipeline.stages import input_volume_settings
+
+    made = replace(skeletonise(dict(before), inputs), input_settings=input_volume_settings(before))
+    resume = PipelineResume(start_from="build_network", inputs=inputs, volume=made)
+
+    after = settings_for(
+        tmp_path, input_path=mask, run_haemodynamics=False, visualize_results=False,
+        segmented_image_downsample="2x",
+    )
+    with pytest.raises(ValueError, match="segmented_image_downsample changed"):
+        run_pipeline_stages(dict(after), SCHEMA, start_from="build_network", resume=resume)
+
+    # Unchanged, it resumes, and the graph keeps what it was built with.
+    G = run_pipeline_stages(dict(before), SCHEMA, start_from="build_network", resume=resume, stop_after="build_network")
+    assert G.graph[INPUT_SETTINGS_RECORD]["segmented_image_downsample"] == "none"
+    with pytest.raises(ValueError, match="this run's network was made"):
+        run_pipeline_stages(
+            dict(after), SCHEMA, start_from="assign_boundaries",
+            # No stored volume (a loaded run's): the graph's own record decides.
+            resume=PipelineResume(start_from="assign_boundaries", inputs=inputs, graph=G),
+        )

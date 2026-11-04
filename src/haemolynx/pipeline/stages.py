@@ -30,7 +30,7 @@ import pickle
 import threading
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
@@ -95,7 +95,7 @@ from haemolynx.io.downsample import (
     raw_volume_like_graph,
     record_on_graph as record_downsample_on_graph,
 )
-from haemolynx.io.ilastik import ilastik_segmented_path, ilastik_segmented_stem
+from haemolynx.io.ilastik import ilastik_segmented_path
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -110,7 +110,7 @@ from haemolynx.visualization.perturbation_plots import (
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.checks import tissue_raw_image
 from haemolynx.pipeline.citations import write_citations
-from haemolynx.pipeline.naming import run_stem
+from haemolynx.pipeline.naming import run_input_path, run_stem
 from haemolynx.synthetic.template import GRAPH_TEMPLATE_RECORD, ROLES as SYNTHETIC_ROLES
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 from haemolynx.pipeline.provenance import record_run
@@ -218,6 +218,10 @@ class SkeletonisedVolume:
     downsample: Downsample | None = None
     #: A synthetic run's volume: no image, no skeleton (see the class).
     synthetic: bool = False
+    #: The Input tab's settings this volume was made with
+    #: (:func:`input_volume_settings`): a run resumed on it with others is
+    #: refused (:func:`_check_resumed_input`). None when not recorded.
+    input_settings: dict | None = None
     #: The thick region's centreline tree as skeletonisation drew it: its
     #: voxels in C order, ``graph.thick_vessel_junctions.thick_vessel_centreline_voxels``
     #: of ``thick_vessel_mask``, which graph building reads instead of
@@ -471,21 +475,7 @@ def segmented_input_path(settings: dict) -> Path | None:
     another raw image's segmentation, or a vessel mask's. Otherwise the
     output is derived where `segment` writes it -- that stage's own naming
     rule. None for a synthetic network, which has no segmented image."""
-    if graph.network_is_synthetic(settings):
-        return None
-    produced = settings.get("input_path")
-    if ilastik_segments(settings):
-        output_dir = Path(settings["ilastik_output_dir"])
-        if (
-            produced is not None
-            and Path(produced).parent == output_dir
-            and Path(produced).stem == ilastik_segmented_stem(settings["raw_image_path"])
-        ):
-            return Path(produced)
-        return ilastik_segmented_path(
-            output_dir, settings["raw_image_path"], settings["ilastik_output_suffix"]
-        )
-    return None if produced is None else Path(produced)
+    return run_input_path(settings)
 
 
 def current_ilastik_output(settings: Mapping[str, Any]) -> tuple[Path | None, str]:
@@ -2756,6 +2746,9 @@ def build_network(
 
         # Saved with the box it was built in, so a run loading it can tell.
         _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
+        # And with the Input settings its volume was made with, so a run
+        # resumed on it with others is refused (_check_resumed_input).
+        G.graph[INPUT_SETTINGS_RECORD] = getattr(volume, "input_settings", None) or input_volume_settings(settings)
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         logger.info(f"Saved graph to: {graph_path}")
@@ -8673,6 +8666,64 @@ def _run_stage_body(name: str, start_from: str | None) -> bool:
     return _stage_index(name) >= _stage_index(start_from)
 
 
+#: Where a graph keeps :func:`input_volume_settings` as it was built
+#: (``G.graph[INPUT_SETTINGS_RECORD]``), for a run resumed on it.
+INPUT_SETTINGS_RECORD = "input_settings"
+
+
+def input_volume_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The Input tab's settings that decide the volume, and so the network,
+    a run builds on, as plain values: the image read (ilastik's output,
+    once `segment` has made it), its axis order and voxel size, the crop
+    box, the downsample and the clean-up -- or, for a synthetic network,
+    the template and every synthetic_ setting. What a run resumed on a
+    stored volume or network must still hold (:func:`_check_resumed_input`)."""
+
+    def plain(value: Any) -> Any:
+        if isinstance(value, PurePath):
+            return str(value)
+        if isinstance(value, (list, tuple)):
+            return [plain(item) for item in value]
+        return value
+
+    synthetic = graph.network_is_synthetic(settings)
+    if synthetic:
+        names = {"network_source", *(name for name in settings if name.startswith("synthetic_"))}
+    else:
+        names = {
+            "network_source", "image_axis_order", "voxel_size_policy",
+            "segmented_image_downsample", "crop_on_import", "segmentation_cleanup",
+        }
+        if str(settings.get("voxel_size_policy", "auto")) != "metadata_only":
+            names.add("voxel_size_override_xyz")
+        if settings.get("crop_on_import"):
+            names.update(name for name in settings if name.startswith("crop_"))
+        if settings.get("segmentation_cleanup"):
+            names.update(name for name in settings if name.startswith("segmentation_cleanup_"))
+    recorded = {name: plain(settings.get(name)) for name in sorted(names)}
+    if not synthetic:
+        image = segmented_input_path(dict(settings))
+        recorded["input_path"] = None if image is None else str(Path(image).resolve())
+    return recorded
+
+
+def _check_resumed_input(settings: Mapping[str, Any], recorded: Any, what: str) -> None:
+    """Refuse a run resumed on a stored *what* (a volume or a network) made
+    with other Input settings than these: it was built on the old volume
+    without a word, and its manifest and settings file named the new ones.
+    Nothing to compare for one made before this was recorded."""
+    if not isinstance(recorded, Mapping):
+        return
+    now = input_volume_settings(settings)
+    changed = sorted(name for name in set(recorded) | set(now) if recorded.get(name) != now.get(name))
+    if changed:
+        raise ValueError(
+            f"The Input tab's {', '.join(changed)} changed since this run's {what} was made, "
+            "and a run resumed on it would not use the new values. Run the pipeline from the "
+            "Input tab to use them, or put them back to resume."
+        )
+
+
 def _earlier_output(
     resume: PipelineResume | None, start_from: str | None, stage: str, attribute: str
 ) -> Any | None:
@@ -8689,22 +8740,37 @@ def _resumed_segmented_path(
 ) -> Path | None:
     """The segmented image a run resumed past segmentation already has.
 
-    The resumed run's own, else -- when ilastik segments and its output is
-    on disk (a run loaded from a file carries no stage outputs) -- that
-    output, so resuming never runs ilastik again. None: segment as usual.
+    The resumed run's own, while it is still the image these settings
+    read -- else, when ilastik segments and its current output is on disk
+    (a run loaded from a file carries no stage outputs), that output, so
+    resuming never runs ilastik again. None: segment as usual. The resumed
+    run's own image was kept though input_path, or the raw image ilastik
+    segments, had changed since, and the Skeletonise tab built on the old
+    one while every other Input change took effect.
     """
+    if resume is None or start_from not in STAGE_CALLS:
+        return None
+    current = current_ilastik_output(settings)[0] if ilastik_segments(settings) else None
     inputs = _earlier_output(resume, start_from, "segment", "inputs")
     if inputs is not None:
-        return inputs.image_path
-    resumed_past_segment = (
-        resume is not None
-        and start_from in STAGE_CALLS
-        and _stage_index(start_from) > _stage_index("segment")
-    )
-    if not resumed_past_segment or not settings.get("use_ilastik_segmentation"):
+        if ilastik_segments(settings):
+            wanted = current
+        elif graph.network_is_synthetic(settings) or settings.get("input_path") in (None, ""):
+            wanted = inputs.image_path
+        else:
+            wanted = io.resolve_image_path_with_optional_zip(Path(settings["input_path"]))
+        if wanted is not None and Path(wanted).resolve() == Path(inputs.image_path).resolve():
+            return inputs.image_path
+        logger.info(
+            "The segmented image is not the one the resumed run read (%s): it is read again.",
+            inputs.image_path,
+        )
+        return current
+    if _stage_index(start_from) <= _stage_index("segment"):
         return None
-    produced = segmented_input_path(settings)
-    return produced if produced is not None and produced.is_file() else None
+    # Only an output its record vouches for: one left without a record (a
+    # binarisation that raised) was taken as this run's.
+    return current
 
 
 def _volume_writing_to(volume: SkeletonisedVolume, output_dir: Path) -> SkeletonisedVolume:
@@ -9011,7 +9077,10 @@ def _run_stages(
         volume = _earlier_output(resume, start_from, "skeletonise", "volume")
         if volume is None:
             volume = skeletonise(settings, inputs)
+            if isinstance(volume, SkeletonisedVolume):
+                volume = replace(volume, input_settings=input_volume_settings(settings))
         else:
+            _check_resumed_input(settings, getattr(volume, "input_settings", None), "image and skeleton")
             logger.info("Resuming with the image and skeleton already loaded.")
             volume = _volume_writing_to(volume, inputs.output_dir)
     _produced(on_stage_output, "skeletonise", volume)
@@ -9019,6 +9088,8 @@ def _run_stages(
         return None
     with run.stage("build_network") as building:
         resumed_graph = _earlier_output(resume, start_from, "build_network", "graph")
+        if resumed_graph is not None:
+            _check_resumed_input(settings, resumed_graph.graph.get(INPUT_SETTINGS_RECORD), "network")
         earlier = _earlier_output(resume, start_from, "build_network", "network")
         if earlier is not None and resumed_graph is not None:
             logger.info("Resuming with the network and vessel masks already built.")
