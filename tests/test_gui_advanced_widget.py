@@ -190,10 +190,10 @@ def test_the_shared_ilastik_rows_move_with_their_own_button(panel, tmp_path):
     assert set(advanced.names) == {n for n in SHARED_ILASTIK_SETTINGS if SCHEMA[n].advanced}
     assert {"ilastik_output_dir", "ilastik_output_suffix", "ilastik_timeout_seconds"} <= set(advanced.names)
 
-    # Ticked with no raw image to segment, nothing on Input reads them.
+    # Ticked with no raw image they stay beside the main ilastik rows.
     rows["use_ilastik_segmentation"].value = True
     _process()
-    assert not _shown(panel, "Input", rows["ilastik_executable"])
+    assert _shown(panel, "Input", rows["ilastik_executable"])
     raw = tmp_path / "raw.tif"
     tifffile.imwrite(raw, np.zeros((4, 8, 8), dtype=np.uint8))
     rows["raw_image_path"].value = raw

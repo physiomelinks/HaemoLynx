@@ -906,8 +906,12 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
         if field.section in ("Statistics and measurements", "Connectivity/Network Analysis")
     }
 
-    assert not fields["measurement_3d_to_cell_mask"].hide_when_unmet
+    # Lined up with the run's image, so gone for a synthetic network
+    # (preflight refused it there after showing it); in view otherwise.
+    assert fields["measurement_3d_to_cell_mask"].hide_when_unmet
+    assert SCHEMA["measurement_3d_to_cell_mask"].requires == ("network_source=segmented_image",)
     assert fields["measurement_3d_to_cell_mask"].is_visible({})
+    assert not fields["measurement_3d_to_cell_mask"].is_visible({"network_source": "synthetic"})
     assert not fields["statistics"].hide_when_unmet
 
     # HDF5 files, so the dataset-name rows have a dataset to name and show too.

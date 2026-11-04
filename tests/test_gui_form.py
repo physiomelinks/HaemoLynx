@@ -313,8 +313,8 @@ def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
         assert name in SHARED_ILASTIK_SETTING_SET
         assert not shared.is_visible({"use_ilastik_segmentation": False}), name
         assert shared.is_visible({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}), name
-        # Ticked with no raw image, it segments nothing: no rows for it.
-        assert not shared.is_visible({"use_ilastik_segmentation": True}), name
+        # Ticked with no raw image they stay beside the main ilastik rows.
+        assert shared.is_visible({"use_ilastik_segmentation": True}), name
 
 
 def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
@@ -369,9 +369,10 @@ def test_shared_ilastik_host_prefers_input_then_boundaries():
     assert shared_ilastik_host({}) is None
     assert shared_ilastik_host({"use_ilastik_segmentation": False}) is None
     assert shared_ilastik_host({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}) == "input"
-    # Ticked with no raw image, main ilastik segments nothing: no host for it,
-    # and a vessel-mask classifier's rows go to Boundaries (below).
-    assert shared_ilastik_host({"use_ilastik_segmentation": True}) is None
+    # Ticked with no raw image, main ilastik segments nothing: its rows stay
+    # on Input, unless a vessel-mask classifier reads them on Boundaries (below).
+    assert shared_ilastik_host({"use_ilastik_segmentation": True}) == "input"
+    assert shared_ilastik_host({"use_ilastik_segmentation": True, "raw_image_path": None}) == "input"
     assert (
         shared_ilastik_host(
             {

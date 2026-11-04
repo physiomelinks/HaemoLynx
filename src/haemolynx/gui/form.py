@@ -144,17 +144,21 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
     Prefer Input when main-image ilastik is on. When only vessel-mask ilastik
     is on, host them on Boundaries so they are not stranded while Input hides
     them -- only while that role's masks are in use, since a switch left on
-    under an unticked mask switch is hidden and runs nothing. One schema value
-    each — the panel reparents the same rows.
+    under an unticked mask switch is hidden and runs nothing. The main switch
+    ticked with no raw image segments nothing: a vessel-mask classifier then
+    takes them to Boundaries, where they are read; with none, they stay on
+    Input beside the main ilastik rows, greyed until a raw image is entered.
+    One schema value each — the panel reparents the same rows.
     """
     from haemolynx.graph.boundaries import network_is_synthetic, vessel_mask_files_in_use
 
     if network_is_synthetic(values):
         return None  # nothing is segmented: no image to run ilastik on
-    # Main ilastik only while it can run (pipeline.stages.ilastik_segments):
-    # its switch ticked with no raw image segments nothing, and kept the
-    # rows on Input though a vessel-mask classifier read them.
-    if values.get("use_ilastik_segmentation") and values.get("raw_image_path") not in (None, ""):
+    main = bool(values.get("use_ilastik_segmentation"))
+    # Main ilastik takes them first only while it can run
+    # (pipeline.stages.ilastik_segments): ticked with no raw image it kept
+    # them on Input though a vessel-mask classifier read them.
+    if main and values.get("raw_image_path") not in (None, ""):
         return "input"
     if (
         values.get("use_ilastik_large_vessel_segmentation")
@@ -164,7 +168,7 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
         and vessel_mask_files_in_use(values, "small")
     ):
         return "boundaries"
-    return None
+    return "input" if main else None
 
 
 @dataclass(frozen=True)
