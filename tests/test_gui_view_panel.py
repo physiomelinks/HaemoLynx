@@ -1354,6 +1354,23 @@ def _baseline_and_sweep(make_napari_viewer, tmp_path):
     return panel, viewer, result, perturbation_layer_names(result.name)[0]
 
 
+def test_a_sweep_opens_on_the_colour_range_of_its_whole_grid(make_napari_viewer, tmp_path):
+    """A layer's own controls fit a new colouring to the values it holds,
+    which for a sweep are one grid point's -- here every vessel one flow -- so
+    the grid-wide range the layer was drawn with, and its slider keeps, was
+    lost the moment the controls were attached."""
+    from haemolynx.gui._widget import _active_column
+    from haemolynx.gui.results import sweep_flow_colour_limits
+
+    _panel, viewer, result, name = _baseline_and_sweep(make_napari_viewer, tmp_path)
+    layer = viewer.layers[name]
+    grid = sweep_flow_colour_limits(result.sweep_flows, "flow_abs_log10")
+
+    assert _active_column(layer) == "flow_abs_log10"
+    assert grid[1] - grid[0] > 0.05, "the grid's points differ; one point's vessels do not"
+    assert tuple(layer.edge_contrast_limits) == pytest.approx(grid)
+
+
 def _typed_range(colour_range, low, high):
     """Type a range into the view panel's boxes, as a user does."""
     colour_range.low.setText(repr(low))
@@ -1449,7 +1466,10 @@ def test_baseline_and_perturbation_each_keep_their_own_colour_range(make_napari_
     show_layer_set(viewer, result.name)
     colour_range.follow_the_layer()
     perturbation = viewer.layers[name]
-    grid = result.sweep_flows.global_flow_abs_limits()
+    from haemolynx.gui.results import sweep_flow_colour_limits
+
+    # Drawn by log flow, as the baseline's vessels are after a solve.
+    grid = sweep_flow_colour_limits(result.sweep_flows, "flow_abs_log10")
     # The perturbation's own grid-wide range, not the baseline's, and not refitted.
     assert tuple(perturbation.edge_contrast_limits) == pytest.approx(grid)
     assert float(colour_range.low.text()) == pytest.approx(grid[0], rel=1e-3)
@@ -1788,14 +1808,18 @@ def test_colour_by_acts_on_the_network_showing_names(make_napari_viewer):
     _pick(colour_by, "flow_abs")
 
     panel._haemolynx_choose_layer_set("dilate")
-    assert colour_by.button.text() == _active_column(dilate) == "flow_abs"
-    _pick(colour_by, "flow_abs_log10")
-
-    assert _active_column(dilate) == "flow_abs_log10"
-    assert _active_column(baseline) == "flow_abs"
+    # The perturbation's own colouring (log flow, as it was drawn), not the
+    # baseline's pick.
+    assert colour_by.button.text() == _active_column(dilate) == "flow_abs_log10"
+    _pick(colour_by, "flow_abs")
+    assert _active_column(dilate) == "flow_abs"
 
     panel._haemolynx_choose_layer_set(None)
     assert colour_by.button.text() == "flow_abs"
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _active_column(baseline) == "flow_abs_log10"
+    assert _active_column(dilate) == "flow_abs"
 
 
 def test_clear_hides_colour_by(make_napari_viewer):

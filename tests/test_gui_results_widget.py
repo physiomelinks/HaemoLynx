@@ -191,7 +191,6 @@ def test_vessel_mask_volumes_land_as_coloured_image_layers(viewer):
     assert isinstance(art_layer, napari.layers.Image)
     assert isinstance(ven_layer, napari.layers.Image)
     assert tuple(art_layer.scale) == voxel_size_zyx
-    assert art_layer.visible is True
     assert art_layer.rendering == "mip"
     assert art_layer.blending == "translucent"
     # Colormap stops: transparent at 0, role colour at 1.
@@ -199,6 +198,70 @@ def test_vessel_mask_volumes_land_as_coloured_image_layers(viewer):
     ven_high = tuple(float(c) for c in ven_layer.colormap.colors[-1])
     assert art_high == pytest.approx(MASK_COLOURS["large_arteriole_mask"], abs=1e-5)
     assert ven_high == pytest.approx(MASK_COLOURS["small_venule_mask"], abs=1e-5)
+
+
+def test_the_network_is_first_shown_without_the_volumes_round_it(viewer):
+    """A saved AIA run opened as the segmented image and two arteriole masks
+    in dark red, every vessel tube behind them. The network's first view
+    hides them; a later stage leaves them as the user sets them."""
+    from haemolynx.gui.results import MASK_LAYERS
+
+    results = ResultLayers()
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[2, 2, 2] = True
+    _apply_layers(viewer, results.stage_finished("skeletonise", SimpleNamespace(
+        image=np.zeros((4, 4, 4), dtype=np.uint8), skeleton=np.zeros((4, 4, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    )))
+    assert viewer.layers[IMAGE].visible is True, "before the network, the image is all there is"
+
+    _apply_layers(viewer, results.stage_finished(
+        "build_network", network(a_graph(), large_arteriole_mask=art)
+    ))
+    mask = viewer.layers[MASK_LAYERS["large_arteriole_mask"]]
+    assert viewer.layers[IMAGE].visible is False
+    assert mask.visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+
+    boundaries = SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+        venule_boundary_nodes=[], graph=a_graph(), large_arteriole_mask=art,
+    )
+    _apply_layers(viewer, results.stage_finished("assign_boundaries", boundaries))
+    assert mask.visible is False, "a later stage's spec keeps it hidden"
+
+    mask.visible = True
+    viewer.layers[IMAGE].visible = True
+    _apply_layers(viewer, results.stage_finished("assign_boundaries", boundaries))
+    assert mask.visible is True and viewer.layers[IMAGE].visible is True, "and shown"
+
+
+def test_a_loaded_run_opens_on_the_network_without_volumes_or_nodes(viewer):
+    """Load run replays the stages merged; it is the network's first view too,
+    and the nodes, hidden when the network is built, stay hidden."""
+    from haemolynx.gui._widget import _apply_layer_groups
+    from haemolynx.gui.results import MASK_LAYERS
+
+    results = ResultLayers()
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[2, 2, 2] = True
+    groups = [
+        results.stage_finished("skeletonise", SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8), skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        )),
+        results.stage_finished("build_network", network(a_graph(), large_arteriole_mask=art)),
+        results.stage_finished("assign_boundaries", SimpleNamespace(
+            inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[], graph=a_graph(), large_arteriole_mask=art,
+        )),
+    ]
+    _apply_layer_groups(viewer, groups)
+
+    assert viewer.layers[IMAGE].visible is False
+    assert viewer.layers[MASK_LAYERS["large_arteriole_mask"]].visible is False
+    assert viewer.layers[NODES].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
 
 
 def boundaries_of(results):
@@ -2354,9 +2417,14 @@ def test_the_vessels_colour_by_branch_order_from_the_dropdown_as_tubes_and_lines
         assert values == expected
         assert len(set(colour_per_order().values())) == 3
         tube_colours_follow_the_lines()
-    # Signed: a diverging map, centred on the capillary bed.
-    assert _colormap_name(vessels) == "coolwarm"
+    # Signed: a diverging map, centred on the capillary bed, the arterial side
+    # red and the venous blue, as the vessel masks are drawn (coolwarm had
+    # them the other way round).
+    assert _colormap_name(vessels) == "RdBu"
     assert tuple(vessels.edge_contrast_limits) == (-1.0, 1.0)
+    signed_colours = colour_per_order()
+    art, ven = signed_colours["Art1"], signed_colours["Ven1"]
+    assert art[0] > art[2] and ven[2] > ven[0]
 
     chooser.native.setCurrentText("branch_order")
     assert _active_column(vessels) == "branch_order"

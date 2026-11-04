@@ -56,6 +56,7 @@ from haemolynx.gui.results import (
     BRANCH_HOVER,
     BRANCH_ORDER_SIGNED,
     DRAWN_ON_TOP,
+    FLOW_DIRECTION,
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
     FLOW_HEADING_COLUMN,
@@ -72,8 +73,11 @@ from haemolynx.gui.results import (
     _flow_heading_contrast_limits,
     clip_volume_to_z,
     colour_cycle_for,
+    colour_values_for_range,
+    drawn_on_top,
     filter_points_by_z,
     filter_vectors_by_z,
+    hidden_on_first_view,
     is_z_depth_filtered_layer,
     is_z_depth_windowed_volume_layer,
     mask_unsolved_flow_columns,
@@ -236,6 +240,12 @@ UNCOLOURED = "#cccccc"
 
 #: The same grey, as RGBA, for the places that build a colour array by hand.
 UNCOLOURED_RGBA = (0.8, 0.8, 0.8, 1.0)
+
+#: A row with no value in the column shown -- above all the flow of a vessel
+#: the solve left unsolved -- drawn dark enough to sit back. In the light grey
+#: of no colouring it was the brightest thing on the canvas, and the middle
+#: of the diverging maps, so a capillary at signed order 0 read as unsolved.
+MISSING_VALUE_RGBA = (0.4, 0.4, 0.4, 1.0)
 
 #: Settings the panel starts with switched off, because they put a run's
 #: results somewhere other than napari. ``visualize_results`` (Produce IDE
@@ -2330,18 +2340,20 @@ def _option_holds(current: Any, value: Any) -> bool:
 
 
 def _draw_on_top(viewer) -> None:
-    """Draw the ``DRAWN_ON_TOP`` layers over everything else.
+    """Draw the ``drawn_on_top`` layers over everything else.
 
-    Without a depth test, rimmed and last in the layer list. Their specs ask
-    for the first two, but a layer from a run saved before they did, or one
-    the Z-depth filter rebuilt, comes back without them, and a layer added
-    after one -- the tubes, always -- paints over it.
+    Without a depth test, rimmed and last in the layer list, the terminal
+    nodes last of all. Their specs ask for the first two, but a layer from a
+    run saved before they did, or one the Z-depth filter rebuilt, comes back
+    without them, and a layer added after one -- the tubes, always -- paints
+    over it.
     """
     layers = viewer.layers
-    on_top = [
-        layers[name] for name in DRAWN_ON_TOP
-        if name in layers and _is_ours(layers[name])
-    ]
+    order = {name: index for index, name in enumerate(DRAWN_ON_TOP)}
+    on_top = sorted(
+        (layer for layer in layers if drawn_on_top(layer.name) and _is_ours(layer)),
+        key=lambda layer: order.get(layer.name, order[FLOW_DIRECTION]),
+    )
     if list(layers)[len(layers) - len(on_top):] != on_top:
         for layer in on_top:
             layers.move(layers.index(layer), len(layers))
@@ -3528,6 +3540,10 @@ def _apply_layers(viewer, group, report=None) -> None:
         layer = viewer.layers[name] if name in viewer.layers else None
         if layer is not None and _is_ours(layer):
             _colour_layer(layer, column)
+    for name in hidden_on_first_view(group):
+        layer = viewer.layers[name] if name in viewer.layers else None
+        if layer is not None and _is_ours(layer):
+            layer.visible = False
     if group.ndisplay is not None:
         viewer.dims.ndisplay = group.ndisplay
     reparent_arrow = getattr(viewer, "_haemolynx_reparent_arrow_length_slider", None)
@@ -3652,7 +3668,7 @@ def _flow_dir_rgba(layer) -> np.ndarray:
 
         # The same grey every other flow-based colouring draws them in.
         unsolved = np.asarray(features[FLOW_SOLUTION], dtype=object) == FLOW_SOLUTION_TEXT[False]
-        rgba[unsolved] = UNCOLOURED_RGBA
+        rgba[unsolved] = MISSING_VALUE_RGBA
     return rgba
 
 
@@ -3670,10 +3686,16 @@ def _flow_heading_colormap() -> str:
 
 
 def _default_colormap_for(column: str | None) -> str:
-    """The map a colour-by column starts with, before the user overrides it."""
+    """The map a colour-by column starts with, before the user overrides it.
+
+    Signed branch order runs red to blue: its arterial side is negative, and
+    arteries are red, veins blue, as the vessel masks are drawn. coolwarm put
+    them the other way round."""
     if column == FLOW_HEADING_COLUMN:
         return _flow_heading_colormap()
-    if column in FLOW_DIR_COLUMNS or column == BRANCH_ORDER_SIGNED:
+    if column == BRANCH_ORDER_SIGNED:
+        return "RdBu"
+    if column in FLOW_DIR_COLUMNS:
         return "coolwarm"
     return "viridis"
 
@@ -3683,12 +3705,12 @@ GREY_NAN_SUFFIX = " (grey NaN)"
 
 
 def _grey_nan_colormap(name: str):
-    """Colormap *name*, drawing NaN in the uncoloured grey.
+    """Colormap *name*, drawing NaN in :data:`MISSING_VALUE_RGBA`'s grey.
 
     NaN is a value a row has not got -- the flow of a vessel the solve left
     unsolved, above all (``results.SOLVED_FLOW_COLUMNS``) -- and napari's own
     maps draw it transparent, so those vessels vanished instead of showing
-    light grey. *name* itself for anything napari cannot read as a map.
+    grey. *name* itself for anything napari cannot read as a map.
     """
     from napari.utils.colormaps import Colormap, ensure_colormap
 
@@ -3701,7 +3723,7 @@ def _grey_nan_colormap(name: str):
         controls=base.controls,
         interpolation=base.interpolation,
         name=f"{base.name}{GREY_NAN_SUFFIX}",
-        nan_color=UNCOLOURED_RGBA,
+        nan_color=MISSING_VALUE_RGBA,
         low_color=base.low_color,
         high_color=base.high_color,
     )
@@ -3716,13 +3738,13 @@ def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
     """One RGBA row per item, looked up from *cycle* by the item's label.
 
     A value the cycle does not name -- a role from a newer config, a blank in a
-    half-filled column -- takes the uncoloured grey rather than borrowing some
-    other label's colour.
+    half-filled column -- takes the missing-value grey rather than borrowing
+    some other label's colour.
     """
     lookup = {label: colour for label, colour in cycle}
     values = layer.features[column]
     return np.array(
-        [lookup.get(value, UNCOLOURED_RGBA) for value in values], dtype=float
+        [lookup.get(value, MISSING_VALUE_RGBA) for value in values], dtype=float
     )
 
 
@@ -4635,30 +4657,22 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
 def _sweep_contrast_limits(sweep, tag: Mapping[str, Any], column: str | None):
     """The range a sweep layer's colouring keeps as its slider moves.
 
-    Flow spans the whole grid (the layer's own limits, else the grid's), so
-    sliding does not re-stretch the colours; log10 flow spans the log of that
-    same range. Any other column fits itself (None): the limits kept on the
-    layer are flow's, in m^3/s, and applied to log10 flow -- about -13 --
-    they put every vessel below the bottom of the colormap the moment the
-    slider moved, so a network coloured by log flow went dark.
+    Flow and log10 flow span the whole grid -- the range the layer was drawn
+    with (``results.sweep_flow_colour_limits``) -- so sliding does not
+    re-stretch the colours. Any other column fits itself (None). The limits
+    kept on the layer are for whichever column it was drawn coloured by:
+    flow's, in m^3/s, applied to log10 flow -- about -13 -- put every vessel
+    below the bottom of the colormap the moment the slider moved, so a network
+    coloured by log flow went dark.
 
     A range the user set for *column* (typed, or a Fit button) wins over
     all of that, so moving the slider never undoes it."""
     chosen = (tag.get(USER_CONTRAST_LIMITS) or {}).get(column)
     if chosen is not None:
         return tuple(chosen)
-    if column == "flow_abs":
-        limits = tag.get("contrast_limits")
-        return limits if limits is not None else sweep.global_flow_abs_limits()
-    if column == "flow_abs_log10":
-        limits = sweep.global_flow_abs_limits()
-        if limits is None:
-            return None
-        from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+    from haemolynx.gui.results import sweep_flow_colour_limits
 
-        low, high = (flow_abs_log10_value(v) for v in limits)
-        return (low, high) if high > low else None
-    return None
+    return sweep_flow_colour_limits(sweep, column)
 
 
 def _apply_sweep_points(viewer, layer_set: str | None, row: int) -> None:
@@ -4884,6 +4898,8 @@ _FLOW_COLOUR_COLUMN_ORDER = (
     "pressure_drop",
     "pressure_u",
     "pressure_v",
+    "resistance",
+    "resistance_log10",
 )
 
 #: Colormaps offered on Vectors/Points layer controls, grouped for scanning.
@@ -5005,7 +5021,7 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
         values = np.asarray(layer.features[column], dtype=float)
     except (TypeError, ValueError):
         return None
-    finite = values[np.isfinite(values)]
+    finite = colour_values_for_range(column, values)
     if finite.size == 0:
         return None
     if column == FLOW_HEADING_COLUMN:
@@ -5289,10 +5305,28 @@ class _ColourScale:
                 # A colouring chosen in napari's own dropdown is applied with
                 # whatever range the last one used, so a column of flows lands on
                 # a scale of branch orders and every vessel comes out one colour.
-                # Fit it, exactly as the button does.
-                self.autoscale(0.0, 100.0)
+                # Fit it, exactly as the button does -- but a sweep's flows to
+                # its whole grid, as its slider keeps them: the values it holds
+                # are one grid point's, often all one flow.
+                if not self._fit_to_sweep_grid():
+                    self.autoscale(0.0, 100.0)
         finally:
             self._following = False
+
+    def _fit_to_sweep_grid(self) -> bool:
+        """Span a sweep layer's flow colouring over its whole grid
+        (:func:`_sweep_contrast_limits`); False for any other layer or column."""
+        layer = self._layer()
+        tag = getattr(layer, "metadata", {}).get(OURS) if layer is not None else None
+        sweep = tag.get("sweep") if isinstance(tag, dict) else None
+        if sweep is None or self._column is None:
+            return False
+        limits = _sweep_contrast_limits(sweep, tag, self._column)
+        if limits is None or not _apply_contrast_limits(layer, *limits):
+            return False
+        self.low.setText(_format_limit(float(limits[0])))
+        self.high.setText(_format_limit(float(limits[1])))
+        return True
 
     def refresh(self, column: str | None) -> None:
         """Show the range of *column*, or hide if there is nothing to show."""
@@ -5530,7 +5564,12 @@ class _FeatureChooser:
         return layer if layer is not None and _is_ours(layer) else None
 
     def refresh(self) -> None:
-        """Offer the columns the layer holds now, keeping the current one."""
+        """Offer the columns the layer holds now, keeping the current one.
+
+        A layer coloured by none of them (the flow arrows' one colour) shows
+        none chosen: the combo picks its first item when filled, which named a
+        colouring that was not on screen, and choosing that item did nothing.
+        """
         layer = self._layer()
         if layer is None:
             return
@@ -5541,8 +5580,7 @@ class _FeatureChooser:
         with _blocked(self.native):
             self.native.clear()
             self.native.addItems(columns)
-            if active in columns:
-                self.native.setCurrentIndex(columns.index(active))
+            self.native.setCurrentIndex(columns.index(active) if active in columns else -1)
 
     def _items(self):
         return (self.native.itemText(i) for i in range(self.native.count()))

@@ -301,9 +301,17 @@ def flow_direction_vectors(
     arrow_length_scale: float = 0.18,
     arrow_offset_scale: float = 0.08,
     flow_abs_attr: str = "flow_abs",
+    arrow_diameter_scale: Optional[float] = None,
+    diameter_attr: str = "diameter_um",
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """One mid-edge arrow per directed edge carrying flow above
     :func:`flow_arrow_floor`, plus features for colouring.
+
+    Every arrow is ``arrow_length_scale`` of the median vessel's length.
+    Given *arrow_diameter_scale*, an arrow is lengthened to that many of its
+    own vessel's diameters (*diameter_attr*), as far as half the vessel's
+    length: drawn over a tube as wide as the vessel, a capillary-sized arrow
+    on an artery was a speck.
 
     Returns
     -------
@@ -317,6 +325,7 @@ def flow_direction_vectors(
         3D RGB direction map). Empty dict when there are no arrows.
     """
     directed: list[tuple[np.ndarray, int, float, float]] = []
+    diameters: list[float] = []
     floor = flow_arrow_floor(graph)
     for u, v, _key, data in _iter_edges(graph):
         try:
@@ -349,6 +358,10 @@ def flow_direction_vectors(
             flow_abs = abs(signed_f) if np.isfinite(signed_f) else float("nan")
         directed.append((np.asarray(points, dtype=float), int(direction_sign),
                          signed_f, flow_abs))
+        try:
+            diameters.append(float(data.get(diameter_attr)))
+        except (TypeError, ValueError):
+            diameters.append(float("nan"))
 
     if not directed:
         return np.empty((0, 2, 3), dtype=float), {}
@@ -358,6 +371,12 @@ def flow_direction_vectors(
     base_len = float(np.median(valid)) if valid else 1.0
     arrow_length = max(0.25, base_len * float(arrow_length_scale))
     lateral_offset = max(0.10, base_len * float(arrow_offset_scale))
+    arrow_lengths = [arrow_length] * len(directed)
+    if arrow_diameter_scale is not None:
+        for index, (diameter, length) in enumerate(zip(diameters, lengths)):
+            if np.isfinite(diameter) and diameter > 0:
+                own = min(float(arrow_diameter_scale) * diameter, 0.5 * float(length))
+                arrow_lengths[index] = max(arrow_length, own)
 
     origins: list[np.ndarray] = []
     directions: list[np.ndarray] = []
@@ -368,11 +387,11 @@ def flow_direction_vectors(
     dir_y_col: list[float] = []
     dir_x_col: list[float] = []
     heading_col: list[float] = []
-    for points, direction_sign, signed_f, flow_abs in directed:
+    for (points, direction_sign, signed_f, flow_abs), length in zip(directed, arrow_lengths):
         result = edge_flow_arrow_zyx(
             points,
             direction_sign=direction_sign,
-            arrow_length=arrow_length,
+            arrow_length=length,
             lateral_offset=lateral_offset,
         )
         if result is None:
