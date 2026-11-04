@@ -597,8 +597,9 @@ def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
     is listed by name in HIDE_WHEN_UNMET_PARENTS instead.
 
     The hub size and tangent length are read by direction-aware merging too,
-    and a `requires` cannot say "either": they carry none, so a direction-aware
-    run with the guard off still shows them, where it used to hide them."""
+    and a `requires` cannot say "either": they carry neither, only the
+    segmented image both readers need, so a direction-aware run with the guard
+    off still shows them, where it used to hide them."""
     assert "detect_cartwheel_hub_artifacts" in HIDE_WHEN_UNMET_PARENTS
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
@@ -607,8 +608,9 @@ def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
     assert parent.widget_type == "CheckBox"
     assert parent.value is False
 
-    off = {"detect_cartwheel_hub_artifacts": False}
-    on = {"detect_cartwheel_hub_artifacts": True}
+    image = {"network_source": "segmented_image"}
+    off = {**image, "detect_cartwheel_hub_artifacts": False}
+    on = {**image, "detect_cartwheel_hub_artifacts": True}
     guard_only = fields["cartwheel_hub_max_radial_dispersion"]
     assert guard_only.hide_when_unmet
     assert SCHEMA["cartwheel_hub_max_radial_dispersion"].requires == ("detect_cartwheel_hub_artifacts",)
@@ -618,7 +620,7 @@ def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
     direction_aware = {**off, "do_graph_building": True, "cluster_collapse_method": "direction_aware"}
     for name in ("cartwheel_hub_min_degree", "cartwheel_hub_tangent_length_um"):
         shared = fields[name]
-        assert SCHEMA[name].requires == (), name
+        assert SCHEMA[name].requires == ("network_source=segmented_image",), name
         for values in (off, on, direction_aware):
             assert shared.is_visible(values) and shared.is_enabled(values), (name, values)
 
