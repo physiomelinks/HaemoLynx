@@ -548,6 +548,8 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "measurement_3d_to_cell_mask": "Measure distance between vessels and 3D object mask",
     "measure_tissue_volume": "Measure tissue volume from the raw image (for vessel density)",
     "mid_run_postprocessing": "Mid-run postprocessing",
+    "use_ilastik_segmentation": "Segment raw image with a pretrained Ilastik classifier",
+    "use_pixel_classifier_segmentation": "Classify and segment raw image in Napari",
     "input_path": "Segmented image path",
     "segmentation_source": "Segmentation source",
     "raw_image_path": "Raw image path",

@@ -3,6 +3,8 @@ only the features some tree reads, the combined vessel job, sparse labels.
 Each must give exactly the answer of the plain path it stands in for."""
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 import tifffile
@@ -15,7 +17,9 @@ from haemolynx.classifier import (
     classify_volume,
     features_at,
     intensity_range,
+    load_classifier,
     new_classifier,
+    read_classifier_record,
     save_classifier,
     segment_with_classifier,
     segment_with_classifiers,
@@ -36,7 +40,7 @@ def trained(volume, truth, purpose="vessels", scales=(1.0, 2.0), channels=(None,
     classes = classes.copy()
     if split:  # tubes in the upper half are the next label
         classes[(classes == 1) & (points[:, 1] >= volume.shape[1] // 2)] = 2
-    if purpose == "vessels_and_classes":  # Vessel, then Arteriole/Venule by x
+    if purpose == "vessels_and_classes":  # Capillary, then Arteriole/Venule by x
         inside = classes > 0
         classes[inside & (points[:, 2] < volume.shape[2] // 3)] = 2
         classes[inside & (points[:, 2] > 2 * volume.shape[2] // 3)] = 3
@@ -172,7 +176,7 @@ def test_a_combined_classifier_makes_the_vessel_mask_of_every_vessel_label(tmp_p
     volume, truth = tube_volume()
     raw = write_raw(tmp_path / "raw.tif", volume)
     classifier = trained(volume, truth, "vessels_and_classes")
-    assert classifier.labels == ("Background", "Vessel", "Arteriole", "Venule")
+    assert classifier.labels == ("Background", "Capillary", "Arteriole", "Venule")
     path = save_classifier(classifier, tmp_path / "all.haemoclf")
     out = segment_with_classifier(raw, path, {
         "Vessel": tmp_path / "v.tif", "Arteriole": tmp_path / "a.tif", "Venule": tmp_path / "ven.tif",
@@ -195,6 +199,43 @@ def test_preflight_takes_a_combined_classifier_for_the_main_mask_and_the_vessel_
         "output_dir": tmp_path / "out", "raw_image_path": raw, "use_pixel_classifier_segmentation": True,
         "pixel_classifier_path": path, "automated_vessel_assignment": True, "use_large_vessel_masks": True,
         "use_pixel_classifier_large_vessel_segmentation": True, "pixel_classifier_large_vessel_path": path,
+    }, schema=default_schema(), config_path=None)
+    assert check_pixel_classifiers(settings).errors == []
+
+
+def _as_saved_before_capillary(path):
+    """*path* rewritten as a combined classifier saved while its capillary
+    label was still called "Vessel"."""
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {key: archive[key] for key in archive.files}
+    record = json.loads(str(arrays["record"][()]))
+    record["labels"] = ["Background", "Vessel", "Arteriole", "Venule"]
+    record["voxels_per_label"] = {
+        ("Vessel" if name == "Capillary" else name): n for name, n in record["voxels_per_label"].items()
+    }
+    arrays["record"] = np.array(json.dumps(record))
+    with open(path, "wb") as handle:
+        np.savez_compressed(handle, **arrays)
+
+
+def test_a_combined_classifier_saved_with_a_vessel_label_reads_as_capillary(tmp_path):
+    from haemolynx.pipeline import default_schema, resolve_settings
+    from haemolynx.pipeline.checks import check_pixel_classifiers
+
+    volume, truth = tube_volume()
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    new = trained(volume, truth, "vessels_and_classes")
+    path = save_classifier(new, tmp_path / "old.haemoclf")
+    _as_saved_before_capillary(path)
+    record = read_classifier_record(path)
+    assert record["labels"] == ["Background", "Capillary", "Arteriole", "Venule"]
+    assert record["voxels_per_label"] == new.voxels_per_label()
+    old = load_classifier(path)
+    assert old.labels == new.labels and old.mask_labels("Vessel") == (1, 2, 3)
+    assert np.array_equal(classify_volume([volume], VOXEL, old), classify_volume([volume], VOXEL, new))
+    settings = resolve_settings({
+        "output_dir": tmp_path / "out", "raw_image_path": raw, "use_pixel_classifier_segmentation": True,
+        "pixel_classifier_path": path,
     }, schema=default_schema(), config_path=None)
     assert check_pixel_classifiers(settings).errors == []
 

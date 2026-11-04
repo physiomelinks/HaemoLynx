@@ -33,21 +33,28 @@ from .forest import FOREST_MAX_DEPTH, FOREST_TREES, Forest, train_forest
 PURPOSES: dict[str, tuple[str, ...]] = {
     "vessels": ("Background", "Vessel"),
     "vessel_classes": ("Background", "Arteriole", "Venule"),
-    "vessels_and_classes": ("Background", "Vessel", "Arteriole", "Venule"),
+    "vessels_and_classes": ("Background", "Capillary", "Arteriole", "Venule"),
     "pericytes": ("Background", "Pericyte"),
     "blocks": ("Background", "Block"),
     "cells": ("Background", "Cell"),
 }
 
+#: Labels renamed since a classifier may have been saved, per purpose: a file
+#: naming the old label reads as naming the new one. The combined job's
+#: "Vessel" became "Capillary" (2026-11-04).
+RENAMED_LABELS: dict[str, dict[str, str]] = {
+    "vessels_and_classes": {"Vessel": "Capillary"},
+}
+
 #: The mask each purpose can write, and the labels it holds. A combined
 #: classifier (``vessels_and_classes``, a vessel neither arteriole nor venule
-#: painted "Vessel") makes the main vessel mask of every vessel label, so an
+#: painted "Capillary") makes the main vessel mask of every vessel label, so an
 #: arteriole is in the vessel mask and in the arteriole mask both.
 MASK_LABELS: dict[str, dict[str, tuple[str, ...]]] = {
     "vessels": {"Vessel": ("Vessel",)},
     "vessel_classes": {"Arteriole": ("Arteriole",), "Venule": ("Venule",)},
     "vessels_and_classes": {
-        "Vessel": ("Vessel", "Arteriole", "Venule"),
+        "Vessel": ("Capillary", "Arteriole", "Venule"),
         "Arteriole": ("Arteriole",),
         "Venule": ("Venule",),
     },
@@ -65,7 +72,7 @@ JOB_PURPOSES: dict[str, tuple[str, ...]] = {
     "cells": ("cells",),
 }
 
-#: The label each purpose writes the main mask from.
+#: The main vessel mask's name (:data:`MASK_LABELS`).
 VESSEL_LABEL = "Vessel"
 
 FILE_SUFFIX = ".haemoclf"
@@ -284,6 +291,20 @@ def _record_of(archive, path) -> dict:
             f"{Path(path).name} was saved by a newer HaemoLynx (file version {record['version']}); "
             "update HaemoLynx to read it."
         )
+    return _with_current_label_names(record)
+
+
+def _with_current_label_names(record: dict) -> dict:
+    """*record* with any label renamed since it was saved (:data:`RENAMED_LABELS`)
+    under its current name, in its labels and its voxel counts."""
+    renamed = RENAMED_LABELS.get(record.get("purpose"), {})
+    if not renamed:
+        return record
+    record = dict(record)
+    record["labels"] = [renamed.get(name, name) for name in record.get("labels", [])]
+    counts = record.get("voxels_per_label")
+    if isinstance(counts, dict):
+        record["voxels_per_label"] = {renamed.get(name, name): n for name, n in counts.items()}
     return record
 
 

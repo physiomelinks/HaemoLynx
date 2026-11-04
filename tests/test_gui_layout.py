@@ -407,6 +407,20 @@ def test_where_the_outputs_go_is_its_own_box_on_the_input_tab():
     assert "output_dir" not in LAYOUTS["export_results"][1].names
 
 
+def test_the_panels_classifier_sits_under_ilastik_on_the_input_tab():
+    """The two ways to segment the raw image, one under the other, above the
+    pause before post processing."""
+    _tab, layout = LAYOUTS["segment"]
+    rows = next(box for box in layout.boxes if box.key == "input").rows
+    assert rows[:5] == (
+        "use_ilastik_segmentation",
+        "ilastik_classifier_path",
+        "use_pixel_classifier_segmentation",
+        "pixel_classifier_path",
+        "mid_run_postprocessing",
+    )
+
+
 def test_the_export_tab_leads_with_the_vtk_export():
     _tab, layout = LAYOUTS["export_results"]
     assert layout.boxes[0].rows[0] == "vtk_export"

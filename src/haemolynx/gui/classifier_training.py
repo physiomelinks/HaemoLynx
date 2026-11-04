@@ -64,9 +64,9 @@ FILE_WORDS: dict[str, str] = {
 
 #: Each classifier purpose's name in the window's job menu.
 PURPOSE_TITLES: dict[str, str] = {
-    "vessels": "Vessels",
+    "vessels": "All vessels",
     "vessel_classes": "Arterioles and venules",
-    "vessels_and_classes": "Vessels, arterioles and venules",
+    "vessels_and_classes": "Capillaries, arterioles and venules",
     "pericytes": "Pericytes",
     "blocks": "Capillary blocks",
     "cells": "Cells",
@@ -76,8 +76,9 @@ PURPOSE_TITLES: dict[str, str] = {
 LABEL_COLOURS: dict[str, tuple[float, float, float, float]] = {
     "Background": (0.62, 0.62, 0.62, 0.85),
     "Vessel": (0.95, 0.25, 0.2, 0.9),
-    "Arteriole": (0.95, 0.45, 0.1, 0.9),
-    "Venule": (0.25, 0.45, 0.95, 0.9),
+    "Capillary": (0.2, 0.8, 0.3, 0.9),
+    "Arteriole": (0.9, 0.1, 0.1, 0.9),
+    "Venule": (0.15, 0.35, 0.95, 0.9),
     "Pericyte": (0.2, 0.85, 0.35, 0.9),
     "Block": (0.98, 0.65, 0.1, 0.9),
     "Cell": (0.75, 0.3, 0.9, 0.9),
@@ -129,11 +130,24 @@ def mask_colours(mask: str) -> dict[int, tuple[float, float, float, float]]:
     return {0: TRANSPARENT, 1: LABEL_COLOURS.get(mask, LABEL_COLOURS["Vessel"])}
 
 
+#: Labels two jobs name differently: a stroke keeps its meaning when the job
+#: changes (the combined job's capillaries are the vessels job's vessels).
+SAME_LABEL: dict[str, str] = {"Vessel": "Capillary", "Capillary": "Vessel"}
+
+
 def remap_strokes(old_purpose: str, new_purpose: str) -> dict[int, int]:
     """Stroke values (label index + 1) of *old_purpose* to *new_purpose*'s, by
-    label name; a label the new purpose lacks maps to 0 (erased)."""
+    label name (or its :data:`SAME_LABEL`); a label the new purpose lacks maps
+    to 0 (erased)."""
     old, new = PURPOSES[old_purpose], PURPOSES[new_purpose]
-    return {i + 1: (new.index(name) + 1 if name in new else 0) for i, name in enumerate(old)}
+
+    def value(name: str) -> int:
+        for candidate in (name, SAME_LABEL.get(name)):
+            if candidate in new:
+                return new.index(candidate) + 1
+        return 0
+
+    return {i + 1: value(name) for i, name in enumerate(old)}
 
 
 def default_classifier_path(raw_image_path: str | Path, row: str) -> Path:

@@ -177,6 +177,15 @@ def test_ide_plot_rows_use_explicit_labels():
     assert label_for("hold_ide_plots_open") == "Hold IDE plots open"
 
 
+def test_the_two_raw_image_segmentation_switches_say_what_they_do():
+    assert label_for("use_ilastik_segmentation") == (
+        "Segment raw image with a pretrained Ilastik classifier"
+    )
+    assert label_for("use_pixel_classifier_segmentation") == (
+        "Classify and segment raw image in Napari"
+    )
+
+
 def test_the_row_for_a_setting_with_a_unit_is_labelled_with_it():
     field = field_for(Setting("length", "float", 1.0, "How long", "S", unit="um"))
     assert field.label == "Length (um)"

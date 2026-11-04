@@ -145,7 +145,8 @@ def test_choosing_the_combined_job_keeps_the_strokes_by_name(panel):
     window.strokes.data[tuple(points.T)] = np.where(classes == 1, 3, 1)  # Venule and Background
     window.job_box.setCurrentIndex(window.purposes.index("vessels_and_classes"))
     assert window.purpose == "vessels_and_classes"
-    assert window.labels == ("Background", "Vessel", "Arteriole", "Venule")
+    assert window.labels == ("Background", "Capillary", "Arteriole", "Venule")
+    assert window.job_box.currentText() == "Capillaries, arterioles and venules"
     values = np.asarray(window.strokes.data)[tuple(points.T)]
     assert set(np.unique(values)) == {1, 4}  # Venule is now the fourth label
 

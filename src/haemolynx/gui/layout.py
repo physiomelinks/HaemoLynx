@@ -188,6 +188,9 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
             names=(
                 "use_ilastik_segmentation",
                 "ilastik_classifier_path",
+                # The panel's own classifier, the other way to segment the raw image.
+                "use_pixel_classifier_segmentation",
+                "pixel_classifier_path",
                 "mid_run_postprocessing",
             ),
             rest=True,
