@@ -56,7 +56,7 @@ from pathlib import Path, PurePath
 from typing import Any, Iterator, Mapping, Optional
 
 from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
-from haemolynx.parsers.schema import Schema, is_active, section_key
+from haemolynx.parsers.schema import Schema, section_key
 from haemolynx.pipeline.naming import run_input_path, run_output_dir, run_stem
 from haemolynx.pipeline.progress import (
     STAGE_FAILED,
@@ -482,16 +482,19 @@ def input_files(settings: Mapping[str, Any], schema: Optional[Schema]) -> list[d
     """Every input file the run read, fingerprinted.
 
     The image analysed (``input_path``, which is ilastik's output once
-    ``segment`` has run it), then every path setting in effect that names an
-    existing file: output folders and prefixes name no file, so they are left
-    out. A file two settings name is fingerprinted once, under the first.
+    ``segment`` has run it), then every path setting in effect down its whole
+    chain (:meth:`Schema.in_effect`) that names an existing file: output
+    folders and prefixes name no file, so they are left out. A file two
+    settings name is fingerprinted once, under the first. Read by its own
+    prerequisites alone, the list named files the run never read: the ilastik
+    project with no raw image to segment, a vessel mask on a synthetic run.
     """
     named: list[tuple[str, Any]] = [("input_path", run_input_path(settings))]
     if schema is not None:
         for setting in schema:
             if setting.kind != "path" or setting.name == "input_path":
                 continue
-            if setting.name in settings and is_active(setting, settings):
+            if setting.name in settings and schema.in_effect(setting.name, settings):
                 named.append((setting.name, settings[setting.name]))
     seen: set[Path] = set()
     records: list[dict[str, Any]] = []

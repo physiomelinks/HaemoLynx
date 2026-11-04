@@ -387,3 +387,14 @@ def test_the_paused_flag_is_the_panels_to_set_and_survives_other_runs():
     state.start(worker=None)
     state.stopped()
     assert state.paused
+
+
+def test_a_full_runs_slow_checks_are_the_quality_score_and_a_template():
+    from haemolynx.gui.run_state import slow_checks
+
+    assert not slow_checks({"network_source": "segmented_image"})
+    assert slow_checks({"network_source": "segmented_image", "min_acceptable_segmentation_quality": 5.0})
+    assert slow_checks({"network_source": "synthetic"})
+    # A run from a tab checks where it is called: its caller expects it started.
+    assert not slow_checks({"network_source": "synthetic"}, "assign_diameters")
+    assert not slow_checks({})

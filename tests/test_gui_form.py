@@ -844,8 +844,10 @@ def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
     parent = fields["measurement_3d_to_cell_mask"]
-    assert not parent.hide_when_unmet
     assert parent.is_visible({})
+    # Lined up with the run's image: gone for a synthetic network, which
+    # preflight refused it on after showing it.
+    assert not parent.is_visible({"network_source": "synthetic"})
     assert parent.section == "Statistics and measurements"
 
     for name in _MEASUREMENT_3D_CHILDREN:
@@ -1571,3 +1573,12 @@ def test_shared_ilastik_rows_host_nowhere_under_a_synthetic_network():
     values = {"network_source": "synthetic", "use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}
     assert shared_ilastik_host(values) is None
     assert shared_ilastik_host({**values, "network_source": "segmented_image"}) == "input"
+
+
+def test_the_image_measurements_are_gone_for_a_synthetic_network():
+    """Regression: the tissue volume, cell distance and pericyte rows showed
+    under a synthetic network, then preflight refused them."""
+    for name in ("measure_tissue_volume", "measurement_3d_to_cell_mask", "measure_pericytes"):
+        assert not unmet_chain(SCHEMA, name, {"network_source": "segmented_image"}), name
+        for source in ("synthetic", "synthetic_surround"):
+            assert unmet_chain(SCHEMA, name, {"network_source": source}), (name, source)

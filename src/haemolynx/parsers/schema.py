@@ -763,6 +763,28 @@ class Schema:
             return True
         return is_prerequisite_met(prerequisite, values)
 
+    def in_effect(
+        self, name: str, values: Mapping[str, Any], _seen: frozenset[str] = frozenset()
+    ) -> bool:
+        """Whether setting *name* is read with *values*, down its whole chain:
+        each of its prerequisites holds (a ``!gate`` also while the gate is
+        out of effect), and each gate one of them needs on, or holding a
+        value, is in effect itself. :func:`is_active` reads only the setting's
+        own prerequisites: an ilastik project under a switch ticked with no
+        raw image to segment is active, and never read."""
+        for prerequisite in self._by_name[name].requires:
+            if not self._prerequisite_in_effect(prerequisite, values):
+                return False
+            gate, test, _expected = parse_prerequisite(prerequisite)
+            if (
+                test != PREREQUISITE_OFF
+                and gate in self._by_name
+                and gate not in _seen
+                and not self.in_effect(gate, values, _seen | {name})
+            ):
+                return False
+        return True
+
     def ineffective_settings(self, values: Mapping[str, Any]) -> list[str]:
         """Settings carrying a value that nothing will read, as messages.
 
