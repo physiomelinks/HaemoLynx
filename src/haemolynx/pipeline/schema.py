@@ -6160,6 +6160,22 @@ SCHEMA = Schema(
             minimum=0,
         ),
         Setting(
+            name="junction_bridges",
+            kind="bool",
+            default=False,
+            help=(
+                "Once diameters are measured, at every junction no thick vessel is part of, cut "
+                "each vessel narrower than 0.8 of the widest vessel there as far along its "
+                "centreline as that vessel's radius, and make the stretch a zero-resistance "
+                "bridge: the part of it lying inside the wider vessel's lumen, which a centreline "
+                "running to the junction's middle counts as its length. Bridges get no branch "
+                "order and leave every vessel's order as it was, and the statistics leave them "
+                "out, as the thick vessels' bridges (graph.junction_bridges)"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics", "network_source=segmented_image"),
+        ),
+        Setting(
             name="pericyte_constriction_factor",
             kind="float",
             default=1.0,

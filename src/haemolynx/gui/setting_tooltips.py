@@ -1075,6 +1075,10 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "Give an unmeasured vessel the median measured width of vessels with its branch-order "
         "label, if at least this many were measured. 0 goes straight to the diameter table"
     ),
+    "junction_bridges": (
+        "Where a narrow vessel joins a wider one, count the stretch inside the wider vessel, as "
+        "long as its radius, as a bridge that adds no resistance, length or branch order"
+    ),
     "measure_diameters_from_raw_image": (
         "Measure each vessel's width from the raw image: by FWHM (full width at half maximum of "
         "its brightness profile) for a lumen stain, or inside the wall ring of an endothelial "

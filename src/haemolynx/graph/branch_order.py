@@ -12,6 +12,7 @@ import networkx as nx
 import numpy as np
 
 from ._helpers import edge_id, sort_nodes
+from .junction_bridges import JUNCTION_BRIDGE
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 logger = logging.getLogger(__name__)
@@ -353,17 +354,26 @@ def _tier_passing_nodes(
     meet (:func:`_passing_nodes`, on the whole graph) and, under
     :data:`TIER_BRANCHINGS`, every node where fewer than three of the tier's
     own vessels meet -- a side branch leaving the tier is no step of it. A
-    bridge is no vessel of the tier."""
+    bridge into a thick vessel is no vessel of the tier; a junction bridge
+    is the end of the vessel it was cut from (:func:`_is_step_free_bridge`)."""
     passing = _passing_nodes(G)
     if steps != TIER_BRANCHINGS:
         return passing
     degree: dict[Any, int] = defaultdict(int)
     for u, v, key in tier_edges:
-        if G.edges[u, v, key].get(IS_ZERO_RESISTANCE):
+        if _is_step_free_bridge(G.edges[u, v, key]):
             continue
         degree[u] += 1
         degree[v] += 1
     return passing | {node for node, count in degree.items() if count < 3}
+
+
+def _is_step_free_bridge(data: Any) -> bool:
+    """Whether a search crosses this edge without a step: a bridge into a
+    thick vessel's lumen. A junction bridge (:mod:`.junction_bridges`) is
+    the end of the vessel it was cut from, crossed as that vessel is, so the
+    orders come out as they would without it."""
+    return bool(data.get(IS_ZERO_RESISTANCE)) and not data.get(JUNCTION_BRIDGE)
 
 
 def _check_steps(steps: str) -> str:
@@ -380,9 +390,10 @@ def _compute_node_distances(
 ) -> dict[int, int]:
     """Compute unweighted BFS node distances with optional stop nodes.
 
-    A zero-resistance bridge is no step: it is the radius of the thick vessel
-    a vessel opens into, so the vessel is one order from the thick vessel,
-    not two. Nor is entering one of *passing_nodes* (by default
+    A zero-resistance bridge into a thick vessel is no step: it is the radius
+    of the thick vessel a vessel opens into, so the vessel is one order from
+    the thick vessel, not two (a junction bridge is crossed as its vessel is,
+    :func:`_is_step_free_bridge`). Nor is entering one of *passing_nodes* (by default
     :func:`_passing_nodes` of *G*; a caller searching a view of a graph
     passes the whole graph's): a vessel split in two there, by an edit or a
     step that left the node, is still one vessel of one order. Each such node
@@ -413,7 +424,7 @@ def _compute_node_distances(
             continue
         for neighbor, between in G.adj[current_node].items():
             datas = between.values() if G.is_multigraph() else (between,)
-            step = 0 if neighbor in passing_nodes or all(d.get(IS_ZERO_RESISTANCE) for d in datas) else 1
+            step = 0 if neighbor in passing_nodes or all(_is_step_free_bridge(d) for d in datas) else 1
             new_distance = distance + step
             if (
                 neighbor not in node_distances

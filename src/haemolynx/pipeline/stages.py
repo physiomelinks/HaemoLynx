@@ -471,6 +471,16 @@ def measures_diameters_from_raw_image(settings: Mapping[str, Any]) -> bool:
     return bool(settings.get("measure_diameters_from_raw_image")) and raw_image_is_set(settings)
 
 
+def junction_bridges_in_effect(settings: Mapping[str, Any]) -> bool:
+    """``junction_bridges`` in effect: on, with the widths it reads measured
+    (haemodynamics on), on an image's network rather than a drawn one."""
+    return (
+        bool(settings.get("junction_bridges"))
+        and bool(settings.get("run_haemodynamics"))
+        and not graph.network_is_synthetic(settings)
+    )
+
+
 def segmented_input_path(settings: dict) -> Path | None:
     """The segmented image the run analyses: the Input tab's ``input_path``,
     or -- when ilastik does the segmenting -- ilastik's output, which is not
@@ -5226,6 +5236,10 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
     voxel_size_zyx = network.volume.voxel_size_zyx
     # The raw image is read here as raw_image_downsample now says.
     _record_downsample(G, settings, network.volume)
+    # Junction bridges are drawn from the widths measured below: any an
+    # earlier run drew go back into their vessels, so each is measured whole.
+    if graph.has_junction_bridges(G):
+        graph.remove_junction_bridges(G, keep=_boundary_node_set(boundaries))
     # The size convention classes the vessels by the widths measured below,
     # and their branch orders follow (graph.vessel_classes_by_size); a network
     # an earlier run classed so, run again without it, loses those classes.
@@ -5400,12 +5414,36 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                     f"Diameter sources: {haemo_results['diameters']} "
                     f"(FWHM: {dict(status_counts)})"
                 )
+            if junction_bridges_in_effect(settings):
+                haemo_results["junction_bridges"] = _log_junction_bridges(
+                    graph.insert_junction_bridges(G)
+                )
 
     return HaemodynamicModel(
         graph=G,
         results=locals().get("haemo_results", {}) or {},
         fwhm_raw=locals().get("fwhm_raw"),
     )
+
+
+def _boundary_node_set(boundaries: BoundaryNodes) -> set[Any]:
+    """Every node a boundary list or the resistance pair names."""
+    nodes = {node for name in _BOUNDARY_NODE_LISTS for node in getattr(boundaries, name)}
+    nodes.update(boundaries.resistance_node_pair or ())
+    return nodes
+
+
+def _log_junction_bridges(counts: Mapping[str, int]) -> dict[str, int]:
+    """Say what :func:`graph.insert_junction_bridges` did; returns its counts."""
+    left = {name: n for name, n in counts.items() if name not in ("bridges", "junctions") and n}
+    logger.info(
+        f"Junction bridges: {counts.get('bridges', 0)} narrow vessel end(s) at "
+        f"{counts.get('junctions', 0)} junction(s) bridged to the junction, as far as the "
+        "widest vessel's radius there, at zero resistance"
+        + (f"; left as they were: {left}" if left else "")
+        + "."
+    )
+    return dict(counts)
 
 
 class _PostProcessSegmentation:
@@ -5843,7 +5881,10 @@ def post_process(
        the fraction of it in the mask, the longest run of background it
        crosses, whether it runs beside a vessel in the same lumen), written
        on the vessel and listed -- never refused: the person drew it where
-       the segmentation is missing as often as not.
+       the segmentation is missing as often as not;
+    8. with ``junction_bridges`` on, the junctions the edits touched are
+       judged afresh from the widths now measured
+       (:func:`_junction_bridges_after_edit`).
 
     Then the marks are cleared, and ``model.results["post_process"]`` says
     what was done (``edited_vessels``, the ``boundary_nodes`` lists as they
@@ -5942,6 +5983,9 @@ def post_process(
         settings, schema, G, edited, network=network, voxel_size_zyx=voxel_size_zyx
     )
     summary.update(measured)
+    bridged = _junction_bridges_after_edit(settings, G, graph.touched_nodes(G), _boundary_node_set(boundaries))
+    if bridged is not None:
+        summary["junction_bridges"] = bridged
     diameters = measured.get("diameters")
     model.results["post_process"] = summary
     graph.clear_edit_marks(G)
@@ -5953,6 +5997,24 @@ def post_process(
         + "."
     )
     return model
+
+
+def _junction_bridges_after_edit(
+    settings: Mapping[str, Any], G: nx.MultiGraph, nodes: Sequence[Any], keep: set[Any]
+) -> dict[str, int] | None:
+    """The junctions at *nodes* judged afresh for junction bridges
+    (:func:`graph.rebridge_junctions`) once an edit or the network handling
+    changed them and their vessels were measured; with ``junction_bridges``
+    no longer in effect, the bridges there only put back. Returns the counts
+    when bridges were drawn, else None. A bridge ending at a node of *keep*
+    (a boundary node) stays."""
+    if not nodes:
+        return None
+    if junction_bridges_in_effect(settings):
+        return _log_junction_bridges(graph.rebridge_junctions(G, nodes, keep=keep))
+    if graph.has_junction_bridges(G):
+        graph.remove_junction_bridges(G, nodes=nodes, keep=keep)
+    return None
 
 
 def _orders_and_diameters_after_edit(
@@ -6364,14 +6426,24 @@ def _merge_where_branches_hung(
     (:func:`_orders_and_diameters_after_edit`), as post processing does after
     a deletion merges two. Boundary nodes and the resistance pair stay, as do
     a thick-vessel bridge and the vessel it opens, and two vessels whose mask
-    tags differ (:data:`_MASK_TAGS_KEPT_APART`)."""
+    tags differ (:data:`_MASK_TAGS_KEPT_APART`). A junction a removed branch
+    hung from may be one no longer: its junction bridges go back into their
+    vessels first, and it is judged afresh once the joined vessels are
+    measured (:func:`_junction_bridges_after_edit`)."""
     G = model.graph
-    keep = {node for name in _BOUNDARY_NODE_LISTS for node in getattr(boundaries, name)}
-    keep.update(boundaries.resistance_node_pair or ())
+    keep = _boundary_node_set(boundaries)
+    regathered = (
+        graph.remove_junction_bridges(
+            G, nodes=[n for n in G if G.degree(n) != G_before.degree(n)], keep=keep
+        )
+        if graph.has_junction_bridges(G)
+        else []
+    )
     left = [n for n in G if G.degree(n) == 2 and G_before.degree(n) > 2 and n not in keep]
     joined = [_merge_keeping_drawn_widths(G, node) for node in left]
     merged = [edge for edge in joined if edge is not None and G.has_edge(*edge)]
     if not merged:
+        _junction_bridges_after_edit(settings, G, regathered, keep)
         return
     if schema is None:
         from haemolynx.pipeline.schema import default_schema
@@ -6385,6 +6457,7 @@ def _merge_where_branches_hung(
     G, measured = _orders_and_diameters_after_edit(
         settings, schema, G, merged, network=network, voxel_size_zyx=voxel_size_zyx
     )
+    _junction_bridges_after_edit(settings, G, [*regathered, *(n for edge in merged for n in edge[:2])], keep)
     model.graph = G
     boundaries.graph = G
     if network is not None:

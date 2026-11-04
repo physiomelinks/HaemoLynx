@@ -1887,9 +1887,11 @@ def remove_listed_interior_dead_ends(
     gets a "deleted" decision and its CSV row, with the branchIDs the network
     had before. A dead end whose removal would leave a boundary node with no
     vessel stays, and so does one whose chain runs through a thick-vessel
-    bridge (a bridge is never a dead end's)."""
+    bridge (a bridge is never a dead end's). A junction bridge is the end of
+    the dead end's own vessel, and goes with it."""
     from collections import Counter
 
+    from haemolynx.graph.junction_bridges import JUNCTION_BRIDGE
     from haemolynx.graph.post_processing import delete_vessels
     from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
@@ -1903,7 +1905,10 @@ def remove_listed_interior_dead_ends(
             done.skipped += 1
             continue
         edges = [tuple(edge) for edge in item.edges]
-        if any(graph.edges[edge].get(IS_ZERO_RESISTANCE) for edge in edges):
+        if any(
+            graph.edges[edge].get(IS_ZERO_RESISTANCE) and not graph.edges[edge].get(JUNCTION_BRIDGE)
+            for edge in edges
+        ):
             done.bridged += 1
             continue
         after = loss.copy()

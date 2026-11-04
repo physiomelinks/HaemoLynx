@@ -878,6 +878,8 @@ diameters_and_pericytes:
   default_diameter: 4.0
   # Give a vessel no method measured the median measured diameter of this run's vessels with the same branch-order label, when at least this many of them were measured, before falling back to the branch-order table (which has no entry for a large arteriole or venule, so it takes default_diameter). 0 goes straight to the table  [range 0..]
   diameter_class_median_min_edges: 3
+  # Once diameters are measured, at every junction no thick vessel is part of, cut each vessel narrower than 0.8 of the widest vessel there as far along its centreline as that vessel's radius, and make the stretch a zero-resistance bridge: the part of it lying inside the wider vessel's lumen, which a centreline running to the junction's middle counts as its length. Bridges get no branch order and leave every vessel's order as it was, and the statistics leave them out, as the thick vessels' bridges (graph.junction_bridges)  [needs run_haemodynamics and network_source = segmented_image]
+  junction_bridges: false
   # Global focal constriction/dilation factor for every branch order (1.0 = no local change; <1 narrows, >1 widens at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]
   pericyte_constriction_factor: 1.0
   # Sparse per-order overrides of pericyte_constriction_factor (<1 constricts, >1 dilates locally). Empty or unset makes no change (global factor only). A listed order replaces the global factor for that order alone (e.g. {B01: 1.0} with global 0.8 leaves B01 unchanged)
