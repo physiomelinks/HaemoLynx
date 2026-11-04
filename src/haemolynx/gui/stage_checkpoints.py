@@ -27,6 +27,7 @@ turned off instead. Starting after diameters also turns off
 from __future__ import annotations
 
 import logging
+import os
 import pickle
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -40,8 +41,10 @@ from haemolynx.graph.boundaries import network_is_synthetic
 from haemolynx.pipeline.naming import run_stem
 from haemolynx.pipeline.progress import STAGES
 from haemolynx.pipeline.stages import (
+    CALIBRATION_SAMPLE,
     TOPOLOGY_STEP,
     PipelineResume,
+    calibration_sample_rule,
     measures_diameters_from_raw_image,
     recorded_raw_image_stain,
     segmented_input_path,
@@ -73,26 +76,62 @@ def _skeleton_array_from_groups(groups: Sequence[Any]) -> Any | None:
     return None
 
 
+def _saved_skeleton_is(path: Path, skeleton: Any) -> bool:
+    """Whether the skeleton saved at *path* has *skeleton*'s voxels, read a
+    slab of planes at a time; False for a file that will not load."""
+    try:
+        saved = np.load(path, mmap_mode="r")
+    except (OSError, ValueError, EOFError):
+        return False
+    mapping = getattr(saved, "_mmap", None)
+    try:
+        if tuple(saved.shape) != tuple(np.shape(skeleton)):
+            return False
+        from haemolynx.preprocessing.memmap_support import slab_step
+
+        step = slab_step(saved.shape)
+        return all(
+            np.array_equal(
+                np.asarray(saved[z0:z0 + step], dtype=bool),
+                np.asarray(skeleton[z0:z0 + step], dtype=bool),
+            )
+            for z0 in range(0, saved.shape[0], step)
+        )
+    finally:
+        del saved
+        if mapping is not None:
+            mapping.close()  # Windows will not replace a mapped file
+
+
 def ensure_skeleton_artefact(
     groups: Sequence[Any],
     output_dir: Path,
     stem: str,
 ) -> Path | None:
-    """Make sure ``{stem}_skeleton.npy`` exists for a resumed Run.
+    """Make sure ``{stem}_skeleton.npy`` exists for a resumed Run, and is the
+    skeleton the replayed groups show.
 
     Returns the path when the file is (or was made) present, else None.
     Without it, turning ``do_skeletonize`` off fails preflight and the user
-    cannot continue from the next tab after a revert.
+    cannot continue from the next tab after a revert. A file there already
+    that is not the groups' skeleton -- a later run's, left in the folder of
+    a run loaded back -- is replaced: the resumed run loaded it and built a
+    graph from another skeleton than the one on screen.
     """
     path = skeleton_resume_path(output_dir, stem)
-    if path.is_file():
-        return path
     skeleton = _skeleton_array_from_groups(groups)
+    if path.is_file() and (skeleton is None or _saved_skeleton_is(path, skeleton)):
+        return path
     if skeleton is None:
         return None
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        np.save(path, np.asarray(skeleton))
+        if path.is_file():
+            logger.info("Replacing %s: it is not the skeleton of the run resumed.", path)
+        part = path.with_name(f"{path.name}.part")
+        with open(part, "wb") as handle:
+            np.save(handle, np.asarray(skeleton, dtype=bool))
+        os.replace(part, path)
         logger.info("Wrote resumed skeleton for next Run to %s", path)
         return path
     except Exception:  # noqa: BLE001 - leave do_skeletonize on if we cannot write
@@ -203,6 +242,8 @@ class RestorePlan:
     start_from: str = ""
     #: Earlier-stage outputs the pipeline should not recompute.
     resume: PipelineResume | None = None
+    #: Why the run starts at another tab than the one asked for.
+    note: str = ""
 
 
 def tab_end_stage(title: str, stages: Sequence = STAGES) -> str | None:
@@ -660,7 +701,10 @@ class StageCheckpoints:
                 pickle_path = None
 
         roles = _boundary_ids_from_group(group)
-        if any(roles.values()):
+        # The Boundaries stage's own lists and masks are its output's, as it
+        # left them -- never carried from an earlier stage, whatever it drew.
+        boundaries_stage = stage == "assign_boundaries" and output is not None
+        if any(roles.values()) or boundaries_stage:
             # Only assign_boundaries draws boundary nodes; its output has the
             # large-vessel hand-off nodes, which it does not draw.
             for role in ("large_arteriole_boundary", "large_venule_boundary"):
@@ -679,7 +723,14 @@ class StageCheckpoints:
         masks: dict[str, Any | None] = {}
         for size in ("large", "small"):
             arteriole, venule = _boundary_masks_from_group(group, size)
-            if arteriole is None and venule is None:
+            if boundaries_stage:
+                # What it drew, else its output's; a role the run leaves off
+                # has none -- carried, a run from Boundaries with it off kept
+                # an earlier run's masks.
+                if arteriole is None and venule is None:
+                    arteriole = getattr(output, f"{size}_arteriole_mask", None)
+                    venule = getattr(output, f"{size}_venule_mask", None)
+            elif arteriole is None and venule is None:
                 carried_masks = self._carried_boundary_masks(size)
                 if carried_masks is not None:
                     arteriole, venule = carried_masks
@@ -708,6 +759,21 @@ class StageCheckpoints:
         )
         self._by_stage[stage] = checkpoint
         return checkpoint
+
+    def keep_output(self, stage: str, output: Any) -> None:
+        """Keep *output* -- what *stage* returned as a resumed run passed
+        through it -- as its checkpoint's stored output, where the checkpoint
+        has none: a run loaded from a file keeps no stage outputs (their
+        volumes are this session's), so every Regenerate of it loaded the
+        image and skeleton again. Its graph, layers and lists stay."""
+        if not self._recording:
+            return
+        checkpoint = self._by_stage.get(stage)
+        if checkpoint is None or checkpoint.output is not None:
+            return
+        stored = _stored_output(stage, output)
+        if stored is not None:
+            self._by_stage[stage] = replace(checkpoint, output=stored)
 
     def _stored_outputs(self, start_from: str) -> dict[str, Any]:
         """PipelineResume fields for the stored outputs ahead of *start_from*."""
@@ -764,6 +830,15 @@ class StageCheckpoints:
         checkpoint = self._by_stage[target]
         previous = previous_tab(current_tab)
         assert previous is not None
+        changed = (
+            _calibration_sample_changed(checkpoint, settings)
+            if start_from == "build_haemodynamic_model"
+            else ""
+        )
+        if changed:
+            earlier = self.plan_run_from(previous, settings=settings, drop=drop)
+            if earlier is not None:
+                return replace(earlier, note=changed)
 
         groups = [
             self._by_stage[name].group
@@ -881,10 +956,30 @@ class StageCheckpoints:
                 del self._by_stage[name]
 
 
+def _calibration_sample_changed(checkpoint: "StageCheckpoint", settings: Mapping[str, Any] | None) -> str:
+    """Why a run from Haemodynamics must start at Diameters, or ``""``: the
+    Diameters stage sampled its image calibrations (the blur, the wall, the
+    decoy check) from the vessels one network-handling rule keeps, and the
+    settings now keep others -- a fresh run would calibrate on those."""
+    graph = getattr(checkpoint, "graph", None)
+    recorded = getattr(graph, "graph", {}).get(CALIBRATION_SAMPLE) if graph is not None else None
+    if recorded is None or settings is None:
+        return ""
+    now = calibration_sample_rule(settings)
+    if list(recorded) == now:
+        return ""
+    return (
+        f"Started at Diameters: its image calibrations sampled the vessels "
+        f"{' / '.join(recorded)} keeps, and the settings now keep those {' / '.join(now)} keeps."
+    )
+
+
 def restore_message(plan: RestorePlan) -> str:
     """What the report box says after preparing a run from this stage."""
     start = plan.start_from or "this stage"
     note = f"Running from {plan.tab_title or start} (using {plan.title})."
     if plan.skip_settings:
         note += f" Turned off {', '.join(plan.skip_settings)}."
+    if getattr(plan, "note", ""):
+        note += f" {plan.note}"
     return note

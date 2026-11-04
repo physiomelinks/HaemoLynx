@@ -233,10 +233,15 @@ def mask_diameters_at_points(
     in_workers = int(workers) > 1 and len(payloads) >= sections_module.MIN_EDGES_FOR_WORKERS
     if in_workers and packed is None:
         packed = PackedMask.from_mask(binary_mask)
-    section_readings = sections_module.run_edge_tasks(
-        _edge_sections, payloads, volume=packed.bits if packed is not None else binary_mask,
-        workers=int(workers), memmap_directory=memmap_directory,
-    )
+    if _single_plane(binary_mask):
+        # No section across a vessel in a 2D image (see
+        # measure_edge_diameters_from_binary_mask): the inscribed radius reads it.
+        section_readings = [[float("nan")] * len(payload[0]) for payload in payloads]
+    else:
+        section_readings = sections_module.run_edge_tasks(
+            _edge_sections, payloads, volume=packed.bits if packed is not None else binary_mask,
+            workers=int(workers), memmap_directory=memmap_directory,
+        )
 
     results: list[tuple[np.ndarray, list[str]]] = []
     for (radii, found, rows), sections in zip(readable, section_readings):
@@ -339,6 +344,11 @@ def measure_edge_diameters_from_binary_mask(
     min_resolvable = float(min_resolvable_diameter_um)
     if method not in EDT_DIAMETER_METHODS:
         raise ValueError(f"method must be one of {EDT_DIAMETER_METHODS}; got {method!r}.")
+    if _single_plane(binary_mask):
+        # A 2D image has no section across a vessel: the plane normal to it
+        # is a line one voxel deep, whose area-equivalent circle reads a 10 um
+        # vessel 3.6 um. The in-plane inscribed radius is its half-width.
+        method = "inscribed_radius"
 
     # The inscribed radius only at the voxels the samples read: the same
     # values as transforming the whole mask, and on a real 287 x 512 x 512
@@ -474,6 +484,11 @@ def measure_edge_diameters_from_binary_mask(
         )
 
     return summary
+
+
+def _single_plane(mask) -> bool:
+    """Whether *mask* is a 2D image read as a single plane, ``(1, y, x)``."""
+    return len(getattr(mask, "shape", ())) == 3 and int(mask.shape[0]) == 1
 
 
 def _edge_sections(volume: np.ndarray, payload: tuple) -> list[float]:

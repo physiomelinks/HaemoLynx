@@ -214,6 +214,17 @@ def _positive(value) -> Optional[float]:
     return number if np.isfinite(number) and number > 0 else None
 
 
+def _working_copy(volume: np.ndarray, dtype, *, use_memmap: bool = False, memmap_directory=None) -> np.ndarray:
+    """A copy of *volume* as *dtype* to draw into: in RAM, or under
+    *use_memmap* on disk in *memmap_directory*, copied a slab at a time."""
+    if not use_memmap:
+        return np.array(volume, dtype=dtype, copy=True)
+    from haemolynx.preprocessing.memmap_support import map_by_slab, new_memmap_array
+
+    out = new_memmap_array(tuple(volume.shape), dtype, directory=memmap_directory)
+    return map_by_slab(volume, lambda slab: np.asarray(slab, dtype=dtype), out)
+
+
 def plant_vessels(
     raw_volume: np.ndarray,
     G: nx.MultiGraph,
@@ -226,17 +237,26 @@ def plant_vessels(
     sample_size: int = PLANTED_SAMPLE_SIZE,
     guide_attribute: str = "edt_diameter_um",
     copy_attributes: Sequence[str] = ("diameter_um",),
+    seed_guess: bool = True,
+    use_memmap: bool = False,
+    memmap_directory=None,
 ) -> Optional[PlantedVessels]:
     """Plant a vessel beside each of up to *sample_size* of *edges* of *G*
     (see the module docstring), in a copy of *raw_volume*; ``None`` when
     none fits. *image_psf_um* is the blur the image shows (see
-    :func:`optics_psf`); *rng* makes it repeatable."""
+    :func:`optics_psf`); *rng* makes it repeatable.
+
+    Each is sized and placed by its vessel's *guide_attribute* width, and
+    carries it as FWHM's first guess only with *seed_guess*: a run's vessels
+    have one only when it measures the mask's widths. Under *use_memmap*
+    (the low-RAM option) the copies of the image and the mask are on disk
+    in *memmap_directory*."""
     spacing = np.asarray(voxel_size_zyx, dtype=float)
     optics = optics_psf(image_psf_um, voxel_size_zyx)
     edges = list(edges)
     gain = image_noise_gain(raw_volume, [G.edges[e]["voxels"] for e in edges], voxel_size_zyx)
-    volume = np.array(raw_volume, dtype=np.float32, copy=True)
-    occupied = np.array(vessel_mask, dtype=bool, copy=True)
+    volume = _working_copy(raw_volume, np.float32, use_memmap=use_memmap, memmap_directory=memmap_directory)
+    occupied = _working_copy(vessel_mask, bool, use_memmap=use_memmap, memmap_directory=memmap_directory)
 
     probe = nx.MultiGraph()
     probe.graph.update(G.graph)
@@ -280,7 +300,7 @@ def plant_vessels(
             "voxels": [tuple(p) for p in line],
             "length": float(np.sum(np.linalg.norm(np.diff(line, axis=0), axis=1))),
             "planted_diameter_um": width,
-            guide_attribute: guide,
+            **({guide_attribute: guide} if seed_guess else {}),
         }
         attrs.update({name: source[name] for name in copy_attributes if name in source})
         index = probe.number_of_edges()

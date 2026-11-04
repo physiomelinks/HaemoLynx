@@ -156,6 +156,8 @@ class SegmentationQualityScore:
     #: The coarser of the two in-plane (y, x) spacings: what ``resolution``
     #: is judged against, since diameters are measured across the y-x plane.
     in_plane_voxel_um: float = 0.0
+    #: A 2D image, read as a stack of one plane: it has no z steps to count.
+    single_plane: bool = False
     #: How many z steps a typical radius spans -- reported, not scored.
     axial_voxels_across_radius: float = 0.0
 
@@ -298,6 +300,10 @@ def score_segmented_mask(
             surface_iou=0.0,
             median_radius_um=0.0,
             coarsest_voxel_um=float(max(sampling)) if sampling else 0.0,
+            # The in-plane spacing, not z, as for any image: the report
+            # named z's as the in-plane sampling.
+            in_plane_voxel_um=float(max(sampling[1], sampling[2])) if len(sampling) == 3 else 0.0,
+            single_plane=mask.ndim == 3 and mask.shape[0] == 1,
         )
 
     labeled, count = label(mask, structure=_STRUCTURE_26)
@@ -362,6 +368,7 @@ def score_segmented_mask(
         coarsest_voxel_um=coarsest_voxel_um,
         in_plane_voxel_um=in_plane_voxel_um,
         axial_voxels_across_radius=axial_voxels_across_radius,
+        single_plane=mask.shape[0] == 1,
     )
 
 
@@ -375,6 +382,14 @@ def _verdict_line(score: SegmentationQualityScore) -> str:
     failure mode this function exists to prevent (see
     RESOLUTION_LIMITING_THRESHOLD's own docstring for the reasoning).
     """
+    if score.component_count == 0:
+        # Nothing to score: an empty mask, or a crop box that missed every
+        # vessel. Its resolution of 0 said to re-image.
+        return (
+            "⚠ The segmented image holds no vessel (in its crop box, if it is cropped): "
+            "there is nothing to score. Check the image, its crop box, and which label "
+            "is vessel."
+        )
     if score.resolution < RESOLUTION_LIMITING_THRESHOLD:
         in_plane = score.in_plane_voxel_um or score.coarsest_voxel_um
         voxels_across_radius = score.median_radius_um / max(1e-9, in_plane)
@@ -431,7 +446,8 @@ def format_segmentation_quality_report(
         headline = f"Segmented image quality: {score.total:.1f}/10"
     in_plane = score.in_plane_voxel_um or score.coarsest_voxel_um
     axial_note = ""
-    if 0.0 < score.axial_voxels_across_radius < DEFAULT_TARGET_VOXELS_ACROSS_RADIUS:
+    # Not for a 2D image: one plane has no z steps for a radius to span.
+    if not score.single_plane and 0.0 < score.axial_voxels_across_radius < DEFAULT_TARGET_VOXELS_ACROSS_RADIUS:
         axial_note = (
             f"\n  note: a typical radius spans only {score.axial_voxels_across_radius:.1f} "
             "z step(s). Diameters are measured in-plane and are unaffected, but "

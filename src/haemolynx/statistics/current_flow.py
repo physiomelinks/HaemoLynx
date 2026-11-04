@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, Optional
 import networkx as nx
 import numpy as np
 
-from ._flow_system import TerminalFlowSystem
+from ._flow_system import TerminalFlowSystem, solved_open_end_pressures
 from ._route_graph import (
     _clear_edge_attributes,
     _edge_conductance,
@@ -98,7 +98,9 @@ def compute_current_flow(
     if problem is not None:
         return _unavailable("Current Flow", problem, label, both)
 
-    system = TerminalFlowSystem(G, inlets, outlets, effective)
+    system = TerminalFlowSystem(
+        G, inlets, outlets, effective, held=solved_open_end_pressures(G, terminals)
+    )
     shares = system.flow_fraction()
     for _u, _v, _k, data in _iter_edges(G):
         data["current_flow_share"] = 0.0

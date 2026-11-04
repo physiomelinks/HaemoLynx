@@ -739,3 +739,41 @@ def test_the_diameters_stage_measures_the_mask_widths_in_workers(monkeypatch):
     apply._measure_edt_diameters(nx.MultiGraph(), config, mask_volume=np.zeros((2, 2, 2), bool))
 
     assert seen == [(7, "D:/volumes")]
+
+
+def _planar_strip(width: int, *, length: int = 100):
+    """A 2D image read as one plane: a straight vessel *width* voxels wide
+    along x, and its centreline."""
+    mask = np.zeros((1, 60, length), dtype=bool)
+    mask[0, 30 - width // 2: 30 - width // 2 + width, :] = True
+    centre = 30.0 - 0.5 if width % 2 == 0 else 30.0
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, voxels=[(0.0, centre, float(x)) for x in range(15, length - 15)])
+    return mask, graph
+
+
+@pytest.mark.parametrize("width", [4, 6, 10])
+@pytest.mark.parametrize("method", ["cross_section", "inscribed_radius"])
+@pytest.mark.parametrize("low_ram", [False, True])
+def test_a_2d_image_is_read_at_its_vessels_width(width, method, low_ram):
+    """Regression: a 2D image (one plane) has no section across a vessel --
+    the plane normal to it is a line one voxel deep -- and the default
+    cross_section method read the area-equivalent circle of that line: a
+    10 um vessel came out 3.6 um. The in-plane inscribed radius reads it."""
+    from haemolynx.haemodynamics.edt_diameter import mask_diameters_at_points
+
+    mask, graph = _planar_strip(width)
+
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0), sample_spacing_along_edge_um=2.0,
+        method=method, use_memmap=low_ram,
+    )
+    data = graph[0][1][0]
+    assert data["edt_diameter_um"] == pytest.approx(width, rel=0.05)
+    assert data["edt_diameter_method"] == "inscribed_radius"
+
+    ((diameters, methods),) = mask_diameters_at_points(
+        mask, (1.0, 1.0, 1.0), [(np.array([[0.0, data_y, 50.0]]), np.array([[0.0, 0.0, 1.0]]))
+                                for data_y in (np.asarray(data["voxels"])[0, 1],)],
+    )
+    assert diameters[0] == pytest.approx(width, rel=0.05) and methods == ["inscribed_radius"]

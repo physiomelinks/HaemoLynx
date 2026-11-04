@@ -761,10 +761,10 @@ def _writer(rows, settings):
     """What a run hands the review: a function writing its settings into the rows."""
     calls = []
 
-    def apply():
-        calls.append(dict(settings))
-        for name, value in settings.items():
-            rows[name].value = value
+    def apply(names):
+        calls.append({name: settings[name] for name in names})
+        for name in names:
+            rows[name].value = settings[name]
 
     return apply, calls
 
@@ -813,7 +813,7 @@ def test_a_proposal_worse_than_the_current_settings_says_so(panel):
     review = panel._haemolynx_optimise_review
     scorecard = (ScoreRow("input vessels the skeleton reaches", 0.95, 0.8, True, 0.02),)
 
-    message = review.propose(_proposal({}, scorecard), lambda: None)
+    message = review.propose(_proposal({}, scorecard), lambda _names: None)
 
     assert "WARNING: worse than your settings on 1 measure." in message
     assert "WARNING: worse than your current settings on input vessels" in review.text.value

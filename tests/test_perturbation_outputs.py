@@ -243,6 +243,20 @@ def test_a_perturbation_writes_the_betweenness_and_community_reports_like_the_ru
         assert (name in written) == statistics_on
 
 
+def test_a_perturbation_leaves_the_weighted_reports_out_with_betweenness_and_communities_off(
+    tmp_path,
+):
+    """Regression: a perturbation wrote them whenever statistics was on; the
+    run writes them only while betweenness or communities is."""
+    run = _run(
+        tmp_path, [ARTERIOLE_DILATION], statistics=True,
+        statistics_betweenness=False, statistics_community=False,
+    )
+    written = {path.name for path in run.results[0].outputs}
+    assert f"{ARTERIOLE_DILATION['name']}_statistics.csv" in written
+    assert not [name for name in written if "_betweenness_communities_" in name]
+
+
 def test_a_perturbation_reassigns_vascular_communities_on_its_own_network(tmp_path):
     run = _run(
         tmp_path,

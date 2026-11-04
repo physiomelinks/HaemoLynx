@@ -834,7 +834,9 @@ def test_each_images_cached_files_go_once_it_ends_and_its_outputs_stay(tmp_path,
     for stem in ("A_seg", "B_seg"):  # a failed image's too
         left = sorted(path.name for path in (out / stem).iterdir())
         assert f"{stem}_skeleton.npy" in left and f"{stem}_graph.pkl" in left
-        assert not [name for name in left if "checkpoint" in name or "thick_vessel_region" in name]
+        assert not [name for name in left if "checkpoint" in name]
+        # Kept: a later run loading this image's skeleton would find it again.
+        assert f"{stem}_thick_vessel_region.npy" in left and f"{stem}_thick_vessel_region.json" in left
     assert (out / "A_seg" / "A_seg.haemorun").is_file()
 
 

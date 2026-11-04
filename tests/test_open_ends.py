@@ -416,6 +416,21 @@ def test_post_processings_prune_and_unsolved_list_keep_the_opened_open_ends():
     assert frozenset((1, 4)) in listed
 
 
+
+def test_the_prune_and_the_unsolved_list_agree_on_an_open_end_left_closed():
+    """Regression: an open end the estimate gave no condition (no shear target,
+    or no flow) was listed as unsolved, but the prune kept its vessel, reading
+    every candidate of the model as open. Both now read what the solve opened."""
+    from haemolynx.graph.network_review import find_unsolved_pieces
+
+    _s, G, _b = _run_solve(_settings("estimated"))
+    G.graph[oe.GRAPH_RECORD] = {"model": "estimated", "to_inlet": [], "to_outlet": [], "as_outlets": [],
+                                "info": {"ends": 0}}
+    listed = {frozenset(e[:2]) for item in find_unsolved_pieces(G, [0], [3]) for e in item.edges}
+    pruned, _stats = graph_module.prune_disconnected_branches(G, [0], [3], protected=[2])
+    assert frozenset((1, 4)) in listed
+    assert not pruned.has_edge(1, 4)
+
 def test_the_estimate_is_handed_a_sparse_matrix_whatever_the_flow_solver(monkeypatch):
     """The estimate converts its conductance matrix to sparse, so under the
     dense flow solver it was handed an N x N array only to convert it. It is
@@ -456,3 +471,14 @@ def test_no_matrix_is_built_for_an_estimate_with_no_open_end(monkeypatch):
     stages.solve(_settings("estimated"), stages.HaemodynamicModel(graph=G),
                  stages.BoundaryNodes(inlet_nodes=[0], outlet_nodes=[3], graph=G))
     assert built == ["dense"]
+
+
+def test_the_pressure_target_is_at_least_0_and_warned_of_outside_the_boundary_pressures():
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    setting = default_schema()["open_end_estimate_pressure_target_pa"]
+    assert setting.minimum == 0.0
+    assert not check_haemodynamics(_settings("estimated", open_end_estimate_pressure_target_pa=2000.0)).warnings
+    (warning,) = check_haemodynamics(_settings("estimated", open_end_estimate_pressure_target_pa=6000.0)).warnings
+    assert "lies outside the boundary pressures (1000.0 to 4500.0 Pa)" in warning
+    assert not check_haemodynamics(_settings("closed", open_end_estimate_pressure_target_pa=6000.0)).warnings

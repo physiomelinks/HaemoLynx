@@ -112,6 +112,8 @@ __all__ = [
     "SMALL_VESSEL_OVERRIDES_MANUAL_NOTE",
     "LARGE_VESSEL_NETWORK_MODE_OFF_NOTE",
     "DISABLED_ROLE_TOOLTIP",
+    "chooses_no_nodes",
+    "node_made_after_boundaries",
     "SYNTHETIC_CHOOSES_NOTE",
     "GLOBAL_MASKS_NOTE",
     "role_disabled_note",
@@ -287,11 +289,20 @@ PERCENT_FOR_NODE_ROLE: Mapping[str, str] = {
 }
 
 
+def chooses_no_nodes(role: str, method: Any) -> bool:
+    """Whether *method* chooses no nodes for *role*: the arteriole and venule
+    boundaries are only ever a list (coordinates, boxes or node IDs), so the
+    run reads any other method as no boundary (``boundary_role_configured``)."""
+    return role in SMALL_AUTO_ROLES and str(method) not in METHOD_SETTINGS
+
+
 def settings_for_method(role: str, method: str) -> tuple[str, ...]:
     """The settings *role* reads when it selects nodes by *method*."""
     key = METHOD_SETTINGS.get(str(method))
     if key is not None:
         return (BOUNDARY_ROLE_SETTINGS[role][key],)
+    if chooses_no_nodes(role, method):
+        return ()
     if str(method) == "edge_percent":
         return ("boundary_axis",
                 PERCENT_FOR_NODE_ROLE[BOUNDARY_ROLE_SETTINGS[role]["node_role"]])
@@ -774,7 +785,8 @@ def band_boxes(
     span = float(end) - float(start)
     boxes: dict[str, tuple[list[float], list[float]]] = {}
     for role in ROLES:
-        if str(values.get(method_setting(role))) != "edge_percent":
+        method = values.get(method_setting(role))
+        if str(method) != "edge_percent" or chooses_no_nodes(role, method):
             continue
         name = PERCENT_FOR_NODE_ROLE[BOUNDARY_ROLE_SETTINGS[role]["node_role"]]
         try:
@@ -988,6 +1000,20 @@ def toggle_node_id(
     return proposed, f"Added node {node} to {role}{moved}."
 
 
+def node_made_after_boundaries(node_id: Any, boundaries_graph: Any, shown_graph: Any) -> bool:
+    """Whether a node clicked on the network on screen is missing from the
+    graph the Boundaries stage runs on (*boundaries_graph*): one an edit on
+    the Post processing tab added. A run from Boundaries would stop on its
+    ID. A terminal the large-vessel cut made is not: the cut makes it again.
+    Without a Boundaries graph, nothing can be said."""
+    from haemolynx.graph.cut_at_large_vessel_volumes import CUT_FROM_LARGE_VESSEL
+
+    if boundaries_graph is None or node_id in boundaries_graph:
+        return False
+    data = shown_graph.nodes[node_id] if shown_graph is not None and node_id in shown_graph else {}
+    return data.get(CUT_FROM_LARGE_VESSEL) is None
+
+
 def node_id_points(
     graph: Any, values: Mapping[str, Any]
 ) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, list]]:
@@ -1125,6 +1151,14 @@ def group_for(values: Mapping[str, Any], bands=None, graph: Any = None) -> Stage
         note = f"{note}, {drawn}" if configured else drawn
     if picks.problems:
         note = f"{note} ({len(picks.problems)} entry could not be read: {picks.problems[0]})"
+    unread = [
+        f"{role_title(role)} boundary: {values.get(method_setting(role))} chooses no nodes for it "
+        "(coordinates, volume or node_ids do)"
+        for role in ROLES
+        if chooses_no_nodes(role, values.get(method_setting(role)))
+    ]
+    if unread:
+        note += "  " + "; ".join(unread) + "."
     note += node_id_note(graph, values)
     return StageLayers(
         stage="boundary_picking",

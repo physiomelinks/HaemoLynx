@@ -176,17 +176,18 @@ def _count_separating_points(
     at the components left would -- which is how it used to be done, a full
     graph copy per point -- from one depth-first search instead. Removing
     ``v`` leaves: each DFS child subtree ``c`` with ``low[c] >= disc[v]``
-    (every child, for a DFS root), the rest of ``v``'s own component, and
-    every other component untouched. A component "separates" when it holds
-    an inlet while some outlet is outside it, or the other way round --
-    outlets outside it include ``v`` itself and any not in *G* at all.
+    (every child, for a DFS root), and the rest of ``v``'s own component. A
+    piece "separates" when it holds an inlet while some outlet of ``v``'s
+    component is outside it, or the other way round -- outlets outside it
+    include ``v`` itself. An inlet and outlet already in different
+    components are separated by no point: every other component is
+    untouched.
     """
     points = [point for point in points if point in G]
     if not points:
         return 0
-    total_in, total_out = len(inlets), len(outlets)
 
-    def separates(inside_in: int, inside_out: int) -> bool:
+    def separates(inside_in: int, inside_out: int, total_in: int, total_out: int) -> bool:
         return (inside_in > 0 and total_out - inside_out > 0) or (
             inside_out > 0 and total_in - inside_in > 0
         )
@@ -234,10 +235,6 @@ def _count_separating_points(
                 n_out[up] = n_out.get(up, 0) + n_out[node]
         component_totals[root] = (size[root], n_in[root], n_out[root])
 
-    separating_components = {
-        root for root, (_size, inside_in, inside_out) in component_totals.items()
-        if separates(inside_in, inside_out)
-    }
     children: dict = {}
     for node, up in parent.items():
         if up is not None:
@@ -246,9 +243,7 @@ def _count_separating_points(
     count = 0
     for point in points:
         root = component_of[point]
-        if separating_components - {root}:
-            count += 1
-            continue
+        _size, component_in, component_out = component_totals[root]
         split = [
             child for child in children.get(point, ())
             if parent[point] is None or low[child] >= disc[point]
@@ -260,7 +255,10 @@ def _count_separating_points(
         rest_out -= (point in outlets) + sum(n_out[child] for child in split)
         if rest_size > 0:
             pieces.append((rest_in, rest_out))
-        if any(separates(inside_in, inside_out) for inside_in, inside_out in pieces):
+        if any(
+            separates(inside_in, inside_out, component_in, component_out)
+            for inside_in, inside_out in pieces
+        ):
             count += 1
     return count
 
@@ -284,20 +282,24 @@ def _perfusion_critical_failure_points(
     tree-child's subtree and everything else. Articulation points are
     classified in one more pass too (see :func:`_count_separating_points`).
     """
-    total_inlets = len(inlets)
-    total_outlets = len(outlets)
-
     parent, order = _spanning_forest_bfs_order(G)
     inlet_subtree = _subtree_membership_counts(G, parent, order, inlets)
     outlet_subtree = _subtree_membership_counts(G, parent, order, outlets)
+    # Each node's tree root: only the inlets and outlets of a bridge's own
+    # component can be separated by it (BFS order visits a parent first).
+    root_of: dict = {}
+    for node in order:
+        up = parent[node]
+        root_of[node] = node if up is None else root_of[up]
 
     critical_bridges = 0
     for u, v in bridges:
         child = u if parent.get(u) == v else v
+        root = root_of[child]
         inlets_in = inlet_subtree[child]
         outlets_in = outlet_subtree[child]
-        inlets_out = total_inlets - inlets_in
-        outlets_out = total_outlets - outlets_in
+        inlets_out = inlet_subtree[root] - inlets_in
+        outlets_out = outlet_subtree[root] - outlets_in
         if (inlets_in > 0 and outlets_out > 0) or (outlets_in > 0 and inlets_out > 0):
             critical_bridges += 1
 

@@ -34,7 +34,7 @@ from .thick_vessels import (
     thick_vessel_region,
     lee_sheet_excess,
 )
-from .thick_vessel_region_cache import ThickVesselRegionCache, thick_vessel_region_key
+from .thick_vessel_region_cache import ThickVesselRegionCache, mask_digest, thick_vessel_region_key
 from .thick_vessel_braid_guard import (
     BraidedThickVesselComponent,
     component_long_axis,
@@ -135,6 +135,7 @@ __all__ = [
     "thick_vessel_region",
     "ThickVesselRegionCache",
     "thick_vessel_region_key",
+    "mask_digest",
     "BraidedThickVesselComponent",
     "component_long_axis",
     "detect_braided_thick_vessel_components",

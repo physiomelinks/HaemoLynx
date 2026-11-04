@@ -110,10 +110,13 @@ def test_ilastik_hands_on_the_path_it_produced(tmp_path, monkeypatch):
     produced.parent.mkdir()
     produced.write_bytes(raw.read_bytes())
 
-    monkeypatch.setattr(
-        io, "run_ilastik_headless_segmentation",
-        lambda **_kwargs: produced,
-    )
+    seen = {}
+
+    def fake_run(**kwargs):
+        seen.update(kwargs)
+        return produced
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", fake_run)
 
     settings = settings_for(
         tmp_path,
@@ -122,11 +125,20 @@ def test_ilastik_hands_on_the_path_it_produced(tmp_path, monkeypatch):
         raw_image_path=raw,
         ilastik_classifier_path=tmp_path / "classifier.ilp",
         ilastik_output_dir=tmp_path / "segmentations",
+        ilastik_vessel_label="Vessel",
+        ilastik_executable="C:/ilastik/ilastik.exe",
     )
     inputs = segment(settings)
 
     assert inputs.image_path == produced
     assert settings["input_path"] == produced
+    # What ilastik is handed: the stand-in returned its output whatever it
+    # was given, so a wrong input, project, output or label went unseen.
+    assert seen["input_image_path"] == raw
+    assert seen["classifier_path"] == tmp_path / "classifier.ilp"
+    assert seen["output_path"] == tmp_path / "segmentations" / "mask_segmented.tif"
+    assert seen["vessel_label"] == "Vessel" and seen["label_setting"] == "ilastik_vessel_label"
+    assert seen["ilastik_executable"] == "C:/ilastik/ilastik.exe"
 
 
 def test_ilastik_timeout_setting_reaches_the_subprocess_call(tmp_path, monkeypatch):
@@ -480,3 +492,142 @@ def test_preflight_refuses_ilastik_output_settings_the_runner_would(tmp_path, ov
     report = _preflight(settings)
 
     assert any(named in e for e in report.errors), report.errors
+
+
+# -- the raw image and the crop box against the segmented image ---------------
+
+
+def _raw_shape_report(tmp_path, raw_array, *, segmented=None, **overrides):
+    from haemolynx.pipeline.checks import check_raw_image_shape
+
+    mask = a_segmented_tiff(tmp_path) if segmented is None else segmented
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, raw_array, **overrides.pop("write", {}))
+    settings = settings_for(tmp_path, input_path=mask, raw_image_path=raw, **overrides)
+    return check_raw_image_shape(settings)
+
+
+def test_preflight_refuses_a_raw_image_of_another_shape(tmp_path):
+    """Regression: preflight passed it, and the Graph stage then stopped after
+    every step, reading it beside the mask, with the graph unsaved."""
+    report = _raw_shape_report(tmp_path, np.zeros((3, 4, 4), np.uint16))
+
+    assert any("(3, 4, 4)" in e and "(4, 4, 4)" in e for e in report.errors), report.errors
+
+
+def test_preflight_passes_the_raw_images_channel_of_the_masks_shape(tmp_path):
+    assert _raw_shape_report(tmp_path, np.zeros((4, 4, 4), np.uint16)).errors == []
+    composite = np.zeros((4, 2, 4, 4), np.uint16)  # z, c, y, x
+    folder = tmp_path / "composite"
+    folder.mkdir()
+    report = _raw_shape_report(
+        folder, composite, raw_image_channel=1,
+        write={"imagej": True, "metadata": {"axes": "ZCYX", "mode": "composite"}},
+    )
+    assert report.errors == [] and report.passed
+
+
+def test_preflight_compares_a_2d_raw_image_with_a_2d_mask(tmp_path):
+    mask = tmp_path / "plane.tif"
+    tifffile.imwrite(mask, np.zeros((6, 8), np.uint8))
+    assert _raw_shape_report(tmp_path, np.zeros((6, 8), np.uint16), segmented=mask).errors == []
+    other = tmp_path / "other"
+    other.mkdir()
+    mask2 = other / "plane.tif"
+    tifffile.imwrite(mask2, np.zeros((6, 8), np.uint8))
+    assert _raw_shape_report(other, np.zeros((6, 9), np.uint16), segmented=mask2).errors
+
+
+def test_preflight_refuses_a_crop_box_outside_the_image(tmp_path):
+    """Regression: only the box's own numbers were checked, so a box past the
+    image passed and the Skeletonise stage (or one image of a batch) stopped."""
+    from haemolynx.pipeline.checks import check_crop_on_import
+
+    mask = a_segmented_tiff(tmp_path)  # 4 x 4 x 4
+    settings = settings_for(
+        tmp_path, input_path=mask, crop_on_import=True, crop_method="coordinates",
+        crop_start_xyz=[100, 0, 0], crop_end_xyz=[120, 3, 3],
+    )
+
+    (error,) = check_crop_on_import(settings).errors
+    assert "Crop on import" in error and "(4, 4, 4)" in error
+    inside = dict(settings, crop_start_xyz=[0, 0, 0], crop_end_xyz=[2, 2, 2])
+    assert check_crop_on_import(inside).errors == []
+
+
+# -- a run resumed after the Input tab's settings changed ----------------------
+
+
+def test_a_resumed_run_reads_the_segmented_image_the_settings_name_now(tmp_path):
+    """Regression: Run from the Skeletonise tab kept the resumed run's own
+    segmented image though input_path had changed, while every other Input
+    change took effect."""
+    from haemolynx.pipeline.stages import PipelineResume, SegmentedInputs, _resumed_segmented_path
+
+    first = a_segmented_tiff(tmp_path)
+    second = tmp_path / "other.tif"
+    second.write_bytes(first.read_bytes())
+    resume = PipelineResume(
+        start_from="skeletonise", inputs=SegmentedInputs(image_path=first, output_dir=tmp_path)
+    )
+
+    same = settings_for(tmp_path, input_path=first)
+    assert _resumed_segmented_path(same, resume, "skeletonise") == first
+    changed = settings_for(tmp_path, input_path=second)
+    assert _resumed_segmented_path(changed, resume, "skeletonise") is None
+
+
+def test_a_resumed_run_takes_only_an_ilastik_output_its_record_vouches_for(tmp_path, no_ilastik):
+    """Regression: any ilastik output on disk was taken as the run's, one
+    left without its record (a binarisation that raised) too."""
+    from haemolynx.io.ilastik import sidecar_path
+    from haemolynx.pipeline.stages import PipelineResume, _resumed_segmented_path
+
+    settings, output, _project = _ilastik_run(tmp_path)
+    resume = PipelineResume(start_from="build_network")
+    assert _resumed_segmented_path(settings, resume, "build_network") == output
+    sidecar_path(output).unlink()
+    assert _resumed_segmented_path(settings, resume, "build_network") is None
+
+
+def test_a_run_resumed_on_a_volume_made_with_other_input_settings_is_refused(tmp_path):
+    """Regression: a run from the Graph tab on with the crop box, downsample,
+    axis order, voxel size or clean-up changed was built on the old volume
+    without a word, and its manifest and settings file named the new values."""
+    from haemolynx.pipeline.stages import (
+        INPUT_SETTINGS_RECORD,
+        PipelineResume,
+        run_pipeline_stages,
+        segment,
+        skeletonise,
+    )
+
+    mask = tmp_path / "rod.tif"
+    volume = np.zeros((7, 7, 20), dtype=np.uint8)
+    volume[2:5, 2:5, 2:18] = 255
+    tifffile.imwrite(mask, volume)
+    before = settings_for(tmp_path, input_path=mask, run_haemodynamics=False, visualize_results=False)
+    inputs = segment(dict(before))
+    from dataclasses import replace
+
+    from haemolynx.pipeline.stages import input_volume_settings
+
+    made = replace(skeletonise(dict(before), inputs), input_settings=input_volume_settings(before))
+    resume = PipelineResume(start_from="build_network", inputs=inputs, volume=made)
+
+    after = settings_for(
+        tmp_path, input_path=mask, run_haemodynamics=False, visualize_results=False,
+        segmented_image_downsample="2x",
+    )
+    with pytest.raises(ValueError, match="segmented_image_downsample changed"):
+        run_pipeline_stages(dict(after), SCHEMA, start_from="build_network", resume=resume)
+
+    # Unchanged, it resumes, and the graph keeps what it was built with.
+    G = run_pipeline_stages(dict(before), SCHEMA, start_from="build_network", resume=resume, stop_after="build_network")
+    assert G.graph[INPUT_SETTINGS_RECORD]["segmented_image_downsample"] == "none"
+    with pytest.raises(ValueError, match="this run's network was made"):
+        run_pipeline_stages(
+            dict(after), SCHEMA, start_from="assign_boundaries",
+            # No stored volume (a loaded run's): the graph's own record decides.
+            resume=PipelineResume(start_from="assign_boundaries", inputs=inputs, graph=G),
+        )

@@ -141,4 +141,24 @@ def load_image_with_voxel_size_2d_aware(
     voxel_meta_status = _voxel_meta_status_for_promotion(
         filepath, image, was_2d, voxel_meta_status
     )
+    if was_2d:
+        voxel_size_z, voxel_meta_status = _z_from_in_plane(
+            voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+        )
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+
+
+def _z_from_in_plane(
+    voxel_size_x: float, voxel_size_y: float, voxel_size_z: float, status: dict[str, object]
+) -> tuple[float, dict[str, object]]:
+    """A 2D image's z spacing, when its file gives none: the finest in-plane
+    one, so the stack of one it is read as never makes its single plane the
+    finest axis. Left at 1 um, a 2D image of 2 um pixels had z as its finest
+    axis, and every voxel count (the skeleton clean-up's, a downsample's
+    blocks) was measured in half a pixel. Its x and y must be known. z stays
+    missing in *status*, so ``auto`` still takes a voxel size override."""
+    missing = [str(axis) for axis in status.get("missing_axes") or ()]
+    invalid = [str(axis) for axis in status.get("invalid_axes") or ()]
+    if "z" not in missing or {"x", "y"} & set(missing + invalid):
+        return voxel_size_z, status
+    return float(min(voxel_size_x, voxel_size_y)), {**status, "z_from_in_plane": True}

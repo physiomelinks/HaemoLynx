@@ -207,6 +207,43 @@ def test_reader_maps_each_row_to_its_field():
     assert template.tissue_volume_um3 == 5.0e6
 
 
+def test_the_tiers_murray_exponent_is_the_one_drawn_to():
+    """Regression: the generator drew its arteriole and venule tiers to the
+    whole network's fitted exponent, which also holds the capillary bed's
+    junctions and the tiers' side branches: 2.6 read off a network drawn to
+    3.0. The tiers' own branchings give it back; a report without them (saved
+    before the rows, or with no tier) still gives the whole network's."""
+    sections = _hand_sections()
+    sections["murray_law"].update({
+        "Median Tier Fitted Murray Exponent": 3.1,
+        "Tier Fitted Murray Exponent IQR Low": 2.8,
+        "Tier Fitted Murray Exponent IQR High": 3.4,
+        "Tier Fitted Murray Exponent Sample Count": 5,
+    })
+    template = template_from_report(sections, tiny_hierarchical_graph(), boundaries=TINY_ROLES)
+    assert template.murray_exponent == 3.1
+    assert template.murray_iqr == (2.8, 3.4)
+
+    note = "N/A (no arteriole or venule branching of two or more narrower measured daughters)"
+    for row in ("Median Tier Fitted Murray Exponent", "Tier Fitted Murray Exponent IQR Low",
+                "Tier Fitted Murray Exponent IQR High"):
+        sections["murray_law"][row] = note
+    template = template_from_report(sections, tiny_hierarchical_graph(), boundaries=TINY_ROLES)
+    assert template.murray_exponent == 2.9
+    assert template.murray_iqr == (2.6, 3.2)
+
+
+def test_a_network_drawn_to_murrays_law_gives_its_exponent_back(tmp_path):
+    """The round trip the generator depends on: the fixture template's tiers
+    are drawn at exponent 3, and the template read off the network drawn gives
+    3 (the whole network's median gave 2.6, and 2.25 once the venous side
+    branches counted as the arterial ones always had)."""
+    from synthetic_fixtures import write_generated_run
+
+    template = load_template(write_generated_run(tmp_path), "statistics")
+    assert template.murray_exponent == pytest.approx(3.0, abs=0.05)
+
+
 def test_loop_count_comes_from_the_density_without_a_cyclomatic_section():
     sections = _hand_sections()
     sections.pop("cyclomatic_number")
@@ -449,6 +486,26 @@ def test_provenance_reads_the_runs_manifest_when_it_is_there(tmp_path):
     assert template.provenance.template_path == str(tmp_path / "template.haemorun")
     assert template.provenance.statistics_mode == "fast"
     assert template.provenance.haemolynx_version is not None
+
+
+def test_provenance_finds_the_manifest_of_a_run_ilastik_segmented(tmp_path):
+    """Regression: the manifest was looked for under the input_path row's
+    stem, a file left from before ilastik was on; the run named its outputs
+    after ilastik's segmentation of the raw image."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "claudin_segmented_run_manifest.json").write_text(
+        json.dumps({"haemolynx_version": "9.9.9", "git": {"commit": "abc123"}}), encoding="utf-8"
+    )
+    settings = {
+        "input_path": tmp_path / "stale.tif",
+        "output_dir": out,
+        "use_ilastik_segmentation": True,
+        "raw_image_path": tmp_path / "claudin.tif",
+        "ilastik_output_dir": tmp_path / "ilastik",
+    }
+    template = load_template(write_fixture_run(tmp_path, settings=settings), "statistics")
+    assert template.provenance.run_version == "9.9.9"
 
 
 def test_load_template_remembers_a_file_until_it_changes(tmp_path):

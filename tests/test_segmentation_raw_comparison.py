@@ -339,3 +339,20 @@ def test_a_precomputed_endothelial_foreground_is_compared_as_one():
     assert foreground.stain == src.ENDOTHELIAL
     result = src.compare_segmentation_to_raw_image(mask, raw, precomputed=foreground)
     assert result.added_voxel_count == int(blob.sum())
+
+
+def test_a_2d_images_missed_structures_are_an_area():
+    """One plane: what the segmentation missed is reported in um2, not as a
+    volume a voxel's z spacing deep."""
+    mask = np.zeros((1, 40, 40), dtype=bool)
+    mask[0, 5:10, 5:35] = True
+    raw = np.zeros((1, 40, 40), dtype=np.float32)
+    raw[0, 5:10, 5:35] = 1.0
+    raw[0, 25:35, 20:30] = 1.0  # a structure the mask misses: 100 pixels
+    result = src.compare_segmentation_to_raw_image(
+        mask, raw, voxel_size_zyx=(1.0, 0.5, 0.5), missed_structure_min_volume_um3=1.0
+    )
+
+    assert result.single_plane and result.missed_structure_total_area_um2 == pytest.approx(25.0)
+    report = src.format_segmentation_raw_comparison_report(result)
+    assert "25.0um2 total, one plane" in report and "um3" not in report

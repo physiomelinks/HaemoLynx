@@ -95,17 +95,31 @@ def test_the_raw_image_preset_measures_once_the_raw_image_is_set():
     assert not unmet_chain(SCHEMA, "measure_diameters_from_raw_image", values)
 
 
+def _usage_bases() -> tuple[dict, dict]:
+    """The defaults, and the defaults with every switch a usage names
+    flipped: a usage's own settings are the same from either."""
+    base = {**SCHEMA.defaults(), "raw_image_path": "raw.tif", "cell_mask_path": "cells.tif"}
+    flipped = dict(base)
+    for setting in set().union(*(PRESETS[name]["overrides"] for name in USAGE_PRESETS)):
+        assert SCHEMA[setting].kind == "bool", setting
+        flipped[setting] = not base[setting]
+    return base, flipped
+
+
 def test_choosing_a_usage_gives_the_same_run_whichever_usage_came_before():
     """Regression: the flow presets left the equivalent resistance off after
-    Quick look, though either one chosen first computes it."""
-    base = {**SCHEMA.defaults(), "raw_image_path": "raw.tif", "cell_mask_path": "cells.tif"}
+    Quick look, though either one chosen first computes it. And Quick look
+    turned the tissue volume and the vascular communities off with no other
+    usage naming them, so they stayed off after it: unseen from the
+    defaults, where both are off already, hence the flipped base."""
     named = set().union(*(PRESETS[name]["overrides"] for name in USAGE_PRESETS))
-    for before, chosen in itertools.permutations(USAGE_PRESETS, 2):
-        alone = _loaded(chosen, over=base)
-        after = _loaded(before, chosen, over=base)
-        for setting in sorted(named):
-            if not unmet_chain(SCHEMA, setting, alone):
-                assert after[setting] == alone[setting], (before, chosen, setting)
+    for base in _usage_bases():
+        for before, chosen in itertools.permutations(USAGE_PRESETS, 2):
+            alone = _loaded(chosen, over=base)
+            after = _loaded(before, chosen, over=base)
+            for setting in sorted(named):
+                if not unmet_chain(SCHEMA, setting, alone):
+                    assert after[setting] == alone[setting], (before, chosen, setting)
 
 
 def test_an_add_on_keeps_the_usage_it_is_loaded_over():
@@ -117,6 +131,28 @@ def test_an_add_on_keeps_the_usage_it_is_loaded_over():
         with_add_on = _loaded(usage, add_on)
         for setting in deciding:
             assert with_add_on[setting] == usage_alone[setting], (usage, add_on, setting)
+
+
+def test_an_add_on_turns_on_what_its_own_settings_need_over_any_usage():
+    """Full report names the statistics and VTK switches beside its own, as
+    the docstring says: over Cell-to-vessel distances, which turns them off,
+    it turns them back on, and the cell measurement stays the usage's. A
+    setting an add-on names is left unread only by a file still to choose or
+    by what the usage decided (Large image's solver for an equivalent
+    resistance Quick look does not compute)."""
+    decided = set().union(*(PRESETS[name]["overrides"] for name in USAGE_PRESETS))
+    for usage, add_on in itertools.product(USAGE_PRESETS, ADD_ONS):
+        values = _loaded(usage, add_on)
+        for setting in PRESETS[add_on]["overrides"]:
+            for rule in unmet_chain(SCHEMA, setting, values):
+                gate = prerequisite_name(rule)
+                assert SCHEMA[gate].kind == "path" or (
+                    gate in decided and gate not in PRESETS[add_on]["overrides"]
+                ), (usage, add_on, setting, rule)
+    report = _loaded("cell_distances", "full_report")
+    assert report["statistics"] and report["vtk_export"] and report["compute_vascular_communities"]
+    assert report["measurement_3d_to_cell_mask"] and not report["run_haemodynamics"]
+    assert not report["measure_tissue_volume"]
 
 
 def test_the_menu_starts_at_none_then_lists_the_usages_then_the_add_ons():

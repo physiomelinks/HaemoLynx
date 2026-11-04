@@ -861,17 +861,22 @@ def diagnose_mask_restriction_alignment(
     ``None`` for a role that was not loaded -- skipped, along with any mask
     with no voxels of its own (nothing to compare). Returns one report per
     remaining mask, in the order given.
+
+    Counted a slab of planes at a time: ``mask & segmented`` of the whole
+    volume was a byte a voxel in RAM per mask, under the low-RAM option too.
     """
-    seg = np.asarray(segmented_mask, dtype=bool)
     reports: list[dict[str, Any]] = []
     for role, mask in masks.items():
         if mask is None:
             continue
-        restrict = np.asarray(mask, dtype=bool)
-        n_mask = int(restrict.sum())
+        n_mask = n_overlap = 0
+        step = memmap_support.slab_step(np.shape(mask))
+        for z0 in range(0, np.shape(mask)[0], step):
+            restrict = np.asarray(mask[z0:z0 + step], dtype=bool)
+            n_mask += int(np.count_nonzero(restrict))
+            n_overlap += int(np.count_nonzero(restrict & np.asarray(segmented_mask[z0:z0 + step], dtype=bool)))
         if n_mask == 0:
             continue
-        n_overlap = int((restrict & seg).sum())
         reports.append(
             {
                 "role": role,

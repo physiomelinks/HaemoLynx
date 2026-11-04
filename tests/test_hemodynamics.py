@@ -639,3 +639,40 @@ def test_the_model_reads_the_stain_the_diameters_stage_recorded(monkeypatch):
     (config,) = seen
     assert not config.use_fwhm_edge_diameters
     assert config.endothelial["use_endothelial_diameters"] is True
+
+
+@pytest.mark.parametrize("basis, form", [("endothelial", "auto"), ("plasma_column", "in_vivo_1994")])
+def test_a_vessel_narrower_than_the_in_vivo_laws_floor_no_longer_stops_the_run(basis, form, caplog):
+    """Regression: the 1994 in vivo form is singular at 1.1 um, and raised for
+    any vessel at or under it, so one thin vessel (a mask width of a 1-2 voxel
+    capillary) stopped the whole Haemodynamics stage. A vessel narrower than
+    the law's fitted floor, 3.3 um, has its viscosity read there; its own
+    width still sets the d^4 of its resistance. The in vitro form is untouched."""
+    import logging
+
+    from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+    from haemolynx.haemodynamics.viscosity import PRIES_MIN_DIAMETER_UM, viscosity_for
+    from haemolynx.pipeline import default_schema, resolve_settings, stages
+
+    schema = default_schema()
+    values = {s.name: s.default for s in schema}
+    values.update(run_haemodynamics=True, segmentation_source=basis, pries_viscosity_form=form,
+                  all_diams_const=False, inlet_nodes=[0], outlet_nodes=[2],
+                  diameter_by_branch_order={"B01": 10.0})
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    G = nx.MultiGraph(image_voxel_size_zyx=(1.0, 1.0, 1.0))
+    G.add_edge(0, 1, length=20.0, diameter_um=10.0, branch_order="B01")
+    G.add_edge(1, 2, length=20.0, diameter_um=1.0, branch_order="B01")
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.poiseuille"):
+        stages.build_haemodynamic_model(settings, stages.HaemodynamicModel(graph=G), schema)
+
+    law = "pries" if form == "auto" else "pries_in_vivo_1994"
+    floor_viscosity = viscosity_for(PRIES_MIN_DIAMETER_UM, law=law, diameter_basis=basis)
+    expected = 128.0 * floor_viscosity * 20e-6 / (np.pi * (1.0e-6) ** 4)
+    assert G.edges[1, 2, 0]["resistance"] == pytest.approx(expected, rel=1e-12)
+    assert "fitted floor, with their viscosity read at it: 1" in caplog.text
+    # Above the floor, and on the in vitro form, nothing is read differently.
+    plasma = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", diameter_basis="plasma_column")
+    assert plasma.calculate_viscosity(1.0) == viscosity_for(1.0, law="pries", diameter_basis="plasma_column")
+    wall = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", diameter_basis="endothelial")
+    assert wall.calculate_viscosity(5.0) == viscosity_for(5.0, law="pries", diameter_basis="endothelial")

@@ -1022,6 +1022,10 @@ def h5_binarization_rule(filepath: str | Path, dataset_name: str | None = None):
         small_int = integer and dtype.itemsize <= 2
         tally: dict[object, int] = {}
         low, high = np.inf, -np.inf
+        # A float dataset of whole numbers is a label mask, read by the
+        # integer rule as the whole volume in RAM is (_whole_number_values):
+        # by its range alone a float 1/2 mask cut by a box was solid vessel.
+        whole = not integer
         for start in range(0, dataset.shape[lead], depth):
             selection[lead] = slice(start, start + depth)
             for row in range(0, dataset.shape[second] if second is not None else 1, rows):
@@ -1040,10 +1044,18 @@ def h5_binarization_rule(filepath: str | Path, dataset_name: str | None = None):
                     if finite.size:
                         low = min(low, float(finite.min()))
                         high = max(high, float(finite.max()))
-    if integer:
+                    if whole:
+                        if finite.size != block.size or np.any(block != np.round(block)):
+                            whole = False
+                        else:
+                            values, counts = np.unique(block, return_counts=True)
+                            for value, count in zip(values.tolist(), counts.tolist()):
+                                tally[value] = tally.get(value, 0) + count
+                            whole = len(tally) <= _MAX_FLOAT_LABELS
+    if integer or (whole and tally):
         ordered = sorted(tally)
         return _integer_rule(
-            np.array(ordered, dtype=dtype),
+            np.array(ordered, dtype=dtype if integer else np.int64),
             np.array([tally[v] for v in ordered], dtype=np.int64),
             shape=kept_shape,
         )

@@ -1388,3 +1388,33 @@ def test_low_ram_cleanup_reconnect_labels_no_volume(tmp_path, monkeypatch):
     assert plain_stats["accepted_bridges"] > 0
     assert np.array_equal(np.asarray(low), plain) and low_stats == plain_stats
     assert np.dtype(np.int32) not in made
+
+
+def test_the_restriction_alignment_check_counts_a_slab_at_a_time(tmp_path, monkeypatch):
+    """`mask & segmented` of the whole volume was a byte a voxel in RAM for
+    each restriction mask, under the low-RAM option too. The same counts."""
+    import tracemalloc
+
+    from haemolynx.preprocessing.thick_vessels import diagnose_mask_restriction_alignment
+
+    shape = (24, 60, 60)
+    segmented = memmap_support.new_memmap_array(shape, bool, directory=tmp_path)
+    segmented[:, 10:50, 10:50] = True
+    mask = memmap_support.new_memmap_array(shape, bool, directory=tmp_path)
+    mask[3:20, 5:45, 5:45] = True
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 60 * 60 * 2)
+
+    tracemalloc.start()
+    try:
+        reports = diagnose_mask_restriction_alignment({"large_arteriole_mask": mask, "empty": None}, segmented)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    whole = np.asarray(mask) & np.asarray(segmented)
+    assert reports == [{
+        "role": "large_arteriole_mask",
+        "mask_voxels": int(np.asarray(mask).sum()),
+        "overlap_voxels": int(whole.sum()),
+        "overlap_fraction": int(whole.sum()) / int(np.asarray(mask).sum()),
+    }]
+    assert peak < whole.size // 4

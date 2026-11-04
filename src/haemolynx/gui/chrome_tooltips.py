@@ -334,9 +334,9 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "parent at, and the pressure drop across them"
     ),
     "weighted_betweenness_communities": (
-        "Betweenness and communities with vessels weighted by resistance "
-        "(easiest paths for flow), length (shortest) and 1/|flow| (busiest): "
-        "the most central nodes and the communities' number and sizes"
+        "Betweenness with vessels as distances by resistance, length and "
+        "1/|flow|, and communities with vessels tied by conductance, 1/length "
+        "and |flow|: the most central nodes and the communities' number and sizes"
     ),
     "zero_resistance_bridges": (
         "The joins drawn inside thick vessels to link the vessels opening "
@@ -420,6 +420,10 @@ OPTIMISE_SETTINGS_TOOLTIP = (
 #: there is no image for their trials to read. Also what each says if pressed.
 OPTIMISE_SYNTHETIC_TOOLTIP = (
     "Unavailable for a synthetic network, which has no image to optimise on. "
+    "Set \"Input\" on the Input tab to Segmented image to use it"
+)
+CHECK_SYNTHETIC_TOOLTIP = (
+    "Unavailable for a synthetic network, which has no segmented image to check. "
     "Set \"Input\" on the Input tab to Segmented image to use it"
 )
 CHECK_SEGMENTED_IMAGE_TOOLTIP = (

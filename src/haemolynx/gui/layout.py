@@ -306,6 +306,12 @@ ANCHOR_OVERRIDES: Mapping[str, str] = {
     "thick_vessel_fill_centreline_gaps": "do_graph_building",
     "thick_vessel_extend_centreline_ends": "do_graph_building",
     "thick_bridge_centreline_tolerance_um": "do_graph_building",
+    # How the mask is read, by the EDT cross-check and also by the ring fit
+    # and the size convention without haemodynamics: no prerequisite, kept
+    # with the cross-check's other rows.
+    "edt_diameter_method": "use_edt_diameter_crosscheck",
+    "edt_min_resolvable_diameter_um": "use_edt_diameter_crosscheck",
+    "edt_junction_proximity_exclusion_um": "use_edt_diameter_crosscheck",
 }
 
 #: What each button says, keyed by its anchor, or ``box:<key>`` for a box's
@@ -616,6 +622,10 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "fwhm_diameter_guess_um",
                 "fwhm_diameter_guess_edge_attribute",
             ),
+        ),
+        (
+            "Image blur (a plasma stain)",
+            ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um"),
         ),
         (
             "FWHM profile fit",

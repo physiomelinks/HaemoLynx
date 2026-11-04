@@ -293,3 +293,13 @@ def test_preflight_says_nothing_of_an_override_that_is_read_or_agrees(tmp_path):
     assert _override_warnings(calibrated, None) == []
     # Under auto an incomplete header reads the override.
     assert _override_warnings(_tiff_without_z_spacing(tmp_path), list(OVERRIDE_XYZ)) == []
+
+
+def test_preflight_refuses_override_with_no_voxel_size():
+    """Regression: preflight passed it, and the stage then raised reading the image."""
+    from haemolynx.pipeline.checks import check_voxel_size_override
+
+    report = check_voxel_size_override({"voxel_size_policy": "override", "voxel_size_override_xyz": None})
+
+    (error,) = report.errors
+    assert "voxel_size_override_xyz is not set" in error

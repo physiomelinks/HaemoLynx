@@ -481,6 +481,34 @@ def test_run_from_the_haemodynamics_tab_applies_the_pruning(monkeypatch):
     assert seen["solve_boundaries"].inlet_nodes == [0]
 
 
+@pytest.mark.parametrize("start_from", ["solve", "post_process", "run_perturbations"])
+def test_a_run_resumed_past_the_haemodynamics_drops_the_boundary_nodes_it_removed(
+    monkeypatch, start_from
+):
+    """Regression (from the Boundaries tab's review): remove_disconnected took
+    inlet 10 off the network and its lists, but the checkpoints after Boundaries
+    carry the lists as Boundaries found them. Continue with no edits, or a run
+    from Perturbations, put 10 back, and the perturbations' re-solve raised
+    "Boundary nodes missing from node_list"."""
+    _stub_stages(monkeypatch)
+    handed = {}
+
+    def perturbations(settings, model, boundaries, *_args, **_kwargs):
+        handed["boundaries"], handed["settings"] = boundaries, settings
+        return SimpleNamespace(graph=None)
+
+    monkeypatch.setattr(stages, "run_perturbations", perturbations)
+    pruned = _two_components()
+    pruned.remove_nodes_from([10, 11])  # what the network handling left
+    resume = PipelineResume(start_from=start_from, graph=pruned, inlet_nodes=(10, 0), outlet_nodes=(2,))
+
+    run_pipeline_stages(dict(REMOVE), schema=None, start_from=start_from, resume=resume)
+
+    assert handed["boundaries"].inlet_nodes == [0]
+    assert handed["settings"]["inlet_nodes"] == [0]
+    assert handed["boundaries"].resistance_node_pair == (0, 2)
+
+
 def test_continuing_with_the_haemodynamics_off_exports_no_earlier_flows(monkeypatch):
     """Regression: unticking run_haemodynamics while a run waited at Post
     processing, then Continue, left the earlier solve's resistances, flows,
@@ -1161,3 +1189,175 @@ def test_the_prune_button_and_network_handling_join_the_same_vessels(tmp_path):
 
     assert stats["junctions_merged"] == 1
     assert _vessels(pruned) == _vessels(model.graph)
+
+
+@pytest.mark.parametrize("solver", ["sparse", "eigendecomposition"])
+def test_the_two_point_resistance_is_found_between_nodes_one_piece_holds(solver, caplog):
+    """Regression: the pair is the first inlet and the first outlet, and inlet
+    10 lies in a piece with no outlet. The sparse solver gave an infinite
+    resistance, the eigendecomposition a finite number with no meaning. The
+    first inlet and outlet one piece holds are used instead, and the log says so."""
+    import logging
+
+    from haemolynx.pipeline import resolve_settings
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    def two_point(inlets, pair):
+        values = {setting.name: setting.default for setting in SCHEMA}
+        values.update(
+            run_haemodynamics=True, inlet_p_bc=1000.0, outlet_p_bc=0.0, inlet_nodes=inlets, outlet_nodes=[2, 3],
+            all_diams_const=False, diameter_by_branch_order={"B01": 15.0, "B02": 20.0, "B03": 8.0},
+            do_equiv_resistance_calculation=True, equivalent_resistance_solver=solver,
+        )
+        settings = resolve_settings(values, schema=SCHEMA, config_path=None)
+        graph = _bifurcation_and_strays()
+        boundaries = BoundaryNodes(inlet_nodes=inlets, outlet_nodes=[2, 3], resistance_node_pair=pair, graph=graph)
+        model = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries)
+        return solve(settings, build_haemodynamic_model(settings, model, SCHEMA), boundaries, SCHEMA)
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+        across = two_point([10, 0], (10, 2))
+    within = two_point([0, 10], (0, 2))
+    assert across.equivalent_resistance_nodes == (0, 2)
+    assert across.equivalent_resistance == pytest.approx(within.equivalent_resistance, rel=1e-9)
+    assert any("no vessel joins nodes 10 and 2" in record.getMessage() for record in caplog.records)
+
+
+def _drawn_network(sources=("synthetic", "synthetic")) -> nx.MultiGraph:
+    """Inlet 0 - 1 - outlet 2, widths 10 and 8 um drawn by a network (not
+    measured), and a dead end 1-3 the removal takes, leaving 1 between two."""
+    import numpy as np
+
+    graph = nx.MultiGraph(image_voxel_size_zyx=(1.0, 1.0, 1.0))
+    positions = {0: (0, 0, 0), 1: (0, 0, 50), 2: (0, 0, 100), 3: (0, 30, 50)}
+    for node, pos in positions.items():
+        graph.add_node(node, pos=np.asarray(pos, dtype=float))
+    for (u, v, width), source in zip(((0, 1, 10.0), (1, 2, 8.0), (1, 3, 6.0)), (*sources, sources[0])):
+        graph.add_edge(u, v, length=float(np.linalg.norm(np.subtract(positions[u], positions[v]))),
+                       diameter_um=width, branch_order="B01", diameter_source=source, diameter_basis="endothelial",
+                       voxels=[list(positions[u]), list(positions[v])])
+    return graph
+
+
+def test_joining_drawn_vessels_keeps_their_width_source_and_basis():
+    """Regression: the vessel remove_disconnected joined in a synthetic network
+    was measured afresh, with no image to measure it from, and became a hand
+    override on the run's basis: its viscosity was read on the wrong one. A
+    drawn width is kept, as the series-equivalent of the two."""
+    settings = dict(SCHEMA.defaults(), network_source="synthetic", segmentation_source="plasma_column",
+                    run_haemodynamics=True, open_end_model="closed", inlet_nodes=[0], outlet_nodes=[2],
+                    diameter_by_branch_order={"B01": 10.0}, **REMOVE)
+    graph = _drawn_network()
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2], graph=graph)
+    model = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries, schema=SCHEMA)
+    ((_u, _v, joined),) = model.graph.edges(data=True)
+    assert (joined["diameter_source"], joined["diameter_basis"]) == ("synthetic", "endothelial")
+    assert joined["diameter_um"] == pytest.approx((100.0 / (50.0 / 10.0**4 + 50.0 / 8.0**4)) ** 0.25)
+
+
+def test_drawn_vessels_of_different_sources_are_not_joined():
+    """A surround's shell (synthetic) meeting the template run's own vessel
+    (image_run): two widths read on two footings stay two vessels."""
+    settings = dict(SCHEMA.defaults(), network_source="synthetic_surround", run_haemodynamics=True,
+                    open_end_model="closed", inlet_nodes=[0], outlet_nodes=[2],
+                    diameter_by_branch_order={"B01": 10.0}, **REMOVE)
+    graph = _drawn_network(("synthetic", "image_run"))
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2], graph=graph)
+    model = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries, schema=SCHEMA)
+    assert sorted(model.graph.edges()) == [(0, 1), (1, 2)]
+    assert model.graph.edges[1, 2, 0]["diameter_source"] == "image_run"
+
+
+def test_the_open_ends_are_estimated_again_from_the_resistances_the_haematocrit_loop_left(caplog):
+    """The estimate was made once, from one haematocrit's resistances, and
+    kept through the distributed loop, which changes them. It is made again
+    from the resistances the loop left, and the flows solved with it: the
+    conditions recorded are those an estimate of the solved network gives."""
+    import logging
+
+    from haemolynx import haemodynamics as hd
+    from haemolynx.haemodynamics import open_ends as oe
+
+    import numpy as np
+
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE
+    from haemolynx.pipeline import resolve_settings
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    # A bifurcation 1 -> {2 wide, 4 narrow}, and 4 -> {outlet 3, 8 leaving the
+    # image}: phase separation at 1 changes the narrow side's resistances.
+    graph = _bifurcation_and_strays()
+    graph.remove_nodes_from([10, 11, 12, 20, 21])
+    graph.remove_edge(1, 3)
+    for node, pos in ((4, (0.0, -20.0, 70.0)), (8, (0.0, -50.0, 70.0))):
+        graph.add_node(node, pos=np.asarray(pos))
+    graph.nodes[8][DEAD_END_KIND] = LEAVES_IMAGE
+    for u, v in ((1, 4), (4, 3), (4, 8)):
+        length = float(np.linalg.norm(graph.nodes[u]["pos"] - graph.nodes[v]["pos"]))
+        graph.add_edge(u, v, key=0, length=length, branch_order="B03", diameter_um=8.0,
+                       voxels=[list(graph.nodes[u]["pos"]), list(graph.nodes[v]["pos"])])
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(
+        LEAVE, run_haemodynamics=True, open_end_model="estimated", haematocrit_model="distributed_iterative",
+        inlet_p_bc=1000.0, outlet_p_bc=0.0, inlet_nodes=[0], outlet_nodes=[2, 3], all_diams_const=False,
+        diameter_by_branch_order={"B01": 15.0, "B02": 20.0, "B03": 8.0}, do_equiv_resistance_calculation=False,
+    )
+    settings = resolve_settings(values, schema=SCHEMA, config_path=None)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3], graph=graph)
+    model = build_haemodynamic_model(settings, HaemodynamicModel(graph=graph), SCHEMA)
+    before = {edge: model.graph.edges[edge]["resistance"] for edge in model.graph.edges(keys=True)}
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.stages"):
+        solution = solve(settings, model, boundaries, SCHEMA)
+    G = solution.graph
+    assert G.edges[1, 4, 0]["resistance"] != pytest.approx(before[(1, 4, 0)])  # the loop changed it
+    assert any("estimated again" in record.getMessage() for record in caplog.records)
+    conductance, nodes = hd.build_conductance_matrix_from_graph(G, solver="sparse")
+    again = oe.open_end_conditions(
+        "estimated", G, inlet_nodes=[0], outlet_nodes=[2, 3], inlet_p_bc=1000.0, outlet_p_bc=0.0,
+        conductance=conductance, node_list=nodes,
+    )
+    recorded = oe.OpenEndConditions.from_record(G.graph[oe.GRAPH_RECORD])
+    assert recorded.nodes == [8]
+    assert recorded.to_inlet == pytest.approx(again.to_inlet, rel=1e-9)
+    assert recorded.to_outlet == pytest.approx(again.to_outlet, rel=1e-9)
+    # Flow is conserved at the junction the open end leaves.
+    flows_at_4 = sum(
+        (1 if G.nodes[4]["pressure"] > G.nodes[other]["pressure"] else -1) * data["flow_abs"]
+        for _n, other, data in G.edges(4, data=True)
+    )
+    assert flows_at_4 == pytest.approx(0.0, abs=1e-6 * G.edges[0, 1, 0]["flow_abs"])
+
+
+def test_a_surrounds_image_vessel_and_shell_vessel_are_not_joined():
+    """Regression (from the Post processing tab's review): the join took the
+    first vessel's attributes, so one vessel carried one part's network_part
+    (and image_run_flow), and the image-flows CSV counted a stretch of shell
+    as image or dropped one. Vessels of two parts stay two."""
+    settings = dict(SCHEMA.defaults(), run_haemodynamics=True, open_end_model="closed",
+                    inlet_nodes=[0], outlet_nodes=[2], diameter_by_branch_order={"B01": 10.0}, **REMOVE)
+    graph = _drawn_network(("edt_mask", "edt_mask"))
+    for (u, v), part in (((0, 1), "image"), ((1, 2), "synthetic"), ((1, 3), "image")):
+        graph.edges[u, v, 0]["network_part"] = part
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2], graph=graph)
+    model = apply_network_handling(settings, HaemodynamicModel(graph=graph), boundaries, schema=SCHEMA)
+    assert sorted(model.graph.edges()) == [(0, 1), (1, 2)]
+    assert [model.graph.edges[e]["network_part"] for e in ((0, 1, 0), (1, 2, 0))] == ["image", "synthetic"]
+
+
+def test_the_diameters_stage_records_the_rule_it_calibrated_by(tmp_path, monkeypatch):
+    """What a run from the Haemodynamics tab compares with the settings now
+    (gui.stage_checkpoints): recorded only where Diameters measured from the
+    raw image, the one measurement that calibrates on it."""
+    from haemolynx.pipeline.stages import CALIBRATION_SAMPLE, calibration_sample_rule
+
+    raw = {"raw_image_path": tmp_path / "raw.tif", "measure_diameters_from_raw_image": True,
+           "raw_image_stain": "plasma_column", "open_end_model": "estimated"}
+    model, _calibrated = _diameters_stage(tmp_path, monkeypatch, {**REMOVE, **raw})
+    assert model.graph.graph[CALIBRATION_SAMPLE] == ["remove_disconnected", "estimated"]
+    model, _calibrated = _diameters_stage(tmp_path, monkeypatch, REMOVE)
+    assert CALIBRATION_SAMPLE not in model.graph.graph
+
+    assert calibration_sample_rule({"boundary_handling": "leave_unsolved"}) == ["leave_unsolved"]
+    assert calibration_sample_rule({**REMOVE, "run_haemodynamics": False, "open_end_model": "estimated"}) == [
+        "remove_disconnected", "closed",
+    ]

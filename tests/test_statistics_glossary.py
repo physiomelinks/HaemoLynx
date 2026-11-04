@@ -277,6 +277,27 @@ def test_the_tissue_rows_have_terms_and_units():
             assert glossary.unit_for(name, rows) in glossary.UNITS, name
 
 
+def test_a_group_with_no_evaluated_vessel_has_a_term_for_its_status():
+    """Regression: past fast mode's cap of evaluated vessels (500), a vessel
+    type with none evaluated wrote a bare "Status" row with no term."""
+    import networkx as nx
+
+    from haemolynx.statistics.csv_export import _flatten_statistics_dict
+    from haemolynx.statistics.occlusion import compute_single_vessel_occlusion_impact
+
+    G = nx.MultiGraph()
+    for u, v, order in ((0, 1, "Art1"), (1, 2, "B01"), (2, 3, "Ven1")):
+        G.add_edge(u, v, length=10.0, branch_order=order)
+    rows = compute_single_vessel_occlusion_impact(
+        G, [0], [3], weighting="length", statistics_mode="fast", max_evaluated_fast=1
+    )
+    # Each row's metric is the last name on its path, as the CSV writes it.
+    metrics = {path.rsplit(" > ", 1)[-1] for path, _value in _flatten_statistics_dict(rows)}
+    assert "Status" in metrics
+    for name in metrics:
+        assert glossary.term_for(name) is not None, name
+
+
 def test_the_branch_statistics_columns_have_terms_and_one_spelling(tmp_path):
     path = export_branch_order_statistics_to_csv(
         {"BO1": {"Edge Count": 2, "Mean Length (microns)": 3.0, "Mean Diameter (microns)": 4.0}},
