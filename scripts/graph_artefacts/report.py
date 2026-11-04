@@ -183,7 +183,7 @@ def bridge_shapes_table(sides: Mapping[str, Mapping[str, Any]]) -> str:
 #: The raw image's cost to a build (``build_side.raw_cost``), ``(key, heading,
 #: format)`` in table order: the build without the raw image against the same
 #: build with it (``PLAN_raw_confirmation.md``, decision D6: +5 % build time,
-#: +50 MB resident on E14.5).
+#: +50 MB resident on Stack A).
 RAW_COST_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("seconds", "build s", "{:,.1f}"),
     ("peak_rss_mb", "peak resident MB", "{:,.0f}"),

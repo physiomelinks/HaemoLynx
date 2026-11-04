@@ -2132,7 +2132,7 @@ class _FatByStructure:
     then each bridge's voxels in the fat region in the order drawn -- and the
     nearest of them to an arm: what :func:`_nearest_point` finds with a
     cKDTree of exactly those voxels in that order, without one built after
-    every bridge (552 s of the patella's join, 2026-10-20).
+    every bridge (552 s of Stack E's join, 2026-10-20).
 
     A structure's ridge keeps the tree its arms aim at first
     (*ridge_of(label)*: ``(coords, tree)`` or None); each voxel bridges add
@@ -2390,7 +2390,7 @@ _JOIN_PROGRESS_EVERY = 200
 
 class _JoinTimes:
     """Seconds and calls the thin-arm join spends in each of its parts, and
-    how many arms ended each way, for its closing log line: on the patella
+    how many arms ended each way, for its closing log line: on Stack E
     (Harvey's batch, 2026-10-19) one stretch of 5,459 arms took 411 s while
     17,000 more took 20 s, and the log could not say where."""
 
@@ -2495,7 +2495,7 @@ def _join_thin_arms_to_fat_ridge(
     network only through another arm's opening is still joined. Aimed at
     whatever was nearest, the second of two capillaries entering side by
     side joined the first one's bridge near the wall, and the bridges ran
-    beside each other and the ridge inside the fat lumen: on E14.5 MCA, 21
+    beside each other and the ridge inside the fat lumen: on Stack A, 21
     of the 33 pairs of edges in one lumen once the thick-vessel split
     (``graph.insert_thick_vessel_junction_nodes``) cut them out.
 
@@ -2760,7 +2760,7 @@ def _join_thin_arms_to_fat_ridge(
     # Under the low-RAM option, the structure number (of `result | thick_b`
     # as labelled) of each voxel a bridge made fat, carried along the bridge
     # from the tree voxel it touched; read where a bridge's voxels were
-    # looked up, each a slab labelled again (four fifths of the patella's
+    # looked up, each a slab labelled again (four fifths of Stack E's
     # join, 2026-10-20).
     new_fat_roi_numbers: dict[tuple[int, int, int], int] = {}
 

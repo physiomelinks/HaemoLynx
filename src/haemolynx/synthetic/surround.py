@@ -14,7 +14,7 @@ and whether the run designated it an inlet or an outlet. Its
 capillary joins the synthetic bed; every arteriole and venule runs on as a
 trunk to the outer box's face, a new inlet or outlet there (Harvey,
 2026-10-27, D5: the solved direction was right at no more ends than a coin,
-59 of 124 on E14.5's harness runs, and a trunk at 97).
+59 of 124 on Stack A's harness runs, and a trunk at 97).
 
 The surround's box is the image's scaled (``synthetic_scale`` along
 ``synthetic_scale_axes``) with the image's box in its middle as a hole
@@ -310,7 +310,7 @@ def surround_joins(
 #: A shell planned with fewer bed vertices than this per join to the image
 #: may not be drawn: on the cut-out harness 13 of the 28 surrounds below it
 #: were not (no bed, or a trunk and its joins left in a piece of their
-#: own), every one above it was (fixture and E14.5, 2026-10-29,
+#: own), every one above it was (fixture and Stack A, 2026-10-29,
 #: ``outputs/surround_check/shell_room``). Below 1 vertex none can be.
 ROOMY_VERTICES_PER_JOIN = 1.0
 

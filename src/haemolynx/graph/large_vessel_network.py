@@ -35,7 +35,7 @@ _STRUCTURE = np.ones((3, 3, 3), dtype=np.uint8)
 #: vessel's cross-section): a vessel cut by the face leaves about one
 #: cross-section (an oblique cut up to 75 degrees stays under 4), while one
 #: lying *along* the face -- a pial vessel against the top of a stack --
-#: leaves a strip many cross-sections long. On E14.5 MCA (0.98 x 0.98 x 1 um)
+#: leaves a strip many cross-sections long. On Stack A (0.98 x 0.98 x 1 um)
 #: the real stumps at the x faces read 1.6-3.0 and the vessels' flanks on the
 #: z=0 face 5.0-27 (`outputs/` run of 2026-10-11; one dataset, one reader --
 #: not a marked grid). Those flanks seeded 8 inlets and 11 outlets, each
@@ -45,14 +45,14 @@ STUMP_MAX_FOOTPRINT_CROSS_SECTIONS = 4.0
 #: How deep into the stack (um) one component's footprints on a face are
 #: told apart: those it joins within this depth of the face are one contact
 #: (a vessel lying along the face touches it in patches its own body joins
-#: there -- on E14.5 the pial vessels against z = 0), those it joins only
+#: there -- on Stack A the pial vessels against z = 0), those it joins only
 #: deeper in a contact each (branches of one tree leaving the face apart;
 #: Harvey, 2026-10-25). About a large vessel's diameter; not fitted to marks.
 STUMP_CONTACT_DEPTH_UM = 12.0
 
 #: How far outside its stump's mask component a vessel's own centreline may
 #: run and still be that vessel. The large masks and the network can come
-#: from two segmentations: on E14.5 MCA the large masks are the Composite
+#: from two segmentations: on Stack A the large masks are the Composite
 #: ilastik export and the network the Claudin one, and the three large
 #: vessels' centrelines leave their masks 2.0-5.8 um before the face
 #: (2026-10-21; one dataset, not a marked grid). Held to the mask at 0 um,
@@ -78,7 +78,7 @@ STUMP_SNAP_MIN_INSIDE_FRACTION = 0.5
 #: ... and there its segmented radius is at least this many times the
 #: component's depth (how far its edge is) at the same points, the median
 #: over them: the large vessel's centreline fills its mask, a capillary
-#: ending in it does not. Harvey's marks on E14.5 (2026-10-26): the
+#: ending in it does not. Harvey's marks on Stack A (2026-10-26): the
 #: arteriole's and the vein's ends 1.9 and 2.3, a capillary ending in the
 #: vein's mask 1.0, another never inside it. Four marks on one stack, not a
 #: marked grid; the masks and the network there come from two segmentations.
@@ -192,7 +192,7 @@ def find_large_vessel_mask_stump_points(
 
     Three contacts are not stumps. A component smaller than
     *min_component_fraction* of the mask's largest one is a speck the
-    classifier left at the face, not a large vessel (E14.5's arteriole mask
+    classifier left at the face, not a large vessel (Stack A's arteriole mask
     had 468 components; the vessel was one, the next 0.5% of it), and a
     contact under that share of its component's largest on the same face is
     a graze. A contact
@@ -260,7 +260,7 @@ def _mask_stumps(
                 # failed the footprint test as a vessel lying along the face.
                 # A contact under *min_component_fraction* of the component's
                 # largest on that face is a graze, as a speck is to components
-                # (E14.5's arteriole touched its x face again in 5 um2, 2% of
+                # (Stack A's arteriole touched its x face again in 5 um2, 2% of
                 # its 230 um2 stump, 84 um from any vessel end there).
                 contacts = []
                 for footprint in _face_contacts(
@@ -366,7 +366,7 @@ def _own_face_end(
     component (:data:`STUMP_SNAP_MIN_VESSEL_FRACTION`) -- the large vessel's
     centreline, not a capillary ending beside it. One inside the component
     comes first, then the one whose vessel runs most along the component,
-    then the one nearest the stump's centroid: on E14.5 a vessel beside the
+    then the one nearest the stump's centroid: on Stack A a vessel beside the
     arteriole, running half along its mask and ending nearer the centroid,
     took the inlet from the arteriole's own end, which runs all along it
     (Harvey's call, 2026-10-25). With the run's *segmentation*, a terminal
@@ -465,7 +465,7 @@ def _near_contact(tip: np.ndarray, stump: _Stump, scale: np.ndarray) -> bool:
     it (from its footprint). Across the face only the component's bounding
     box held a stump with one contact, so on a graph where the arteriole's
     own end just failed the tests the inlet went to an end 239 um away along
-    the face (E14.5, 2026-10-26; Harvey's call)."""
+    the face (Stack A, 2026-10-26; Harvey's call)."""
     reach = STUMP_SNAP_OFFSET_UM + stump.radius_um
     face_um = stump.face_index * float(scale[stump.axis])
     if abs(float(tip[stump.axis]) - face_um) > reach:
@@ -538,7 +538,7 @@ def _snap_stumps_to_terminals(
     # the mask's stumps has one, rather than the nearest terminal in the
     # mask, which can lie anywhere: a further branch's contact (2026-10-25),
     # or a vein whose own centreline runs past the face with only capillaries
-    # ending there (E14.5's second vein contact; Harvey, 2026-10-26).
+    # ending there (Stack A's second vein contact; Harvey, 2026-10-26).
     ended = any(node is not None for node in ends)
     for stump, node, mine in zip(stumps, ends, own):
         if node is not None:
@@ -552,7 +552,7 @@ def _snap_stumps_to_terminals(
             )
             continue
         # The nearest end near the contact, though none passed the tests,
-        # before the nearest terminal anywhere inside the mask: on E14.5 the
+        # before the nearest terminal anywhere inside the mask: on Stack A the
         # arteriole's own end, 5 um from its contact, just failed them and
         # the mask's nearest terminal lay 365 um inside it (2026-10-26).
         near = [n for n in mine if _near_contact(pos[n], stump, scale)]

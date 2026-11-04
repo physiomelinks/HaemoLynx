@@ -14,7 +14,7 @@ The pool is every piece recovery is handed: the graph it is handed
 (``reconnect_orphan_and_dangling_nodes``' graph) gives the pieces
 (``uncovered_mask_voxels``, 26-connected, recovery's own two filters) and the
 graph it returns gives the edges it drew in each (``recovered``, joins apart).
-On E14.5 it draws into 39 of 1,749: those are the decisions a skip rule would
+On Stack A it draws into 39 of 1,749: those are the decisions a skip rule would
 change, but 30 of 39 would leave no fresh grid, and a piece it draws nothing
 into asks the same question for the review list of segmented vessels without
 a centreline (``network_review.find_uncovered_mask``).
@@ -24,7 +24,7 @@ Each piece is measured in both channels and by its shape (the key's columns):
 - dextran (a plasma label): the median brightness of its voxels and of its
   deepest ones, in the run's units (0 background, 1 lumen; not clipped), and
   that over the brightness of the centrelines beside it -- the brightness
-  read locally, since on E14.5 the stack's top 30 um reads several times its
+  read locally, since on Stack A the stack's top 30 um reads several times its
   depths (the plan's depth risk);
 - claudin-5 (the wall, the run's raw image): the median brightness of its
   voxels (1 the wall), whether walls enclose its deepest points
@@ -332,7 +332,7 @@ def views(drawer: RegionDrawer, k: int, regions: Regions, drawn: dict, voxel_siz
 PAGE = dict(
     title="Uncovered Region Review {grid}: is the outlined piece a vessel the graph missed?",
     question="Is the outlined piece a vessel of its own?",
-    lede=("One piece of the E14.5 segmentation per card, outlined in yellow: segmented vessel that no centreline "
+    lede=("One piece of the Stack A segmentation per card, outlined in yellow: segmented vessel that no centreline "
           "of the graph covered before mask recovery ran. Where mask recovery draws a centreline through it and "
           "joins it to the network, that is drawn in cyan; most pieces it leaves alone. Each card shows the piece in its own plane and across it, in the segmentation "
           "the graph was built from, the dextran channel (plasma) and the claudin-5 channel (the vessel wall: a "

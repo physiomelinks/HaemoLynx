@@ -189,7 +189,7 @@ def _spy_on_graph_building(monkeypatch) -> dict:
 
 def test_a_thick_vessel_regions_centreline_reaches_every_clean_up_and_the_split(tmp_path, monkeypatch):
     """Every clean-up keeps the strand on the thick vessels' centreline tree
-    of two in one lumen (judged by the wall alone it broke them, E14.5,
+    of two in one lumen (judged by the wall alone it broke them, Stack A,
     2026-10-15): graph building's own, the one after smoothing and the one
     after the split are all handed it, and the split the same tree, found
     once."""
@@ -413,7 +413,7 @@ def _spy_on_retrace(monkeypatch) -> dict:
 
 def test_the_skeleton_re_trace_runs_by_default_and_not_when_turned_off(tmp_path, monkeypatch):
     """On by default since Harvey's grid N2 (2026-10-18: 19 of the 21 vessels it
-    drew on E14.5 kept)."""
+    drew on Stack A kept)."""
     seen = _spy_on_retrace(monkeypatch)
     assert SCHEMA.defaults()["retrace_lost_skeleton"] is True
     build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)

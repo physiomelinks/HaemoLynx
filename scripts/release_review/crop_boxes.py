@@ -1,13 +1,13 @@
 """Crops of a reference dataset that keep its large-vessel stumps.
 
 ``speed.10a`` and ``memory.10a`` time a dataset cut to an eighth, a quarter
-and a half. A centred crop of E14.5 holds none of the places its
+and a half. A centred crop of Stack A holds none of the places its
 large-vessel masks leave the image, so ``mask_stump`` finds no inlet and
 the run stops at Boundaries. These crops keep every stump the whole stack
 has, on its own face (:func:`.full.stump_keeping_box`), so a crop's
 boundaries are found the way the whole stack's are.
 
-    python -m release_review.crop_boxes --config config.yaml --of e14p5
+    python -m release_review.crop_boxes --config config.yaml --of stack_a
 
 (from ``scripts/``, with ``PYTHONPATH`` holding the ``src`` to find the
 stumps with) prints the datasets file's crop entries. The stumps are the
@@ -88,7 +88,7 @@ def entries(of: str, shape_zyx: Sequence[int], stumps: Sequence[dict[str, Any]])
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Crops that keep a dataset's large-vessel stumps.")
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--of", default="e14p5", help="the dataset's name in the datasets file")
+    parser.add_argument("--of", default="stack_a", help="the dataset's name in the datasets file")
     arguments = parser.parse_args(argv)
     found = find_stumps(arguments.config)
     for stump in found["stumps"]:

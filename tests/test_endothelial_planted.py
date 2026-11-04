@@ -21,7 +21,7 @@ from endothelial_fixtures import hollow_vessel_scene
 ONE_VESSEL = (((0.15, 0.25, 1.0), (0.5, 0.5, 0.5), 18.0),)
 
 #: (voxel size zyx, optics zyx, wall): a two-photon stack's anisotropic
-#: voxels, a fine isotropic one, a coarse one -- none of them E14.5's.
+#: voxels, a fine isotropic one, a coarse one -- none of them Stack A's.
 IMAGES = [
     ((1.0, 0.98, 0.98), (2.0, 0.5, 0.5), 1.0),
     ((2.0, 0.5, 0.5), (2.5, 0.4, 0.4), 0.8),

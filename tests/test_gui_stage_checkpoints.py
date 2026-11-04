@@ -654,7 +654,7 @@ def test_a_synthetic_run_names_and_clears_its_checkpoints_after_its_template(tmp
 
     settings = {
         "network_source": "synthetic",
-        "synthetic_template_path": tmp_path / "e14_5.haemorun",
+        "synthetic_template_path": tmp_path / "stack_a.haemorun",
         "input_path": tmp_path / "stack.tif",  # left from an image run, not read
         "output_dir": tmp_path / "out",
     }
@@ -663,11 +663,11 @@ def test_a_synthetic_run_names_and_clears_its_checkpoints_after_its_template(tmp
     results.stage_finished("build_network", network(a_graph()))
     checkpoint = checkpoints.record("build_network", _group("build_network", "3. Graph"), results, settings=settings)
 
-    ours = checkpoint_pickle_path(tmp_path / "out", "e14_5_synthetic", "build_network")
+    ours = checkpoint_pickle_path(tmp_path / "out", "stack_a_synthetic", "build_network")
     assert checkpoint.pickle_path == ours and ours.is_file()
     image_runs = checkpoint_pickle_path(tmp_path / "out", "stack", "build_network")
     image_runs.write_bytes(b"an image run's")
-    assert stems_for_cached_artefacts(settings) == ("e14_5_synthetic",)
+    assert stems_for_cached_artefacts(settings) == ("stack_a_synthetic",)
     assert discard_cached_artefacts_for_settings(settings) == (ours,)
     assert not ours.is_file() and image_runs.is_file()
     # With no template chosen there is no stem: nothing is named, nothing cleared.

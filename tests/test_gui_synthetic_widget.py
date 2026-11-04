@@ -215,6 +215,6 @@ def test_a_surround_runs_from_the_panel_into_the_viewer(make_napari_viewer, qtbo
     graph = widget._haemolynx_checkpoints.get("solve").graph
     assert "network_part" in available_edge_columns(graph)
     out = tmp_path / "out"
-    assert (out / "e14_5_surrounded_image_flows.csv").is_file()
-    assert (out / "e14_5_surrounded_run_manifest.json").is_file()
-    assert "Schmid, F." in (out / "e14_5_surrounded_citations.txt").read_text(encoding="utf-8")
+    assert (out / "stack_a_surrounded_image_flows.csv").is_file()
+    assert (out / "stack_a_surrounded_run_manifest.json").is_file()
+    assert "Schmid, F." in (out / "stack_a_surrounded_citations.txt").read_text(encoding="utf-8")

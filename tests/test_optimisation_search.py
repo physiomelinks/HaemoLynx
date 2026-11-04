@@ -1977,8 +1977,8 @@ def test_auto_reports_no_estimate_when_it_falls_back_to_the_voxel_count():
 # ---------------------------------------------------------------------------
 # Voxel-counted settings in and out of a downsampled search
 # ---------------------------------------------------------------------------
-_E14_STARTING_VOXEL_SETTINGS = {
-    # The E14.5 run's own starting values, which a 16x search returned 16x over.
+_StackA_STARTING_VOXEL_SETTINGS = {
+    # The Stack A run's own starting values, which a 16x search returned 16x over.
     "skeleton_closing_radius": 2,
     "skeleton_bridge_gap_size": 3,
     "skeleton_min_branch_length": 3,
@@ -1991,9 +1991,9 @@ _E14_STARTING_VOXEL_SETTINGS = {
 def test_voxel_settings_go_into_the_search_in_its_own_grids_voxels():
     from haemolynx.optimisation.search import _to_search_grid
 
-    on_grid = _to_search_grid(dict(_DEFAULT_STARTING_VALUES, **_E14_STARTING_VOXEL_SETTINGS), 16)
+    on_grid = _to_search_grid(dict(_DEFAULT_STARTING_VALUES, **_StackA_STARTING_VOXEL_SETTINGS), 16)
 
-    assert {name: on_grid[name] for name in _E14_STARTING_VOXEL_SETTINGS} == {
+    assert {name: on_grid[name] for name in _StackA_STARTING_VOXEL_SETTINGS} == {
         "skeleton_closing_radius": 0,
         "skeleton_bridge_gap_size": 0,
         "skeleton_min_branch_length": 0,
@@ -2002,20 +2002,20 @@ def test_voxel_settings_go_into_the_search_in_its_own_grids_voxels():
         "skeleton_bundle_hub_min_spacing": 0,
     }
     assert on_grid["graph_reconnect_threshold"] == _DEFAULT_STARTING_VALUES["graph_reconnect_threshold"]
-    assert _to_search_grid(_E14_STARTING_VOXEL_SETTINGS, 1) == _E14_STARTING_VOXEL_SETTINGS
+    assert _to_search_grid(_StackA_STARTING_VOXEL_SETTINGS, 1) == _StackA_STARTING_VOXEL_SETTINGS
 
 
 def test_a_kept_voxel_setting_comes_back_as_the_user_had_it():
-    """Regression: the E14.5 run's 16x search kept every one of these and
+    """Regression: the Stack A run's 16x search kept every one of these and
     returned it multiplied by 16 -- a closing radius of 32 voxels (~31 um),
     a maximum bridge distance of 160 (~157 um)."""
     from haemolynx.optimisation.search import _to_full_resolution, _to_search_grid
 
-    on_grid = _to_search_grid(_E14_STARTING_VOXEL_SETTINGS, 16)
+    on_grid = _to_search_grid(_StackA_STARTING_VOXEL_SETTINGS, 16)
     decided = dict(on_grid, skeleton_max_bridge_distance=2)  # the one the search moved
 
     settings, finer = _to_full_resolution(
-        decided, _E14_STARTING_VOXEL_SETTINGS, on_grid, 16, bundle_refinement_ran=True,
+        decided, _StackA_STARTING_VOXEL_SETTINGS, on_grid, 16, bundle_refinement_ran=True,
     )
 
     assert settings == {
@@ -2046,7 +2046,7 @@ def test_a_downsampled_search_that_changes_nothing_returns_the_starting_values(m
             pass
 
     monkeypatch.setattr(search_module, "_Search", _KeepingSearch)
-    starting_values = dict(_DEFAULT_STARTING_VALUES, **_E14_STARTING_VOXEL_SETTINGS)
+    starting_values = dict(_DEFAULT_STARTING_VALUES, **_StackA_STARTING_VOXEL_SETTINGS)
     mask = np.zeros((64, 64, 64), dtype=bool)
     mask[20:40, 20:40, 20:40] = True
 
@@ -2054,7 +2054,7 @@ def test_a_downsampled_search_that_changes_nothing_returns_the_starting_values(m
         mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, downsample_factor=16,
     )
 
-    for name, value in _E14_STARTING_VOXEL_SETTINGS.items():
+    for name, value in _StackA_STARTING_VOXEL_SETTINGS.items():
         assert result.settings[name] == value, name
     assert set(result.finer_than_search_grid) == {
         "skeleton_closing_radius", "skeleton_bridge_gap_size", "skeleton_min_branch_length",
@@ -2109,7 +2109,7 @@ def test_a_search_time_is_each_step_times_how_often_a_search_runs_it():
 
 def test_auto_times_the_search_on_the_grid_it_will_search(monkeypatch):
     """Regression: Auto timed one whole pipeline cycle at 16x and scaled it
-    with voxel count, which read a 4x search on the E14.5 stack as 637 s;
+    with voxel count, which read a 4x search on Stack A as 637 s;
     it took 57 s. Coarse grids do not predict fine ones -- vessels merge into
     blobs there -- so the steps are timed on the grid the resolution cap
     allows."""
@@ -2133,7 +2133,7 @@ def test_auto_times_the_search_on_the_grid_it_will_search(monkeypatch):
 @pytest.mark.parametrize(
     "typical_radius_um, voxel_size_zyx, expected",
     [
-        (3.67, (1.0, 0.98, 0.98), 2),  # the E14.5 stack: 1.9 voxels at 2x, 0.94 at 4x
+        (3.67, (1.0, 0.98, 0.98), 2),  # Stack A: 1.9 voxels at 2x, 0.94 at 4x
         (20.0, (1.0, 0.98, 0.98), 8),
         (1.0, (1.0, 0.98, 0.98), 1),  # unresolved even at full resolution
         (3.0, (2.0, 0.5, 0.5), 4),  # judged in-plane on an anisotropic stack
@@ -2148,7 +2148,7 @@ def test_auto_never_searches_a_grid_too_coarse_for_the_typical_vessel(
 
 
 def test_auto_caps_a_time_budget_that_would_go_coarser_than_the_vessels_allow(monkeypatch):
-    """Regression: with nothing but a time budget, Auto searched the E14.5
+    """Regression: with nothing but a time budget, Auto searched the Stack A
     stack on an 18 x 32 x 32 grid where a capillary is one voxel."""
     import haemolynx.optimisation.search as search_module
 
@@ -2392,7 +2392,7 @@ def _run_and_trial(tmp_path, mask, *, thick_restriction=True, **overrides):
 
 def test_a_thick_trial_confines_its_region_to_the_runs_vessel_masks(tmp_path, monkeypatch):
     """Regression (A5): a trial's thick region took no notice of
-    ``skeleton_thick_vessel_restrict_to_mask``, so on E14.5 it was 99.8% of
+    ``skeleton_thick_vessel_restrict_to_mask``, so on Stack A it was 99.8% of
     the mask where the run's was 12%. Given the run's restriction, a trial
     makes the run's skeleton voxel for voxel."""
     import haemolynx.io as io_module
@@ -2422,7 +2422,7 @@ def test_a_thick_trial_confines_its_region_to_the_runs_vessel_masks(tmp_path, mo
 def test_a_plain_trial_fills_the_skeletons_holes_as_the_run_does(tmp_path):
     """Regression (A10): a plain-Lee trial skeletonised with
     ``skeletonize_volume`` and skipped the hole fill every loader's
-    ``_skeletonize_loaded_volume`` does -- on E14.5's cleaned mask the fill
+    ``_skeletonize_loaded_volume`` does -- on Stack A's cleaned mask the fill
     adds half again to the raw skeleton. A hollow shell's Lee skeleton is a
     closed surface, which the fill makes solid; a vessel leaves each side."""
     from haemolynx import preprocessing

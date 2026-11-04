@@ -288,7 +288,7 @@ def flow_arrow_floor(graph: Any) -> float:
     own floor for carrying flow
     (:func:`haemolynx.statistics.flux_heterogeneity.carrying_floor`, 1e-9 of
     the network's largest), below which a flow's sign is the solve's rounding.
-    On E14.5 (2026-10-21) it hides none: the least flow, 1.7e-20 m^3/s at an
+    On Stack A (2026-10-21) it hides none: the least flow, 1.7e-20 m^3/s at an
     open end, is 1.6e-8 of the largest."""
     from haemolynx.statistics.flux_heterogeneity import carrying_floor
 

@@ -320,7 +320,7 @@ def test_a_dead_end_is_judged_short_as_its_whole_chain_as_the_prune_judges_it():
     chain at the fat region's edge, that was 8 um of vessel against a 4 um
     opening -- short -- although the stub prune, judging the chain to its
     junction (12 um against the 2 um trunk), had rightly kept it: 25 of
-    E14.5's 49 "short" dead ends."""
+    Stack A's 49 "short" dead ends."""
     mask, G, tip = _dead_end_through_a_bridge()
 
     report = _report(mask, G, stub_radius_multiple=3.0)
@@ -333,7 +333,7 @@ def test_a_dead_end_is_judged_short_as_its_whole_chain_as_the_prune_judges_it():
 def test_a_tip_is_never_inside_its_own_chains_lumen():
     """Regression: the report left out a dead end's last edge alone, so a
     tip 3 um beyond the 4 um opening the thick-vessel split cut off as a
-    bridge read as inside "another" lumen -- its own (15 of E14.5's 21)."""
+    bridge read as inside "another" lumen -- its own (15 of Stack A's 21)."""
     from haemolynx.graph import IS_ZERO_RESISTANCE
     from lumen_artefact_fixtures import capsule
 

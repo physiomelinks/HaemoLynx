@@ -451,7 +451,7 @@ def zero_flows_behind_dead_ends(G: Union[nx.Graph, nx.MultiGraph]) -> int:
     (``flow_abs_log10`` to match) on every vessel whose :data:`FLOW_STATE` is
     ``blind_end`` or ``closed_end``; return how many. Nothing drives a flow
     through them, so what the pressure solve left there is rounding (up to
-    5e-20 m^3/s on E14.5, either sign). Their ``pressure_u``/``pressure_v``
+    5e-20 m^3/s on Stack A, either sign). Their ``pressure_u``/``pressure_v``
     stay as solved: the junction's pressure, which is the answer. Only the
     attributes a solve wrote are touched. Run after
     ``haemodynamics.set_edge_flows`` on any graph whose flow states are marked

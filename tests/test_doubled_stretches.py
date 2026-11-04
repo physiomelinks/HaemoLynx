@@ -213,7 +213,7 @@ def test_the_memo_remembers_where_zips_put_junctions_and_a_second_pass_changes_n
 def test_a_zip_that_would_put_the_junction_back_where_one_was_is_refused():
     """A fork is not zipped to a junction a previous round's zip left behind:
     the memo holds that place and the zip is refused, so no round undoes
-    the one before (E14.5's forks moved to and fro to the round limit)."""
+    the one before (Stack A's forks moved to and fro to the round limit)."""
     from haemolynx.graph.doubled_stretches import _Editor
 
     mask, G, (trunk_end, _a, _b) = fork_that_parts()
@@ -288,7 +288,7 @@ def test_a_thick_vessel_taper_is_never_a_stretch_nor_a_partner():
     """The thin vessel a thick one narrows into runs inside the thick lumen
     from the thick centreline's end (``THICK_TAPER``, set by the split): the
     stretch step rewired it as a second strand, and the curved vessels round
-    it came back as straight lines (E14.5, S25, 2026-10-13)."""
+    it came back as straight lines (Stack A, S25, 2026-10-13)."""
     from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
 
     mask, G = two_strands_in_one_lumen()
@@ -311,7 +311,7 @@ def _rows_between(G, x0, x1):
 
 def test_the_strand_on_a_thick_vessels_centreline_is_kept_and_the_other_rejoined_to_it():
     """Rewiring by the wall alone, the clean-up took the stretch on the thick
-    centreline tree as often as not (E14.5, 2026-10-15). The strand through
+    centreline tree as often as not (Stack A, 2026-10-15). The strand through
     the trunk is, here, the one on the tree: the trunk's own stretch beside
     it is cut out instead, and its two ends joined to the strand."""
     from test_lumen_loops import _on_row
@@ -351,7 +351,7 @@ def test_a_stretch_with_no_length_on_the_tree_is_never_on_it():
     """Regression: a partner stretch narrowed to one point has no length, and
     "at least half of it on the tree" held for it (0 >= 0) -- every capillary
     beside one, far from any thick vessel, was taken for the wall side and
-    rewired: on E14.5, 2.7 mm of vessel lost."""
+    rewired: on Stack A, 2.7 mm of vessel lost."""
     from haemolynx.graph.doubled_stretches import _mostly_on
 
     nowhere = lambda points: 0.0
@@ -502,7 +502,7 @@ def test_a_rejoin_closing_a_loop_inside_one_lumen_is_refused(monkeypatch):
 
 
 def test_what_a_rewire_left_is_deleted_not_rewired_again():
-    """Regression: on E14.5 a rewire made the next round's pair, round after
+    """Regression: on Stack A a rewire made the next round's pair, round after
     round, and the clean-up ran to its round limit. A join a rewire made is
     marked (``REWIRED``), and the pair rule deletes such an edge instead."""
     from haemolynx.graph.doubled_stretches import REWIRED

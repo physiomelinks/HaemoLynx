@@ -1,4 +1,4 @@
-"""E14.5 under a size convention: how many vessels (and how much length) each
+"""Stack A under a size convention: how many vessels (and how much length) each
 class holds at a pair of thresholds, how the wide class sits against Harvey's
 large masks, and how many separate pieces the wide vessels form. Widths are
 the ones the run stamped; bridges are left out, and a bridge joins the wide
@@ -17,7 +17,7 @@ import networkx as nx
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
-SOLVED = REPO / "outputs/vessel_class_review/e14p5_solved.pkl"
+SOLVED = REPO / "outputs/vessel_class_review/stack_a_solved.pkl"
 BRIDGE = "is_zero_resistance"
 
 

@@ -210,20 +210,20 @@ def test_perturbation_overrides_naming_a_file_or_vessels_are_not_kept(tmp_path):
 
 def test_the_file_reads_as_what_the_preset_changes(tmp_path):
     preset = save_preset(
-        "  Quick E14 look  ", {**DEFAULTS, "statistics": True, "vtk_export": False}, SCHEMA, directory=tmp_path
+        "  Quick Stack A look  ", {**DEFAULTS, "statistics": True, "vtk_export": False}, SCHEMA, directory=tmp_path
     )
     text = preset.path.read_text(encoding="utf-8")
     assert text.startswith("# A HaemoLynx saved preset.")
     raw = yaml.safe_load(text)
     assert list(raw) == ["name", "saved", "settings"]
-    assert raw["name"] == "Quick E14 look" == preset.name
+    assert raw["name"] == "Quick Stack A look" == preset.name
     assert raw["settings"] == {"statistics": True, "vtk_export": False}
-    assert preset.path == tmp_path / "Quick E14 look.yaml"
+    assert preset.path == tmp_path / "Quick Stack A look.yaml"
     assert not list(tmp_path.glob("*.part"))
 
 
 def test_a_name_becomes_a_file_name_every_system_takes():
-    assert preset_file_stem("My E14.5: run/2") == "My E14_5_ run_2"
+    assert preset_file_stem("My v1.5: run/2") == "My v1_5_ run_2"
     assert preset_file_stem("  thick vessels  ") == "thick vessels"
     assert preset_file_stem("con") == "_con"
     assert preset_file_stem("LPT1") == "_LPT1"

@@ -13,7 +13,7 @@ tortuosity and diameter distributions; ``comparison.md`` also says how each
 tool defines each quantity.
 
 This is not part of the test suite (``tests/test_stats_cross_check.py`` pins
-the synthetic case with skan); E14.5 takes about ten minutes a side.
+the synthetic case with skan); Stack A takes about ten minutes a side.
 
 Usage
 -----
@@ -28,7 +28,7 @@ Segmentation" export is labelled 1 = vessel)::
     python scripts/stats_cross_check.py --mask "<stem>.tiff" --mask-value 1 \\
         --voxel-size-xyz 0.98 0.98 1.0 --config config.yaml \\
         --maskel-python <env>/python --vesselvio-results <VesselVio results folder> \\
-        --out outputs/stats_cross_check/e14
+        --out outputs/stats_cross_check/stack_a
 """
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """How a network is laid out in its box (``PLAN_synthetic_physiology.md``).
 
 The counts, lengths and widths a template records say nothing about where the
-vessels are. A tissue has its own layout -- E14.5's large vessels lie flat in a
+vessels are. A tissue has its own layout -- Stack A's large vessels lie flat in a
 plexus on one face, its capillaries are densest there and run up through the
 depth from it -- and a synthetic network drawn to the counts alone fills its box
 evenly in every direction, which is not that tissue (Harvey, 2026-10-25: D4,
@@ -42,8 +42,8 @@ FAR_UM = 50.0
 AXIS_CONE_DEG = 30.0
 #: A run along an axis: capillaries joined end to end whose chords all lie
 #: within AXIS_CONE_DEG of it; one is counted that spans this much of the box
-#: along the axis (um) -- E14.5's columns from the plexus up, a muscle's
-#: fibre-parallel capillaries, read off whatever template has them.
+#: along the axis (um) -- Stack A's columns from the plexus up, another tissue's
+#: parallel capillaries, read off whatever template has them.
 RUN_SPAN_UM = 100.0
 #: The four classes a capillary's chord falls in: within AXIS_CONE_DEG of z,
 #: y or x, or none of them (the cones do not overlap).
@@ -104,7 +104,7 @@ class Organisation:
     #: Along z, y and x, the runs spanning RUN_SPAN_UM or more.
     long_runs: Optional[tuple[int, int, int]] = None
     #: The mean chord (um) of the capillaries in each of DIRECTION_CLASSES
-    #: (None for a class with none): on E14.5 its vertical vessels reach past
+    #: (None for a class with none): on Stack A its vertical vessels reach past
     #: nearer junctions, 1.4 times the mean.
     chord_by_class_um: Optional[tuple[Optional[float], ...]] = None
     #: The trees' shape (Harvey, 2026-10-25, grid D1b): per branch-order
@@ -120,15 +120,15 @@ class Organisation:
     #: picked the drawn networks whose venous trees reach as far as these.
     tree_reach_um: Optional[tuple[tuple[str, float, float], ...]] = None
     #: Each capillary junction's depth (z) as a share of the box's, sorted:
-    #: how the template's junctions spread over depth (E14.5: 61% in the
+    #: how the template's junctions spread over depth (Stack A: 61% in the
     #: bottom 48 um, its plexus). A Voronoi bed's corners are put at these
     #: depths (``bed.depths_like_template``). None for a template written before.
     capillary_junction_depths_rel: Optional[tuple[float, ...]] = None
     #: Each tree vessel's own turn per 10 um at :data:`CURVATURE_STEP_UM`
     #: steps (:func:`path_turning`), sorted: the spread the drawn trees take
-    #: their curves from (E14.5: median 22.9 where the mean over every
+    #: their curves from (Stack A: median 22.9 where the mean over every
     #: stretch is 29.3); and the median vessel's turn per 10 um read at
-    #: :data:`FINE_CURVATURE_STEP_UM` steps (E14.5: 83). None before them.
+    #: :data:`FINE_CURVATURE_STEP_UM` steps (Stack A: 83). None before them.
     tree_curvature_by_vessel_deg: Optional[tuple[float, ...]] = None
     tree_fine_curvature_deg: Optional[float] = None
 

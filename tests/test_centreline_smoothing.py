@@ -969,7 +969,7 @@ def test_a_staircase_with_a_bridge_across_a_gap_is_smoothed_and_shorter(spacing)
     anisotropic voxels, slid into it by the filter on isotropic ones -- lay up
     to half the gap from the skeleton. Nothing passed, not even the original:
     an edge with a bridge kept its staircase (1137 of 3305 edges, 31 of 61 mm,
-    on the E14.5 MCA graph), or on isotropic voxels was only relaxed."""
+    on the Stack A graph), or on isotropic voxels was only relaxed."""
     from scipy.spatial import cKDTree
 
     from haemolynx.graph.smoothing import edge_tolerance_um

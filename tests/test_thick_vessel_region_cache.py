@@ -166,7 +166,7 @@ def test_low_ram_read_back_holds_no_volume_in_ram(tmp_path, monkeypatch):
 
 
 def test_discarding_the_entry_removes_both_files(tmp_path):
-    cache = ThickVesselRegionCache(tmp_path / "E14_thick_vessel_region")
+    cache = ThickVesselRegionCache(tmp_path / "StackA_thick_vessel_region")
     mask = _mask()
     cache.store("key", mask, mask.shape)
     assert cache.sidecar.is_file() and cache.packed.is_file()

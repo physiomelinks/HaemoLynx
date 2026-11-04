@@ -37,7 +37,7 @@ def panel(make_napari_viewer, tmp_path):
     viewer = make_napari_viewer()
     viewer.add_image(np.zeros((8, 8, 8)), name="stack")
     widget = settings_widget(napari_viewer=viewer)
-    image, mask = _files(tmp_path, "E14_MCA_segmented.tif", "E14_MCA_pericytes.tif")
+    image, mask = _files(tmp_path, "StackA_region_segmented.tif", "StackA_region_pericytes.tif")
     rows = widget._haemolynx_rows()
     rows["input_path"].value = image
     rows["run_haemodynamics"].value = True
@@ -54,7 +54,7 @@ def test_ticking_measure_pericytes_fills_its_mask_from_the_input_folder(panel):
 
     rows["measure_pericytes"].value = True
     assert _path(widget._haemolynx_values()["pericyte_measurement_mask_path"]) == mask
-    assert "E14_MCA_pericytes.tif" in widget._haemolynx_report()
+    assert "StackA_region_pericytes.tif" in widget._haemolynx_report()
 
 
 def test_choosing_the_measured_constriction_reads_the_mask_found(panel):
@@ -116,7 +116,7 @@ def test_a_mask_the_panel_found_is_still_the_panels_after_an_entry_is_added(pane
     assert _entry_mask(perturbations) == mask
     perturbations.add()
 
-    image, other = _files(tmp_path / "next", "E15_MCA_segmented.tif", "E15_MCA_pericytes.tif")
+    image, other = _files(tmp_path / "next", "StackB_region_segmented.tif", "StackB_region_pericytes.tif")
     rows["input_path"].value = image
     assert _entry_mask(perturbations) == other
     rows["measure_pericytes"].value = True

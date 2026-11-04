@@ -29,10 +29,10 @@ same order -- a node's path count and dependency take their terms in
 networkx's sequence (``np.add.at`` adds in index order, the sorts are
 stable) -- so each source's increments are networkx's bits, summed here in
 node order as before. It runs in the workers (numpy only) and, below
-:data:`PARALLEL_BETWEENNESS_MIN_NODES` or with one worker, here. On 29_2_f
+:data:`PARALLEL_BETWEENNESS_MIN_NODES` or with one worker, here. On 12_2_f
 contra's statistics graph (15,843 nodes, 2026-10-20, one machine state):
 networkx's loop in 8 workers 164 s, the batched pass here 125 s, in 8
-workers 19 s; 29_1_f contra (21,944): 303, 213 and 26 s; networkx alone
+workers 19 s; 12_1_f contra (21,944): 303, 213 and 26 s; networkx alone
 ~1,040 s on the first.
 """
 from __future__ import annotations

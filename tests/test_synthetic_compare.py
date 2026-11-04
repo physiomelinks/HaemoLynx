@@ -348,7 +348,7 @@ def test_a_closed_network_reports_the_templates_open_ends_as_not_drawn():
 
 
 def test_the_dead_end_total_is_unbanded_when_the_template_has_kinds_a_network_cannot_draw():
-    """E14.5's template counts 17 artefact ends and 94 ends of pieces without
+    """Stack A's template counts 17 artefact ends and 94 ends of pieces without
     a junction; one connected network draws neither, so its total was marked
     outside while the kinds drawn (leaving the image, inside) were exact."""
     T = fixture_template()

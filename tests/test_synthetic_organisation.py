@@ -233,7 +233,7 @@ def _columns(extent=(200.0, 200.0, 200.0)):
 
 
 def test_chord_directions_runs_and_lengths_are_read_off_the_network():
-    """Harvey, 2026-10-25: E14.5's capillary columns, read from whatever
+    """Harvey, 2026-10-25: Stack A's capillary columns, read from whatever
     template has them, never built in."""
     slab = measure_organisation(_slab(), EXTENT)
     assert slab.chord_axis_share == pytest.approx((1.0, 0.0, 0.0))

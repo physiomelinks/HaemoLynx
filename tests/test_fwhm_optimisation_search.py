@@ -275,7 +275,7 @@ def test_the_estimate_auto_reports_is_the_one_it_chose_the_sample_by():
 
 
 def test_auto_never_samples_fewer_vessels_than_planting_needs():
-    """Regression (B8): on E14.5 Auto's budget fitted ten vessels, too few to
+    """Regression (B8): on Stack A Auto's budget fitted ten vessels, too few to
     plant one of known width, so the accuracy group never ran."""
     count = s._sample_edge_count_from_probe_seconds(
         probe_seconds=5.0, probe_edge_count=10, total_edges=1342, target_seconds=180.0
@@ -287,8 +287,8 @@ def test_auto_never_samples_fewer_vessels_than_planting_needs():
     ) == 60
 
 
-def test_auto_estimate_matches_the_e14p5_search_it_was_counted_on():
-    """B8: on E14.5 (4724f6ce) Auto's probe took 2.86 s for ten vessels, 1.64 s
+def test_auto_estimate_matches_the_stack_a_search_it_was_counted_on():
+    """B8: on Stack A (4724f6ce) Auto's probe took 2.86 s for ten vessels, 1.64 s
     of it fixed, and the search on 100 vessels took 1,488 s; the estimate was
     3,153 s (each trial tripled for its checks, 119 trials) and is now within
     10% of it."""
@@ -523,7 +523,7 @@ def test_a_trial_derives_the_mask_widths_and_the_psf_its_settings_change(multi_v
 
 def test_each_measured_graph_is_painted_once_a_search_with_the_same_widths(monkeypatch):
     """Every trial painted a whole-image label volume for its sample, its
-    decoys and its planted vessels -- a third of a second each on E14.5's
+    decoys and its planted vessels -- a third of a second each on Stack A's
     grid. Each graph is now painted once a search, and a trial reads the
     same widths as one painting its own."""
     G = _multi_vessel_graph()

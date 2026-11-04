@@ -1,13 +1,13 @@
-"""Phase 0 of PLAN_vessel_classes_from_segmentation.md: E14.5 solved, with its
+"""Phase 0 of PLAN_vessel_classes_from_segmentation.md: Stack A solved, with its
 real large masks' labels on the vessels.
 
-Resumes the release-review E14.5 run (commit 75e856bf, 2026-10-25: large masks
+Resumes the release-review Stack A run (commit 75e856bf, 2026-10-25: large masks
 on, mask-stump inlets/outlets, endothelial diameters from the raw image) from
 its saved skeleton and graph, runs Boundaries, Diameters, Haemodynamics and the
 solve, and pickles the solved graph. Its `large_mask_vessel_type` tags are the
 truth the published rules are scored against (score_rules.py).
 
-    python scripts/vessel_class_review/solve_e14p5.py
+    python scripts/vessel_class_review/solve_stack_a.py
 """
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-SOURCE_RUN = REPO / "outputs/release_review/2026-10-25_75e856bf/e14p5"
+SOURCE_RUN = REPO / "outputs/release_review/2026-10-25_75e856bf/stack_a"
 OUT = REPO / "outputs/vessel_class_review"
-RUN_DIR = OUT / "e14p5_run"
-SOLVED = OUT / "e14p5_solved.pkl"
+RUN_DIR = OUT / "stack_a_run"
+SOLVED = OUT / "stack_a_solved.pkl"
 
 #: The saved build: skeleton, graph, thick region and voxel size.
 COPIED_SUFFIXES = (

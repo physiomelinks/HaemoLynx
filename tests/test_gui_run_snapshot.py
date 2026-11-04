@@ -347,7 +347,7 @@ def test_a_run_from_another_machine_is_pointed_at_this_ones_files(tmp_path):
     here.write_bytes(b"raw")
     blocker = tmp_path / "server_home"
     blocker.write_text("a file, so nothing can be created under it")
-    server = blocker / "sliu205"
+    server = blocker / "colleague"
     settings = {
         "input_path": PurePosixPath(server / "data" / "stack.tiff"),
         "large_arteriole_mask_path": str(server / "segs" / "Large_arteriole.tiff"),
@@ -414,24 +414,24 @@ def test_a_synthetic_run_loads_under_its_templates_stem_and_finds_its_template(t
     from haemolynx.pipeline.naming import run_stem
 
     (tmp_path / "templates").mkdir()
-    (tmp_path / "templates" / "e14_5.haemorun").write_bytes(b"template")
+    (tmp_path / "templates" / "stack_a.haemorun").write_bytes(b"template")
     blocker = tmp_path / "server_home"
     blocker.write_text("a file, so nothing can be created under it")
     settings = {
         "network_source": "synthetic",
-        "synthetic_template_path": PurePosixPath(blocker / "runs" / "e14_5.haemorun"),
+        "synthetic_template_path": PurePosixPath(blocker / "runs" / "stack_a.haemorun"),
         "output_dir": blocker / "outputs",
     }
     snapshot = RunSnapshot(settings=settings, results_state={"settings": dict(settings)})
 
-    moved = relocate_run_paths(snapshot, tmp_path / "e14_5_synthetic.haemorun")
+    moved = relocate_run_paths(snapshot, tmp_path / "stack_a_synthetic.haemorun")
 
     assert {m.name for m in moved} == {"synthetic_template_path", "output_dir"}
-    assert Path(snapshot.settings["synthetic_template_path"]) == tmp_path / "templates" / "e14_5.haemorun"
-    assert run_stem(snapshot.settings) == "e14_5_synthetic"
+    assert Path(snapshot.settings["synthetic_template_path"]) == tmp_path / "templates" / "stack_a.haemorun"
+    assert run_stem(snapshot.settings) == "stack_a_synthetic"
     loaded = StageCheckpoints()
     assert write_resume_artefacts(snapshot, snapshot.settings, loaded) is None
-    assert not (tmp_path / "outputs" / "e14_5_synthetic_skeleton.npy").exists()
+    assert not (tmp_path / "outputs" / "stack_a_synthetic_skeleton.npy").exists()
     assert loaded.session_artefact_paths == ()
 
 
@@ -717,7 +717,7 @@ def test_capturing_a_run_does_not_copy_the_checkpoints_graphs_again(tmp_path):
 
 
 def test_a_run_is_not_written_at_gzips_slowest_level(tmp_path):
-    """Level 9, gzip's default, took 12.6 s to write one E14.5-sized binary
+    """Level 9, gzip's default, took 12.6 s to write one Stack A-sized binary
     mask against 0.44 s at level 1. A gzip header records which it was."""
     checkpoints = StageCheckpoints()
     results = ResultLayers()

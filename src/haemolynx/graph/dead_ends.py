@@ -90,7 +90,7 @@ HEADING_LENGTH_UM = 3.0
 AHEAD_REACH_UM = 10.0
 AHEAD_MAX_TURN_DEG = 60.0
 #: A vessel ahead this many junctions or more from the dead end's own junction
-#: is not one of its neighbours (the One centreline session's marks on E14.5's
+#: is not one of its neighbours (the One centreline session's marks on Stack A's
 #: seven tips inside another lumen, 2026-10-11: removed at 0-1 junctions away,
 #: joined at 2, 3 and 11). Counted no further than :data:`AHEAD_MAX_HOPS` edges.
 NEIGHBOUR_MAX_JUNCTIONS = 1
@@ -870,8 +870,8 @@ def remove_interior_dead_ends(G: nx.MultiGraph, kinds: Sequence[str] = INTERIOR_
     is not judged here and stays.
 
     Harvey's marks: G1-G3 (2026-10-12) called most interior dead ends "not a
-    real vessel", the AIA patella's P1 (2026-10-20) none of 30 a real blind
-    end, and G5 (2026-10-21) 17 of 29 that stop short "stop here". On E14.5
+    real vessel", Batch E's P1 (2026-10-20) none of 30 a real blind
+    end, and G5 (2026-10-21) 17 of 29 that stop short "stop here". On Stack A
     this is 210 chains, 8.0 mm, 17% of the network; they carry no flow.
 
     Returns ``{"dead_ends", "vessels", "nodes", "length_um"}`` removed.

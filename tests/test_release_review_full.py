@@ -12,14 +12,14 @@ from release_review.ladder import FAIL, PASS, measured
 
 
 def test_the_datasets_file_resolves_paths_and_fills_in_crops(tmp_path):
-    (tmp_path / "config.yaml").write_text("run:\n  input_path: images/e14.tif\n")
+    (tmp_path / "config.yaml").write_text("run:\n  input_path: images/stack_a.tif\n")
     (tmp_path / "datasets.yaml").write_text(yaml.safe_dump({
-        "e14p5": {"config": "config.yaml", "settings": {"statistics": True, "raw_image_path": "raw.tif"},
+        "stack_a": {"config": "config.yaml", "settings": {"statistics": True, "raw_image_path": "raw.tif"},
                   "needs_gib": 8, "shape_zyx": [287, 512, 512]},
-        "e14p5_eighth": {"of": "e14p5", "crop_fraction": 0.125},
+        "stack_a_eighth": {"of": "stack_a", "crop_fraction": 0.125},
     }))
     datasets = full.load_datasets(tmp_path / "datasets.yaml")
-    whole, eighth = datasets["e14p5"], datasets["e14p5_eighth"]
+    whole, eighth = datasets["stack_a"], datasets["stack_a_eighth"]
     assert whole["config"] == str((tmp_path / "config.yaml").resolve())
     assert whole["settings"]["raw_image_path"] == str((tmp_path / "raw.tif").resolve())
     assert whole["voxels"] == 287 * 512 * 512
@@ -27,16 +27,16 @@ def test_the_datasets_file_resolves_paths_and_fills_in_crops(tmp_path):
     assert eighth["settings"]["statistics"] is True and eighth["needs_gib"] == 8
     assert eighth["voxels"] == 256 * 256 * 144
     (missing,) = full.missing_inputs(whole)
-    assert Path(missing).resolve() == (tmp_path / "images" / "e14.tif").resolve()
+    assert Path(missing).resolve() == (tmp_path / "images" / "stack_a.tif").resolve()
     (tmp_path / "images").mkdir()
-    (tmp_path / "images" / "e14.tif").write_bytes(b"x")
+    (tmp_path / "images" / "stack_a.tif").write_bytes(b"x")
     assert full.missing_inputs(whole) == []
     assert full.load_datasets(tmp_path / "absent.yaml") == {}
 
 
-#: E14.5's stumps (whole-stack masks at 340e8518): the arteriole leaves by
+#: Stack A's stumps (whole-stack masks at 340e8518): the arteriole leaves by
 #: the far x face, the venule by the near one in five places.
-E14_STUMPS = [
+StackA_STUMPS = [
     {"axis": "x", "face_index": 511, "min_zyx": [6, 180, 511], "max_zyx": [26, 203, 511]},
     {"axis": "x", "face_index": 0, "min_zyx": [4, 255, 0], "max_zyx": [29, 315, 0]},
     {"axis": "x", "face_index": 0, "min_zyx": [16, 190, 0], "max_zyx": [27, 233, 0]},
@@ -49,10 +49,10 @@ E14_STUMPS = [
 @pytest.mark.parametrize("fraction", [0.125, 0.25, 0.5])
 def test_a_stump_keeping_crop_holds_every_stump_on_its_own_face(fraction):
     shape = (287, 512, 512)
-    box = full.stump_keeping_box(shape, fraction, E14_STUMPS)
+    box = full.stump_keeping_box(shape, fraction, StackA_STUMPS)
     (z0, y0, x0), (z1, y1, x1) = box
     assert (x0, x1) == (0, 511)  # stumps on both x faces: x kept whole
-    for stump in E14_STUMPS:
+    for stump in StackA_STUMPS:
         for axis in range(3):
             assert box[0][axis] <= stump["min_zyx"][axis] - (axis != 2) * 4 or stump["min_zyx"][axis] < 4
             assert stump["max_zyx"][axis] + (axis != 2) * 4 <= box[1][axis]
@@ -80,19 +80,19 @@ def test_a_crop_box_becomes_coordinate_settings_and_its_voxel_count(tmp_path):
     }
     assert full.box_voxels(box) == 71 * 260 * 512
     (tmp_path / "datasets.yaml").write_text(yaml.safe_dump({
-        "e14p5": {"settings": {"input_path": "e14.tif"}, "shape_zyx": [287, 512, 512]},
-        "e14p5_eighth": {"of": "e14p5", "crop_fraction": 0.125, "crop_box_zyx": box},
+        "stack_a": {"settings": {"input_path": "stack_a.tif"}, "shape_zyx": [287, 512, 512]},
+        "stack_a_eighth": {"of": "stack_a", "crop_fraction": 0.125, "crop_box_zyx": box},
     }))
-    eighth = full.load_datasets(tmp_path / "datasets.yaml")["e14p5_eighth"]
+    eighth = full.load_datasets(tmp_path / "datasets.yaml")["stack_a_eighth"]
     assert eighth["settings"]["crop_method"] == "coordinates" and eighth["voxels"] == 71 * 260 * 512
 
 
 def test_the_crop_entries_name_each_box_and_its_share():
     from release_review import crop_boxes
 
-    text = crop_boxes.entries("e14p5", (287, 512, 512), E14_STUMPS)
+    text = crop_boxes.entries("stack_a", (287, 512, 512), StackA_STUMPS)
     lines = text.splitlines()
-    assert [line.split(":")[0] for line in lines] == ["e14p5_eighth", "e14p5_quarter", "e14p5_half"]
+    assert [line.split(":")[0] for line in lines] == ["stack_a_eighth", "stack_a_quarter", "stack_a_half"]
     assert "crop_box_zyx: [[0," in lines[0] and "# 0.12" in lines[0]
 
 
@@ -110,10 +110,10 @@ def _run(stages=2, status="finished"):
     })
 
 
-def test_the_whole_e14_run_decides_speed_2a_and_memory_2a():
+def test_the_whole_stack_a_run_decides_speed_2a_and_memory_2a():
     assert full.speed_2a(_run()).status == PASS
     assert full.speed_2a(_run(status="failed")).status == FAIL
-    assert full.memory_2a(_run()).evidence.startswith("E14.5 finished, peak 5.0 GiB on a 32.0 GiB Windows")
+    assert full.memory_2a(_run()).evidence.startswith("Stack A finished, peak 5.0 GiB on a 32.0 GiB Windows")
     # Not run, or no room to run it: the row decides; no room is not a fail.
     assert full.speed_2a(None) is None and full.memory_2a(None) is None
 
@@ -121,20 +121,20 @@ def test_the_whole_e14_run_decides_speed_2a_and_memory_2a():
 def test_every_reference_dataset_needs_its_table():
     runs = {name: _run() for name in full.REFERENCE}
     assert full.per_stage_check("speed.6a", runs, {}).status == PASS
-    del runs["mason_sm"]
-    result = full.per_stage_check("memory.6a", runs, {"mason_sm": "input not on this machine: E:/x.tif"})
-    assert result.status == FAIL and "Mason SM: input not on this machine" in result.evidence
+    del runs["stack_c"]
+    result = full.per_stage_check("memory.6a", runs, {"stack_c": "input not on this machine: E:/x.tif"})
+    assert result.status == FAIL and "Stack C: input not on this machine" in result.evidence
 
 
 def test_a_table_recorded_at_an_earlier_commit_counts():
-    rows = manifests.benchmark_rows(_run(), dataset="mason_sm", commit="abc12345", date="2026-10-20")
-    assert full.measured_before(rows, "mason_sm") == "abc12345"
+    rows = manifests.benchmark_rows(_run(), dataset="stack_c", commit="abc12345", date="2026-10-20")
+    assert full.measured_before(rows, "stack_c") == "abc12345"
     assert full.measured_before(rows, "brain") is None
-    runs = {name: _run() for name in full.REFERENCE if name != "mason_sm"}
+    runs = {name: _run() for name in full.REFERENCE if name != "stack_c"}
     result = full.per_stage_check("speed.6a", runs, {}, rows)
-    assert result.status == PASS and "Mason SM (at abc12345)" in result.evidence
-    failed = manifests.benchmark_rows(_run(status="failed"), dataset="mason_sm", commit="def", date="2026-10-21")
-    assert full.measured_before(failed, "mason_sm") is None
+    assert result.status == PASS and "Stack C (at abc12345)" in result.evidence
+    failed = manifests.benchmark_rows(_run(status="failed"), dataset="stack_c", commit="def", date="2026-10-21")
+    assert full.measured_before(failed, "stack_c") is None
 
 
 def test_the_solved_share_must_be_explained_on_every_dataset():
@@ -148,25 +148,25 @@ def test_the_solved_share_must_be_explained_on_every_dataset():
 
 def test_the_lumen_report_counts_on_a_real_stack_only():
     report = {"text": "Lumen artefacts: 17 pair(s)...", "counts": {"duplicate_pair_count": 17}}
-    assert full.graph_6a({"e14p5": {"lumen_artefacts": report}}).status == PASS
+    assert full.graph_6a({"stack_a": {"lumen_artefacts": report}}).status == PASS
     assert full.graph_6a({"seven_vessel": {"lumen_artefacts": report}}) is None
-    missing = full.graph_6a({"e14p5": {"status": "failed"}})
-    assert missing.status == FAIL and "no report for E14.5" in missing.evidence
+    missing = full.graph_6a({"stack_a": {"status": "failed"}})
+    assert missing.status == FAIL and "no report for Stack A" in missing.evidence
 
 
 def test_a_slowdown_check_needs_an_earlier_commit():
     assert full.speed_8b([], None) is None
-    slower = trends.Slowdown("e14p5", "build_network", "abc", 100.0, 130.0)
+    slower = trends.Slowdown("stack_a", "build_network", "abc", 100.0, 130.0)
     result = full.speed_8b([slower], "abc")
-    assert result.status == PASS and "e14p5 build_network 100 -> 130 s" in result.evidence
+    assert result.status == PASS and "stack_a build_network 100 -> 130 s" in result.evidence
 
 
-def test_scaling_needs_three_sizes_and_e14_within_sixteen_gib():
+def test_scaling_needs_three_sizes_and_stack_a_within_sixteen_gib():
     rows = [{"commit": "a", "dataset": name, "stage": stage, "status": "finished", "voxels": voxels,
              "wall_seconds": voxels / 1e6, "peak_rss_mib": peak}
-            for name, voxels in (("e14p5", 8e6), ("e14p5_half", 4e6), ("e14p5_quarter", 2e6))
+            for name, voxels in (("stack_a", 8e6), ("stack_a_half", 4e6), ("stack_a_quarter", 2e6))
             for stage, peak in (("graph", voxels / 1e4), ("total", 5000.0 * voxels / 8e6))]
-    datasets = {"e14p5": {}, "e14p5_half": {"of": "e14p5"}, "e14p5_quarter": {"of": "e14p5"}}
+    datasets = {"stack_a": {}, "stack_a_half": {"of": "stack_a"}, "stack_a_quarter": {"of": "stack_a"}}
     assert full.scaling_check("speed.10a", rows, datasets).status == PASS
     memory = full.scaling_check("memory.10a", rows, datasets)
     assert memory.status == PASS and "against 16 GiB" in memory.evidence
@@ -174,7 +174,7 @@ def test_scaling_needs_three_sizes_and_e14_within_sixteen_gib():
     assert full.scaling_check("speed.10a", [], datasets) is None
     # A stage reached on the whole stack alone (each crop stopped before it)
     # is not measured against volume.
-    solve = {"commit": "a", "dataset": "e14p5", "stage": "solve", "status": "finished", "voxels": 8e6,
+    solve = {"commit": "a", "dataset": "stack_a", "stage": "solve", "status": "finished", "voxels": 8e6,
              "wall_seconds": 3.0, "peak_rss_mib": 800.0}
     stopped = full.scaling_check("speed.10a", rows + [solve], datasets)
     assert stopped.status == FAIL and "fewer than 3 sizes: solve" in stopped.evidence

@@ -276,7 +276,7 @@ def test_a_bridge_left_dangling_by_a_clean_up_goes_too():
 def test_a_piece_bridged_at_both_ends_to_one_node_goes_with_its_bridges():
     """A short strand in the thick lumen, each end only a bridge, both to the
     centreline's node at y = 30 (what the tree fill left at grid V's V13 on
-    E14.5): not a vessel opening into the thick one, and contracted for the
+    Stack A): not a vessel opening into the thick one, and contracted for the
     statistics a loop on one node. A vessel bridged at both ends to two
     places on the centreline is a loop through tissue and stays."""
     from haemolynx.graph.thick_vessel_junctions import remove_dangling_bridges
@@ -458,7 +458,7 @@ def _row(y):
 
 def test_the_pair_rule_keeps_the_strand_on_a_thick_vessels_centreline():
     """Of two strands in one lumen the one nearer the wall goes -- unless it
-    is the thick vessel's own centreline (E14.5, 2026-10-15: the pair rule
+    is the thick vessel's own centreline (Stack A, 2026-10-15: the pair rule
     took the strand on the tree as often as not, breaking the vessel)."""
     mask = wide_vessel()
     support = MaskSupport(mask, VOXEL_SIZE)
@@ -512,7 +512,7 @@ def test_the_short_loop_rule_is_not_given_the_thick_centreline(monkeypatch):
 
 
 def _thick_vessel_running_on_into_a_narrow_one():
-    """Harvey's breaks (Forclaude.haemorun, E14.5, 2026-10-15) in miniature:
+    """Harvey's breaks (a saved Stack A run, 2026-10-15) in miniature:
     a 12 um vessel (the thick region) runs on into a 4 um one. Its
     centreline is one edge from the thick vessel well into the narrow one; a
     second strand 2 um off it lies wholly in the wide lumen. Averaged along
@@ -706,7 +706,7 @@ def test_touching_capillaries_are_zipped_into_one_shared_stretch():
 
 def test_a_ring_in_a_bending_vessel_reads_as_round_tissue_and_the_pair_rule_breaks_it():
     """The plan's right answer, no ring, holds -- by the pair rule, not the
-    loop rule. As the plan found on E14.5's loops 18 and 22, the ring's
+    loop rule. As the plan found on Stack A's loops 18 and 22, the ring's
     antipodal chords cut the bend's inside corner, so the in-lumen loop test
     reads tissue; the two arcs side by side in one lumen are a pair, and one
     goes."""

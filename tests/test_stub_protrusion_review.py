@@ -1,7 +1,7 @@
 """Grid S's tools (``scripts/stub_protrusion_review``, the stub prune's
 protrusion test in ``PLAN_one_centreline_per_lumen.md``): the spy that measures
 every dead end the stub prune is handed, the pool of those the protrusion test
-decides, and how the 30 are spread. The grid itself is built on E14.5 and never
+decides, and how the 30 are spread. The grid itself is built on Stack A and never
 in CI."""
 from __future__ import annotations
 

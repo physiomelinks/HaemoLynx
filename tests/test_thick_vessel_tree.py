@@ -2,7 +2,7 @@
 ``preprocessing/thick_vessel_tree.py``) and the thin-arm join's bounded last
 resort.
 
-Harvey's patella mask at a 3 um gate has one fat component of 111 M voxels
+Harvey's Stack E mask at a 3 um gate has one fat component of 111 M voxels
 crossing the stack (2026-10-18), and the tree's 26-neighbour CSR graph alone
 was ~40 GB of it. Pinned here: the in-RAM tree (and the low-RAM one without
 the setting) stays bit for bit what it was; a component small enough for the

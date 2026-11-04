@@ -118,7 +118,7 @@ LAYER_INSIDE = 0.5
 #: How much keeping a trunk on its tree's course from the root counts in a
 #: junction's score, in spacings (a trunk turning straight back loses twice
 #: this). Only with a template that records its trunks' straightness. On
-#: E14.5 (five seeds) 2 keeps the trees 0.77-0.81 in the template's tree cells
+#: Stack A (five seeds) 2 keeps the trees 0.77-0.81 in the template's tree cells
 #: and lets the venous trees reach 115-121 um from their outlets (median;
 #: the template's 134); 4 reached further but strayed from the cells.
 TRUNK_PERSISTENCE = 2.0

@@ -108,7 +108,7 @@ PLASMA_VISCOSITY_CP = 1.2
 #: the relative flow differences (a relative difference of nothing).
 NO_FLOW_SHARE = 1e-9
 #: NetFlow's SOR stops once no node's pressure moves more than this (mmHg).
-#: On E14.5 with fixed haematocrit (2026-10-15): at its sample's 1e-10,
+#: On Stack A with fixed haematocrit (2026-10-15): at its sample's 1e-10,
 #: vessels carrying 1e-8 of the largest flow -- pressure drops of ~3e-10
 #: mmHg -- came out up to 29% away from HaemoLynx's; at 5e-12 up to 1.5%, at
 #: 2e-12 0.58% (5 s). Rounding stops the updates shrinking below ~1.5e-12

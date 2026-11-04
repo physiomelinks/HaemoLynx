@@ -114,12 +114,12 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     ("organisation", "box within 20 um of a capillary"): ("abs", 0.07),
     ("organisation", "box beyond 50 um of a capillary"): ("abs", 0.05),
     ("organisation", "trunk turn (degrees)"): ("abs", 15.0),
-    # Harvey, 2026-10-25: E14.5's capillary columns, read off any template
+    # Harvey, 2026-10-25: Stack A's capillary columns, read off any template
     # (a run's count is a few dozen at most: a third either way).
     ("organisation", "capillary chords along an axis (share)"): ("abs", 0.05),
     # Banded since grid D1b (Harvey, 2026-10-25): its capillaries had lost
     # their curvature (7-11 against 26 degrees) and only their tortuosity
-    # row said so. Not calibrated: E14.5 draws 22-25.
+    # row said so. Not calibrated: Stack A draws 22-25.
     ("organisation", "capillary curvature (degrees per 10 um)"): ("abs", 6.0),
     ("organisation", "tree curvature (degrees per 10 um)"): ("abs", 6.0),
     # Read at two steps (Harvey, grid D1f: the trees Harvey passed over wound
@@ -127,7 +127,7 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     ("organisation", "tree curvature, median vessel (degrees per 10 um)"): ("abs", 4.0),
     ("organisation", "tree curvature at 2 um steps, median vessel (degrees per 10 um)"): ("abs", 10.0),
     # The trees' shape (Harvey, grid D1b): their side branches and how well
-    # their trunks hold their course. Not calibrated: E14.5 draws its 27
+    # their trunks hold their course. Not calibrated: Stack A draws its 27
     # leaves exactly and its trunks at 0.55-0.62 against 0.63.
     ("organisation", "tree leaves"): ("abs", 3.0),
     ("organisation", "trunk straightness, root to leaf"): ("abs", 0.08),
@@ -135,7 +135,7 @@ TOLERANCES: dict[tuple[str, str], tuple] = {
     ("organisation", "tree reach (um)"): ("rel", 0.15),
     ("organisation", "capillary runs along an axis spanning 100 um (per mm^2)"): ("rel", 0.35),
     # How the vessels lie (statistics.layout; Harvey, 2026-10-25, after grid
-    # D1d: every drawn network sat outside E14.5 on these). Not calibrated.
+    # D1d: every drawn network sat outside Stack A on these). Not calibrated.
     ("layout", "junction smallest angle median (degrees)"): ("abs", 10.0),
     ("layout", "junction smallest angle P25 (degrees)"): ("abs", 12.0),
     ("layout", "junction largest angle median (degrees)"): ("abs", 10.0),

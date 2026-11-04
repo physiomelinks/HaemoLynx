@@ -41,11 +41,11 @@ Added at Harvey's request; `zyx` stays the default. What the headers of the file
 
 | File | Labels |
 |---|---|
-| `MasonTest.tif` (ImageJ, `slices` set) | `ZYX` |
-| Desktop nerve / skeletal-muscle crops (ImageJ composites) | `ZCYX` |
-| Skeletal-muscle `.ome.tif` (16.4 G voxels) | `ZYX` |
-| E14.5 claudin Probabilities `.h5` (ilastik) | axistags `z c y x` |
-| `e14p5_mca.tif`, the test fixtures (written by tifffile) | `QYX`: none |
+| Mason's test stack (ImageJ, `slices` set) | `ZYX` |
+| Desktop nerve / Stack D crops (ImageJ composites) | `ZCYX` |
+| Stack D's `.ome.tif` (16.4 G voxels) | `ZYX` |
+| Stack A claudin Probabilities `.h5` (ilastik) | axistags `z c y x` |
+| Stack A's own `.tif`, the test fixtures (written by tifffile) | `QYX`: none |
 
 So every file there reads as `zyx` under auto too, and switching the default would change none of
 those runs. What auto can and cannot see:

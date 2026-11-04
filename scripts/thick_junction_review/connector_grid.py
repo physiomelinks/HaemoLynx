@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PLAN_bridging.md, after grid P: every connector the thick-vessel split
-leaves unbridged on E14.5 -- a vessel running into the thick-vessel region
+leaves unbridged on Stack A -- a vessel running into the thick-vessel region
 and on to its centreline tree, kept as vessel because no thick centreline in
 the graph lay within its bridge's reach -- for Harvey to mark (his call,
 2026-10-25: "grid of the 9").
@@ -181,7 +181,7 @@ def replay(capture: Path) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--capture", required=True, help="e14_run.py --capture's finish_input.pkl (grid P's)")
+    parser.add_argument("--capture", required=True, help="stack_a_run.py --capture's finish_input.pkl (grid P's)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--page-data", help="also write the cases as the interactive page's JSON (grid_page.py)")
     args = parser.parse_args(argv)
@@ -214,7 +214,7 @@ def main(argv=None) -> int:
              for u, v, d in drawn.edges(data=True) if u != v]
     if cases:
         grid._sheet(cases, out / "grid_K_connector.png", mask, region, tree_points, paths, vs,
-                    f"E14.5, grid K (connectors, IDs {cases[0]['id']}-{cases[-1]['id']})   " + QUESTION)
+                    f"Stack A, grid K (connectors, IDs {cases[0]['id']}-{cases[-1]['id']})   " + QUESTION)
     with open(out / "key_connector.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=KEY_FIELDS, extrasaction="ignore")
         writer.writeheader()
@@ -227,7 +227,7 @@ def main(argv=None) -> int:
     if args.page_data:
         Path(args.page_data).write_text(json.dumps({
             "grid": "K",
-            "dataset": "E14.5 MCA, Harvey's Claudin segmentation (grid K: connectors left unbridged)",
+            "dataset": "Stack A, Harvey's Claudin segmentation (grid K: connectors left unbridged)",
             "voxel_size_zyx": [float(v) for v in vs],
             "slab_um": 2 * phase5.HALF_SLAB_UM,
             "sheets": [{

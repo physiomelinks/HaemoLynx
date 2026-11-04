@@ -92,7 +92,7 @@ def _missing_mask_components(
 
     The count alone overstates the loss: every component counts once, so a
     mask whose vasculature is one large component plus hundreds of specks
-    reads as mostly missing (E14.5: 832 of 1,205 "vessels", 0.36% of the
+    reads as mostly missing (Stack A: 832 of 1,205 "vessels", 0.36% of the
     mask's volume). ``missing_volume_fraction`` -- the missing components'
     voxels over every mask voxel, specks below the floor included -- is
     reported beside it for that reason.
@@ -376,7 +376,7 @@ def diagnose_centreline_dropped_by_thick_gate(
     masks. Lengths count each voxel as the step to its nearest neighbour in
     its piece.
 
-    Read-only, and a census, not a verdict: on E14.5 Harvey's grid P
+    Read-only, and a census, not a verdict: on Stack A Harvey's grid P
     (2026-10-18, ``PLAN_surface_coverage.md``) called 25 of 30 such pieces
     the large vessel's own lumen or wall, which is what the gate exists to
     drop. It costs a whole-volume Lee, so the pipeline does not run it;

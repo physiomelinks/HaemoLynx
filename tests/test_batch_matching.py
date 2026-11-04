@@ -35,27 +35,27 @@ def _files(folder: Path, *names: str) -> list[Path]:
 def test_masks_raw_images_and_probability_maps_in_one_folder_are_not_inputs(tmp_path):
     first, second, *_others = _files(
         tmp_path,
-        f"E14_MCA_{ILASTIK}.tiff",
-        f"E15_MCA_{ILASTIK}.tiff",
-        "E14_MCA.tif",
-        "C1-E15_MCA.tif",
-        f"E14_MCA_{ILASTIK}_arteriole.tiff",
-        f"E14_MCA_{ILASTIK}_Vein.tiff",
-        "E15_MCA_small_vessels.tif",
-        "E14_MCA_Probabilities.h5",
+        f"StackA_region_{ILASTIK}.tiff",
+        f"StackB_region_{ILASTIK}.tiff",
+        "StackA_region.tif",
+        "C1-StackB_region.tif",
+        f"StackA_region_{ILASTIK}_arteriole.tiff",
+        f"StackA_region_{ILASTIK}_Vein.tiff",
+        "StackB_region_small_vessels.tif",
+        "StackA_region_Probabilities.h5",
         "notes.txt",
-        "E14_MCA_classifier.ilp",
+        "StackA_region_classifier.ilp",
     )
     assert batch_inputs(tmp_path) == (first, second)
 
 
 def test_a_folder_of_segmented_images_alone_is_every_image(tmp_path):
-    images = _files(tmp_path, "E14.tif", "E15.tif", "E16.h5")
+    images = _files(tmp_path, "StackA.tif", "StackB.tif", "StackC.h5")
     assert batch_inputs(tmp_path) == tuple(images)
 
 
 def test_a_file_saying_raw_is_never_an_input_unless_it_is_a_segmentation(tmp_path):
-    raw, segmented = _files(tmp_path, "E14_raw.tif", f"E14_raw_{ILASTIK}.tiff")
+    raw, segmented = _files(tmp_path, "StackA_raw.tif", f"StackA_raw_{ILASTIK}.tiff")
     assert batch_inputs(tmp_path) == (segmented,)
     assert is_raw_of(raw, segmented)
     assert not is_raw_of(segmented, raw)
@@ -76,31 +76,31 @@ def test_a_missing_folder_has_no_inputs(tmp_path):
 @pytest.mark.parametrize(
     "raw_name",
     [
-        "E14_MCA.tif",  # ilastik: the segmentation is the raw name with words added
-        "E14_MCA_raw.tif",
-        "C1-E14_MCA.tif",  # ImageJ's split channel
-        "E14_MCA_ch2.tif",
-        "E14_MCA_unsegmented.h5",
+        "StackA_region.tif",  # ilastik: the segmentation is the raw name with words added
+        "StackA_region_raw.tif",
+        "C1-StackA_region.tif",  # ImageJ's split channel
+        "StackA_region_ch2.tif",
+        "StackA_region_unsegmented.h5",
     ],
 )
 def test_the_raw_image_is_matched_from_its_own_folder(tmp_path, raw_name):
-    _files(tmp_path / "seg", f"E14_MCA_{ILASTIK}.tiff")
-    raw, _other = _files(tmp_path / "raw", raw_name, "E15_MCA.tif")
+    _files(tmp_path / "seg", f"StackA_region_{ILASTIK}.tiff")
+    raw, _other = _files(tmp_path / "raw", raw_name, "StackB_region.tif")
     (match,) = match_batch(BatchFolders(tmp_path / "seg", raw=tmp_path / "raw"))
     assert match.raw == raw
     assert match.ok
 
 
 def test_a_blank_raw_folder_is_the_segmented_folder(tmp_path):
-    segmented, raw = _files(tmp_path, f"E14_{ILASTIK}.tiff", "E14.tif")
+    segmented, raw = _files(tmp_path, f"StackA_{ILASTIK}.tiff", "StackA.tif")
     (match,) = match_batch(BatchFolders(tmp_path))
     assert (match.segmented, match.raw) == (segmented, raw)
 
 
 def test_another_images_raw_image_is_not_taken(tmp_path):
-    _files(tmp_path / "seg", "E14_MCA_seg.tif")
+    _files(tmp_path / "seg", "StackA_region_seg.tif")
     _files(
-        tmp_path / "raw", "E15_MCA.tif", "E14_ACA.tif", "E14_MCA_seg.tif", "E14_large_vein.tif"
+        tmp_path / "raw", "StackB_region.tif", "StackA_ACA.tif", "StackA_region_seg.tif", "StackA_large_vein.tif"
     )
     (match,) = match_batch(BatchFolders(tmp_path / "seg", raw=tmp_path / "raw"))
     assert match.raw is None
@@ -109,23 +109,23 @@ def test_another_images_raw_image_is_not_taken(tmp_path):
 
 
 def test_the_raw_image_sharing_the_name_furthest_is_taken(tmp_path):
-    _files(tmp_path / "seg", "E14_MCA_C1_seg.tif")
+    _files(tmp_path / "seg", "StackA_region_C1_seg.tif")
     _shorter, closer, _other_channel = _files(
-        tmp_path / "raw", "E14.tif", "E14_MCA_C1.tif", "E14_MCA_C2.tif"
+        tmp_path / "raw", "StackA.tif", "StackA_region_C1.tif", "StackA_region_C2.tif"
     )
     (match,) = match_batch(BatchFolders(tmp_path / "seg", raw=tmp_path / "raw"))
     assert match.raw == closer
 
 
 def test_tied_raw_images_are_named_and_left_for_the_user(tmp_path):
-    _files(tmp_path / "seg", f"E14_{ILASTIK}.tiff")
-    first, second = _files(tmp_path / "raw", "C1-E14.tif", "C2-E14.tif")
+    _files(tmp_path / "seg", f"StackA_{ILASTIK}.tiff")
+    first, second = _files(tmp_path / "raw", "C1-StackA.tif", "C2-StackA.tif")
     (match,) = match_batch(BatchFolders(tmp_path / "seg", raw=tmp_path / "raw"))
     assert match.raw is None
     assert match.raw_ties == (first, second)
     assert match.tied_roles == (RAW_ROLE,)
     assert not match.ok
-    assert "C1-E14.tif, C2-E14.tif" in match.problems[0]
+    assert "C1-StackA.tif, C2-StackA.tif" in match.problems[0]
 
     chosen = match.choose(RAW_ROLE, second)
     assert (chosen.raw, chosen.raw_ties, chosen.ok) == (second, (), True)
@@ -134,65 +134,65 @@ def test_tied_raw_images_are_named_and_left_for_the_user(tmp_path):
 
 
 def test_one_choice_resolves_every_images_tie_alike(tmp_path):
-    _files(tmp_path / "seg", f"E14_{ILASTIK}.tiff", f"E15_{ILASTIK}.tiff")
-    c1_e14, c2_e14, c1_e15, _c2_e15 = _files(
-        tmp_path / "raw", "C1-E14.tif", "C2-E14.tif", "C1-E15.tif", "C2-E15.tif"
+    _files(tmp_path / "seg", f"StackA_{ILASTIK}.tiff", f"StackB_{ILASTIK}.tiff")
+    c1_stack_a, c2_stack_a, c1_stack_b, _c2_stack_b = _files(
+        tmp_path / "raw", "C1-StackA.tif", "C2-StackA.tif", "C1-StackB.tif", "C2-StackB.tif"
     )
     matches = match_batch(BatchFolders(tmp_path / "seg", raw=tmp_path / "raw"))
-    chosen = choose_alike(matches, RAW_ROLE, c1_e14, matches[0].raw_ties)
-    assert [match.raw for match in chosen] == [c1_e14, c1_e15]
+    chosen = choose_alike(matches, RAW_ROLE, c1_stack_a, matches[0].raw_ties)
+    assert [match.raw for match in chosen] == [c1_stack_a, c1_stack_b]
     assert all(match.ok for match in chosen)
     # Choosing the other channel chooses it everywhere.
-    chosen = choose_alike(matches, RAW_ROLE, c2_e14, matches[0].raw_ties)
-    assert [match.raw.name for match in chosen] == ["C2-E14.tif", "C2-E15.tif"]
+    chosen = choose_alike(matches, RAW_ROLE, c2_stack_a, matches[0].raw_ties)
+    assert [match.raw.name for match in chosen] == ["C2-StackA.tif", "C2-StackB.tif"]
 
 
 def test_read_raw_name_refuses_segmentations_masks_and_other_images():
-    segmented = "a/E14_MCA_seg.tif"
-    assert read_raw_name("a/E14_MCA_mask.tif", segmented) is None
-    assert read_raw_name("a/E14_MCA_large_vein.tif", segmented) is None
-    assert read_raw_name("a/E14_MCA_Probabilities.h5", segmented) is None
-    assert read_raw_name("a/E14_ACA.tif", segmented) is None
-    assert read_raw_name("a/E14_MCA.tif", segmented) == (3, 3, 1, 1)
-    assert read_raw_name("a/C2-E14_MCA.h5", segmented) == (3, 3, 0, 0)
+    segmented = "a/StackA_region_seg.tif"
+    assert read_raw_name("a/StackA_region_mask.tif", segmented) is None
+    assert read_raw_name("a/StackA_region_large_vein.tif", segmented) is None
+    assert read_raw_name("a/StackA_region_Probabilities.h5", segmented) is None
+    assert read_raw_name("a/StackA_ACA.tif", segmented) is None
+    assert read_raw_name("a/StackA_region.tif", segmented) == (3, 3, 1, 1)
+    assert read_raw_name("a/C2-StackA_region.h5", segmented) == (3, 3, 0, 0)
 
 
 # --- the masks --------------------------------------------------------------
 
 
 def test_masks_in_folders_of_their_own_are_matched_to_each_image(tmp_path):
-    e14, _e15 = _files(tmp_path / "seg", "E14_seg.tif", "E15_seg.tif")
-    e14_art, e14_ven, e15_art, e15_ven = _files(
+    stack_a, _stack_b = _files(tmp_path / "seg", "StackA_seg.tif", "StackB_seg.tif")
+    stack_a_art, stack_a_ven, stack_b_art, stack_b_ven = _files(
         tmp_path / "large",
-        "E14_large_arteriole.tif",
-        "E14_large_vein.tif",
-        "E15_large_arteriole.tif",
-        "E15_large_vein.tif",
+        "StackA_large_arteriole.tif",
+        "StackA_large_vein.tif",
+        "StackB_large_arteriole.tif",
+        "StackB_large_vein.tif",
     )
-    e14_small, e15_small = _files(tmp_path / "small", "E14_small.tif", "E15_small_vessels.tif")
+    stack_a_small, stack_b_small = _files(tmp_path / "small", "StackA_small.tif", "StackB_small_vessels.tif")
     folders = BatchFolders(tmp_path / "seg", large=tmp_path / "large", small=tmp_path / "small")
     first, second = match_batch(folders, ["large", "small"])
     assert first.settings() == {
-        "input_path": e14,
+        "input_path": stack_a,
         "raw_image_path": None,
-        "large_arteriole_mask_path": e14_art,
-        "large_venule_mask_path": e14_ven,
-        "small_arteriole_mask_path": e14_small,
+        "large_arteriole_mask_path": stack_a_art,
+        "large_venule_mask_path": stack_a_ven,
+        "small_arteriole_mask_path": stack_a_small,
         "small_venule_mask_path": None,
     }
-    assert (second.masks["large"].arteriole, second.masks["large"].venule) == (e15_art, e15_ven)
-    assert second.masks["small"].global_mask == e15_small
+    assert (second.masks["large"].arteriole, second.masks["large"].venule) == (stack_b_art, stack_b_ven)
+    assert second.masks["small"].global_mask == stack_b_small
     assert first.ok and second.ok
     assert any("global mask of every small vessel" in note for note in first.notes)
 
 
 def test_everything_in_the_segmented_folder(tmp_path):
-    """Harvey's E14.5 exports: ilastik names, a vessel type and no size."""
-    stem = f"E14p5_MCAregion_{ILASTIK}"
+    """Harvey's Stack A exports: ilastik names, a vessel type and no size."""
+    stem = f"StackA_region_{ILASTIK}"
     segmented, raw, art, ven = _files(
         tmp_path,
         f"{stem}.tiff",
-        "C1-E14p5_MCAregion.tif",
+        "C1-StackA_region.tif",
         f"{stem}_arteriole.tiff",
         f"{stem}_Vein.tiff",
     )
@@ -204,8 +204,8 @@ def test_everything_in_the_segmented_folder(tmp_path):
 
 
 def test_masks_beside_the_raw_image_are_found_only_when_its_folder_is_given(tmp_path):
-    _files(tmp_path / "seg", "E14_seg.tif")
-    _files(tmp_path / "raw", "E14.tif", "E14_large_arteriole.tif", "E14_large_vein.tif")
+    _files(tmp_path / "seg", "StackA_seg.tif")
+    _files(tmp_path / "raw", "StackA.tif", "StackA_large_arteriole.tif", "StackA_large_vein.tif")
     (match,) = match_batch(BatchFolders(tmp_path / "seg", raw=tmp_path / "raw"), ["large"])
     assert not match.masks["large"].found_any
     assert match.problems == (f"No large vessel masks found in {tmp_path / 'seg'}.",)
@@ -216,7 +216,7 @@ def test_masks_beside_the_raw_image_are_found_only_when_its_folder_is_given(tmp_
 
 
 def test_mask_rows_nothing_was_found_for_are_emptied(tmp_path):
-    (image,) = _files(tmp_path, "E14_seg.tif")
+    (image,) = _files(tmp_path, "StackA_seg.tif")
     (match,) = match_batch(BatchFolders(tmp_path), ["small"])
     assert match.settings() == {
         "input_path": image,
@@ -228,37 +228,37 @@ def test_mask_rows_nothing_was_found_for_are_emptied(tmp_path):
 
 
 def test_sizes_not_searched_are_left_out_of_the_settings(tmp_path):
-    _files(tmp_path, "E14_seg.tif", "E14_large_arteriole.tif")
+    _files(tmp_path, "StackA_seg.tif", "StackA_large_arteriole.tif")
     (match,) = match_batch(BatchFolders(tmp_path))
     assert match.masks == {}
     assert set(match.settings()) == {"input_path", "raw_image_path"}
 
 
 def test_a_lone_venule_mask_stops_the_image(tmp_path):
-    _files(tmp_path, "E14_seg.tif", "E14_large_vein.tif")
+    _files(tmp_path, "StackA_seg.tif", "StackA_large_vein.tif")
     (match,) = match_batch(BatchFolders(tmp_path), ["large"])
     assert match.problems == (
-        "Found a large venule mask, E14_large_vein.tif, but no large arteriole mask "
+        "Found a large venule mask, StackA_large_vein.tif, but no large arteriole mask "
         "to go with it.",
     )
 
 
 def test_tied_masks_are_chosen_alike_across_the_batch(tmp_path):
-    _files(tmp_path, "E14_seg.tif", "E15_seg.tif", "E14_large_vein.tif", "E15_large_vein.tif")
-    e14_a, e14_b, e15_a, _e15_b = _files(
+    _files(tmp_path, "StackA_seg.tif", "StackB_seg.tif", "StackA_large_vein.tif", "StackB_large_vein.tif")
+    stack_a_a, stack_a_b, stack_b_a, _stack_b_b = _files(
         tmp_path,
-        "E14_large_arteriole.tif",
-        "E14_large_arteriole_mask.tif",
-        "E15_large_arteriole.tif",
-        "E15_large_arteriole_mask.tif",
+        "StackA_large_arteriole.tif",
+        "StackA_large_arteriole_mask.tif",
+        "StackB_large_arteriole.tif",
+        "StackB_large_arteriole_mask.tif",
     )
     matches = match_batch(BatchFolders(tmp_path), ["large"])
     role = mask_role("large", "arteriole")
     assert matches[0].tied_roles == (role,)
-    assert matches[0].ties(role) == (e14_a, e14_b)
+    assert matches[0].ties(role) == (stack_a_a, stack_a_b)
     assert not matches[0].ok
-    chosen = choose_alike(matches, role, e14_a, matches[0].ties(role))
-    assert [match.masks["large"].arteriole for match in chosen] == [e14_a, e15_a]
+    chosen = choose_alike(matches, role, stack_a_a, matches[0].ties(role))
+    assert [match.masks["large"].arteriole for match in chosen] == [stack_a_a, stack_b_a]
     assert all(match.ok for match in chosen)
 
 
@@ -279,10 +279,10 @@ def test_the_batchs_other_images_are_never_read_as_masks(tmp_path):
 
 
 def test_a_mask_folder_of_its_own_says_the_size(tmp_path):
-    """Harvey's first batch (AIA_classified_IZ): ilastik exports whose names
+    """Harvey's first batch: ilastik exports whose names
     say 'large' and 'intermediate', not 'small', and segmented images whose
     names carry 'all_vessel', which the masks lack."""
-    stems = ["28_3_d_contra_patella_cropped_hdf5", "28_3_d_ipsi_FITC", "29_1_b_contra_FITC"]
+    stems = ["11_3_d_contra_sample1_cropped_hdf5", "11_3_d_ipsi_FITC", "12_1_b_contra_FITC"]
     for stem in stems:
         _files(tmp_path / "all", f"{stem}_{ILASTIK}_all_vessel.h5")
         _files(tmp_path / "large", f"{stem}_{ILASTIK}_large.h5")
@@ -314,19 +314,19 @@ def test_a_file_in_an_own_folder_goes_to_the_image_sharing_most_of_its_name(tmp_
 
 
 def test_an_own_folder_reads_vessel_types_and_ties(tmp_path):
-    _files(tmp_path / "seg", "E14_seg.tif", "E15_seg.tif")
+    _files(tmp_path / "seg", "StackA_seg.tif", "StackB_seg.tif")
     art, ven, first, second = _files(
-        tmp_path / "large", "E14_art_arteriole.tif", "E14_vein.tif", "E15_a.tif", "E15_b.tif"
+        tmp_path / "large", "StackA_art_arteriole.tif", "StackA_vein.tif", "StackB_a.tif", "StackB_b.tif"
     )
-    e14, e15 = match_batch(BatchFolders(tmp_path / "seg", large=tmp_path / "large"), ["large"])
-    assert (e14.masks["large"].arteriole, e14.masks["large"].venule) == (art, ven)
-    assert e15.masks["large"].ambiguous == {"global": (first, second)}
-    assert not e15.ok
+    stack_a, stack_b = match_batch(BatchFolders(tmp_path / "seg", large=tmp_path / "large"), ["large"])
+    assert (stack_a.masks["large"].arteriole, stack_a.masks["large"].venule) == (art, ven)
+    assert stack_b.masks["large"].ambiguous == {"global": (first, second)}
+    assert not stack_b.ok
 
 
 def test_a_file_naming_the_other_size_is_not_an_own_folders(tmp_path):
-    _files(tmp_path / "seg", "E14_seg.tif")
-    _files(tmp_path / "masks", "E14_large.tif")
+    _files(tmp_path / "seg", "StackA_seg.tif")
+    _files(tmp_path / "masks", "StackA_large.tif")
     (match,) = match_batch(BatchFolders(tmp_path / "seg", small=tmp_path / "masks"), ["small"])
     assert not match.masks["small"].found_any
 
@@ -334,17 +334,17 @@ def test_a_file_naming_the_other_size_is_not_an_own_folders(tmp_path):
 def test_a_mask_folder_given_as_the_segmented_folder_reads_names(tmp_path):
     """Named as the segmented folder, the folder says nothing: a file there is
     a small mask by its name, and one named 'intermediate' is an image."""
-    _files(tmp_path, "E14_seg.tif", "E14_intermediate.tif", "E14_small_vessels.tif")
+    _files(tmp_path, "StackA_seg.tif", "StackA_intermediate.tif", "StackA_small_vessels.tif")
     matches = match_batch(BatchFolders(tmp_path, small=tmp_path), ["small"])
-    assert [match.stem for match in matches] == ["E14_intermediate", "E14_seg"]
-    assert matches[1].masks["small"].global_mask == tmp_path / "E14_small_vessels.tif"
+    assert [match.stem for match in matches] == ["StackA_intermediate", "StackA_seg"]
+    assert matches[1].masks["small"].global_mask == tmp_path / "StackA_small_vessels.tif"
 
 
 # --- the batch as a whole ---------------------------------------------------
 
 
 def test_images_sharing_a_stem_would_share_a_folder_and_both_stop(tmp_path):
-    tiff, h5 = _files(tmp_path, "E14_seg.tif", "E14_seg.h5")
+    tiff, h5 = _files(tmp_path, "StackA_seg.tif", "StackA_seg.h5")
     matches = match_batch(BatchFolders(tmp_path))
     assert [match.segmented for match in matches] == [h5, tiff]
     assert [match.same_stem for match in matches] == [(tiff,), (h5,)]
@@ -402,30 +402,30 @@ def test_matching_a_large_folder_stays_quick(tmp_path):
 def test_a_batch_of_raw_images_lists_the_raw_images_alone(tmp_path):
     first, second, *_others = _files(
         tmp_path,
-        "E14_MCA.tif",
-        "E15_MCA.h5",
-        f"E14_MCA_{ILASTIK}.tiff",
-        "E14_MCA_Probabilities.h5",
-        "E14_MCA_arteriole.tif",
-        "E15_MCA_segmented.tif",
+        "StackA_region.tif",
+        "StackB_region.h5",
+        f"StackA_region_{ILASTIK}.tiff",
+        "StackA_region_Probabilities.h5",
+        "StackA_region_arteriole.tif",
+        "StackB_region_segmented.tif",
     )
     assert batch_inputs(tmp_path, raw=True) == (first, second)
 
 
 def test_a_batch_of_raw_images_matches_its_masks_against_the_raw_names(tmp_path):
     raw = tmp_path / "raw"
-    e14, e15, arteriole, venule = _files(
-        raw, "E14_MCA.tif", "E15_MCA.tif", "E14_MCA_large_arteriole.tif", "E14_MCA_large_venule.tif"
+    stack_a, stack_b, arteriole, venule = _files(
+        raw, "StackA_region.tif", "StackB_region.tif", "StackA_region_large_arteriole.tif", "StackA_region_large_venule.tif"
     )
-    (e15_small,) = _files(tmp_path / "small", f"E15_MCA_{ILASTIK}_intermediate.h5")
+    (stack_b_small,) = _files(tmp_path / "small", f"StackB_region_{ILASTIK}_intermediate.h5")
     folders = BatchFolders(raw=raw, small=tmp_path / "small", from_raw=True)
     first, second = match_batch(folders, ["large", "small"])
     assert [(match.segmented, match.raw, match.stem) for match in (first, second)] == [
-        (None, e14, "E14_MCA_segmented"),
-        (None, e15, "E15_MCA_segmented"),
+        (None, stack_a, "StackA_region_segmented"),
+        (None, stack_b, "StackB_region_segmented"),
     ]
     assert (first.masks["large"].arteriole, first.masks["large"].venule) == (arteriole, venule)
-    assert second.masks["small"].global_mask == e15_small
+    assert second.masks["small"].global_mask == stack_b_small
     assert first.settings()["input_path"] is None
     assert not any("raw image" in note for note in first.notes + second.notes)
 
@@ -443,40 +443,40 @@ def test_a_batch_of_raw_images_needs_a_raw_folder(tmp_path):
 
 
 def test_each_image_gets_its_own_file_from_a_folder_of_them(tmp_path):
-    _files(tmp_path / "seg", "E14_MCA_seg.tif", "E14_ACA_seg.tif")
+    _files(tmp_path / "seg", "StackA_region_seg.tif", "StackA_ACA_seg.tif")
     pericytes = tmp_path / "pericytes"
-    mca, aca, _map = _files(
-        pericytes, "E14_MCA_pericytes.tif", "E14_ACA_NG2.tif", "E14_MCA_Probabilities.h5"
+    region, aca, _map = _files(
+        pericytes, "StackA_region_pericytes.tif", "StackA_ACA_NG2.tif", "StackA_region_Probabilities.h5"
     )
     folders = BatchFolders(tmp_path / "seg", pericyte=pericytes)
-    aca_match, mca_match = match_batch(folders, roles=["pericyte"])
-    assert mca_match.files == {"pericyte": mca}
+    aca_match, region_match = match_batch(folders, roles=["pericyte"])
+    assert region_match.files == {"pericyte": region}
     assert aca_match.settings()["pericyte_mask_path"] == aca
-    assert aca_match.ok and mca_match.ok
+    assert aca_match.ok and region_match.ok
     # Not read by the run: not matched.
     assert all(match.files == {} for match in match_batch(folders))
 
 
 def test_a_file_is_the_image_whose_name_it_holds_wholly(tmp_path):
-    _files(tmp_path / "seg", "E14.tif", "E14_2.tif")
-    second_cells, first_cells = _files(tmp_path / "cells", "E14_2_cells.tif", "E14_cells.tif")
-    e14, e14_2 = match_batch(BatchFolders(tmp_path / "seg", cell=tmp_path / "cells"), roles=["cell"])
-    assert (e14.files["cell"], e14_2.files["cell"]) == (first_cells, second_cells)
+    _files(tmp_path / "seg", "StackA.tif", "StackA_2.tif")
+    second_cells, first_cells = _files(tmp_path / "cells", "StackA_2_cells.tif", "StackA_cells.tif")
+    stack_a, stack_a_2 = match_batch(BatchFolders(tmp_path / "seg", cell=tmp_path / "cells"), roles=["cell"])
+    assert (stack_a.files["cell"], stack_a_2.files["cell"]) == (first_cells, second_cells)
 
 
 def test_a_tissue_image_beside_the_raw_images_is_the_other_channel(tmp_path):
-    _files(tmp_path / "seg", "C1-E14_seg.tif", "C1-E15_seg.tif")
+    _files(tmp_path / "seg", "C1-StackA_seg.tif", "C1-StackB_seg.tif")
     raw = tmp_path / "raw"
-    c1_14, c2_14, c1_15, c2_15 = _files(raw, "C1-E14.tif", "C2-E14.tif", "C1-E15.tif", "C2-E15.tif")
-    e14, e15 = match_batch(BatchFolders(tmp_path / "seg", raw=raw, tissue=raw), roles=["tissue"])
-    assert (e14.raw, e14.files["tissue"]) == (c1_14, c2_14)
-    assert (e15.raw, e15.files["tissue"]) == (c1_15, c2_15)
+    c1_14, c2_14, c1_15, c2_15 = _files(raw, "C1-StackA.tif", "C2-StackA.tif", "C1-StackB.tif", "C2-StackB.tif")
+    stack_a, stack_b = match_batch(BatchFolders(tmp_path / "seg", raw=raw, tissue=raw), roles=["tissue"])
+    assert (stack_a.raw, stack_a.files["tissue"]) == (c1_14, c2_14)
+    assert (stack_b.raw, stack_b.files["tissue"]) == (c1_15, c2_15)
 
 
 def test_choosing_the_raw_image_takes_it_out_of_the_tissue_images_tie(tmp_path):
-    _files(tmp_path / "seg", "E14_seg.tif")
+    _files(tmp_path / "seg", "StackA_seg.tif")
     raw = tmp_path / "raw"
-    c1, c2 = _files(raw, "C1-E14.tif", "C2-E14.tif")
+    c1, c2 = _files(raw, "C1-StackA.tif", "C2-StackA.tif")
     (match,) = match_batch(BatchFolders(tmp_path / "seg", raw=raw, tissue=raw), roles=["tissue"])
     assert match.tied_roles == (RAW_ROLE, "tissue")
     chosen = match.choose(RAW_ROLE, c1)
@@ -485,24 +485,24 @@ def test_choosing_the_raw_image_takes_it_out_of_the_tissue_images_tie(tmp_path):
 
 
 def test_tied_files_are_named_and_one_chosen_chooses_alike(tmp_path):
-    _files(tmp_path / "seg", "E14_seg.tif", "E15_seg.tif")
+    _files(tmp_path / "seg", "StackA_seg.tif", "StackB_seg.tif")
     cells = tmp_path / "cells"
-    _files(cells, "E14_cells_left.tif", "E14_cells_right.tif", "E15_cells_left.tif", "E15_cells_right.tif")
+    _files(cells, "StackA_cells_left.tif", "StackA_cells_right.tif", "StackB_cells_left.tif", "StackB_cells_right.tif")
     matches = match_batch(BatchFolders(tmp_path / "seg", cell=cells), roles=["cell"])
     first = matches[0]
     assert first.tied_roles == ("cell",)
     assert first.files["cell"] is None
     assert (
-        "Several files could be the cell mask (E14_cells_left.tif, E14_cells_right.tif): choose one."
+        "Several files could be the cell mask (StackA_cells_left.tif, StackA_cells_right.tif): choose one."
         in first.problems
     )
-    chosen = choose_alike(matches, "cell", cells / "E14_cells_right.tif", first.ties("cell"))
-    assert [match.files["cell"].name for match in chosen] == ["E14_cells_right.tif", "E15_cells_right.tif"]
+    chosen = choose_alike(matches, "cell", cells / "StackA_cells_right.tif", first.ties("cell"))
+    assert [match.files["cell"].name for match in chosen] == ["StackA_cells_right.tif", "StackB_cells_right.tif"]
     assert all(match.ok for match in chosen)
 
 
 def test_an_image_with_no_file_is_a_problem_unless_the_run_reads_another(tmp_path):
-    _files(tmp_path / "seg", "E14_seg.tif")
+    _files(tmp_path / "seg", "StackA_seg.tif")
     empty = tmp_path / "empty"
     empty.mkdir()
     folders = BatchFolders(tmp_path / "seg", pericyte=empty, tissue=empty)

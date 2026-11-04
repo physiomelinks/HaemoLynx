@@ -49,13 +49,13 @@ not independent samples, so the comparison is a choice (the window's Comparison 
 of the other condition whose name is most alike once the condition phrase is taken out of both
 (Harvey, 2026-10-19: pair on the terms given, by similar names, not on one batch's naming).
 Only images of one subject pair -- the part of the name before the phrase, separators trimmed,
-case ignored (`28_3_d_contra_FITC` is `28_3_d`), or a `--subject-pattern` regular expression's
-first group (`^(\d+_\d+)` reads the animal, `28_3`); within a subject one image a side pair,
+case ignored (`11_3_d_contra_FITC` is `11_3_d`), or a `--subject-pattern` regular expression's
+first group (`^(\d+_\d+)` reads the animal, `11_3`); within a subject one image a side pair,
 and more are matched one to one, closest first (`BatchConditions.name_words`: the most words in
-common from the start, then anywhere; `E14_WT_1` with `E14_KO_1`), a tie left out, never
+common from the start, then anywhere; `StackA_WT_1` with `StackA_KO_1`), a tie left out, never
 guessed. `--paired-aggregate median|mean` (the window's "Several images of a subject") instead
 pairs each subject's median or mean over all its images in a condition, metric by metric
-(Harvey's AIA batch by animal: 3 pairs, smallest p 0.25). `BatchConditions.pairing` leaves out,
+(Harvey's Batch E by animal: 3 pairs, smallest p 0.25). `BatchConditions.pairing` leaves out,
 with its reason, every image in neither or both conditions, with no subject the pattern reads,
 with no partner, or in a tie. The pairs (with the images in each value) and every image left
 out go in `batch_condition_pairs.csv` (the table's Condition cell says the same as you type);
@@ -70,9 +70,9 @@ sections and their subsections (`Strahler Network` takes `Strahler Network > Ord
 ignoring case, `excluded_section`) from all three CSVs before anything is summarised or
 tested, so the Benjamini-Hochberg q is over the metrics left; a name matching no section is
 said in the message, and a batch records them in `batch_settings.yaml`
-(`# batch_exclude_sections:`). For Harvey's AIA contra/ipsi batch, whose patella dead ends are
+(`# batch_exclude_sections:`). For Harvey's contra/ipsi Batch E, whose dead ends are
 segmentation fragments (his P1 marks: none a real blind end): rebuilt from its per-image CSVs
-with `exclude_sections="Dead Ends"` it gives `outputs/aia_all8`'s hand-edited CSVs byte for
+with `exclude_sections="Dead Ends"` it gives its hand-edited CSVs byte for
 byte, and without it the originals in `with_dead_ends/`.
 In the panel: the Input tab's Batch run button (above the Input row) opens
 `_widget.py`'s `_BatchRunWindow` (folders, the matched table with ticks and tie choices,
@@ -126,9 +126,9 @@ skeletonisation (Windows 11), each image had left two memmap-folder files, eight
 and a region cache; with clearing, the memmap folder is empty and the `.haemorun`, graph and
 skeleton remain. A re-run of one image now finds the thick-vessel region again.
 
-**Single runs check their paths too** (2026-10-24). An E14.5 run with its output under
-a worktree's `outputs/synthetic_e14p5/template/` ran for 8 minutes and then failed at Export
-writing `{stem}_betweenness_communities_resistance.json`, a 266-character path (the E14.5 stem
+**Single runs check their paths too** (2026-10-24). A Stack A run with its output under
+a worktree's `outputs/synthetic_stack_a/template/` ran for 8 minutes and then failed at Export
+writing `{stem}_betweenness_communities_resistance.json`, a 266-character path (the Stack A stem
 alone is about 115). `check_output_path_lengths` is now part of every run's `preflight`, not
 only a batch image's (`batch_preflight` no longer adds it again). `output_paths` reads a single
 run's settings as a config gives them (strings, relative paths from the folder the run starts
@@ -160,7 +160,7 @@ The other files a run reads beside its image (`io.batch_matching.FILE_ROLES`: pe
 mask, the 3D distances' vessel mask, tissue image, mask of blocks) each come from a folder of their
 own, given to the image whose name they share the most words with from the start, then the most
 words, then the fewest of the image's words they lack (`_Owners`, shared with `mask_owners`:
-`E14_cells` is `E14`'s, not `E14_2`'s, where before it tied). A file already matched to the image
+`StackA_cells` is `StackA`'s, not `StackA_2`'s, where before it tied). A file already matched to the image
 (its raw image, a mask) is never one of them, so a tissue folder that is the raw folder gives the
 other channel, and choosing a tied raw image takes it out of the tissue image's tie. A role is
 matched only while the run, or a perturbation of a type reading it, reads it

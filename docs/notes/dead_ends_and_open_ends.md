@@ -31,9 +31,9 @@ review lists and the boundary review all classify through it; a fixed `image_fac
 with no junction at the end of graph building, before the kinds are marked and the graph is
 saved (`remove_pieces_without_junction`: the chains whose dead ends are `island_end`, any
 length, anywhere; rings and lone nodes stay; the count and length go on
-`G.graph["pieces_without_junction_removed"]` / `_um`). Harvey's AIA patella grid P1
-(`outputs/patella_dead_end_review/`) marked 11 of 14 such pieces specks and 3 real vessel the
-segmentation cut off, and none of 30 patella dead ends a real blind end.
+`G.graph["pieces_without_junction_removed"]` / `_um`). Harvey's Batch E grid P1
+marked 11 of 14 such pieces specks and 3 real vessel the
+segmentation cut off, and none of 30 of its dead ends a real blind end.
 `remove_interior_dead_ends` (Graph tab, off by default -- on from 2026-10-22, turned off
 again the same day by Harvey: on the nerve test crop it took 26 chains, 129 -> 87 vessels and
 5,477 -> 4,404 um, and the seven-vessel fixture 10 vessels -> 1;
@@ -50,19 +50,19 @@ both ends (`recover_uncovered_mask_vessels(coverage_reach_radii=0, two_ended=Tru
 into thick vessels like any vessel; the lumen clean-up runs with the 5.3 um hole limit; the
 interior dead ends it leaves are removed a second time. Counts on the graph
 (`interior_dead_ends_removed`, `_um`, `interior_recovery_drawn_um`, `_kept_um`). Fitted to
-Harvey's marks on E14.5 alone (2026-10-21, `outputs/stops_short_route_review/`): G5 (a
+Harvey's marks on Stack A alone (2026-10-21, `outputs/stops_short_route_review/`): G5 (a
 trace-on along a route through the mask joined no better than never joining, 23/29 each;
 17 of 29 `stops_short` ends "stop here"), the remove-then-recover graph he called the best
 yet, L1 (at 10 um the short-loop rule broke a real loop 16 times in 24, 12 of 16 of them on
 recovered strands) and the fresh L2 (5.3 um 19/29 against 13 at 10 um and 16 keeping all;
-below 5.3 um about even). On E14.5: 211 chains, 7.4 mm, out; 6.2 mm drawn back joined at
+below 5.3 um about even). On Stack A: 211 chains, 7.4 mm, out; 6.2 mm drawn back joined at
 both ends; 43.9 mm, 194 dead ends and 310 loops after, against 47.8 mm, 396 and 231 built.
 The same graph under the low-RAM option (tests/test_build_network_stage.py). Not yet
 tried on another dataset.
 Speed, output identical (2026-10-22): `densify_polyline` is vectorised (the loop's floats,
-pinned against it in tests/test_shared_helpers.py; 8.5x on E14.5's polylines) and
+pinned against it in tests/test_shared_helpers.py; 8.5x on Stack A's polylines) and
 `_fill_tree_gaps` keeps each edge's samples between fills rather than resampling the graph
-after each (2.8 s a fill). The step 196 -> 163 s on E14.5 (one pair); whole builds 633/658 s
+after each (2.8 s a fill). The step 196 -> 163 s on Stack A (one pair); whole builds 633/658 s
 old against 653/600/673 s new, within the machine's noise, every node, edge and attribute
 identical, in RAM and low-RAM (`outputs/stops_short_route_review/speed_check.py`,
 `build_check.py`). Recovery's routes (~35 s: a window's EDT and MCP each) are left: a shared
@@ -81,7 +81,7 @@ pressures); a node's hover says "open end: leaves the image" only where `node_le
 else "dead end: {kind}" (`node_end_text`, the nodes layers' `end` column) -- every degree-1
 node read "open end"; and no flow arrow is drawn on a vessel at or below the statistics' floor
 for carrying flow (`visualization.flow_direction.flow_arrow_floor`, `carrying_floor`: 1e-9 of
-the largest), where its sign is rounding. On E14.5 that hides no arrow: the open ends' arrows
+the largest), where its sign is rounding. On Stack A that hides no arrow: the open ends' arrows
 are real flow (`estimated` fed through 34, drained through 53), the least 1.7e-20 m^3/s, 1.6e-8
 of the largest -- small, not rounding.
 `graph/dead_end_extension.py` holds the
@@ -110,7 +110,7 @@ augments with them. `scripts/open_end_sensitivity.py` re-solves one network unde
 What landed on `claude/plan-dead-ends-36f84f`, and why each choice:
 
 - **Fresh grids G1', G2', G3'** (`scripts/dead_end_review/build_grids.py --fresh`; pages and keys
-  `outputs/dead_end_review/G1b`-`G3b`, git-ignored; `FRESH.md` beside them). Built from E14.5
+  `outputs/dead_end_review/G1b`-`G3b`, git-ignored; `FRESH.md` beside them). Built from Stack A
   (Harvey's Claudin segmentation, config.yaml) at fc1d8607, replayed from the thick-bridges
   session's capture of `finish_network_graph`'s input: 394 dead ends (91 leaves_image, 95
   stops_short, 93 unknown, 17 artefact, 4 broken, 94 island ends) against 1,082 on the graph
@@ -159,11 +159,11 @@ Harvey marked G1'-G3' (90 marks; `outputs/dead_end_review/FIT_G1b_G2b_G3b.md` in
 
 `preprocessing/raw_evidence.py` gained the three wall readings dead ends need (`bafd3aa2`):
 `ring_along` (E1), `inside_walls` (E2) and `walls_ahead` (E3). They measure only, and nothing reads
-them yet. Grid DR1 (`scripts/dead_end_review/build_dr1.py`, `9debc4d1`) asks of 30 fresh E14.5
+them yet. Grid DR1 (`scripts/dead_end_review/build_dr1.py`, `9debc4d1`) asks of 30 fresh Stack A
 dead ends whether the chain is a vessel and whether the vessel goes on past the tip. It went to
 Harvey on 2026-10-25.
 
-On E14.5 (claudin-5, 394 dead ends, one process) the ring fit costs 0.032 s a section, `walls_ahead`
+On Stack A (claudin-5, 394 dead ends, one process) the ring fit costs 0.032 s a section, `walls_ahead`
 7 ms a dead end and `inside_walls` 2 ms a point; `ring_calibration` took 86 s on 8 workers. There:
 
 - the vesselness share reads "walled" at three in four interior tips;
@@ -186,7 +186,7 @@ Harvey marked DR1 the same day (`outputs/dead_end_review/FIT_DR1.md` in worktree
 E4 (`route_ahead`, `8f2a0a3f`), at Harvey's call after DR1: a tracker that follows the walls from
 one lumen radius past the tip, steering by the wall all round over three steps ahead, within 60 deg
 of the heading, and stopping heading out of the image. Those last two came after reading DR1's
-marked dead ends: at 100 deg it turned into neighbours and along the image face. On E14.5 it costs
+marked dead ends: at 100 deg it turned into neighbours and along the image face. On Stack A it costs
 0.13 s a dead end and runs a median 10 um against E3's 6. Grid DR2 (`9a906d10`) judges it on 30
 fresh dead ends, with its three rules fixed in `fit_marks.FRESH_RULES["DR2"]` beforehand.
 
@@ -227,7 +227,7 @@ and the point of the graph's own thick centreline nearest the tree there (`thick
 vessel ahead" lands there, and post processing bridges the stretch inside the lumen. Delete takes
 the dead end's own chain only.
 
-E14.5 (Harvey's Claudin segmentation, the build at `155699f4`; `outputs/thick_junction_review/thick_wall_2026-10-25/`): 36 of
+Stack A (Harvey's Claudin segmentation, the build at `155699f4`; `outputs/thick_junction_review/thick_wall_2026-10-25/`): 36 of
 393 dead ends are `thick_wall` (20 were `stops_short`, 16 `unknown`); of the 58 tips within reach
 the rest leave the image (15), are artefacts (7) or lie on the tree (4). 30 of the 36 turn more
 than 80 degrees from the way to the thick centreline (all but one more than 60): vessels running
@@ -254,5 +254,5 @@ for 0.4 um where it passed between two of them. `facing_ends._background`, which
 reads too, now takes background between two mask voxels that touch as no stretch
 (`tests/test_facing_ends.py`, `tests/test_dead_ends.py`, on `dead_end_fixtures.thin_diagonal_pair`).
 Nerve at the defaults: 129 -> 128 edges, 12 -> 11 pieces, 22 -> 20 `unknown` dead ends, the
-inlets and outlets still apart. E14.5 (the thick-bridges capture): the graph identical, digest
+inlets and outlets still apart. Stack A (the thick-bridges capture): the graph identical, digest
 `cfe70e01`, every dead end's kind the same; its 9 pairs within 10 um all turn too far.

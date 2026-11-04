@@ -1031,7 +1031,7 @@ def _bifurcation_with_a_blind_stub() -> nx.MultiGraph:
 
 def test_a_blind_stub_does_not_turn_a_bifurcation_into_a_mixed_junction(monkeypatch):
     """Regression: inside the loop's passes a blind stub's flow was the
-    pressure solve's rounding (up to about 1e-20 m^3/s on E14.5, either way),
+    pressure solve's rounding (up to about 1e-20 m^3/s on Stack A, either way),
     so its junction had three outflows and was mixed, with no phase
     separation. Every pass now sets the flows behind dead ends to exactly 0,
     and the junction divides as the bifurcation it is."""

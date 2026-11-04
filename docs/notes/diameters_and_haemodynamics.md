@@ -77,11 +77,11 @@ per-point flows (`sweep_flows.py`) so the viewer's slider can swap them without 
   PLAN_dead_ends.md; Fry et al. 2012: pressures chosen to keep the network near a target
   pressure and wall shear stress, taken from the closed solve, so an open end may feed the
   network as well as drain it), `closed` (the behaviour before), `terminal_resistance` (drains to
-  the outlet pressure through k times its own vessel's resistance) or `outlet`. On E14.5 the
+  the outlet pressure through k times its own vessel's resistance) or `outlet`. On Stack A the
   estimate fed 30% as much blood in through 39 open ends as the designated inlets did, drained
   through 29, and agreed with closed on 86% of flow directions but with the drain-only models on
   only 56-65%; network resistance moved under 8% across all five
-  (`outputs/open_end_sensitivity_e14/`). Like the viscosity law it moves every flow, so **flows
+  (`outputs/open_end_sensitivity_stack_a/`). Like the viscosity law it moves every flow, so **flows
   are not comparable across open-end models**; perturbations may not override it and solve with
   the baseline's conditions (kept on the graph, `G.graph["open_end_conditions"]`). See
   `haemodynamics/open_ends.py` below.
@@ -172,7 +172,7 @@ class median and the table (`edt_diameter_prefer_over_table_on_fwhm_failure`). B
 an unset cross-check as the default (`_measurement_config`), and the example configs say true. On
 the test's scene the search now takes a good start from 0.089 to 0.083 (averaging 4 -> 8 um,
 sample spacing 2 -> 4 um, three accepted samples, half-extent 8.5 um). The cost is the mask
-measurement, about 37 s on E14.5 with workers (2026-10-22). A default run's diameters, and so its
+measurement, about 37 s on Stack A with workers (2026-10-22). A default run's diameters, and so its
 resistances, differ from one before this wherever FWHM failed or started from the global guess.
 
 Turning it on by default showed three places that read it where nothing had: a synthetic

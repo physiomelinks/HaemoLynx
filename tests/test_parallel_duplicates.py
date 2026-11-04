@@ -104,7 +104,7 @@ def test_paths_added_after_the_index_was_built_are_judged_too():
 
 def test_the_added_paths_near_a_box_are_those_whose_bounds_meet_it_in_order_added():
     """Kept as box arrays rather than tested path by path: mask recovery adds
-    thousands, and the per-path test was 87% of its run time on E14.5."""
+    thousands, and the per-path test was 87% of its run time on Stack A."""
     rng = np.random.default_rng(0)
     index = EdgeSampleIndex(_graph([((7, 7, 2), (7, 7, 3))]))
     for _ in range(50):  # past the boxes' first growth

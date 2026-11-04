@@ -720,7 +720,7 @@ def test_missing_vessels_report_their_share_of_the_whole_mask_volume():
 
 
 def test_one_large_vessel_among_many_missing_specks_is_mostly_missing_by_count_but_not_by_volume():
-    """The E14.5 case in miniature (832 of 1,205 components missing, 0.36%
+    """The Stack A case in miniature (832 of 1,205 components missing, 0.36%
     of the mask): the vasculature is one large component and the skeleton
     leaves out a hundred 2-voxel specks. By count almost every "vessel" is
     missing; by volume very little is, and the report must say both."""
@@ -998,7 +998,7 @@ def _thick_vessel_with_capillary(capillary_y: int):
 def _gated(mask, large):
     from haemolynx.preprocessing.thick_vessels import skeletonize_thickness_gated
 
-    # E14.5's settings: the large masks are the thick body, 3 um of wall, 3 um of flake filter.
+    # Stack A's settings: the large masks are the thick body, 3 um of wall, 3 um of flake filter.
     return skeletonize_thickness_gated(
         mask, min_radius_um=3.0, voxel_size_zyx=(1.0, 1.0, 1.0), restrict_thick_to_mask=large,
         return_thick_mask=True, wall_absorption_um=3.0, flake_filter_um=3.0,

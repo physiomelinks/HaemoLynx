@@ -517,7 +517,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py` (the split, and one fixture per bridge shape of `thick_vessel_bridge_shapes`), `test_thick_bridge_review_grid.py` (the Phase 5 grid's cases), `test_junction_bridges.py` (the rule on tubes of known width, putting bridges back, branch orders unchanged, resistance, the Diameters stage, post processing's re-judging and the network handling), `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_doubled_stretches.py` (trim, zip, rejoin, a pair rewired, a join closing a loop inside one lumen refused), `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), `test_vessel_size_classes.py` (the size convention: the rule, the tagging, the diameter chain's hook, the stages and post processing on `tests/vessel_class_fixtures.py`'s tubes of known width, preflight, the outputs, a whole run), `test_graph_artefacts_tool.py` (the comparison harness, its re-trace and the census by place), `test_graph_crop.py` (vessels clipped at a box's faces, the pieces' sources), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_endothelial_planted.py` (planted vessels read at their lumen at several voxel sizes, walls and blurs), `test_pericyte_measurements.py` (profiles, junction distances and branch resistances on a tube of known width, the export stage, the measured-constriction perturbation, its batch and preflight), `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_capillary_block_mask.py` (which vessels a mask's blobs block, the perturbation, its checks), `test_mask_distribution.py` (a mask's objects per order and per mm of capillary, their vessels' length, width and angle, their depth, the kernel density's mode), `test_sweep_flow_layers.py` |
-| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `test_statistics_layout.py` (junction shape, coverage and columns on networks with hand-known answers), `test_statistics_glossary.py` (every row of a run with every statistic on has a term, a definition and a unit; the units a run decides; older CSVs read back alike; the page up to date), `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_capillary_paths.py` (routes counted by hand, the label a draining capillary carries not read), `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_exact_betweenness.py` (the parallel pass `==` networkx on every shape, weighting and scaling, in workers and here; the batched pass where path counts pass 2^53, at every batch size; the fallbacks of both worker programs), `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, one-to-one matching by name, every reason an image is left out, median/mean per subject, Wilcoxon/paired t by hand, Harvey's AIA names) |
+| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `test_statistics_layout.py` (junction shape, coverage and columns on networks with hand-known answers), `test_statistics_glossary.py` (every row of a run with every statistic on has a term, a definition and a unit; the units a run decides; older CSVs read back alike; the page up to date), `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_capillary_paths.py` (routes counted by hand, the label a draining capillary carries not read), `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_exact_betweenness.py` (the parallel pass `==` networkx on every shape, weighting and scaling, in workers and here; the batched pass where path counts pass 2^53, at every batch size; the fallbacks of both worker programs), `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, one-to-one matching by name, every reason an image is left out, median/mean per subject, Wilcoxon/paired t by hand, Harvey's batch names) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py`, `test_endothelial_optimisation_search.py` (a trial's widths `==` the run's; the search on a stand-in ring fit; slow: whole searches at two voxel sizes) |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, `test_gui_pericyte_mask_search.py`, `test_gui_raw_panel.py`, …); `test_gui_pericyte_mask_widget.py` (the pericyte mask rows filled and kept alike in the real panel); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every setting has its own hover text in `setting_tooltips.py`, and holds it and every other control's string to one voice (35 words at most, no setting names, code or history); `test_gui_hover_text_widget.py` scans the built panel, with and without a viewer, and every dock, window and layer control it opens for a control with none (`tests/hover_text_scan.py`, shared with the Batch run window's scan; the help window waits on Harvey's words); `test_batch_run.py` (the batch runner and its command line, one real two-image batch, one real ilastik batch with a stand-in ilastik), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window: eight rows in view after Check, every control's hover text scanned built; Run pipeline's hand-off), `test_gui_fwhm_optimise_widget.py` / `test_gui_endothelial_optimise_widget.py` (the Diameters tab's two optimisers), `test_gui_presets_widget.py` (the Preset menu: what it sets, what replaces it; a preset saved, replaced, deleted and loaded in a later panel), `test_gui_perturbation_widget.py` (the Perturbations tab's editors; a perturbation saved, added in a later panel, numbered on, deleted, its folder opened) |
@@ -646,7 +646,7 @@ RAM, each worker holds its own volumes.
   times its own vessel's resistance) or `outlet`. Like the viscosity law it moves every flow, so
   **flows are not comparable across open-end models**; perturbations may not override it and solve
   with the baseline's conditions (`G.graph["open_end_conditions"]`). See `haemodynamics/open_ends.py`
-  below; the E14.5 comparison is in `docs/notes/diameters_and_haemodynamics.md`.
+  below; the Stack A comparison is in `docs/notes/diameters_and_haemodynamics.md`.
 - **Viscosity model** — selectable, and the choice changes every resistance a run produces, so
   **resistances are not comparable across laws or across diameter bases**. The graph records both
   in `G.graph["viscosity_law"]` / `["diameter_basis"]`. All of it is in
@@ -693,7 +693,7 @@ RAM, each worker holds its own volumes.
 ## Key modules (quick reference)
 
 Each entry says what a module is for and the rules a change to it must keep. Why a rule or
-default is what it is (the marked grids it was fitted on, benchmarks, E14.5 and patella numbers)
+default is what it is (the marked grids it was fitted on, benchmarks, Stack A and Stack E numbers)
 is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each heading below.
 **Keep entries here short:** a new measurement history goes in `docs/notes/` or the matching
 `PLAN_*.md`, not in this file.
@@ -751,7 +751,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `STUMP_SNAP_MIN_FILL` times as wide there as the mask is deep), so a capillary ending in a large
   vessel's mask is no stump's end. A stump with no end of its own takes no node while another of the
   mask's stumps has one, else falls back to the nearest of its ends near the contact, then to the
-  nearest terminal in the mask, with a `BoundaryCoordinateWarning`. Checked on E14.5 only (Harvey's
+  nearest terminal in the mask, with a `BoundaryCoordinateWarning`. Checked on Stack A only (Harvey's
   marks on four ends), not a marked grid.
 - **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`, read through
   `voxel_size_zyx` (edge voxels are microns, masks voxel-indexed). The large mask of the class
@@ -771,7 +771,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   `large_vessel_mask_split_diameter_um` wide fits **in the run's segmentation**, centred in the
   same mask (read with half the coarsest voxel spacing of slack), kept large, and the rest, the
   small mask of its side; a global mask splits into a global pair. The mask gives only the side: a
-  classifier's mask may be far thinner than the vessel (E14.5's). Every caller hands
+  classifier's mask may be far thinner than the vessel (Stack A's). Every caller hands
   `stages._split_large_vessel_masks` the segmentation (`_SegmentationBoxes`, or the skeletonise
   stage's binary image). Done after the large masks load, the wide part reaching the load-time
   dilation past the balls; no default width (preflight:
@@ -845,7 +845,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   (`graph/doubled_stretches.py`: rewired, never deleted whole, bridges never touched; with
   `lumen_cleanup_guard_rejoins`, on, a rejoin makes no join that would close a loop inside one
   lumen, as the pair rewire never does: `_join_closes_loop_in_one_lumen`). Harvey turned both on
-  (2026-10-26) though they failed `PLAN_clean_graph.md`'s kill criteria on E14.5 (more loops round
+  (2026-10-26) though they failed `PLAN_clean_graph.md`'s kill criteria on Stack A (more loops round
   holes over 10 um, a few more dead ends); off is the clean-up as it was. Then dangling bridges,
   the stub prune. What only the wider
   of two vessels sees as doubled is listed, not resolved ("Stretches doubled in one lumen",
@@ -1010,7 +1010,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   extended through the segmentation (`thick_vessel_extend_centreline_ends`, on, not yet checked on
   a fresh grid), and blind vessels beyond a bridge the stub prune would take go with it. A vessel
   carrying on from a thick centreline's end is bridged like any other: the taper rule that left it
-  as vessel failed its fresh grid P (Harvey, 2026-10-25) and was dropped (E14.5: 12 more bridges,
+  as vessel failed its fresh grid P (Harvey, 2026-10-25) and was dropped (Stack A: 12 more bridges,
   network resistance -10%); the wall join and the fork
   rule beat marking all one way there (`docs/notes/thick_vessels.md`). The clean-up still leaves an
   edge marked `THICK_TAPER` (a graph saved before) alone as it does a bridge. Bridges
@@ -1322,7 +1322,7 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   template's (`generate._grow_side_to_reach`); the bed's vertices (a Voronoi bed's seeds) are the
   template's capillary vertices moved by their spacing (`bed.template_vertices`; a scaled box: laid
   cell by cell to its density, `bed.density_vertices`), it runs the way its capillaries run (each
-  direction judged against its own chord length, `bed.class_chord_ratios`: E14.5's columns) and its
+  direction judged against its own chord length, `bed.class_chord_ratios`: Stack A's columns) and its
   vessels curve as theirs do (`polylines.lobes`; each capillary its chord times a tortuosity drawn
   from the template's, `generate._capillary_lengths_by_tortuosity`; each tree vessel's turn drawn
   from the template's own tree vessels, read at 10 um steps, and a fine wobble bringing its turn read
@@ -1411,7 +1411,7 @@ against the user's own judgement:
 6. **Before relying on a rule, check it on a fresh grid** it was not fitted on. Turn each kind of
    case the marks revealed into a synthetic fixture, so the tests pin it.
 
-The first grid was the E14.5 loop review (`outputs/loop_review/`, 2026-10-08). Hole size, the
+The first grid was the Stack A loop review (`outputs/loop_review/`, 2026-10-08). Hole size, the
 measure assumed, did not separate the user's marks. Whether a gap lies inside the loop and the
 loop runs through the mask did.
 
@@ -1427,7 +1427,8 @@ loop runs through the mask did.
 - Force-pushing `main`/`master` or amending pushed commits unless explicitly requested.
 - Expanding scope into unrelated refactors when fixing a targeted issue.
 - Raising a release-review score without evidence in its row, or moving a check's target to make it pass (see **Release review** below).
-- Adding dated benchmarks, grid results or E14.5 numbers to this file: they go in `docs/notes/` or the matching `PLAN_*.md` (see **Key modules**).
+- Adding dated benchmarks, grid results or Stack A numbers to this file: they go in `docs/notes/` or the matching `PLAN_*.md` (see **Key modules**).
+- Naming the user's data anywhere that reaches origin: code, comments, tests, notes, the release review and commit messages. That covers a dataset, sample or file name, a path in someone's home folder, and any tissue beyond nerve, carotid and brain. Datasets go by their aliases (Stack A to Stack D, Batch E), and test files take made-up names.
 
 ---
 

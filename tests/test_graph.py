@@ -442,8 +442,8 @@ def test_degree2_merge_joins_a_spur_and_a_gap_bridge_without_retracing():
     skeleton by A*. A gap bridge has no skeleton across its gap, so the trace
     from spur tip N to M went back down the spur it had just come up and along
     the vessel -- an edge that ran out to N and back over the same voxels,
-    duplicating the vessel's own, and here measured 61% too long. On an
-    E14.5 stack, 209 of 3772 edges ran out and back like this.
+    duplicating the vessel's own, and here measured 61% too long. On a
+    Stack A stack, 209 of 3772 edges ran out and back like this.
 
     A merged edge is its two legs, each run once."""
     G, skeleton = _two_spurs_bridged_at_their_tips()
@@ -693,7 +693,7 @@ def test_are_paths_similar_counts_two_strands_through_one_lumen_as_one_vessel():
 def test_degree2_removal_keeps_one_vessel_of_two_strands_through_one_lumen(route_is):
     """Regression test: strands 5-10 um apart through one lumen are one
     vessel. Judged by distance alone (> 3 um apart) the merged route was
-    added beside the existing edge: pairs of parallel edges in the E14.5 MCA
+    added beside the existing edge: pairs of parallel edges in the Stack A
     graph went from 23 to 157, nearly all inside one segmented vessel.
     Whichever copy is kept, the
     other goes -- including a refused route, which used to stay behind as
@@ -771,7 +771,7 @@ def test_duplicate_parallel_edges_names_every_copy_but_one_of_each_vessel(lumen,
 def test_degree2_removal_removes_duplicate_parallel_edges_it_did_not_make():
     """Regression test: skeletonisation leaves loops round one lumen as two
     edges between the same junctions, with no degree-2 node between them for
-    a merge to compare -- so no step removed them, and at E14.5 MCA 20 such
+    a merge to compare -- so no step removed them, and at Stack A 20 such
     pairs came straight through from the first graph build."""
     detour = _square_detour()
     G = _ab_edges(_line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21), detour)
@@ -794,7 +794,7 @@ def test_degree2_removal_removes_duplicate_parallel_edges_it_did_not_make():
 def test_degree2_removal_resolves_a_duplicate_route_even_beside_a_busy_junction(lumen):
     """Regression test: merging leaves a degree-2 node alone beside a junction
     of max_degree or more, and with it any route through it repeating the
-    edge its neighbours already share -- at E14.5 MCA three were left that
+    edge its neighbours already share -- at Stack A three were left that
     way, one vessel drawn twice. A route the mask separates from that edge
     is a vessel of its own and stays as it was."""
     G = _ab_edges(_line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21), stubs=4)
@@ -975,7 +975,7 @@ def test_a_segment_is_not_bridged_to_itself(segments):
 
 def test_building_the_graph_does_not_search_the_skeleton_for_voxel_cycles(monkeypatch):
     """Regression: every build turned each skeleton voxel into a voxel-graph
-    node and ran ``nx.cycle_basis`` over it -- ~22 s of the E14.5 build -- and
+    node and ran ``nx.cycle_basis`` over it -- ~22 s of the Stack A build -- and
     the offsets included (0, 0, 0), so every voxel was a "loop". What it found
     only ever excluded terminal pairs an edge already joined. A real vessel
     loop in the skeleton still comes out as a cycle in the graph."""
@@ -1663,7 +1663,7 @@ def test_a_stub_mostly_off_the_mask_is_pruned_whatever_its_length():
 
 @pytest.mark.parametrize("mask_runs_on", [False, True])
 def test_a_short_sprout_is_kept_only_where_the_mask_ends_with_it(mask_runs_on):
-    """An 8 um blind sprout (E14.5) ends where its mask does: the radius rule
+    """An 8 um blind sprout (Stack A) ends where its mask does: the radius rule
     keeps it. Where the mask runs on past the tip, the tip is a vessel the
     network lost track of, held to min_stub_length as well, and pruned."""
     G = _vessel_with_a_stub((10, 18, 20))

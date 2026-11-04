@@ -60,7 +60,7 @@ _TIE_UM = 1e-9
 #: How far out from a centreline, in lumen radii (+ the margin), its lumen's
 #: cross-section is followed to the wall. A flattened lumen's far side lies
 #: well past its radius -- the radius is the distance to the *nearest* wall --
-#: and on E14.5 79% of the mask the radius rule left uncovered had a straight
+#: and on Stack A 79% of the mask the radius rule left uncovered had a straight
 #: line through the mask to its nearest centreline, a median 2 radii out, 90%
 #: within 3.2. Recovery traced it as a second strand. A branch the graph lost
 #: runs on past this reach, so its far part stays uncovered and is recovered.
@@ -164,7 +164,7 @@ def _cross_section_task(bits: np.ndarray, payload) -> np.ndarray:
 #: Fewer centreline samples than this have their cross-sections followed in
 #: this process. Starting the workers costs about ten seconds (each imports
 #: the package afresh), and one process follows roughly 6,000 samples a
-#: second: E14.5's 66,000 stay here, a 16 G-voxel stack's millions go out.
+#: second: Stack A's 66,000 stay here, a 16 G-voxel stack's millions go out.
 _WORKER_MIN_SAMPLES = 400_000
 
 
@@ -270,7 +270,7 @@ def _nearest_with_ties(tree: cKDTree, points: np.ndarray, k: int, upper: float):
     edge's cross-section. Which of those tied samples a plain *k*-nearest
     query hands back depends on how the tree split every sample in the image,
     so a change anywhere changed which edges judged a voxel here -- the mask
-    left uncovered differed 280 um from any change on E14.5
+    left uncovered differed 280 um from any change on Stack A
     (PLAN_dale_review_fixes.md, item 2). Rows without a tie at the *k*-th
     come back *k* wide; the few with one, in blocks as wide as they need.
     """
@@ -1039,13 +1039,13 @@ def recover_uncovered_mask_vessels(
     graph whose interior dead ends were removed first
     (``dead_ends.remove_interior_dead_ends``): followed out to 4 radii a
     lumen counts the mask beside a neighbour as covered, and recovery as it
-    is draws mostly dead ends -- on E14.5, 1,376 of the 2,024 edges it drew
+    is draws mostly dead ends -- on Stack A, 1,376 of the 2,024 edges it drew
     there (2026-10-21).
 
     With *skeleton* -- the run's own skeleton, voxel-indexed like the mask --
     a piece's centreline is the skeleton where it runs through the piece,
     and a piece the skeleton does not run through is left alone. Without
-    it the mask round the piece is Lee-thinned again. On E14.5 (2026-10-13)
+    it the mask round the piece is Lee-thinned again. On Stack A (2026-10-13)
     re-thinning drew two thirds of its length where the skeleton has none,
     as combs and mazes across wide lumens, which the clean-up then took out
     again; from the skeleton, recovery took 38 s instead of 97, and the

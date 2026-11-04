@@ -1,7 +1,7 @@
 """Which step of graph building made a connection
 (``scripts/thick_bridge_review/connection_steps.py``): a course found in a
 graph, the step that made it, a bridge's course before the split, and the
-skeleton layer that drew it. The E14.5 trace itself is run by hand."""
+skeleton layer that drew it. The Stack A trace itself is run by hand."""
 from __future__ import annotations
 
 import networkx as nx

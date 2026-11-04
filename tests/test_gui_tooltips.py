@@ -24,7 +24,7 @@ MAX_TOOLTIP_WORDS = 35
 SNAKE_CASE = re.compile(r"\b[a-z0-9]+(?:_[a-z0-9]+)+\b")
 #: What a new user has no use for: dates, datasets, people, plans, code.
 NOT_FOR_A_NEW_USER = re.compile(
-    r"\bE14\.5\b|\bpatella\b|\bHarvey\b|\bMason\b|\bPLAN\b|\b\d{4}-\d{2}-\d{2}\b"
+    r"\bStack [A-E]\b|\bBatch E\b|\bHarvey\b|\bMason\b|\bPLAN\b|\b\d{4}-\d{2}-\d{2}\b"
     r"|\.py\b|\bet al\b|haemolynx\.|G\.graph"
 )
 #: Values a dropdown shows as they are spelled, so hover text may name them.
@@ -224,7 +224,7 @@ def test_voice_check_catches_what_it_is_for():
     # A value its dropdown shows as spelled may be named.
     assert "terminal_resistance" in SHOWN_CHOICE_VALUES
     assert _voice_problems("Drain each through terminal_resistance instead") == []
-    assert _voice_problems("Fitted on E14.5 in October") == ["mentions 'E14.5'"]
+    assert _voice_problems("Fitted on Stack A in October") == ["mentions 'Stack A'"]
 
 
 def test_every_group_box_and_move_has_its_own_hover_text():

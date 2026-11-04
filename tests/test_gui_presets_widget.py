@@ -215,7 +215,7 @@ def test_ticking_mask_switches_by_preset_searches_for_the_masks(panel, tmp_path)
     """A preset ticks the switches as a user would, so the masks beside the
     image are found, and the report says so under the preset's line."""
     image, art, ven = (tmp_path / name for name in (
-        "E14_MCA_segmented.tif", "E14_MCA_large_arterioles.tif", "E14_MCA_large_veins.tif",
+        "StackA_region_segmented.tif", "StackA_region_large_arterioles.tif", "StackA_region_large_veins.tif",
     ))
     for path in (image, art, ven):
         path.write_bytes(b"")
@@ -229,7 +229,7 @@ def test_ticking_mask_switches_by_preset_searches_for_the_masks(panel, tmp_path)
     report = panel._haemolynx_report()
     assert report.startswith("Loaded preset Arteriole and venule masks: set ")
     # Both searches' lines, the large masks' and the small masks'.
-    assert "E14_MCA_large_arterioles.tif" in report
+    assert "StackA_region_large_arterioles.tif" in report
     assert "No small vessel masks found" in report
 
 

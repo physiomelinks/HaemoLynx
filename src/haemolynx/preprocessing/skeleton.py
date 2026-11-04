@@ -88,7 +88,7 @@ class _SlabComponents:
     ``np.argwhere(labeled)`` and ``labeled`` there). An int32 label volume
     of the mask was 22 GB on disk for a 5.5 G-voxel stack, and writing it
     took the page cache from the rest of the machine (free RAM fell to
-    0.2 GB on a patella run)."""
+    0.2 GB on a Stack E run)."""
 
     def __init__(self, mask: np.ndarray, structure: np.ndarray, *, voxels: bool = False):
         from . import slab_labels
@@ -1080,7 +1080,7 @@ def _select_hub_centres(
     cell and the ones next to it: any hub nearer than the spacing is in one
     of those. Checking every hub kept so far made this quadratic, and a
     skeleton's local density takes few distinct values, so its maxima tie
-    across whole plateaus of peaks -- on a 2x grid of the E14.5 stack, bundle
+    across whole plateaus of peaks -- on a 2x grid of Stack A, bundle
     refinement took 24 minutes of a 29-minute optimiser run. Distances are
     the same arithmetic on the same integer coordinates as before, so the
     hubs kept are exactly the same.

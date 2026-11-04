@@ -11,7 +11,7 @@ and the thin capillaries fused to it are joined onto that tree (`_join_thin_arms
 each arm aims at the tree as it was before any arm joined, and at an earlier arm's bridge only
 when the tree is past the bridge cap -- aimed at whatever was nearest, a second capillary joined
 the first one's bridge by the wall and the bridges ran side by side through the fat lumen, 21 of
-E14.5's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
+Stack A's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
 remain. Under the low-RAM option (2026-10-18) no step makes a distance map or label volume of
 the stack (`blockwise_edt.py`, `slab_labels.py`) and the skeleton and region are bit for bit
 the in-RAM ones (synthetic networks, trunks wider than 16 voxels, anisotropic, cut by the faces,
@@ -31,14 +31,14 @@ once, and each pass started its own), each mapping its volumes for one task and 
 writes; the free memory the plan and the re-check before each task read (2 GB kept free) is read
 once this process's disk-backed volumes are written out and their pages handed back
 (`memmap_support.release_resident_pages`): on Windows a mapped file's pages are not available
-while in a working set or unwritten on the modified list (14.7 GB of it on the patella, emptying
+while in a working set or unwritten on the modified list (14.7 GB of it on Stack E, emptying
 at ~55 MB/s), so the re-check took the run's own volumes for the machine's memory and held the
-patella's catchment to one task at a time (region 925 -> 1,296 s at `dcc41c25`; 916 s with the
+Stack E's catchment to one task at a time (region 925 -> 1,296 s at `dcc41c25`; 916 s with the
 re-check off). 75 M-voxel stack: region 132 -> 42 s (45 s in one process); 300 M: catchment
-85 -> 25 s, both bit for bit (the patella with this not yet timed). **The large-stack tree**
+85 -> 25 s, both bit for bit (Stack E with this not yet timed). **The large-stack tree**
 (`skeleton_thick_vessel_large_stack_tree`, off by default, under the low-RAM option only;
 `preprocessing/thick_vessel_tree.py`, 2026-10-19) is for a fat region that is one network
-crossing the stack -- Harvey's patella at a 3 um gate, 111 M of its 144 M fat voxels in one
+crossing the stack -- Harvey's Stack E at a 3 um gate, 111 M of its 144 M fat voxels in one
 component, ~40 GB of that CSR. Each component's tree is built as `_component_tree` builds it
 (root and far end, arms farthest first, the same tests), from shortest paths found over the
 voxels themselves (`shortest_path_parents`: bucketed label-correcting, neighbours three to a
@@ -52,8 +52,8 @@ voxels are grouped by component in one array filled as the slabs are labelled, t
 read along `distances_at_points`' own block rows on up to 4 threads, small components on
 threads, and the join's last resort bounded (`_bounded_structure_path`: a box round the
 arm's ends, 41 voxels padding doubling, at most 64 M box voxels and 2 M searched; an arm
-with no path is left unjoined and logged). E14.5 (Harvey's settings) with it: thick region,
-tree and skeleton bit for bit the in-RAM ones. Patella tree step (1312 s at `1d9bf1ab`, its
+with no path is left unjoined and logged). Stack A (Harvey's settings) with it: thick region,
+tree and skeleton bit for bit the in-RAM ones. Stack E's tree step (1312 s at `1d9bf1ab`, its
 region read back): labelling 120 s, 5,644 small components 330 s, the big one's radius
 119 s, its shortest paths 740 s (~6.6 us a voxel; threads gave nothing there), arms 8 s;
 peak 22.2 GB commit, 9.7 GB above the region and skeleton buffer (6 GB unthreaded), during the radius
@@ -66,11 +66,11 @@ closing log line (paths 907 s, the nearest-fat tree rebuilt per bridge 552 s, th
 465 s, the bounded search 360 s). Before the bridge numbers were carried it ran 5.6 arms/s
 against 20. **It draws the same arms,
 so it does not keep a network's narrower vessels**: arms aim only at voxels of at least 0.4
-of the component's widest radius, so the patella's 111 M-voxel component got its main path
+of the component's widest radius, so Stack E's 111 M-voxel component got its main path
 and 2 arms (263,706 tree voxels in all; 68% of fat voxels over 20 um from the tree, against
-3.5% on E14.5), and the fat voxels no arm reaches are not handed to Lee. What to do there
+3.5% on Stack A), and the fat voxels no arm reaches are not handed to Lee. What to do there
 (hand them back, or aim arms by local radius) waits on Harvey and a marked grid. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
-wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
+wall; 39 s on Stack A) is kept beside the saved skeleton, one bit a voxel
 (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
 digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
 run with the same mask and settings reads it back (`skeletonize_thickness_gated(thick_region=)`),
@@ -84,8 +84,8 @@ alone, and every vessel opening into it is joined by one `IS_ZERO_RESISTANCE` br
 from where it leaves the thick region (the segmentation within the margin of the large-vessel
 body: the thick vessel's segmented boundary) to the centreline; a bridge is never a dead end nor
 attached to one. The centreline is the tree `skeletonize_edt_ridge` draws through the region,
-found again from the region (9 s on E14.5, so nothing new is carried through resume or a
-`.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid: E15's held no case; in post-processing only a gap an edited vessel reaches, as far as its bridge would look, and what is drawn is marked edited so the stage measures it); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
+found again from the region (9 s on Stack A, so nothing new is carried through resume or a
+`.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid: Stack B's held no case; in post-processing only a gap an edited vessel reaches, as far as its bridge would look, and what is drawn is marked edited so the stage measures it); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
 near it counts only if long enough (3 um at an edge's end, 6 um within). Every edge reaching the
 region is labelled outside / centreline / inside: inside stretches joined through their nodes
 that lead out of the region and meet the centreline, or come within one lumen radius of it, are
@@ -102,7 +102,7 @@ would take it as a stub too: shorter than `min_stub_length` and than
 `min_stub_length_radius_multiple` times the thick vessel's lumen radius at the tree point
 nearest the bridge (`_remove_blind_vessels_beyond_bridges(stub_length_um=)`; Harvey's grid Y,
 2026-10-15: the four marked keep were 34-154 um, stretches of the thick vessel itself and long
-capillaries, the two marked remove 6 and 16 um). On E14.5: 150
+capillaries, the two marked remove 6 and 16 um). On Stack A: 150
 bridges, each from the region's boundary to the centreline (median length 1.24 lumen radii),
 every one leading to a junction or the image's edge, against the old rule's 360 inside pieces of
 which 44 were radius-shaped; 42 blind vessels (529 um) removed. Bridges are not measured
@@ -117,7 +117,7 @@ from Harvey's examples (2026-10-13, `PLAN_bridging.md` F1-F1c): a dead end stopp
 is first drawn on through the mask to the thick centreline, under the bridge gate and
 the same-lumen guard (a short join judged at its middle) and the loop guards, never closing a loop shorter than the run's
 `remove_short_loops_under_um` round a hole no wider than `short_loop_keep_hole_over_um`
--- one the clean-up would break (on E14.5 all 10 short loops the build left ran through such
+-- one the clean-up would break (on Stack A all 10 short loops the build left ran through such
 a join), then bridged like any vessel (`join_dead_ends_at_walls`; the
 edge records `joined_at_thick_wall_um`) -- skeletonisation often ends a thin arm at the wall;
 a bridge carrying a thick centreline's end on along its own line was, until 2026-10-25, the
@@ -136,9 +136,9 @@ within `EXTEND_REACH_UM` (40 um); an image face reached first means the vessel l
 and nothing is drawn (`_extend_thick_centreline_ends`, edge mark `EXTENDED_UM`). At grid W's
 16, 20 and 23 the tree ended where the graph did, so following the tree alone could not make
 Harvey's joins. Grid Y (`outputs/thick_vessel_breaks/GRID_Y_extension.md`, all 18 such
-places on E14.5's two segmentations): 17/18 against 14 for drawing every one, wrong at a 4 um
+places on Stack A's two segmentations): 17/18 against 14 for drawing every one, wrong at a 4 um
 step out to a face; leave-one-out about 15-16, the reach resting on one example. On Harvey's
-E14.5 Claudin segmentation (2026-10-20, rebuilt from his run's skeleton) it drew 12 thick
+Stack A Claudin segmentation (2026-10-20, rebuilt from his run's skeleton) it drew 12 thick
 centrelines on: dead ends in vessels of 5 um radius or more 124 -> 116, `stops_short` 102 -> 96.
 
 ## Bridge shapes, shared nodes and drawn bridges (2026-10-24)
@@ -147,7 +147,7 @@ centrelines on: dead ends in vessels of 5 um radius or more 124 -> 116, `stops_s
 (`d0ca6387`..`a857e40b`). **The bridge-shape report** (`graph/thick_vessel_bridge_shapes.py`,
 `diagnose_thick_vessel_bridges`, logged by `build_network` after the split and written by
 `scripts/graph_artefacts.py`) puts each bridge in one of the 2026-10-09 audit's six shapes, or
-`fork`. Judged by the tree alone on that audit's graph (E14.5's 2026-10-07 checkpoint, 393 bridges)
+`fork`. Judged by the tree alone on that audit's graph (Stack A's 2026-10-07 checkpoint, 393 bridges)
 it finds 273 in the four shapes the split never means to make, against the audit's 284, with the
 same median lengths; the audit read the radius at the inner node with a fixed 1.5 um tolerance,
 the report the tree's radius with the split's own tolerance. On the current rule every bridge
@@ -155,7 +155,7 @@ ending off the tree ends on the graph's own thick centreline where it strays, 2-
 default that counts as reaching the centreline; and a bridge "lies along" it only with 3 um on the
 tree, since one shorter than twice the tolerance has most of its length there whatever its
 direction. **Design C.4**: bridges ending within one lumen radius of each other share one node
-(`_share_centreline_nodes`); on Harvey's E14.5 Claudin segmentation (the graph handed to the split
+(`_share_centreline_nodes`); on Harvey's Stack A Claudin segmentation (the graph handed to the split
 at `00611a47`, replayed) it moved 11 of 73, and the clean-up after the split then took a different
 path at one tangle at the image face (x < 30 um, y 95-150 um), where the split already joins two
 nodes by a 4 um bridge and a 47 um vessel: saved graph 1,226 -> 1,221 nodes, vessel length 47,314
@@ -165,13 +165,13 @@ outside its region (in the segmentation; 8.7 and 2.3 um median from the tree) an
 one to 30 um, 152 um of the 175. Drawn for Harvey on both graphs, down z and down x, and kept at his
 call (2026-10-26): the tangle reads better with C.4. A judgement on one place, not a marked grid.
 **Design C.5**: a bridge whose straight line would cross more than 2 um of background
-keeps the way its vessel ran through the lumen (`DRAWN_BRIDGE`): 1 of 73 on E14.5.
+keeps the way its vessel ran through the lumen (`DRAWN_BRIDGE`): 1 of 73 on Stack A.
 **`thick_bridge_centreline_tolerance_um`** (1.5 um, unfitted) replaces the constant;
 `thick_bridge_one_radius` was not made (the drawn-path rule it would switch back to is gone, and
 Phase 6 runs it from a script), and stays dropped at Harvey's call (2026-10-26); that script is
-kept only in the git-ignored `outputs/tb/` of worktree `plan-thick-bridges-e32666`. The Phase 5 grid (30 bridges, 30 near-misses, E14.5 at `47edef60`,
+kept only in the git-ignored `outputs/tb/` of worktree `plan-thick-bridges-e32666`. The Phase 5 grid (30 bridges, 30 near-misses, Stack A at `47edef60`,
 `scripts/thick_bridge_review/build_grid.py`) went to Harvey on 2026-10-24 for marks. **Phase 6**,
-E14.5 built and solved at `47edef60` with the rule before 43dcf453 and with this one: bridges 123
+Stack A built and solved at `47edef60` with the rule before 43dcf453 and with this one: bridges 123
 (1,847 um) -> 63 (505 um), length over radius median 1.31 -> 1.08, vessel length 46,471 -> 47,139
 um, network resistance 5.70e15 -> 2.79e15 Pa.s/m^3 (open ends closed 1.22e16 -> 3.79e15, same
 inlet and outlets), `build_network` 218 -> 245 s (the split 0.4 -> 14.3 s); the 55 old bridges
@@ -200,7 +200,7 @@ loop guard, right on 1 of 3), the fork rule 6/8 against 4/8 (misses at ratios 0.
 at 0.90-0.98), the taper rule 5/8 against 7/8 for all S: 3 of its 4 tapers marked as side entries to
 bridge, at cosines 0.80-0.97. **The taper rule dropped** (Harvey's call, 2026-10-25): a vessel carrying
 on from a thick centreline's end is bridged like any other (grid P's taper sheet: 7/8, wrong on P15,
-the one T). E14.5, one run each to solve on Harvey's Claudin segmentation, with the rule and
+the one T). Stack A, one run each to solve on Harvey's Claudin segmentation, with the rule and
 without: tapers left as vessel 15 -> 0, bridges in the built graph 63 (505 um) -> 75 (582 um; 57
 radius-shaped, 13 longer than the radius, 4 at forks, 1 along the centreline: no new shape), vessel
 47,139 -> 47,012 um, dead ends 394 -> 393, vessels solved 1,101 -> 1,119, network resistance
@@ -208,30 +208,30 @@ radius-shaped, 13 longer than the radius, 4 at forks, 1 along the centreline: no
 `THICK_TAPER` alone, for graphs saved before. **A dead end the wall join leaves** (within its
 reach of the lumen, off the tree) is a `thick_wall` dead end since 2026-10-25, judged on the tree
 the build records on the graph and listed in Post processing's "Dead ends at thick vessels"
-(`dead_ends_and_open_ends.md`): 36 of E14.5's 393. **Harvey's calls on what grid P left** (2026-10-25):
+(`dead_ends_and_open_ends.md`): 36 of Stack A's 393. **Harvey's calls on what grid P left** (2026-10-25):
 a fork of two vessels of a size keeps no bridge (his marks: 4 near-equal forks E, 2 B); the wall
 join's reach and in-lumen loop guard go to grid P2 (`scripts/thick_junction_review/wall_rest_grid.py`:
-every unmarked case of each on E14.5, 5 and 4), the 9 connectors the split leaves unbridged to
+every unmarked case of each on Stack A, 5 and 4), the 9 connectors the split leaves unbridged to
 grid K (`connector_grid.py`: 2 read their reach at a thin tree spur, 1 sunk by one exit), and the
-tree fill to a fresh grid on E15. **P2 and K marked** (the
+tree fill to a fresh grid on Stack B. **P2 and K marked** (the
 same day; `outputs/thick_junction_review/grid_P2/FIT_P2.md`, `grid_K/FIT_K.md`): every version of
-the join replayed on E14.5 and scored on all 22 marked wall cases (15 J, 7 N): as it is 12/22, the
+the join replayed on Stack A and scored on all 22 marked wall cases (15 J, 7 N): as it is 12/22, the
 reach at 15 um 14/22 (two more joins, both J, none N), the in-lumen loop guard or the beside check
 dropped 12/22 (the short-loop guard then refuses the same joins). Harvey: the reach 15 um, the
 guard kept. Grid K: 4 B, 5 N; today's split 5/9, the reach read at the widest tree radius 4/9 (the
-marks contradict the spur cause), each exit bridged on its own 6/9; nothing changes until the E15
+marks contradict the spur cause), each exit bridged on its own 6/9; nothing changes until the Stack B
 grid checks that and the length inside the region (8/9 here, 6/9 leave-one-out).
-**Grid E15** (2026-10-27, `scripts/thick_junction_review/e15_grid.py`; fit
-`outputs/thick_junction_review/grid_E15/FIT_E15.md`): Harvey's second stack with thick vessels,
-built on large masks from his embryo projects (trained on E14.5; thin on E15, the region 3.2% of
+**Grid Stack B** (2026-10-27, `scripts/thick_junction_review/stack_b_grid.py`; fit
+`outputs/thick_junction_review/grid_StackB/FIT_StackB.md`): Harvey's second stack with thick vessels,
+built on large masks from his other projects (trained on Stack A; thin on Stack B, the region 3.2% of
 the segmentation in 24 pieces), holds no tree-fill gap with the graph on two sides and leaves no
 connector unbridged, so the fill and grid K's measures stay unchecked on fresh data. Its 30 wall
 joins (1 joined, 13 past the reach, 15 turned away on the chord, 1 beside a vessel) Harvey marked
-all N: the join 29/30, a 10 um reach 30/30; pooled with E14.5's 22 marked cases 43/52 at 15 um
+all N: the join 29/30, a 10 um reach 30/30; pooled with Stack A's 22 marked cases 43/52 at 15 um
 against 42/52 at 10 um. The one join (10.9 um past the lumen, 72 degrees on the chord) sits among
-E14.5's J joins on every measure in the key, so nothing changes.
+Stack A's J joins on every measure in the key, so nothing changes.
 **A thick vessel's end at the image face is never dropped** (found raising the reach): on
-E14.5 at 15 um a wall join put a node on the arteriole's centreline 17 um from the image face,
+Stack A at 15 um a wall join put a node on the arteriole's centreline 17 um from the image face,
 past the tree's end (skeletonisation stops the tree short of the face). The stretch from there to
 the face became an edge of its own, inside the region and off the tree; met at that node by the
 joined vessel's stretch, the split took both for one connector, replaced it by the joined
@@ -243,7 +243,7 @@ path through a connector (`_at_image_face`;
 
 **The Phase 5 grid, sheet 1 marked (Harvey, 2026-10-25).** IDs 1-30 (17 bridges, 13 near-misses;
 `outputs/thick_bridge_review/marks.csv`, fit by `scripts/thick_bridge_review/fit_marks.py` into
-`FIT.md`, E14.5 at `47edef60`): B 3, V 3, C 13, N 11. The current rule agrees on 9 of 30 (2 of the
+`FIT.md`, Stack A at `47edef60`): B 3, V 3, C 13, N 11. The current rule agrees on 9 of 30 (2 of the
 17 bridges marked a bridge, 7 of the 13 near-misses marked vessel or thick centreline), against 13
 for marking all C and 16 for making no bridge at all. 7 bridges are the thick vessel's own
 centreline by Harvey's marks and 6 should not be connected, as should 5 near-misses. Neither
@@ -281,7 +281,7 @@ judged as that commit made them.
 voxel inside the large-vessel masks is the thick body, so a capillary inside or within the wall
 of a large mask gets no Lee centreline. D2's alternative, the body as large mask AND inscribed
 radius (of the hole-filled segmentation) of at least half `skeleton_thick_vessel_min_radius_um`
-(1.5 um on E14.5), measured on E14.5 at origin `6d5c1bb1` (Harvey's Claudin segmentation, the
+(1.5 um on Stack A), measured on Stack A at origin `6d5c1bb1` (Harvey's Claudin segmentation, the
 main checkout's config, each run to the solve with the restriction swapped for the run; no code
 changed; `outputs/sc/d2/d2_run.py`, `d2_score.py`, `REPORT_D2.md` in worktree
 `quirky-goodall-bbcb6f`):
@@ -314,11 +314,11 @@ two runs. A small change of the thick body choosing another stump is worth a loo
 
 ## Where the connections that should not exist come from (2026-10-26)
 
-The Phase 5 grid's 25 N cases ("should not be connected at all"), traced on E14.5 (Harvey's
+The Phase 5 grid's 25 N cases ("should not be connected at all"), traced on Stack A (Harvey's
 Claudin segmentation, `config.yaml`) built again at `26ba5ab1`: all 25 are still there, 12 as
 bridges and 13 as near-misses. `scripts/thick_bridge_review/capture_steps.py` runs to
 `build_network` keeping the skeleton before and after the thin-arm join, the graph after every
-topology step and every step after them, and the graph the split was handed (E14.5: 660 s, about
+topology step and every step after them, and the graph the split was handed (Stack A: 660 s, about
 5 GB). `connection_steps.py` looks for each case's course (a near-miss's piece; for a bridge, its
 vessel's way from the region's edge to the centreline in the graph the split was handed) in every
 step's graph, and puts it down to the first step of the last unbroken run that has it; where the
@@ -335,12 +335,12 @@ each (voxel z, y, x; b bridge, n near-miss):
 | Lee on the thin catchment | 1 | n 42 (19, 384, 123) |
 | the split's end extension | 1 | n 11 (28, 58, 153) |
 
-The clean-up thins the whole skeleton again (25,549 voxels added, 28,980 taken on E14.5), moving a
+The clean-up thins the whole skeleton again (25,549 voxels added, 28,980 taken on Stack A), moving a
 join's path two or three voxels, so a skeleton step is judged by whether its skeleton joins the
 course's ends within 3 um, not by covering it. **The join is the largest group, and it is also how
 every other vessel meets a thick one.** It gives each thin skeleton component one path to the
 ridge, from the component's voxel nearest it; Lee stops 3 um short of the region, and 90 of
-E14.5's 212 paths start on a one-voxel arm that cut leaves (47 of the 212 are still a connection
+Stack A's 212 paths start on a one-voxel arm that cut leaves (47 of the 212 are still a connection
 in the saved graph). Of all 60 Phase 5 cases the join made 32: N 12, C 12, B 6, V 2. Of today's 77
 bridges it made 49 (the split 12, the skeleton clean-up 6, the tree 4, other steps 6). **No measure
 is worth a grid.** On those 32 (all one way 20/32): the arm's direction against the path
@@ -358,7 +358,7 @@ join is asked to connect. Harness and traces: `outputs/nc/` in worktree `angry-c
 (git-ignored; `trace_N/TRACE.md`, `trace_bridges/`, `joins/`).
 
 **Grid J, a census of the join's paths** (Harvey, 2026-10-26;
-`scripts/thick_bridge_review/join_census.py`): every path the join drew on E14.5 that the saved
+`scripts/thick_bridge_review/join_census.py`): every path the join drew on Stack A that the saved
 graph still joins and that passes nowhere within 3 um of a Phase 5 piece, 25 of the 212 (only 54
 of the 212 arms are in the saved graph at all), shuffled into J01-J25 and drawn as Phase 5 draws,
 the join's path in red. Marks J joined here, C the big vessel's own centreline, N should not be
@@ -374,7 +374,7 @@ nearly two times in three, a real vessel opening in one time in ten, and the thi
 centreline, where the tree misses it, one time in five; all N is the best any measure can do on
 grid J, and no rule is fitted.
 
-**The join switched off** (Harvey's request, 2026-10-26): E14.5 captured twice at `e8ce15fb`,
+**The join switched off** (Harvey's request, 2026-10-26): Stack A captured twice at `e8ce15fb`,
 low-RAM (the same graph as in RAM), with the config as it is and with
 `skeleton_thick_vessel_max_bridge_distance_um` = 0, which leaves every arm past the cap. All 57
 marked cases the join made are joined with it on; with it off, 50 go: N 31 of 37, B 5 of 6, C 12
@@ -391,7 +391,7 @@ nodes), island ends 94 -> 116, vessel 47,596 -> 47,437 um. Nothing changed in th
 
 ## Grid SW: the dead ends the wall join leaves in the surface layer (2026-10-27)
 
-Harvey asked why vessels in E14.5's surface layer look broken beside each other. At `9a620be2`
+Harvey asked why vessels in Stack A's surface layer look broken beside each other. At `9a620be2`
 (a low-RAM capture, `scripts/thick_bridge_review/capture_steps.py`) the thick region is one piece of
 851k voxels in the top 38 um, flagged by the braid guard, so all 57 of the run's `thick_wall` dead
 ends lie in the first 40 um. Each was already a dead end in the first graph built from the
@@ -411,19 +411,19 @@ refused 3 J, 1 V and 3 N. The best single threshold is right 44/56; the best pai
 most 30 um turning at most 84 degrees on the chord whatever the loop guards say, 47/56 fitted and
 45/56 leave-one-out (it joins 9 J and 4 marked N or V where the join joins none; 9 to 4 on the
 cases they disagree on, p = 0.27). Not implemented: under 90%, and fitted on these cases alone;
-the 52 wall cases marked on grids P, P2 and E15 would check it. Only 2 V, so nothing supports
+the 52 wall cases marked on grids P, P2 and Stack B would check it. Only 2 V, so nothing supports
 joining these to the vessel ahead (`trace_on_dead_ends`, `join_dead_ends_to_vessel_sides` stay
 off). What looked broken in the surface layer was mostly the drawing (vessels leaving a 40 um slab,
 flowless chains drawn grey on the mask) and dead ends Harvey keeps.
 
 **The pair rule's fresh check** (the same day, at Harvey's request;
 `outputs/thick_junction_review/grid_SW/score_pair_rule.py` and `SCORE_PAIR_RULE.md`, main checkout):
-the 52 wall cases Harvey marked on grids P, P2 and E15, each capture replayed at `9a620be2` (E15's
-is `outputs/br/e15_masks_build/` in worktree `plan-bridging-ef14af`), each case matched by position
+the 52 wall cases Harvey marked on grids P, P2 and Stack B, each capture replayed at `9a620be2` (Stack B's
+is `outputs/br/stack_b_masks_build/` in worktree `plan-bridging-ef14af`), each case matched by position
 to the wall join's pool and its chain measured on the graph the join is handed, as grid SW's were
-again. The pair within the 15 um reach is right 40/52 (E14.5 13/22, E15 27/30), against 43/52 for
+again. The pair within the 15 um reach is right 40/52 (Stack A 13/22, Stack B 27/30), against 43/52 for
 the join as it is (14/22, 29/30) and 37/52 all N; the join with the pair's joins added 42/52 (16/22,
-26/30). The pair gains five Js the join refuses on E14.5 (P01, P02, P32, P34, P36, four of them at
+26/30). The pair gains five Js the join refuses on Stack A (P01, P02, P32, P34, P36, four of them at
 the loop guards), drops three it joins (P10, P12, P31: chains of 37-44 um) and joins six marked N
 (P03, P04, P39; E01, E17, E26). It fails its fresh check, so nothing changes. Across P, P2 and SW
 the loop guards refused 9 cases marked J and 7 marked N or V.

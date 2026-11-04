@@ -71,9 +71,9 @@ def test_a_condition_is_its_phrases_ignoring_case():
     condition = parse_condition(" WT ,  Wildtype,, ")
     assert condition.label == "WT, Wildtype"
     assert condition.phrases == ("wt", "wildtype")
-    assert condition.holds("E14_wt_01_Simple Segmentation")
-    assert condition.holds("E14_WILDTYPE_2")
-    assert not condition.holds("E14_KO_1")
+    assert condition.holds("StackA_wt_01_Simple Segmentation")
+    assert condition.holds("StackA_WILDTYPE_2")
+    assert not condition.holds("StackA_KO_1")
     assert parse_condition("") is None
     assert parse_condition(" , ") is None
     assert parse_condition(None) is None
@@ -82,10 +82,10 @@ def test_a_condition_is_its_phrases_ignoring_case():
 def test_each_image_is_in_one_condition_both_or_neither():
     conditions = BatchConditions.from_text("WT", "KO")
     assert conditions.compares
-    assert conditions.condition_of("E14_WT_1") == "WT"
-    assert conditions.condition_of("E14_ko_1") == "KO"
-    assert conditions.condition_of("E14_WT_KO_1") == BOTH_CONDITIONS
-    assert conditions.condition_of("E14_HET_1") == ""
+    assert conditions.condition_of("StackA_WT_1") == "WT"
+    assert conditions.condition_of("StackA_ko_1") == "KO"
+    assert conditions.condition_of("StackA_WT_KO_1") == BOTH_CONDITIONS
+    assert conditions.condition_of("StackA_HET_1") == ""
     names = ["WT_1", "WT_2", "KO_1", "HET_1", "WT_KO"]
     assert conditions.counts(names) == {"WT": 2, "KO": 1, BOTH_CONDITIONS: 1, "": 1}
     assert conditions.describe(names) == "2 in WT, 1 in KO, 1 in both, 1 in neither"
@@ -255,16 +255,16 @@ def test_benjamini_hochberg_against_hand_computed_q_values():
 
 def _batch(root: Path) -> list[str]:
     for stem, length, degree in (
-        ("E14_WT_1", 100.0, 2.0),
-        ("E14_KO_1", 210.0, 2.4),
-        ("E14_WT_2", 110.0, 2.1),
-        ("E14_KO_2", 220.0, 2.2),
-        ("E14_WT_3", 120.0, 2.3),
-        ("E14_KO_3", 230.0, 2.0),
-        ("E14_HET_1", 150.0, 2.1),
+        ("StackA_WT_1", 100.0, 2.0),
+        ("StackA_KO_1", 210.0, 2.4),
+        ("StackA_WT_2", 110.0, 2.1),
+        ("StackA_KO_2", 220.0, 2.2),
+        ("StackA_WT_3", 120.0, 2.3),
+        ("StackA_KO_3", 230.0, 2.0),
+        ("StackA_HET_1", 150.0, 2.1),
     ):
         _write_image(root, stem, length, degree)
-    return ["E14_WT_1", "E14_KO_1", "E14_WT_2", "E14_KO_2", "E14_WT_3", "E14_KO_3", "E14_HET_1", "E14_gone"]
+    return ["StackA_WT_1", "StackA_KO_1", "StackA_WT_2", "StackA_KO_2", "StackA_WT_3", "StackA_KO_3", "StackA_HET_1", "StackA_gone"]
 
 
 def test_two_conditions_write_by_image_summary_and_comparison(tmp_path):
@@ -275,13 +275,13 @@ def test_two_conditions_write_by_image_summary_and_comparison(tmp_path):
         tmp_path / SUMMARY_FILENAME,
         tmp_path / COMPARISON_FILENAME,
     )
-    assert files.images == 7 and files.missing == ("E14_gone",)
+    assert files.images == 7 and files.missing == ("StackA_gone",)
 
     by_image = _rows(tmp_path / BY_IMAGE_FILENAME)
     # Each condition's images together, then the rest, in batch order.
     assert by_image[0] == [
         "Section", "Metric", "Unit",
-        "E14_WT_1", "E14_WT_2", "E14_WT_3", "E14_KO_1", "E14_KO_2", "E14_KO_3", "E14_HET_1",
+        "StackA_WT_1", "StackA_WT_2", "StackA_WT_3", "StackA_KO_1", "StackA_KO_2", "StackA_KO_3", "StackA_HET_1",
     ]
     assert by_image[1] == ["", "Condition", "", "WT", "WT", "WT", "KO", "KO", "KO", ""]
     length_row = next(row for row in by_image if row[1] == "Total Edge Length")
@@ -319,7 +319,7 @@ def test_two_conditions_write_by_image_summary_and_comparison(tmp_path):
     assert files.tested == len(tested)
     expected_q = benjamini_hochberg([float(r["P (Mann-Whitney U, two-sided)"]) for r in tested])
     assert [float(r["Q (Benjamini-Hochberg)"]) for r in tested] == pytest.approx(expected_q)
-    assert "KO against WT" in files.message and "E14_gone" in files.message
+    assert "KO against WT" in files.message and "StackA_gone" in files.message
 
 
 def test_without_conditions_every_image_is_summarised_and_nothing_tested(tmp_path):
@@ -350,53 +350,53 @@ def test_a_batch_with_no_statistics_writes_nothing(tmp_path):
 
 # -- paired by subject ------------------------------------------------------------
 
-#: Harvey's AIA batch, 2026-10-19: two subjects with both sides imaged.
-AIA = [
-    "28_3_d_contra_patella_cropped_hdf5_Simple Segmentation_all_vessel",
-    "28_3_d_ipsi_FITC_Simple Segmentation_all_vessel",
-    "29_1_b_contra_FITC_Simple Segmentation_all_vessel",
-    "29_1_f_contra_FITC_Simple Segmentation_all_vessel",
-    "29_1_f_ipsi_FITC_Simple Segmentation_all_vessel",
-    "29_2_c_ipsi_FITC_Simple Segmentation_all_vessel",
-    "29_2_d_ipsi_FITC_Simple Segmentation_all_vessel",
-    "29_2_f_contra_FITC_Simple Segmentation_all_vessel",
+#: Harvey's Batch E, 2026-10-19: two subjects with both sides imaged.
+BATCH_E = [
+    "11_3_d_contra_sample1_cropped_hdf5_Simple Segmentation_all_vessel",
+    "11_3_d_ipsi_FITC_Simple Segmentation_all_vessel",
+    "12_1_b_contra_FITC_Simple Segmentation_all_vessel",
+    "12_1_f_contra_FITC_Simple Segmentation_all_vessel",
+    "12_1_f_ipsi_FITC_Simple Segmentation_all_vessel",
+    "12_2_c_ipsi_FITC_Simple Segmentation_all_vessel",
+    "12_2_d_ipsi_FITC_Simple Segmentation_all_vessel",
+    "12_2_f_contra_FITC_Simple Segmentation_all_vessel",
 ]
 
 
 def test_a_subject_is_the_name_before_its_condition_phrase():
     conditions = BatchConditions.from_text("contra", "ipsi", paired=True)
     assert conditions.design == "paired"
-    assert conditions.subject_of(AIA[0]) == "28_3_d"
-    assert conditions.subject_of("29_1_F-IPSI.FITC") == "29_1_f"
-    assert conditions.subject_of("contra_29_1_f") == ""  # the phrase begins the name
-    assert conditions.subject_of("29_1_f_FITC") == ""  # in neither condition
+    assert conditions.subject_of(BATCH_E[0]) == "11_3_d"
+    assert conditions.subject_of("12_1_F-IPSI.FITC") == "12_1_f"
+    assert conditions.subject_of("contra_12_1_f") == ""  # the phrase begins the name
+    assert conditions.subject_of("12_1_f_FITC") == ""  # in neither condition
     pattern = BatchConditions.from_text(
         "contra", "ipsi", paired=True, subject_pattern=r"(\d+_\d+_[a-z])_"
     )
-    assert pattern.subject_of("side_contra_29_1_f_FITC") == "29_1_f"
+    assert pattern.subject_of("side_contra_12_1_f_FITC") == "12_1_f"
     assert pattern.subject_of("side_contra_FITC") == ""
     whole = BatchConditions.from_text("WT", "KO", paired=True, subject_pattern=r"m\d+")
-    assert whole.subject_of("E14_WT_M07") == "m07"
+    assert whole.subject_of("StackA_WT_M07") == "m07"
 
 
-def test_the_aia_batch_pairs_two_subjects_and_lists_the_rest():
+def test_the_paired_batch_pairs_two_subjects_and_lists_the_rest():
     conditions = BatchConditions.from_text("contra", "ipsi", paired=True)
-    pairing = conditions.pairing(AIA)
+    pairing = conditions.pairing(BATCH_E)
     assert pairing.pairs == (
-        Pair("28_3_d", (AIA[0],), (AIA[1],)),
-        Pair("29_1_f", (AIA[3],), (AIA[4],)),
+        Pair("11_3_d", (BATCH_E[0],), (BATCH_E[1],)),
+        Pair("12_1_f", (BATCH_E[3],), (BATCH_E[4],)),
     )
     assert [(name[:6], subject, reason) for name, subject, reason in pairing.unpaired] == [
-        ("29_1_b", "29_1_b", "no ipsi image of subject 29_1_b"),
-        ("29_2_c", "29_2_c", "no contra image of subject 29_2_c"),
-        ("29_2_d", "29_2_d", "no contra image of subject 29_2_d"),
-        ("29_2_f", "29_2_f", "no ipsi image of subject 29_2_f"),
+        ("12_1_b", "12_1_b", "no ipsi image of subject 12_1_b"),
+        ("12_2_c", "12_2_c", "no contra image of subject 12_2_c"),
+        ("12_2_d", "12_2_d", "no contra image of subject 12_2_d"),
+        ("12_2_f", "12_2_f", "no ipsi image of subject 12_2_f"),
     ]
-    assert pairing.pair_of(AIA[4]).a == (AIA[3],)
-    assert pairing.pair_of(AIA[2]) is None
-    assert pairing.reason_left_out(AIA[2]) == "no ipsi image of subject 29_1_b"
-    assert conditions.describe(AIA).endswith(
-        "2 pair(s) by subject (28_3_d, 29_1_f), 4 image(s) with no partner"
+    assert pairing.pair_of(BATCH_E[4]).a == (BATCH_E[3],)
+    assert pairing.pair_of(BATCH_E[2]) is None
+    assert pairing.reason_left_out(BATCH_E[2]) == "no ipsi image of subject 12_1_b"
+    assert conditions.describe(BATCH_E).endswith(
+        "2 pair(s) by subject (11_3_d, 12_1_f), 4 image(s) with no partner"
     )
 
 
@@ -428,18 +428,18 @@ def test_every_image_that_cannot_pair_says_why():
 def test_images_pair_by_the_most_alike_names_once_the_phrase_is_out():
     conditions = BatchConditions.from_text("WT", "KO", paired=True)
     pairing = conditions.pairing(
-        ["E14_WT_1", "E14_WT_2", "E14_KO_2", "E14_KO_1", "WT_m9_left", "KO_m9_left"]
+        ["StackA_WT_1", "StackA_WT_2", "StackA_KO_2", "StackA_KO_1", "WT_m9_left", "KO_m9_left"]
     )
     assert pairing.pairs == (
-        Pair("e14_1", ("E14_WT_1",), ("E14_KO_1",)),
-        Pair("e14_2", ("E14_WT_2",), ("E14_KO_2",)),
+        Pair("stacka_1", ("StackA_WT_1",), ("StackA_KO_1",)),
+        Pair("stacka_2", ("StackA_WT_2",), ("StackA_KO_2",)),
         # The phrase begins both names: what follows it is what they share.
         Pair("m9_left", ("WT_m9_left",), ("KO_m9_left",)),
     )
     assert pairing.unpaired == ()
     sides = BatchConditions.from_text("contra", "ipsi", paired=True)
-    assert sides.name_words("28_3_d_contra_FITC") == ("28", "3", "d", "fitc")
-    assert conditions.name_words("E14-KO.2") == ("e14", "2")
+    assert sides.name_words("11_3_d_contra_FITC") == ("11", "3", "d", "fitc")
+    assert conditions.name_words("StackA-KO.2") == ("stacka", "2")
 
 
 def test_names_alike_from_the_start_win_over_words_shared_later():
@@ -547,7 +547,7 @@ def test_an_independent_batch_writes_no_pairs(tmp_path):
 
 # -- several images of one subject, aggregated --------------------------------------
 
-#: Harvey's rule for the AIA batch (2026-10-19): the subject is the animal.
+#: Harvey's rule for Batch E (2026-10-19): the subject is the animal.
 ANIMAL = r"^(\d+_\d+)"
 
 
@@ -555,24 +555,24 @@ def test_the_animal_pattern_gives_harveys_three_aggregated_pairs():
     conditions = BatchConditions.from_text(
         "contra", "ipsi", paired=True, subject_pattern=ANIMAL, aggregate="median"
     )
-    pairing = conditions.pairing(AIA)
+    pairing = conditions.pairing(BATCH_E)
     assert pairing.pairs == (
-        Pair("28_3", (AIA[0],), (AIA[1],)),
-        Pair("29_1", (AIA[2], AIA[3]), (AIA[4],)),
-        Pair("29_2", (AIA[7],), (AIA[5], AIA[6])),
+        Pair("11_3", (BATCH_E[0],), (BATCH_E[1],)),
+        Pair("12_1", (BATCH_E[2], BATCH_E[3]), (BATCH_E[4],)),
+        Pair("12_2", (BATCH_E[7],), (BATCH_E[5], BATCH_E[6])),
     )
     assert pairing.unpaired == ()
-    assert conditions.describe(AIA).endswith("3 pair(s) by subject (28_3, 29_1, 29_2)")
+    assert conditions.describe(BATCH_E).endswith("3 pair(s) by subject (11_3, 12_1, 12_2)")
     # Without aggregating, the same subjects leave out the animals with two images a side.
     # Without combining, each animal's images are matched one to one by name:
-    # 29_1's ipsi f takes contra f, and 29_2's contra f is as like c as d.
+    # 12_1's ipsi f takes contra f, and 12_2's contra f is as like c as d.
     plain = BatchConditions.from_text("contra", "ipsi", paired=True, subject_pattern=ANIMAL)
-    assert [pair.subject for pair in plain.pairing(AIA).pairs] == ["28_3", "29_1"]
-    assert {(name[:6], reason) for name, _subject, reason in plain.pairing(AIA).unpaired} == {
-        ("29_1_b", "no ipsi image of subject 29_1 left once the closest names were paired"),
-        ("29_2_c", "names in subject 29_2 equally like each other: which pairs is unclear"),
-        ("29_2_d", "names in subject 29_2 equally like each other: which pairs is unclear"),
-        ("29_2_f", "names in subject 29_2 equally like each other: which pairs is unclear"),
+    assert [pair.subject for pair in plain.pairing(BATCH_E).pairs] == ["11_3", "12_1"]
+    assert {(name[:6], reason) for name, _subject, reason in plain.pairing(BATCH_E).unpaired} == {
+        ("12_1_b", "no ipsi image of subject 12_1 left once the closest names were paired"),
+        ("12_2_c", "names in subject 12_2 equally like each other: which pairs is unclear"),
+        ("12_2_d", "names in subject 12_2 equally like each other: which pairs is unclear"),
+        ("12_2_f", "names in subject 12_2 equally like each other: which pairs is unclear"),
     }
 
 
@@ -595,37 +595,37 @@ def test_an_unknown_way_to_combine_images_is_refused():
 
 @pytest.mark.parametrize("aggregate, combined", [("median", 30.0), ("mean", 40.0)])
 def test_each_subjects_images_are_combined_metric_by_metric(tmp_path, aggregate, combined):
-    # Animal 29_1 has three contra images (10, 30, 80: median 30, mean 40);
-    # 28_3 one of each; 29_2's second ipsi image lacks the metric.
+    # Animal 12_1 has three contra images (10, 30, 80: median 30, mean 40);
+    # 11_3 one of each; 12_2's second ipsi image lacks the metric.
     lengths = {
-        "28_3_d_contra": 100.0, "28_3_d_ipsi": 150.0,
-        "29_1_a_contra": 10.0, "29_1_b_contra": 30.0, "29_1_c_contra": 80.0,
-        "29_1_f_ipsi": 50.0,
-        "29_2_f_contra": 200.0, "29_2_c_ipsi": 260.0,
+        "11_3_d_contra": 100.0, "11_3_d_ipsi": 150.0,
+        "12_1_a_contra": 10.0, "12_1_b_contra": 30.0, "12_1_c_contra": 80.0,
+        "12_1_f_ipsi": 50.0,
+        "12_2_f_contra": 200.0, "12_2_c_ipsi": 260.0,
     }
     for stem, length in lengths.items():
         _write_image(tmp_path, stem, length, 2.0)
-    export_statistics_to_csv({"Average Degree": 2.5}, tmp_path / "29_2_d_ipsi" / "29_2_d_ipsi_statistics.csv")
-    stems = [*lengths, "29_2_d_ipsi"]
+    export_statistics_to_csv({"Average Degree": 2.5}, tmp_path / "12_2_d_ipsi" / "12_2_d_ipsi_statistics.csv")
+    stems = [*lengths, "12_2_d_ipsi"]
     conditions = BatchConditions.from_text(
         "contra", "ipsi", paired=True, subject_pattern=ANIMAL, aggregate=aggregate
     )
     files = write_batch_statistics(tmp_path, stems, conditions)
     pairs = {row["Subject"]: row for row in _dict_rows(tmp_path / PAIRS_FILENAME)}
-    assert pairs["29_1"]["contra images"] == "29_1_a_contra; 29_1_b_contra; 29_1_c_contra"
-    assert pairs["29_1"]["contra value"] == f"{aggregate} of 3 images"
-    assert pairs["29_1"]["ipsi value"] == "the one image"
-    assert pairs["29_2"]["ipsi images"] == "29_2_c_ipsi; 29_2_d_ipsi"
+    assert pairs["12_1"]["contra images"] == "12_1_a_contra; 12_1_b_contra; 12_1_c_contra"
+    assert pairs["12_1"]["contra value"] == f"{aggregate} of 3 images"
+    assert pairs["12_1"]["ipsi value"] == "the one image"
+    assert pairs["12_2"]["ipsi images"] == "12_2_c_ipsi; 12_2_d_ipsi"
     comparison = _dict_rows(tmp_path / COMPARISON_FILENAME)
     length = next(r for r in comparison if r["Metric"] == "Total Edge Length")
     assert length["N pairs"] == "3"
-    # The pairs' contra values: 100, the combined 29_1, 200; ipsi 150, 50, 260 (29_2_d has none).
+    # The pairs' contra values: 100, the combined 12_1, 200; ipsi 150, 50, 260 (12_2_d has none).
     contra = sorted([100.0, combined, 200.0])
     assert float(length["Median contra"]) == pytest.approx(contra[1])
     differences = sorted([50.0, 50.0 - combined, 60.0])
     assert float(length["Median of paired differences (ipsi - contra)"]) == pytest.approx(differences[1])
     assert float(length["Smallest possible P"]) == pytest.approx(0.25)
-    # Every image has Average Degree (2.0, and 2.5 for 29_2_d), so 29_2's ipsi
+    # Every image has Average Degree (2.0, and 2.5 for 12_2_d), so 12_2's ipsi
     # value combines both of its images there.
     degree = next(r for r in comparison if r["Metric"] == "Average Degree")
     assert degree["N pairs"] == "3"
@@ -637,8 +637,8 @@ def test_each_subjects_images_are_combined_metric_by_metric(tmp_path, aggregate,
 
 
 def test_a_statistics_csv_with_a_field_past_csvs_default_limit_is_read(tmp_path):
-    """A full-mode run writes whole lists into one field (Harvey's AIA batch,
-    2026-10-19: 29_1_f_contra's statistics CSV, 956 KB); read with csv's
+    """A full-mode run writes whole lists into one field (Harvey's Batch E,
+    2026-10-19: 12_1_f_contra's statistics CSV, 956 KB); read with csv's
     default 131,072-character limit the image was dropped from the comparison."""
     wide = "[" + ", ".join(str(node) for node in range(40_000)) + "]"
     assert len(wide) > csv.field_size_limit() == 131_072

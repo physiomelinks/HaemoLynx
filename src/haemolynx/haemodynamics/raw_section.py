@@ -34,7 +34,7 @@ its lumen's contrast against the section's texture outside it, on the lumen
 closing within its plane and on its centre lying near the centreline, and a
 vessel needs two readings that pass: a blob of speckle can pass once, a
 lumen passes all along the vessel. On an
-image whose sections are speckle with no clean lumen edge -- a real embryonic
+image whose sections are speckle with no clean lumen edge -- a real
 brain stack, where the plasma dye appears to have leaked into the tissue --
 fits latch onto the bright halo round a vessel and read about twice its
 width, and agree with FWHM within 20% on only a quarter of vessels at any
@@ -118,7 +118,7 @@ PSF_CALIBRATION_MIN_GUIDE_UM = 6.0
 #: The most sections the estimate fits (see
 #: :func:`~haemolynx.haemodynamics.sections.calibration_sites`). One section
 #: of each of 150 random vessels, as it used to be, left 20-33 fits on the
-#: E14.5 MCA stack (2,157 wide vessels), and sigma_xy anywhere from 0.63 to
+#: Stack A stack (2,157 wide vessels), and sigma_xy anywhere from 0.63 to
 #: 1.02 um and sigma_z from 1.70 to 2.36 um depending on which 150. Every
 #: one of its 4,803 sections leaves about a thousand.
 PSF_CALIBRATION_MAX_SECTIONS = 5000
@@ -132,7 +132,7 @@ PSF_CALIBRATION_MIN_AXIAL_FITS = 5
 #: The widest 95% interval (half its width, as a fraction of the estimate)
 #: either blur may have and still be used: past it the sections do not pin
 #: the blur down, and FWHM fits each profile's blur itself instead. On the
-#: E14.5 MCA stack 150 random sections gave sigma_xy +-41-73% and sigma_z
+#: Stack A stack 150 random sections gave sigma_xy +-41-73% and sigma_z
 #: +-18-47%, depending on which 150; all of its sections, about +-6%.
 PSF_CALIBRATION_MAX_RELATIVE_INTERVAL = 0.15
 _AXIAL_TILT = 0.5

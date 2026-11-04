@@ -76,9 +76,9 @@ batch of sources at once with numpy (the workers import numpy only), every addit
 networkx's order (`np.add.at` adds in index order, the sorts are stable), so each source's
 increments are networkx's bits; it also runs in this process below the threshold, with one
 worker, or when the workers fail. Weighted, endpoint and directed passes keep networkx's loop.
-One machine state, 29_2_f contra (15,843 nodes): networkx's loop in 8 workers 164 s, the
-batched pass here 125 s, in 8 workers 19 s; 29_1_f contra (21,944): 303, 213 and 26 s.
-Harvey's AIA batch graph `29_1_b_contra_FITC` (18,253 nodes, 8 workers, a busy machine):
+One machine state, 12_2_f contra (15,843 nodes): networkx's loop in 8 workers 164 s, the
+batched pass here 125 s, in 8 workers 19 s; 12_1_f contra (21,944): 303, 213 and 26 s.
+Harvey's Batch E graph `12_1_b_contra_FITC` (18,253 nodes, 8 workers, a busy machine):
 414 s against networkx's ~2,950 s (timed on 300 sources, scaled); a 4,000-node piece of it
 122.5 -> 44.7 s, every value's bits equal. `MAX_DEFAULT_WORKERS` (8) is the ceiling.
 
@@ -128,14 +128,14 @@ empty space at all logs a warning, since an automatic split then cuts the tissue
 
 ## statistics/layout.py (2026-10-25)
 
-Three measures asked for after grid D1d, when E14.5 sat outside every drawn network on them
+Three measures asked for after grid D1d, when Stack A sat outside every drawn network on them
 (`docs/notes/synthetic.md`): **junction shape** (the three angles at each junction of three
-vessels, each read 8 um along its centreline: E14.5's are the same read at 4, 8 or 15 um and with
+vessels, each read 8 um along its centreline: Stack A's are the same read at 4, 8 or 15 um and with
 or without a dead-end stub at the junction), **tissue coverage** (a 10 um probe grid through the
 image box, at most 200,000 seeded random probes in a larger one, to the nearest centreline sampled
 every 2 um) and **vessel columns** (chords of at least 10 um within 30 degrees of z; their spread
 by the Clark-Evans ratio of their midpoints in the image plane, with no edge correction). On
-E14.5's MCA run: junction smallest angle median 97 degrees, 1.2% acute, angles summing to 356;
+Stack A's run: junction smallest angle median 97 degrees, 1.2% acute, angles summing to 356;
 0.5% of the box beyond 50 um of a vessel, 90th percentile 34.7 um; columns 21% of the length,
 Clark-Evans 0.90. The three cost 0.6 s together on it. The vessel classes gained their 90th
 percentile tortuosity beside the mean and median.

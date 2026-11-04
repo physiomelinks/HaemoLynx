@@ -41,7 +41,7 @@ GAP_BRIDGE_TANGENT_LENGTH_UM = 5.0
 #: round a junction's voxel cluster: not vessel ends, and pointing whichever of
 #: the lattice's 26 directions the cluster happened to take. Judged by
 #: direction alone they reach out to terminals up to the reconnect threshold
-#: away; on the E14.5 MCA stack 3,225 of the 3,743 bridges built without a
+#: away; on Stack A 3,225 of the 3,743 bridges built without a
 #: direction check started from one.
 MIN_GAP_BRIDGE_END_LENGTH_UM = 3.0
 

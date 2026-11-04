@@ -1,5 +1,5 @@
 """Grid SZ1 (Phase 0f of PLAN_vessel_classes_from_segmentation.md): about 30
-E14.5 vessels 5-15 um wide, for Harvey to mark small vessel, capillary or
+Stack A vessels 5-15 um wide, for Harvey to mark small vessel, capillary or
 can't tell, so the small-vessel threshold is set by his marks.
 
 Three vessels per 1 um band of the run's final widths (wall to wall), none in
@@ -23,7 +23,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "outputs/vessel_class_review"
 GRID = OUT / "SZ1"
-SOLVED = OUT / "e14p5_solved.pkl"
+SOLVED = OUT / "stack_a_solved.pkl"
 
 BAND_EDGES_UM = np.arange(5.0, 15.01, 1.0)
 PER_BAND = 3

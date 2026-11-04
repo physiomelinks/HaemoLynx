@@ -1546,7 +1546,7 @@ def find_lost_skeleton(
     each piece :func:`~haemolynx.graph.skeleton_retrace.judge_lost_skeleton`
     finds no centreline near, at least ``MIN_PIECE_UM`` of skeleton and at
     least half in the mask, longest first, with what the re-trace said of it.
-    Harvey's drawing of every vessel E14.5's surface still lacked
+    Harvey's drawing of every vessel Stack A's surface still lacked
     (2026-10-18) ranked a piece's length above every other measure. Where the
     re-trace got as far as a route, the item's ``path_um`` is it, from the
     vessel point one end joins to the other's, for Draw along the skeleton;

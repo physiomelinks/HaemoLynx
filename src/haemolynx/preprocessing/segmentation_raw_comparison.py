@@ -103,7 +103,7 @@ DEFAULT_LOW_AGREEMENT_IOU_WARNING_THRESHOLD = 0.5
 PLASMA_COLUMN = "plasma_column"
 ENDOTHELIAL = "endothelial"
 #: How far outside a lumen mask an endothelial image's vessel may reach and
-#: still count as the mask's own: the wall (about 1.2 um on E14.5's claudin-5
+#: still count as the mask's own: the wall (about 1.2 um on Stack A's claudin-5
 #: channel) and its blur.
 DEFAULT_WALL_TOLERANCE_UM = 2.0
 

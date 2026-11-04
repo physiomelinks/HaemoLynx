@@ -396,7 +396,7 @@ def test_hub_selection_keeps_exactly_the_hubs_it_kept_before(seed, hub_min_spaci
 def test_hub_selection_on_a_plateau_of_tied_peaks_is_not_quadratic():
     """Regression: a skeleton's density ties across whole plateaus, every
     voxel of one a peak, and checking each against every hub kept took
-    bundle refinement 24 minutes of a 2x optimiser run on the E14.5 stack."""
+    bundle refinement 24 minutes of a 2x optimiser run on Stack A."""
     import time
 
     zz, yy, xx = np.indices((30, 120, 120))

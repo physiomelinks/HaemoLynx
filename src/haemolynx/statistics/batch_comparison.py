@@ -184,16 +184,16 @@ class BatchConditions:
     name is most like its own once the condition phrase is taken out of both.
     An image's subject ID is the part of its file name *before* the condition
     phrase it holds, separators (space, ``_``, ``-``, ``.``) trimmed and case
-    ignored (``28_3_d_contra_FITC`` is subject ``28_3_d`` of ``contra``), and
+    ignored (``11_3_d_contra_FITC`` is subject ``11_3_d`` of ``contra``), and
     only images of one subject pair. Within a subject, one image a side pair;
     with more, the names are matched one to one, closest first: the most words
     in common from the start of the name (the phrase taken out), then the most
-    words in common anywhere (``E14_WT_1`` with ``E14_KO_1``, ``E14_WT_2`` with
-    ``E14_KO_2``); a tie is left out, not guessed. A *subject_pattern* (a
+    words in common anywhere (``StackA_WT_1`` with ``StackA_KO_1``, ``StackA_WT_2`` with
+    ``StackA_KO_2``); a tie is left out, not guessed. A *subject_pattern* (a
     regular expression, searched ignoring case; its first group if it has
     one, else the whole match) replaces the subject rule, for names whose
     subject is not what comes first
-    (``^(\\d+_\\d+)`` reads the animal, ``28_3``, from ``28_3_d_contra_FITC``).
+    (``^(\\d+_\\d+)`` reads the animal, ``11_3``, from ``11_3_d_contra_FITC``).
 
     Under *aggregate* ``"median"`` or ``"mean"`` a subject's images are not
     matched one to one: each of its conditions is the median or mean of all

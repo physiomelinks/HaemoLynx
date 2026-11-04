@@ -244,7 +244,7 @@ def _same_network(a, b) -> bool:
 def test_a_hole_outside_the_box_draws_the_network_drawn_without_one(options):
     """Every hole check is asked and excludes nothing: the network is the
     one drawn without a hole, to the bit. (That one is HEAD's: checked
-    against a git archive of 3e819c4d on nine networks, fixture and E14.5,
+    against a git archive of 3e819c4d on nine networks, fixture and Stack A,
     both beds, 2026-10-28.)"""
     template = fixture_template()
     far = Hole((1e5, 1e5, 1e5), (1e5 + 1.0, 1e5 + 1.0, 1e5 + 1.0))

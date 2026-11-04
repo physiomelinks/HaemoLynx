@@ -178,9 +178,9 @@ MASK_COLOURS: dict[str, tuple[float, float, float, float]] = {
 }
 
 #: Shared napari Image options for vessel-mask volumes (plus per-role colour).
-#: Their maximum along each ray, not their lit surface ("iso"): E14.5's large
+#: Their maximum along each ray, not their lit surface ("iso"): Stack A's large
 #: masks lie inside the thick vessels' tubes, where a surface is never seen,
-#: and a mask filling the box (an AIA run's) drew as a wall over every tube.
+#: and a mask filling the box (a Batch E run's) drew as a wall over every tube.
 MASK_VOLUME_OPTIONS: dict[str, Any] = {
     "blending": "translucent",
     "opacity": 0.55,
@@ -904,7 +904,7 @@ LOG10_COLUMNS = {"flow_abs_log10": "flow_abs", RESISTANCE_LOG10: "resistance"}
 
 #: What each stage colours the vessels by once it has run, unless the user has
 #: chosen otherwise. Flow and resistance as their log10: on a straight scale
-#: from least to most, 96% of the E14.5 network's flow and 99% of its
+#: from least to most, 96% of the Stack A network's flow and 99% of its
 #: resistance sat in the bottom tenth, one colour. `flow_abs`, not
 #: `flow_signed`: the sign follows the order the MultiGraph happens to store
 #: an edge in, so a signed colouring shows an arbitrary pattern that reads as

@@ -1,7 +1,7 @@
 """The raw image as evidence for graph building, read where the mask is silent.
 
 The segmentation was made from the raw channel, so inside the mask the raw
-image mostly repeats what the mask says: on E14.5, dextran contrast along a
+image mostly repeats what the mask says: on Stack A, dextran contrast along a
 mask-covered chain separated Harvey's "vessel" from "not a vessel" marks no
 better than marking everything one way (grid G4, 2026-10-13). The raw image
 says something new in two places only, and this module reads it there:
@@ -90,7 +90,7 @@ CALIBRATION_BLOCK_UM = 40.0
 #: Read round each block, so a vessel the block cuts keeps its true depth.
 CALIBRATION_MARGIN_UM = 6.0
 #: ``auto`` names the stain the one way every reader does: ``raw_stain.read_raw_stain``
-#: (``raw_image_stain``'s own rule, calibrated on E14.5), so the stain the
+#: (``raw_image_stain``'s own rule, calibrated on Stack A), so the stain the
 #: build reads its evidence under is the one the Diameters stage measures by.
 #: A capillary bed thinner than the image's blur reads as lumen either way,
 #: so ``raw_image_stain`` can say instead.
@@ -98,7 +98,7 @@ CALIBRATION_MARGIN_UM = 6.0
 #: of the background above it, or there is nothing to read.
 SIGNAL_OVER_SPREAD = 1.0
 #: Gaussian blur (voxels) of each window before sampling, so a question is
-#: not answered by one speck of shot noise: E14.5's dextran channel has a
+#: not answered by one speck of shot noise: Stack A's dextran channel has a
 #: median of 3 counts inside the mask and 0 outside, and only once blurred by
 #: a voxel do 98% of lumen voxels stand above the background's 99th
 #: percentile. The calibration reads its levels on blocks blurred the same
@@ -139,7 +139,7 @@ class RawCalibration:
     reading: Optional[dict] = None
     #: What the image's own wall rings say (``endothelial.calibrate_from_rings``),
     #: when a run has paid for them (:func:`ring_calibration`, 90-120 s on
-    #: E14.5): the blur, Gaussian sigma in microns along ``(z, y, x)``; the
+    #: Stack A): the blur, Gaussian sigma in microns along ``(z, y, x)``; the
     #: wall's thickness in microns; the median fitted wall brightness above
     #: the background, before the blur. None until then: the block levels
     #: above are the default, and :meth:`RawEvidenceEndothelial.ring_along`
@@ -391,7 +391,7 @@ class WallsAhead:
 #: round), and never more than this far off the tip's heading: the dead-end
 #: classifier's own "ahead" (``graph.dead_ends.AHEAD_MAX_TURN_DEG``, the
 #: facing join's turn limit). At 100 deg it turned along the image's face and
-#: into neighbours on E14.5.
+#: into neighbours on Stack A.
 ROUTE_CONE_DEG = 30.0
 ROUTE_MAX_TURN_DEG = 60.0
 #: Each step the route is re-centred between the walls within this, across
@@ -1472,7 +1472,7 @@ def ring_calibration(
     brightness of the rings that pass the contrast gate. Unchanged, with the
     calibration's log line saying why, when the rings do not calibrate.
 
-    Optional and costly (90-120 s on E14.5 with 8 workers, against the block
+    Optional and costly (90-120 s on Stack A with 8 workers, against the block
     calibration's second): a run that has measured endothelial diameters has
     paid for it already. Assign the result to ``evidence.calibration`` for
     :meth:`RawEvidenceEndothelial.ring_along` to fit with it."""

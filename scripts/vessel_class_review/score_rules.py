@@ -1,9 +1,9 @@
 """Phase 0b of PLAN_vessel_classes_from_segmentation.md: the published
-arteriole/venule rules, as published (nothing fitted), against E14.5's real
+arteriole/venule rules, as published (nothing fitted), against Stack A's real
 large masks.
 
 The truth is each vessel's `large_mask_vessel_type`, the tag the run's own
-overlap rule gave it from Harvey's ilastik arteriole and Vein masks. E14.5 has
+overlap rule gave it from Harvey's ilastik arteriole and Vein masks. Stack A has
 few large trees, so everything here screens the rules; it decides nothing.
 
     python scripts/vessel_class_review/score_rules.py
@@ -21,8 +21,8 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "outputs/vessel_class_review"
-SOLVED = OUT / "e14p5_solved.pkl"
-CSV_OUT = OUT / "e14p5_vessels.csv"
+SOLVED = OUT / "stack_a_solved.pkl"
+CSV_OUT = OUT / "stack_a_vessels.csv"
 REPORT = OUT / "phase0b_report.md"
 
 MEASURES = ("diameter_um", "length_over_diameter", "ksd_per_um", "distance_factor",
@@ -115,7 +115,7 @@ def main() -> None:
     for vessel in vessels:
         vessel.measures["diameter_um"] = vessel.diameter_um
 
-    lines = ["# Phase 0b: published rules against E14.5's large masks", "",
+    lines = ["# Phase 0b: published rules against Stack A's large masks", "",
              f"Solved graph: `{SOLVED.name}` ({G.number_of_edges()} edges). "
              f"Vessels at or above {CAPILLARY_UNDER_UM} um: {len(vessels)}, in "
              f"{len({v.tree for v in vessels})} trees.", ""]

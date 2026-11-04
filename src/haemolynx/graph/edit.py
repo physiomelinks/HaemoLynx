@@ -98,7 +98,7 @@ def insert_node_on_edge(
         # An edge's points may run from either of its nodes; the pieces below
         # are cut as running from u. Cut the other way, each piece got the
         # other's points, and merging them later drew a straight jump across
-        # the gap (E14.5: 35 um).
+        # the gap (Stack A: 35 um).
         voxels = list(orient_path_from_startpoint(voxels, G.nodes[u]["pos"]))
 
     index = _closest_vertex_index(voxels, point_um)

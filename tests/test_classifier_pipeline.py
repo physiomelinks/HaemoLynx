@@ -123,8 +123,8 @@ def test_ilastik_takes_precedence_over_the_classifier(tmp_path, image):
 
 
 def test_the_classifier_output_is_named_after_the_raw_image(tmp_path):
-    settings = {"raw_image_path": tmp_path / "E14.tif", "output_dir": tmp_path / "o"}
-    assert classifier_segmented_path(settings) == tmp_path / "o" / "E14_segmented.tif"
+    settings = {"raw_image_path": tmp_path / "StackA.tif", "output_dir": tmp_path / "o"}
+    assert classifier_segmented_path(settings) == tmp_path / "o" / "StackA_segmented.tif"
 
 
 # ---------------------------------------------------------- vessel masks

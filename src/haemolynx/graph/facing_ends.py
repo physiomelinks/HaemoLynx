@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_FACING_MAX_GAP_UM = 10.0
 
 #: How far a join may turn from either end's own heading, in degrees. Of the
-#: E14.5 stack's dead-end pairs within 10 um, half were siblings off one
+#: Stack A stack's dead-end pairs within 10 um, half were siblings off one
 #: junction and a fifth lay side by side; the 15 pointing at each other all
 #: fell within this.
 FACING_MAX_TURN_DEG = 60.0

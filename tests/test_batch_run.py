@@ -447,9 +447,9 @@ def test_the_command_line_pairs_conditions_by_subject(tmp_path, schema, monkeypa
     folder.mkdir()
     out = tmp_path / "out"
     for stem, length in (
-        ("28_3_d_contra_FITC", 1.0), ("28_3_d_ipsi_FITC", 2.0),
-        ("29_1_f_contra_FITC", 3.0), ("29_1_f_ipsi_FITC", 5.0),
-        ("29_1_b_contra_FITC", 4.0),
+        ("11_3_d_contra_FITC", 1.0), ("11_3_d_ipsi_FITC", 2.0),
+        ("12_1_f_contra_FITC", 3.0), ("12_1_f_ipsi_FITC", 5.0),
+        ("12_1_b_contra_FITC", 4.0),
     ):
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
         export_statistics_to_csv(
@@ -462,11 +462,11 @@ def test_the_command_line_pairs_conditions_by_subject(tmp_path, schema, monkeypa
     ]
     assert main(argv) == 0
     printed = capsys.readouterr().out
-    assert "2 pair(s) by subject (28_3_d, 29_1_f), 1 image(s) with no partner" in printed
-    assert "left out with no partner: 29_1_b_contra_FITC" in printed
+    assert "2 pair(s) by subject (11_3_d, 12_1_f), 1 image(s) with no partner" in printed
+    assert "left out with no partner: 12_1_b_contra_FITC" in printed
     assert "smallest possible p 0.5" in printed
     pairs = _summary_rows(out / "batch_condition_pairs.csv")
-    assert [row["Subject"] for row in pairs] == ["28_3_d", "29_1_f", "29_1_b"]
+    assert [row["Subject"] for row in pairs] == ["11_3_d", "12_1_f", "12_1_b"]
     comparison = _summary_rows(out / "batch_condition_comparison.csv")
     assert comparison[0]["N pairs"] == "2"
 
@@ -519,9 +519,9 @@ def test_the_command_line_pairs_animals_by_the_median_of_their_images(tmp_path, 
     folder.mkdir()
     out = tmp_path / "out"
     for stem, length in (
-        ("28_3_d_contra_FITC", 1.0), ("28_3_d_ipsi_FITC", 2.0),
-        ("29_1_b_contra_FITC", 3.0), ("29_1_f_contra_FITC", 5.0), ("29_1_f_ipsi_FITC", 6.0),
-        ("29_2_f_contra_FITC", 7.0), ("29_2_c_ipsi_FITC", 8.0), ("29_2_d_ipsi_FITC", 9.0),
+        ("11_3_d_contra_FITC", 1.0), ("11_3_d_ipsi_FITC", 2.0),
+        ("12_1_b_contra_FITC", 3.0), ("12_1_f_contra_FITC", 5.0), ("12_1_f_ipsi_FITC", 6.0),
+        ("12_2_f_contra_FITC", 7.0), ("12_2_c_ipsi_FITC", 8.0), ("12_2_d_ipsi_FITC", 9.0),
     ):
         shutil.copy(FIXTURE, folder / f"{stem}.tif")
         export_statistics_to_csv(
@@ -535,11 +535,11 @@ def test_the_command_line_pairs_animals_by_the_median_of_their_images(tmp_path, 
     ]
     assert main(argv) == 0
     printed = capsys.readouterr().out
-    assert "3 pair(s) by subject (28_3, 29_1, 29_2)" in printed
+    assert "3 pair(s) by subject (11_3, 12_1, 12_2)" in printed
     assert "(median of each subject's images in a condition): 3 pair(s)" in printed
     assert "smallest possible p 0.25" in printed
     pairs = {row["Subject"]: row for row in _summary_rows(out / "batch_condition_pairs.csv")}
-    assert pairs["29_1"]["contra images"] == "29_1_b_contra_FITC; 29_1_f_contra_FITC"
+    assert pairs["12_1"]["contra images"] == "12_1_b_contra_FITC; 12_1_f_contra_FITC"
     comparison = _summary_rows(out / "batch_condition_comparison.csv")
     # Pairs (1, 2), (median 4, 6), (7, median 8.5): differences 1, 2, 1.5.
     assert float(comparison[0]["Median of paired differences (ipsi - contra)"]) == 1.5
@@ -1098,21 +1098,21 @@ def test_the_summary_and_table_carry_each_images_other_files(tmp_path, schema, m
     from haemolynx.gui.batch_run import BatchSetup, TABLE_COLUMNS, table_rows, tied_cells
 
     monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
-    seg = _copies(tmp_path / "seg", "E14_seg", "E15_seg")
+    seg = _copies(tmp_path / "seg", "StackA_seg", "StackB_seg")
     cells = tmp_path / "cells"
     cells.mkdir()
-    for name in ("E14_cells.tif", "E15_cells_left.tif", "E15_cells_right.tif"):
+    for name in ("StackA_cells.tif", "StackB_cells_left.tif", "StackB_cells_right.tif"):
         (cells / name).write_bytes(b"")
     folders = BatchFolders(seg, cell=cells)
     matches = match_batch(folders, roles=["cell"])
     summary = run_batch(_values(schema, tmp_path), schema, matches[:1], tmp_path / "out", folders=folders)
     (row,) = _summary_rows(summary.csv_path)
-    assert row["cell_mask"] == str(cells / "E14_cells.tif")
-    assert row["pericyte_mask"] == "" and row["segmented"] == str(seg / "E14_seg.tif")
+    assert row["cell_mask"] == str(cells / "StackA_cells.tif")
+    assert row["pericyte_mask"] == "" and row["segmented"] == str(seg / "StackA_seg.tif")
     setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=matches)
     column = TABLE_COLUMNS.index("Other files")
     assert [cells[column] for cells in table_rows(setup)] == [
-        "cell mask: E14_cells.tif",
+        "cell mask: StackA_cells.tif",
         "cell mask: 2 files tie: choose",
     ]
     assert tied_cells(matches[1]) == {column: ("cell", matches[1].ties("cell"))}
@@ -1135,14 +1135,14 @@ def test_a_batchs_other_folders_and_ilastik_are_read_back_from_its_settings_file
 def test_a_set_batch_greys_nothing_its_images_have_and_says_where_rows_come_from(tmp_path, schema):
     from haemolynx.gui.batch_run import BatchSetup
 
-    raw = _copies(tmp_path / "raw", "E14", "E15")
+    raw = _copies(tmp_path / "raw", "StackA", "StackB")
     folders = BatchFolders(raw=raw, from_raw=True, tissue=tmp_path / "tissue")
     setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=match_batch(folders))
     values = schema.defaults()
     gates = setup.gates(values)
     # The panel's raw image row is empty, but every image has one: ilastik's
     # switch, and whatever else reads the raw image, is not greyed.
-    assert values["raw_image_path"] is None and gates["raw_image_path"] == raw / "E14.tif"
+    assert values["raw_image_path"] is None and gates["raw_image_path"] == raw / "StackA.tif"
     assert gates["input_path"] is None  # ilastik makes it
     assert setup.fills("tissue_raw_tiff_path") and not setup.fills("cell_mask_path")
     assert "Made for each image by ilastik" in setup.row_tooltip("input_path")
@@ -1233,7 +1233,7 @@ def test_the_command_line_runs_a_batch_of_raw_images_for_ilastik(tmp_path, schem
         return None
 
     monkeypatch.setattr(batch_run, "run_image", run_image)
-    raw = _large_masks(_copies(tmp_path / "raw", "E14", "E15"), "E14", "E15")
+    raw = _large_masks(_copies(tmp_path / "raw", "StackA", "StackB"), "StackA", "StackB")
     config = _ilastik_config(tmp_path, schema, masks=True)
     out = tmp_path / "out"
     # No raw folder: there are no images.
@@ -1243,11 +1243,11 @@ def test_the_command_line_runs_a_batch_of_raw_images_for_ilastik(tmp_path, schem
     assert "All 2 image(s) passed their checks." in capsys.readouterr().out
     assert main(["--config", str(config), "--raw", str(raw), "--output", str(out)]) == 0
     assert [(Path(values["raw_image_path"]).name, values["input_path"]) for values in calls] == [
-        ("E14.tif", None),
-        ("E15.tif", None),
+        ("StackA.tif", None),
+        ("StackB.tif", None),
     ]
-    assert Path(calls[0]["ilastik_output_dir"]) == out / "E14_segmented" / "segmentations"
-    assert (out / "E15_segmented" / "E15_segmented.haemorun").is_file()
+    assert Path(calls[0]["ilastik_output_dir"]) == out / "StackA_segmented" / "segmentations"
+    assert (out / "StackB_segmented" / "StackB_segmented.haemorun").is_file()
 
 
 @pytest.mark.slow
@@ -1288,7 +1288,7 @@ def test_a_real_batch_of_raw_images_is_segmented_by_ilastik_and_run(tmp_path, sc
         wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
         wrapper.chmod(0o755)
     values.update({"ilastik_executable": str(wrapper), "statistics": True})
-    raw = _copies(tmp_path / "raw", "E14", "E15")
+    raw = _copies(tmp_path / "raw", "StackA", "StackB")
     folders = BatchFolders(raw=raw, from_raw=True)
     out = tmp_path / "out"
     summary = run_batch(values, schema, match_batch(folders), out, folders=folders)

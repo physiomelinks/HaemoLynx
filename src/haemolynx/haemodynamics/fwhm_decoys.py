@@ -13,7 +13,7 @@ speck scale. An FWHM width inside that range is one a speck could have
 produced; every measured edge is flagged ``fwhm_in_speck_width_range`` when
 there are enough decoy widths to set one. Nothing changes a diameter.
 
-On a real embryonic brain stack, accepting one sample, FWHM measured 28% of
+On a real brain stack, accepting one sample, FWHM measured 28% of
 decoys, at 2.1-4.3 um (5-95%) with a median fit R^2 of 0.93 -- better than
 on the vessels -- and 53% of the vessels it had measured read inside that
 range; several read 2-3 um on a speck inside a band several times wider.

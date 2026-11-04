@@ -197,7 +197,7 @@ def new_memmap_array(
     Windows, which will not delete a file while it is mapped, at the next
     call here or as the process exits): stage outputs such as the skeleton
     ``skeletonise`` hands on, the float32 raw image the raw evidence and the
-    Diameters stage read (two 301 MB files a low-RAM E14.5 run), and the
+    Diameters stage read (two 301 MB files a low-RAM Stack A run), and the
     volumes tests compare were left in the temp directory by every run --
     2,800 of them on one machine (2026-10-18). Killing the process outright
     still leaves them.

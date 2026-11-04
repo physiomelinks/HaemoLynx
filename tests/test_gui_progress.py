@@ -136,7 +136,7 @@ def test_a_step_shows_the_second_bar():
 
 def test_a_step_bar_names_the_step_running_not_the_one_just_done():
     """Regression: the bar named the step just finished, so for the twelve
-    minutes mask recovery took on E14.5 it read "reconnect_orphan_and_dangling_nodes",
+    minutes mask recovery took on Stack A it read "reconnect_orphan_and_dangling_nodes",
     and the orphan reconnect (0.05 s) was blamed for it."""
     display = ProgressDisplay()
     display.update(

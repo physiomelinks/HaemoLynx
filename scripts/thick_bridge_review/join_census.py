@@ -185,7 +185,7 @@ def page_data(cases: Sequence[Mapping[str, Any]], mask, region, tree_points, G, 
     views = [case_view(case, mask, region, tree_points, paths, vs) for case in cases]
     return {
         "grid": GRID,
-        "dataset": "E14.5 MCA, Harvey's Claudin segmentation",
+        "dataset": "Stack A, Harvey's Claudin segmentation",
         "voxel_size_zyx": [float(v) for v in vs],
         "slab_um": 12.0,
         "sheets": [{

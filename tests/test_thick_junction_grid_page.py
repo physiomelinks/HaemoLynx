@@ -193,7 +193,7 @@ def test_grid_k_measures_both_causes():
 
 
 def test_grid_k_takes_a_contact_held_twice_as_one():
-    """Regression: on E14.5 a connector's contacts held one sample twice, and
+    """Regression: on Stack A a connector's contacts held one sample twice, and
     sorting them by distance went on to compare the two points."""
     from thick_junction_review.connector_grid import by_distance
 
@@ -204,7 +204,7 @@ def test_grid_k_takes_a_contact_held_twice_as_one():
     assert ranked[0][1] is twice
 
 
-# --- the E15 grid: the tree fill, the wall join and grid K's measures, fresh ------
+# --- the Stack B grid: the tree fill, the wall join and grid K's measures, fresh ------
 
 
 def _gap_on_a_straight_tree(detour=None, filled=False):
@@ -248,11 +248,11 @@ def _gap_on_a_straight_tree(detour=None, filled=False):
     [(None, None, "filled"), (15.0, 3.0, "filled"), (7.0, 1.4, "left as it was")],
     ids=["no-way-round", "a-long-way-round", "about-as-direct"],
 )
-def test_the_e15_grid_reads_each_gaps_way_round_to_the_end(detour, ratio, says):
+def test_the_stack_b_grid_reads_each_gaps_way_round_to_the_end(detour, ratio, says):
     """The tree fill cuts its search at 2.1 times the tree's path; the grid
     reads the graph's own way between the gap's sides to the end, so its key
     places every gap on the measure, whichever side of 2.1."""
-    from thick_junction_review.e15_grid import fill_cases
+    from thick_junction_review.stack_b_grid import fill_cases
 
     (case,) = fill_cases(_gap_on_a_straight_tree(detour))
 
@@ -267,21 +267,21 @@ def test_the_e15_grid_reads_each_gaps_way_round_to_the_end(detour, ratio, says):
     assert case["decision"] == "left as it was", "nothing was drawn"
 
 
-def test_the_e15_grid_reads_whether_the_fill_drew_the_gap():
-    from thick_junction_review.e15_grid import fill_cases
+def test_the_stack_b_grid_reads_whether_the_fill_drew_the_gap():
+    from thick_junction_review.stack_b_grid import fill_cases
 
     (case,) = fill_cases(_gap_on_a_straight_tree(filled=True))
 
     assert case["decision"] == "filled" and case["drawn_share"] == 1.0
 
 
-def test_the_e15_grids_wall_sheet_takes_joins_and_ends_past_the_reach_heading_in():
+def test_the_stack_b_grids_wall_sheet_takes_joins_and_ends_past_the_reach_heading_in():
     """Six joins and three dead ends past the 15 um reach heading for the
     thick vessel (one turned away is not one of the three), then the other
     decisions."""
     import random
 
-    from thick_junction_review.e15_grid import COUNTS, WALL_BEYOND, WALL_JOINED, pick_wall
+    from thick_junction_review.stack_b_grid import COUNTS, WALL_BEYOND, WALL_JOINED, pick_wall
 
     def case(decision, past, turn):
         return {"decision": decision, "past_lumen_um": past, "chord_turn_deg": turn, "route_turn_deg": turn}
@@ -301,13 +301,13 @@ def test_the_e15_grids_wall_sheet_takes_joins_and_ends_past_the_reach_heading_in
     assert bins == {0, 1, 2}, "spread over how far past the lumen they end: 0-5, 5-10 and 10-15 um"
 
 
-def test_the_e15_grids_wall_sheet_takes_what_the_other_sheets_leave_of_thirty():
-    """E15 gave the fill and the connectors no case, so the wall sheet asks
+def test_the_stack_b_grids_wall_sheet_takes_what_the_other_sheets_leave_of_thirty():
+    """Stack B gave the fill and the connectors no case, so the wall sheet asks
     all thirty; it never asks fewer than its own share, nor more than its
     pool holds."""
     import random
 
-    from thick_junction_review.e15_grid import COUNTS, TOTAL, pick_wall, wall_count
+    from thick_junction_review.stack_b_grid import COUNTS, TOTAL, pick_wall, wall_count
 
     assert wall_count(COUNTS["fill"], COUNTS["connector"]) == COUNTS["wall"]
     assert wall_count(0, 0) == TOTAL == 30
@@ -320,10 +320,10 @@ def test_the_e15_grids_wall_sheet_takes_what_the_other_sheets_leave_of_thirty():
     assert len(pick_wall(pool[:20], random.Random(0), wall_count(0, 0))) == 20
 
 
-def test_the_e15_grid_says_whether_each_exit_on_its_own_would_bridge_a_connector():
+def test_the_stack_b_grid_says_whether_each_exit_on_its_own_would_bridge_a_connector():
     """Grid K's second measure: a connector one of whose exits is in reach
     would be bridged there, were each exit taken on its own."""
-    from thick_junction_review.e15_grid import connector_cases
+    from thick_junction_review.stack_b_grid import connector_cases
 
     def exit_(x, fails):
         return {"where": np.array([0.0, 0.0, x]), "tree_radius_um": 3.0, "reach_um": 11.0,

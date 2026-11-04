@@ -8,7 +8,7 @@ annotator (George, Rebecca or Mike) or another modality.
 
 ## Choosing the vessels
 
-1. Run the pipeline on the dataset through Diameters (E14.5 first, then a second dataset).
+1. Run the pipeline on the dataset through Diameters (Stack A first, then a second dataset).
 2. List the run's vessels with their diameters, and draw 30 or more spread across the widths:
    about a third under 5 um, a third 5-10 um, a third over 10 um, never two from the same branch.
    Draw them before measuring, by their ID, not by how clear they look. Keep the list.

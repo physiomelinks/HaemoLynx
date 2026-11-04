@@ -28,9 +28,9 @@ the tree, or -- with *graph_centreline*, the default -- on the graph's own
 thick centreline where that strays off the tree: a node with a vessel whose
 first :data:`ALONG_CENTRELINE_MIN_UM` lie inside the thick lumen, within the
 lumen's radius of the tree. The split bridges to the graph's thick centreline,
-and on E14.5 (2026-10-24) every bridge ending off the tree ended on it, 2 to
+and on Stack A (2026-10-24) every bridge ending off the tree ended on it, 2 to
 6 um away. Judged by the tree alone, the six shapes after ``fork`` are the
-categories of the 2026-10-09 audit of E14.5's bridges (the plan's finding 2),
+categories of the 2026-10-09 audit of Stack A's bridges (the plan's finding 2),
 when 290 of 393 gave no resistance to something that is vessel.
 
 Each bridge's length over the lumen radius is reported too, and whether it

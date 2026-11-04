@@ -246,7 +246,7 @@ def _small_integer_tally(slab: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     how many of each. Where they span a few values, one ``count_nonzero`` per
     value between the slab's minimum and maximum: a 1/2 mask is counted at
     ~1.1 G voxels/s, where ``np.bincount`` of an int32 copy managed 113 M
-    (29_2_f's intermediate mask, 2026-10-20). Otherwise that bincount."""
+    (12_2_f's intermediate mask, 2026-10-20). Otherwise that bincount."""
     if slab.size == 0:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
     low, high = int(slab.min()), int(slab.max())
@@ -1078,7 +1078,7 @@ def load_3d_h5_with_voxel_size(
     *box*, three slices in the canonical ``(z, y, x)`` order with their start
     and stop given (``io.crop.CropBox.slices``), reads only that box of the
     volume: the voxels ``image[box]`` would hold, without reading the rest of
-    the file. A crop_on_import box of 1024 x 1024 x 512 is 5% of an AIA
+    the file. A crop_on_import box of 1024 x 1024 x 512 is 5% of a Batch E
     stack's 9.4 GB.
 
     *axis_order* names what the dataset's array axes mean (default ``"zyx"``),
@@ -1340,7 +1340,7 @@ def _skeletonize_loaded_volume(
     was wrong. It is no no-op: a thin 3D curve encloses no background
     (``test_fill_binary_holes_on_a_sparse_skeleton_changes_nothing``), but
     Lee thinning can leave closed surfaces where the mask holds fat or hollow
-    vessels, and the fill makes each solid -- on E14.5's cleaned Claudin mask
+    vessels, and the fill makes each solid -- on Stack A's cleaned Claudin mask
     with plain Lee it added 49% to the skeleton (PLAN_optimisers.md, A10).
 
     *use_memmap* is forwarded to :func:`skeletonize_by_component` (whose

@@ -4,15 +4,17 @@ the vessel, each projected through the vessel's own thinnest axis over the
 depth it spans. Shared by grid_av1.py and grid_sz1.py."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-DROPBOX = Path("C:/Users/hd01/Dropbox")
-STEM = "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_zstack_spot1_1p5z_MCAregion"
-SEGMENTATION = DROPBOX / f"Claudin_{STEM}_Simple Segmentation.tiff"
-RAW = DROPBOX / f"{STEM}.tif"
+#: The stack's folder and file stem, from the environment: no image is named here.
+DATA = Path(os.environ.get("HAEMOLYNX_REVIEW_DATA", "."))
+STEM = os.environ.get("HAEMOLYNX_REVIEW_STEM", "stack_a")
+SEGMENTATION = DATA / f"Claudin_{STEM}_Simple Segmentation.tiff"
+RAW = DATA / f"{STEM}.tif"
 
 #: Half the side of a case's window, at least; it grows to hold the vessel.
 HALF_WINDOW_UM = 60.0

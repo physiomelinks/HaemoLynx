@@ -88,7 +88,7 @@ def _parser() -> argparse.ArgumentParser:
             "as independent images (Mann-Whitney U, Welch t): each image with the image "
             "of the other condition whose name is most alike once the condition phrase "
             "is taken out, within its subject (the part of the name before the phrase: "
-            "28_3_d in 28_3_d_contra_FITC). Images with no partner, or a tie, are left "
+            "11_3_d in 11_3_d_contra_FITC). Images with no partner, or a tie, are left "
             "out and listed."
         ),
     )
@@ -97,7 +97,7 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "With --paired: a regular expression whose first group (or whole match) "
             "is the subject ID, in place of the text before the condition phrase; "
-            "'^(\\d+_\\d+)' reads 28_3 from 28_3_d_contra_FITC."
+            "'^(\\d+_\\d+)' reads 11_3 from 11_3_d_contra_FITC."
         ),
     )
     parser.add_argument(

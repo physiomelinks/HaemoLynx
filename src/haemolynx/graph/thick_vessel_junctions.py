@@ -75,7 +75,7 @@ CENTRELINE_TOLERANCE_UM = 1.5
 
 #: ... or this fraction of the thick vessel's radius there, when that is more:
 #: a wide vessel's centreline wanders round the tree by more than a narrow
-#: one's (on E14.5 a 12 um vessel's by up to 4 um), and is still its centreline.
+#: one's (on Stack A a 12 um vessel's by up to 4 um), and is still its centreline.
 CENTRELINE_TOLERANCE_PER_RADIUS = 0.3
 
 #: A bridge's centreline end this close (µm, along the centreline) to a node
@@ -121,7 +121,7 @@ _MIN_CENTRELINE_WITHIN_UM = 4.0 * CENTRELINE_TOLERANCE_UM
 #: skeletonisation often ends a thin vessel's arm short of the thick region,
 #: at its wall, and then nothing reaches the thick centreline. 15 um since
 #: Harvey's grids P and P2 (2026-10-25): every dead end 10-14 um past the lumen
-#: heading for it was marked "join"; at 15 um E14.5 gains two joins, both so
+#: heading for it was marked "join"; at 15 um Stack A gains two joins, both so
 #: marked, and none marked "leave".
 WALL_JOIN_REACH_UM = 15.0
 
@@ -139,14 +139,14 @@ JOINED_AT_WALL_UM = "joined_at_thick_wall_um"
 TAPER_DIRECTION_UM = 5.0
 
 #: A stretch of the thick centreline tree no graph centreline follows, shorter
-#: than this (µm), is the tolerance flickering, not a gap (on E14.5 half the
+#: than this (µm), is the tolerance flickering, not a gap (on Stack A half the
 #: gaps were 2 um or less).
 TREE_GAP_MIN_UM = 3.0
 
 #: A gap is filled only where the graph's own way between its two sides is
 #: more than this many times as long as the tree's path, or there is none: a
 #: graph that already joins them about as directly draws the vessel there,
-#: however far off the tree. Fitted on Harvey's grid V (E14.5, 2026-10-15):
+#: however far off the tree. Fitted on Harvey's grid V (Stack A, 2026-10-15):
 #: right on 18 of 20, against 13 for filling none; the drawn path was right
 #: at 2.2-32 times (and on one stray at 1.0), wrong at 0.5-2.0 (and once at
 #: 4.2).
@@ -165,7 +165,7 @@ EXTEND_END_OFF_TREE_UM = 15.0
 #: How far (µm) a thick centreline is drawn on along its tree where the tree
 #: runs on with no graph beside it, and then on through the segmentation from
 #: where the tree ends, looking for the vessel or dead end it reaches. Fitted
-#: on Harvey's grid Y (E14.5, both segmentations, 2026-10-15): every way he
+#: on Harvey's grid Y (Stack A, both segmentations, 2026-10-15): every way he
 #: wanted drawn was 32 um or shorter, the one too long 54 um.
 EXTEND_TREE_MAX_UM = 150.0
 EXTEND_REACH_UM = 40.0
@@ -474,7 +474,7 @@ class ThickCentreline:
     The lumen clean-up asks it which of two strands in one lumen is the
     thick vessel's own centreline. It runs before the split, when nothing
     marks one yet, and judged by the wall alone it took the strand on the
-    tree as often as not (Forclaude.haemorun, E14.5, 2026-10-15: the graph
+    tree as often as not (a saved Stack A run, 2026-10-15: the graph
     followed 95% of the tree after skeletonisation and 83% when built).
     """
 
@@ -986,7 +986,7 @@ def insert_thick_vessel_junction_nodes(
     # The thick vessel's own end running out of the image: an inside run
     # ending at a dead end on an image face is its way to the face, kept as
     # the thick vessel's path, never a connector's stretch to replace with a
-    # bridge. Joined at a node a wall join put on the centreline (E14.5, the
+    # bridge. Joined at a node a wall join put on the centreline (Stack A, the
     # reach at 15 um), it fell in with that vessel's connector and the
     # arteriole's inlet at the face went with it.
     extent_um = (np.asarray(thick.shape) - 1) * vs
@@ -1463,7 +1463,7 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
 
     # Each edge's samples, kept while the edge, its path and its nodes'
     # positions are the very objects they were: every gap filled had the
-    # whole graph sampled again, 2.8 s a time on E14.5, though a fill
+    # whole graph sampled again, 2.8 s a time on Stack A, though a fill
     # changes a few edges.
     sampled: dict = {}
 
@@ -1619,7 +1619,7 @@ def _extend_thick_centreline_ends(
        of -- comes first, the vessel leaves the image there and nothing is
        drawn.
 
-    Grid Y (Harvey, 2026-10-15; 18 places, every one on E14.5's two
+    Grid Y (Harvey, 2026-10-15; 18 places, every one on Stack A's two
     segmentations): drawn to a vessel or dead end, right at all 13 where
     the way was 32 um or shorter, wrong at the one of 54 um; drawn to a face,
     right at 1 of 3 (a 4 um step out to the face; wrong 10 um across a vessel
@@ -2110,7 +2110,7 @@ def _remove_blind_vessels_beyond_bridges(
     of the image is kept, and so is one at least *stub_length_um(inner end
     of the bridge)* long, which the stub prune would keep as well.
 
-    Harvey's grid Y (2026-10-15, E14.5): of six vessels this took, the four
+    Harvey's grid Y (2026-10-15, Stack A): of six vessels this took, the four
     marked keep were 34-154 um long -- stretches of the thick vessel itself,
     and long capillaries -- and the two marked remove 6 and 16 um, all on
     the right side of the prune's 3 lumen radii; so was grid W's 142 um
@@ -2237,7 +2237,7 @@ def remove_dangling_bridges(G: nx.MultiGraph) -> int:
     clean-up took out joins nothing. And every vessel whose two ends are
     each nothing but a bridge, both to the same node, with its bridges: a
     piece of strand left in the thick vessel's lumen (where the thick
-    centreline drawn from the tree replaced the graph's own, on E14.5), not
+    centreline drawn from the tree replaced the graph's own, on Stack A), not
     a vessel opening into it; contracted for the statistics, it would be a
     loop on one node. Only one lying round that node, though
     (:func:`_lies_round_its_bridges_node`): a vessel that leaves the thick

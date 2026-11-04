@@ -254,7 +254,7 @@ def figure_cells(
 def batch_progress_text(
     results: Sequence[BatchResult], *, elapsed_s: float, running_elapsed_s: float = 0.0
 ) -> str:
-    """One line on a batch as it runs: ``"Image 3 of 12: E14_MCA -- 2 done, 0
+    """One line on a batch as it runs: ``"Image 3 of 12: StackA_region -- 2 done, 0
     failed, 41 min so far, about 1 h 50 min left"``. *results* are the
     batch's images in order, as far as they have got; *elapsed_s* is the
     batch's time so far and *running_elapsed_s* the running image's. The

@@ -12,7 +12,7 @@ only that.
 segmented folder that are neither a mask of another file there
 (:func:`~haemolynx.io.vessel_mask_discovery.read_mask_name`), nor a
 probability map, nor the raw image of another file there (:func:`is_raw_of`):
-``E14_MCA.tif`` beside ``E14_MCA_Simple Segmentation.tiff``.
+``StackA_region.tif`` beside ``StackA_region_Simple Segmentation.tiff``.
 
 **A raw image** (:func:`read_raw_name`) is read against a segmented image as a
 mask is, with no role words: what its name says, apart from the words that say
@@ -230,8 +230,8 @@ def read_raw_name(candidate: Path | str, segmented: Path | str) -> RawName | Non
 
 
 def _says_raw(words: Iterable[str]) -> bool:
-    """A name saying ``raw`` and no segmentation word: ``E14_raw.tif``, not
-    ilastik's ``E14_raw_Simple Segmentation.tiff``."""
+    """A name saying ``raw`` and no segmentation word: ``StackA_raw.tif``, not
+    ilastik's ``StackA_raw_Simple Segmentation.tiff``."""
     words = set(words)
     return bool(words & RAW_WORDS) and not words & SEGMENTATION_WORDS
 
@@ -593,7 +593,7 @@ class _Owners:
     """Which batch image a file in a folder of its own belongs to: the image
     whose name shares the most words with it from the start, then the most
     words, then the fewest words of its own the file lacks, when one image
-    does (``E14_pericytes`` is ``E14``'s, not ``E14_2``'s)."""
+    does (``StackA_pericytes`` is ``StackA``'s, not ``StackA_2``'s)."""
 
     def __init__(self, inputs: Sequence[Path]) -> None:
         self._inputs = list(inputs)
@@ -822,8 +822,8 @@ def choose_alike(
 ) -> tuple[BatchMatch, ...]:
     """*matches* with every tie in *role* chosen as *example* was chosen from
     *example_tied*: the file that differs from the others it tied with as
-    *example* differs from its own -- choosing ``C1-E14.tif`` over
-    ``C2-E14.tif`` chooses ``C1-E15.tif`` over ``C2-E15.tif``. A tie with no
+    *example* differs from its own -- choosing ``C1-StackA.tif`` over
+    ``C2-StackA.tif`` chooses ``C1-StackB.tif`` over ``C2-StackB.tif``. A tie with no
     such file, or more than one, stays."""
     example = Path(example)
     key = _distinguishing(example, [Path(path) for path in example_tied])

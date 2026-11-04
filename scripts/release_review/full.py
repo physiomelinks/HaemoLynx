@@ -4,13 +4,13 @@ The datasets are local and never committed: their paths live in the main
 checkout's ``release_review_datasets.yaml`` (git-ignored, as every root
 ``*.yaml`` is). One entry per dataset::
 
-    e14p5:
+    stack_a:
       config: config.yaml          # relative to this file's folder
       settings: {statistics: true} # beside the config's
       needs_gib: 8                 # free memory to start it with
       shape_zyx: [287, 512, 512]
-    e14p5_eighth:                  # the same, cut to an eighth (speed.10a)
-      of: e14p5
+    stack_a_eighth:                  # the same, cut to an eighth (speed.10a)
+      of: stack_a
       crop_fraction: 0.125
       crop_box_zyx: [[0, 98, 0], [70, 357, 511]]   # optional: this box, not a centred one
 
@@ -37,10 +37,10 @@ DATASETS_FILE = "release_review_datasets.yaml"
 #: The reference datasets (``RELEASE_REVIEW.md`` § Reference datasets): the
 #: three fixtures, from the fixture tier, and the four local stacks.
 FIXTURE_RUNS = ("seven_vessel", "bundled_h5", "nerve_crop")
-REFERENCE = FIXTURE_RUNS + ("e14p5", "nerve", "mason_sm", "brain")
+REFERENCE = FIXTURE_RUNS + ("stack_a", "nerve", "stack_c", "brain")
 TITLES = {
     "seven_vessel": "seven-vessel fixture", "bundled_h5": "bundled h5 fixture", "nerve_crop": "Nerve crop fixture",
-    "e14p5": "E14.5", "nerve": "Nerve", "mason_sm": "Mason SM", "brain": "Brain",
+    "stack_a": "Stack A", "nerve": "Nerve", "stack_c": "Stack C", "brain": "Brain",
 }
 
 
@@ -257,25 +257,25 @@ def _not_run(name: str, skipped: Mapping[str, str]) -> str:
 
 
 def speed_2a(run: Optional[manifests.RunRecord]) -> Optional[CheckResult]:
-    """Decided by an E14.5 run of this scoring; with none (not run, or no
+    """Decided by a Stack A run of this scoring; with none (not run, or no
     room to run it) the check's row decides, so no room is never a fail."""
     if run is None:
         return None
     stages = ", ".join(f"{stage.stage} {stage.wall_seconds:,.0f} s" for stage in run.stages if stage.wall_seconds)
     return measured("speed.2a", run.finished, run.wall_seconds,
-                    f"E14.5 {run.status} in {run.wall_seconds:,.0f} s ({stages})")
+                    f"Stack A {run.status} in {run.wall_seconds:,.0f} s ({stages})")
 
 
 def memory_2a(run: Optional[manifests.RunRecord]) -> Optional[CheckResult]:
     if run is None:
         return None
     return measured("memory.2a", run.finished, run.peak_rss_bytes,
-                    f"E14.5 {run.status}, peak {_gib(run.peak_rss_bytes)} on a {_gib(run.machine_ram_bytes)} {run.platform} machine")
+                    f"Stack A {run.status}, peak {_gib(run.peak_rss_bytes)} on a {_gib(run.machine_ram_bytes)} {run.platform} machine")
 
 
 #: The real stacks whose saved graph's lumen-artefact report counts for
 #: ``graph.6a``.
-LUMEN_REPORT_DATASETS = ("e14p5", "nerve", "mason_sm", "brain")
+LUMEN_REPORT_DATASETS = ("stack_a", "nerve", "stack_c", "brain")
 
 
 def graph_6a(results: Mapping[str, Optional[Mapping[str, Any]]]) -> Optional[CheckResult]:
@@ -366,12 +366,12 @@ def speed_8b(flagged: Sequence[trends.Slowdown], compared_with: Optional[str]) -
 def scaling_check(
     check_id: str, rows: Sequence[Mapping[str, Any]], datasets: Mapping[str, Any], commit: Optional[str] = None,
 ) -> Optional[CheckResult]:
-    """Every stage's time (or peak memory) against volume, on E14.5 and its
+    """Every stage's time (or peak memory) against volume, on Stack A and its
     crops at one commit: each stage needs the target's number of sizes, and
     none may grow faster than its volume."""
     if commit is not None:
         rows = [row for row in rows if str(row.get("commit")) == commit]
-    family = ["e14p5"] + [name for name, entry in datasets.items() if entry.get("of") == "e14p5"]
+    family = ["stack_a"] + [name for name, entry in datasets.items() if entry.get("of") == "stack_a"]
     field = "wall_seconds" if check_id.startswith("speed") else "peak_rss_mib"
     found = trends.scaling(rows, family, field)
     if found["sizes"] == 0:
@@ -381,19 +381,19 @@ def scaling_check(
     short = sorted(
         stage for stage, sizes in found["stage_sizes"].items() if stage != "total" and sizes < needed
     )
-    evidence = f"E14.5 at {found['sizes']} sizes; growth with volume: {exponents or 'none'}"
+    evidence = f"Stack A at {found['sizes']} sizes; growth with volume: {exponents or 'none'}"
     if short:
         evidence += f"; measured at fewer than {needed} sizes: {', '.join(short)}"
     passed = found["sizes"] >= needed and not short and not found["faster_than_volume"]
     if check_id == "memory.10a":
         whole = [
             row for row in rows
-            if row.get("dataset") == "e14p5" and row.get("stage") == "total" and row.get("status") == "finished"
+            if row.get("dataset") == "stack_a" and row.get("stage") == "total" and row.get("status") == "finished"
         ]
         peak = trends._float(whole[-1].get("peak_rss_mib")) if whole else None
         limit = target("memory.10a", 1) / 2**20
         shown = "-" if peak is None else f"{peak / 1024:.1f} GiB"
-        evidence += f"; E14.5 peak {shown} against {limit / 1024:.0f} GiB"
+        evidence += f"; Stack A peak {shown} against {limit / 1024:.0f} GiB"
         passed = passed and peak is not None and peak <= limit
     if found["faster_than_volume"]:
         evidence += f"; faster than volume, with no stated reason: {', '.join(found['faster_than_volume'])}"
@@ -415,8 +415,8 @@ def collect(
     every_result = {**(fixture_results or {}), **results}
     found = [
         graph_6a(results),
-        speed_2a(runs.get("e14p5")),
-        memory_2a(runs.get("e14p5")),
+        speed_2a(runs.get("stack_a")),
+        memory_2a(runs.get("stack_a")),
         per_stage_check("speed.6a", runs, skipped, rows),
         per_stage_check("memory.6a", runs, skipped, rows),
         flow_6c(every_result, skipped),

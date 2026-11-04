@@ -4,7 +4,7 @@
 :func:`~.thick_vessels._component_tree` draws a fat component's tree from
 scipy's Dijkstra over a 26-neighbour graph of every voxel in it, built into
 CSR: about 360 bytes a voxel. Where the fat region is one network crossing the
-stack (Harvey's patella mask at a 3 um gate: 111 M voxels, 2026-10-18) that
+stack (Harvey's Stack E mask at a 3 um gate: 111 M voxels, 2026-10-18) that
 graph alone is 40 GB. Its arm loop also rescanned the whole component for
 every arm, and stopped at 500 arms.
 
@@ -799,7 +799,7 @@ def edt_ridge_by_component(
     # array filled as the slabs are labelled: sorted, the voxels come by
     # component and, within one, in C order. Collected as key, label and
     # number arrays and joined, the labelling was 40 bytes a fat voxel at
-    # once (5.8 GB on the patella's 144 M); this is 8.
+    # once (5.8 GB on Stack E's 144 M); this is 8.
     shift = max(1, int(np.prod(shape, dtype=np.int64) - 1).bit_length())
     if int(total).bit_length() + shift > 62:
         raise ValueError(f"a {shape} volume with {total} fat voxels is too large to sort")

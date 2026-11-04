@@ -11,7 +11,7 @@ Save run captures the run on the GUI thread and writes it on a worker (`save_run
 Save and Load are greyed until it is done). The write is gzip level 1 (`COMPRESS_LEVEL`), into a `.part`
 file moved over the name once complete. The volumes the checkpoints and the results share are
 pickled once, and the checkpoints' graphs, private copies already, are not copied again. gzip's
-default level 9 took 12.6 s on one E14.5-sized binary mask, against 0.44 s at level 1. A whole E14.5
+default level 9 took 12.6 s on one Stack A-sized binary mask, against 0.44 s at level 1. A whole Stack A
 run (1 GB pickled, 2026-10-15) went from 297 s with the panel frozen to 8 s in the background, and
 its file from 80 to 104 MB. Level 6 would take 27 s and save 18 MB of that, and level 3 9 s to save 8 MB.
 
@@ -111,7 +111,7 @@ the choice while it is Uniform (`set_tube_uniform_diameter`; 4 µm to start, 0.5
 ## The settings optimisers (Optimise settings, Optimise FWHM settings, Optimise endothelial settings)
 
 History of `PLAN_optimisers.md` (2026-10-23 to 2026-10-24), which brings the optimisers in line
-with the pipeline as it now runs and adds the third; the plan's **Measured** section has the E14.5
+with the pipeline as it now runs and adds the third; the plan's **Measured** section has the Stack A
 numbers.
 
 - **Phase 1** (`e1314748`): the pipeline's own argument builders in `pipeline/stages.py`
@@ -119,11 +119,11 @@ numbers.
   `thick_vessel_refinement_arguments`, `centreline_smoothing_arguments`, beside
   `graph_build_arguments`), which `skeletonise` and `build_network` call and the search's four hand
   copies gave way to; the report names the settings a search read but does not tune that are not at
-  their defaults. E14.5's skeleton and graph unchanged by it.
+  their defaults. Stack A's skeleton and graph unchanged by it.
 - **Phase 2** (`f1184f25`): Optimise settings starts from what a run's skeletonise reads
   (`stages.load_volume_on_run_grid`): the run's grid and whole settings, voxel counts on that grid
   and back, the run's thick-vessel restriction, the plain skeleton through
-  `io.load._skeletonize_loaded_volume`. A trial's E14.5 skeleton equals the run's.
+  `io.load._skeletonize_loaded_volume`. A trial's Stack A skeleton equals the run's.
 - **Phase 3** (`9328c668`): FWHM trials measure through the run's own call
   (`apply.measure_fwhm_diameters`) with the run's config and mask, inside the whole vessel graph,
   on a template cleared of the run's widths.
@@ -131,7 +131,7 @@ numbers.
   radius sampler, the one `MaskSupport`, the thick centreline tree, made once per mask) and
   `stages.finish_network_graph` (everything after graph building: smoothing by the vessel radius,
   the clean-ups, the thick-vessel split, the re-trace, straight steps, the optional removals). Every
-  graph sweep scores the finished graph, so a trial's E14.5 graph equals the run's edge for edge.
+  graph sweep scores the finished graph, so a trial's Stack A graph equals the run's edge for edge.
   The smoothing sweep moved most (it now judges the saved graph with the run's radius tolerance),
   and the search took 1.9 times as long (D5 allowed 2).
 - **Phase 5** (panel, low RAM, words): both optimisers grey under `network_source=synthetic`,
@@ -162,11 +162,11 @@ numbers.
   once; scored on hollow vessels of known lumen planted with the image's own blur, wall and noise,
   the sample's spread and decoys. Auto times reading and caps the sample under 64 vessels, where
   every trial would start worker processes.
-- **B8** (`ca5df387`, `aee7da34`): Optimise FWHM settings' Auto sampled about 10 of E14.5's 1,342
+- **B8** (`ca5df387`, `aee7da34`): Optimise FWHM settings' Auto sampled about 10 of Stack A's 1,342
   vessels, too few to plant any vessel of known width, so the accuracy group never ran. Auto now
   samples at least 100, and its time model counts the trials a pass makes (77) and the planted
   vessels and decoys each measures (half a vessel per sampled one): 1,530 s estimated against the
-  1,488 s the E14.5 search took. It found FWHM's planted-vessel error about 0.54 there, still open.
+  1,488 s the Stack A search took. It found FWHM's planted-vessel error about 0.54 there, still open.
 - **The scorecard and the report** (2026-10-24, `95941900`): the scorecard marks its graphs' dead ends as the
   run does (`stages.mark_dead_end_kinds`, which `build_network` calls too) and counts each kind,
   with loops inside one lumen beside short loops; a kind is a measure only (`ScoreRow`'s

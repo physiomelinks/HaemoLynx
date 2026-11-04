@@ -2288,7 +2288,7 @@ def _bridge_voxels(joined, skeleton, thick):
 def test_two_arms_entering_side_by_side_each_run_to_the_ridge():
     """Regression: the second arm joined the first arm's bridge beside the
     wall instead of running to the centreline, so the two bridges ran side by
-    side through the fat lumen -- 21 of E14.5 MCA's 33 pairs of edges in one
+    side through the fat lumen -- 21 of Stack A's 33 pairs of edges in one
     lumen once the thick-vessel split cut them out."""
     skeleton, thick, allowed = _two_arms_into_a_fat_band((18, 21))
 
@@ -2308,7 +2308,7 @@ def test_two_arms_entering_side_by_side_each_run_to_the_ridge():
 @pytest.mark.parametrize("use_memmap", [False, True])
 def test_the_join_logs_every_arm_and_where_its_time_went(monkeypatch, caplog, use_memmap):
     """Progress is logged whichever way an arm ends -- an arm already
-    touching the ridge used to skip it, so on the patella one log stretch
+    touching the ridge used to skip it, so on Stack E one log stretch
     held 5,459 arms and could not say which -- and the join ends with each
     outcome's count and the seconds spent in each of its parts. What it
     draws does not change."""
@@ -2366,7 +2366,7 @@ def test_the_low_ram_join_chains_arms_through_earlier_bridges_as_in_ram(monkeypa
     the ridge and the bridges before it. Under the low-RAM option that is
     found from the ridge's tree and the bridges' voxels kept beside it, not
     from a tree of every fat voxel built again after each bridge (552 s of
-    the patella's join, 2026-10-20), and the skeleton is the in-RAM one."""
+    Stack E's join, 2026-10-20), and the skeleton is the in-RAM one."""
     import logging
 
     import haemolynx.preprocessing.thick_vessels as thick_vessels_module

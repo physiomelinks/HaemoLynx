@@ -25,8 +25,8 @@ from haemolynx.synthetic.template import (
 )
 from synthetic_fixtures import TINY_ROLES, fixture_template, tiny_hierarchical_graph, tiny_sections
 
-#: E14.5's layout (its MCA run, 2026-10-25).
-E14P5_LAYOUT = LayoutTarget(
+#: Stack A's layout (its run, 2026-10-25).
+STACK_A_LAYOUT = LayoutTarget(
     junction_smallest_angle_median_deg=97.1,
     junction_smallest_angle_p25_deg=86.8,
     junction_largest_angle_median_deg=138.8,
@@ -98,17 +98,17 @@ def test_the_class_tortuosity_tail_is_the_reports_row_else_the_graphs():
 
 def test_the_layout_and_the_tail_go_through_json_and_scaling():
     T = fixture_template()
-    T = replace(T, layout=E14P5_LAYOUT, classes={**T.classes, "capillary": replace(T.classes["capillary"], p90_tortuosity=1.45)})
+    T = replace(T, layout=STACK_A_LAYOUT, classes={**T.classes, "capillary": replace(T.classes["capillary"], p90_tortuosity=1.45)})
     again = NetworkTemplate.from_dict(T.to_dict())
-    assert again.layout == E14P5_LAYOUT
+    assert again.layout == STACK_A_LAYOUT
     assert again.classes["capillary"].p90_tortuosity == 1.45
-    assert T.scaled(1.5).layout == E14P5_LAYOUT
+    assert T.scaled(1.5).layout == STACK_A_LAYOUT
     assert NetworkTemplate.from_dict({**T.to_dict(), "layout": None}).layout is None
 
 
 def test_a_batch_template_averages_its_runs_layouts():
-    a = replace(fixture_template(), layout=E14P5_LAYOUT)
-    b = replace(fixture_template(), layout=replace(E14P5_LAYOUT, acute_junction_share=0.052, distance_p90_um=44.7))
+    a = replace(fixture_template(), layout=STACK_A_LAYOUT)
+    b = replace(fixture_template(), layout=replace(STACK_A_LAYOUT, acute_junction_share=0.052, distance_p90_um=44.7))
     average = average_templates([a, b])
     assert average.layout.acute_junction_share == pytest.approx(0.032)
     assert average.layout.distance_p90_um == pytest.approx(39.7)
@@ -117,8 +117,8 @@ def test_a_batch_template_averages_its_runs_layouts():
 
 
 def test_the_comparison_bands_every_layout_row_and_the_tail():
-    T = replace(fixture_template(), layout=E14P5_LAYOUT)
-    S = replace(fixture_template(), layout=replace(E14P5_LAYOUT, acute_junction_share=0.40, junction_smallest_angle_median_deg=53.0))
+    T = replace(fixture_template(), layout=STACK_A_LAYOUT)
+    S = replace(fixture_template(), layout=replace(STACK_A_LAYOUT, acute_junction_share=0.40, junction_smallest_angle_median_deg=53.0))
     rows = {(r.section, r.characteristic): r for r in compare_templates(T, S)}
     for characteristic, _field in LAYOUT_CHARACTERISTICS:
         assert rows[("layout", characteristic)].tolerance, characteristic
@@ -145,7 +145,7 @@ def test_the_acute_weight_follows_the_templates_own_junctions():
 
 def test_a_template_with_a_layout_draws_wider_junctions_and_the_same_counts():
     plain = fixture_template()
-    shaped = replace(plain, layout=E14P5_LAYOUT)
+    shaped = replace(plain, layout=STACK_A_LAYOUT)
     before, after = [], []
     for seed in (1, 2, 3):
         G0 = generate_network(plain, seed=seed)

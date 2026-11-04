@@ -20,8 +20,8 @@ def _files(folder: Path, *names: str) -> list[Path]:
 
 
 def test_words_split_at_punctuation_spaces_and_capitals():
-    assert file_name_words("E14.5_MCA LargeArterioles-mask") == [
-        "e", "14", "5", "mca", "large", "arterioles", "mask",
+    assert file_name_words("Stack1.5_ROI LargeArterioles-mask") == [
+        "stack", "1", "5", "roi", "large", "arterioles", "mask",
     ]
     assert file_name_words("SMALL_VEINS") == ["small", "veins"]
 
@@ -29,11 +29,11 @@ def test_words_split_at_punctuation_spaces_and_capitals():
 def test_all_four_masks_are_found_beside_the_segmented_image(tmp_path):
     image, large_art, large_ven, small_art, small_ven = _files(
         tmp_path,
-        "E14_MCA_segmented.tif",
-        "E14_MCA_large_arterioles.tif",
-        "E14_MCA_large_veins.tif",
-        "E14_MCA_small_artery_mask.tif",
-        "E14_MCA_small_venules.tif",
+        "StackA_region_segmented.tif",
+        "StackA_region_large_arterioles.tif",
+        "StackA_region_large_veins.tif",
+        "StackA_region_small_artery_mask.tif",
+        "StackA_region_small_venules.tif",
     )
     found = find_vessel_masks([image])
     assert found["large"] == FoundVesselMasks("large", arteriole=large_art, venule=large_ven)
@@ -62,7 +62,7 @@ def test_every_venule_word_names_a_venule_mask(tmp_path, word):
 
 def test_a_size_with_no_vessel_type_is_a_global_mask(tmp_path):
     image, large, small = _files(
-        tmp_path, "E14_seg.tif", "E14_large_vessels.tif", "E14_Small.tiff"
+        tmp_path, "StackA_seg.tif", "StackA_large_vessels.tif", "StackA_Small.tiff"
     )
     found = find_vessel_masks([image])
     assert found["large"].global_mask == large and found["large"].is_global
@@ -75,14 +75,14 @@ def test_a_size_with_no_vessel_type_is_a_global_mask(tmp_path):
 
 
 def test_a_size_with_both_vessel_types_is_a_global_mask(tmp_path):
-    image, mask = _files(tmp_path, "E14.tif", "E14_large_arteries_and_veins.tif")
+    image, mask = _files(tmp_path, "StackA.tif", "StackA_large_arteries_and_veins.tif")
     found = find_vessel_masks([image], ["large"])["large"]
     assert found.global_mask == mask and found.arteriole is None and found.venule is None
 
 
 def test_a_pair_is_read_rather_than_a_global_mask_beside_it(tmp_path):
     image, global_mask, art, ven = _files(
-        tmp_path, "E14.tif", "E14_large.tif", "E14_large_arteriole.tif", "E14_large_venule.tif"
+        tmp_path, "StackA.tif", "StackA_large.tif", "StackA_large_arteriole.tif", "StackA_large_venule.tif"
     )
     found = find_vessel_masks([image], ["large"])["large"]
     assert found.global_mask == global_mask
@@ -91,14 +91,14 @@ def test_a_pair_is_read_rather_than_a_global_mask_beside_it(tmp_path):
 
 
 def test_a_lone_arteriole_or_venule_mask_fills_only_its_own_row(tmp_path):
-    image, art, ven = _files(tmp_path, "E14.tif", "E14_large_arteriole.tif", "E14_small_vein.tif")
+    image, art, ven = _files(tmp_path, "StackA.tif", "StackA_large_arteriole.tif", "StackA_small_vein.tif")
     found = find_vessel_masks([image])
     assert found["large"].settings() == {"large_arteriole_mask_path": art}
     assert found["small"].settings() == {"small_venule_mask_path": ven}
 
 
 def test_a_vessel_type_with_no_size_is_a_large_mask_never_a_small_one(tmp_path):
-    image, art, ven = _files(tmp_path, "E14.tif", "E14_arteriole.tif", "E14_Vein.tiff")
+    image, art, ven = _files(tmp_path, "StackA.tif", "StackA_arteriole.tif", "StackA_Vein.tiff")
     found = find_vessel_masks([image])
     assert found["large"] == FoundVesselMasks(
         "large", arteriole=art, venule=ven, size_named=False
@@ -111,20 +111,20 @@ def test_a_vessel_type_with_no_size_is_a_large_mask_never_a_small_one(tmp_path):
 
 
 def test_both_vessel_types_with_no_size_are_a_global_large_mask(tmp_path):
-    image, mask = _files(tmp_path, "E14.tif", "E14_arteries_and_veins.tif")
+    image, mask = _files(tmp_path, "StackA.tif", "StackA_arteries_and_veins.tif")
     found = find_vessel_masks([image], ["large"])["large"]
     assert found.global_mask == mask and not found.size_named
 
 
 @pytest.mark.parametrize(
     "named",
-    ["E14_large_arteriole.tif", "E14_large_venules.tif", "E14_large_vessels.tif"],
+    ["StackA_large_arteriole.tif", "StackA_large_venules.tif", "StackA_large_vessels.tif"],
 )
 def test_any_file_saying_large_puts_the_type_only_names_aside(tmp_path, named):
     """As long as no file says 'large' (Harvey, 2026-10-18): one that does,
     of whatever kind, decides the large masks alone."""
     image, _art, _ven, explicit = _files(
-        tmp_path, "E14.tif", "E14_arteriole.tif", "E14_vein.tif", named
+        tmp_path, "StackA.tif", "StackA_arteriole.tif", "StackA_vein.tif", named
     )
     found = find_vessel_masks([image], ["large"])["large"]
     assert found.size_named
@@ -135,7 +135,7 @@ def test_any_file_saying_large_puts_the_type_only_names_aside(tmp_path, named):
 
 def test_a_file_saying_small_leaves_the_type_only_names_large(tmp_path):
     image, art, ven, small = _files(
-        tmp_path, "E14.tif", "E14_arteriole.tif", "E14_vein.tif", "E14_small_vessels.tif"
+        tmp_path, "StackA.tif", "StackA_arteriole.tif", "StackA_vein.tif", "StackA_small_vessels.tif"
     )
     found = find_vessel_masks([image])
     assert (found["large"].arteriole, found["large"].venule) == (art, ven)
@@ -143,36 +143,36 @@ def test_a_file_saying_small_leaves_the_type_only_names_large(tmp_path):
 
 
 def test_a_name_with_neither_size_nor_type_is_no_mask(tmp_path):
-    image, *_ = _files(tmp_path, "E14.tif", "E14_mask.tif", "E14_vessels.tif")
+    image, *_ = _files(tmp_path, "StackA.tif", "StackA_mask.tif", "StackA_vessels.tif")
     found = find_vessel_masks([image])
     assert not found["large"].found_any and not found["small"].found_any
 
 
 def test_both_sizes_in_one_name_is_no_mask(tmp_path):
-    image, _ = _files(tmp_path, "E14.tif", "E14_large_small_arteriole.tif")
+    image, _ = _files(tmp_path, "StackA.tif", "StackA_large_small_arteriole.tif")
     found = find_vessel_masks([image])
     assert not found["large"].found_any and not found["small"].found_any
 
 
 def test_another_images_mask_is_not_taken(tmp_path):
-    image, _other = _files(tmp_path, "E14_MCA_segmented.tif", "E15_MCA_large_arteriole.tif")
+    image, _other = _files(tmp_path, "StackA_region_segmented.tif", "StackB_region_large_arteriole.tif")
     assert not find_vessel_masks([image], ["large"])["large"].found_any
 
-    (own,) = _files(tmp_path, "E14_MCA_large_arteriole.tif")
+    (own,) = _files(tmp_path, "StackA_region_large_arteriole.tif")
     assert find_vessel_masks([image], ["large"])["large"].arteriole == own
 
 
 def test_a_mask_named_only_by_its_role_belongs_to_the_folder(tmp_path):
-    image, mask = _files(tmp_path, "E14_MCA_segmented.tif", "large_arteriole_mask.tif")
+    image, mask = _files(tmp_path, "StackA_region_segmented.tif", "large_arteriole_mask.tif")
     assert find_vessel_masks([image], ["large"])["large"].arteriole == mask
 
 
 def test_the_mask_sharing_the_image_name_furthest_is_taken(tmp_path):
     image, _shorter, closer = _files(
         tmp_path,
-        "E14_MCA_C1_seg.tif",
-        "E14_large_arteriole.tif",
-        "E14_MCA_large_arteriole.tif",
+        "StackA_region_C1_seg.tif",
+        "StackA_large_arteriole.tif",
+        "StackA_region_large_arteriole.tif",
     )
     assert find_vessel_masks([image], ["large"])["large"].arteriole == closer
 
@@ -195,13 +195,13 @@ def test_role_words_in_the_image_name_are_not_read_as_the_masks_role(tmp_path):
 def test_the_input_itself_and_other_file_types_are_never_masks(tmp_path):
     image, *_ = _files(
         tmp_path,
-        "E14_large_vessels.tif",
-        "E14_large_arteriole_classifier.ilp",
-        "E14_large_arteriole.png",
-        "E14_large_arteriole_Probabilities.h5",
-        "E14_large_arteriole_raw.tif",
+        "StackA_large_vessels.tif",
+        "StackA_large_arteriole_classifier.ilp",
+        "StackA_large_arteriole.png",
+        "StackA_large_arteriole_Probabilities.h5",
+        "StackA_large_arteriole_raw.tif",
     )
-    (tmp_path / "E14_large_venule.tif").mkdir()
+    (tmp_path / "StackA_large_venule.tif").mkdir()
     found = find_vessel_masks([image], ["large"])["large"]
     assert not found.found_any
     assert found.ambiguous == {}
@@ -209,14 +209,14 @@ def test_the_input_itself_and_other_file_types_are_never_masks(tmp_path):
 
 def test_tied_files_are_left_unchosen_unless_one_shares_the_images_format(tmp_path):
     image, first, second = _files(
-        tmp_path, "E14.tif", "E14_large_arteriole.tif", "E14_large_arteriole_mask.tif"
+        tmp_path, "StackA.tif", "StackA_large_arteriole.tif", "StackA_large_arteriole_mask.tif"
     )
     found = find_vessel_masks([image], ["large"])["large"]
     assert found.arteriole is None
     assert found.ambiguous == {"arteriole": (first, second)}
     assert found.settings() == {}
 
-    tiff, _h5 = _files(tmp_path, "E14_small_vein.tif", "E14_small_vein.h5")
+    tiff, _h5 = _files(tmp_path, "StackA_small_vein.tif", "StackA_small_vein.h5")
     assert find_vessel_masks([image], ["small"])["small"].venule == tiff
 
 
@@ -227,18 +227,18 @@ def test_masks_beside_the_raw_image_are_found_too(tmp_path):
     raw_folder.mkdir()
     out_folder.mkdir()
     raw, art, ven = _files(
-        raw_folder, "E14.tif", "E14_large_arteriole_segmented.tif", "E14_large_venule_segmented.tif"
+        raw_folder, "StackA.tif", "StackA_large_arteriole_segmented.tif", "StackA_large_venule_segmented.tif"
     )
-    segmented = out_folder / "E14_segmented.tif"
+    segmented = out_folder / "StackA_segmented.tif"
     found = find_vessel_masks([segmented, raw], ["large"])["large"]
     assert (found.arteriole, found.venule) == (art, ven)
 
 
-def test_the_users_e14p5_exports_are_read_as_the_large_masks(tmp_path):
-    """Harvey's E14.5 masks as named on disk: a vessel type, no size."""
+def test_the_users_stack_a_exports_are_read_as_the_large_masks(tmp_path):
+    """Harvey's Stack A masks as named on disk: a vessel type, no size."""
     stem = (
-        "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
-        "zstack_spot1_1p5z_MCAregion_Simple Segmentation"
+        "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+        "zstack_spot1_1p5z_region001_Simple Segmentation"
     )
     image, art, ven = _files(
         tmp_path, f"{stem}.tiff", f"{stem}_arteriole.tiff", f"{stem}_Vein.tiff"
@@ -250,8 +250,8 @@ def test_the_users_e14p5_exports_are_read_as_the_large_masks(tmp_path):
 
 def test_the_users_ilastik_export_names_are_read(tmp_path):
     stem = (
-        "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
-        "zstack_spot1_1p5z_MCAregion_Simple Segmentation"
+        "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+        "zstack_spot1_1p5z_region001_Simple Segmentation"
     )
     image, art, ven = _files(
         tmp_path, f"{stem}.tiff", f"{stem}_large_arteriole.tiff", f"{stem}_Large_Vein.tiff"
@@ -273,8 +273,8 @@ def test_given_folders_are_searched_instead_of_the_images_own(tmp_path):
     images, masks = tmp_path / "images", tmp_path / "masks"
     images.mkdir()
     masks.mkdir()
-    image, beside = _files(images, "E14_seg.tif", "E14_large_arteriole.tif")
-    elsewhere, venule = _files(masks, "E14_large_arteriole.tif", "E14_large_venule.tif")
+    image, beside = _files(images, "StackA_seg.tif", "StackA_large_arteriole.tif")
+    elsewhere, venule = _files(masks, "StackA_large_arteriole.tif", "StackA_large_venule.tif")
     found = find_vessel_masks([image], ["large"], folders=[masks])["large"]
     assert (found.arteriole, found.venule) == (elsewhere, venule)
     # Without folders=, the image's own folder, as before.
@@ -295,13 +295,13 @@ def test_an_unknown_size_is_refused():
 
 
 def test_read_mask_name_ranks_by_the_shared_start_then_shared_words_then_format():
-    assert read_mask_name("a/E14_MCA_large_vein.tif", "a/E14_MCA_seg.tif") == (
+    assert read_mask_name("a/StackA_region_large_vein.tif", "a/StackA_region_seg.tif") == (
         "large", "venule", (3, 3, 1), True,
     )
-    assert read_mask_name("a/MCA_large_vein.h5", "a/E14_MCA_seg.tif") == (
+    assert read_mask_name("a/region_large_vein.h5", "a/StackA_region_seg.tif") == (
         "large", "venule", (0, 1, 0), True,
     )
-    assert read_mask_name("a/E14_MCA_vein.tif", "a/E14_MCA_seg.tif") == (
+    assert read_mask_name("a/StackA_region_vein.tif", "a/StackA_region_seg.tif") == (
         "large", "venule", (3, 3, 1), False,
     )
-    assert read_mask_name("a/E14_MCA_C2_large_vein.tif", "a/E14_MCA_seg.tif") is None
+    assert read_mask_name("a/StackA_region_C2_large_vein.tif", "a/StackA_region_seg.tif") is None

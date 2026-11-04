@@ -144,8 +144,8 @@ def test_the_window_takes_the_stylesheet_napari_gives_the_panel(panel):
 
 def test_a_tie_is_chosen_in_the_table_for_every_image(panel, tmp_path):
     batch = panel._haemolynx_batch
-    _images(tmp_path / "seg", "E14_seg", "E15_seg")
-    for name in ("C1-E14", "C2-E14", "C1-E15", "C2-E15"):
+    _images(tmp_path / "seg", "StackA_seg", "StackB_seg")
+    for name in ("C1-StackA", "C2-StackA", "C1-StackB", "C2-StackB"):
         shutil.copy(FIXTURE, tmp_path / "seg" / f"{name}.tif")
     batch.open()
     window = batch.window[0]
@@ -154,8 +154,8 @@ def test_a_tie_is_chosen_in_the_table_for_every_image(panel, tmp_path):
     window.match()
     choice = window.table.cellWidget(0, 2)
     assert choice is not None
-    choice.setCurrentIndex(1)  # C1-E14.tif
-    assert [match.raw.name for match in window.setup.matches] == ["C1-E14.tif", "C1-E15.tif"]
+    choice.setCurrentIndex(1)  # C1-StackA.tif
+    assert [match.raw.name for match in window.setup.matches] == ["C1-StackA.tif", "C1-StackB.tif"]
     assert window.table.cellWidget(1, 2) is None
 
 
@@ -289,7 +289,7 @@ def test_the_window_combines_a_subjects_images_by_their_median(panel, tmp_path):
     from haemolynx.gui.batch_run import TABLE_COLUMNS
 
     batch = panel._haemolynx_batch
-    _images(tmp_path / "seg", "29_1_b_contra", "29_1_f_contra", "29_1_f_ipsi")
+    _images(tmp_path / "seg", "12_1_b_contra", "12_1_f_contra", "12_1_f_ipsi")
     batch.open()
     window = batch.window[0]
     assert not window.aggregate.isEnabled()
@@ -302,17 +302,17 @@ def test_the_window_combines_a_subjects_images_by_their_median(panel, tmp_path):
     window.subject_pattern.setText(r"^(\d+_\d+)")
     assert window.aggregate.isEnabled()
     column = TABLE_COLUMNS.index("Condition")
-    # One to one by name, 29_1_f with 29_1_f: 29_1_b is left out.
+    # One to one by name, 12_1_f with 12_1_f: 12_1_b is left out.
     assert [window.table.item(row, column).text() for row in range(3)] == [
-        "contra: unpaired, no ipsi image of subject 29_1 left once the closest names were paired",
-        "contra, subject 29_1",
-        "ipsi, subject 29_1",
+        "contra: unpaired, no ipsi image of subject 12_1 left once the closest names were paired",
+        "contra, subject 12_1",
+        "ipsi, subject 12_1",
     ]
     window.aggregate.setCurrentIndex(window.aggregate.findData("median"))
     assert [window.table.item(row, column).text() for row in range(3)] == [
-        "contra, subject 29_1 (median of 2)",
-        "contra, subject 29_1 (median of 2)",
-        "ipsi, subject 29_1",
+        "contra, subject 12_1 (median of 2)",
+        "contra, subject 12_1 (median of 2)",
+        "ipsi, subject 12_1",
     ]
     window.use()
     assert batch.mode.setup.conditions.aggregate == "median"
@@ -891,7 +891,7 @@ def test_a_folder_of_masks_of_blocks_adds_a_perturbation_reading_them(panel, tmp
 
 def test_with_ilastik_on_the_window_lists_the_raw_folders_images(panel, tmp_path):
     rows = panel._haemolynx_rows()
-    raw = _images(tmp_path / "raw", "E14", "E15")
+    raw = _images(tmp_path / "raw", "StackA", "StackB")
     # The panel's one raw image row is empty: what reads it is greyed.
     assert not rows["use_ilastik_segmentation"].enabled
     rows["use_ilastik_segmentation"].value = True
@@ -904,7 +904,7 @@ def test_with_ilastik_on_the_window_lists_the_raw_folders_images(panel, tmp_path
     window.fields["output"].setText(str(tmp_path / "out"))
     window.fields["output"].editingFinished.emit()
     assert window.table.rowCount() == 2
-    assert window.table.item(0, 1).text() == "by ilastik: E14_segmented"
+    assert window.table.item(0, 1).text() == "by ilastik: StackA_segmented"
     assert "2 raw image(s), each segmented by ilastik," in window.status.text()
     window.use()
     assert batch.mode.setup.folders.from_raw
@@ -971,8 +971,8 @@ def test_every_control_in_the_window_has_hover_text(panel, tmp_path):
     from haemolynx.io.batch_matching import FILE_ROLE_KEYS
 
     batch = panel._haemolynx_batch
-    _images(tmp_path / "seg", "E14_seg", "E15_seg")
-    for name in ("C1-E14", "C2-E14"):
+    _images(tmp_path / "seg", "StackA_seg", "StackB_seg")
+    for name in ("C1-StackA", "C2-StackA"):
         shutil.copy(FIXTURE, tmp_path / "seg" / f"{name}.tif")
     batch.open()
     window = batch.window[0]

@@ -41,7 +41,7 @@ def test_a_manifest_is_read_into_stage_records(tmp_path):
 def test_benchmark_rows_skip_resumed_stages_and_add_the_whole_run():
     manifest = json.loads(json.dumps(MANIFEST))
     manifest["stages"][0]["resumed"] = True
-    rows = manifests.benchmark_rows(manifests.parse(manifest), dataset="e14p5", commit="abc", date="2026-10-25", voxels=10)
+    rows = manifests.benchmark_rows(manifests.parse(manifest), dataset="stack_a", commit="abc", date="2026-10-25", voxels=10)
     assert [row["stage"] for row in rows] == ["skeletonise", "build_network", "total"]
     assert rows[0]["peak_rss_mib"] == 3072.0 and rows[-1]["wall_seconds"] == 30.0
     assert set(rows[0]) == set(manifests.BENCHMARK_COLUMNS)
@@ -72,7 +72,7 @@ def test_the_solved_share_and_why_the_rest_carries_no_flow():
     assert manifests.solved_share([{"length": 3.0}])["unsolved_um_by_state"] == {"not solved": 3.0}
 
 
-def _row(commit, stage, seconds, dataset="e14p5", status="finished", voxels=None, peak=None):
+def _row(commit, stage, seconds, dataset="stack_a", status="finished", voxels=None, peak=None):
     return {"commit": commit, "dataset": dataset, "stage": stage, "wall_seconds": seconds,
             "status": status, "voxels": voxels, "peak_rss_mib": peak}
 

@@ -33,7 +33,7 @@ then returns the reduced grid's voxel size already resolved (status `RUN_GRID_SO
 A saved skeleton at another factor is refused as one from another crop box is. The skeleton
 clean-up's voxel counts (`stages.SKELETON_VOXEL_SETTINGS`) keep their physical size on the grid
 (`skeleton_voxel_settings_on_grid`: divided by the finest axis's factor, half up, at least 1).
-Measured on E14.5 (`outputs/ds2/`, 2026-10-19, built network against the full-resolution one,
+Measured on Stack A (`outputs/ds2/`, 2026-10-19, built network against the full-resolution one,
 share of its length within max(3 um, lumen radius); a one-voxel shift of the image gives 93.5%):
 2x 63.9% before, 72.6% after (69.1% from the majority alone); 4x 30.1% -> 52.4%. What is
 still lost is thin vessels (r < 2.5 um: 36% -> 53% kept, 91% under the shift) and short dead
@@ -49,6 +49,6 @@ slab at a time (`io.load.mask_binarization_rule`), then applied to the box as it
 read as solid vessel and one where vessel is the majority came back inside out. The vessel,
 pericyte and cell masks were already binarised whole before the cut. A file holding one value
 only is read explicitly, with a warning: 0 and 2 (ilastik background) empty, any other value
-vessel everywhere -- it was `> 0`, so Harvey's `28_3_d_ipsi_FITC_Simple Segmentation_large.h5`,
+vessel everywhere -- it was `> 0`, so Harvey's `11_3_d_ipsi_FITC_Simple Segmentation_large.h5`,
 label 2 in all 17.1 G voxels, loaded as one solid large vessel and every vessel of the run was
 classed Unknown_Large. Pinned in `tests/test_crop_on_import.py`.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PLAN_bridging.md, after grid P: every case of the wall join's two open
-questions on E14.5 that grid P did not mark, for Harvey to mark (his call,
+questions on Stack A that grid P did not mark, for Harvey to mark (his call,
 2026-10-25: "grid of the rest").
 
 - **The reach** (``WALL_JOIN_REACH_UM``, 10 um then; 15 um since these marks): dead ends past it, up to the
@@ -75,7 +75,7 @@ def _marked_centres(key_csv: Path) -> np.ndarray:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--capture", required=True, help="e14_run.py --capture's finish_input.pkl (grid P's)")
+    parser.add_argument("--capture", required=True, help="stack_a_run.py --capture's finish_input.pkl (grid P's)")
     parser.add_argument("--marked", required=True, help="grid P's key_wall.csv: its cases are not asked again")
     parser.add_argument("--out", required=True)
     parser.add_argument("--page-data", help="also write the cases as the interactive page's JSON (grid_page.py)")
@@ -111,7 +111,7 @@ def main(argv=None) -> int:
              for u, v, d in drawn.edges(data=True) if u != v]
     if picked:
         grid._sheet(picked, out / "grid_P2_wall.png", mask, region, tree_points, paths, vs,
-                    f"E14.5, grid P2 (wall joins, IDs {picked[0]['id']}-{picked[-1]['id']})   "
+                    f"Stack A, grid P2 (wall joins, IDs {picked[0]['id']}-{picked[-1]['id']})   "
                     + grid.QUESTIONS["wall"])
     with open(out / "key_wall.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=KEY_FIELDS, extrasaction="ignore")
@@ -125,7 +125,7 @@ def main(argv=None) -> int:
     if args.page_data:
         Path(args.page_data).write_text(json.dumps({
             "grid": "P2",
-            "dataset": "E14.5 MCA, Harvey's Claudin segmentation (grid P2: the wall join's rest)",
+            "dataset": "Stack A, Harvey's Claudin segmentation (grid P2: the wall join's rest)",
             "voxel_size_zyx": [float(v) for v in vs],
             "slab_um": 2 * phase5.HALF_SLAB_UM,
             "sheets": [{

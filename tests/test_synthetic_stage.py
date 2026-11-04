@@ -95,7 +95,7 @@ def test_the_input_stage_reads_the_template_and_leaves_input_path_alone(template
     assert settings["input_path"] == tmp_path / "stale.tif"  # never resolved, never replaced
     assert raw_image_is_set({**settings, "raw_image_path": "raw.tif"}) is False
     assert segmented_input_path(settings) is None
-    assert run_stem(settings) == "e14_5_synthetic"
+    assert run_stem(settings) == "stack_a_synthetic"
 
 
 def test_the_input_stage_needs_a_template(tmp_path):
@@ -128,7 +128,7 @@ def test_the_graph_stage_draws_the_network_and_pickles_it(template_run, tmp_path
     assert G.graph["image_voxel_size_zyx"] == fixture_template().voxel_size_zyx
     assert synthetic_box_shape(G) == fixture_template().image_shape
     assert all(DEAD_END_KIND in G.nodes[n] for n in G if G.degree(n) == 1)
-    pickled = tmp_path / "out" / "e14_5_synthetic_graph.pkl"
+    pickled = tmp_path / "out" / "stack_a_synthetic_graph.pkl"
     assert pickled.is_file()
     with pickled.open("rb") as handle:
         assert pickle.load(handle).number_of_edges() == G.number_of_edges()
@@ -299,8 +299,8 @@ def test_every_output_is_named_after_the_template(whole_run):
         "_graph.pkl", "_statistics.csv", "_branch_statistics.csv", "_template_comparison.csv",
         "_run_manifest.json", "_run_settings.yaml", "_citations.txt",
     ):
-        assert f"e14_5_synthetic{suffix}" in names, (suffix, names)
-    assert "e14_5_synthetic_vessels.vtp" in names
+        assert f"stack_a_synthetic{suffix}" in names, (suffix, names)
+    assert "stack_a_synthetic_vessels.vtp" in names
     assert not any(name.startswith("stale") for name in names)
     assert G.number_of_edges() > 100
 
@@ -312,7 +312,7 @@ def test_the_run_solves_and_reports_its_comparison(whole_run):
     assert COMPARISON_SECTION in report["sections"]
     section = report["sections"][COMPARISON_SECTION]
     _within, _of, fitted = section["fitted characteristics within tolerance"].split()
-    with (out / "out" / "e14_5_synthetic_template_comparison.csv").open(encoding="utf-8", newline="") as handle:
+    with (out / "out" / "stack_a_synthetic_template_comparison.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.reader(handle))
     assert tuple(rows[0]) == CSV_COLUMNS
     assert any(row[1] == "inlets" and row[6] == "yes" for row in rows[1:])
@@ -353,7 +353,7 @@ def test_a_closed_network_takes_its_flow_in_at_the_inlets_and_out_at_the_outlets
 
 def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     settings, _report, _G, out = whole_run
-    manifest = json.loads((out / "out" / "e14_5_synthetic_run_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((out / "out" / "stack_a_synthetic_run_manifest.json").read_text(encoding="utf-8"))
     inputs = {record["setting"]: record for record in manifest["inputs"]}
     assert "synthetic_template_path" in inputs
     assert "input_path" not in inputs
@@ -367,8 +367,8 @@ def test_the_manifest_records_the_template_as_the_runs_input(whole_run):
     assert manifest["synthetic"]["bed_model"] == "delaunay"
     assert manifest["synthetic"]["open_ends"] == "closed"
     assert manifest["synthetic"]["source"] == "statistics"
-    assert manifest["synthetic"]["template"].endswith("e14_5.haemorun")
-    citations = (out / "out" / "e14_5_synthetic_citations.txt").read_text(encoding="utf-8")
+    assert manifest["synthetic"]["template"].endswith("stack_a.haemorun")
+    citations = (out / "out" / "stack_a_synthetic_citations.txt").read_text(encoding="utf-8")
     assert "Network generation methods" in citations and "- skan" not in citations
 
 
@@ -569,7 +569,7 @@ def test_a_surround_run_is_named_and_checked_as_one(surround_run):
     assert any("z faces" in warning and "stay open ends" in warning for warning in report.warnings)
     names = {path.name for path in (out / "out").iterdir()}
     for suffix in ("_graph.pkl", "_image_flows.csv", "_template_comparison.csv", "_run_manifest.json"):
-        assert f"e14_5_surrounded{suffix}" in names, (suffix, names)
+        assert f"stack_a_surrounded{suffix}" in names, (suffix, names)
     from haemolynx.synthetic.surround import SURROUNDED
 
     assert G.graph[GRAPH_NETWORK_SOURCE] == SURROUNDED
@@ -598,7 +598,7 @@ def test_each_image_vessels_flow_is_set_beside_its_runs(surround_run, image_run_
 
     _settings_, _report, G, out = surround_run
     image, _boundaries = load_image_run(image_run_with_open_ends)
-    with (out / "out" / "e14_5_surrounded_image_flows.csv").open(encoding="utf-8", newline="") as handle:
+    with (out / "out" / "stack_a_surrounded_image_flows.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == image.number_of_edges()
     compared = [row for row in rows if row["flow_ratio"]]
@@ -626,10 +626,10 @@ def test_the_whole_surround_is_solved_from_its_outer_faces(surround_run):
 def test_a_surrounds_manifest_and_vtk_say_what_it_is(surround_run):
     pv = pytest.importorskip("pyvista")
     _settings_, _report, _G, out = surround_run
-    manifest = json.loads((out / "out" / "e14_5_surrounded_run_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((out / "out" / "stack_a_surrounded_run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["network_source"] == "synthetic_surround"
     assert manifest["synthetic"]["surrounds_template_run"] is True and manifest["synthetic"]["scale"] == 2.0
-    vessels = pv.read(str(out / "out" / "e14_5_surrounded_vessels.vtp"))
+    vessels = pv.read(str(out / "out" / "stack_a_surrounded_vessels.vtp"))
     assert set(vessels.cell_data["network_part"]) == {"image", "synthetic"}
     image_orders = [o for part, o in zip(vessels.cell_data["network_part"], vessels.cell_data["image_branch_order"]) if part == "image"]
     assert image_orders and all(image_orders)

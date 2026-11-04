@@ -4,7 +4,7 @@ would trim away -- are they vessels?
 
 Judging a doubled run with the wider of the two lumen radii made every
 capillary fused along a trunk's wall a hair of the trunk, and the trim took
-it whole: on E14.5 the graph lost 5.7 mm of centreline (``outputs/
+it whole: on Stack A the graph lost 5.7 mm of centreline (``outputs/
 clean_graph_phase1_sym``). Those chains are what this grid shows: 30 dead
 ends present in the graph built without that test and absent from the one
 built with it, spread across the chain's length, each drawn in its own plane

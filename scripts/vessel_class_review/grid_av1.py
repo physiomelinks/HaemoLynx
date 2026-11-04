@@ -1,5 +1,5 @@
 """Grid AV1 (Phase 0c of PLAN_vessel_classes_from_segmentation.md): about 30
-E14.5 vessels at or above the capillary cut-off, for Harvey to mark arteriole,
+Stack A vessels at or above the capillary cut-off, for Harvey to mark arteriole,
 venule or can't tell.
 
 Spread across diameter and length over diameter, at most 3 vessels from one
@@ -22,8 +22,8 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "outputs/vessel_class_review"
 GRID = OUT / "AV1"
-SOLVED = OUT / "e14p5_solved.pkl"
-VESSELS_CSV = OUT / "e14p5_vessels.csv"
+SOLVED = OUT / "stack_a_solved.pkl"
+VESSELS_CSV = OUT / "stack_a_vessels.csv"
 
 N_CASES = 30
 PER_TREE = 3
@@ -50,7 +50,7 @@ def choose(rows: list[dict]) -> list[dict]:
     pool = [r for r in rows if float(r["length_um"]) >= MIN_LENGTH_UM]
     ld = np.array([float(r["length_over_diameter"]) for r in pool])
     ld_edges = np.nanquantile(ld, [1 / 3, 2 / 3])
-    # Spread over diameter and length over diameter: on E14.5 only one vessel
+    # Spread over diameter and length over diameter: on Stack A only one vessel
     # had a partner of the other class beside it (phase0b_report.md), so the
     # pair width ratio would spread over nothing.
     cells = defaultdict(list)
@@ -103,7 +103,7 @@ def main() -> None:
         cases = chosen[sheet_no:sheet_no + CASES_PER_SHEET]
         fig, axes = plt.subplots(len(cases), 4, figsize=(16, 4.1 * len(cases) + 1.2))
         axes = np.atleast_2d(axes)
-        fig.suptitle(f"Grid AV1 (E14.5 MCA), sheet {sheet_no // CASES_PER_SHEET + 1}: {QUESTION}\n{LEGEND}",
+        fig.suptitle(f"Grid AV1 (Stack A), sheet {sheet_no // CASES_PER_SHEET + 1}: {QUESTION}\n{LEGEND}",
                      fontsize=11, y=0.999)
         for row_no, r in enumerate(cases):
             case_id = sheet_no + row_no + 1

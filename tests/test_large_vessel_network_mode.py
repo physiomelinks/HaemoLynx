@@ -364,7 +364,7 @@ def test_the_stage_hands_the_stump_its_runs_segmentation(tmp_path, monkeypatch):
 
 
 def test_the_stump_reads_an_ilastik_label_image_as_the_run_binarises_it(tmp_path):
-    """Regression (E14.5, 2026-10-26): the stage handed the stump the volume
+    """Regression (Stack A, 2026-10-26): the stage handed the stump the volume
     as loaded, an ilastik export of 1 (vessel) and 2 (background), and the
     fill test read it as ``> 0``: all vessel, so every end filled its large
     mask and the capillary 2310 took an outlet again in the re-solve, though
@@ -387,7 +387,7 @@ def test_the_stump_reads_an_ilastik_label_image_as_the_run_binarises_it(tmp_path
         output_dir=tmp_path,
     )
     network = VesselNetwork(graph=G, volume=volume, large_arteriole_mask=mask, large_venule_mask=venule)
-    settings = _assign_boundaries_settings(plot_dir=tmp_path, input_path=str(tmp_path / "e14_segmented.tif"))
+    settings = _assign_boundaries_settings(plot_dir=tmp_path, input_path=str(tmp_path / "stack_a_segmented.tif"))
 
     assign_boundaries(settings, network)
 
@@ -483,7 +483,7 @@ def test_large_vessel_inlet_and_outlet_overrides_cannot_collide_on_the_same_node
 
 
 def test_a_vessel_lying_along_a_face_gives_no_stump_there():
-    """On E14.5 the pial arteriole's flank against the top of the stack read
+    """On Stack A the pial arteriole's flank against the top of the stack read
     as a stump: its footprint spans many of its own cross-sections, where a
     vessel cut by a face leaves about one."""
     mask = np.zeros((10, 10, 30), dtype=bool)
@@ -605,7 +605,7 @@ def _stump_inlets(G, mask):
     ids=["its-end-a-few-um-outside-the-mask-at-the-face", "its-end-just-short-of-the-face"],
 )
 def test_a_stump_takes_its_own_vessels_end_at_the_face_not_a_terminal_deep_in_the_mask(tip):
-    """Regression (E14.5, 2026-10-21): the large masks and the network came
+    """Regression (Stack A, 2026-10-21): the large masks and the network came
     from two segmentations, so the arteriole's centreline left its mask 4 um
     before the face. Held to the mask, the snap passed that end over for the
     one terminal inside the mask, an arm tip 354 um away."""
@@ -621,7 +621,7 @@ def test_a_stump_takes_its_own_vessels_end_at_the_face_not_a_terminal_deep_in_th
 
 
 def test_two_stumps_give_two_nodes_each_its_own_vessels_end():
-    """Regression (E14.5): both vein stumps snapped to the one terminal inside
+    """Regression (Stack A): both vein stumps snapped to the one terminal inside
     the vein mask, ~100 um from either, so its two outlets became one."""
     mask = np.zeros((20, 20, 120), dtype=bool)
     mask[7:13, 2:7, 0:50] = True  # vein A, from the x = 0 face
@@ -655,7 +655,7 @@ def test_a_capillary_ending_by_the_face_beside_the_large_vessel_is_not_its_end()
 
 
 def test_a_stump_takes_the_end_whose_vessel_runs_most_along_its_mask():
-    """Regression (E14.5, 2026-10-25): a vessel beside the arteriole ran half
+    """Regression (Stack A, 2026-10-25): a vessel beside the arteriole ran half
     along its mask (54% of its first 50 um) and ended nearer the stump's
     centroid than the arteriole's own end, whose vessel runs all along it;
     the nearer one took the inlet, the Large_Art tier went empty and the
@@ -767,7 +767,7 @@ def test_each_contact_keeps_its_own_end_though_another_runs_more_along_the_mask(
 
 def test_a_graze_under_the_share_of_its_components_largest_contact_is_no_stump():
     """Harvey (2026-10-25): as a speck component is no stump, a contact under
-    the same share of its component's largest on the face is a graze (E14.5's
+    the same share of its component's largest on the face is a graze (Stack A's
     arteriole touched its x face again in 5 um2, 2% of its stump, 84 um from
     any vessel end there). Here a one-voxel strand leaves the face beside a
     6 x 6 um leg and joins it 20 um in."""
@@ -813,7 +813,7 @@ def _tube_along_x(volume, y, z, radius, x_stop):
 def _vein_with_a_capillary_in_its_mask(shape=(30, 50, 120), y=20):
     """The vein's mask (the large-vessel segmentation) a tube 4.5 um in radius
     from the x = 0 face; the run's segmentation of the vein 5 um in radius,
-    its axis 4 um off the mask's (two segmentations, as on E14.5), and a
+    its axis 4 um off the mask's (two segmentations, as on Stack A), and a
     capillary 1.2 um in radius inside the mask by its edge, apart from the
     vein in the segmentation."""
     mask = _tube_along_x(np.zeros(shape, dtype=bool), y + 4, 15, 4.5, 100)
@@ -830,11 +830,11 @@ def _capillary_and_vein_graph(y=20, first=0):
 
 
 def test_a_capillary_ending_in_the_veins_mask_is_not_its_end():
-    """Harvey (E14.5, 2026-10-26): node 2310, a 4.5 um capillary ending inside
+    """Harvey (Stack A, 2026-10-26): node 2310, a 4.5 um capillary ending inside
     the vein's mask, nearer its contact than the vein's own end, took the
     outlet. Its vessel runs inside the mask but fills it no more than the mask
     is deep; the vein's own centreline is far wider in the segmentation than
-    the mask is deep where it runs (1.9-2.3 times on E14.5)."""
+    the mask is deep where it runs (1.9-2.3 times on Stack A)."""
     mask, segmentation = _vein_with_a_capillary_in_its_mask()
     G = _capillary_and_vein_graph()
 
@@ -849,7 +849,7 @@ def test_a_capillary_ending_in_the_veins_mask_is_not_its_end():
 
 
 def test_a_contact_whose_only_end_is_a_capillary_takes_no_node_when_another_has_one():
-    """Harvey (2026-10-26): the vein's second contact on E14.5, where its own
+    """Harvey (2026-10-26): the vein's second contact on Stack A, where its own
     centreline runs past the face and only capillaries end, gets no outlet --
     not the nearest terminal in the mask -- while the mask's other contact
     has its vein's end."""
@@ -931,7 +931,7 @@ def _arteriole_ending_just_outside_its_mask(own_end_y):
 
 
 def test_a_stump_takes_no_end_far_from_its_contact_along_the_face():
-    """Regression (E14.5, 2026-10-26): on a graph where the arteriole's own
+    """Regression (Stack A, 2026-10-26): on a graph where the arteriole's own
     end just failed the run-along test (48% for 50%), the inlet went to an end
     239 um away across the face, where the arteriole's mask comes within 3 um
     of the face without touching it: the one contact's reach across the face

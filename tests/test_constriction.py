@@ -486,7 +486,7 @@ def _graph_with_a_bridge() -> nx.MultiGraph:
 
 
 def test_a_thick_vessel_bridge_is_left_to_the_overrides_by_both_constriction_paths():
-    """E14.5's pericyte perturbation stopped at its first bridge (2026-10-12):
+    """Stack A's pericyte perturbation stopped at its first bridge (2026-10-12):
     both paths demanded a branch order of every edge. A bridge is no vessel
     -- apply_final_resistance_overrides sets it -- so both skip it, and still
     refuse a vessel without one."""
@@ -548,7 +548,7 @@ def _constrict_both_ways(graph):
 def test_a_vessel_no_inlet_and_outlet_reach_is_skipped_by_both_constriction_paths():
     """Under boundary_handling=leave_unsolved a piece no inlet and outlet
     reach keeps no branch order (they are assigned from the inlets), and
-    E14.5's pericyte perturbation stopped at the first of 954 (2026-10-12).
+    Stack A's pericyte perturbation stopped at the first of 954 (2026-10-12).
     It carries no flow whatever its resistance, so both paths pass it by, as
     set_poiseuille_resistances does; a solved vessel without one is still
     refused."""

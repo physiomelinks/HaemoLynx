@@ -26,7 +26,7 @@ BOX = CropBox((0, 40, 0), (48, 140, 200), SHAPE)
 
 def _endothelial_image_and_lumen():
     """One wide vessel (lumen radius 6 um) along x at y = 30 um, drawn as a
-    wall ring under the E14.5 stack's blur, and its lumen mask."""
+    wall ring under Stack A's blur, and its lumen mask."""
     z, y = np.meshgrid(np.arange(SHAPE[0]) * VS[0], np.arange(SHAPE[1]) * VS[1], indexing="ij")
     distance = np.repeat(np.hypot(z - 24, y - 30)[..., None], SHAPE[2], axis=2)
     wall = (distance > 6.0) & (distance <= 7.2)

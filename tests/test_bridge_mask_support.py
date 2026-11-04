@@ -139,7 +139,7 @@ def test_a_one_voxel_z_dropout_reads_one_micron_on_a_coarse_z(hole_at, path_z):
 )
 def test_the_sample_step_divides_every_half_spacing_where_a_small_divisor_does(spacing, step):
     """0.5 x 0.5 x 2 um and cube voxels keep their step; on 0.98 x 0.98 x 1 um
-    (E14.5) no step within four times the lookups divides both half spacings,
+    (Stack A) no step within four times the lookups divides both half spacings,
     so the finest axis's step stays and nothing measured there moves."""
     from haemolynx.preprocessing.bridge_mask_support import _sample_step
 

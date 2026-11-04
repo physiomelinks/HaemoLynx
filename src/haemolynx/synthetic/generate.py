@@ -28,7 +28,7 @@ vessels the template had leaving its image, and, without interior dead ends
 vessel broken in two, so every pair is one capillary fewer and one loop more,
 the capillaries' total length kept (:func:`dead_end_pairs_joined`). Kept at
 the template's count instead, a bed without dead ends needs every vertex a
-junction: on E14.5 that drew 422 loops against its 231.
+junction: on Stack A that drew 422 loops against its 231.
 
 **A hole** (``GenerationOptions.hole``, ``synthetic.hole``) is a box the
 network leaves empty: an image's own box, inside a surround drawn round it
@@ -264,7 +264,7 @@ def _draw_trunk(
     tortuosity = max(first(order and order.mean_tortuosity, cls and cls.mean_tortuosity) or 1.0, 1.0)
     step = (first(order and order.mean_length_um, cls and cls.mean_length_um) or FALLBACK_TRUNK_STEP_UM) / tortuosity
     # An image's own template can hold an order only as the sliver its face
-    # cut (E14.5's harness: one of 0.44 um, a trunk of 400 joints, each
+    # cut (Stack A's harness: one of 0.44 um, a trunk of 400 joints, each
     # wanting a bed vessel of the few vertices near it).
     step = max(step, float(min_step_um))
     diameter = first(join.diameter_um, order and order.mean_diameter_um, cls and cls.mean_diameter_um) or 5.0
@@ -503,7 +503,7 @@ def _capillary_lengths_by_tortuosity(
 
     Drawn from the length distribution instead (:func:`_capillary_lengths`),
     a vessel whose drawn length fell short of its chord was clamped to it and
-    came out straight: on E14.5, where the chords leave the template's
+    came out straight: on Stack A, where the chords leave the template's
     capillaries little more length than they span, 70-78% of them at worst
     (grid D1b), 12-17 degrees per 10 um against 26 in some seeds after."""
     count = len(chords)
@@ -518,7 +518,7 @@ def _capillary_lengths_by_tortuosity(
     elif median is not None and p90 is not None and p90 > median > 1.0:
         # The excess over straight a lognormal through the template's median
         # and 90th percentile: its winding tail, which the mean with a fixed
-        # spread drew short of (E14.5, grid D1d: P90 1.14-1.26 against 1.48).
+        # spread drew short of (Stack A, grid D1d: P90 1.14-1.26 against 1.48).
         mu = math.log(median - 1.0)
         sigma = (math.log(p90 - 1.0) - mu) / _Z90
         tortuosity = 1.0 + rng.lognormal(mu, sigma, size=count)
@@ -691,7 +691,7 @@ class BedPlan:
         """The nodes the network (a surround's shell) is planned with: its
         vessels, the trees' and the bed's, less its loops, plus one, as for
         any network in one piece. Within 3% of the count drawn on the
-        fixture and E14.5, closed or open, at 1.5 and 2 times (2026-10-29);
+        fixture and Stack A, closed or open, at 1.5 and 2 times (2026-10-29);
         the template's own node count is not, since the dead ends it has
         are mostly not drawn."""
         trees = sum(int(target.count) for key, target in self.template.classes.items() if key != "capillary")
@@ -1227,7 +1227,7 @@ def _with_fine_wobble(
 ) -> list:
     """*paths* with the tree vessels' fine wobble: their median vessel's turn
     read at ``organisation.FINE_CURVATURE_STEP_UM`` steps brought to the
-    template's (Harvey, grid D1f: E14.5's trees turn 88 degrees per 10 um
+    template's (Harvey, grid D1f: Stack A's trees turn 88 degrees per 10 um
     read every 2 um, the drawn ones' smooth curves 72-75), by one amplitude
     for every tree vessel (:func:`polylines.fine_wobble`), found by
     bisection; none when they already turn as much, nor on a vessel it would

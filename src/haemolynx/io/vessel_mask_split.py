@@ -8,7 +8,7 @@ kept as its large mask, and the rest, the small mask of the same side
 A voxel is wide where a ball of that diameter fits inside the vessel around
 it. The vessel is the run's segmented image, and the mask only says which
 side a voxel is on: a classifier's arteriole or venule mask need not follow
-the vessel's walls (E14.5's are 4-7 um thick along vessels measured about
+the vessel's walls (Stack A's are 4-7 um thick along vessels measured about
 20 um wide, so read by their own width most of their large vessels were
 small). Without the segmentation each mask is read as the vessel itself:
 its opening by the ball.
@@ -49,7 +49,7 @@ def _new_volume(shape, *, use_memmap: bool, memmap_directory) -> np.ndarray:
 
 
 #: Voxels in a padded block, at least. Large-vessel masks are sparse, and only
-#: blocks holding mask are transformed: E14.5's arteriole mask (0.2% of a
+#: blocks holding mask are transformed: Stack A's arteriole mask (0.2% of a
 #: 75 M-voxel stack) split at 12 um in 4.8 s at 500 k, 12 s at 2 M, 36 s at
 #: 32 M, the same masks each time.
 SPLIT_BLOCK_VOXELS = 500_000

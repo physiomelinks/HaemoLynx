@@ -153,7 +153,7 @@ def test_each_side_is_split_on_its_own_and_a_global_mask_stays_global():
 
 def _thin_masks_on_wide_vessels(spacing):
     """The segmentation (the 16 um tube and its 5 um branch) and a thin
-    classifier mask along both: 4 um round each axis, as E14.5's are
+    classifier mask along both: 4 um round each axis, as Stack A's are
     4-7 um thick along vessels about 20 um wide."""
     shape = tuple(int(np.ceil(80 / s)) for s in spacing)
     wide, branch = _wide_tube_with_branch(spacing)

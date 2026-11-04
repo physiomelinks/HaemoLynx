@@ -148,7 +148,7 @@ PAGE = dict(
     title="Dead End Review DR2: does the vessel go on past its tip, and does the route follow it?",
     question="Does the vessel go on past the tip?",
     second="Is the traced route right?",
-    lede=("One dead end of the E14.5 graph per card (red; the ring marks its tip), in three planes: its own "
+    lede=("One dead end of the Stack A graph per card (red; the ring marks its tip), in three planes: its own "
           "plane, the one across it, and a third past the tip. The dashed cyan line is the tip's heading. Each "
           "plane shows the segmentation, the dextran channel (plasma) and the claudin-5 channel (the vessel "
           "wall). Tick “Show the traced route” to see, in yellow, the route traced through the walls past "

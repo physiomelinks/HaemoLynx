@@ -122,7 +122,7 @@ def test_no_vessel_is_built_twice_between_the_same_two_nodes(tmp_path, collapse_
     """No two edges joining the same two nodes, and no route through a
     degree-2 node beside an edge, run through one lumen: one vessel, drawn
     twice. Regression test: on this capillary bed distance_only collapse
-    left two such pairs; on the E14.5 MCA stack direction-aware collapse and
+    left two such pairs; on Stack A direction-aware collapse and
     degree-2 merging left hundreds, drawn in the viewer as parallel vessels
     inside one segmented branch."""
     schema = default_schema()
@@ -504,7 +504,7 @@ def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
     mask, and no two edges through one lumen unless taking either out would
     cut vessels off (``lumen_loops.cuts_off_vessels``, the only pairs the
     end-of-build clean-up keeps). The one-centreline-per-lumen work's
-    regression guard: on E14.5 the build used to leave 124 such pairs and 12
+    regression guard: on Stack A the build used to leave 124 such pairs and 12
     loops inside one lumen.
 
     Built three times. At the defaults the short-loop rule

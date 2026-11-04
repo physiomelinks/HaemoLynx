@@ -86,7 +86,7 @@ FALLBACK_NEIGHBOURS = 16
 #: How much a candidate's alignment with the template's capillaries counts in
 #: the fill's score, in local spacings: ``weight * (1/3 - u.T.u) * 3/2`` --
 #: nothing in an isotropic cell, a spacing's bonus along a cell's only
-#: direction, half a spacing's penalty across it. On E14.5 (2026-10-25, the
+#: direction, half a spacing's penalty across it. On Stack A (2026-10-25, the
 #: bed on the template's own vertices, each candidate judged against its
 #: direction's own chord) 2 gives its columns -- 9-13 runs along z spanning
 #: 100 um against the template's 12 (1: 5-9) -- and keeps its curvature (22-25
@@ -116,7 +116,7 @@ VORONOI_LAID_OUT_OVERSAMPLE = 3.0
 #: their spacing (:func:`_template_seeds`), drawn this many times over: so
 #: little contraction keeps the corners as close as the template's vertices,
 #: and its capillaries room to curve. Contracted three times over to the cell
-#: field, E14.5's Voronoi bed drew chords as long as its vessels and every
+#: field, Stack A's Voronoi bed drew chords as long as its vessels and every
 #: capillary straight in some seeds (grid D1c); at 1.5 they curve 22-26
 #: degrees per 10 um (26), though its plexus layer holds 31-37% of the
 #: vertices against the template's 58% (49% contracted): a tessellation's
@@ -130,7 +130,7 @@ VORONOI_ATTEMPTS = 6
 #: Whether a Voronoi bed's corners are put at the template's junction
 #: depths (:func:`depths_like_template`; Harvey, grid D1e). A tessellation of
 #: seeds in a sheet thinner than their spacing puts its corners above and
-#: below the sheet, not in it: on E14.5 37% of the Voronoi bed's junctions lay
+#: below the sheet, not in it: on Stack A 37% of the Voronoi bed's junctions lay
 #: in the bottom 48 um against the template's 61%, and Harvey took no Voronoi
 #: network for the tissue in five grids.
 VORONOI_DEPTHS_FROM_TEMPLATE = True
@@ -141,7 +141,7 @@ VORONOI_DEPTHS_FROM_TEMPLATE = True
 #: (all of it at 0 degrees), and the fill aims each pair of vessels at a
 #: vertex at the template's own junction angle (its junctions' three angles
 #: summed, over three) at both ends of the candidate rather than at the trees'
-#: daughter angle at one. On E14.5 (Delaunay, seeds 1-2) 40% of the junctions
+#: daughter angle at one. On Stack A (Delaunay, seeds 1-2) 40% of the junctions
 #: had an acute pair, 16% with this and :meth:`_Fill.relax_junctions` (the
 #: template 1%), the smallest angle's median 53 -> 69 degrees (97). Heavier, or
 #: aiming harder at the template's angle (:data:`JUNCTION_ANGLE_WEIGHT` 5:
@@ -150,7 +150,7 @@ VORONOI_DEPTHS_FROM_TEMPLATE = True
 #: straight (tortuosity P90 1.0, curvature 0.1 degrees per 10 um).
 ACUTE_WEIGHT = 3.0
 #: The share of junctions with an acute pair the fill draws unaided on
-#: E14.5 (Delaunay 0.39-0.41, Voronoi 0.27-0.29): the acute weight is
+#: Stack A (Delaunay 0.39-0.41, Voronoi 0.27-0.29): the acute weight is
 #: :data:`ACUTE_WEIGHT` scaled by how far below this the template's own share
 #: lies (none for a template at or above it), so a template whose junctions
 #: are acute is drawn so, not widened past itself.
@@ -158,7 +158,7 @@ UNAIDED_ACUTE_SHARE = 0.38
 #: ... and each pair's departure from that angle costs this many spacings per
 #: 90 degrees (as :data:`ANGLE_WEIGHT` without a layout).
 JUNCTION_ANGLE_WEIGHT = 0.5
-#: The greedy fill alone leaves one E14.5 junction in eight or more acute
+#: The greedy fill alone leaves one Stack A junction in eight or more acute
 #: whatever the weights: by a vertex's turn the edges that would have given it
 #: a wide Y are taken. So the fill is relaxed after (:meth:`_Fill.relax_junctions`):
 #: two edges trade ends (every vertex keeps its degree, so the counts and the
@@ -734,7 +734,7 @@ class _Fill:
         self.tensors = tensors
         #: The template's mean chord in each direction class
         #: (``organisation.DIRECTION_CLASSES``) as a ratio: a candidate is
-        #: judged against its own direction's length (E14.5's vertical vessels
+        #: judged against its own direction's length (Stack A's vertical vessels
         #: reach past nearer junctions); None: one length for all.
         self.class_chords = class_chords
         #: The template's own junction angle (``statistics.layout``): with it

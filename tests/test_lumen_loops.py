@@ -104,7 +104,7 @@ def test_a_ring_inside_one_lumen_loses_its_side_along_the_wall():
 
 
 def test_the_side_kept_is_the_one_down_the_middle_even_when_longer():
-    """Regression: the longest side went, and on E14.5 that was often the
+    """Regression: the longest side went, and on Stack A that was often the
     vessel's own centreline, leaving a strand along the rim -- 80k voxels of
     mask uncovered, and a mask diameter read off the rim too small."""
     G = _vessel_with(10)
@@ -195,7 +195,7 @@ def _on_row(row: int, scale: float = 1.0):
 
 
 def test_a_ring_keeps_its_side_on_a_thick_vessels_centreline_though_nearer_the_wall():
-    """E14.5, 2026-10-15: judged by the wall alone, the clean-up took the
+    """Stack A, 2026-10-15: judged by the wall alone, the clean-up took the
     side on the thick centreline tree as often as not, and the thick vessel
     was left broken. The side on the tree stays."""
     G = _vessel_with(4, 9)
@@ -495,7 +495,7 @@ def test_the_default_limit_is_the_review_lists_and_the_setting_defaults_to_it():
 
 def test_a_short_loop_through_a_thick_vessel_bridge_is_left_to_the_review_list():
     """A bridge is the join to the thick centreline, not a second strand:
-    on E14.5 breaking such loops cost 32 of 110 bridges."""
+    on Stack A breaking such loops cost 32 of 110 bridges."""
     from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
     G = _vessel_with(4, 9)
@@ -569,7 +569,7 @@ def _ring_polyline(G):
 
 def test_a_short_loop_round_a_wide_hole_is_left_to_the_review_list():
     """Harvey's grids Q and Q2 (2026-10-15): of 60 loops the rule broke on
-    E14.5, shown with the side it took, those round a hole over 10 um were
+    Stack A, shown with the side it took, those round a hole over 10 um were
     real 29 times in 32. Such a loop stays; with the limit at 0 it is broken
     as before."""
     G, mask = _capillary_ring()

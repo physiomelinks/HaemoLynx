@@ -203,7 +203,7 @@ def test_vessel_mask_volumes_land_as_coloured_image_layers(viewer):
 
 
 def test_the_network_is_first_shown_without_the_volumes_round_it(viewer):
-    """A saved AIA run opened as the segmented image and two arteriole masks
+    """A saved Batch E run opened as the segmented image and two arteriole masks
     in dark red, every vessel tube behind them. The network's first view
     hides them; a later stage leaves them as the user sets them."""
     from haemolynx.gui.results import MASK_LAYERS
@@ -284,7 +284,7 @@ def drawn_on_top(viewer, name=BOUNDARY_NODES) -> bool:
 def test_the_terminal_nodes_are_drawn_over_tubes_added_after_them(viewer):
     """With config.yaml every terminal node is a large-vessel stump, inside a
     thick vessel: depth-tested and drawn before the tubes, the tubes hid all
-    three of E14.5's. A run saved before holds them drawn that way, so the
+    three of Stack A's. A run saved before holds them drawn that way, so the
     panel puts it right itself rather than trusting the spec."""
     results = ResultLayers()
     built = results.stage_finished("build_network", network(a_graph()))

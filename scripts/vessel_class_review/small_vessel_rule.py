@@ -5,7 +5,7 @@ be on the xy plane, and they should be larger than 6 microns, smaller than 10
 microns." So a small vessel is one 6-10 um wide that is reached from a large
 vessel through such vessels; its direction does not matter. After grid SZ1 (as
 stated: 10/26) Harvey changed the band to 6-15 um the same day. The large vessels
-are those the run tagged in Harvey's E14.5 large masks, and a thick-vessel
+are those the run tagged in Harvey's Stack A large masks, and a thick-vessel
 bridge counts as part of the large vessel it joins.
 
 Two readings of "propagate": `strict` grows only through vessels in the band;
@@ -26,7 +26,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "outputs/vessel_class_review"
-SOLVED = OUT / "e14p5_solved.pkl"
+SOLVED = OUT / "stack_a_solved.pkl"
 GRID = OUT / "SZ1"
 REPORT = GRID / "SZ1_rule_result.md"
 
@@ -84,7 +84,7 @@ def main() -> None:
     vessels = [(u, v, k, d) for u, v, k, d in G.edges(keys=True, data=True) if not d.get(BRIDGE) and u != v]
     in_band = sum(SMALL_MIN_UM <= float(d.get("diameter_um") or 0) <= SMALL_MAX_UM for *_, d in vessels)
     lines = ["# Harvey's small-vessel rule against grid SZ1", "",
-             "A small vessel: 6-15 um wide, reached from a large vessel (in Harvey's E14.5 large masks) "
+             "A small vessel: 6-15 um wide, reached from a large vessel (in Harvey's Stack A large masks) "
              "through such vessels; any direction.", "",
              f"{len(vessels)} vessels; {in_band} are 6-15 um wide. Marked S or C: {len(decided)} "
              f"(all S: {sum(marks[i] == 'S' for i in decided)}/{len(decided)}).", "",

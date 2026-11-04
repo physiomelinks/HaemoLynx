@@ -1,5 +1,5 @@
 """Phase 0f of PLAN_vessel_classes_from_segmentation.md: the large-vessel
-threshold against E14.5's real large masks.
+threshold against Stack A's real large masks.
 
 A vessel is "large" by truth when the run's own overlap rule tagged it in the
 arteriole or Vein mask (`large_mask_vessel_type`). Each candidate threshold
@@ -19,7 +19,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "outputs/vessel_class_review"
-SOLVED = OUT / "e14p5_solved.pkl"
+SOLVED = OUT / "stack_a_solved.pkl"
 REPORT = OUT / "phase0f_large_threshold.md"
 
 #: The two candidates the plan names: 2 x the thick-vessel gate's default
@@ -64,7 +64,7 @@ def score(width, large, length, threshold):
 def main() -> None:
     with SOLVED.open("rb") as f:
         G = pickle.load(f)
-    lines = ["# Phase 0f: the large-vessel threshold against E14.5's large masks", "",
+    lines = ["# Phase 0f: the large-vessel threshold against Stack A's large masks", "",
              "Truth: the run's large-mask tag (arteriole or Vein mask). \"Found\" is the share of tagged",
              "vessels at or above the threshold; \"precision\" the share of vessels at or above it that are",
              "tagged; \"right\" counts every vessel; \"by length\" weights each by its length. All one way",

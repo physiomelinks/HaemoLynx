@@ -82,7 +82,7 @@ DEFAULT_MAX_RADIAL_DISPERSION = 0.5
 #: they stay this close the whole way (outside the member's own re-ended
 #: start). Wider than degree-2 merging's 3 um (``are_paths_similar``): paths
 #: 3-5 um apart here are mostly one wide vessel skeletonised twice (on the
-#: E14.5 MCA mask, 7 in 8 such pairs with mask evidence had lumen between
+#: Stack A mask, 7 in 8 such pairs with mask evidence had lumen between
 #: them, not background).
 DEFAULT_DUPLICATE_PATH_TOLERANCE_UM = 5.0
 
@@ -111,7 +111,7 @@ def _merge_stays_within(origins: np.ndarray, distance_threshold: float) -> bool:
     *distance_threshold* of their centroid -- the furthest any node is moved
     by a merge, over every pass. Union-find closest-first chains otherwise:
     a run of junctions 4 um apart along a vessel, pairwise within the
-    threshold, became one node (81 nodes spanning 26 um on E14.5), with every
+    threshold, became one node (81 nodes spanning 26 um on Stack A), with every
     vessel between them deleted."""
     if len(origins) < 2:
         return True
@@ -368,7 +368,7 @@ def collapse_node_clusters_direction_aware(
 
         # Closest first, and pairs at one distance in the order of their two
         # nodes' positions. Nodes on the voxel lattice share distances by the
-        # hundred (58 distances among E14.5's 25,188 pairs), and which merges
+        # hundred (58 distances among Stack A's 25,188 pairs), and which merges
         # the checks below refuse depends on what merged before. Left to the
         # order query_pairs' set yields them -- hash order of array indices --
         # a node added or removed anywhere reordered the ties everywhere, and

@@ -43,12 +43,12 @@ def test_a_graph_loads_with_networkx_and_numpy_only(tmp_path):
 def test_the_most_specific_dictionary_entry_names_a_file():
     entries = ["{stem}_statistics.csv", "{stem}_branch_statistics.csv", "*.png, *.html",
                "{name}_statistics.csv, {name}_branch_statistics.csv", "{arteriole|capillary}_sweep.csv"]
-    assert exports.match_entry("E14_branch_statistics.csv", entries) == "{stem}_branch_statistics.csv"
-    assert exports.match_entry("E14_statistics.csv", entries) == "{stem}_statistics.csv"
+    assert exports.match_entry("StackA_branch_statistics.csv", entries) == "{stem}_branch_statistics.csv"
+    assert exports.match_entry("StackA_statistics.csv", entries) == "{stem}_statistics.csv"
     assert exports.match_entry("raw_skeleton.png", entries) == "*.png, *.html"
     assert exports.match_entry("capillary_sweep.csv", entries) == "{arteriole|capillary}_sweep.csv"
     assert exports.match_entry("pericyte_sweep.csv", entries) is None
-    assert exports.match_entry("E14_citations.txt", entries) is None
+    assert exports.match_entry("StackA_citations.txt", entries) is None
 
 
 def _run_folder(folder, *, length=10.0, csv_text="a_um,b_pa\n1,2\n"):

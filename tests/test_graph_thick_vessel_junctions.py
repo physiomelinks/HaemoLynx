@@ -657,7 +657,7 @@ def test_each_bridge_is_reported_with_its_shape():
 
 def test_a_bridge_ending_on_the_graphs_thick_centreline_off_the_tree_reaches_it():
     """The split bridges to the graph's own thick centreline, which strays off
-    the tree by a few microns (on E14.5, 2026-10-24, every bridge ending off
+    the tree by a few microns (on Stack A, 2026-10-24, every bridge ending off
     the tree ended on it, 2-6 um away): judged by the tree alone, the
     2026-10-09 audit's rule, it never reaches the centreline."""
     lumen, body, tree = _thick()
@@ -776,7 +776,7 @@ def test_a_vessel_stopping_at_the_wall_is_drawn_on_and_bridged():
 
 @pytest.mark.parametrize("short_of_face_um", [0.0, 4.0, 6.0])
 def test_a_thick_vessels_end_at_the_image_face_stays_when_a_vessel_joins_beside_it(short_of_face_um):
-    """Regression (E14.5, the wall join at 15 um): skeletonisation stops the
+    """Regression (Stack A, the wall join at 15 um): skeletonisation stops the
     tree short of the image face, and a vessel joins the thick centreline
     13 um in, so the thick vessel's stretch to the face is an edge of its own
     inside the region, off the tree. Met at that node by the joining
@@ -1065,7 +1065,7 @@ def test_a_narrower_branch_is_left_when_fork_bridges_are_switched_off():
 
 
 def test_a_wall_join_targets_only_what_the_split_calls_thick_centreline():
-    """Regression (E14.5, 2026-10-13): the join took any point near the tree
+    """Regression (Stack A, 2026-10-13): the join took any point near the tree
     as thick centreline, a vessel crossing the thick one included (within
     the tree's tolerance for a few microns: a flicker the split does not call
     centreline). Joined at one, the split read the join's new node in the
@@ -1153,7 +1153,7 @@ def _hook(far: int = 26):
 
 
 def test_a_wall_join_closing_a_short_loop_is_refused():
-    """On E14.5 all 10 short loops the build left ran through a vessel drawn on
+    """On Stack A all 10 short loops the build left ran through a vessel drawn on
     from a wall: the clean-up breaks every short loop but one through a
     bridge, so a join may not make one it would have broken."""
     from haemolynx.graph.thick_vessel_junctions import JOINED_AT_WALL_UM
@@ -1476,7 +1476,7 @@ def test_the_run_draws_thick_centrelines_on_by_default_and_off_with_its_setting(
 
     settings = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
                 "bridge_min_mask_fraction": 0.8, "remove_short_loops_under_um": 200.0}
-    # On by default since 2026-10-20 (grid Y, 17/18; Harvey's E14.5 Claudin run).
+    # On by default since 2026-10-20 (grid Y, 17/18; Harvey's Stack A Claudin run).
     assert thick_junction_bridge_arguments(settings)["extend_thick_ends"] is True
     assert default_schema()["thick_vessel_extend_centreline_ends"].default is True
     settings["thick_vessel_extend_centreline_ends"] = False

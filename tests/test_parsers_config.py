@@ -224,7 +224,7 @@ def test_an_absolute_path_keeps_its_drive_and_root(tmp_path):
 def test_a_long_path_with_spaces_round_trips_through_dump_and_load(tmp_path):
     """Napari save/load on Windows used to corrupt paths that contain spaces.
 
-    magicgui's FileEdit absolutises every path. A typical Dropbox / user-data
+    magicgui's FileEdit absolutises every path. A typical cloud-drive / user-data
     path is far longer than PyYAML's default dump width, and when that path
     also contains a space the dumper folded it onto a second indented line.
     The hand-built config then contained invalid YAML, so "Save config..."
@@ -232,10 +232,10 @@ def test_a_long_path_with_spaces_round_trips_through_dump_and_load(tmp_path):
     """
     absolute = (
         tmp_path
-        / "Dropbox"
+        / "CloudDrive"
         / (
-            "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
-            "zstack_spot1_1p5z_MCAregion_Simple Segmentation_arteriole.tiff"
+            "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+            "zstack_spot1_1p5z_region001_Simple Segmentation_arteriole.tiff"
         )
     )
     absolute.parent.mkdir(parents=True, exist_ok=True)

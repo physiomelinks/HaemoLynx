@@ -377,7 +377,7 @@ def measure_edge_diameters_from_binary_mask(
 
     # Each edge in turn: a skip reason, or its inscribed radii and, for the
     # cross-section method, the payload its sections are read from. The
-    # sections are most of the time (95% of E14.5's 150 s in one process),
+    # sections are most of the time (95% of Stack A's 150 s in one process),
     # so they go to worker processes; the edges are then finished in this
     # order, so the summary is the same however many there were.
     pending: list[tuple] = []

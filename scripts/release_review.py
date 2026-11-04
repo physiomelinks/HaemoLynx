@@ -23,7 +23,7 @@ runs and the phantoms; ten minutes or so)::
 The full tier too (the reference datasets named in the main checkout's
 ``release_review_datasets.yaml``; hours, and up to 20 GB of memory)::
 
-    python scripts/release_review.py --full --datasets e14p5
+    python scripts/release_review.py --full --datasets stack_a
 
 ``--no-fixtures`` leaves the fixture tier out of a full-tier run, to time one
 more dataset at a commit already scored.

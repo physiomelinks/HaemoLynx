@@ -27,7 +27,7 @@ its own beside the thick one: its median lumen radius at least
 `VESSEL_BESIDE_THICK_RADIUS_UM` (2.3 um) and lying outside the kept strand's lumen
 (`_vessel_beside`), when both stay. Judged by the wall alone, the strand on the tree
 went as often as not -- an edge running on past the thick vessel into narrower ones averages
-nearer the wall -- and the thick vessels came out broken (Harvey's Forclaude.haemorun, E14.5,
+nearer the wall -- and the thick vessels came out broken (a saved Stack A run of Harvey's,
 2026-10-15: the graph followed 95% of the tree after skeletonisation and 84.7% built).
 Calibrated on Harvey's grids W-Z (2026-10-15, `outputs/thick_vessel_breaks/GRID_*.md`): the
 first version (c13ea37, the short-loop rule and the stub prune given it too) was right at 11
@@ -37,10 +37,10 @@ loop rules take capillaries beside it, the short-loop preference and the stub pr
 were wrong wherever they decided (grid W), and grids Y and Z (50 removals beside a kept thick
 centreline, marked keep or remove) fitted the beside-vessel test, 39/50 left out against 28
 for removing all. As now: 73 of 98 marks across the four grids against 55 for the plain build;
-the tree followed 88.5% on E14.5, 3 more loops (95 -> 98). Not yet checked on a fresh grid. Run once in
-a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
+the tree followed 88.5% on Stack A, 3 more loops (95 -> 98). Not yet checked on a fresh grid. Run once in
+a fixed order, each left work the others never saw (on Stack A the last merge alone raised the
 pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
-settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds
+settings, so `build_network` runs it again after smoothing. Stack A settles in 9 rounds
 (`lumen_cleanup_max_rounds`, 12 by default, `CONSOLIDATION_MAX_ROUNDS`): pairs in one lumen 124 -> 9 (all kept by the guard), loops
 inside one lumen 12 -> 0, at a cost of 1.9 points of mask coverage and ~35 s. A round after
 the first re-judges only what changed: the pair check keeps each edge's verdict between rounds
@@ -49,7 +49,7 @@ centreline within the reach it is judged over, was added, changed or removed -- 
 reads nothing else), and the lumen-radius lookup graph building makes remembers the voxels it
 has measured (`pointwise_distance.FeatureDistance(remember=)`, up to `LUMEN_RADII_REMEMBERED`;
 off by default, since the low-RAM blockwise EDT visits each voxel once and would only pay its
-memory). On E14.5 the build went 339 -> 255 s with the graph unchanged node for node. Mask
+memory). On Stack A the build went 339 -> 255 s with the graph unchanged node for node. Mask
 recovery is now the slow step (~134 s): routing its joins through the mask and finding the
 uncovered mask, not tracing its pieces (Lee thinning there is ~5 s).
 
@@ -62,12 +62,12 @@ as theirs to take out. `degree2.carry_merged_provenance` now runs in every merge
 `bridge_kind` stay only where both halves had them, and `recovered_fraction`,
 `bridged_fraction` (shares, since a split copies its edge's attributes onto both pieces) and
 `bridge_kinds` carry the rest. The loop review CSV's `recovered_um` / `bridged_um` read them
-(`degree2.drawn_um`). On E14.5 the saved graph is unchanged by it.
+(`degree2.drawn_um`). On Stack A the saved graph is unchanged by it.
 
 **The stub prune's protrusion test (2026-10-25).** `scripts/stub_protrusion_review/` measures
 every dead end each stub prune call of a run is handed, as the test reads it (16 nearest
 centreline samples, its own masked out) and uncapped (16 nearest of other centrelines). On
-E14.5 (23 calls, 8,041 readings) 119 dead ends are left to the test by the prune's other rules
+Stack A (23 calls, 8,041 readings) 119 dead ends are left to the test by the prune's other rules
 with either reading under 2 radii; today's reading is infinite (never judged) for 58 of them.
 On the hair fixture today's test never judges the 25 um hair, while the uncapped reading takes
 the hair and the trunk's collinear end at the face beside it (`tests/test_stub_protrusion_review.py`).
@@ -98,9 +98,9 @@ meeting its parent is not one), so no reconnect draws one segmented vessel twice
 too short to leave anything judged once those ends are left out (in a lumen 6 um round, any
 under 14 um) is judged at its middle -- only where a reconnect draws a bridge
 (`judge_short_at_middle`: `MaskBridges`, the skeleton gate, the thick-vessel wall join), not in mask recovery or the
-doubled-stretch rule, where on E14.5 it cost 1.1 points of mask coverage. The gap, optimise
+doubled-stretch rule, where on Stack A it cost 1.1 points of mask coverage. The gap, optimise
 and orphan reconnects judge the 80-degree turn on the path drawn, not the chord
-(`MaskBridges.bridge(ends=, max_turn_deg=)`): on E14.5 that and the middle sample refused 13
+(`MaskBridges.bridge(ends=, max_turn_deg=)`): on Stack A that and the middle sample refused 13
 more gap bridges, all 13 marked right by Harvey (grid R, 2026-10-14). A segmentation not the
 skeleton's shape raises (`check_mask_shape`), and the three bridging settings require no
 stage, so a run loading its saved skeleton keeps them;
@@ -118,20 +118,20 @@ never more than its own radius outside another centreline's lumen (`STUB_PROTRUS
 goes whatever its length, and one whose tip the mask runs on past is held to
 `min_stub_length` as well, while a blind sprout keeps the radius rule
 (`min_stub_length_radius_multiple`, 3 radii by default: at 1.5, 3 um on a capillary, Lee's
-blind spurs stayed -- 1,037 of E14.5's 1,234 dead ends).
+blind spurs stayed -- 1,037 of Stack A's 1,234 dead ends).
 
 **Bridging loose ends (2026-10-25, `PLAN_bridging.md`).** The skeleton bridges now judge their
 facing (`skeleton_bridge_min_facing_cosine`) on the route drawn, read at the point the chord's length
-along it, as the reconnects judge their turn (`6e09639a`); on E14.5 (Harvey's Claudin segmentation)
+along it, as the reconnects judge their turn (`6e09639a`); on Stack A (Harvey's Claudin segmentation)
 the step draws 1 bridge from 957 branch ends, none refused for it, and the skeleton and graph are
 the base's bit for bit. The bridge gate's sample step divides every axis's half spacing where a
 step down to a quarter of the finest axis's does (`e87c08e1`): on 0.3 x 0.3 x 1 um voxels a
-one-slice z dropout read 0.86-1.14 um by the path's vertices and now reads 1.0; E14.5's 0.98 x 0.98
+one-slice z dropout read 0.86-1.14 um by the path's vertices and now reads 1.0; Stack A's 0.98 x 0.98
 x 1 um keeps 0.49 um (the half spacings' common divisor is 0.01 um). F11 closed by measurement:
 the masks skeleton cleaning and graph building receive are bool already (in RAM, and a bool
 memmap under the low-RAM option, on the Nerve fixture), so `np.asanyarray(mask, dtype=bool)`
 copies nothing, and graph building is handed the run's `MaskSupport`, so `assemble.py`'s two
-conversions never run; the ungated secondary-loop reconnect adds 3 edges on E14.5 (none left
+conversions never run; the ungated secondary-loop reconnect adds 3 edges on Stack A (none left
 with its mark in the saved graph) and none on the Nerve fixture.
 
 ## graph/mask_recovery.py
@@ -142,11 +142,11 @@ the mask no centreline's lumen covers (`uncovered_mask_voxels`: within a sample'
 inside its lumen's cross-section, followed out in 32 directions across the vessel to the wall,
 at most `CROSS_SECTION_REACH_RADII` = 4 radii, and only while the mask is also there a radius
 ahead and behind -- so a flattened lumen's far side is covered, while a branch narrower than
-its vessel stops the outline at the wall; on E14.5 79% of the mask the radius rule alone left
+its vessel stops the outline at the wall; on Stack A 79% of the mask the radius rule alone left
 uncovered was that far side, and recovery traced it as second strands), in pieces of at least
 `recovery_min_region_volume_um3` and wider than a voxel and a half, traced along the run's own
 skeleton (the build passes it: `skeleton=`; a piece the skeleton does not run through is left
-alone, and only a caller passing none Lee-thins the mask again -- on E14.5, 2026-10-13, two
+alone, and only a caller passing none Lee-thins the mask again -- on Stack A, 2026-10-13, two
 thirds of what re-thinning drew lay where the skeleton has nothing, combs across wide lumens
 the clean-up then took out) and joined to
 the network through the mask where an end lies within `final_orphan_reconnect_threshold` of a
@@ -155,13 +155,13 @@ and never a loop inside one lumen: after a strand's first join (nearest end firs
 join, or a traced path closing a ring, is kept only when the loop it closes runs round tissue
 -- its chords cross more than a dropout (`bridge_max_background_gap_um`) of background
 (`lumen_loops.loop_inside_one_lumen`). Joining every free end made tangles of short loops (on
-E14.5, 3,232 under 30 µm against 101 before the step). Its duplicate check and node ids are
+Stack A, 3,232 under 30 µm against 101 before the step). Its duplicate check and node ids are
 kept indexed (`EdgeSampleIndex.added_near`, `_NodeIds`): scanned per path, they were 95% of
 the step's time. The join loop reads each strand's edges from the strand's own nodes, keeps
 the samples recovered so far in trees that double in size (`_RecoveredSamples`: loose until
 `_LOOSE_SAMPLES`, then merged) rather than one tree rebuilt per strand, and groups the
 uncovered mask by labelling a slab of slices at a time (`_components`) rather than a KD-tree
-pair search: on a 43,000-edge skeletal-muscle crop the whole-graph scan and the rebuild were
+pair search: on a 43,000-edge crop of Stack D the whole-graph scan and the rebuild were
 three quarters of the step, and the pair search holds 13 pairs a voxel, gigabytes on a large
 stack. The cross-section outline (`_follow_rays`) follows each ray only to its first
 voxel out, with the samples sorted by reach so a chunk is not kept going by its widest vessel,
@@ -169,13 +169,13 @@ reads the mask as bits (`preprocessing.PackedMask`: 2 GB for a 16 G-voxel stack,
 every `MaskSupport.inside` switches to after `PACK_AFTER_POINTS` lookups) and spreads its chunks
 over worker processes (`preprocessing.shared_volume_tasks.run_volume_tasks`, the pool the
 section diameter methods use) once there are `_WORKER_MIN_SAMPLES`; the outline is per sample
-and identical with any of that (E14.5's uncovered scan went 108 -> 18 s, bit for bit). Without
+and identical with any of that (Stack A's uncovered scan went 108 -> 18 s, bit for bit). Without
 a mask, or with both settings off, the two steps leave the graph as it is.
 `recover_uncovered_mask_vessels(coverage_reach_radii=, two_ended=)` (2026-10-21): the first is
 `uncovered_mask_voxels`' cross-section reach (0: a centreline's own radius covers), the second
 takes recovered edges left hanging from a dead end out again until none is
 (`keep_two_ended_recovery`, `G.graph["recovered_one_ended_removed"]`); both for
-`remove_interior_dead_ends` -- after removing E14.5's interior dead ends, recovery as it is
+`remove_interior_dead_ends` -- after removing Stack A's interior dead ends, recovery as it is
 drew 1,376 of its 2,024 edges as dead ends.
 
 ## graph/facing_ends.py
@@ -188,7 +188,7 @@ chain back to the junction -- are joined across up to that gap, though it is mor
 dropout, because one vessel broken by the segmentation is the one case where crossing more
 background is the vessel. One stretch of background only (never a third vessel), each end at
 least 3 µm long, the gap no longer than the two together, not beside a vessel in the same
-lumen, closest pairs first. Rare by design: of E14.5's 284 dead-end pairs within 10 µm, 143
+lumen, closest pairs first. Rare by design: of Stack A's 284 dead-end pairs within 10 µm, 143
 were siblings off one junction, 57 side by side and only 15 pointed at each other.
 
 ## graph/lumen_loops.py
@@ -202,7 +202,7 @@ chords crossing no more than a dropout of background -- and one inside a lumen l
 (the run of edges between two places the network meets it) nearest the wall, so the vessel's
 middle is what stays and no spur is left; a ring the network meets once goes whole. A loop
 round tissue stays however short. Removing the longest arc instead kept rim strands and left
-80k more voxels of E14.5 uncovered.
+80k more voxels of Stack A uncovered.
 
 ## Short loops
 
@@ -210,21 +210,21 @@ round tissue stays however short. Removing the longest arc instead kept rim stra
 default** since 2026-10-13) — in every `consolidate_lumen` round, after the in-lumen loop step,
 every loop up to that long round loses its arc nearest the wall whatever the mask says of it.
 Harvey's grids I and I2 (`outputs/loop_review/FIT_I*.md`, judged on the claudin-5 channel):
-55 of 60 short loops of E14.5 close inside one vessel, the in-lumen rule found none of them
+55 of 60 short loops of Stack A close inside one vessel, the in-lumen rule found none of them
 (the background it reads between the two sides as tissue was not tissue there), and no
 measure of the mask or the raw image found the five real ones (46-179 µm) -- so the rule is
 the trivial one, right 92-93 % at the cost of one real loop in twelve. Except round a wide
 hole (`short_loop_keep_hole_over_um`, **10 µm** by default since 2026-10-15): a loop whose
 hole -- `lumen_loops.loop_hole_um`, the median background its antipodal chords cross,
 `loop_measures`' `chord_bg_median_um` -- is wider is left alone. Grids Q and Q2
-(`outputs/loop_break_review/FIT_Q*.md`, 60 of the rule's breaks on E14.5, each drawn with
+(`outputs/loop_break_review/FIT_Q*.md`, 60 of the rule's breaks on Stack A, each drawn with
 the side it took): where a side should go it took the right one every time, but most
 loops round a wide hole were real, and breaking one merged it with its neighbour into a
 longer loop that was broken in turn (44% of the first pass's breaks). Over 10 µm 29 of 32
 were real, under it 24 of 28 false: 53/60 leave-one-out against 33 all one way. Fitted on
 Q (9.2 µm), held on Q2's big holes (21 of 26 real); grid I/I2's "real or false?" marks had
 called 6 of 9 big-hole loops false, and the six shown again blind in Q2 all came back
-real. E14.5 skeleton reach 68.5 -> 70.5%, 40 short loops left for the review list.
+real. Stack A skeleton reach 68.5 -> 70.5%, 40 short loops left for the review list.
 0 breaks every short loop. The Short loops review list shows what is left, and 0 for the
 length leaves every short loop to it. `preprocessing/raw_evidence.py` (`RawEvidence`: the
 raw channel read in windows where the mask is silent, calibrated once per build and kept on
@@ -249,7 +249,7 @@ Harvey drew as missing, at 69-78%), half of it further than two
 lumen radii + 3 um from every centreline, meeting reached skeleton in two places; it is drawn
 between the two contacts farthest apart through it (not the whole tangle), joined by splitting
 the nearest vessel (never a bridge). Only the two short joins face the bridge gate: the route
-between is the run's own skeleton, which crosses 3-10 um dropouts of E14.5's raw mask along
+between is the run's own skeleton, which crosses 3-10 um dropouts of Stack A's raw mask along
 vessels grid N marked V. Never beside a vessel in the same lumen (`duplicates_existing_vessel`).
 Each further place the piece meets the graph is then joined along its skeleton under the same
 tests, the hole read on the loop that join closes (`_join_place`, edge mark `retraced_join`):
@@ -261,21 +261,21 @@ the `REFUSED_*` reasons). Harvey's grid N (2026-10-18, 30 of the pool): every pi
 hole over 10.3 um was a vessel (9/9), 17 of 21 round a smaller one were not; at the 10 um
 limit (fitted on Q/Q2, not N) 25/30 against 17 for all X; the pair and in-lumen loop rules,
 which never read hole size, had taken 12 of the 13 V. Grid N2 (the 21 vessels it drew on
-E14.5): 19 V, 1 X, 1 unsure; 10 of the 11 at no grid N place V; 6 of the 7 a pair in one lumen
+Stack A): 19 V, 1 X, 1 unsure; 10 of the 11 at no grid N place V; 6 of the 7 a pair in one lumen
 by the mask V. A* routes (Add vessel's mask and raw tracers) matched Harvey's drawn routes no
 better than the skeleton (48% vs 41-42% of his lines), so the skeleton route stays. Harvey then
 drew every vessel the surface still lacked (68 strokes, 1.7 mm): 62% of it has skeleton under
 it, which the hole and separation tests leave out (the drawn pieces mostly close loops round
 holes under 10 um), and 38% has none, beside the large vessels (the thick-vessel gate); of 504
 lost surface pieces only the mask share separated cleanly, so it is half, not 80%
-(`outputs/surface_review/missing_*.py`). On E14.5 (the 2026-10-16 run): 35 re-traced edges,
+(`outputs/surface_review/missing_*.py`). On Stack A (the 2026-10-16 run): 35 re-traced edges,
 1.35 mm, 49 s; skeleton reach 71.3 -> 73.6% (67.0 -> 70.0% on the surface beside the large
 vessels), mask covered 74.5 -> 75.4%, 30.8% of Harvey's missing length covered (26.1% at 80%);
 pairs in one lumen by the mask 4 -> 14, short loops 42 -> 63, dead ends unchanged.
 
 Again on 2026-10-25 (origin `94320b75` plus the census, Harvey's Claudin segmentation, the
 graph built from the thick-bridges capture as `build_network` builds it and finished three
-ways; `outputs/sc/e14_variants.py` and `REPORT.md` in worktree `quirky-goodall-bbcb6f`):
+ways; `outputs/sc/stack_a_variants.py` and `REPORT.md` in worktree `quirky-goodall-bbcb6f`):
 
 | | off | pieces only | pieces + joins (default) |
 |---|---:|---:|---:|
@@ -301,7 +301,7 @@ every lost piece of 20 um or more and at least half in the mask, longest first (
 missing-vessel drawing ranked length above every other measure, AUC 0.78), with the re-trace's
 reason, hole, far and mask shares. Draw along the skeleton adds the route the re-trace would
 draw, split into the vessels at both ends; a piece meeting the network once is traced with Add
-vessel. On the E14.5 graph above the list holds about 155 pieces, 9.8 mm of skeleton.
+vessel. On the Stack A graph above the list holds about 155 pieces, 9.8 mm of skeleton.
 
 Grid N3, the fresh check: N2 checked only what the rule draws, so N3 is 30 fresh pool
 pieces (none within 15 um of a grid N or N2 case) on both sides of the rule, 13 the run draws
@@ -318,7 +318,7 @@ threshold reaches 90%: 5-8 um gets 45/55, the rule's 10 um 43/55, all V 29/55. L
 (inside one lumen by the mask) are the part the hole cannot reach: 17 pieces, 5 of them V. The
 rule is unchanged; what it leaves is the review list's.
 
-Grid O (sent 2026-10-26, rebuilt and marked 2026-10-27): segmentation no skeleton crosses. On E14.5 at `6d5c1bb1`
+Grid O (sent 2026-10-26, rebuilt and marked 2026-10-27): segmentation no skeleton crosses. On Stack A at `6d5c1bb1`
 (Harvey's Claudin segmentation) the mask no centreline of the skeleton covers by mask recovery's
 own rule (the skeleton as graph building's first step makes it: 1.02 M voxels in 12,004 pieces)
 leaves 723 pieces of at least 200 um^3 whose widest point lies within 2 r + 3 um of the skeleton
@@ -352,7 +352,7 @@ voxel comes back ~7% longer than the vessel it traces). It is *not* one of the `
 it runs in `pipeline/stages.py`'s `build_network`, after the topology steps and before the graph
 is pickled — so a caller assembling a graph by hand gets no smoothing unless it asks.
 `build_network` then runs `consolidate_lumen` again on the smoothed curves (smoothing alone
-turned E14.5's 2 loops inside one lumen into 12), and once more after the thick-vessel split
+turned Stack A's 2 loops inside one lumen into 12), and once more after the thick-vessel split
 (the split alone made 7, through its bridges): nothing is the last step. The clean-up knows a
 bridge -- never merged with a vessel at a degree-2 node, a pair with one left to the loop
 step, and one left dangling by a removal taken out
@@ -372,23 +372,23 @@ with a bridge was kept raw.
 where the mask is silent, calibrated once a build (`stages._record_raw_evidence`, after the graph
 and the dead-end kinds) and kept on `G.graph["raw_evidence"]`. No rule reads it.
 
-**What a build pays for it (2026-10-25, E14.5, at `8204478d`).** `build_network` from the
+**What a build pays for it (2026-10-25, Stack A, at `8204478d`).** `build_network` from the
 thick-bridges session's capture of Harvey's Claudin segmentation, twice, each in a fresh process
 (`outputs/raw_confirmation/budget.py`, git-ignored, in worktree `plan-raw-confirmation-0887be`):
 without the raw image 211.9 s and a peak of 4,912 MB; with it (claudin-5, the composite's channel
 1) 209.8 s and 4,913 MB. The raw step, loading the channel and calibrating it, took 1.2 s. It holds
 the channel (uint16, 144 MiB) while it calibrates and then lets it go. The process peak was 2.2 GB
 when the step started and did not rise during it; the build's peak comes later. The plan's
-budgets (decision D6: +5 % build time, +50 MB on E14.5) hold: +0.6 % and +1 MB of peak. The
+budgets (decision D6: +5 % build time, +50 MB on Stack A) hold: +0.6 % and +1 MB of peak. The
 "+50 MB resident" was written for windows and samples; read in RAM the channel itself is three
 times that, for the second it takes, and under the build's peak. No window is read, since no rule
-asks. The budget for the 16.4 G-voxel skeletal-muscle stack (≤ 200 MB, ≤ 10 s of calibration)
+asks. The budget for the 16.4 G-voxel Stack D (≤ 200 MB, ≤ 10 s of calibration)
 is not measured: its segmentation is on this machine, but its raw image only as a 1,000 x 1,000
 crop at an unknown offset. `scripts/graph_artefacts.py --raw-cost` makes the same comparison for
 any config with a raw image, in its report.
 
 **Uncovered mask, grid UR1 (2026-10-25).** Mask recovery is handed 1,749 pieces of uncovered
-mask on E14.5 (the graph after the orphan reconnect, its own two filters) and draws a
+mask on Stack A (the graph after the orphan reconnect, its own two filters) and draws a
 centreline into 39 of them; in the finished graph a median 78 % of a piece is still uncovered.
 The dextran channel (not the segmentation's own here: it was made from claudin-5) reads mostly
 depth: the top 30 um a median 1.27 of the run's lumen level, every band below 0.31-0.41, while
@@ -417,7 +417,7 @@ join; when nothing is joined the edge is deleted whole, as before. Grids D-F (20
 found the undoubled remainder vessel 56 % of the time with no measure to say when, and decision D2
 (Harvey, 2026-10-12) chose rewiring, judged by the plan's kill criteria rather than a grid.
 
-On E14.5 (Harvey's Claudin segmentation, the one-centreline session's skeleton of 2026-10-25,
+On Stack A (Harvey's Claudin segmentation, the one-centreline session's skeleton of 2026-10-25,
 `scripts/graph_artefacts.py` at `7f7e699c` against this work; harness `outputs/cg/`, git-ignored)
 it failed them:
 
@@ -443,7 +443,7 @@ would join is joined already, round that loop, so that join is not made and its 
 stretch; a stretch-step rejoin with no join left is not made at all. The zip makes no new loop and
 is not tested. The two earlier attempts at rewiring (the parked Phase 2 branch, the
 missed-branches session's trim-and-rejoin) raised the short loops for want of this. On the same
-E14.5 graph the guard alone, against the clean-up as it was: mask covered 80.5 -> 81.5 %,
+Stack A graph the guard alone, against the clean-up as it was: mask covered 80.5 -> 81.5 %,
 centreline +0.45 mm, doubled centreline -27 um, interior dead ends 256 -> 255, clean-up no slower;
 short loops 69 -> 77, every one of the 9 it keeps round a hole of 10-37 um -- loops an unguarded
 rejoin had closed inside the lumen, whose arc the in-lumen rule then took. 267 joins tested in a
@@ -460,25 +460,25 @@ keeps as real; each setting's off is the clean-up as it was.
 its own radius) is listed for a person, not resolved: "Stretches doubled in one lumen" on the Post
 processing tab (`network_review.find_doubled_stretches`, runs of 2 um or more, whole-edge pairs left
 to "Two vessels in one lumen"). Grid H2 had found half of such chains vessels of their own. On
-E14.5 at `7f7e699c` it lists 87 (27 of 5 um or more): 340 um seen only from the wider side, 78 um
+Stack A at `7f7e699c` it lists 87 (27 of 5 um or more): 340 um seen only from the wider side, 78 um
 only from the narrower (stretches the stretch step refused), 19 um from both.
 
 The Nerve fixture (`tests/data/Nerve_capillaries_cropped.tif`, through `build_network`, at the
 defaults and at the Nerve integration test's skeleton settings): the graph unchanged by every
 measure of the report (129 and 46 edges, no pair in one lumen, 0 loops inside one lumen, 0 tips in
 another lumen, no `artefact` dead end).
-With both off the clean-up on E14.5's pre-clean-up graph is `7f7e699c`'s node for node and edge for
-edge (checked at `94320b75`, when off was the default). At `94320b75` the harness's E14.5 graph (no skeleton re-trace) has 1 pair
+With both off the clean-up on Stack A's pre-clean-up graph is `7f7e699c`'s node for node and edge for
+edge (checked at `94320b75`, when off was the default). At `94320b75` the harness's Stack A graph (no skeleton re-trace) has 1 pair
 in one lumen, 696 um of doubled centreline (333 um seen only from the wider side), 78 short loops, 0 inside one
 lumen, 201 interior dead ends (15 `artefact`, 94 `stops_short`, 88 `unknown`, 4 `broken`), 3 tips in another
 lumen and 81.0 % of the mask covered, built in 153 s; the plan's section 6 holds the targets.
 
-A second dataset, the skeletal-muscle stack (`BigSMconfig.yaml`; a 503 x 512 x 512 sub-crop of
-`outputs/t6/smcrops/crop0`, 0.913 x 0.913 x 4.94 um voxels, 5.5 % vessel, through `build_network` with that
+A second dataset, Stack D (its run config; a 503 x 512 x 512 sub-crop of
+its first crop in `outputs/t6/`, 0.913 x 0.913 x 4.94 um voxels, 5.5 % vessel, through `build_network` with that
 config), with 1d on (`c393ab58`: the rewire and the guard, before the round-limit fix) against off (the
 defaults): pairs in one lumen 16 against 44, doubled centreline 6,308 against 7,316 um, mask covered 57.6
 against 55.4 %, tips in another lumen 21 against 30, centreline +5.6 mm -- and short loops 119 against 86,
-interior dead ends 1,962 against 1,836. The same trade as on E14.5, larger: the kill criteria fail here too.
+interior dead ends 1,962 against 1,836. The same trade as on Stack A, larger: the kill criteria fail here too.
 At the defaults the crop meets none of the plan's dataset-wide targets: 44 pairs, 1 loop inside one lumen,
 30 tips in another lumen, 102 `artefact` dead ends (its z voxels are five times its in-plane ones).
 
@@ -486,7 +486,7 @@ At the defaults the crop meets none of the plan's dataset-wide targets: 44 pairs
 on the graph it hands on is kept: its counts (`graph.lumen_artefact_counts`: pairs in one lumen,
 loops inside one, tips in another lumen and whether any was found, the doubled centreline, the
 short loops, the dead ends by place) on `G.graph[graph.LUMEN_ARTEFACT_COUNTS]`, and again in the
-run's manifest as `checks.lumen_artefacts`. The warning stays; a run never stops for it -- E14.5
+run's manifest as `checks.lumen_artefacts`. The warning stays; a run never stops for it -- Stack A
 at the defaults has a pair and three tips in another lumen, and the skeleton re-trace, kept after
 the last clean-up, can add pairs. The record is put on the graph after `{stem}_graph.pkl` is
 written, and every run makes it again, a loaded graph included; the low-RAM option skips the
@@ -494,7 +494,7 @@ report and leaves none. The tests hold the Nerve fixture (`test_pipeline_invaria
 dense capillary bed (`tests/integration/test_dense_capillary_bed.py`) to it: nothing it would warn
 of, at the defaults (both pass with the rewire and the guard on).
 
-On E14.5 with both on, against both off (`scripts/graph_artefacts.py` on the same skeleton, one run,
+On Stack A with both on, against both off (`scripts/graph_artefacts.py` on the same skeleton, one run,
 2026-10-26; the harness now runs the skeleton re-trace, so these pairs are not the earlier
 re-trace-free count): centreline 47,440 -> 48,166 um, mask covered 82.0 -> 83.2 %, doubled
 centreline 919 -> 827 um (runs of 5 um or more 51 -> 42), pairs in one lumen 10 -> 10, loops inside

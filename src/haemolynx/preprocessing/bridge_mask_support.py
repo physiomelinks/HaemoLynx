@@ -331,7 +331,7 @@ def path_shadows_existing_vessel(
     reconnects that draw a bridge ask for that: in a lumen 6 um round every
     bridge under 14 um had nothing judged, and could draw a second strand
     unchallenged (PLAN_bridging.md F4). Mask recovery and the clean-up's
-    doubled-stretch rule do not: on E14.5 it took 1.1 points of mask
+    doubled-stretch rule do not: on Stack A it took 1.1 points of mask
     coverage and 1 mm of centreline with them, doubled centreline not falling,
     and those rules are calibrated on marked grids.
 

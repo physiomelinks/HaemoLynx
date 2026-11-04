@@ -15,7 +15,7 @@ dark elliptical lumen and a bright wall ring round it, both seen through the
 microscope's blur projected onto the plane. The internal diameter is the
 lumen's area-equivalent one.
 
-On synthetic rings with this repository's embryonic stack's blur (sigma 1.0
+On synthetic rings with Stack A's blur (sigma 1.0
 um across, 3.5 um along z) and wall (1.3 um), the internal diameter is within
 1% from 6 um up at any orientation and 3-6% at 4 um; a 3 um vessel lying in
 the image plane is not resolved.

@@ -13,7 +13,7 @@ the join carries it on; a vessel running past the thick one has its nearest
 voxel on its side. Each path is measured by the arm's own direction over the
 stretch before its start against the path's chord (``approach_cos``, 1
 heading straight in, 0 running across) and by the arm's voxels beside the
-start (``start_degree``: 1 its tip, 0 an arm of one voxel). On E14.5 neither
+start (``start_degree``: 1 its tip, 0 an arm of one voxel). On Stack A neither
 separated Harvey's marks.
 
     python scripts/thick_bridge_review/join_paths.py --run <run> --out <folder>

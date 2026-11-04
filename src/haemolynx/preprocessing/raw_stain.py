@@ -14,7 +14,7 @@ block's distance transforms give the ``core`` (the middle of its widest
 vessels: at least ``min_core_depth_um`` and ``core_fraction`` of the block's
 deepest point inside the mask), the ``wall`` (the band within
 ``wall_reach_um`` either side of the mask's edge) and the ``background``
-(further out). On E14.5 the claudin-5 channel peaks in that band at about
+(further out). On Stack A the claudin-5 channel peaks in that band at about
 twelve times its level 5 um inside a vessel, while the dextran channel falls
 from the middle out. The
 answer is the sign of :attr:`StainReading.contrast`, ``(core - wall) /
@@ -34,7 +34,7 @@ ENDOTHELIAL = "endothelial"
 #: The stains ``raw_image_stain`` names, besides ``auto``.
 STAINS = (PLASMA_COLUMN, ENDOTHELIAL)
 #: How far the contrast must lean either way to decide. With 64 blocks, on
-#: E14.5 the dextran channel reads +0.25 to +0.33 and the claudin-5 one -0.16
+#: Stack A the dextran channel reads +0.25 to +0.33 and the claudin-5 one -0.16
 #: to -0.44 over five seeds (about 5 s each); synthetic vessels with that
 #: stack's blur read further out. Noise, or an image unrelated to the mask,
 #: is stopped by SIGNAL_OVER_SPREAD.

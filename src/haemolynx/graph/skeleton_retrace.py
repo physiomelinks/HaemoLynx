@@ -3,7 +3,7 @@
 The lumen clean-up judges two centrelines through one segmented lumen, and a loop
 inside one, by the mask alone. On the surface plexus, where the segmentation fuses
 neighbouring vessels into sheets, that takes vessels of their own: of 30 skeleton
-pieces the E14.5 graph had lost (Harvey's grid N, 2026-10-18,
+pieces the Stack A graph had lost (Harvey's grid N, 2026-10-18,
 ``PLAN_surface_coverage.md``), every one whose loop with the final graph ran round a
 tissue hole wider than 10.3 um was a vessel (9 of 9), and 17 of the 21 round a
 smaller hole were not. The two rules that had taken the vessels -- pairs in one lumen
@@ -22,7 +22,7 @@ along its own skeleton between the two contacts farthest apart through it, not w
 in the tangles Lee leaves in a wide sheet, Harvey drew one vessel, not the mesh. Each
 further place it meets the graph is then joined along its skeleton when the loop that
 join closes runs round a wide hole too: on grid N2 (2026-10-18, the 21 vessels this drew
-on E14.5, 19 kept) every join Harvey added did that.
+on Stack A, 19 kept) every join Harvey added did that.
 """
 from __future__ import annotations
 
@@ -55,12 +55,12 @@ logger = logging.getLogger(__name__)
 #: A skeleton voxel no centreline comes within this of (um) is lost.
 REACH_UM = 3.0
 #: A lost piece holds at least this much skeleton (um, each voxel counted as the
-#: step to its nearest neighbour in the piece: on E14.5's near-cubic voxels the
+#: step to its nearest neighbour in the piece: on Stack A's near-cubic voxels the
 #: 20 voxels grid N's pool was drawn with, on a coarse z axis the same length)...
 MIN_PIECE_UM = 20.0
 #: ...at least this share of them in the mask (the raw segmentation; the skeleton was
 #: thinned from it hole-filled and closed, so it runs on through dropouts). Harvey drew
-#: every vessel E14.5's surface still lacked (2026-10-18): each was at least 58% in the
+#: every vessel Stack A's surface still lacked (2026-10-18): each was at least 58% in the
 #: mask, and at 80% four of them, at 69-78%, were refused with nothing else let in...
 MIN_MASK_FRACTION = 0.5
 #: ...and at least this share a separate tube from every centreline: further than
@@ -160,7 +160,7 @@ class _Edits:
       and all; each edit of *G* is made on the copy too, where ``_trial_copy``
       would put it (:func:`_copy_split`, :func:`_copy_added_edge`). Each
       judgement reads the copy a fresh ``_trial_copy`` would give. A copy per
-      judged piece and join was half the step (29_2_f contra replay,
+      judged piece and join was half the step (12_2_f contra replay,
       2026-10-20); one per drawn piece and join was still 30% of it.
     - a node it adds takes the id ``next_node_id`` would have scanned the
       graph for, counted on instead.
@@ -324,7 +324,7 @@ class _LiveSamples:
     every edge of a graph *keep* (``data -> bool``) accepts, kept up to date by
     :meth:`update` as edges are split and drawn. Rebuilt whole after every
     piece and join, they were 98% of the step's time on a 36,000-edge graph
-    (28_3_d contra patella, 2026-10-19: 110 pieces drawn in 9 hours). The
+    (Stack E, 11_3_d contra, 2026-10-19: 110 pieces drawn in 9 hours). The
     graph's samples as first read stay in one KD-tree, those of edges removed
     since are skipped, and those of edges added since sit in a small tree of
     their own: the same samples a tree built over the graph as it stands holds,
@@ -790,7 +790,7 @@ def _judge_on_trial(
     nothing["path_um"] = path
     # The bridge gate judges the two joins from the graph to the skeleton, which
     # this step draws. The route between is the run's own skeleton, which graph
-    # building never holds to it: E14.5's skeleton, thinned from the hole-filled
+    # building never holds to it: Stack A's skeleton, thinned from the hole-filled
     # mask, crosses dropouts of 3-10 um in the raw mask along vessels grid N
     # marked as vessels.
     joins = (path[:2], path[-2:])

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Grid S's marks against its key (``build_grid_s.py``): K (a vessel, keep) or
 R (not a vessel, remove) for 30 dead ends the stub prune's protrusion test
-decides on E14.5.
+decides on Stack A.
 
 Scored, each as right / wrong against marking all one way:
 

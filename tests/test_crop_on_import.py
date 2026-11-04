@@ -566,7 +566,7 @@ def test_preflight_reports_a_crop_no_image_could_hold():
 # An ilastik "Simple Segmentation" export labels vessel 1 and background 2, and
 # which is vessel is decided from the values a volume holds (the minority of
 # two). Decided on the box alone, a box holding only background (one value) came
-# back solid vessel -- Harvey's 28_3_d_ipsi box, every vessel then classed
+# back solid vessel -- Harvey's 11_3_d_ipsi box, every vessel then classed
 # Unknown_Large -- and a box where vessel is the majority came back inside out.
 
 #: Background, as an ilastik Simple Segmentation export writes it.
@@ -751,7 +751,7 @@ def test_a_cropped_and_downsampled_vessel_mask_is_binarised_as_the_whole_file_re
 
 # --- an H5 stack read only within the box ---------------------------------------
 #
-# The AIA stacks are 9.4 GB H5 files cut to a 5% box: the box is read alone, and
+# The Batch E stacks are 9.4 GB H5 files cut to a 5% box: the box is read alone, and
 # a mask is binarised by the rule its whole file gives. Every test compares with
 # reading the file whole and cutting it, as the loaders did before.
 
@@ -767,7 +767,7 @@ def _write_h5(path, volume, *, chunks=(4, 8, 8, 1)) -> str:
 
 
 def _labels(seed=0) -> np.ndarray:
-    """A 1/2 ilastik label volume: 1 (vessel) the minority, as in the AIA masks."""
+    """A 1/2 ilastik label volume: 1 (vessel) the minority, as in the Batch E masks."""
     rng = np.random.default_rng(seed)
     return np.where(rng.random(STACK) < 0.2, 1, 2).astype(np.uint8)
 

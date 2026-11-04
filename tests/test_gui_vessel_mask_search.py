@@ -94,7 +94,7 @@ def test_a_new_input_image_searches_again_for_every_role_in_use(tmp_path):
 
 def test_found_masks_fill_the_rows_that_name_no_file(tmp_path):
     image, art, ven, small = _files(
-        tmp_path, "E14.tif", "E14_large_arteriole.tif", "E14_large_venule.tif", "E14_small.tif"
+        tmp_path, "StackA.tif", "StackA_large_arteriole.tif", "StackA_large_venule.tif", "StackA_small.tif"
     )
     settings = {**BOTH_ON, "input_path": image}
     fill = fill_vessel_mask_rows(settings, ("large", "small"))
@@ -105,13 +105,13 @@ def test_found_masks_fill_the_rows_that_name_no_file(tmp_path):
         "small_venule_mask_path": None,
     }
     report = "\n".join(fill.lines)
-    assert "E14_large_arteriole.tif" in report and "E14_large_venule.tif" in report
+    assert "StackA_large_arteriole.tif" in report and "StackA_large_venule.tif" in report
     assert "global mask of every small vessel" in report
 
 
 def test_a_file_the_user_chose_keeps_its_whole_role(tmp_path):
     image, _art, _ven = _files(
-        tmp_path, "E14.tif", "E14_large_arteriole.tif", "E14_large_venule.tif"
+        tmp_path, "StackA.tif", "StackA_large_arteriole.tif", "StackA_large_venule.tif"
     )
     chosen_folder = tmp_path / "chosen"
     chosen_folder.mkdir()
@@ -176,7 +176,7 @@ def test_a_new_image_with_no_masks_empties_the_rows_filled_for_the_last_one(tmp_
 
 def test_a_row_already_holding_the_found_file_is_no_conflict(tmp_path):
     image, art, ven = _files(
-        tmp_path, "E14.tif", "E14_large_arteriole.tif", "E14_large_venule.tif"
+        tmp_path, "StackA.tif", "StackA_large_arteriole.tif", "StackA_large_venule.tif"
     )
     settings = {**LARGE_ON, "input_path": image, "large_arteriole_mask_path": art}
     assert fill_vessel_mask_rows(settings, ("large",)).values == {
@@ -186,7 +186,7 @@ def test_a_row_already_holding_the_found_file_is_no_conflict(tmp_path):
 
 
 def test_a_lone_arteriole_mask_says_the_run_will_read_it_as_global(tmp_path):
-    image, art = _files(tmp_path, "E14.tif", "E14_large_arteriole.tif")
+    image, art = _files(tmp_path, "StackA.tif", "StackA_large_arteriole.tif")
     fill = fill_vessel_mask_rows({**LARGE_ON, "input_path": image}, ("large",))
     assert fill.values == {"large_arteriole_mask_path": art}
     assert "reads it as a global mask of every large vessel" in fill.lines[0]
@@ -194,7 +194,7 @@ def test_a_lone_arteriole_mask_says_the_run_will_read_it_as_global(tmp_path):
 
 def test_masks_naming_only_a_vessel_type_fill_the_large_rows_and_say_so(tmp_path):
     image, art, ven = _files(
-        tmp_path, "E14_seg.tiff", "E14_seg_arteriole.tiff", "E14_seg_Vein.tiff"
+        tmp_path, "StackA_seg.tiff", "StackA_seg_arteriole.tiff", "StackA_seg_Vein.tiff"
     )
     fill = fill_vessel_mask_rows({**BOTH_ON, "input_path": image}, ("large", "small"))
     assert fill.values == {"large_arteriole_mask_path": art, "large_venule_mask_path": ven}
@@ -205,18 +205,18 @@ def test_masks_naming_only_a_vessel_type_fill_the_large_rows_and_say_so(tmp_path
 
 def test_tied_files_are_named_and_no_row_is_filled(tmp_path):
     image, *_ = _files(
-        tmp_path, "E14.tif", "E14_large_venule.tif", "E14_large_venule_mask.tif"
+        tmp_path, "StackA.tif", "StackA_large_venule.tif", "StackA_large_venule_mask.tif"
     )
     fill = fill_vessel_mask_rows({**LARGE_ON, "input_path": image}, ("large",))
     assert fill.values == {}
     assert any(
-        "E14_large_venule.tif, E14_large_venule_mask.tif" in line and "choose one" in line
+        "StackA_large_venule.tif, StackA_large_venule_mask.tif" in line and "choose one" in line
         for line in fill.lines
     )
 
 
 def test_nothing_found_or_no_image_is_reported(tmp_path):
-    (image,) = _files(tmp_path, "E14.tif")
+    (image,) = _files(tmp_path, "StackA.tif")
     fill = fill_vessel_mask_rows({**LARGE_ON, "input_path": image}, ("large",))
     assert fill.values == {}
     assert fill.lines[0].startswith("No large vessel masks found")
@@ -231,8 +231,8 @@ def test_nothing_found_or_no_image_is_reported(tmp_path):
 def test_the_raw_image_is_looked_beside_when_the_segmented_image_is_elsewhere(tmp_path):
     raw_folder = tmp_path / "raw"
     raw_folder.mkdir()
-    raw, art, ven = _files(raw_folder, "E14.tif", "E14_large_artery.tif", "E14_large_vein.tif")
-    settings = {**LARGE_ON, "input_path": tmp_path / "out" / "E14_segmented.tif", "raw_image_path": raw}
+    raw, art, ven = _files(raw_folder, "StackA.tif", "StackA_large_artery.tif", "StackA_large_vein.tif")
+    settings = {**LARGE_ON, "input_path": tmp_path / "out" / "StackA_segmented.tif", "raw_image_path": raw}
     assert fill_vessel_mask_rows(settings, ("large",)).values == {
         "large_arteriole_mask_path": art,
         "large_venule_mask_path": ven,

@@ -3,7 +3,7 @@
 Finding the region (:func:`~haemolynx.preprocessing.thick_vessels.thick_vessel_region`:
 the hole fill, the inscribed-radius map, the geodesic body and its wall) is
 the slow part of thickness-gated skeletonisation -- about four minutes on
-E14.5 -- and every run found it again, from the same mask with the same
+Stack A -- and every run found it again, from the same mask with the same
 settings. The region depends on nothing but the mask's voxels and the
 arguments that function takes, so an entry is keyed on a digest of exactly
 those (:func:`thick_vessel_region_key`): a changed mask, voxel size, radius,

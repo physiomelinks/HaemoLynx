@@ -180,7 +180,7 @@ def test_cluster_members_reaching_one_neighbour_by_separate_vessels_keep_both(me
     """Regression test: two vessels from a cluster to one neighbour, 10 um
     apart, are two vessels. Deduplication used to keep only the shorter edge
     whatever its route, so merging the member either dropped its own vessel
-    (longer) or deleted the representative's (shorter) -- as at E14.5 MCA
+    (longer) or deleted the representative's (shorter) -- as at Stack A
     node 4932, whose 31 um vessel to node 3643 vanished behind the
     representative's 28 um one, 11 um away."""
     G = nx.MultiGraph()
@@ -223,7 +223,7 @@ def test_cluster_members_reaching_one_neighbour_through_one_lumen_keep_one_edge(
     """Regression test: the two vessels of the test above, 10 um apart, are
     one vessel when the segmentation has lumen all the way between them --
     Lee thinning leaves strands that far apart through one wide vessel, and
-    keeping both left the E14.5 MCA graph with parallel edges inside one
+    keeping both left the Stack A graph with parallel edges inside one
     segmented vessel. Where the segmentation has tissue between them they
     stay two."""
     G = nx.MultiGraph()
@@ -417,7 +417,7 @@ def _chain_graph(step_um: float, count: int):
 def test_a_run_of_junctions_closer_than_the_threshold_does_not_chain_into_one_node():
     """Seven junctions 4 um apart span 24 um. Single-linkage over the repair
     passes merged them all into one node at the middle, moving the end ones
-    12 um and deleting the vessel between them; on E14.5 one such cluster
+    12 um and deleting the vessel between them; on Stack A one such cluster
     held 81 nodes over 26 um. A cluster is now bounded: no node is moved
     further than the collapse distance, so the run survives in pieces."""
     G = _chain_graph(4.0, 7)
@@ -488,7 +488,7 @@ def _lattice_graph(seed: int, size: int = 8) -> nx.MultiGraph:
     """Junctions on a 1 um grid in one plane, each joined to some of its grid
     neighbours by a straight vessel. Every candidate pair ties with dozens of
     others, as nodes on the voxel lattice do before collapse (58 distances
-    among E14.5's 25,188 pairs)."""
+    among Stack A's 25,188 pairs)."""
     rng = np.random.default_rng(seed)
     G = nx.MultiGraph()
     for y in range(size):
@@ -544,7 +544,7 @@ def test_collapse_does_not_depend_on_node_order_or_ids(seed, presentation):
     """Pairs at one distance were taken in the order cKDTree.query_pairs' set
     yields them -- hash order of array indices -- and merged groups in node
     order. A node added or removed anywhere reordered every tie, and on
-    E14.5 a change at the image faces moved junctions 180 um away
+    Stack A a change at the image faces moved junctions 180 um away
     (PLAN_dale_review_fixes.md, item 2). Two isolated nodes added first, or
     the nodes taken in reverse, changed this lattice's collapse."""
     G = _lattice_graph(seed)

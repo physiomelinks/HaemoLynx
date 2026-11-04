@@ -405,7 +405,7 @@ DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS = 300.0
 #: "Auto" never searches a grid so coarse that a typical vessel's radius (see
 #: :func:`_typical_vessel_radius_um`) is fewer than this many of its voxels --
 #: a typical vessel at least three voxels across -- whatever the time budget
-#: allows. On a 0.98 um E14.5 stack with a typical radius of 3.7 um that is
+#: allows. On a 0.98 um stack (Stack A) with a typical radius of 3.7 um that is
 #: 2x (1.9 voxels), not 4x (0.9); the time budget alone had chosen 16x, which
 #: put every capillary in a single ~16 um voxel.
 AUTO_MIN_VOXELS_ACROSS_TYPICAL_RADIUS = 1.5
@@ -417,7 +417,7 @@ _AUTO_RADIUS_CROP_VOXELS = 8_000_000
 
 
 #: How many times a search runs each of its costly steps, counted on the
-#: E14.5 MCA stack (287 x 512 x 512) as the panel runs it, the scorecard's
+#: Stack A stack (287 x 512 x 512) as the panel runs it, the scorecard's
 #: own two runs not counted (2026-10-24, at 16x and 4x). Graph building and
 #: the finish, most of a search's time, were the same at 16x, 4x and 2x. The
 #: cleanup and its mask score were 9 and 16 at 16x, 21 and 32 at 4x (more of
@@ -448,7 +448,7 @@ class _SearchTimeModel:
     Timed on the grid itself, because a coarser one does not predict it.
     What this replaced timed one whole cleanup-skeletonise-build-graph cycle
     at 16x, scaled it with voxel count and multiplied it by 44: it read a 4x
-    search on the E14.5 stack as 637 s, and the search took 57 s. A search
+    search on Stack A as 637 s, and the search took 57 s. A search
     repeats the cheap steps far more often than the costly ones, and the
     cheap ones are not cheap on a very coarse grid, where vessels merge into
     blobs whose tangled skeletons are slow to turn into graphs -- a graph
@@ -1000,7 +1000,7 @@ def _thick_vessel_kwargs(
     ``skeleton_thick_vessel_restrict_to_mask`` names: a volume, not a
     setting, which the caller builds as a run does and the search hands to
     every thick trial itself (:func:`_raw_skeleton`). Without it a trial's
-    thick region was 99.8% of E14.5's mask, the run's 12%.
+    thick region was 99.8% of Stack A's mask, the run's 12%.
     """
     kwargs = {
         "voxel_size_zyx": voxel_size_zyx,
@@ -1270,7 +1270,7 @@ def _raw_skeleton(
     """The skeleton a run's ``skeletonise`` makes of *mask* before cleaning
     it: thickness-gated, the thick region confined to *restriction* when
     there is one, or plain Lee through the loaders' own helper, which fills
-    holes as well (on E14.5 that adds half again to the raw skeleton).
+    holes as well (on Stack A that adds half again to the raw skeleton).
     Neither is tiled: tiling only acts on a component larger than any
     search grid holds."""
     return _raw_skeleton_parts(mask, settings, voxel_size_zyx, restriction=restriction)[0]
@@ -2956,7 +2956,7 @@ def optimise_skeleton_and_graph_settings(
     (``pipeline.stages.thick_vessel_restriction_mask``), ``None`` for none.
     Every thick trial is confined to it, reduced onto the search grid by
     block majority as a run reduces vessel masks. Without it a trial's thick
-    region is not the run's: on E14.5 it was 99.8% of the mask, the run's 12%.
+    region is not the run's: on Stack A it was 99.8% of the mask, the run's 12%.
 
     *downsample_factor* trades accuracy for speed on a large volume: ``None``
     (the default) auto-detects a factor estimated to keep the whole search

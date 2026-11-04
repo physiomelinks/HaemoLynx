@@ -2,7 +2,7 @@
 are for.
 
 A lattice of 5 um capillaries 22 um apart in one plane, at the voxel size of
-an E14.5 two-photon stack (0.98 x 0.98 x 1.0 um), with what goes wrong in
+a Stack A two-photon stack (0.98 x 0.98 x 1.0 um), with what goes wrong in
 one:
 
 - a 12 um vessel, wide enough that Lee thinning leaves side strands where

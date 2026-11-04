@@ -16,7 +16,7 @@ never marked).
   arm at most ``FORK_BRANCH_MAX_RADIUS_FRACTION`` (0.8) of the trunk's radius
   is bridged from the fork to where it leaves the trunk's lumen.
 
-The capture (``finish_network_graph``'s input, ``e14_run.py --capture``) is
+The capture (``finish_network_graph``'s input, ``stack_a_run.py --capture``) is
 replayed with this checkout's code, and each rule's candidates are measured
 as the split sees them: every dead end within 15 um of a thick lumen, every
 pair a taper is chosen from, every arm of a fork. Each sheet asks one rule's
@@ -537,7 +537,7 @@ KEY_FIELDS = {
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--capture", required=True, help="e14_run.py --capture's finish_input.pkl")
+    parser.add_argument("--capture", required=True, help="stack_a_run.py --capture's finish_input.pkl")
     parser.add_argument("--out", required=True)
     parser.add_argument("--exclude-key", help="the Phase 5 grid's key.csv: leave out cases near its")
     parser.add_argument("--page-data", help="also write the cases as the interactive page's JSON (grid_page.py)")
@@ -598,7 +598,7 @@ def main(argv=None) -> int:
                  for u, v, d in drawn.edges(data=True) if u != v]
         if picked:
             _sheet(picked, out / f"grid_P_{rule}.png", mask, region, tree_points, paths, vs,
-                   f"E14.5, grid P ({rule}s, IDs {picked[0]['id']}-{picked[-1]['id']})   " + QUESTIONS[rule])
+                   f"Stack A, grid P ({rule}s, IDs {picked[0]['id']}-{picked[-1]['id']})   " + QUESTIONS[rule])
         with open(out / f"key_{rule}.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=KEY_FIELDS[rule], extrasaction="ignore")
             writer.writeheader()
@@ -623,7 +623,7 @@ def main(argv=None) -> int:
             })
     if args.page_data:
         Path(args.page_data).write_text(json.dumps({
-            "dataset": "E14.5 MCA, Harvey's Claudin segmentation",
+            "dataset": "Stack A, Harvey's Claudin segmentation",
             "voxel_size_zyx": [float(v) for v in vs],
             "slab_um": 2 * phase5.HALF_SLAB_UM,
             "sheets": sheets,

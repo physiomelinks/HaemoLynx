@@ -242,7 +242,7 @@ def psf_from_section_blurs(sigma_a, sigma_b, other_axis_z) -> tuple[float, float
 #: A whole-image calibration (the blur, the endothelial wall) reads each wide
 #: vessel at its middle and then every this many um out from it -- or every
 #: twice the length a section is averaged over, if more, so no two sections
-#: share voxels. On a real stack (E14.5 MCA, 1,029 sections of 557 vessels)
+#: share voxels. On a real stack (Stack A, 1,029 sections of 557 vessels)
 #: the blurs read 8 um apart along one vessel were nearly independent
 #: (intra-vessel correlation 0.18), so they add almost as much as new vessels.
 CALIBRATION_SECTION_SPACING_UM = 8.0

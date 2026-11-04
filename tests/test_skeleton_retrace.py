@@ -288,7 +288,7 @@ def test_a_further_join_round_a_hole_under_the_limit_is_left_out():
 
 def test_a_lost_stretch_through_dropouts_in_the_mask_is_drawn_back():
     """The skeleton is thinned from the mask hole-filled and closed, so it runs on through
-    dropouts of the raw segmentation: Harvey's missing vessels on E14.5 were 58-100% in
+    dropouts of the raw segmentation: Harvey's missing vessels on Stack A were 58-100% in
     the mask, and four at 69-78% were refused at 80%. A third of this stretch is dropout."""
     scene = _ring()
     mask = scene.mask()
@@ -336,7 +336,7 @@ def _lattice(cells=6, missing_share=0.3, seed=1, side=40.0):
 
 def test_the_sample_indexes_are_built_once_and_followed_as_pieces_are_drawn(monkeypatch):
     """Rebuilt over the whole graph after every piece and join, they took 98% of
-    the step on a 36,000-edge graph (28_3_d contra patella, 2026-10-19: 9 hours
+    the step on a 36,000-edge graph (Stack E, 11_3_d contra, 2026-10-19: 9 hours
     for 110 pieces). Each is built once; the result is the lattice's every lost
     side drawn back, the vessels its ends met split and kept whole."""
     scene = _lattice()

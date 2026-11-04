@@ -12,7 +12,7 @@ its own and is never judged; asking for 16 samples of *other* centrelines
 pruned vessels' collinear ends at image faces. The redesign the plan names
 (exempt collinear continuations, or stubs at the face) is to be fitted here.
 
-The pool is every dead end the build's stub prunes were handed on E14.5
+The pool is every dead end the build's stub prunes were handed on Stack A
 (``prune_spy.py`` beside this script, installed round a ``run_pipeline_stages``
 run: each call's graph and, per chain, both protrusion readings), once each, that the prune's other rules leave to the
 protrusion test -- at least its length threshold long or within it of a face,
@@ -25,8 +25,8 @@ shuffled. Each case is drawn on the segmentation in its own plane, with the
 graph as that prune call was handed it; the measures and today's verdicts are
 in ``key.csv``, never on the sheets.
 
-    python scripts/stub_protrusion_review/build_grid_s.py --spy outputs/oc/e14_on/prune_spy \\
-        --run outputs/oc/e14_on --out outputs/stub_protrusion_review \\
+    python scripts/stub_protrusion_review/build_grid_s.py --spy outputs/oc/stack_a_on/prune_spy \\
+        --run outputs/oc/stack_a_on --out outputs/stub_protrusion_review \\
         --page-data outputs/stub_protrusion_review/page.json
 
 *--run* is the run's own directory: ``mask.npy`` (the segmentation as
@@ -233,7 +233,7 @@ def main(argv=None) -> int:
         stub["junction_um"] = tuple(round(float(x), 2) for x in stub["junction"])
 
     _sheet(picked, out / "grid_S.png", mask, region, tree_points, paths_of, vs,
-           f"E14.5, grid S (dead ends and the protrusion test, IDs S01-S{len(picked):02d})   " + QUESTION)
+           f"Stack A, grid S (dead ends and the protrusion test, IDs S01-S{len(picked):02d})   " + QUESTION)
     with open(out / "key.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=KEY_FIELDS, extrasaction="ignore")
         writer.writeheader()
@@ -268,7 +268,7 @@ def main(argv=None) -> int:
             cases.append(view)
         Path(args.page_data).write_text(json.dumps({
             "grid": "S",
-            "dataset": "E14.5 MCA, Harvey's Claudin segmentation",
+            "dataset": "Stack A, Harvey's Claudin segmentation",
             "voxel_size_zyx": [float(v) for v in vs],
             "slab_um": 2 * phase5.HALF_SLAB_UM,
             "sheets": [{"rule": "stub", "title": "Dead ends", "question": QUESTION,

@@ -14,7 +14,7 @@ skeletonisation, each side's final graph is split at the thick-vessel region
 as ``build_network`` saves it (the region found once, by this checkout, and
 shared); ``--no-thick-split`` measures the graph before that split.
 
-This is not part of the test suite: a full E14.5 build takes about seven
+This is not part of the test suite: a full Stack A build takes about seven
 minutes a side.
 
 Usage

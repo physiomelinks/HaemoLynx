@@ -2697,7 +2697,7 @@ def test_a_merged_replay_keeps_a_layer_hidden_that_one_spec_hid():
 
 def test_the_first_view_of_a_network_hides_the_volumes_round_it():
     """The segmented image and the vessel masks fill the image box; shown with
-    the network they hid every vessel tube (a saved AIA run opened as dark red
+    the network they hid every vessel tube (a saved Batch E run opened as dark red
     and nothing else). The group that first draws the network -- the one
     turning the view to 3D, in a run or a replay -- hides them; no other does."""
     from haemolynx.gui.results import (
@@ -2726,7 +2726,7 @@ def test_the_first_view_of_a_network_hides_the_volumes_round_it():
 
 def test_haemodynamics_colours_by_log_resistance_and_the_solve_by_log_flow():
     """Resistance goes as the fourth power of the width and flow spans orders
-    of magnitude: on a straight scale 96% of E14.5's flow and 99% of its
+    of magnitude: on a straight scale 96% of Stack A's flow and 99% of its
     resistance sat in the bottom tenth, one colour. Their log10 is what the
     stages colour by, and the straight columns stay to pick."""
     from haemolynx.gui.results import RESISTANCE_LOG10

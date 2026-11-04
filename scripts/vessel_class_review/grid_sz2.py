@@ -2,7 +2,7 @@
 from the large vessels through vessels in that band), fixed before any SZ2
 mark is seen, as CLAUDE.md's marked grids ask of a rule moved after a grid.
 
-Thirty E14.5 vessels not in grid SZ1, none within 40 um of an SZ1 case or of
+Thirty Stack A vessels not in grid SZ1, none within 40 um of an SZ1 case or of
 each other, none in the large masks, at least 10 um long, from four groups the
 rule tells apart: those it calls small, those in the band it does not reach,
 those under the band and those over it. Each group is spread over width, then
@@ -25,7 +25,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "outputs/vessel_class_review"
 GRID = OUT / "SZ2"
-SOLVED = OUT / "e14p5_solved.pkl"
+SOLVED = OUT / "stack_a_solved.pkl"
 SZ1_KEY = OUT / "SZ1" / "SZ1_key.csv"
 
 SEED = 20261028

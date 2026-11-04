@@ -131,7 +131,7 @@ def ring_share(values: dict) -> float:
 
 def ring_level(values: dict) -> int:
     """E1 in three levels: no ring (0), rings at some sections (1), at half
-    or more (2). On E14.5 half the interior tips fit none -- a capillary's
+    or more (2). On Stack A half the interior tips fit none -- a capillary's
     lumen is filled in by the blur along z -- so even picks across E1's order
     would be half zeros, and a threshold could not be fitted above them."""
     share = ring_share(values)
@@ -210,7 +210,7 @@ PAGE = dict(
     title="Dead End Review DR1: does the vessel go on past its tip?",
     question="Is the red chain a real vessel?",
     second="Does the vessel go on past the tip?",
-    lede=("One dead end of the E14.5 graph per card (red; the ring marks its tip), in three planes: its own "
+    lede=("One dead end of the Stack A graph per card (red; the ring marks its tip), in three planes: its own "
           "plane and the one across it, as on G4, and a third along its heading past the tip. The dashed cyan "
           "line is the straight line ahead of the tip that is being measured, from one lumen radius past the "
           "tip to 30 um further. Each plane shows the segmentation the graph was built from, the dextran "

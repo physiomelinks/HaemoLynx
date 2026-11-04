@@ -6,7 +6,7 @@ graph still loses, why the skeleton re-trace leaves it
 
 "Reached" is the re-trace's own measure: a centreline within
 ``skeleton_retrace.REACH_UM`` of the skeleton voxel. The surface slab is the
-first *surface_depth_um* of the stack (E14.5's pia lies at z = 0); "beside
+first *surface_depth_um* of the stack (Stack A's pia lies at z = 0); "beside
 the large vessels" is within *near_large_um* of the large-vessel masks.
 """
 from __future__ import annotations

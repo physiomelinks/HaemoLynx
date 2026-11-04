@@ -88,7 +88,7 @@ STEP_LABELS: tuple[str, ...] = (
 
 #: At most this many rounds of :func:`consolidate_lumen`. Every round that
 #: changes anything takes nodes or edges away, so it always settles. On the
-#: E14.5 stack it takes 9: after the first three, each round's pair removal
+#: Stack A stack it takes 9: after the first three, each round's pair removal
 #: leaves a degree-2 node whose merge shows the next pair (6, 3, 1, 1 of them),
 #: one pass of the pair search -- about 7 s there -- a round.
 CONSOLIDATION_MAX_ROUNDS = 12
@@ -436,7 +436,7 @@ def consolidate_lumen(
     Each of them leaves work for the others -- a duplicate taken out leaves
     a dead end, a pruned stub leaves a degree-2 node whose merge makes a
     longer edge to judge again -- and run once, in a fixed order, what the
-    later ones left was never judged: on E14.5 the last merge alone raised
+    later ones left was never judged: on Stack A the last merge alone raised
     the pairs of edges in one lumen from 94 to 126. Merging first in every
     round also means each is judged on whole vessels, not on the pieces mask
     recovery split them into. The graph that comes back is merged.

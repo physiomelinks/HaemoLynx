@@ -194,7 +194,7 @@ def test_a_strand_with_no_join_is_not_left_as_an_island(monkeypatch):
 
 def test_a_ring_round_a_hole_in_the_mask_is_not_added_as_a_self_loop(monkeypatch):
     """Regression: Lee thinning round a hole traces a path that ends where it
-    starts. It was added as a self-loop -- 193 on the E14.5 stack, 33 of them
+    starts. It was added as a self-loop -- 193 on Stack A, 33 of them
     left as islands once the stub prune took their tails -- and the flow
     solve refused the graph."""
     from haemolynx.graph.mask_recovery import _Piece
@@ -378,7 +378,7 @@ def test_a_vessel_leaving_and_rejoining_round_tissue_keeps_both_joins(monkeypatc
 def test_a_split_vessel_is_searched_without_the_joins_hanging_off_it():
     """Regression: a point on a vessel already split by a join could be taken
     to lie on that join, and the next strand was attached to the join -- 206
-    times on the E14.5 stack -- instead of to the vessel."""
+    times on Stack A -- instead of to the vessel."""
     from haemolynx.graph.mask_recovery import _Attachments
 
     G = nx.MultiGraph()
@@ -728,7 +728,7 @@ def _reordered(G, *, reverse_nodes=False, reverse_edges=False):
 def test_the_mask_left_uncovered_does_not_depend_on_edge_order(order):
     """A voxel was judged by its 4 nearest centreline samples, and which of
     six tied junction samples cKDTree handed back depended on how it split
-    every sample -- on the order the edges came in, here, and on E14.5 on
+    every sample -- on the order the edges came in, here, and on Stack A on
     edges 280 um away (PLAN_dale_review_fixes.md, item 2). Either order
     changed 33 of this junction's uncovered voxels; every tied sample is
     judged now."""

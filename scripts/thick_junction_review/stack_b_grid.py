@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""PLAN_bridging.md's last grid: E15 (Harvey's Simple Segmentation of
-``Composite_150826_E15_cldn5_..._spot1``, the second stack with thick
-vessels here), a fresh check of three things fitted on E14.5 alone (his
+"""PLAN_bridging.md's last grid: Stack B (Harvey's Simple Segmentation of
+Stack B, the second stack with thick
+vessels here), a fresh check of three things fitted on Stack A alone (his
 calls, 2026-10-25):
 
 - **The tree fill** (``_fill_tree_gaps``, ``TREE_FILL_MIN_DETOUR`` 2.1, fitted
@@ -16,19 +16,19 @@ calls, 2026-10-25):
   grid K asked them (B/N); the key holds each exit on its own (``exits``,
   ``failed_exits``) and the length inside the region (``inside_um``).
 
-One replay of ``outputs/br/e15_run.py``'s capture with this checkout's code,
+One replay of ``outputs/br/stack_b_run.py``'s capture with this checkout's code,
 each rule's cases measured as the split hands them to it; one sheet per
 question, its cases spread across the rule's decisions and measures, then
 shuffled, IDs E01... on from sheet to sheet, 30 in all: a sheet short of
-cases leaves its share to the wall sheet (E15's build on its large masks
+cases leaves its share to the wall sheet (Stack B's build on its large masks
 gave the fill no gap with the graph on two sides, and the split left no
 connector). Each sheet draws the graph as its rule is handed it (never its
 answer); the measures and decisions are in ``key_<rule>.csv`` only.
 
-    python scripts/thick_junction_review/e15_grid.py \\
-        --capture outputs/br/e15_build/finish_input.pkl \\
-        --out outputs/thick_junction_review/grid_E15 \\
-        --page-data outputs/thick_junction_review/grid_E15/page.json
+    python scripts/thick_junction_review/stack_b_grid.py \\
+        --capture outputs/br/stack_b_build/finish_input.pkl \\
+        --out outputs/thick_junction_review/grid_StackB \\
+        --page-data outputs/thick_junction_review/grid_StackB/page.json
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ except ImportError:  # run as a script, from its own folder
     import phase1_rules_grid as grid
 
 SEED = 20261026
-DATASET = "E15 (Composite_150826_E15_cldn5 spot1), Harvey's Simple Segmentation"
+DATASET = "Stack B (Stack B), Harvey's Simple Segmentation"
 #: Dead ends this far past a thick lumen are wall-join cases: the reach
 #: (15 um) and 5 um beyond it.
 WALL_POOL_PAST_LUMEN_UM = 20.0
@@ -260,7 +260,7 @@ def wall_pool(seen) -> list[dict]:
 
 def wall_count(fill_picked: int, connector_picked: int) -> int:
     """The wall sheet's size: :data:`COUNTS`'s, or more where the fill and
-    connector sheets came out short of theirs (E15 gave neither a case), so
+    connector sheets came out short of theirs (Stack B gave neither a case), so
     the grid still asks :data:`TOTAL`."""
     return max(COUNTS["wall"], TOTAL - fill_picked - connector_picked)
 
@@ -323,7 +323,7 @@ def _sheet(cases, out_png, mask, region, tree_points, paths, vs, title):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--capture", required=True, help="outputs/br/e15_run.py's finish_input.pkl")
+    parser.add_argument("--capture", required=True, help="outputs/br/stack_b_run.py's finish_input.pkl")
     parser.add_argument("--out", required=True)
     parser.add_argument("--page-data", help="also write the cases as the interactive page's JSON (grid_page.py)")
     args = parser.parse_args(argv)
@@ -385,8 +385,8 @@ def main(argv=None) -> int:
             for u, v, d in drawn[rule].edges(data=True) if u != v
         ]
         if picked:
-            _sheet(picked, out / f"grid_E15_{rule}.png", mask, region, tree_points, paths, vs,
-                   f"E15 ({TITLES[rule].lower()}, IDs {picked[0]['id']}-{picked[-1]['id']})   " + QUESTIONS[rule])
+            _sheet(picked, out / f"grid_StackB_{rule}.png", mask, region, tree_points, paths, vs,
+                   f"Stack B ({TITLES[rule].lower()}, IDs {picked[0]['id']}-{picked[-1]['id']})   " + QUESTIONS[rule])
         with open(out / f"key_{rule}.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=KEY_FIELDS[rule], extrasaction="ignore")
             writer.writeheader()
@@ -410,7 +410,7 @@ def main(argv=None) -> int:
             })
     if args.page_data:
         Path(args.page_data).write_text(json.dumps({
-            "grid": "E15", "dataset": DATASET,
+            "grid": "Stack B", "dataset": DATASET,
             "voxel_size_zyx": [float(v) for v in vs],
             "slab_um": 2 * phase5.HALF_SLAB_UM,
             "sheets": sheets,

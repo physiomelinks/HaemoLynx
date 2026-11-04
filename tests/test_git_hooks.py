@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 LOCAL_ONLY = {
     "PLAN_example.md": "# A plan\n\nStep one.\n",
     "config.yaml": "do_skeletonize: true\n",
-    "Run.yml": "image: E14.5.tif\n",
+    "Run.yml": "image: Stack A.tif\n",
 }
 TRACKED = {
     "examples/example_config.yaml": "do_skeletonize: false\n",

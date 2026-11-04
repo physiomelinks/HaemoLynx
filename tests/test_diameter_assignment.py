@@ -726,15 +726,15 @@ def test_the_edt_mask_is_the_segmented_input(tmp_path):
 
 
 def test_an_old_configs_edt_mask_path_is_dropped_for_the_segmented_input(tmp_path):
-    """A config or saved run naming another dataset's mask (the E14.5 one
-    carried into a patella run) still loads; the path is not read, not
+    """A config or saved run naming another dataset's mask (the Stack A one
+    carried into a Stack E run) still loads; the path is not read, not
     checked by preflight, and the widths come from the run's own image."""
     from haemolynx.pipeline import default_schema
     from haemolynx.pipeline.checks import preflight
     from haemolynx.pipeline.stages import _haemodynamics_apply_config
 
     schema = default_schema()
-    image = tmp_path / "patella_mask.tif"
+    image = tmp_path / "old_mask.tif"
     image.write_bytes(b"")
     settings = schema.validate(
         {
@@ -742,11 +742,11 @@ def test_an_old_configs_edt_mask_path_is_dropped_for_the_segmented_input(tmp_pat
             "diameter_by_branch_order": dict(DIAMETERS),
             "run_haemodynamics": True,
             "use_edt_diameter_crosscheck": True,
-            "edt_mask_path": tmp_path / "e14p5_mask.tif",  # not there
+            "edt_mask_path": tmp_path / "stack_a_mask.tif",  # not there
         }
     )
     assert "edt_mask_path" not in settings
-    assert not [error for error in preflight(settings, schema).errors if "e14p5" in error]
+    assert not [error for error in preflight(settings, schema).errors if "stack_a" in error]
     config = _haemodynamics_apply_config(settings, schema, voxel_size_zyx=(1.0, 1.0, 1.0))
     assert config.edt_setting("edt_mask_path") == image
 

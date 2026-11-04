@@ -50,7 +50,7 @@ def _load_mask_image(
     the box was worked out for is read only within it, binarised by the rule
     its whole volume gives (:func:`haemolynx.io.load.h5_binarization_rule`) --
     the mask ``crop_volume`` cuts from the whole one, in RAM as it hands it
-    back. On 29_2_d ipsi's AIA masks (6.9 G voxels each) reading whole,
+    back. On Batch E's 12_2_d ipsi masks (6.9 G voxels each) reading whole,
     binarising and cutting was 36% of graph building. Last in the returned
     tuple: whether the mask came back cut.
     """

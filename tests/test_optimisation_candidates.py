@@ -310,7 +310,7 @@ def test_bundle_density_fraction_candidates_never_offer_floating_point_noise():
     """Regression: a uniform filter of a 0/1 volume leaves ~1e-16 where the
     density is zero; counted as density on a sparse mask, they made the
     60th percentile 1e-16 -- a threshold calling every voxel near the
-    skeleton a bundle, which took most of a 29-minute search on the E14.5
+    skeleton a bundle, which took most of a 29-minute search on the Stack A
     stack. Every real density is at least one voxel's share of the window."""
     # A block at one end of a long, empty volume: the filter's running sums
     # leave crumbs all the way along it, five times as many as real values.

@@ -641,7 +641,7 @@ def test_with_the_gates_off_the_loop_through_two_vessels_builds_as_before():
     was four nodes and four edges, and with the gates off still is. On, it
     is too: recovery traces along the run's skeleton, and the skeleton never
     reached the two ends of the tube. (It used to Lee-thin the mask again
-    and trace them: on E14.5 two thirds of what that drew was where the
+    and trace them: on Stack A two thirds of what that drew was where the
     skeleton has nothing, combs across wide lumens the clean-up took out.)"""
     mask = _loop_masks()["two vessels"]
     mask[:, 29:36, 16:25] = True

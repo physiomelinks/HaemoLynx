@@ -25,7 +25,7 @@ The mean is 4.0. The release gate needs more.
 
 | ID | By | Passes when | Now | Evidence or gap |
 |---|---|---|---|---|
-| graph.2a | A | A graph builds. | ✓ | E14.5: 3,146 edges (`outputs/x/REPORT.md`) |
+| graph.2a | A | A graph builds. | ✓ | Stack A: 3,146 edges (`outputs/x/REPORT.md`) |
 | graph.4a | R | Steps tested. | ✓ | |
 | graph.6b | H | Rules fitted to marks. | ✗ | Harvey marked G1 |
 | graph.8a | A | Phantoms ≥ 0.95 *(proposed)*. | ✗ | No phantoms |
@@ -47,7 +47,7 @@ def test_the_document_is_read_row_by_row(document):
     assert list(document.rows) == ["graph.2a", "graph.4a", "graph.6b", "graph.8a"]
     row = document.rows["graph.2a"]
     assert (row.kind, row.passed, row.aspect) == ("A", True, "graph")
-    assert row.evidence.startswith("E14.5: 3,146 edges")
+    assert row.evidence.startswith("Stack A: 3,146 edges")
     assert document.rows["graph.4a"].evidence == ""
     assert document.rows["graph.8a"].passed is False
     assert document.scorecard["graph"].score == 4

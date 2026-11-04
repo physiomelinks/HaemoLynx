@@ -32,7 +32,7 @@ from its neighbours as they were; block max, which these used before
 (2026-10-19), widened every vessel by about a coarse voxel and merged
 neighbours closer than one, and reduced as read, a ``1``/``2``-labelled
 segmentation (ilastik's) came out *eroded*, background winning every block.
-On E14.5 at 2x the built network reproduced 64% of the full-resolution one's
+On Stack A at 2x the built network reproduced 64% of the full-resolution one's
 length by the old rule and 69% by majority (a one-voxel shift of the image
 gives 94%), and at 4x 30% and 51%: the vessels a coarse grid loses are the
 thin ones and short dead ends, which no reduction rule keeps (max keeps more

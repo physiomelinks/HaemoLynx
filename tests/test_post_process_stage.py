@@ -849,7 +849,7 @@ def _large_tier_run(tmp_path, *, gap_at_z=25.0):
     real Boundaries and Diameters stages, its large arteriole broken at
     *gap_at_z*: the trunk a0-a1-a2 reaches the inlet, the piece beyond it
     (m-a3) is a fragment lying in the arteriole mask, joined to nothing --
-    the E14.5 large-mask vessels the Large tier missed. Returns settings,
+    the Stack A large-mask vessels the Large tier missed. Returns settings,
     network, boundaries, model and the node ids."""
     from test_branch_order_hierarchy import _branching_large_vessel_network, _large_tier_settings
 
@@ -1770,7 +1770,7 @@ def test_the_tabs_review_lists_read_the_segmentation_post_processing_keeps(tmp_p
 
 def test_the_next_regenerate_reads_the_segmentation_it_was_read_as_last(tmp_path, monkeypatch):
     """Every Regenerate binarised the image and built the support's surface
-    tree again (E14.5: about 5 of 6 s). A Regenerate is handed the run's
+    tree again (Stack A: about 5 of 6 s). A Regenerate is handed the run's
     volume again, which keeps them, until the image or a setting that shapes
     them changes."""
     run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)

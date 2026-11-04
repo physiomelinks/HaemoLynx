@@ -36,10 +36,10 @@ def test_ticking_the_mask_switches_fills_the_rows_from_the_input_folder(
     rows = panel._haemolynx_rows()
     image, art, ven, small = _files(
         tmp_path,
-        "E14_MCA_segmented.tif",
-        "E14_MCA_Large_Arterioles.tif",
-        "E14_MCA_large_veins.tif",
-        "E14_MCA_small_vessels.tif",
+        "StackA_region_segmented.tif",
+        "StackA_region_Large_Arterioles.tif",
+        "StackA_region_large_veins.tif",
+        "StackA_region_small_vessels.tif",
     )
     rows["input_path"].value = image
     rows["automated_vessel_assignment"].value = True
@@ -50,7 +50,7 @@ def test_ticking_the_mask_switches_fills_the_rows_from_the_input_folder(
     values = panel._haemolynx_values()
     assert _path(values["large_arteriole_mask_path"]) == art
     assert _path(values["large_venule_mask_path"]) == ven
-    assert "E14_MCA_Large_Arterioles.tif" in panel._haemolynx_report()
+    assert "StackA_region_Large_Arterioles.tif" in panel._haemolynx_report()
 
     rows["use_small_vessel_masks_for_boundary_assignment"].value = True
     values = panel._haemolynx_values()
@@ -119,7 +119,7 @@ def test_loading_a_config_keeps_the_mask_paths_it_names(make_napari_viewer, tmp_
     panel = settings_widget()
     rows = panel._haemolynx_rows()
     image, _art, _ven = _files(
-        tmp_path, "E14.tif", "E14_large_arteriole.tif", "E14_large_venule.tif"
+        tmp_path, "StackA.tif", "StackA_large_arteriole.tif", "StackA_large_venule.tif"
     )
     rows["input_path"].value = image
     rows["automated_vessel_assignment"].value = True

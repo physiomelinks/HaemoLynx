@@ -670,7 +670,7 @@ def test_a_large_tier_on_one_side_hands_over_at_its_boundary():
 
 def _large_tier_only_template():
     """The fixture template as a run with large-vessel masks alone leaves one
-    (E14.5's): Large_Art/Large_Ven orders straight into the capillary bed, no
+    (Stack A's): Large_Art/Large_Ven orders straight into the capillary bed, no
     Art/Ven tier, the hand-off nodes counted as large-vessel boundary nodes."""
     T = fixture_template()
     renamed = {"arteriole": ("large_arteriole", "Large_Art"), "venule": ("large_venule", "Large_Ven")}
@@ -694,7 +694,7 @@ def _large_tier_only_template():
 
 
 def test_a_large_tier_alone_hands_over_to_the_bed_at_large_boundary_nodes():
-    """Regression (E14.5 as a template, 2026-10-24): with no Art/Ven tier the
+    """Regression (Stack A as a template, 2026-10-24): with no Art/Ven tier the
     large tier's leaves were marked arteriole/venule boundary nodes, so the
     run labelled the large tier Art/Ven and counted no large boundary nodes."""
     T = _large_tier_only_template()
@@ -721,7 +721,7 @@ def test_a_large_tier_alone_hands_over_to_the_bed_at_large_boundary_nodes():
 
 
 def _trunk_template():
-    """A large tier shaped like E14.5's: two trunks per side over six orders
+    """A large tier shaped like Stack A's: two trunks per side over six orders
     at a flat width (an order's mean hardly falls), no Art/Ven tier."""
     T = _large_tier_only_template()
     orders = []
@@ -749,7 +749,7 @@ def test_trunk_children_per_tip_lets_a_trunk_go_on_as_one():
 def test_a_trunk_hands_side_branches_to_the_bed_at_its_orders_widths():
     """Harvey, 2026-10-24: the large tier is a trunk with side branches, its
     widths the template's per order. Murray's law at its exponent shrank a
-    trunk of 15 orders below a micron on E14.5."""
+    trunk of 15 orders below a micron on Stack A."""
     T = _trunk_template()
     G = generate_network(T, seed=SEED)
     roles = boundary_nodes(G)
@@ -815,7 +815,7 @@ def test_the_tree_rescale_reads_the_graph_sources_own_extremes():
 def test_a_first_vessel_longer_than_the_box_is_shortened_inside_it():
     """Harvey, 2026-10-24: a root's first vessel stays in the box -- re-aimed,
     else shortened -- since cut at a face its tree would be that one vessel
-    (E14.5's graph source drew the one inlet's out through a face)."""
+    (Stack A's graph source drew the one inlet's out through a face)."""
     T = fixture_template()
     T = replace(
         T,
@@ -1007,7 +1007,7 @@ def test_degree_sequence_targets_cap_the_junction_degree():
 def _star_beside_a_dead_end():
     """The largest piece: a junction (0) with four dead ends, one of them (4)
     nearest the other piece. The other piece: a junction (5) whose three
-    vessels all end blind -- what the fill left on E14.5. Every vertex is
+    vessels all end blind -- what the fill left on Stack A. Every vertex is
     full, and the star's junction has a dead end, not a junction, nearest."""
     points = np.array(
         [
@@ -1023,7 +1023,7 @@ def _star_beside_a_dead_end():
 
 
 def test_a_piece_whose_junctions_have_dead_ends_nearest_is_still_joined():
-    """Regression (E14.5 as a template, 2026-10-24): the repair looked only at
+    """Regression (Stack A as a template, 2026-10-24): the repair looked only at
     each vertex's nearest vertex of the largest piece; a dead end there, and
     no spare vessel at the star's junction, left the star apart and the
     network failed its contract."""
@@ -1361,7 +1361,7 @@ def test_one_lobe_is_the_bow_and_more_lobes_curve_more_at_one_length():
 
 
 def test_each_direction_is_judged_against_its_own_chord():
-    """E14.5's vertical capillaries reach past nearer junctions (1.4 times
+    """Stack A's vertical capillaries reach past nearer junctions (1.4 times
     the mean chord): judged against one wanted length the fill never drew
     them."""
     org = replace(_organisation((1, 1, 1), [1.0]), chord_by_class_um=(40.0, None, 20.0, 30.0))
@@ -1426,7 +1426,7 @@ def test_a_template_with_columns_gets_columns():
 
 def test_capillaries_keep_the_templates_tortuosity_within_its_length():
     """Lengths from the length distribution were clamped to their chords
-    where they fell short, and E14.5's capillaries came out straight (grid
+    where they fell short, and Stack A's capillaries came out straight (grid
     D1b): each is now its chord times a tortuosity drawn from the template,
     the excess scaled alike so the class total is the template's."""
     from haemolynx.synthetic.generate import MAX_TORTUOSITY_SCALE, _capillary_lengths_by_tortuosity

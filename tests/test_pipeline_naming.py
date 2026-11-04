@@ -23,9 +23,9 @@ def test_a_synthetic_run_is_named_after_its_template():
     settings = {
         "input_path": Path("data") / "stack.tif",  # left over from an image run: not read
         "network_source": "synthetic",
-        "synthetic_template_path": Path("runs") / "e14_5.haemorun",
+        "synthetic_template_path": Path("runs") / "stack_a.haemorun",
     }
-    assert run_stem(settings) == "e14_5_synthetic"
+    assert run_stem(settings) == "stack_a_synthetic"
     assert run_input_path(settings) is None
     assert synthetic_run_stem("a/b/template.haemorun") == "template" + SYNTHETIC_STEM_SUFFIX
 
@@ -34,9 +34,9 @@ def test_the_template_runs_network_inside_a_synthetic_one_is_named_surrounded():
     settings = {
         "input_path": Path("data") / "stack.tif",
         "network_source": "synthetic_surround",
-        "synthetic_template_path": Path("runs") / "e14_5.haemorun",
+        "synthetic_template_path": Path("runs") / "stack_a.haemorun",
     }
-    assert run_stem(settings) == "e14_5_surrounded"
+    assert run_stem(settings) == "stack_a_surrounded"
     assert run_input_path(settings) is None
     assert synthetic_run_stem("a/b/template.haemorun", surrounded=True) == "template" + SURROUNDED_STEM_SUFFIX
 

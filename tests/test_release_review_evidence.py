@@ -6,7 +6,7 @@ from release_review import evidence
 
 def test_paths_are_read_from_backticks_only_where_they_can_be_placed():
     text = (
-        "E14.5 (`outputs/p6/o2_current/solve_summary.json`), `test_flow_solvers.py:125, 207`, "
+        "Stack A (`outputs/p6/o2_current/solve_summary.json`), `test_flow_solvers.py:125, 207`, "
         "`pipeline/checks.py:595-616`, `{stem}_run_manifest.json`, `hang_debug.*`, `REPORT.md`, "
         "`graph.FLOW_STATE`, `outputs/release_review/2026-10-15_9b679b8/`, `tests/test_x.py:12`"
     )

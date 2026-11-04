@@ -15,14 +15,14 @@ merging and collapse (`mask_lumen_test(support=)`, `MaskSupport.lookup_volume`),
 radius's "is this voxel background" (`FeatureDistance(packed=)`, set by the support when it
 measures the very same array), and the EDT diameters' section planes and radii on a memmapped
 mask. The same answers, from RAM rather than a disk page read at random -- which only pays once
-the mask is out of the page cache: on E14.5 (75 M voxels, cached) a lookup cost ~30 ns either
+the mask is out of the page cache: on Stack A (75 M voxels, cached) a lookup cost ~30 ns either
 way. The thick tree's inscribed radius is measured once (`ThickCentreline.radius_um` ->
 `tree_radius_um=`) and a block of its box at a time, reading only blocks within 60 um of a point
 (`_inscribed_radius_um`); mask recovery traces a piece along the skeleton from the piece's own
 voxels (`_trace_skeleton_in_region`, skan's paths from the coordinate graph `graph.build` builds)
 rather than a padded window round it. Both bit for bit; on a 210 M-voxel stack (traced numpy
 peak) the radius went 425 -> 72 MB and a 24,000-voxel diagonal piece 1,419 -> 1 MB
-(`outputs/lrb/peaks.py`, git-ignored). E14.5 low-RAM, three runs each from a `git archive`
+(`outputs/lrb/peaks.py`, git-ignored). Stack A low-RAM, three runs each from a `git archive`
 (`outputs/lrb/bench.py`): every graph identical to the old code's, node for node, edge for edge,
 every attribute, before and after diameters; `build_network` 225 -> 233 s median, within the
 machine's noise (the in-build clean-up ranged 49-140 s on both, 74.3 s each under the profiler
@@ -32,7 +32,7 @@ the skeleton a voxel at a time but no pipeline step calls them.
 Temp files: a `new_memmap_array` array nobody releases has its file deleted once it and its
 views are gone (`weakref.finalize`; on Windows, which keeps a mapped file, at the next
 `new_memmap_array` or at exit). Unreleased were the skeleton `skeletonise` hands on, the float32
-raw image the raw evidence and the Diameters stage load (two 301 MB files a low-RAM E14.5 run,
+raw image the raw evidence and the Diameters stage load (two 301 MB files a low-RAM Stack A run,
 a volume's worth of float32 each on any stack) and the volumes tests compare -- 2,806 files in
 one machine's `%TEMP%`. Killing a run still leaves its files.
 **No whole-volume copies under the low-RAM option** (2026-10-19, for a 5.5 G-voxel stack on
@@ -40,14 +40,14 @@ one machine's `%TEMP%`. Killing a run still leaves its files.
 separate): every step below gives the run bit for bit, and its tests are in
 `tests/test_low_ram_volume_copies.py` beside the modules' own. Reconnect's routing workers
 start with one OpenMP/BLAS thread (`reconnect._routing_environment`: threadpoolctl holds only
-in the parent, and each worker's OpenBLAS committed ~659 MB, which ran an E14.5 build out of
+in the parent, and each worker's OpenBLAS committed ~659 MB, which ran a Stack A build out of
 paging file) and are at most `shared_volume_tasks.default_worker_count()`. The lumen radius
 reads tiles of the surface (`FeatureDistance(by_block=True)`, through
 `MaskSupport(low_memory=)` and `mask_radius_sampler(low_memory=)`: a k-d tree per 96-voxel
 tile, made when a query first needs it, least recently used dropped past 256 MB or, when
 memory is free, past a quarter of it shared by every such lookup alive
 (`SURFACE_TILE_MEMORY_FRACTION`, read again each 64 MB: 256 MB alone held a tenth of the
-uncropped patella's 2.4 GB of tiles and mask recovery remade tiles all step), searched ring
+uncropped Stack E's 2.4 GB of tiles and mask recovery remade tiles all step), searched ring
 by ring until the best is no further than the nearest voxel unsearched) instead of one tree
 over the whole surface (~69 B a surface voxel, 7-9 GB). A tile is made from the packed bits
 a byte at a time (`PackedMask.box`), its surface by a separable 3x3x3 dilation
@@ -61,7 +61,7 @@ volume of zeros and a Dijkstra over every fat voxel) nor holds a volume for it. 
 skeleton is drawn on disk; the region cache and the vessel-mask cache unpack a slab at a time
 onto disk (`memmap_support.unpack_bits_by_slab`), and a cached "no region" is a broadcast
 False. Components whose sizes, membership or voxels are wanted come from slabs, not an int32
-label memmap (22 GB of dirty pages each, which emptied the page cache on a patella run):
+label memmap (22 GB of dirty pages each, which emptied the page cache on a Stack E run):
 `skeleton._SlabComponents` for the fraction filter, the connectivity stats, both
 small-component drops, the bridging and `skeletonize_by_component` (each component's mask
 written as the slabs pass its box and thinned once its last plane is read). The thin-arm join
@@ -70,7 +70,7 @@ theirs along the bridge drawn (two 26-adjacent voxels of one mask share its comp
 `thick_vessels._numbers_carried_along`, from the arm voxel it starts at and the tree voxel it
 stopped against), and only a voxel neither reaches is read from its slab labelled again as it
 was (`slab_labels.NumbersAnywhere`; read voxel by voxel, those reads were four fifths of the
-patella's join, 2026-10-20). It held 16 B a fat voxel, twice.
+Stack E's join, 2026-10-20). It held 16 B a fat voxel, twice.
 Every `label` of a whole vessel or pericyte mask is `slab_labels.ForegroundLabels` (each
 foreground voxel's key and int32 number, 12 B a foreground voxel, numbered as `label` numbers;
 scipy's own volume is 8 B a voxel from 2**31 voxels): the volume filter, the minority swap,
@@ -83,7 +83,7 @@ support (`stages._PostProcessSegmentation`); the overlay projection counts and m
 a time; mask recovery's worker bits go to the run's `memmap_directory`
 (`MaskSupport.memmap_directory`), not `%TEMP%`. Checked against `4c96e9c5`
 (`outputs/lvc/old_vs_new.py`, git-ignored: 60 results of the changed functions, dtypes too,
-identical) and on E14.5 (low-RAM, skeletonise through diameters, `outputs/lvc/e14/bench.py`,
+identical) and on Stack A (low-RAM, skeletonise through diameters, `outputs/lvc/stack_a/bench.py`,
 a `git archive` of `a82c7e9` against this commit: the skeleton, the built graph and the graph
 after diameters identical, node for node, edge for edge, every attribute; private peaks
 skeletonise 2.74 -> 2.30 GB, build_network 3.32 -> 2.98 GB, boundaries 2.61 -> 2.01 GB; the
@@ -99,7 +99,7 @@ and the result's file; the vessel-mask volume filter 1,376 -> 252 MB; the overla
 2,064 MB and 41 s -> 409 MB and 4.4 s; post-processing's binarisations 574 MB and 5.2 s ->
 367 MB and 1.3 s; the projection 344 -> 367 MB (no smaller at this size, constant past it).
 The gated skeleton (1 B a voxel) and the join's lookups (16 B a fat voxel, twice: 4.6 GB on
-the patella's 144 M) are gone from RAM by construction.
+Stack E's 144 M) are gone from RAM by construction.
 Coordinates that stand in for `np.argwhere` (`ForegroundLabels.coords` / `component_coords`,
 the skeleton's slab components, the thick tree's voxels) are laid out as it lays them out,
 Fortran order (the transpose of the index arrays): a BLAS product of them rounds by the
@@ -126,8 +126,8 @@ the same answers): continuity (on 40 M voxels of it) 2,712 MB and 62 s -> 207 MB
 2 um dilation 5,608 MB and 33 s -> 580 MB and 20 s (only voxels with mask inside the reach's
 box are measured); the union's 1 B a voxel goes to disk; the reconnect's label file (4 B a
 voxel: 744 -> 515 MB of temp files) is gone, its RAM peak unchanged at 2.0 GB -- the blockwise
-EDT's block, whose float64 transform is still a file (8 B a voxel). E14.5 low-RAM, a `git
-archive` of `b6c602a` against it with `3bdb785`'s changes (`outputs/lvc/e14b/`, git-ignored,
+EDT's block, whose float64 transform is still a file (8 B a voxel). Stack A low-RAM, a `git
+archive` of `b6c602a` against it with `3bdb785`'s changes (`outputs/lvc/stack_a_b/`, git-ignored,
 stopped after the boundaries, the small masks `make_masks.py`'s stand-ins): four runs reaching
 every one of these steps but the hand-edit tags -- A the cleanup's reconnect (12 bridges), the
 thick restriction over all four masks and a 2 um dilation on load; B a global small mask (the
@@ -151,7 +151,7 @@ The rest gained nothing in RAM: the overlap and volume-filter clean-ups already 
 algorithm, the surface tiles and point distances tie, and the confidence assignment keeps its
 one transform thresholded per step. The low-RAM reconnect refuses big windows (not the same
 graph), and the low-RAM skeletonisation steps were slower one by one on that synthetic stack.
-**A whole E14.5 run is faster low-RAM, not slower** (2026-10-22, `56912ef4` from a `git
+**A whole Stack A run is faster low-RAM, not slower** (2026-10-22, `56912ef4` from a `git
 archive`, the repo-root `config.yaml` with only `use_memmap_loading` changed; four runs in the
 order in RAM, low RAM, low RAM, in RAM; `outputs/lowram_ab/`, git-ignored): skeletonise
 190 / 89 / 91 / 223 s, build_network 427 / 234 / 240 / 437 s, diameters 278 / 319 / 262 s

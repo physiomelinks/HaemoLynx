@@ -31,8 +31,8 @@ def _touch(folder: Path, *names: str) -> list[Path]:
 
 @pytest.fixture
 def folder(tmp_path):
-    image, mask = _touch(tmp_path, "E14_MCA_segmented.tif", "E14_MCA_pericytes.tif")
-    _touch(tmp_path, "E14_MCA_large_arterioles.tif", "notes.txt")
+    image, mask = _touch(tmp_path, "StackA_region_segmented.tif", "StackA_region_pericytes.tif")
+    _touch(tmp_path, "StackA_region_large_arterioles.tif", "notes.txt")
     return tmp_path, image, mask
 
 
@@ -59,12 +59,12 @@ def test_a_file_that_is_not_a_mask_or_is_the_image_itself_is_not_found(tmp_path)
 
 
 def test_of_several_the_one_sharing_the_images_name_is_chosen(tmp_path):
-    image, own, _other = _touch(tmp_path, "E14_MCA.tif", "E14_MCA_pericytes.tif", "E15_pericytes.tif")
+    image, own, _other = _touch(tmp_path, "StackA_region.tif", "StackA_region_pericytes.tif", "StackB_pericytes.tif")
     assert find_pericyte_mask([image]).path == own
 
 
 def test_a_tie_is_named_and_none_chosen(tmp_path):
-    image, first, second = _touch(tmp_path, "E14.tif", "E14_pericytes_a.tif", "E14_pericytes_b.tif")
+    image, first, second = _touch(tmp_path, "StackA.tif", "StackA_pericytes_a.tif", "StackA_pericytes_b.tif")
     found = find_pericyte_mask([image])
     assert found.path is None and set(found.tied) == {first, second}
 

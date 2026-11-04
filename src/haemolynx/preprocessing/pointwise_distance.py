@@ -56,7 +56,7 @@ SURFACE_TILE_CACHE_BYTES = 256 << 20
 #: The share of the memory free that the low-RAM lookups' tiles may grow
 #: to, between them, past :data:`SURFACE_TILE_CACHE_BYTES` (unless the
 #: caller fixes a budget). 256 MB held about a tenth of the uncropped
-#: patella's tiles (1090 x 1750 x 724 voxels, 35.6 M surface voxels, 2.4 GB
+#: Stack E's tiles (1090 x 1750 x 724 voxels, 35.6 M surface voxels, 2.4 GB
 #: of tiles): mask recovery visits its pieces all over the stack, so tiles
 #: were dropped and made again, and making them was ~95% of the step.
 SURFACE_TILE_MEMORY_FRACTION = 0.25
@@ -146,7 +146,7 @@ class FeatureDistance:
     *remember* keeps the distances of up to that many voxels once measured,
     for a caller that asks about the same voxels again and again: graph
     building's clean-up reads the lumen radius along the same centrelines
-    round after round, and on E14.5 MCA these lookups were over a third of
+    round after round, and on Stack A these lookups were over a third of
     its time. Off (0) by default -- a caller visiting every voxel once, as
     :func:`distance_transform_edt_blockwise` does, would only pay its memory
     (about 100 bytes a voxel).
@@ -460,7 +460,7 @@ class _SurfaceTiles:
         ring, a batch spanning the stack (stub pruning reads every
         centreline voxel) wanted each tile again only after every other
         tile of that ring. Over a tight budget that makes a few tiles fewer
-        (a patella crop's pruning at 40 MB: 2,676 tiles made, not 2,821).
+        (a Stack E crop's pruning at 40 MB: 2,676 tiles made, not 2,821).
         Each query's answer is its own, so the order changes no distance."""
         query = np.asarray(query, dtype=np.intp)
         home = np.clip(query // self.tile, 0, self.grid - 1)

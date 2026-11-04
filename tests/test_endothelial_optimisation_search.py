@@ -474,7 +474,7 @@ def test_a_run_calibrating_on_no_vessel_is_refused_with_its_reason(raw_path):
 def test_auto_times_reading_with_the_images_blur_and_wall_calibrated_once(monkeypatch, raw_path):
     """Regression: Auto's probe left the blur and wall to the measurement,
     which calibrated them on the whole image at every timed call -- a minute
-    on E14.5, taken as every vessel's cost, so it sampled ten vessels and
+    on Stack A, taken as every vessel's cost, so it sampled ten vessels and
     estimated over an hour. The probe now reads with the image's own values,
     calibrated once, and the search reuses that calibration."""
     stand_in = _StandIn(monkeypatch, lambda settings, calibration, edge: [6.0, 6.0])

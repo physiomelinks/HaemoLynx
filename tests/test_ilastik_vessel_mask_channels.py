@@ -229,7 +229,7 @@ def test_each_image_of_a_batch_gives_the_classifier_its_own_raw_image(tmp_path, 
     seg, raw = tmp_path / "seg", tmp_path / "raw"
     seg.mkdir()
     raw.mkdir()
-    for stem in ("E14", "E15"):
+    for stem in ("StackA", "StackB"):
         tifffile.imwrite(seg / f"{stem}_seg.tif", np.zeros((4, 6, 8), dtype=np.uint8))
         _composite(raw / f"{stem}.tif")
     base = {

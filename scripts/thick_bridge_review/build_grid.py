@@ -249,7 +249,7 @@ KEY_FIELDS = (
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--capture", required=True, help="e14_run.py --capture's finish_input.pkl")
+    parser.add_argument("--capture", required=True, help="stack_a_run.py --capture's finish_input.pkl")
     parser.add_argument("--graph", required=True, help="the graph build_network saved")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
@@ -310,7 +310,7 @@ def main(argv=None) -> int:
     for number, cases in enumerate(sheets, start=1):
         first, last = cases[0]["id"], cases[-1]["id"]
         _sheet(cases, out / f"grid_{number}.png", mask, region, tree_points, paths, vs,
-               f"Thick-vessel bridges and the pieces beside them, E14.5 (sheet {number} of {len(sheets)}, "
+               f"Thick-vessel bridges and the pieces beside them, Stack A (sheet {number} of {len(sheets)}, "
                f"IDs {first}-{last})")
     with open(out / "key.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=KEY_FIELDS, extrasaction="ignore")

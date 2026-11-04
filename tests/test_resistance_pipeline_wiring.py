@@ -308,7 +308,7 @@ def test_preflight_accepts_a_runnable_configuration(pipeline, tmp_path):
 
 
 def test_preflight_stops_a_run_whose_outputs_windows_would_refuse(pipeline, tmp_path, monkeypatch):
-    """Before any work starts: an E14.5 run with a long output folder ran for
+    """Before any work starts: a Stack A run with a long output folder ran for
     8 minutes, then died at Export writing a 266-character path."""
     from haemolynx.pipeline import batch, preflight
 

@@ -149,12 +149,12 @@ FWHM_SETTING_NAMES: tuple[str, ...] = (
 #: run (a toggle stayed off) mean a real run can finish before reaching this.
 _SWEEP_TOTAL_UPPER_BOUND = 34
 #: The trials a pass of every group measures, for Auto's time estimate:
-#: counted on E14.5 (77 at 4724f6ce, 100 vessels sampled; repeated settings
+#: counted on Stack A (77 at 4724f6ce, 100 vessels sampled; repeated settings
 #: come from the trial cache and are not counted). The estimate used to take
 #: 34 sweeps of 3.5 candidates, 119 trials (PLAN_optimisers.md, B8).
 _TRIALS_PER_PASS = 77
 #: The planted vessels and decoys a trial also measures, per sampled vessel,
-#: with the segmentation: 52 for 100 sampled and 96 for 200 on E14.5. Fewer
+#: with the segmentation: 52 for 100 sampled and 96 for 200 on Stack A. Fewer
 #: than are asked for are placed (room is needed round each), and their
 #: small graphs pay little of a trial's fixed cost.
 _CHECK_VESSELS_PER_SAMPLED_VESSEL = 0.5
@@ -169,7 +169,7 @@ DEFAULT_AUTO_SAMPLE_TARGET_SECONDS = 180.0
 _MIN_SAMPLE_EDGE_COUNT = 10
 #: What "Auto" never samples fewer than (a smaller pool is sampled whole):
 #: planting puts a vessel of known width beside about one sampled vessel in
-#: five (43 of 200 on E14.5), and the accuracy group needs some planted. A
+#: five (43 of 200 on Stack A), and the accuracy group needs some planted. A
 #: budget too small for this shows in the estimate; it is not met by sampling
 #: so few vessels that accuracy is never checked (PLAN_optimisers.md, B8).
 _MIN_AUTO_SAMPLE_EDGE_COUNT = 100
@@ -739,7 +739,7 @@ class _FwhmSearch(_SweepBookkeeping):
     def _labels_for(self, base: nx.MultiGraph) -> np.ndarray:
         """*base*'s label volume, which FWHM paints from its edges' voxels
         and every copy of it shares -- painted once (a whole image a time:
-        a third of a second on E14.5's grid however few the edges), not by
+        a third of a second on Stack A's grid however few the edges), not by
         each trial. *base* is one of this search's own graphs, alive as long
         as it is."""
         key = id(base)

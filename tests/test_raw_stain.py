@@ -1,6 +1,6 @@
 """Telling a plasma (luminal) label from an endothelial (wall) one
 (``preprocessing/raw_stain.py``, ``raw_image_stain="auto"``), on synthetic
-vessels drawn with the E14.5 stack's blur."""
+vessels drawn with Stack A's blur."""
 from __future__ import annotations
 
 import numpy as np
@@ -12,7 +12,7 @@ from haemolynx.preprocessing.raw_stain import ENDOTHELIAL, PLASMA_COLUMN, read_r
 VS = (1.0, 0.5, 0.5)
 SHAPE = (48, 160, 160)
 #: Sigma (z, y, x) in voxels: about 2.9 um along z and 1.1 um across, the
-#: E14.5 claudin-5 channel's own calibration.
+#: Stack A claudin-5 channel's own calibration.
 BLUR = (2.9, 2.2, 2.2)
 
 

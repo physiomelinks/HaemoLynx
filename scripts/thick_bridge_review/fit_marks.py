@@ -8,7 +8,7 @@ Marks: B = a bridge, V = vessel, C = the thick vessel's own centreline,
 N = should not be connected at all.
 
     python scripts/thick_bridge_review/fit_marks.py \\
-        --capture outputs/tb/after/finish_input.pkl --graph outputs/tb/after/e14_graph.pkl \\
+        --capture outputs/tb/after/finish_input.pkl --graph outputs/tb/after/stack_a_graph.pkl \\
         --grid outputs/thick_bridge_review
 
 writes ``measures.csv`` and ``FIT.md`` into the grid's folder.

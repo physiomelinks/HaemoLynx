@@ -19,7 +19,7 @@ Three measures of the statistics CSV (``PLAN_synthetic_physiology.md``; Harvey,
   Clark-Evans ratio of their positions: 1 at random, above 1 evenly spaced,
   below 1 bunched).
 
-On E14.5's MCA run the junctions are wide and flat (smallest angle median 97
+On Stack A's run the junctions are wide and flat (smallest angle median 97
 degrees, 1% acute, sum 356), 4.8% of the box lies beyond 50 um of a capillary
 and its columns are evenly spread (Clark-Evans 0.90); the synthetic networks
 of grid D1d were not (``docs/notes/synthetic.md``).
@@ -40,7 +40,7 @@ from ._sampling import REPRODUCIBILITY_SEED
 
 #: How far along each vessel from the node its direction is read, in microns:
 #: past a centreline's last voxel of wobble at the node, short of its bend.
-#: E14.5's junction shape is the same read at 4, 8 or 15 um.
+#: Stack A's junction shape is the same read at 4, 8 or 15 um.
 JUNCTION_DIRECTION_REACH_UM = 8.0
 #: Two vessels of a junction closer than this are an acute pair.
 ACUTE_JUNCTION_DEG = 45.0

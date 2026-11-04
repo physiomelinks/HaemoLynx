@@ -1250,7 +1250,7 @@ def _segmented_image_binarization_rule(input_path: Any, image: np.ndarray, *, fr
 
 def _h5_input_crop_box(settings: dict, input_format: str) -> CropBox | None:
     """The crop_on_import box a 3D H5 input image is read within, rather than
-    read whole and cut (the AIA stacks: 9.4 GB read for a 5% box); None when
+    read whole and cut (the Batch E stacks: 9.4 GB read for a 5% box); None when
     it is read whole -- another format, no box or the whole image, or the
     low-RAM raw cache keeping the whole image for the next run."""
     if input_format != "h5" or (settings["use_memmap_loading"] and settings["memmap_directory"]):
@@ -1401,7 +1401,7 @@ def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Dow
     reduction of the finest axis, rounded half up and never below 1 where it
     was set. Empty without a reduction. Counted on the coarse grid as set, a
     downsampled run bridged gaps and dropped pieces twice as long (at 2x): on
-    E14.5 it built 2.5 points less of the full-resolution network and half
+    Stack A it built 2.5 points less of the full-resolution network and half
     again as many false junctions (2026-10-19)."""
     if downsample is None or downsample.is_identity:
         return {}
@@ -1686,7 +1686,7 @@ def thick_vessel_region_cache(
 ) -> preprocessing.ThickVesselRegionCache:
     """Where a run keeps the thick-vessel region it found: beside its saved
     skeleton in *output_dir* (the run's ``output_dir`` when not given), one
-    entry per run output. Finding the region is about four minutes on E14.5,
+    entry per run output. Finding the region is about four minutes on Stack A,
     and a run with the same mask and settings as the last reads it back
     instead (:mod:`~haemolynx.preprocessing.thick_vessel_region_cache`).
     """
@@ -2893,10 +2893,10 @@ def finish_network_graph(
         )
         finished("centreline smoothing")
     # Smoothing moves every centreline, so what graph building's last
-    # step judged is judged again on the curves that are saved: on E14.5
+    # step judged is judged again on the curves that are saved: on Stack A
     # smoothing alone turned 2 loops inside one lumen into 12. The same
     # clean-up runs once more after the thick-vessel split below: nothing
-    # is the last step, and on E14.5 the split alone made 7 loops inside
+    # is the last step, and on Stack A the split alone made 7 loops inside
     # one lumen through its bridges.
     lumen_cleanup = None
     if binary_mask is not None:
@@ -3011,7 +3011,7 @@ def finish_network_graph(
         finished("removal of interior dead ends and merge of the junctions left")
     # Pieces with no junction (their dead ends are graph.dead_ends'
     # island ends, or leave the image), taken out last so no step after
-    # rejoins or re-makes one. On Harvey's AIA patella grid P1 (2026-10-20)
+    # rejoins or re-makes one. On Harvey's Batch E grid P1 (2026-10-20)
     # 11 of 14 were specks and 3 real vessel the segmentation cut off.
     if settings.get("remove_pieces_without_junction"):
         removed = graph.dead_ends.remove_pieces_without_junction(G)
@@ -3706,7 +3706,7 @@ def _remove_and_recover_interior_dead_ends(
     ``recovery_short_loop_keep_hole_over_um``, and the interior dead ends the
     clean-up leaves taken out again.
 
-    Fitted to Harvey's marks on E14.5 (2026-10-21): G5 (17 of 29 dead ends
+    Fitted to Harvey's marks on Stack A (2026-10-21): G5 (17 of 29 dead ends
     that stop short "stop here"), the recovery he called the best graph yet,
     and grids L1 and L2 for the clean-up's hole limit. Not yet tried on
     another dataset."""
@@ -3879,7 +3879,7 @@ class _SegmentationBoxes:
     skeleton was made from, by the whole image's rule
     (:func:`_segmented_image_binarization_rule`, decided on the first read):
     no whole-volume copy. Read as ``> 0``, an ilastik export's background
-    (2) was vessel, so on E14.5 every end filled its large mask and a
+    (2) was vessel, so on Stack A every end filled its large mask and a
     capillary took an outlet again (2026-10-26)."""
 
     def __init__(self, image: np.ndarray, input_path: Any):
@@ -5704,7 +5704,7 @@ class _PostProcessSegmentation:
 
     :meth:`of` keeps it on the network's volume, so the next Regenerate of
     the run does not binarise the image and build the support's surface tree
-    again: on E14.5 that was about 5 of the 6 s post processing took."""
+    again: on Stack A that was about 5 of the 6 s post processing took."""
 
     def __init__(self, settings: dict, network: "VesselNetwork | None"):
         self.settings = settings

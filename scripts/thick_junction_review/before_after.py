@@ -165,7 +165,7 @@ def main(argv=None) -> int:
         rows = int(np.ceil(len(page) / 2))
         fig, axes = plt.subplots(rows, 4, figsize=(16, 4.15 * rows + 1.6), squeeze=False)
         fig.suptitle(
-            "Thick-vessel bridges on E14.5, before (040170b) and after (Phase 1), top-down: a 12 um z slab\n"
+            "Thick-vessel bridges on Stack A, before (040170b) and after (Phase 1), top-down: a 12 um z slab\n"
             "grey = segmentation, orange = thick-vessel region, yellow dots = its centreline tree, "
             "green = vessels, magenta dashes = bridges, white bar = 10 um",
             fontsize=11,

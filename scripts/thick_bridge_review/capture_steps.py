@@ -10,7 +10,7 @@ and the graph the split was handed.
         --input <segmented image> --out <run folder> [--set name=<json>]
 
 From a worktree, run it with ``PYTHONPATH=src`` (the venv's haemolynx is the
-main checkout's). An E14.5 capture holds about 5 GB at its peak.
+main checkout's). A Stack A capture holds about 5 GB at its peak.
 """
 from __future__ import annotations
 

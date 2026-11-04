@@ -149,7 +149,7 @@ def test_read_voxel_size_xyz_is_none_for_what_it_cannot_read(tmp_path):
 # given no resolution for, so an OME-TIFF's tags say 1 micron whatever its
 # voxels are. Its size is the OME-XML header's PhysicalSizeX/Y/Z.
 
-MUSCLE_XYZ = (0.91, 0.91, 4.94)
+STACK_D_XYZ = (0.91, 0.91, 4.94)
 
 
 def _ome_tiff(path, sizes, shape=(4, 6, 8), **kwargs):
@@ -175,7 +175,7 @@ def _ome_sizes(xyz, unit=None):
 
 
 def test_an_ome_tiffs_voxel_size_is_read_from_its_ome_header(tmp_path, caplog):
-    """Regression: the skeletal-muscle stack, 0.913 x 0.913 x 4.94 um in its OME
+    """Regression: Stack D, 0.913 x 0.913 x 4.94 um in its OME
     header, ran on 1 um on every axis -- read from tags saying one pixel per
     unit -- with a warning about z alone."""
     import logging
@@ -184,7 +184,7 @@ def test_an_ome_tiffs_voxel_size_is_read_from_its_ome_header(tmp_path, caplog):
 
     from haemolynx.io import load_3d_tif_with_voxel_size, resolve_voxel_size_xyz
 
-    path = _ome_tiff(tmp_path / "muscle.ome.tif", _ome_sizes(MUSCLE_XYZ))
+    path = _ome_tiff(tmp_path / "stack_d.ome.tif", _ome_sizes(STACK_D_XYZ))
     with tifffile.TiffFile(path) as tif:
         # The trap: the tags are there, and say 1.
         assert tif.pages[0].tags["XResolution"].value == (1, 1)
@@ -193,11 +193,11 @@ def test_an_ome_tiffs_voxel_size_is_read_from_its_ome_header(tmp_path, caplog):
         _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path))
         resolved, source = resolve_voxel_size_xyz((x, y, z), status, None, "auto")
 
-    assert (x, y, z) == pytest.approx(MUSCLE_XYZ)
+    assert (x, y, z) == pytest.approx(STACK_D_XYZ)
     assert status["status"] == "complete"
     assert status["source"] == "ome_metadata"
     assert status["axis_sources"] == {"x": "ome_metadata", "y": "ome_metadata", "z": "ome_metadata"}
-    assert resolved == pytest.approx(MUSCLE_XYZ)
+    assert resolved == pytest.approx(STACK_D_XYZ)
     assert source == "metadata"
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
@@ -236,14 +236,14 @@ def test_ome_sizes_follow_the_axis_order_the_pages_are_read_with(tmp_path):
 
 
 def test_read_voxel_size_xyz_reads_an_ome_tiffs_header(tmp_path, monkeypatch):
-    """Regression: it returned None for the muscle stack, whose tags of 1 and
+    """Regression: it returned None for Stack D, whose tags of 1 and
     missing ImageJ spacing looked like a file saying nothing, so the panel drew
     it at 1 um. Still a header read."""
     import tifffile
 
     from haemolynx.io import read_voxel_size_xyz
 
-    path = _ome_tiff(tmp_path / "muscle.ome.tif", _ome_sizes(MUSCLE_XYZ))
+    path = _ome_tiff(tmp_path / "stack_d.ome.tif", _ome_sizes(STACK_D_XYZ))
 
     def _refuse(self, *args, **kwargs):
         raise AssertionError("asarray was called; this should be a header read")
@@ -251,7 +251,7 @@ def test_read_voxel_size_xyz_reads_an_ome_tiffs_header(tmp_path, monkeypatch):
     monkeypatch.setattr(tifffile.TiffFile, "asarray", _refuse)
     found, status = read_voxel_size_xyz(path)
 
-    assert found == pytest.approx(MUSCLE_XYZ)
+    assert found == pytest.approx(STACK_D_XYZ)
     assert status["source"] == "ome_metadata"
     assert status["status"] == "complete"
 

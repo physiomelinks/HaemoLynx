@@ -228,7 +228,7 @@ def main(argv=None) -> int:
         "batch": args.grid,
         "title": f"Doubled Run Review {args.grid}: is this one vessel drawn twice?",
         "question": "Is the red stretch one vessel drawn twice?",
-        "lede": ("The E14.5 segmentation (white = vessel) in the plane of one stretch of centreline (red) that the "
+        "lede": ("The Stack A segmentation (white = vessel) in the plane of one stretch of centreline (red) that the "
                  "report counts as running beside another centreline (blue) in the same lumen; the rest of the red "
                  "stretch's own centreline is orange, the chord between the two at the stretch's middle is yellow. "
                  "Both panels are the segmentation: graph building never sees the raw image here."),

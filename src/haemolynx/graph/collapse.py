@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 #: collapse distance is not a gap but a vessel that leaves and comes back (a
 #: loop's arc), and merging its ends would delete it as a self-loop, however
 #: long, with nothing judging it: the node stays apart instead, and the loop
-#: is judged later, with the mask, by ``lumen_loops``. On the E14.5 MCA
+#: is judged later, with the mask, by ``lumen_loops``. On the Stack A
 #: stack 1,649 edges of 5 um or more (12.6 mm) went this way under the
 #: direction-aware method, 260 of them over 10 um.
 MAX_ABSORBED_EDGE_MULTIPLE = 2.0

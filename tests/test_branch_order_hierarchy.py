@@ -547,7 +547,7 @@ def test_a_bridge_is_no_order_and_no_step():
 
 # --- The Large_Art/Large_Ven tier on a real large vessel ---------------------
 #
-# Found on a solved E14.5 run (outputs/vessel_classes_check/REPORT.md, findings
+# Found on a solved Stack A run (outputs/vessel_classes_check/REPORT.md, findings
 # 2 and 3): the Large tier stopped at the first side branch, and the Art tier
 # then crossed the capillary bed into the large vein.
 
@@ -622,7 +622,7 @@ def test_the_large_tier_runs_along_the_large_vessel_past_its_side_branches():
     """Regression: the Large_Art search from the inlet stopped at every large
     boundary node, and every junction where a side branch leaves the large
     arteriole is one -- so only the inlet's own vessel was Large_Art and the
-    rest of the trunk became Art (E14.5: 1 of 48 vessels)."""
+    rest of the trunk became Art (Stack A: 1 of 48 vessels)."""
     G, nodes = _large_arteriole_with_side_branches()
 
     summary = assign_vessel_branch_orders(G, **nodes)
@@ -650,7 +650,7 @@ def test_the_arteriole_tier_does_not_cross_the_capillary_bed_into_the_large_vein
     """Regression: the Art search started at every large boundary node and was
     stopped only by arteriole boundary nodes, so a capillary leaving the large
     arteriole directly took it across the bed into the large vein before the
-    venous tiers ran (E14.5: the outlet's own vessel was Art11, Large_Ven had
+    venous tiers ran (Stack A: the outlet's own vessel was Art11, Large_Ven had
     no vessel). A capillary leaving a large vessel is a capillary."""
     G, nodes = _capillaries_from_large_arteriole_to_large_vein()
 
@@ -1133,7 +1133,7 @@ def test_the_small_tiers_follow_the_small_masks_through_a_run(tmp_path):
 # Hierarchical mode needs arteriole and venule boundary nodes, which only the
 # small masks or a hand pick give. A run with the large masks alone fell back
 # to B orders from the inlets, so its large arteriole was B01 and the
-# Large_Art/Large_Ven tags were computed and never read (E14.5, 2026-10-21).
+# Large_Art/Large_Ven tags were computed and never read (Stack A, 2026-10-21).
 
 
 def _large_vessels_without_small_ones():
@@ -1439,7 +1439,7 @@ def _four_way_bed(split: bool) -> nx.MultiGraph:
 def test_a_node_where_only_two_vessels_meet_is_no_step():
     """Regression (F4): each node counted as a step, so the capillary 1-2 cut
     at 9 was B01 then B02, and everything past it an order more than the same
-    vessel uncut (E14.5: 54 such nodes, all beside a junction of four or
+    vessel uncut (Stack A: 54 such nodes, all beside a junction of four or
     more; 322 vessels' orders)."""
     nodes = dict(outlet_nodes=[6], arteriole_boundary_nodes=[1], venule_boundary_nodes=[5])
     whole, cut = _four_way_bed(split=False), _four_way_bed(split=True)

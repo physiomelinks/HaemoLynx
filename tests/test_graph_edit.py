@@ -367,7 +367,7 @@ def test_the_windowed_cost_field_matches_the_whole_one_on_anisotropic_voxels():
 
 @pytest.mark.parametrize("named", ["as stored", "the other way round"])
 def test_insert_node_on_edge_splits_a_path_stored_from_its_other_end(named):
-    """Regression (E14.5, 2026-10-13): an edge's points may run from either of
+    """Regression (Stack A, 2026-10-13): an edge's points may run from either of
     its nodes. Split as if they ran from the first node named, each piece got
     the other piece's points, and the next degree-2 merge joined them with a
     35 um straight jump across the gap."""

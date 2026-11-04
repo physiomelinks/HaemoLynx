@@ -24,7 +24,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "outputs/vessel_class_review"
 GRID = OUT / "SZR"
-SOLVED = OUT / "e14p5_solved.pkl"
+SOLVED = OUT / "stack_a_solved.pkl"
 
 SEED = 20261029
 BAND_UM = (6.0, 15.0)

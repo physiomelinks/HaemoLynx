@@ -295,7 +295,7 @@ def _routing_environment() -> dict[str, str]:
     (:func:`nested_native_thread_limit`) holds only in the process that sets
     it: a worker's numpy otherwise starts OpenBLAS with a thread per core and
     commits ~659 MB doing it, against ~19 MB with one -- 13 GB for 20 workers,
-    which ran an E14.5 build out of paging file. Routing does no BLAS, so the
+    which ran a Stack A build out of paging file. Routing does no BLAS, so the
     paths are the same."""
     from haemolynx.preprocessing.shared_volume_tasks import _NATIVE_THREAD_VARIABLES
 

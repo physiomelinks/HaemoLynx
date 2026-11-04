@@ -122,7 +122,7 @@ _ROUNDING = 3
 #: at most (blur 5 + wall 5 + gate 6, less the baselines they share), and
 #: the fewest vessels ever sampled. The budget is FWHM's three minutes
 #: (``.fwhm_search.DEFAULT_AUTO_SAMPLE_TARGET_SECONDS``) times three and a
-#: bit: a ring reading costs ~0.2 s a vessel (E14.5), and three minutes
+#: bit: a ring reading costs ~0.2 s a vessel (Stack A), and three minutes
 #: sampled 13 of 1,342 vessels there, 4-6 of them read -- so few that one
 #: vessel's spread moved the score more than any setting did.
 DEFAULT_AUTO_SAMPLE_TARGET_SECONDS = 600.0
@@ -654,7 +654,7 @@ class _EndothelialSearch(_SweepBookkeeping):
         blur, or the wall, on their own at the current settings, or the
         settings already fix it. Otherwise it stays the image's estimate: a
         fixed value inside the estimate's own interval is no different from
-        it, and on E14.5 the search moved one on a vessel or two."""
+        it, and on Stack A the search moved one on a vessel or two."""
         group = "blur_and_wall"
         incumbent = (
             self.current.get("endothelial_psf_sigma_xy_um"),
@@ -840,7 +840,7 @@ def _prepared_search(
     if sample_edge_count is None:
         # Timed reading with the image's own blur and wall, calibrated once
         # here (the search reuses it): a probe that calibrated would time the
-        # calibration, a minute on E14.5, as if every vessel cost it; one
+        # calibration, a minute on Stack A, as if every vessel cost it; one
         # whose gate leaves the rings uncalibrated would read nothing.
         probe_settings = dict(starting_values)
         image_psf, image_wall, _details = _calibrated_values(calibrations({

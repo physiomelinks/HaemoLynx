@@ -74,7 +74,7 @@ DEFAULT_SHEAR_WEIGHT = 1.0
 MAX_SIGN_ITERATIONS = 20
 #: A vessel whose wall shear stress is below this share of the target carries
 #: almost no flow: its direction is left free (no shear target), and its
-#: flipping does not keep the estimate from settling. On E14.5 every vessel
+#: flipping does not keep the estimate from settling. On Stack A every vessel
 #: still flipping after five passes was one of these.
 SETTLED_SHEAR_FRACTION = 0.01
 

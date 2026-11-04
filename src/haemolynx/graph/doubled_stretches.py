@@ -4,7 +4,7 @@ A second edge through one lumen is not always a pair end to end
 (``lumen_loops.remove_parallel_edges_in_lumen`` judges whole edges: half of
 one beside another). A dead end runs back along the vessel it leaves; two
 edges leave a junction side by side and part further on (a fork); a second
-strand doubles part of a vessel. On E14.5 only 51 of 1,805 um of doubled
+strand doubles part of a vessel. On Stack A only 51 of 1,805 um of doubled
 centreline lay in pairs (PLAN_clean_graph.md, section 1.3).
 
 :func:`resolve_doubled_stretches` finds the doubled stretches sample by
@@ -75,14 +75,14 @@ logger = logging.getLogger(__name__)
 #: minimum is calibrated and every run is resolved (decision D6): the cost
 #: to two touching vessels is the shared stretch running on one centreline,
 #: nothing deleted. The parked attempt's 3 um and two radii left nine tenths
-#: of E14.5's doubling in place.
+#: of Stack A's doubling in place.
 MIN_DOUBLED_RUN_UM = 0.0
 MIN_DOUBLED_RUN_RADII = 0.0
 
 #: Whether the stretch step's rejoin, by default, makes no join that would
 #: close a loop inside one lumen (:func:`_join_closes_loop_in_one_lumen`; the
 #: pair rewire always tests its joins); a run says with
-#: ``lumen_cleanup_guard_rejoins``. On E14.5 (2026-10-25, the graph as
+#: ``lumen_cleanup_guard_rejoins``. On Stack A (2026-10-25, the graph as
 #: ``scripts/graph_artefacts.py`` saves it, against 7f7e699c) it took 73 um of
 #: doubled centreline out and covered 0.9 points more of the mask, but left 7
 #: more short loops -- loops round holes of 10 um or more, which grids Q/Q2
@@ -95,7 +95,7 @@ GUARD_REJOINS = True
 
 #: Edge mark: what :func:`rewire_pair` left of an edge it took out. Such an
 #: edge, found in a pair again, is deleted rather than rewired once more: on
-#: E14.5 a rewire made the next round's pair one round after another, and the
+#: Stack A a rewire made the next round's pair one round after another, and the
 #: clean-up ran to its round limit (2026-10-25).
 REWIRED = "rewired"
 
@@ -145,7 +145,7 @@ def doubled_stretches(
     within the reach it is judged over, is not judged again -- its runs
     read only its own path and the centrelines in that reach. The clean-up
     asks every round of a graph each round changes in a few places; judged
-    whole every round, the finder was ~7-11 s a round on E14.5.
+    whole every round, the finder was ~7-11 s a round on Stack A.
     """
     if G.number_of_edges() < 2:
         return []
@@ -259,9 +259,9 @@ def _judge_edge(u, v, key, path, dense, reach, own, index, owners, edge_of, brid
     # inside the wider lumen. Judged with the wider of the two radii
     # instead (tried 2026-10-12), a capillary fused along a trunk's wall
     # counted as beside the trunk from its own side, and the trim then
-    # took the whole capillary: on E14.5 5.7 mm of centreline and 3.7
+    # took the whole capillary: on Stack A 5.7 mm of centreline and 3.7
     # points of mask coverage went with 430 um of doubling. What the
-    # wider side alone sees (588 of 906 um left on E14.5) is a grid's
+    # wider side alone sees (588 of 906 um left on Stack A) is a grid's
     # question, not a finder's.
     neighbour_judged = _same_lumen_neighbours(
         samples[judged], tangents[judged], cKDTree(points), points, support.inside, support.radius,
@@ -308,7 +308,7 @@ class _Editor:
         self.touched: set[tuple] = set()
         #: Centreline taken out less centreline added, microns: kept here as
         #: edges go and come, not read off the whole graph after each change
-        #: (that sum, twice per stretch, was 59 of the step's 70 s on E14.5).
+        #: (that sum, twice per stretch, was 59 of the step's 70 s on Stack A).
         self.removed_um = 0.0
         #: Positions (rounded) of the junctions zips have left behind, across
         #: the clean-up's rounds: a zip that would put its new junction back
@@ -406,7 +406,7 @@ def _part_together(along_edge: float, along_partner: float, min_shared_um: float
     along each (within a factor of two, and past *min_shared_um*). A fork
     does; where the parting points disagree, the edge re-attached at the
     other's parting point doubled back along the stretch kept, and the next
-    round zipped it the other way: on E14.5 11 forks moved 4 um to and fro
+    round zipped it the other way: on Stack A 11 forks moved 4 um to and fro
     to the round limit."""
     if along_edge < min_shared_um or along_partner < min_shared_um:
         return False
@@ -418,7 +418,7 @@ def _zip(editor: _Editor, run: DoubledStretch, shared, at_start: bool, min_share
 
     A parting point less than *min_shared_um* along the edge kept from
     *shared* is refused: zipped there, the roles reverse at the new
-    junction and the next round zips the other way (E14.5: 11 forks
+    junction and the next round zips the other way (Stack A: 11 forks
     moving 0.4 um back and forth to the round limit)."""
     G = editor.G
     u, v, _key = run.edge
@@ -754,7 +754,7 @@ def resolve_doubled_stretches(
     counts = {"trimmed": 0, "zipped": 0, "rejoined": 0}
     # A run of a single sample has no length to rewire: zipping it moved the
     # junction one vertex along and left the same one-sample run at the new
-    # junction, so the clean-up never settled (E14.5: ~24 forks re-zipped
+    # junction, so the clean-up never settled (Stack A: ~24 forks re-zipped
     # every round to its limit).
     too_short = 0.5 * _sample_step(support.voxel_size_zyx)
     for run in runs:
@@ -795,7 +795,7 @@ def resolve_doubled_stretches(
             # A fork is two edges leaving a junction. At a degree-2 node the
             # two are one vessel folding back (a hairpin) or kinking: zipped,
             # the degree-2 merge joined the pieces again and the next round
-            # zipped them again, 11 of them on E14.5 to the round limit.
+            # zipped them again, 11 of them on Stack A to the round limit.
             done = "zipped" if _zip(editor, run, u, at_start=True, min_shared_um=2 * too_short) else None
         elif run.at_stop and v in (a, b) and G.degree[v] >= 3:
             done = "zipped" if _zip(editor, run, v, at_start=False, min_shared_um=2 * too_short) else None

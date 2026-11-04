@@ -5,7 +5,7 @@ Every rule that joins two pieces of network across background -- the graph
 bridges, the facing-dead-end join, the tip-to-side join the dead-end plan
 holds back -- reads only the mask: a gap of background under 2 um is a
 dropout, more is tissue. The raw image can say what is in the gap. This grid
-shows 30 candidates from one built E14.5 graph: pairs of dead ends within
+shows 30 candidates from one built Stack A graph: pairs of dead ends within
 reach of each other (joined or refused, and why), dead ends with another
 vessel straight ahead, and the bridges the build drew across background.
 Each is drawn in its own plane on the segmentation, with the raw image
@@ -83,7 +83,7 @@ def _evenly(items: list, count: int, key) -> list:
 
 def _by_value(items: list, count: int) -> list:
     """*count* candidates spread over the gap reading by value, not by rank:
-    a third each from dark gaps, middling ones and bright ones (on E14.5 two
+    a third each from dark gaps, middling ones and bright ones (on Stack A two
     thirds of all candidates read fully bright, so a rank spread shows
     mostly those), the bright third spread over its dimmest sample."""
     bins = (

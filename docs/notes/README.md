@@ -2,7 +2,7 @@
 
 CLAUDE.md is the contract: layout, conventions, rules, and what each module is for. This folder
 holds what used to sit beside it there: why a rule or default is what it is, the marked grids it
-was fitted on, the benchmarks, and the E14.5 and patella numbers. Each file was moved verbatim
+was fitted on, the benchmarks, and the Stack A and Stack E numbers. Each file was moved verbatim
 out of CLAUDE.md on 2026-10-22. They are dated history and are not kept up to date line by line,
 so check a claim against the code before relying on it.
 

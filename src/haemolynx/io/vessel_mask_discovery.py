@@ -3,7 +3,7 @@
 A user who keeps the large and small arteriole and venule masks in the folder
 of the image they were segmented from need not browse for each one: a mask's
 name is the image's name, or part of it, with its size and vessel type added
--- ``E14_MCA_large_arterioles.tif`` beside ``E14_MCA_segmented.tif``.
+-- ``StackA_region_large_arterioles.tif`` beside ``StackA_region_segmented.tif``.
 :func:`find_vessel_masks` reads the folder for them, and the panel fills the
 mask rows from what it finds (``gui/vessel_mask_search.py``).
 
@@ -11,10 +11,10 @@ A name says which mask it is through whole words, in any case and split at
 punctuation, spaces and capitals (``LargeArterioles`` is two words): ``large``
 or ``small`` for the size, and for the type ``arteriole``, ``arterioles``,
 ``artery`` or ``arteries``, or ``venule``, ``venules``, ``vein`` or ``veins``.
-A size with no type (``E14_MCA_large_vessels.tif``), or with both, is a global
-mask of every vessel that size. A type with no size (``E14_MCA_arteriole.tif``)
+A size with no type (``StackA_region_large_vessels.tif``), or with both, is a global
+mask of every vessel that size. A type with no size (``StackA_region_arteriole.tif``)
 is a large mask, but only while no file beside the image says ``large``: one
-that does decides the large masks alone (Harvey, 2026-10-18; his E14.5 exports
+that does decides the large masks alone (Harvey, 2026-10-18; his Stack A exports
 are ``..._Simple Segmentation_arteriole.tiff`` and ``..._Vein.tiff``). It is
 never a small mask.
 
@@ -22,8 +22,8 @@ Only the words a mask's name adds to the image's are read for its role, so an
 image called ``large_field.tif`` does not make every file beside it a large
 mask. Everything else in a mask's name must be in the image's name too, apart
 from words that say nothing about which image it is (``mask``, ``segmented``,
-ilastik's ``Simple Segmentation`` ...): ``E15_large_arteriole.tif`` is another
-image's mask, not ``E14``'s. Of several masks for one role the one sharing
+ilastik's ``Simple Segmentation`` ...): ``StackB_large_arteriole.tif`` is another
+image's mask, not ``StackA``'s. Of several masks for one role the one sharing
 the image's name furthest from its start is taken; a tie is left unchosen.
 """
 from __future__ import annotations

@@ -274,7 +274,7 @@ def choose(candidates: list, measures: dict, count: int = COUNT) -> list:
 PAGE = dict(
     title="Dead End Review G4: is the red chain a real vessel?",
     question="Is the red chain a real vessel?",
-    lede=("One dead end (red, its heading cyan) of the E14.5 graph per card, in two planes at right angles. Each "
+    lede=("One dead end (red, its heading cyan) of the Stack A graph per card, in two planes at right angles. Each "
           "plane shows the segmentation the graph was built from, the dextran channel (Texas Red, what was "
           "segmented) and the endothelial channel (claudin-5, the vessel wall). Grey dots are other centrelines; "
           "the orange bar is 5 um. Your marks save as you go."),

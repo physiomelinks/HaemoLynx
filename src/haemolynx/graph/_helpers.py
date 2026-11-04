@@ -921,7 +921,7 @@ def points_within(tree: cKDTree, points: np.ndarray, reach: float) -> np.ndarray
     *reach* apart along it, grown by that half, which holds every point the
     balls would; each of those is kept when a point of *points* lies within
     *reach* of it, by the same test SciPy makes (a squared distance is the
-    same whichever way round it is taken). 29_2_f contra's 17,955 edges at
+    same whichever way round it is taken). 12_2_f contra's 17,955 edges at
     their own reaches: 31.6 s -> 13.1 s, every list the same."""
     points = np.asarray(points, dtype=float).reshape(-1, 3)
     reach = float(reach)

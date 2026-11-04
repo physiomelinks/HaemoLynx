@@ -767,7 +767,7 @@ def test_compute_rich_club_coefficient_handles_a_multigraph():
 def test_a_loop_vessel_changes_neither_rich_club_nor_k_core():
     """Contracting thick-vessel bridges makes a self-loop wherever a vessel
     opens into one thick vessel at both ends; NetworkX refuses self-loops,
-    and E14.5's statistics stopped there (2026-10-12)."""
+    and Stack A's statistics stopped there (2026-10-12)."""
     G = nx.MultiGraph()
     G.add_edges_from([(0, 1), (1, 2), (2, 0), (2, 3)])
     without = (compute_rich_club_coefficient(G), compute_k_core_structure(G))

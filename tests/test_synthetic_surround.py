@@ -193,7 +193,7 @@ def test_a_trunk_runs_from_its_join_out_to_the_box_handing_vessels_to_the_bed():
 
 def test_a_trunk_of_an_order_cut_to_a_sliver_keeps_its_joints_a_bed_vertex_apart():
     """Regression: a template measured from an image can hold an order only
-    as the sliver its face cut (E14.5's harness: one vessel of 0.44 um). Its
+    as the sliver its face cut (Stack A's harness: one vessel of 0.44 um). Its
     trunk was cut into pieces that long, 400 joints each wanting a bed
     vessel, and the few bed vertices near them took 46-78 vessels each: the
     junction trades over them took 42 and 96 minutes."""
@@ -339,7 +339,7 @@ def test_a_connector_carries_its_vessels_mask_tags_so_the_large_tier_runs_on_acr
     """Regression: the connector from an image vessel's tip to its face took
     the vessel's class but not its large-mask tag. The large tier is followed
     along tagged vessels from the trunk's inlet, so it stopped there, and on
-    E14.5 every one of the image's 86 large vessels lost its Large_ label."""
+    Stack A every one of the image's 86 large vessels lost its Large_ label."""
     from haemolynx.graph.branch_order import LARGE_MASK_VESSEL_TYPE
 
     T, image, roles = image_run

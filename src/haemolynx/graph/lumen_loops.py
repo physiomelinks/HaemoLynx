@@ -89,7 +89,7 @@ class _LoopMeasures:
     and the mask, so a loop the last call measured is not measured again;
     each call keeps only the loops it asked about. The clean-up calls each
     loop rule nine times on graphs that change in a few places, and measuring
-    every loop again was ~half of each call (29_2_f contra, 2026-10-20)."""
+    every loop again was ~half of each call (12_2_f contra, 2026-10-20)."""
 
     def __init__(self, memo: dict | None, kind: str, measure: Callable[[np.ndarray], Any]):
         self._memo, self._kind, self._measure = memo, kind, measure
@@ -394,7 +394,7 @@ THICK_CENTRELINE_LEAD_UM = 3.0
 #: and lying outside the kept strand's lumen (:data:`BESIDE_THICK_LUMEN_RADII`).
 #: Keeping the strand on the tree made the clean-up take capillaries running
 #: beside the thick vessel, which had been its only route before (grids W
-#: and X). Harvey's grids Y and Z (2026-10-15, E14.5: 50 pair and loop
+#: and X). Harvey's grids Y and Z (2026-10-15, Stack A: 50 pair and loop
 #: removals beside a kept thick centreline, marked keep or remove): the
 #: kept ones mostly 3-8 um in radius, the removed 1-2 um; right 39/50 with
 #: this, against 28 for removing all.
@@ -432,7 +432,7 @@ def _removal_order(
     otherwise the one nearest the wall first (``_wall_hugging``). Judged by
     the wall alone, a strand on the tree whose edge ran on into narrower
     vessels averaged nearer the wall than a strand lying wholly in the wide
-    lumen, and went: the thick vessel was left broken (E14.5, 2026-10-15).
+    lumen, and went: the thick vessel was left broken (Stack A, 2026-10-15).
 
     Empty when the run that would go first, off the tree, is a vessel of its
     own beside the one on it (:func:`_vessel_beside`): the caller then leaves
@@ -561,7 +561,7 @@ DEFAULT_SHORT_LOOP_UM = LOOP_SEARCH_UM
 #: its antipodal chords cross (:func:`loop_hole_um`, ``loop_measures``'
 #: ``chord_bg_median_um``) -- is left to the review list rather than broken
 #: (``short_loop_keep_hole_over_um``). Harvey's grids Q and Q2 (2026-10-15,
-#: 60 of the rule's breaks on E14.5, shown with the side it took): over 10 um
+#: 60 of the rule's breaks on Stack A, shown with the side it took): over 10 um
 #: 29 of 32 were real loops, under it 24 of 28 were not; 53/60 right
 #: leave-one-out against 33 for marking all one way. The six grid I/I2 loops
 #: shown again in Q2 all came back real, the four marked false included.
@@ -591,14 +591,14 @@ def remove_short_loops(
     round tissue, unless the hole it runs round is wider than
     *keep_hole_over_um* (:func:`loop_hole_um`).
 
-    Harvey's grids I and I2 (2026-10-13, 60 short loops of E14.5 judged on
+    Harvey's grids I and I2 (2026-10-13, 60 short loops of Stack A judged on
     the claudin-5 channel): 55 closed inside one vessel, and the mask rule
     had found none of them, since the background it reads between the two
     sides as tissue was not tissue there. No measure, of the mask or the raw
     image, found the five real ones (46-179 um round), and no length cut did
     better than taking a side of every short loop, which is right 92-93% of
     the time at the cost of one real loop in twelve. Grids Q and Q2
-    (2026-10-15) then showed 60 of the loops this broke on E14.5 with the
+    (2026-10-15) then showed 60 of the loops this broke on Stack A with the
     side it took: where a side should go it took the right one every time,
     but most loops round a wide hole were real
     (:data:`DEFAULT_SHORT_LOOP_KEEP_HOLE_UM`), and breaking one merged it
@@ -632,7 +632,7 @@ def remove_short_loops(
                 continue
             # A loop through a thick-vessel bridge is the join to the thick
             # centreline, not two strands: left to the review list. Taking a
-            # side of those cost E14.5 32 of its 110 bridges. A taper, the
+            # side of those cost Stack A 32 of its 110 bridges. A taper, the
             # thick vessel narrowing inside its own lumen, likewise.
             if any(
                 G.edges[a, b, key].get(IS_ZERO_RESISTANCE) or G.edges[a, b, key].get(THICK_TAPER)
@@ -706,7 +706,7 @@ def cuts_off_vessels(G: nx.MultiGraph, edge) -> bool:
 #: Whether :func:`remove_parallel_edges_in_lumen` rewires the edge of a pair
 #: that goes (``doubled_stretches.rewire_pair``) rather than deleting it
 #: whole, when a caller does not say; a run says with
-#: ``lumen_cleanup_rewire_pairs``. On E14.5 (2026-10-25, the clean-up on one
+#: ``lumen_cleanup_rewire_pairs``. On Stack A (2026-10-25, the clean-up on one
 #: graph either way) rewiring kept 0.9 mm more centreline and 0.7 points more
 #: of the mask covered, but left 9 more short loops -- all round holes of
 #: 10 um or more, which grids Q/Q2 found mostly real -- and 5 more interior

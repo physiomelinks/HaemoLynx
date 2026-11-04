@@ -297,7 +297,7 @@ EMPTY = np.zeros((4, 4, 4), dtype=np.float32)
 
 def test_every_wide_vessel_is_read_so_the_blur_does_not_depend_on_the_seed(monkeypatch):
     """Regression: one section of each of 150 random wide vessels left 20-33
-    fits on a real stack (E14.5 MCA, 2,157 wide vessels), and sigma_xy
+    fits on a real stack (Stack A, 2,157 wide vessels), and sigma_xy
     anywhere from 0.63 to 1.02 um and sigma_z from 1.70 to 2.36 um depending
     on the seed. Every vessel read, the seed has nothing left to choose."""
     graph = _graph(_short_wide_lines(400), [9.0] * 400)

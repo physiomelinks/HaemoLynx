@@ -415,7 +415,7 @@ def test_the_low_ram_join_carries_bridge_numbers_along_the_bridge(tmp_path, monk
     before the flake filter and the bridges changed the skeleton): every
     number carried is the one that read gives, the skeleton is the in-RAM
     one, and with nothing carried it is too, read slab by slab. On the
-    patella (2026-10-20) the slab reads were four fifths of the join."""
+    Stack E (2026-10-20) the slab reads were four fifths of the join."""
     from haemolynx.preprocessing import slab_labels
     from haemolynx.preprocessing import thick_vessels as tv
 

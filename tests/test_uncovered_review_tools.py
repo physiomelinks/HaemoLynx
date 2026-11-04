@@ -1,7 +1,7 @@
 """Grid UR1's builder (``scripts/uncovered_review/build_ur1.py``,
 ``PLAN_raw_confirmation.md`` Phase 4): the pieces of mask recovery is
 handed, what it draws in each, how the 30 are chosen, and the outline each
-card draws. The grid itself is built on E14.5 and never in CI."""
+card draws. The grid itself is built on Stack A and never in CI."""
 from __future__ import annotations
 
 import networkx as nx

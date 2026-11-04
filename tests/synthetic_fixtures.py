@@ -319,7 +319,7 @@ def write_generated_run(
     tmp_path: Path,
     *,
     seed: int = 11,
-    name: str = "e14_5.haemorun",
+    name: str = "stack_a.haemorun",
     settings: Mapping[str, Any] | None = None,
     open_ends: bool = False,
     solve: bool = False,

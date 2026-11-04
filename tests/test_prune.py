@@ -71,7 +71,7 @@ def test_a_radius_relative_threshold_prunes_the_spur_and_keeps_the_capillary():
 def test_the_pipeline_default_prunes_a_blind_spur_three_radii_long_and_no_more():
     """Lee thinning leaves spurs about as long as a capillary is wide, ending
     where the mask does. At 1.5 radii (3 um on a 2 um capillary) they stayed:
-    on E14.5, 1,037 of 1,234 dead ends were blind ends kept by that rule."""
+    on Stack A, 1,037 of 1,234 dead ends were blind ends kept by that rule."""
     from haemolynx.pipeline import default_schema
 
     multiple = default_schema()["min_stub_length_radius_multiple"].default

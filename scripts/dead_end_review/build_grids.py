@@ -300,7 +300,7 @@ PAGES = {
     "G1": dict(
         title="Dead End Review G1: interior dead ends",
         question="What is this dead end?",
-        lede=("The E14.5 segmentation (white = vessel) in the plane of one dead end (red), its heading cyan. "
+        lede=("The Stack A segmentation (white = vessel) in the plane of one dead end (red), its heading cyan. "
               "Toggle 'Raw image' to see the dextran signal. Your marks and drawings save as you go."),
         steps=["Look at where the red chain ends, and what the segmentation and the raw image do there.",
                "Mark what it is. For B, draw where the vessel goes on.",

@@ -34,7 +34,7 @@ from the path instead. Graph building bridges gaps in the skeleton with straight
 steps, often 5-20 um long, and a node moved by cluster collapse starts its
 edges off the skeleton too; no voxel lies along either, so judged against the
 skeleton alone not even the original passed, and an edge with a bridge kept its
-staircase. On the E14.5 MCA graph that kept 1137 of 3305 edges raw, 31 of its
+staircase. On the Stack A graph that kept 1137 of 3305 edges raw, 31 of its
 61 mm of vessel, nearly all for a straight step of 2 um or more; measured from
 the path where it leaves the skeleton, none are, and those edges came back 7%
 shorter.
@@ -546,7 +546,7 @@ def smooth_straight_steps(
 
     The lumen clean-up runs after the build's smoothing pass and joins a cut
     piece to the vessel it doubled with a straight chord across the lumen;
-    on E14.5 15 such chords of 5-8.5 um were left, drawn as kinks, and their
+    on Stack A 15 such chords of 5-8.5 um were left, drawn as kinks, and their
     14 vessels were 21 um (4%) longer than smoothed.
     """
     edges = edges_with_straight_steps(G, max_step_um)

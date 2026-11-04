@@ -46,7 +46,7 @@ NOTHING_TO_SAVE = (
 SAVE_IN_PROGRESS = "A run is still being saved. Wait for it to finish."
 
 #: gzip's default, 9, spends most of a save on the run's volumes: 12.6 s for
-#: one binary mask the size of E14.5's (75 MB) against 0.44 s at 1, for a file
+#: one binary mask the size of Stack A's (75 MB) against 0.44 s at 1, for a file
 #: 0.8 MB larger. A run holds several such volumes, and a larger stack scales
 #: with them.
 COMPRESS_LEVEL = 1

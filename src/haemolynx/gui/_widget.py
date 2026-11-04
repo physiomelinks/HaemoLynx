@@ -11537,7 +11537,7 @@ class _BatchRunWindow:
         self.design.currentIndexChanged.connect(lambda *_: self._conditions_changed())
         self.subject_pattern = QLineEdit()
         self.subject_pattern.setPlaceholderText(
-            "blank: the text before the condition phrase (28_3_d in 28_3_d_contra_FITC)"
+            "blank: the text before the condition phrase (11_3_d in 11_3_d_contra_FITC)"
         )
         self.subject_pattern.setToolTip(tips["subject_pattern"])
         self.subject_pattern.textChanged.connect(lambda *_: self._conditions_changed())
@@ -12891,7 +12891,7 @@ def _post_processing_controls(
         #: which the tab never edits), and each edit and decision since, oldest
         #: first. Undo makes the network again from the first by every edit
         #: but the last: copying the whole graph at every click took longer
-        #: than the click (0.8 s for a 57,000-vessel patella).
+        #: than the click (0.8 s for a 57,000-vessel network).
         undo_base=None,
         undo=[],
     )

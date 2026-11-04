@@ -681,10 +681,10 @@ def test_loading_a_config_with_a_long_spaced_path_round_trips(
 
     absolute = (
         tmp_path
-        / "Dropbox"
+        / "CloudDrive"
         / (
-            "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
-            "zstack_spot1_1p5z_MCAregion_Simple Segmentation_arteriole.tiff"
+            "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+            "zstack_spot1_1p5z_region001_Simple Segmentation_arteriole.tiff"
         )
     )
     absolute.parent.mkdir(parents=True, exist_ok=True)
@@ -718,10 +718,10 @@ def test_panel_save_config_round_trips_long_paths_with_spaces(
 
     absolute = (
         tmp_path
-        / "Dropbox"
+        / "CloudDrive"
         / (
-            "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
-            "zstack_spot1_1p5z_MCAregion_Simple Segmentation_.tiff"
+            "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+            "zstack_spot1_1p5z_region001_Simple Segmentation_.tiff"
         )
     )
     absolute.parent.mkdir(parents=True, exist_ok=True)

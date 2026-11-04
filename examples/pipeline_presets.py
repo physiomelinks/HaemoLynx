@@ -34,7 +34,7 @@ _EXAMPLE_PRESETS: dict[str, dict] = {
             'automated_vessel_assignment': True,
             'do_pericyte_construction': False,
             'final_render_mode': '3d',
-            'raw_image_path': '/home/farg967/Documents/git_projects/haemolynx/examples/images/Nerve_capillaries.tif',
+            'raw_image_path': 'examples/images/Nerve_capillaries.tif',
             'hold_ide_plots_open': False,
             'interactive_plots': False,
             'pericyte_mask_path': None,
@@ -164,7 +164,7 @@ _EXAMPLE_PRESETS: dict[str, dict] = {
     "full_fwhm": {
         "description": 'Enable full FWHM diameter workflow with detailed outputs for raw-image-aligned analysis.',
         "overrides": {
-            'raw_image_path': '/home/farg967/Documents/git_projects/haemolynx/examples/images/Nerve_capillaries.tif',
+            'raw_image_path': 'examples/images/Nerve_capillaries.tif',
             'hold_ide_plots_open': False,
             'interactive_plots': False,
             'show_plots_in_ide': False,

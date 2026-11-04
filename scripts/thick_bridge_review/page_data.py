@@ -5,7 +5,7 @@ drawn as the sheets draw it (``phase1_rules_grid.case_view``), on one sheet
 with the grid's question and its four marks.
 
     python scripts/thick_bridge_review/page_data.py \\
-        --capture outputs/tb/after/finish_input.pkl --graph outputs/tb/after/e14_graph.pkl \\
+        --capture outputs/tb/after/finish_input.pkl --graph outputs/tb/after/stack_a_graph.pkl \\
         --grid outputs/thick_bridge_review --out outputs/thick_bridge_review/page.json
 """
 from __future__ import annotations
@@ -72,7 +72,7 @@ def page_data(cases: list[dict], ids, capture: dict, G) -> dict:
     views = [case_view(page_case(by_id[i]), mask, region, tree_points, paths, vs) for i in ids]
     return {
         "grid": "TB",
-        "dataset": "E14.5 MCA, Harvey's Claudin segmentation",
+        "dataset": "Stack A, Harvey's Claudin segmentation",
         "voxel_size_zyx": [float(v) for v in vs],
         "slab_um": 12.0,
         "sheets": [{

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Grid SW: every dead end the thick-vessel split left at a thick vessel's
-wall in E14.5's surface layer, for Harvey to mark (2026-10-27: "mark which
+wall in Stack A's surface layer, for Harvey to mark (2026-10-27: "mark which
 should join the vein").
 
-On E14.5 the thick region is one piece in the top 38 um, so all 57 of the
+On Stack A the thick region is one piece in the top 38 um, so all 57 of the
 run's ``thick_wall`` dead ends lie in the surface layer. The thin-arm join
 gives each connected piece of thin skeleton one opening into the thick
 region; the split's wall join (``_join_dead_ends_at_walls``) is meant to
@@ -264,7 +264,7 @@ def main(argv=None) -> int:
     sheets = []
     for s, start in enumerate(range(0, len(cases), PER_SHEET), start=1):
         part = cases[start:start + PER_SHEET]
-        title = (f"E14.5 surface layer, grid {GRID} sheet {s} (IDs {part[0]['id']}-{part[-1]['id']}): dead ends "
+        title = (f"Stack A surface layer, grid {GRID} sheet {s} (IDs {part[0]['id']}-{part[-1]['id']}): dead ends "
                  f"the thick-vessel split left at a big vessel's wall\n{QUESTION}")
         grid._sheet(part, out / f"grid_{GRID}_{s}.png", mask, region, tree_points, paths, vs, title)
         sheets.append({
@@ -273,7 +273,7 @@ def main(argv=None) -> int:
             "cases": [grid.case_view(case, mask, region, tree_points, paths, vs) for case in part],
         })
     data = {
-        "grid": GRID, "dataset": "E14.5 MCA, Harvey's Claudin segmentation (today's run, 9a620be2)",
+        "grid": GRID, "dataset": "Stack A, Harvey's Claudin segmentation (today's run, 9a620be2)",
         "voxel_size_zyx": [float(v) for v in vs], "slab_um": 2 * phase5.HALF_SLAB_UM, "sheets": sheets,
     }
     (out / "page.json").write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")

@@ -35,7 +35,7 @@ SPECS = {
         ],
         "tokens": ("#b42318", "#fbe4e1", "#1d4ed8", "#e1e8fb"),
         "tokens_dark": ("#f07468", "#3a1c19", "#7aa2ff", "#18233d"),
-        "about": ("E14.5 MCA region, 30 vessels at least 8.4 µm wide (wall to wall), shuffled."),
+        "about": ("Stack A region, 30 vessels at least 8.4 µm wide (wall to wall), shuffled."),
         "blue": "the rest of its tree (vessels ≥ 8.4 µm joined to it)",
     },
     "SZ1": {
@@ -49,7 +49,7 @@ SPECS = {
         ],
         "tokens": ("#9a3412", "#fde8dc", "#0e7490", "#dbf1f6"),
         "tokens_dark": ("#fb923c", "#3b2214", "#67d3e8", "#12303a"),
-        "about": ("E14.5 MCA region, 30 vessels 5-15 µm wide (wall to wall), three in each 1 µm band, "
+        "about": ("Stack A region, 30 vessels 5-15 µm wide (wall to wall), three in each 1 µm band, "
                   "none in your large masks, shuffled. Your marks set where the run tells small "
                   "vessels from capillaries."),
         "blue": "vessels in your large arteriole and vein masks",
@@ -59,7 +59,7 @@ SPECS = {
 SPECS["SZ2"] = {
     **SPECS["SZ1"],
     "title": "Grid SZ2 Small Vessel or Capillary",
-    "about": ("E14.5 MCA region, 30 fresh vessels 4-18 µm wide (wall to wall), none in your large "
+    "about": ("Stack A region, 30 fresh vessels 4-18 µm wide (wall to wall), none in your large "
               "masks or in grid SZ1, shuffled. Your marks check the small-vessel rule (6-15 µm, grown "
               "from the large vessels) on vessels it was not set on."),
 }
@@ -67,7 +67,7 @@ SPECS["SZ2"] = {
 SPECS["SZR"] = {
     **SPECS["SZ1"],
     "title": "Grid SZR Small Vessel or Capillary Again",
-    "about": ("E14.5 MCA region, 20 vessels from grids SZ1 and SZ2 shown again under new numbers, "
+    "about": ("Stack A region, 20 vessels from grids SZ1 and SZ2 shown again under new numbers, "
               "shuffled. Mark each as you see it now; your earlier marks are not shown. Your marks "
               "say how often a mark repeats."),
 }
