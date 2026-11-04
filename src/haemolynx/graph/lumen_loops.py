@@ -25,7 +25,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
     _sample_step,
 )
 
-from ._helpers import densify_polyline, edge_sample_points, node_position_key
+from ._helpers import antipodal_chords, densify_polyline, edge_sample_points, node_position_key
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 
 logger = logging.getLogger(__name__)
@@ -41,17 +41,13 @@ _UNUSABLE = 1e12
 def _chord_background_um(loop_um: np.ndarray, support: MaskSupport) -> np.ndarray | None:
     """The background each antipodal chord of a closed path crosses, in
     microns: from each point of the path, evenly spaced, to the point half
-    the path away. None when the path is too short to have chords."""
-    loop = np.asarray(loop_um, dtype=float).reshape(-1, 3)
+    the path away (``_helpers.antipodal_chords``). None when the path is too
+    short to have chords."""
     step = _sample_step(support.voxel_size_zyx)
-    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))])
-    count = int(np.ceil(arc[-1] / step))
-    if count < 4:
+    found = antipodal_chords(loop_um, step)
+    if found is None:
         return None
-    along = np.arange(count) * (arc[-1] / count)
-    points = np.column_stack([np.interp(along, arc, loop[:, axis]) for axis in range(3)])
-    half = count // 2
-    start, chords = points[:half], points[half:2 * half] - points[:half]
+    _starts_at, _ends_at, start, chords = found
     lengths = np.linalg.norm(chords, axis=1)
     samples = int(np.ceil(lengths.max() / step)) + 1
     if samples < 2:
@@ -59,7 +55,7 @@ def _chord_background_um(loop_um: np.ndarray, support: MaskSupport) -> np.ndarra
     t = np.linspace(0.0, 1.0, samples)
     flags = support.inside(
         (start[:, None, :] + t[None, :, None] * chords[:, None, :]).reshape(-1, 3)
-    ).reshape(half, samples)
+    ).reshape(len(start), samples)
     return (~flags).sum(axis=1) * lengths / (samples - 1)
 
 

@@ -128,11 +128,13 @@ def test_every_caller_gives_the_same_verdict():
         support = MaskSupport(case.mask, VOXEL_SIZE)
         ends = de.classify_dead_ends(case.graph, extent_um=EXTENT, support=support)
         leaving = {tip for tip, end in ends.items() if end.kind == de.LEAVES_IMAGE}
+        # The report counts a lone edge (both its ends dead ends) apart, wherever it lies.
+        lone_edges = {tip for tip in ends if all(case.graph.degree(o) == 1 for o in case.graph.neighbors(tip))}
         judged = diagnostics_classify(case.graph, case.mask, voxel_size_zyx=VOXEL_SIZE, mask_support=support)
-        assert set(judged["at_image_face"]) == leaving, case.name
+        assert set(judged["at_image_face"]) == leaving - lone_edges, case.name
         assert {tip: end.kind for tip, end in judged["ends"].items()} == {t: e.kind for t, e in ends.items()}
         report = diagnose_lumen_artefacts(case.graph, case.mask, voxel_size_zyx=VOXEL_SIZE, mask_support=support)
-        assert report["dead_ends_at_image_face"] == len(leaving), case.name
+        assert report["dead_ends_at_image_face"] == len(leaving - lone_edges), case.name
         assert sum(report["dead_end_kind_counts"].values()) == len(ends)
         listed = {item.nodes[0] for item in nr.find_dead_ends(case.graph, support)}
         assert listed == set(ends) - leaving - _second_island_ends(case.graph, ends), case.name
@@ -262,13 +264,16 @@ def test_census_lists_every_kind():
 
 
 def _island_nodes(G, ends):
-    return {n for tip, end in ends.items() if end.kind == de.ISLAND_END for edge in end.chain for n in edge[:2]}
+    """The nodes of every chain the classifier ran to another dead end, not
+    to a junction: an island end's, or one leaving the image with none."""
+    return {n for tip, end in ends.items() if G.degree(end.junction) <= 1 for edge in end.chain for n in edge[:2]}
 
 
 @pytest.mark.parametrize("make", CASES, ids=lambda make: make.__name__)
 def test_removing_pieces_without_a_junction_takes_exactly_the_island_ends_chains(make):
     """The removal reads the one definition: it takes the nodes of every chain
-    the classifier calls an island end, and nothing else."""
+    the classifier runs to another dead end (an island end's, or a vessel's
+    with no junction leaving the image), and nothing else."""
     case = make()
     support = MaskSupport(case.mask, VOXEL_SIZE)
     ends = de.classify_dead_ends(case.graph, extent_um=EXTENT, support=support)
@@ -531,6 +536,37 @@ def test_the_vessels_the_image_faces_cut_are_the_chains_of_the_ends_leaving_it()
     assert len(de.vessels_cut_by_image_faces(G)) == 2
 
 
+def test_a_vessel_with_no_junction_leaves_the_image_where_it_reaches_a_face():
+    """Regression: an end of a piece with no junction was an island end
+    before the face test was asked, so a lone vessel crossing the image face
+    to face had no open end and no censored length. An island's end inside
+    the image is still an island end."""
+    from dead_end_fixtures import RADIUS
+    from haemolynx.graph._helpers import edge_id
+    from lumen_artefact_fixtures import capsule, polyline_graph
+
+    lone = ((10.0, 30.0, 0.0), (10.0, 30.0, 79.0))          # face to face along x
+    half = ((10.0, 50.0, 0.0), (10.0, 50.0, 20.0), (10.0, 50.0, 40.0))  # one face, two edges
+    mask = capsule(np.zeros(SHAPE, dtype=bool), (10, 30, -5), (10, 30, 85), RADIUS)
+    capsule(mask, (10, 50, -5), (10, 50, 40), RADIUS)
+    G = polyline_graph([list(lone), list(half[:2]), list(half[1:])])
+    G.graph["image_voxel_size_zyx"] = VOXEL_SIZE
+    de.record_image_extent(G, SHAPE, VOXEL_SIZE)
+    support = MaskSupport(mask, VOXEL_SIZE)
+
+    for judged in (de.classify_dead_ends(G, extent_um=EXTENT, support=support),
+                   de.classify_dead_ends(G, extent_um=EXTENT)):
+        assert {tip: end.kind for tip, end in judged.items()} == {
+            lone[0]: de.LEAVES_IMAGE, lone[1]: de.LEAVES_IMAGE,
+            half[0]: de.LEAVES_IMAGE, half[2]: de.ISLAND_END,
+        }
+    de.classify_and_mark(G, support=support)
+    assert set(de.open_end_nodes(G)) == {lone[0], lone[1], half[0]}
+    assert de.vessels_cut_by_image_faces(G) == {edge_id(*e) for e in G.edges(keys=True)}
+    # The removal still takes every piece with no junction, open ends and all.
+    assert de.remove_pieces_without_junction(G)["pieces"] == 2 and G.number_of_nodes() == 0
+
+
 # --- at a thick vessel's wall (PLAN_bridging.md 1.3) ---------------------------
 
 
@@ -701,3 +737,25 @@ def test_every_face_test_reads_a_2d_image_as_having_no_z_faces():
     depth, _leaves = nr._face_readers(G, pos, None, None)
     assert depth(1) == pytest.approx(29.0)  # x = 30 in a 60 um plane: 29 um from the x = 59 face
     assert _vessels_within_face_margin(G, 5.0) == []
+
+
+def test_merging_the_junctions_a_removal_left_touches_no_loop_elsewhere():
+    """Regression: the merge's duplicate pass ran over the whole graph, so a
+    removal far away took one arc of every two-edge loop in it (the
+    re-trace's restored loops included)."""
+    import networkx as nx
+
+    from haemolynx.graph.degree2 import smart_multigraph_degree2_removal
+
+    G = nx.MultiGraph()
+    for node, pos in {"A": (0, 0, 0), "B": (0, 0, 20), "C": (0, 50, 0), "D": (0, 50, 10), "E": (0, 50, 20)}.items():
+        G.add_node(node, pos=np.array(pos, dtype=float))
+    G.add_edge("A", "B", voxels=[[0, 0, 0], [0, 1, 10], [0, 0, 20]], length=20.1)
+    G.add_edge("A", "B", voxels=[[0, 0, 0], [0, -1, 10], [0, 0, 20]], length=20.1)
+    G.add_edge("C", "D", voxels=[[0, 50, 0], [0, 50, 10]], length=10.0)
+    G.add_edge("D", "E", voxels=[[0, 50, 10], [0, 50, 20]], length=10.0)
+
+    smart_multigraph_degree2_removal(G, None, max_degree=None, nodes=["D"])
+
+    assert "D" not in G and G.has_edge("C", "E")
+    assert G.number_of_edges("A", "B") == 2

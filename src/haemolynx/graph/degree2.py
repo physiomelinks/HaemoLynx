@@ -44,6 +44,19 @@ RECOVERED_FRACTION = "recovered_fraction"
 BRIDGED_FRACTION = "bridged_fraction"
 BRIDGE_KINDS = "bridge_kinds"
 
+#: The edge mark on what the interior dead ends' recovery drew
+#: (``pipeline.stages._remove_and_recover_interior_dead_ends``), and its
+#: share of a vessel merged from one, carried as ``recovered`` is.
+INTERIOR_RECOVERY = "interior_recovery"
+INTERIOR_RECOVERY_FRACTION = "interior_recovery_fraction"
+
+#: Each share, and the mark of an edge that is wholly what it counts.
+_WHOLE_MARKS = {
+    RECOVERED_FRACTION: "recovered",
+    BRIDGED_FRACTION: "bridge_kind",
+    INTERIOR_RECOVERY_FRACTION: INTERIOR_RECOVERY,
+}
+
 
 def _drawn_fraction(data: dict, fraction: str, whole: bool) -> float:
     if fraction in data:
@@ -62,18 +75,23 @@ def carry_merged_provenance(merged: dict, d1: dict, d2: dict) -> dict:
     it. Merges dropped it, so a report could not tell a recovered or bridged
     stretch once the clean-up had merged it into its vessel.
 
-    ``recovered`` and ``bridge_kind`` (with ``bridge_background_um``) describe
-    the whole edge, so they stay only where both halves had them, one kind of
-    bridge: recovery's own trims (``mask_recovery.keep_two_ended_recovery``,
-    ``_trim_recovered_spur``) take out a ``recovered`` edge whole, and must
-    not take a vessel with it. :data:`RECOVERED_FRACTION`,
-    :data:`BRIDGED_FRACTION` and :data:`BRIDGE_KINDS` say how much of it
-    either drew, however it was merged, weighted by each half's ``length``."""
-    for key in ("recovered", "bridge_kind", "bridge_background_um", RECOVERED_FRACTION, BRIDGED_FRACTION, BRIDGE_KINDS):
+    ``recovered``, :data:`INTERIOR_RECOVERY` and ``bridge_kind`` (with
+    ``bridge_background_um``) describe the whole edge, so they stay only where
+    both halves had them, one kind of bridge: recovery's own trims
+    (``mask_recovery.keep_two_ended_recovery``, ``_trim_recovered_spur``) take
+    out a ``recovered`` edge whole, and must not take a vessel with it.
+    :data:`RECOVERED_FRACTION`, :data:`INTERIOR_RECOVERY_FRACTION`,
+    :data:`BRIDGED_FRACTION` and :data:`BRIDGE_KINDS` say how much of it each
+    drew, however it was merged, weighted by each half's ``length``."""
+    for key in (
+        "recovered", INTERIOR_RECOVERY, "bridge_kind", "bridge_background_um",
+        RECOVERED_FRACTION, INTERIOR_RECOVERY_FRACTION, BRIDGED_FRACTION, BRIDGE_KINDS,
+    ):
         merged.pop(key, None)
     halves = (d1, d2)
-    if all(d.get("recovered") for d in halves):
-        merged["recovered"] = True
+    for mark in ("recovered", INTERIOR_RECOVERY):
+        if all(d.get(mark) for d in halves):
+            merged[mark] = True
     kinds = [d.get("bridge_kind") for d in halves]
     if kinds[0] and kinds[0] == kinds[1]:
         merged["bridge_kind"] = kinds[0]
@@ -83,11 +101,8 @@ def carry_merged_provenance(merged: dict, d1: dict, d2: dict) -> dict:
     lengths = np.array([float(d.get("length") or 0.0) for d in halves])
     total = float(lengths.sum())
     weights = lengths / total if total > 0 else np.full(2, 0.5)
-    for fraction, whole in (
-        (RECOVERED_FRACTION, lambda d: bool(d.get("recovered"))),
-        (BRIDGED_FRACTION, lambda d: bool(d.get("bridge_kind"))),
-    ):
-        share = float(sum(w * _drawn_fraction(d, fraction, whole(d)) for w, d in zip(weights, halves)))
+    for fraction, mark in _WHOLE_MARKS.items():
+        share = float(sum(w * _drawn_fraction(d, fraction, bool(d.get(mark))) for w, d in zip(weights, halves)))
         if share > 0.0:
             merged[fraction] = min(share, 1.0)
     every_kind = _bridge_kinds(d1) | _bridge_kinds(d2)
@@ -97,10 +112,11 @@ def carry_merged_provenance(merged: dict, d1: dict, d2: dict) -> dict:
 
 
 def drawn_um(data: dict, fraction: str) -> float:
-    """How many um of an edge mask recovery (:data:`RECOVERED_FRACTION`) or
+    """How many um of an edge mask recovery (:data:`RECOVERED_FRACTION`), the
+    interior dead ends' recovery (:data:`INTERIOR_RECOVERY_FRACTION`) or
     bridges (:data:`BRIDGED_FRACTION`) drew: all of it for an edge that is
     one, the carried share of a vessel merged from one."""
-    whole = bool(data.get("recovered") if fraction == RECOVERED_FRACTION else data.get("bridge_kind"))
+    whole = bool(data.get(_WHOLE_MARKS[fraction]))
     try:
         length = float(data.get("length") or 0.0)
     except (TypeError, ValueError):
@@ -347,6 +363,7 @@ def create_trivial_merged_edge(
 def duplicate_parallel_edges(
     G: nx.MultiGraph,
     inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    nodes: Optional[Iterable[Any]] = None,
 ) -> List[Tuple[Any, Any, Any]]:
     """The ``(u, v, key)`` edges that repeat another edge between the same two
     nodes: the same vessel twice (``are_paths_similar``: within 3 um of each
@@ -360,7 +377,7 @@ def duplicate_parallel_edges(
     """
     duplicates: List[Tuple[Any, Any, Any]] = []
     seen = set()
-    for u, v in G.edges():
+    for u, v in (G.edges() if nodes is None else G.edges([n for n in nodes if n in G])):
         if u == v or (u, v) in seen or G.number_of_edges(u, v) < 2:
             continue
         seen.update({(u, v), (v, u)})
@@ -387,12 +404,14 @@ def duplicate_parallel_edges(
 def remove_duplicate_parallel_edges(
     G: nx.MultiGraph,
     inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    nodes: Optional[Iterable[Any]] = None,
 ) -> int:
-    """Remove every edge :func:`duplicate_parallel_edges` names; how many.
+    """Remove every edge :func:`duplicate_parallel_edges` names (of those at
+    *nodes*, when given); how many.
 
     Never disconnects anything: each removed edge leaves the one it repeats.
     """
-    duplicates = duplicate_parallel_edges(G, inside_lumen)
+    duplicates = duplicate_parallel_edges(G, inside_lumen, nodes)
     for u, v, key in duplicates:
         G.remove_edge(u, v, key=key)
     return len(duplicates)
@@ -475,7 +494,9 @@ def smart_multigraph_degree2_removal(
     total_removed = duplicates_removed = 0
     only = None if nodes is None else list(dict.fromkeys(nodes))
     for iteration in range(max_iterations):
-        duplicates_removed += remove_duplicate_parallel_edges(G, inside_lumen)
+        # With *nodes*, only the edges at them: a merge asked for there took a
+        # loop's arc anywhere in the graph (the re-trace's loops included).
+        duplicates_removed += remove_duplicate_parallel_edges(G, inside_lumen, only)
         removed_this_iter = 0
 
         for node in list(G.nodes()) if only is None else only:

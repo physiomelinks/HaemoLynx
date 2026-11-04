@@ -1087,6 +1087,86 @@ def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_t
     assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)
 
 
+# --- a loaded run's skeleton on disk is its own -------------------------------
+
+
+def _skeleton_groups(skeleton: np.ndarray) -> list[StageLayers]:
+    return [
+        StageLayers(
+            stage="skeletonise",
+            title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        )
+    ]
+
+
+def test_a_skeleton_another_run_wrote_since_is_replaced_by_the_runs_own(tmp_path):
+    """A loaded run's Run from this stage loads {stem}_skeleton.npy. Any file
+    there was trusted: a later run in the same folder had rewritten it, and the
+    loaded run was rebuilt from that run's skeleton."""
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    other = np.zeros((5, 5, 5), dtype=bool)
+    other[2, 2, :] = True
+    np.save(tmp_path / "input_skeleton.npy", other)
+    own = np.zeros((5, 5, 5), dtype=bool)
+    own[:, 2, 2] = True
+
+    path = ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")
+
+    assert path == skeleton_resume_path(tmp_path, "input")
+    assert np.array_equal(np.load(path), own)
+
+    # Another shape is another skeleton too.
+    np.save(path, np.zeros((5, 5, 6), dtype=bool))
+    assert np.array_equal(np.load(ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")), own)
+
+
+def test_a_skeleton_on_disk_that_is_the_runs_own_or_with_none_to_compare_is_left_alone(tmp_path):
+    import os
+
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    own = np.zeros((5, 5, 5), dtype=bool)
+    own[:, 2, 2] = True
+    path = skeleton_resume_path(tmp_path, "input")
+    np.save(path, own.astype(np.uint8))  # the same voxels, saved as another type
+    old_ns = path.stat().st_mtime_ns - 60_000_000_000
+    os.utime(path, ns=(old_ns, old_ns))
+
+    assert ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input") == path
+    assert path.stat().st_mtime_ns == old_ns
+    assert ensure_skeleton_artefact([_group("skeletonise")], tmp_path, "input") == path
+    assert path.stat().st_mtime_ns == old_ns
+    assert ensure_skeleton_artefact([_group("skeletonise")], tmp_path, "missing") is None
+
+
+def test_a_checkpoint_not_keeping_its_output_still_reads_its_boundary_nodes(tmp_path):
+    """A batch keeps no stage outputs (it never resumes), but its .haemorun
+    still needs the large-vessel hand-off nodes only the output carries."""
+    graph = a_graph()
+    results = ResultLayers()
+    output = _boundaries_output(graph)
+    group = results.stage_finished("assign_boundaries", output)
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    checkpoints = StageCheckpoints()
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        output_dir=tmp_path / "out",
+    )
+    checkpoints.record("skeletonise", _group("skeletonise"), results, output=volume)
+    assert checkpoints.get("skeletonise").output is not None  # kept by default
+    checkpoints.record("skeletonise", _group("skeletonise"), results, output=volume, keep_output=False)
+    checkpoints.record("assign_boundaries", group, results, output=output, keep_output=False)
+
+    assert checkpoints.get("skeletonise").output is None
+    recorded = checkpoints.get("assign_boundaries")
+    assert recorded.large_arteriole_boundary_nodes == (1,)
+    assert recorded.large_venule_boundary_nodes == (2,)
+
+
 @pytest.mark.parametrize(
     "now, starts_at",
     [
@@ -1151,3 +1231,43 @@ def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
     skeleton_path.write_bytes(b"not a skeleton")
     assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
     assert np.array_equal(np.load(skeleton_path), skeleton)
+
+
+def test_a_resumed_skeleton_is_written_with_the_grid_it_was_made_on(tmp_path):
+    """Written alone, the resumed skeleton had no record: the run loading it
+    checked only its shape, and took one cut from a box moved since, of the
+    same size."""
+    from haemolynx.gui.stage_checkpoints import skeleton_record_path
+    from haemolynx.io.crop import CropBox
+    from haemolynx.pipeline.stages import _check_saved_skeleton_grid, _saved_skeleton_record
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints = StageCheckpoints()
+    results = built(a_graph(resistance=1.0))
+    skeleton = np.zeros((2, 3, 4), dtype=bool)
+    skeleton[1, 1, :] = True
+    box = CropBox((0, 0, 0), (2, 3, 4), (2, 10, 10))
+    checkpoints.record(
+        "skeletonise",
+        StageLayers(
+            stage="skeletonise", title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        ),
+        results, settings=settings, output=SimpleNamespace(crop=box, downsample=None),
+    )
+    for stage in ("build_network", "assign_boundaries", "assign_diameters",
+                  "build_haemodynamic_model", "solve", "post_process"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    assert checkpoints.get("skeletonise").skeleton_grid["crop"] == {
+        "start_zyx": [0, 0, 0], "stop_zyx": [2, 3, 4],
+    }
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    record = _saved_skeleton_record(skeleton_record_path(tmp_path / "out", "stack"), skeleton_path)
+    assert record["crop"] == {"start_zyx": [0, 0, 0], "stop_zyx": [2, 3, 4]} and record["downsample"] is None
+    _check_saved_skeleton_grid(skeleton_path, skeleton.shape, skeleton.shape, record, box, None)
+    moved = CropBox((0, 5, 0), (2, 8, 4), (2, 10, 10))
+    with pytest.raises(ValueError, match="crop_on_import"):
+        _check_saved_skeleton_grid(skeleton_path, skeleton.shape, skeleton.shape, record, moved, None)

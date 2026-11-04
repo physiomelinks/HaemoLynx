@@ -185,8 +185,14 @@ def prune_vascular_stubs(
       inside, so a real branch beside a hair, running on past the hair's
       tip, is kept.
 
-    Stubs at an image face are kept as before; the two whatever-its-length
-    rules apply there too, since neither is a vessel the image cut through.
+    Stubs at an image face are kept as before. Of the whatever-its-length
+    rules only the mask's applies to a tip leaving the image (a stub mostly
+    off the mask is no vessel the image cut through): the spur and hair
+    rules, which read the lumens round a stub, took a wide vessel's last
+    stretch to the face past a branch -- in its own lumen all the way -- and
+    with it the vessel's open end. A tip leaves the image as
+    *image_face_test* says, else when it touches a face of
+    *image_extent_um* (within its radius or two voxels).
     *index_memo*, a dict passed to every call on one graph and mask, keeps
     the centreline index's points and radii per unchanged edge between
     calls (``_centreline_index``). *image_face_test* ``(tip, path_from_junction) -> bool``, when given,
@@ -241,14 +247,30 @@ def prune_vascular_stubs(
         tip_radius = float(np.asarray(lumen_radius_at(path[-1:]), dtype=float).reshape(-1)[0])
         return protrusion < STUB_PROTRUSION_RADII * tip_radius
 
-    def not_a_vessel(path: np.ndarray, junction: Any) -> bool:
-        if 2 * int(np.count_nonzero(inside_lumen(path))) < len(path):
-            return True
+    def off_the_mask(path: np.ndarray) -> bool:
+        return 2 * int(np.count_nonzero(inside_lumen(path))) < len(path)
+
+    def inside_parent_lumen(path: np.ndarray) -> bool:
         if radius_at is None:
             return False
         junction_pos = path[0]
         parent_radius = float(radius_at(junction_pos))
         return parent_radius > 0 and float(np.linalg.norm(path[-1] - junction_pos)) < parent_radius + 1.0
+
+    def leaves_the_image(node: Any, path: np.ndarray) -> bool:
+        """For the spur and hair rules: *image_face_test*, else the tip
+        touching a face (the distance part of ``dead_ends.leaves_image``).
+        Within its threshold of one is not enough: in a stack 20 um deep
+        that is every tip."""
+        if image_face_test is not None:
+            return image_face_test(node, path)
+        if extent is None:
+            return False
+        from .dead_ends import leaves_image
+
+        tip = np.asarray(G_pruned.nodes[node]["pos"], dtype=float)
+        radius = float(radius_at(tip)) if radius_at is not None else None
+        return leaves_image(tip, extent, tip_radius_um=radius, voxel_size_zyx=voxel_size)[0]
 
     def mask_continues(path: np.ndarray) -> bool:
         reverse = path[::-1]
@@ -294,9 +316,16 @@ def prune_vascular_stubs(
                     else None
                 )
                 if path is not None and len(path) > 1:
+                    # The spur and hair rules judge a stub by the lumens
+                    # round it, and a wide vessel's last stretch to the face,
+                    # past a branch, lies in its own lumen: a tip the image
+                    # cut through is not taken by them.
                     if inside_lumen is not None and (
-                        not_a_vessel(path, junction)
-                        or (index is not None and inside_other_lumens(path, edges, index))
+                        off_the_mask(path)
+                        or (
+                            (inside_parent_lumen(path) or (index is not None and inside_other_lumens(path, edges, index)))
+                            and not leaves_the_image(node, path)
+                        )
                     ):
                         nodes_to_remove.extend(goes)
                         not_vessels += 1

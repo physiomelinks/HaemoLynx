@@ -1374,3 +1374,39 @@ def test_a_batch_without_conditions_writes_one_template_and_none_without_runs(
     summary = run_batch(_values(schema, tmp_path), schema, matches, again, folders=folders)
     assert summary.templates == () and not list(again.glob("*.haemobatch"))
     assert all(r.status == batch_run.DONE for r in summary.results)
+
+
+def test_a_batch_image_keeps_no_stage_outputs_in_its_checkpoints(tmp_path, schema, monkeypatch):
+    """A batch recorded each stage as the panel does, keeping what segment,
+    skeletonise and build_network returned (the volumes and masks) for a
+    resume a batch never makes. Run for real through graph building."""
+    import haemolynx.pipeline as pipeline
+    from haemolynx.gui import stage_checkpoints
+
+    made = []
+
+    class Recorded(stage_checkpoints.StageCheckpoints):
+        def __init__(self):
+            super().__init__()
+            made.append(self)
+
+    real_run = pipeline.run_pipeline_stages
+
+    def through_graph_building(settings, schema, **kwargs):
+        return real_run(settings, schema, stop_after="build_network", **kwargs)
+
+    monkeypatch.setattr(stage_checkpoints, "StageCheckpoints", Recorded)
+    monkeypatch.setattr(pipeline, "run_pipeline_stages", through_graph_building)
+    shutil.copy(FIXTURE, tmp_path / "A_seg.tif")
+    values = {
+        **_values(schema, tmp_path),
+        "input_path": tmp_path / "A_seg.tif",
+        "output_dir": tmp_path / "out",
+    }
+
+    graph = batch_run.run_image(values, schema)
+
+    assert graph is not None and graph.number_of_edges() > 0
+    (checkpoints,) = made
+    assert set(stage_checkpoints.RESUMABLE_OUTPUTS) <= set(checkpoints.stages)
+    assert [record.stage for record in checkpoints.records() if record.output is not None] == []

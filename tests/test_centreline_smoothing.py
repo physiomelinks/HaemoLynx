@@ -853,6 +853,83 @@ def _smoothed_wave_amplitude(along_axis: int) -> float:
     return float(np.abs(middle[:, 1] - 10.0).max())
 
 
+def _straight_staircase(start, end, spacing):
+    """A straight vessel from *start* to *end* (microns, both on voxel
+    centres) traced as the 26-connected voxel staircase a skeleton gives on
+    *spacing*: the one-edge graph, its skeleton, and its true length."""
+    spacing = np.asarray(spacing, dtype=float)
+    a, b = np.asarray(start, dtype=float) / spacing, np.asarray(end, dtype=float) / spacing
+    steps = int(np.ceil(np.abs(b - a).max()))
+    index = []
+    for t in np.linspace(0.0, 1.0, steps + 1):
+        voxel = tuple(int(i) for i in np.rint(a + t * (b - a)))
+        if not index or index[-1] != voxel:
+            index.append(voxel)
+    index = np.asarray(index)
+    skeleton = np.zeros(index.max(axis=0) + 3, dtype=bool)
+    skeleton[tuple(index.T)] = True
+    path = index * spacing
+    G = nx.MultiGraph()
+    G.add_node(0, pos=path[0])
+    G.add_node(1, pos=path[-1])
+    G.add_edge(0, 1, key=0, voxels=path.tolist())
+    return G, skeleton, float(np.linalg.norm(np.subtract(end, start)))
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 1.0, 1.0), (2.0, 0.5, 0.5), (3.0, 0.5, 0.5), (0.5, 1.0, 1.0)])
+@pytest.mark.parametrize("end", [(30.0, 26.0, 30.0), (30.0, 14.0, 27.0)])
+def test_an_oblique_vessel_on_anisotropic_voxels_comes_back_its_own_length(spacing, end):
+    """Regression: on anisotropic voxels the path was resampled at the finest
+    step, so the passes smoothed over about 1.5 um while the coarse axis's
+    staircase is a voxel of it high: a 41.6 um oblique vessel measured
+    47.1 um on 2 x 0.5 x 0.5 um voxels and 50.5 um on 3 x 0.5 x 0.5."""
+    G, skeleton, true_length = _straight_staircase((6.0, 2.0, 6.0), end, spacing)
+    raw_length = float(np.linalg.norm(np.diff(np.asarray(G.edges[0, 1, 0]["voxels"]), axis=0), axis=1).sum())
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=spacing)
+
+    edge = G.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] in ("smoothed", "relaxed")
+    assert edge["length"] == pytest.approx(true_length, rel=0.02), f"raw {raw_length:.2f} um"
+    assert np.allclose(edge["voxels"][0], G.nodes[0]["pos"]) and np.allclose(edge["voxels"][-1], G.nodes[1]["pos"])
+
+
+def test_chaikin_smooths_an_oblique_vessel_on_anisotropic_voxels_too():
+    """The coarse axis is smoothed by the run's own method: Chaikin's corner
+    cutting, which makes points of its own, as well as Taubin."""
+    spacing = (2.0, 0.5, 0.5)
+    G, skeleton, true_length = _straight_staircase((6.0, 2.0, 6.0), (30.0, 26.0, 30.0), spacing)
+    raw_length = float(np.linalg.norm(np.diff(np.asarray(G.edges[0, 1, 0]["voxels"]), axis=0), axis=1).sum())
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=spacing, method="chaikin", iterations=2)
+
+    edge = G.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] in ("smoothed", "relaxed")
+    assert true_length - 1e-9 <= edge["length"] < raw_length
+
+
+@pytest.mark.parametrize(
+    "spacing, always_resample, length, points",
+    [
+        ((1.0, 1.0, 1.0), False, 36.75446337706389, 25),
+        ((1.0, 1.0, 1.0), True, 37.01087473854225, 40),
+        ((2.0, 2.0, 2.0), False, 37.43312882725514, 13),
+        ((2.0, 2.0, 2.0), True, 37.72279352428807, 21),
+    ],
+)
+def test_isotropic_voxels_are_smoothed_exactly_as_before(spacing, always_resample, length, points):
+    """Pinned to the output before anisotropic paths were resampled at the
+    coarsest step: on cube voxels nothing changed."""
+    G, skeleton, _true = _straight_staircase((6.0, 2.0, 6.0), (30.0, 20.0, 27.0), spacing)
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=spacing, always_resample=always_resample)
+
+    edge = G.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] == "smoothed"
+    assert len(edge["voxels"]) == points
+    assert edge["length"] == pytest.approx(length, rel=1e-12, abs=0.0)
+
+
 def test_a_vessel_running_along_z_is_smoothed_over_the_same_distance_as_one_in_plane():
     """Regression (audit): each pass averaged neighbouring vertices, a voxel
     apart -- four times further along a 2 um z than in-plane -- so the same

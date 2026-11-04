@@ -666,3 +666,28 @@ def test_bridging_settings_are_in_effect_with_a_saved_skeleton():
     assert not [m for m in schema.ineffective_settings(values) if "bridge_" in m]
     values["bridge_require_mask_support"] = False
     assert any("bridge_max_background_gap_um" in m for m in schema.ineffective_settings(values))
+
+
+def test_the_graph_tab_rows_follow_the_readers_they_have():
+    """Regressions: the interior recovery read the recovery thresholds while
+    they were greyed under mask recovery off; the consistency thresholds
+    showed under the low-RAM option, which skips the checks they warn by;
+    and no Graph-tab row greyed for a synthetic network, which reads none."""
+    from haemolynx.gui.form import prerequisite_chain
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.progress import STAGES
+
+    schema = default_schema()
+    values = {**schema.defaults(), "recover_uncovered_mask_vessels": False, "remove_interior_dead_ends": True,
+              "recovery_min_length_um": 50.0, "recovery_min_region_volume_um3": 500.0}
+    assert not [m for m in schema.ineffective_settings(values) if "recovery_min" in m]
+
+    values = {**schema.defaults(), "use_memmap_loading": True, "graph_missing_vessel_warn_below": 0.5}
+    assert any("graph_missing_vessel_warn_below" in m for m in schema.ineffective_settings(values))
+
+    (graph_tab,) = [stage for stage in STAGES if stage.call == "build_network"]
+    ungated = [
+        name for name in graph_tab.settings
+        if "network_source=segmented_image" not in prerequisite_chain(schema, name)
+    ]
+    assert ungated == []

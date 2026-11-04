@@ -335,7 +335,7 @@ _add(T, "Dead Ends of Vessels Broken by the Segmentation", "count", "Dead ends w
 _add(T, "Dead Ends That Are Artefacts", "count", "Dead ends off the mask, inside a neighbouring lumen or along a vessel's wall.")
 _add(T, "Blind Ends (marked by hand)", "count", "Dead ends a person marked as real blind ends.")
 _add(T, "Interior Dead Ends, Blind or Broken (unknown)", "count", "Interior dead ends no rule could class.")
-_add(T, "Ends of Pieces Without a Junction", "count", "Dead ends of pieces of network with no junction.")
+_add(T, "Ends of Pieces Without a Junction", "count", "Dead ends of pieces of network with no junction, inside the image: one leaving it is counted as leaving the image.")
 _add(T, "Interior Dead Ends per mm of Vessel (1/mm)", "1/mm", "Interior dead ends that could be the tissue's own (blind, unknown, broken, stopped short, at a thick vessel's wall) per mm of vessel.")
 _add(T, "Interior Dead Ends per mm^3 of Tissue (1/mm^3)", "1/mm^3", "The same dead ends per cubic millimetre of measured tissue.")
 _add(T, "Interior Dead-End Chain Length, median (microns)", "um", "The median length of those dead ends' chains, tip to junction.", pattern=r"Interior Dead-End Chain Length, median \(microns\)")
