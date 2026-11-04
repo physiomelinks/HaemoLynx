@@ -181,6 +181,30 @@ def test_a_network_with_no_span_to_split_names_both_methods(tmp_path):
         stages.assign_boundaries(settings, network)
 
 
+@pytest.mark.parametrize(
+    "distance_um, outlets", [(0.0, [4, 5, 6]), (20.0, [4, 5])], ids=["every-terminal", "beyond-20-um"]
+)
+def test_the_stage_measures_degree_1_outlets_from_the_inlets_it_chose(tmp_path, distance_um, outlets):
+    """Regression: the stage wrote the inlets it chose into the settings only
+    after choosing the outlets, so ``degree_1_from_inlet`` found no inlet to
+    measure from and stopped the run. The outlets are the terminals further
+    than ``boundary_distance_from_inlet_node`` from inlet 0: terminal 6,
+    8.5 um from it, only while that distance is under 8.5 um."""
+    G = _branching_network()
+    G.add_node(6, pos=np.asarray((24.0, 14.0, 30.0)))  # off node 1, near the inlet
+    G.add_edge(1, 6, length=1.0)
+    settings = _defaults(
+        outlet_node_selection_method="degree_1_from_inlet",
+        boundary_distance_from_inlet_node=distance_um,
+        plot_dir=tmp_path,
+    )
+
+    stages.assign_boundaries(settings, _network_for_stages(G, tmp_path))
+
+    assert settings["inlet_nodes"] == [0]
+    assert settings["outlet_nodes"] == outlets
+
+
 def _network_for_stages(G: nx.MultiGraph, output_dir: Path) -> stages.VesselNetwork:
     """Wrap a hand-built graph in what ``assign_boundaries`` reads."""
     image = np.zeros(IMAGE_SHAPE, dtype=np.uint8)

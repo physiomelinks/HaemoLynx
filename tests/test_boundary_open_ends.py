@@ -126,3 +126,90 @@ def test_the_setting_reaches_the_selector_and_empty_turns_it_off(value, expected
     }
 
     assert sorted(select_boundary_nodes_for_role(G, IMAGE_SHAPE, settings, "inlet")) == expected
+
+
+def test_open_terminal_nodes_read_the_faces_on_three_distinct_spacings():
+    """Every test above runs on 1 um voxels. On (2.0, 0.5, 0.4) um a 41-voxel
+    stack is 80 um deep in z but 16 um across x: a terminal 2 um from the
+    high-x face is an open end, one 2 um short of 16 um in z is not. Read
+    x-first, the voxel size makes the stack 16 um deep in z and swaps the
+    two."""
+    G = nx.MultiGraph(voxel_size=(2.0, 0.5, 0.4))
+    positions = {
+        "hub": (8.0, 10.0, 8.0),
+        "near_high_x": (8.0, 10.0, 14.0),  # 2 um from x = 16 um; 8 um from every other face
+        "z_14": (14.0, 10.0, 8.0),  # 14 um deep in an 80 um stack; 8 um from the x faces
+        "near_high_z": (79.0, 10.0, 8.0),  # 1 um from z = 80 um
+    }
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for node in ("near_high_x", "z_14", "near_high_z"):
+        G.add_edge("hub", node)
+
+    open_ends = open_terminal_nodes(G, (41, 41, 41), max_distance_um=5.0)
+
+    assert sorted(open_ends) == ["near_high_x", "near_high_z"]
+
+
+def _kinds_marked(G):
+    """The kinds graph building marks: both x tips leave the image, while the
+    side tip 1 um from the high-z face and the branch inside the tissue stop
+    short."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE, STOPS_SHORT
+
+    G.nodes["low_face"][DEAD_END_KIND] = LEAVES_IMAGE
+    G.nodes["high_face"][DEAD_END_KIND] = LEAVES_IMAGE
+    G.nodes["side_face"][DEAD_END_KIND] = STOPS_SHORT
+    G.nodes["dead_end"][DEAD_END_KIND] = STOPS_SHORT
+    return G
+
+
+@pytest.mark.parametrize(
+    "open_end_test, expected",
+    [("leaves_image", ["low_face"]), (None, ["dead_end", "low_face"])],
+    ids=["leaves_image", "distance"],
+)
+def test_the_leaves_image_test_reaches_the_selector_from_the_settings(open_end_test, expected):
+    """boundary_open_end_test=leaves_image takes the dead ends' marked kinds,
+    not the distance: within 20 um of a face the dead end 15 um from the
+    low-x face is an open end by distance, but graph building marked it as
+    stopping short, so only the low-x tip is an inlet."""
+    G = _kinds_marked(_network())
+    settings = {
+        "inlet_node_selection_method": "edge_percent",
+        "boundary_axis": 2,
+        "boundary_first_percent": 20.0,
+        "boundary_last_percent": 20.0,
+        "boundary_open_end_max_distance_um": 20.0,
+    }
+    if open_end_test is not None:
+        settings["boundary_open_end_test"] = open_end_test
+
+    assert sorted(select_boundary_nodes_for_role(G, IMAGE_SHAPE, settings, "inlet")) == expected
+
+
+def test_the_leaves_image_test_picks_outlets_by_kind_from_the_settings():
+    """degree_1_from_inlet with leaves_image keeps the terminals marked as
+    leaving the image: the high-x tip, not the side tip graph building marked
+    as stopping short, though it lies 1 um from the high-z face (the distance
+    test takes both)."""
+    G = _kinds_marked(_network())
+    settings = {
+        "inlet_node_selection_method": "edge_percent",
+        "outlet_node_selection_method": "degree_1_from_inlet",
+        "boundary_axis": 2,
+        "boundary_first_percent": 20.0,
+        "boundary_last_percent": 20.0,
+        "inlet_nodes": ["low_face"],
+    }
+
+    by_distance = select_boundary_nodes_for_role(
+        G, IMAGE_SHAPE, settings, "outlet", exclude_nodes=["low_face"]
+    )
+    by_kind = select_boundary_nodes_for_role(
+        G, IMAGE_SHAPE, {**settings, "boundary_open_end_test": "leaves_image"}, "outlet",
+        exclude_nodes=["low_face"],
+    )
+
+    assert sorted(by_distance) == ["high_face", "side_face"]
+    assert by_kind == ["high_face"]

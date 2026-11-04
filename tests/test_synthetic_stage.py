@@ -198,6 +198,20 @@ def test_the_boundaries_stage_takes_the_generators_roles(template_run, tmp_path)
     assert settings["venule_boundary_nodes"] == roles["venule_boundary"]
 
 
+def test_the_boundaries_stage_leaves_no_image_runs_large_vessel_inlet(template_run, tmp_path):
+    """Regression: only the generator's roles were reset, so the large-vessel
+    inlet and outlet an image run chose stayed in the run's lists: nodes of
+    another graph."""
+    settings = _settings(template_run, tmp_path)
+    settings["large_vessel_inlet_nodes"] = [3316]
+    settings["large_vessel_outlet_nodes"] = [17]
+    network = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA)
+
+    assign_boundaries(settings, network)
+
+    assert settings["large_vessel_inlet_nodes"] == [] and settings["large_vessel_outlet_nodes"] == []
+
+
 def test_the_boundaries_stage_refuses_a_network_without_an_outlet(template_run, tmp_path):
     settings = _settings(template_run, tmp_path)
     network = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA)

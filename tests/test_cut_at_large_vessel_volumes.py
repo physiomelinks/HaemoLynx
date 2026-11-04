@@ -874,8 +874,14 @@ def test_default_schema_cuts_interior_edges_with_large_mask_assignment(
         assert not _edge_has_interior_voxel(data, cut_volume)
 
 
-def test_assign_boundaries_rewrites_graph_pickle_after_cut(tmp_path, monkeypatch):
+def test_the_cut_leaves_graph_buildings_pickle_and_gives_its_ends_a_kind(tmp_path, monkeypatch):
+    """Regression: the cut wrote its network over ``{stem}_graph.pkl``, graph
+    building's own file, so a run loading it (``do_graph_building`` off) got
+    the large vessels already cut away whatever its masks and cut now said.
+    And the ends the cut made carried no dead-end kind, which every other
+    dead end does."""
     G, arteriole, venule = _crossing_chain_graph()
+    built = set(G.nodes)
     stem = "stack"
     input_path = tmp_path / f"{stem}.tif"
     input_path.write_bytes(b"x")
@@ -887,7 +893,6 @@ def test_assign_boundaries_rewrites_graph_pickle_after_cut(tmp_path, monkeypatch
     graph_path = tmp_path / f"{stem}_graph.pkl"
     with graph_path.open("wb") as handle:
         pickle.dump(G, handle)
-    assert G.number_of_edges() == 1
 
     monkeypatch.setattr(
         "haemolynx.graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
@@ -905,9 +910,42 @@ def test_assign_boundaries_rewrites_graph_pickle_after_cut(tmp_path, monkeypatch
 
     with graph_path.open("rb") as handle:
         restored = pickle.load(handle)
-    assert restored.number_of_edges() == network.graph.number_of_edges()
-    assert restored.number_of_edges() == 1
-    assert set(restored.nodes) == set(network.graph.nodes)
+    assert set(restored.nodes) == built
+    assert set(network.graph.nodes) != built, "the cut did change the network"
+    cut_ends = [
+        node for node, data in network.graph.nodes(data=True)
+        if data.get("cut_from_large_vessel") and network.graph.degree(node) == 1
+    ]
+    assert cut_ends
+    assert all(network.graph.nodes[node].get("dead_end_kind") for node in cut_ends)
+
+
+def test_a_saved_graph_an_earlier_run_cut_is_warned_about_when_loaded(tmp_path, caplog):
+    """Graph files written before the cut stopped overwriting them hold the cut
+    network: loading one says so, since its large vessels are gone."""
+    import logging
+
+    from haemolynx.pipeline.stages import build_network
+
+    G, arteriole, venule = _crossing_chain_graph()
+    cut = cut_graph_at_large_vessel_volumes(G, arteriole, venule, voxel_size_zyx=VOXEL_SIZE)
+    input_path = tmp_path / "stack.tif"
+    input_path.write_bytes(b"x")
+    with (tmp_path / "stack_graph.pkl").open("wb") as handle:
+        pickle.dump(cut, handle)
+    settings = {
+        **default_schema().defaults(),
+        "input_path": str(input_path),
+        "plot_dir": tmp_path,
+        "do_graph_building": False,
+        "visualize_results": False,
+    }
+    volume = _network_for_cut(G, arteriole, venule, tmp_path).volume
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+        build_network(settings, volume, default_schema())
+
+    assert any("already cut at the large-vessel masks" in record.message for record in caplog.records)
 
 
 def test_preflight_warns_when_large_masks_on_and_cut_off():

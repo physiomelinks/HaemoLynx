@@ -8045,6 +8045,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         BC_NODE_IDS,
         BC_REGION_NAMES,
         band_boxes,
+        node_made_after_boundaries,
         box_colours,
         box_from_view_drag,
         box_mesh,
@@ -9526,6 +9527,13 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             report.value = (
                 f"No node under that click. Click on one of the node dots to "
                 f"add it to {owner}'s node IDs."
+            )
+            return
+        if node_made_after_boundaries(hit.node_id, box_graph(), graph()):
+            report.value = (
+                f"Node {hit.node_id} was added after the Boundaries stage, by an edit: a run "
+                "from Boundaries does not have it and would stop on its ID. Pick a node the "
+                "network had before the edits."
             )
             return
         proposed, action = toggle_node_id(current_values(), owner, hit.node_id)
