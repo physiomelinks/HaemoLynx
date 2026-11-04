@@ -39,10 +39,7 @@ from haemolynx.io import (
 )
 from haemolynx.parsers import check_settings
 from haemolynx.pipeline import default_schema
-from haemolynx.pipeline.checks import (
-    check_global_vessel_masks,
-    check_large_vessel_cut_when_masks_enabled,
-)
+from haemolynx.pipeline.checks import check_global_vessel_masks
 from haemolynx.pipeline.stages import (
     SkeletonisedVolume,
     VesselNetwork,
@@ -439,13 +436,6 @@ def test_preflight_says_what_global_masks_do_and_warns_of_unread_settings():
     )
     assert any("read as one" in warning and "small-vessel" in warning for warning in report.warnings)
     assert any("strict_branch_order_assignment" in warning for warning in report.warnings)
-
-
-def test_preflight_does_not_ask_global_masks_for_the_cut():
-    report = check_large_vessel_cut_when_masks_enabled(
-        _settings(cut_network_at_large_vessel_volumes=False)
-    )
-    assert not report.warnings
 
 
 def test_preflight_is_silent_without_global_masks():

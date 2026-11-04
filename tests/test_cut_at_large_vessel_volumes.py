@@ -11,10 +11,9 @@ import pytest
 
 from haemolynx.graph import cut_graph_at_large_vessel_volumes
 from haemolynx.gui.results import NODES, VESSELS, ResultLayers, edge_polylines
-from haemolynx.pipeline import default_schema
+from haemolynx.pipeline import default_schema, preflight
 from haemolynx.pipeline.checks import (
     check_large_vessel_branch_order_mode_prerequisites,
-    check_large_vessel_cut_when_masks_enabled,
     check_thick_vessel_restriction_prerequisites,
     ilastik_segments_vessel_masks,
 )
@@ -117,7 +116,7 @@ def _through_volume_orphan_graph() -> tuple[nx.MultiGraph, np.ndarray, np.ndarra
 
 def test_schema_defaults_and_requires_for_volume_cut():
     schema = default_schema()
-    assert schema["cut_network_at_large_vessel_volumes"].default is True
+    assert schema["cut_network_at_large_vessel_volumes"].default is False
     assert schema["remove_orphaned_branches_outside_large_vessel_volumes"].default is False
     assert schema["orphaned_branch_max_edge_count"].default == 3
     assert schema["cut_network_at_large_vessel_volumes"].requires == (
@@ -816,42 +815,44 @@ def test_napari_empty_post_cut_graph_emits_empty_vessel_and_node_layers():
     assert results._graph is post_cut
 
 
-def test_default_schema_cuts_interior_edges_with_large_mask_assignment(
+def test_large_mask_assignment_cuts_only_once_the_cut_is_ticked(
     tmp_path, monkeypatch
 ):
-    """Large-mask assignment with schema defaults must cut without a second opt-in."""
-    G, arteriole, venule = _crossing_chain_graph()
-    network = _network_for_cut(G, arteriole, venule, tmp_path)
-    schema = default_schema()
-    settings = schema.defaults()
-    settings.update(
-        {
-            "input_path": tmp_path / "stack.tif",
-            "plot_dir": tmp_path,
-            "automated_vessel_assignment": True,
-            "use_large_vessel_masks": True,
-            # An arteriole/venule pair: with no venule mask the masks are global.
-            "large_venule_mask_path": "large_venule_mask.tif",
-            "automated_vessel_assignment_fast_mode": False,
-            "automated_vessel_assignment_enable_overlap_cleanup": False,
-            "automated_vessel_assignment_use_legacy_mode": True,
-            "large_vessel_assignment_max_dilation_microns": 0.0,
-            "write_fast_mode_preassignment_large_vessel_debug_3d_html": False,
-            "use_small_vessel_masks_for_boundary_assignment": False,
-            "inlet_nodes": [],
-            "outlet_nodes": [],
-            "arteriole_boundary_nodes": [],
-            "venule_boundary_nodes": [],
-            "arteriole_boundary_node_coordinates": [],
-            "venule_boundary_node_coordinates": [],
-            "arteriole_boundary_node_volumes": [],
-            "venule_boundary_node_volumes": [],
-            "inlet_node_coordinates": [],
-            "outlet_node_coordinates": [],
-            "boundary_handling": "leave_unsolved",
-        }
-    )
-    assert settings["cut_network_at_large_vessel_volumes"] is True
+    """The cut is off by default (Harvey, 2026-11-04): large-mask assignment
+    with the schema's defaults keeps the vessels inside the large masks, and
+    cuts them away only once the cut is ticked."""
+
+    def defaults_with_large_masks(**overrides):
+        settings = default_schema().defaults()
+        settings.update(
+            {
+                "input_path": tmp_path / "stack.tif",
+                "plot_dir": tmp_path,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": True,
+                # An arteriole/venule pair: with no venule mask the masks are global.
+                "large_venule_mask_path": "large_venule_mask.tif",
+                "automated_vessel_assignment_fast_mode": False,
+                "automated_vessel_assignment_enable_overlap_cleanup": False,
+                "automated_vessel_assignment_use_legacy_mode": True,
+                "large_vessel_assignment_max_dilation_microns": 0.0,
+                "write_fast_mode_preassignment_large_vessel_debug_3d_html": False,
+                "use_small_vessel_masks_for_boundary_assignment": False,
+                "inlet_nodes": [],
+                "outlet_nodes": [],
+                "arteriole_boundary_nodes": [],
+                "venule_boundary_nodes": [],
+                "arteriole_boundary_node_coordinates": [],
+                "venule_boundary_node_coordinates": [],
+                "arteriole_boundary_node_volumes": [],
+                "venule_boundary_node_volumes": [],
+                "inlet_node_coordinates": [],
+                "outlet_node_coordinates": [],
+                "boundary_handling": "leave_unsolved",
+                **overrides,
+            }
+        )
+        return settings
 
     monkeypatch.setattr(
         "haemolynx.graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
@@ -864,10 +865,23 @@ def test_default_schema_cuts_interior_edges_with_large_mask_assignment(
         "haemolynx.visualization.visualize_3d_plotly_large_vessel_assignment",
         lambda *args, **kwargs: None,
     )
-
-    assign_boundaries(settings, network)
-
+    G, arteriole, venule = _crossing_chain_graph()
     cut_volume = arteriole | venule
+
+    settings = defaults_with_large_masks()
+    assert settings["cut_network_at_large_vessel_volumes"] is False
+    kept = _network_for_cut(G.copy(), arteriole, venule, tmp_path)
+    assign_boundaries(settings, kept)
+    assert set(kept.graph.nodes) == {0, 1}
+    assert any(
+        _edge_has_interior_voxel(data, cut_volume)
+        for _u, _v, data in kept.graph.edges(data=True)
+    )
+
+    network = _network_for_cut(G.copy(), arteriole, venule, tmp_path)
+    assign_boundaries(
+        defaults_with_large_masks(cut_network_at_large_vessel_volumes=True), network
+    )
     assert network.graph.number_of_edges() == 1
     assert 1 not in network.graph.nodes
     for _u, _v, data in network.graph.edges(data=True):
@@ -948,37 +962,25 @@ def test_a_saved_graph_an_earlier_run_cut_is_warned_about_when_loaded(tmp_path, 
     assert any("already cut at the large-vessel masks" in record.message for record in caplog.records)
 
 
-def test_preflight_warns_when_large_masks_on_and_cut_off():
-    report = check_large_vessel_cut_when_masks_enabled(
-        {
-            "use_large_vessel_masks": True,
-            "automated_vessel_assignment": True,
-            "cut_network_at_large_vessel_volumes": False,
-        }
-    )
-    assert report.warnings
-    assert any("cut_network_at_large_vessel_volumes" in warning for warning in report.warnings)
+def test_preflight_says_nothing_of_the_cut_left_off_by_default(tmp_path):
+    """Regression: preflight warned whenever the large masks were used with
+    the cut off, and told the user to turn it on. Off is the default now
+    (Harvey, 2026-11-04), so the large masks used at the defaults hear nothing
+    of the cut."""
+    schema = default_schema()
+    settings = {
+        **schema.defaults(),
+        "input_path": str(tmp_path / "stack.tif"),
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "large_arteriole_mask_path": str(tmp_path / "large_arteriole.tif"),
+        "large_venule_mask_path": str(tmp_path / "large_venule.tif"),
+    }
+    assert settings["cut_network_at_large_vessel_volumes"] is False
 
-    clear = check_large_vessel_cut_when_masks_enabled(
-        {
-            "use_large_vessel_masks": True,
-            "automated_vessel_assignment": True,
-            "cut_network_at_large_vessel_volumes": True,
-        }
-    )
-    assert not clear.warnings
+    report = preflight(settings, schema)
 
-
-def test_preflight_softens_cut_off_warning_when_large_vessel_mode_is_on():
-    report = check_large_vessel_cut_when_masks_enabled(
-        {
-            "use_large_vessel_masks": True,
-            "automated_vessel_assignment": True,
-            "cut_network_at_large_vessel_volumes": False,
-            "assign_large_vessel_branch_orders": True,
-        }
-    )
-    assert not report.warnings
+    assert not [w for w in report.warnings if "cut_network_at_large_vessel_volumes" in w]
 
 
 _LARGE_VESSEL_MODE_SETTINGS = {
@@ -1518,7 +1520,7 @@ def test_the_terminal_selectors_find_cut_terminals_at_zero_dilation():
 
 
 def test_the_default_cut_and_zero_dilation_assign_the_cut_terminals(tmp_path):
-    """The stage with the schema defaults (cut on, 0 um dilation), the real
+    """The stage with the cut on and the schema's 0 um dilation, the real
     selector: it used to raise 'found no terminal nodes in the arteriole
     mask'."""
     G, art, ven, _tag = _chain_through_both_masks()

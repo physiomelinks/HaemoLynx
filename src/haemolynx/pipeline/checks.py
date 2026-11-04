@@ -34,10 +34,7 @@ from haemolynx.haemodynamics.perturbations import (
     perturbations_from_settings,
     settings_for_perturbation_type,
 )
-from haemolynx.io.vessel_masks import (
-    global_vessel_mask_roles,
-    vessel_masks_are_global,
-)
+from haemolynx.io.vessel_masks import global_vessel_mask_roles
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport, check_settings, resolve_existing_path
 from haemolynx.pipeline.batch import check_output_path_lengths
@@ -574,30 +571,6 @@ def check_vessel_size_classes(settings: Mapping[str, Any]) -> CheckReport:
             f"{', '.join(unread)} set, but with classify_vessels_by_size no branch "
             "orders are assigned, so nothing reads them."
         )
-    return report
-
-
-def check_large_vessel_cut_when_masks_enabled(
-    settings: Mapping[str, Any],
-) -> CheckReport:
-    """Warn when large-mask assignment is on but the volume cut is off."""
-    report = CheckReport()
-    if not vessel_masks_in_use(settings, "large") or vessel_masks_are_global(settings):
-        # Global masks cut nothing (check_global_vessel_masks says so).
-        return report
-    if bool(settings.get("cut_network_at_large_vessel_volumes")):
-        return report
-    if assigns_large_vessel_branch_orders(settings):
-        # Cut is deliberately off: large-vessel material stays in the
-        # network as Large_Art/Large_Ven branch orders instead of being
-        # cut away -- not the oversight this warning otherwise flags.
-        return report
-    report.add_warning(
-        "use_large_vessel_masks and automated_vessel_assignment are on, but "
-        "cut_network_at_large_vessel_volumes is off. Interior branches inside "
-        "large arteriole/venule volumes will stay in the network and napari "
-        "viewer unless you enable the cut."
-    )
     return report
 
 
@@ -1924,7 +1897,6 @@ def preflight(
     report.extend(check_global_vessel_masks(settings))
     report.extend(check_large_vessel_mask_split(settings))
     report.extend(check_vessel_size_classes(settings))
-    report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_branch_order_steps(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))

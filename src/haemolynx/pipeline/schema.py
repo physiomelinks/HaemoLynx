@@ -1895,14 +1895,14 @@ SCHEMA = Schema(
         Setting(
             name="cut_network_at_large_vessel_volumes",
             kind="bool",
-            default=True,
+            default=False,
             help=(
                 "Before automated terminal assignment, cut the graph at large "
                 "arteriole/venule mask boundaries: remove edges inside the "
                 "volume and split crossing edges so new degree-1 terminals sit "
-                "on the exterior side of the cut. Runs by default whenever "
-                "large-vessel masks drive automated assignment; turn off only "
-                "when you deliberately want interior branches kept"
+                "on the exterior side of the cut. Off by default: the large "
+                "vessels stay in the network (assign_large_vessel_branch_orders "
+                "labels them Large_Art/Large_Ven)"
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),

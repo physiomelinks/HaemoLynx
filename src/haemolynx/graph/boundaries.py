@@ -709,7 +709,7 @@ def assigns_large_vessel_branch_orders(settings: Mapping[str, Any]) -> bool:
     return (
         bool(settings.get("assign_large_vessel_branch_orders"))
         and vessel_masks_in_use(settings, "large")
-        and not bool(settings.get("cut_network_at_large_vessel_volumes", True))
+        and not bool(settings.get("cut_network_at_large_vessel_volumes", False))
         and not vessel_masks_are_global(settings)
     )
 

@@ -148,7 +148,7 @@ PRESETS: dict[str, dict[str, Any]] = {
             "automated_vessel_assignment": True,
             "use_large_vessel_masks": True,
             "inlets_outlets_from_vessel_masks": True,
-            "cut_network_at_large_vessel_volumes": True,
+            "cut_network_at_large_vessel_volumes": False,
             "use_small_vessel_masks_for_boundary_assignment": True,
         },
     },

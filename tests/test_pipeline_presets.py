@@ -95,6 +95,17 @@ def test_the_raw_image_preset_measures_once_the_raw_image_is_set():
     assert not unmet_chain(SCHEMA, "measure_diameters_from_raw_image", values)
 
 
+def test_the_mask_preset_keeps_the_large_vessels_over_a_config_that_cut_them():
+    """The cut at the large vessel masks is off by default (Harvey,
+    2026-11-04), and the masks preset leaves it off: chosen over a config
+    that cut there, it turns the cut off rather than keeping it."""
+    cut = {**SCHEMA.defaults(), "cut_network_at_large_vessel_volumes": True}
+    for over in (None, cut):
+        values = _loaded("arteriole_venule_masks", over=over)
+        assert values["cut_network_at_large_vessel_volumes"] is False
+        assert values["use_large_vessel_masks"] is True
+
+
 def _usage_bases() -> tuple[dict, dict]:
     """The defaults, and the defaults with every switch a usage names
     flipped: a usage's own settings are the same from either."""
