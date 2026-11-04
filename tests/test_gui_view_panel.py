@@ -1080,17 +1080,17 @@ def test_a_3d_snap_turns_the_camera_and_recentres(make_napari_viewer, plane, vie
     viewer = _snap_viewer(make_napari_viewer)
     viewer.dims.ndisplay = 3
     viewer.reset_view()
-    centre = tuple(viewer.camera.center)
+    centre = tuple(viewer.scene.camera.center)
     # Somewhere else entirely, as a user leaves it after orbiting and panning.
-    viewer.camera.angles = (35.0, -20.0, 70.0)
-    viewer.camera.center = (0.0, 0.0, 0.0)
+    viewer.scene.camera.angles = (35.0, -20.0, 70.0)
+    viewer.scene.camera.center = (0.0, 0.0, 0.0)
     viewer.dims.order = (2, 1, 0)
 
     viewer._haemolynx_view_snap_buttons.buttons[plane].click()
 
-    np.testing.assert_allclose(viewer.camera.view_direction, view, atol=1e-9)
-    np.testing.assert_allclose(viewer.camera.up_direction, up, atol=1e-9)
-    np.testing.assert_allclose(viewer.camera.center, centre)
+    np.testing.assert_allclose(viewer.scene.camera.view_direction, view, atol=1e-9)
+    np.testing.assert_allclose(viewer.scene.camera.up_direction, up, atol=1e-9)
+    np.testing.assert_allclose(viewer.scene.camera.center, centre)
     assert tuple(viewer.dims.order) == (0, 1, 2)
 
 
@@ -1102,12 +1102,12 @@ def test_a_2d_snap_shows_the_planes_axes(make_napari_viewer, plane, displayed):
 
     viewer = _snap_viewer(make_napari_viewer)
     viewer.dims.ndisplay = 2
-    viewer.camera.zoom = 50.0
+    viewer.scene.camera.zoom = 50.0
 
     assert snap_view_to_plane(viewer, plane)
 
     assert tuple(viewer.dims.displayed) == displayed
-    assert viewer.camera.zoom != 50.0  # refitted to the data
+    assert viewer.scene.camera.zoom != 50.0  # refitted to the data
 
 
 def test_tubes_stay_on_the_vessel_lines_after_a_2d_snap_then_3d(make_napari_viewer):

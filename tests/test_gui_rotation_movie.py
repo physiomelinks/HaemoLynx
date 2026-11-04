@@ -19,10 +19,23 @@ from haemolynx.gui.rotation_movie import (
     to_displayed,
     turntable_directions,
     unique_movie_path,
+    viewer_camera,
 )
 from haemolynx.gui.view_snap import camera_directions_for_plane
 
 Z = np.array([1.0, 0.0, 0.0])
+
+
+def test_the_camera_is_the_scenes():
+    """napari 0.9 deprecated ``viewer.camera`` for ``viewer.scene.camera``:
+    the scene's is read, the old name only for a stand-in without a scene."""
+    from types import SimpleNamespace
+
+    scene_camera, old_camera = object(), object()
+    both = SimpleNamespace(scene=SimpleNamespace(camera=scene_camera), camera=old_camera)
+    assert viewer_camera(both) is scene_camera
+    assert viewer_camera(SimpleNamespace(camera=old_camera)) is old_camera
+    assert viewer_camera(None) is None
 
 
 def _right(view, up):

@@ -178,7 +178,17 @@ def test_napari_is_an_extra_not_a_dependency():
     runtime = text.split("dependencies = [", 1)[1].split("]", 1)[0]
     assert "napari" not in runtime, "napari must not be a runtime dependency"
     extras = text.split("[project.optional-dependencies]", 1)[1].split("[project", 1)[0]
-    assert "napari[pyqt6]>=0.8" in extras
+    assert "napari[pyqt6]>=0.9" in extras
+
+
+def test_both_napari_extras_need_napari_0_9():
+    """The panel uses what replaced napari 0.9's deprecations (the scene's
+    camera, the canvas size, the projection modes), none of them in 0.8."""
+    text = PYPROJECT.read_text(encoding="utf-8")
+    extras = text.split("[project.optional-dependencies]", 1)[1].split("[project", 1)[0]
+    for name in ("napari", "napari-plugin"):
+        line = extras.split(f"\n{name} = ", 1)[1].split("\n", 1)[0]
+        assert ">=0.9" in line.split(",", 1)[0], line
 
 
 def test_the_napari_extra_brings_a_qt_binding():

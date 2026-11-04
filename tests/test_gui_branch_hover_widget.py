@@ -100,6 +100,45 @@ def test_hovering_along_the_polyline_shows_tooltip(make_napari_viewer, monkeypat
     assert shown[-1] is None
 
 
+def test_a_drag_over_a_vessel_shows_no_tooltip(make_napari_viewer, monkeypatch):
+    """napari 0.10 runs move callbacks during a drag too: rotating or panning
+    across the vessels must not search them or pop a tooltip on every frame."""
+    from napari.utils.interactions import mouse_move_callbacks
+
+    shown: list[str | None] = []
+    monkeypatch.setattr(
+        "qtpy.QtWidgets.QToolTip.showText",
+        lambda _pos, text, *a, **k: shown.append(str(text)),
+    )
+    monkeypatch.setattr(
+        "qtpy.QtWidgets.QToolTip.hideText",
+        lambda *a, **k: shown.append(None),
+    )
+    searched: list[str] = []
+    real_index = widget_mod._hover_feature_index
+    monkeypatch.setattr(
+        widget_mod, "_hover_feature_index",
+        lambda layer, event: searched.append(layer.name) or real_index(layer, event),
+    )
+
+    viewer = make_napari_viewer()
+    layer = _draw_hover(viewer)
+
+    def move(position, dragging):
+        event = _fake_event(position)
+        event.is_dragging = dragging
+        mouse_move_callbacks(layer, event)
+        mouse_move_callbacks(viewer, event)
+
+    # Midway along vessel 0 -> 1, out of both nodes' reach.
+    move((5.0, 0.0, 0.0), dragging=True)
+    move((5.0, 50.0, 0.0), dragging=True)
+    assert shown == [] and searched == []
+
+    move((5.0, 0.0, 0.0), dragging=False)
+    assert searched and shown and shown[-1].startswith("branchID: 0")
+
+
 def test_legacy_midpoint_hover_circle_is_removed(make_napari_viewer):
     viewer = make_napari_viewer()
     viewer.add_points(

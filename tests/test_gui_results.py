@@ -36,7 +36,9 @@ from haemolynx.gui.results import (
     NODES,
     PERICYTE_POINT_SIZE,
     PERICYTES,
+    POINTS_PROJECTION,
     SKELETON,
+    VECTORS_PROJECTION,
     VESSEL_LABEL_POINT_SIZE,
     VESSEL_LABELS,
     VESSEL_TUBES,
@@ -58,6 +60,7 @@ from haemolynx.gui.results import (
     node_points,
     pericyte_points,
     polylines_to_vectors,
+    with_projection_mode,
     z_slice_window,
     z_window_is_full,
 )
@@ -113,6 +116,49 @@ def built(graph=None, voxel_size_zyx=(1.0, 1.0, 1.0)) -> ResultLayers:
 
 def spec_named(group, name):
     return next(spec for spec in group.layers if spec.name == name)
+
+
+def test_the_network_layers_name_naparis_projection_mode():
+    """Points and vectors off the slice shown shrink and fade through napari's
+    projection_mode, never the out_of_slice_display napari 0.9 deprecated."""
+    results = ResultLayers()
+    graph = results.stage_finished("build_network", network(a_graph()))
+    boundaries = results.stage_finished("assign_boundaries", SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+        venule_boundary_nodes=[], resistance_node_pair=None))
+    specs = [spec for group in (graph, boundaries) for spec in group.layers
+             if spec.kind in {"points", "vectors"}]
+    assert {spec.kind for spec in specs} == {"points", "vectors"}
+    for spec in specs:
+        assert "out_of_slice_display" not in spec.options, spec.name
+    assert spec_named(graph, VESSELS).options["projection_mode"] == VECTORS_PROJECTION
+    assert spec_named(graph, NODES).options["projection_mode"] == POINTS_PROJECTION
+    assert spec_named(boundaries, BOUNDARY_NODES).options["projection_mode"] == POINTS_PROJECTION
+
+
+@pytest.mark.parametrize(
+    "kind, out_of_slice, mode",
+    [
+        ("points", True, POINTS_PROJECTION),
+        ("vectors", True, VECTORS_PROJECTION),
+        ("points", False, "all"),
+        ("vectors", False, "all"),
+    ],
+)
+def test_a_saved_out_of_slice_display_becomes_its_projection_mode(kind, out_of_slice, mode):
+    """A run saved before carries the old option: it reaches napari as the
+    mode napari itself makes of it, and the saved options stay as they were."""
+    saved = {"size": 3.0, "out_of_slice_display": out_of_slice}
+    assert with_projection_mode(kind, saved) == {"size": 3.0, "projection_mode": mode}
+    assert saved == {"size": 3.0, "out_of_slice_display": out_of_slice}
+
+
+def test_options_without_the_old_name_pass_through():
+    assert with_projection_mode("points", {"size": 2.0}) == {"size": 2.0}
+    assert with_projection_mode(
+        "points", {"projection_mode": "none", "out_of_slice_display": True}
+    ) == {"projection_mode": "none"}
+    assert with_projection_mode("shapes", {"out_of_slice_display": True}) == {}
 
 
 # --- the registration test, which is the one that matters --------------------

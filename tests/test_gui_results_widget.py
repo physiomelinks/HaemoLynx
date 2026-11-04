@@ -39,6 +39,7 @@ from haemolynx.gui.results import (  # noqa: E402
     FLOW_DIRECTION,
     IMAGE,
     NODES,
+    POINTS_PROJECTION,
     SKELETON,
     VESSEL_TUBES,
     VESSELS,
@@ -46,6 +47,7 @@ from haemolynx.gui.results import (  # noqa: E402
     ResultLayers,
     StageLayers,
     perturbation_layer_names,
+    with_projection_mode,
 )
 from test_gui_results import a_graph, network, spec_named  # noqa: E402
 
@@ -290,11 +292,25 @@ def test_the_terminal_nodes_are_drawn_over_tubes_added_after_them(viewer):
                     options={"size": 6.0, "out_of_slice_display": True})
     _add_or_update(viewer, saved)
     assert str(viewer.layers[BOUNDARY_NODES].blending) == "translucent"
+    # Its out_of_slice_display, deprecated by napari 0.9, reaches napari as
+    # the projection mode it stands for (the suite errors on the old name).
+    assert str(viewer.layers[BOUNDARY_NODES].projection_mode) == POINTS_PROJECTION
 
     _apply_layers(viewer, built)
 
     assert VESSEL_TUBES in viewer.layers
     assert drawn_on_top(viewer)
+
+
+@pytest.mark.parametrize("kind", ["points", "vectors"])
+def test_the_projection_modes_are_what_napari_makes_of_out_of_slice_display(kind):
+    """A saved run's out_of_slice_display=True draws as it did: the mode we
+    pass in its place is the one napari itself turns it into."""
+    data = np.zeros((1, 3)) if kind == "points" else np.zeros((1, 2, 3))
+    with pytest.warns(FutureWarning, match="out_of_slice_display"):
+        layer = getattr(napari.layers, kind.capitalize())(data, out_of_slice_display=True)
+    ours = with_projection_mode(kind, {"out_of_slice_display": True})["projection_mode"]
+    assert str(layer.projection_mode) == ours
 
 
 def test_the_terminal_nodes_stay_on_top_through_the_z_depth_filter(viewer):

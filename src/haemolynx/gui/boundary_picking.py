@@ -73,6 +73,7 @@ from haemolynx.graph.boundaries import (
 )
 from haemolynx.gui.results import (
     BOUNDARY_COORDINATE_POINT_SIZE,
+    POINTS_PROJECTION,
     PREFIX,
     LayerSpec,
     StageLayers,
@@ -1076,7 +1077,7 @@ def specs_for(values: Mapping[str, Any], graph: Any = None) -> tuple[LayerSpec, 
                 "symbol": "ring",
                 "size": BOUNDARY_COORDINATE_POINT_SIZE,
                 "border_width": 0.25,
-                "out_of_slice_display": True,
+                "projection_mode": POINTS_PROJECTION,
             },
         )
     ]
@@ -1113,7 +1114,7 @@ def specs_for(values: Mapping[str, Any], graph: Any = None) -> tuple[LayerSpec, 
                     "symbol": "square",
                     "size": BOUNDARY_COORDINATE_POINT_SIZE,
                     "border_width": 0.25,
-                    "out_of_slice_display": True,
+                    "projection_mode": POINTS_PROJECTION,
                 },
             )
         )
@@ -1469,7 +1470,7 @@ def box_nodes_spec(nodes: Sequence[BoxNode], chosen: int | None = None) -> Layer
             "face_color": faces,
             "border_color": rims,
             "border_width": 0.3,
-            "out_of_slice_display": True,
+            "projection_mode": POINTS_PROJECTION,
         },
     )
 

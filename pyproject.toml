@@ -68,9 +68,12 @@ Issues = "https://github.com/physiomelinks/HaemoLynx/issues"
 # a pool leaves running); the library reads it only when it is there.
 dev = ["pytest", "pytest-cov", "pytest-xdist", "ruff", "nbconvert", "nbformat", "npe2>=0.8", "psutil"]
 notebook = ["ipykernel"]
-# The napari panel. napari 0.8 requires Python 3.11, above this library's 3.10,
+# The napari panel. napari 0.9 requires Python 3.11, above this library's 3.10,
 # so this extra is installable only there -- deliberately, rather than
-# resolving to an old napari that has not been tested against.
+# resolving to an old napari that has not been tested against. 0.9 is the
+# floor because the panel draws with what replaced napari 0.9's deprecations:
+# `viewer.scene.camera`, `viewer.canvas.size`, and the `projection_mode`s
+# `rescale_linear` and `fade` in place of `out_of_slice_display`.
 #
 # It includes a Qt binding, because `pip install "HaemoLynx[napari]"` should
 # give a panel that opens: napari itself declares none, and without one it
@@ -79,8 +82,8 @@ notebook = ["ipykernel"]
 #
 # imageio-ffmpeg is the view window's rotation movie as MP4; without it the
 # movie is a GIF.
-napari = ["napari[pyqt6]>=0.8", "magicgui>=0.7", "npe2>=0.8", "imageio-ffmpeg>=0.4"]
-napari-plugin = ["napari>=0.8", "magicgui>=0.7", "npe2>=0.8", "imageio-ffmpeg>=0.4"]
+napari = ["napari[pyqt6]>=0.9", "magicgui>=0.7", "npe2>=0.8", "imageio-ffmpeg>=0.4"]
+napari-plugin = ["napari>=0.9", "magicgui>=0.7", "npe2>=0.8", "imageio-ffmpeg>=0.4"]
 
 [project.entry-points."napari.manifest"]
 haemolynx = "haemolynx.gui:napari.yaml"
@@ -93,6 +96,11 @@ markers = [
     "plotting: marks tests that create figures",
     "integration: marks integration tests",
     "gui: marks tests that build real Qt widgets (need napari and a display)",
+]
+# napari 0.9's deprecations, replaced throughout the panel: one used again fails.
+filterwarnings = [
+    "error:viewer.camera is a deprecated attribute:DeprecationWarning",
+    "error:out_of_slice_display:FutureWarning",
 ]
 
 [tool.coverage.run]

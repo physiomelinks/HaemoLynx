@@ -212,9 +212,10 @@ def open_movie_writer(path: Path, fps: int = MOVIE_FPS):
 
 def viewer_camera(viewer):
     """*viewer*'s camera: ``viewer.scene.camera`` from napari 0.9, which
-    deprecated ``viewer.camera``."""
+    deprecated ``viewer.camera``; the old name only for a stand-in viewer
+    without a scene, and None for no viewer."""
     camera = getattr(getattr(viewer, "scene", None), "camera", None)
-    return camera if camera is not None else viewer.camera
+    return camera if camera is not None else getattr(viewer, "camera", None)
 
 
 def _as_tuple(vector: np.ndarray) -> tuple[float, float, float]:

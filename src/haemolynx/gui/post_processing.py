@@ -61,7 +61,14 @@ from haemolynx.graph.post_processing import (
     junction_vessels,
     resistance_node_pair_with_edits,
 )
-from haemolynx.gui.results import PREFIX, LayerSpec, node_points, polylines_to_vectors
+from haemolynx.gui.results import (
+    POINTS_PROJECTION,
+    PREFIX,
+    VECTORS_PROJECTION,
+    LayerSpec,
+    node_points,
+    polylines_to_vectors,
+)
 
 __all__ = [
     "ACTION_DELETE_ITEM",
@@ -430,7 +437,7 @@ def _marker_options(colours: np.ndarray) -> dict[str, Any]:
         "face_color": "transparent",
         "border_color": colours,
         "border_width": MARKER_BORDER_WIDTH,
-        "out_of_slice_display": True,
+        "projection_mode": POINTS_PROJECTION,
     }
 
 
@@ -773,7 +780,7 @@ def trace_layers(trace: VesselTrace) -> tuple[LayerSpec, ...]:
                     "vector_style": "line",
                     "edge_width": TRACE_LINE_WIDTH,
                     "edge_color": list(TRACE_COLOUR),
-                    "out_of_slice_display": True,
+                    "projection_mode": VECTORS_PROJECTION,
                 },
             )
         )
@@ -795,7 +802,7 @@ def trace_layers(trace: VesselTrace) -> tuple[LayerSpec, ...]:
                 "face_color": np.asarray([colour[r] for r in roles], dtype=float),
                 "border_color": "black",
                 "border_width": 0.1,
-                "out_of_slice_display": True,
+                "projection_mode": POINTS_PROJECTION,
             },
         )
     )
@@ -816,7 +823,7 @@ def added_nodes_layer(graph: Any, nodes: Iterable[Any]) -> LayerSpec:
             "face_color": list(NEW_NODE_COLOUR),
             "border_color": "black",
             "border_width": 0.1,
-            "out_of_slice_display": True,
+            "projection_mode": POINTS_PROJECTION,
         },
     )
 
@@ -863,7 +870,7 @@ def bridge_cut_layer(point_um: Sequence[float] | None) -> LayerSpec:
             "face_color": list(NEW_NODE_COLOUR),
             "border_color": "black",
             "border_width": 0.1,
-            "out_of_slice_display": True,
+            "projection_mode": POINTS_PROJECTION,
         },
     )
 
@@ -1629,7 +1636,7 @@ def review_region_layer(item: Any) -> LayerSpec:
         data=points,
         features={},
         # A list, not a tuple: napari 0.9 refuses a tuple as a colour.
-        options={"size": 1.0, "face_color": list(TRACE_COLOUR), "border_width": 0.0, "out_of_slice_display": True},
+        options={"size": 1.0, "face_color": list(TRACE_COLOUR), "border_width": 0.0, "projection_mode": POINTS_PROJECTION},
     )
 
 

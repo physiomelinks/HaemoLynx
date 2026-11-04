@@ -1805,7 +1805,7 @@ def test_a_near_miss_in_3d_takes_the_node_it_was_aimed_at(panel):
     with_graph(viewer, bc)
     by_node_ids(widget)
     viewer.dims.ndisplay = 3
-    viewer.camera.zoom = 1.0
+    viewer.scene.camera.zoom = 1.0
     bc.pick_nodes()
 
     def click_3d(position):
@@ -1849,7 +1849,7 @@ def _box_panel(panel, method="volume"):
     bc.role.value = "inlet"
     viewer.dims.ndisplay = 2
     viewer.dims.set_point(0, 20.0)
-    viewer.camera.center = (20.0, 50.0, 60.0)
+    viewer.scene.camera.center = (20.0, 50.0, 60.0)
     return widget, viewer, bc
 
 
@@ -1936,7 +1936,7 @@ def test_use_node_without_a_selection_says_so(panel):
 def test_several_boxes_and_remove(panel):
     widget, viewer, bc = _box_panel(panel)
     bc.insert_box()
-    viewer.camera.center = (20.0, 150.0, 150.0)
+    viewer.scene.camera.center = (20.0, 150.0, 150.0)
     bc.insert_box()
     action = bc.actions["inlet"]
     assert list(action.box_choice.choices) == ["Box 1", "Box 2"]
@@ -2091,14 +2091,14 @@ def test_clicking_a_listed_node_marks_it_and_centres_the_view_on_it(panel):
     widget, viewer, bc = _box_panel(panel)
     bc.insert_box()
     bc.scan_box()
-    viewer.camera.center = (0.0, 0.0, 0.0)
+    viewer.scene.camera.center = (0.0, 0.0, 0.0)
     table = bc.actions["inlet"].box_nodes.table
     table.selectRow(1)                                   # node 2, a junction
 
     drawn = viewer.layers[BC_BOX_NODES]
     assert tuple(np.round(drawn.face_color[1], 3)) == CHOSEN_BOX_NODE_COLOUR
     assert drawn.size[1] == max(drawn.size)
-    centre = np.asarray(viewer.camera.center)[-2:]
+    centre = np.asarray(viewer.scene.camera.center)[-2:]
     assert np.allclose(centre, [52.0, 62.0])             # node 2's (y, x)
     assert viewer.dims.point[0] == pytest.approx(22.0, abs=1.0)   # its slice
     assert "Node 2" in widget._haemolynx_report()
@@ -2173,7 +2173,7 @@ def test_in_3d_a_press_moves_only_the_3d_box_until_the_presses_stop(panel):
     bc.insert_box()
     bc.show()
     viewer.dims.ndisplay = 3
-    viewer.camera.angles = (0, 0, 0)           # looking down -z, -y up the screen
+    viewer.scene.camera.angles = (0, 0, 0)           # looking down -z, -y up the screen
     solid = viewer.layers[boxes_name("inlet")]
     flat = viewer.layers[regions_name("inlet")]
     flat_before = np.asarray(flat.data[0]).copy()

@@ -82,6 +82,7 @@ from haemolynx.gui.results import (
     is_z_depth_windowed_volume_layer,
     mask_unsolved_flow_columns,
     perturbation_layer_names,
+    with_projection_mode,
     z_window_is_full,
 )
 from haemolynx.gui.optimise_progress import OptimisationProgressDisplay
@@ -104,6 +105,7 @@ from haemolynx.gui.run_state import (
     post_processing_tab_title,
     regenerate_stop_after,
 )
+from haemolynx.gui.rotation_movie import viewer_camera
 from haemolynx.gui.stage_checkpoints import (
     SKIP_FOR_RESUME,
     StageCheckpoints,
@@ -805,7 +807,7 @@ def snap_view_to_plane(viewer, plane: str) -> bool:
         viewer.dims.order = tuple(range(ndim))
         viewer.reset_view()
         view_direction, up_direction = camera_directions_for_plane(plane)
-        viewer.camera.set_view_direction(view_direction, up_direction)
+        viewer_camera(viewer).set_view_direction(view_direction, up_direction)
     else:
         viewer.dims.order = dims_order_for_plane(plane, ndim)
         viewer.reset_view()
@@ -2498,7 +2500,7 @@ def _set_z_filtered_layer_data(
         if features:
             add_kwargs["features"] = dict(features)
         if kind == "vectors":
-            for key in ("vector_style", "edge_width", "length", "out_of_slice_display"):
+            for key in ("vector_style", "edge_width", "length", "projection_mode"):
                 if hasattr(layer, key):
                     add_kwargs[key] = getattr(layer, key)
             colour_attr, colour = "edge_color", getattr(layer, "edge_color", None)
@@ -2508,8 +2510,8 @@ def _set_z_filtered_layer_data(
                     add_kwargs[key] = _uniform_points_property(
                         getattr(layer, key), new_count
                     )
-            if hasattr(layer, "out_of_slice_display"):
-                add_kwargs["out_of_slice_display"] = layer.out_of_slice_display
+            if hasattr(layer, "projection_mode"):
+                add_kwargs["projection_mode"] = layer.projection_mode
             colour_attr, colour = "face_color", getattr(layer, "face_color", None)
         # Only a single flat colour carries over as-is. Per-row colours belong
         # to the old rows -- the caller re-applies the colouring rule instead
@@ -4008,9 +4010,10 @@ def _add_or_update(viewer, spec) -> None:
                     if key in image_opts:
                         setattr(existing, key, image_opts[key])
             if spec.kind == "vectors":
-                for key in ("edge_width", "vector_style", "out_of_slice_display"):
-                    if key in spec.options:
-                        setattr(existing, key, spec.options[key])
+                vector_options = with_projection_mode(spec.kind, spec.options)
+                for key in ("edge_width", "vector_style", "projection_mode"):
+                    if key in vector_options:
+                        setattr(existing, key, vector_options[key])
                 _apply_vectors_length(existing, spec)
             _colour_layer(existing, spec.colour_by, spec.colour_kind,
                           spec.colour_cycle, spec.contrast_limits)
@@ -4027,7 +4030,7 @@ def _add_or_update(viewer, spec) -> None:
         viewer.layers.remove(existing)
 
     adder = getattr(viewer, f"add_{spec.kind}")
-    options = dict(spec.options)
+    options = with_projection_mode(spec.kind, spec.options)
     if spec.kind == "image":
         options = _image_options_for_napari(options)
     for key in _BRANCH_HOVER_OPTION_KEYS:
@@ -6072,6 +6075,15 @@ def _show_branch_tooltip(layer, index: int) -> None:
         QToolTip.showText(QCursor.pos(), text)
 
 
+def _dragging(event) -> bool:
+    """Whether a mouse-move event comes in the middle of a drag.
+
+    napari 0.10 calls move callbacks during drags too (0.9 did not), so a
+    hover would search every vessel on each frame of a rotate or pan.
+    """
+    return bool(getattr(event, "is_dragging", False))
+
+
 def _branch_hover_mouse_move(layer, event) -> None:
     """Show the composed tooltip when the cursor is over this layer's polyline.
 
@@ -6079,6 +6091,8 @@ def _branch_hover_mouse_move(layer, event) -> None:
     hide-on-empty so a selected nodes layer cannot swallow a hit on the
     vessels underneath.
     """
+    if _dragging(event):
+        return
     index = _hover_feature_index(layer, event)
     if index is None:
         return
@@ -6152,6 +6166,8 @@ def _branch_hover_viewer_mouse_move(viewer, event) -> None:
     """
     from qtpy.QtWidgets import QToolTip
 
+    if _dragging(event):
+        return
     layers = getattr(viewer, "layers", ())
     for layer in reversed(list(layers)):
         if not _is_node_hover_layer(layer):
@@ -8872,7 +8888,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         view = getattr(event, "view_direction", None)
         up = getattr(event, "up_direction", None)
         if view is None or up is None:
-            view, up = viewer.camera.view_direction, viewer.camera.up_direction
+            view, up = viewer_camera(viewer).view_direction, viewer_camera(viewer).up_direction
         depth = float(actions[armed.owner].depth.value)
 
         def box_to(position):
@@ -9190,7 +9206,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     def view_centre() -> list[float]:
         dims = viewer.dims
         return view_centre_zyx(
-            dims.point, tuple(int(a) for a in dims.displayed), viewer.camera.center
+            dims.point, tuple(int(a) for a in dims.displayed), viewer_camera(viewer).center
         )
 
     def write_boxes(owner: str, boxes, active: int | None) -> None:
@@ -9250,8 +9266,8 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         camera = {}
         if viewer.dims.ndisplay == 3:
             # Relative to how the 3D view is turned, not to the image's axes.
-            camera = {"view_direction": viewer.camera.view_direction,
-                      "up_direction": viewer.camera.up_direction}
+            camera = {"view_direction": viewer_camera(viewer).view_direction,
+                      "up_direction": viewer_camera(viewer).up_direction}
         boxes[index] = move_box(boxes[index], direction, float(actions[owner].box_step.value),
                                 displayed, **camera)
         preview_boxes(owner, boxes)
@@ -9552,7 +9568,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             # near miss takes the node it was aimed at. Not in 2D, where the
             # dot is on the slice and a projected miss could reach through
             # to another slice's node.
-            zoom = float(getattr(viewer.camera, "zoom", 0.0) or 0.0)
+            zoom = float(getattr(viewer_camera(viewer), "zoom", 0.0) or 0.0)
             hit = nearest_node_hit(
                 nodes.data, _layer_features(nodes), position,
                 max_distance=NODE_PICK_SLOP_PX / zoom if zoom > 0 else 0.0,
@@ -11770,6 +11786,14 @@ _POST_PROCESSING_EDIT_STATUS = {
 #: is a drag -- turning or panning the view -- not a click.
 _CLICK_DRAG_TOLERANCE_PX = 4.0
 
+
+def _canvas_size_px(viewer) -> tuple[float, ...]:
+    """The viewer's canvas in screen pixels, ``(height, width)``: napari keeps
+    ``viewer.canvas.size`` in step with the window. Empty when there is none."""
+    size = getattr(getattr(viewer, "canvas", None), "size", None)
+    return tuple(float(v) for v in size) if size is not None else ()
+
+
 def _zoom_viewer_to(viewer, position_zyx, box_um: float = JUNCTION_ZOOM_BOX_UM) -> None:
     """Centre the camera on *position_zyx* (microns) and zoom to a *box_um* box.
 
@@ -11790,10 +11814,11 @@ def _zoom_viewer_to(viewer, position_zyx, box_um: float = JUNCTION_ZOOM_BOX_UM) 
             for axis in range(offset, len(position)):
                 if axis not in displayed:
                     viewer.dims.set_point(axis, position[axis])
-        viewer.camera.center = camera_center_for(position, displayed)
-        zoom = zoom_for_canvas(getattr(viewer, "_canvas_size", ()) or (), box_um)
+        camera = viewer_camera(viewer)
+        camera.center = camera_center_for(position, displayed)
+        zoom = zoom_for_canvas(_canvas_size_px(viewer), box_um)
         if zoom is not None:
-            viewer.camera.zoom = zoom
+            camera.zoom = zoom
     except Exception:  # noqa: BLE001 - zooming is a convenience, never fatal
         logger.exception("could not zoom the viewer to %s", position_zyx)
 
@@ -13340,7 +13365,7 @@ def _post_processing_controls(
         """Centre the camera on *loop* and fit it; in 3D, look along its normal."""
         if viewer is None:
             return
-        camera = viewer.camera
+        camera = viewer_camera(viewer)
         three_d = int(viewer.dims.ndisplay) == 3
         towards = up = None
         if three_d:
@@ -13458,7 +13483,7 @@ def _post_processing_controls(
             offset = max(0, int(viewer.dims.ndim) - 3)
             displayed = [int(axis) - offset for axis in viewer.dims.displayed]
             point = [float(p) for p in list(viewer.dims.point)[offset:]]
-            return view_centre_zyx(viewer.camera.center, displayed, point)
+            return view_centre_zyx(viewer_camera(viewer).center, displayed, point)
         except Exception:  # noqa: BLE001 - the whole network is listed instead
             logger.exception("could not read the view centre")
             return None
@@ -14773,7 +14798,7 @@ def _post_processing_controls(
         position = np.asarray(event.position, dtype=float)
         dims = list(getattr(event, "dims_displayed", ()) or ())
         view = getattr(event, "view_direction", None) if len(dims) == 3 else None
-        reach = marker_pick_um(getattr(getattr(viewer, "camera", None), "zoom", None))
+        reach = marker_pick_um(getattr(viewer_camera(viewer), "zoom", None))
         if state.review_items:
             row = marker_under_click(
                 [item.centre_um for item in state.review_items], position,

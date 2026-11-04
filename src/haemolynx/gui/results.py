@@ -100,6 +100,14 @@ PERICYTE_POINT_SIZE = 4.0
 #: Picking rings on the Boundaries tab (distinct from snapped boundary nodes).
 BOUNDARY_COORDINATE_POINT_SIZE = 8.0
 
+#: How points and vectors off the slice a 2D view shows are drawn (napari's
+#: ``projection_mode``, which replaced ``out_of_slice_display`` in 0.9): points
+#: near it shrink with their distance from it, vectors fade.
+POINTS_PROJECTION = "rescale_linear"
+VECTORS_PROJECTION = "fade"
+#: The mode napari's own ``out_of_slice_display=True`` turns into, per kind.
+_OUT_OF_SLICE_PROJECTION = {"points": POINTS_PROJECTION, "vectors": VECTORS_PROJECTION}
+
 #: Layers drawn over every other. The terminal nodes sit where vessels leave
 #: the image, often inside a thick vessel, whose tube or mask hid them whole
 #: while they were depth-tested like the other points. So they are drawn with
@@ -1021,6 +1029,21 @@ class LayerSpec:
     sweep_rows: Any | None = None
 
 
+def with_projection_mode(kind: str, options: Mapping[str, Any]) -> dict[str, Any]:
+    """*options* with napari's deprecated ``out_of_slice_display`` as the
+    ``projection_mode`` napari turns it into, so a run saved before the change
+    draws the same without the deprecated name. False is napari's ``"all"``."""
+    prepared = dict(options)
+    if "out_of_slice_display" not in prepared:
+        return prepared
+    out_of_slice = prepared.pop("out_of_slice_display")
+    if kind in _OUT_OF_SLICE_PROJECTION:
+        prepared.setdefault(
+            "projection_mode", _OUT_OF_SLICE_PROJECTION[kind] if out_of_slice else "all"
+        )
+    return prepared
+
+
 @dataclass(frozen=True, eq=False)
 class SweepNodeRows:
     """A sweep's nodes at each grid point: the same points, with that point's
@@ -1507,7 +1530,7 @@ def pericyte_layer(
         visible=visible,
         options={
             "size": PERICYTE_POINT_SIZE,
-            "out_of_slice_display": True,
+            "projection_mode": POINTS_PROJECTION,
         },
     )
 
@@ -1902,7 +1925,7 @@ class ResultLayers:
                 options={
                     "vector_style": "line",
                     "edge_width": 0.6,
-                    "out_of_slice_display": True,
+                    "projection_mode": VECTORS_PROJECTION,
                     **hover_options,
                 },
             ),
@@ -1916,7 +1939,7 @@ class ResultLayers:
                 visible=False,
                 options={
                     "size": VESSEL_LABEL_POINT_SIZE,
-                    "out_of_slice_display": True,
+                    "projection_mode": POINTS_PROJECTION,
                 },
             ),
         ]
@@ -1956,7 +1979,7 @@ class ResultLayers:
                 colour_by="degree",
                 colour_kind="continuous",
                 contrast_limits=_limits(degrees),
-                options={"size": NODE_POINT_SIZE, "out_of_slice_display": True},
+                options={"size": NODE_POINT_SIZE, "projection_mode": POINTS_PROJECTION},
             )
         )
         return StageLayers(
@@ -2136,7 +2159,7 @@ class ResultLayers:
                     contrast_limits=_limits(degrees),
                     options={
                         "size": NODE_POINT_SIZE,
-                        "out_of_slice_display": True,
+                        "projection_mode": POINTS_PROJECTION,
                     },
                     # Start hidden -- a busy point cloud on first view of a new
                     # run. Only the first emission sets this: later stages'
@@ -2217,7 +2240,7 @@ class ResultLayers:
                         contrast_limits=_limits(degrees),
                         options={
                             "size": NODE_POINT_SIZE,
-                            "out_of_slice_display": True,
+                            "projection_mode": POINTS_PROJECTION,
                         },
                     )
                 )
@@ -2235,7 +2258,7 @@ class ResultLayers:
                         },
                         options={
                             "size": NODE_POINT_SIZE,
-                            "out_of_slice_display": True,
+                            "projection_mode": POINTS_PROJECTION,
                         },
                     )
                 )
@@ -2288,7 +2311,7 @@ class ResultLayers:
                         "vector_style": "line",
                         "edge_width": width,
                         "edge_color": colour,
-                        "out_of_slice_display": True,
+                        "projection_mode": VECTORS_PROJECTION,
                     },
                     # Start hidden: the lines sit on the vessels, and the
                     # user turns a layer on to inspect a fit. Only the first
@@ -2370,7 +2393,7 @@ class ResultLayers:
                 colour_cycle=role_colours(),
                 options={
                     "size": BOUNDARY_NODE_POINT_SIZE,
-                    "out_of_slice_display": True,
+                    "projection_mode": POINTS_PROJECTION,
                     **ON_TOP_POINTS_OPTIONS,
                 },
                 visible=visible,
@@ -2477,7 +2500,7 @@ class ResultLayers:
                         contrast_limits=_limits(values),
                         options={
                             "size": NODE_POINT_SIZE,
-                            "out_of_slice_display": True,
+                            "projection_mode": POINTS_PROJECTION,
                         },
                     )
                 )
@@ -2561,7 +2584,7 @@ class ResultLayers:
                 **_colouring(per_segment, colour_by),
                 visible=False,
                 options={"vector_style": "line", "edge_width": 0.6,
-                         "out_of_slice_display": True, **hover_options},
+                         "projection_mode": VECTORS_PROJECTION, **hover_options},
             )
         ]
 
@@ -2588,7 +2611,7 @@ class ResultLayers:
                     visible=False,
                     options={
                         "size": NODE_POINT_SIZE,
-                        "out_of_slice_display": True,
+                        "projection_mode": POINTS_PROJECTION,
                     },
                 )
             )
@@ -2708,7 +2731,7 @@ class ResultLayers:
                 **colouring,
                 visible=False,
                 options={"vector_style": "line", "edge_width": 0.6,
-                         "out_of_slice_display": True},
+                         "projection_mode": VECTORS_PROJECTION},
                 sweep=sweep,
                 segment_owner=owner,
                 sweep_edge_index=edge_index,
@@ -2756,7 +2779,7 @@ class ResultLayers:
                 colour_kind="continuous",
                 contrast_limits=_limits(pressure.ravel()),
                 visible=False,
-                options={"size": NODE_POINT_SIZE, "out_of_slice_display": True},
+                options={"size": NODE_POINT_SIZE, "projection_mode": POINTS_PROJECTION},
                 sweep_rows=rows,
             ),
         )
@@ -2795,7 +2818,7 @@ class ResultLayers:
                     "vector_style": "triangle",
                     "edge_width": 1.2,
                     "length": float(self.settings.get("flow_arrow_scale", 1.0)),
-                    "out_of_slice_display": True,
+                    "projection_mode": VECTORS_PROJECTION,
                 },
                 sweep_rows=rows,
             ),
@@ -2929,7 +2952,7 @@ class ResultLayers:
                     "edge_width": flow_arrow_width_um(graph),
                     "edge_color": FLOW_ARROW_COLOUR,
                     "length": scale,
-                    "out_of_slice_display": True,
+                    "projection_mode": VECTORS_PROJECTION,
                     **FLOW_ARROW_OPTIONS,
                     **hover_options,
                 },

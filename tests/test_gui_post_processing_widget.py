@@ -21,6 +21,7 @@ pytest.importorskip("magicgui")
 from haemolynx.graph import edge_keys  # noqa: E402
 from haemolynx.graph._helpers import calculate_path_length  # noqa: E402
 from haemolynx.gui._widget import (  # noqa: E402
+    JUNCTION_ZOOM_BOX_UM,
     POST_PROCESSING_TAB,
     _apply_layers,
     _post_processing_controls,
@@ -214,14 +215,14 @@ def test_no_list_is_chosen_at_first_and_choosing_one_waits_for_a_scan(make_napar
     for widget in (c.scan_button, c.click_delete_button, c.add_button, c.prune_button):
         assert not c.junction_box.isAncestorOf(widget)
 
-    centre_before = np.asarray(viewer.camera.center, dtype=float).copy()
+    centre_before = np.asarray(viewer.scene.camera.center, dtype=float).copy()
     c.scan_button.click()
     graph = c.state.graph
     assert graph is not None
     assert c.state.node is None and c.table.rowCount() == 0
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
     assert _colour_of(viewer, graph, (1, 2)) == _rgba(CONNECTED)
-    assert np.allclose(viewer.camera.center, centre_before)
+    assert np.allclose(viewer.scene.camera.center, centre_before)
     assert c.status.text() == "6 vessels; no list chosen."
 
     # An edit rescans: still no junction picked or marked.
@@ -240,7 +241,7 @@ def test_no_list_is_chosen_at_first_and_choosing_one_waits_for_a_scan(make_napar
     assert c.state.node == 1 and c.table.rowCount() == 4
     assert np.allclose(viewer.layers[HIGH_DEGREE_JUNCTIONS].data, [[10, 0, 0]])
     assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
-    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    centre = np.asarray(viewer.scene.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(centre, [10, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
 
     c.review_choice.setCurrentText(NO_LIST)
@@ -253,6 +254,9 @@ def test_no_list_is_chosen_at_first_and_choosing_one_waits_for_a_scan(make_napar
 def test_scan_lists_the_junction_recolours_the_vessels_and_zooms(page):
     c, viewer = page.controls, page.viewer
     layer_before = viewer.layers[VESSELS]
+    # The zoom fits a JUNCTION_ZOOM_BOX_UM box to the canvas's shorter side.
+    viewer.canvas.size = (300, 450)
+    viewer.scene.camera.zoom = 1.0
     c.scan_button.click()
 
     assert c.junction_list.count() == 1
@@ -269,8 +273,9 @@ def test_scan_lists_the_junction_recolours_the_vessels_and_zooms(page):
     assert _colour_of(viewer, graph, (1, 2)) == _rgba(AT_JUNCTION)
     assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
     assert np.allclose(viewer.layers[HIGH_DEGREE_JUNCTIONS].data, [[10, 0, 0]])
-    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    centre = np.asarray(viewer.scene.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(centre, [10, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
+    assert viewer.scene.camera.zoom == pytest.approx(300 / JUNCTION_ZOOM_BOX_UM)
 
 
 def test_selecting_table_rows_turns_those_vessels_yellow(page):
@@ -1145,7 +1150,7 @@ def test_short_loops_are_listed_only_once_chosen_and_scanned(make_napari_viewer,
         assert _colour_of(viewer, graph, pair) == _rgba(AT_JUNCTION)
     assert _colour_of(viewer, graph, (0, 1)) == _rgba(CONNECTED)
     # Zoomed to the loop's middle, (20, 0, 0).
-    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    centre = np.asarray(viewer.scene.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(centre, [20, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
 
     c.review_choice.setCurrentText(NO_LIST)
@@ -1161,9 +1166,9 @@ def test_picking_a_loop_in_3d_looks_at_it_in_its_own_plane(make_napari_viewer, t
     page.controls.scan_button.click()
 
     # The loop lies in x = 0, so the camera looks along x at its middle.
-    view = np.asarray(viewer.camera.view_direction, dtype=float)
+    view = np.asarray(viewer.scene.camera.view_direction, dtype=float)
     assert abs(view[2]) == pytest.approx(1.0, abs=1e-3)
-    assert np.allclose(np.asarray(viewer.camera.center), [20, 0, 0], atol=1e-3)
+    assert np.allclose(np.asarray(viewer.scene.camera.center), [20, 0, 0], atol=1e-3)
 
 
 def test_keep_records_the_loop_takes_it_off_the_list_and_writes_the_csv(make_napari_viewer, tmp_path):
@@ -1282,7 +1287,7 @@ def test_a_review_list_shows_its_own_page_and_buttons_and_lists_only_once_scanne
     assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
     assert _colour_of(viewer, graph, (1, 2)) == _rgba(CONNECTED)
     assert np.allclose(viewer.layers[REVIEW_MARKERS].data, [[10, 10, 0]])
-    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    centre = np.asarray(viewer.scene.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(centre, [10, 10, 0][-len(viewer.dims.displayed):], atol=1e-6)
     assert "1 item(s) in unsolved pieces to review" in c.review_summary.text()
 
@@ -1390,15 +1395,15 @@ def test_the_region_limits_a_list_to_round_the_view_centre(make_napari_viewer):
     page = _review_page(make_napari_viewer())
     c, viewer = page.controls, page.viewer
     c.review_choice.setCurrentText(UNSOLVED)
-    viewer.camera.center = (0.0, 500.0, 500.0)
+    viewer.scene.camera.center = (0.0, 500.0, 500.0)
     c.region.setValue(30.0)
     c.scan_button.click()
     assert c.review_items.count() == 0
-    viewer.camera.center = (0.0, 10.0, 10.0)
+    viewer.scene.camera.center = (0.0, 10.0, 10.0)
     c.scan_button.click()
     assert c.review_items.count() == 1
     c.region.setValue(0.0)
-    viewer.camera.center = (0.0, 500.0, 500.0)
+    viewer.scene.camera.center = (0.0, 500.0, 500.0)
     c.scan_button.click()
     assert c.review_items.count() == 1
 
@@ -1720,8 +1725,8 @@ def test_ringed_junctions_vessels_are_magenta_and_a_click_on_a_ring_chooses_it(m
     assert _colour_of(viewer, graph, (6, 8)) == _rgba(CONNECTED)
     assert _ring_colours(viewer, HIGH_DEGREE_JUNCTIONS) == [_rgba(AT_JUNCTION), _rgba(LISTED)]
 
-    viewer.camera.zoom = 10.0
-    centre = np.asarray(viewer.camera.center, dtype=float).copy()
+    viewer.scene.camera.zoom = 10.0
+    centre = np.asarray(viewer.scene.camera.center, dtype=float).copy()
     _click(page, (31.0, 1.0, 0.0))  # inside junction 4's ring, nothing armed
 
     assert c.state.node == 4 and c.junction_list.currentRow() == 1
@@ -1729,7 +1734,7 @@ def test_ringed_junctions_vessels_are_magenta_and_a_click_on_a_ring_chooses_it(m
     assert _colour_of(viewer, graph, (4, 7)) == _rgba(AT_JUNCTION)
     assert _colour_of(viewer, graph, (1, 5)) == _rgba(LISTED)
     assert _ring_colours(viewer, HIGH_DEGREE_JUNCTIONS) == [_rgba(LISTED), _rgba(AT_JUNCTION)]
-    assert np.allclose(viewer.camera.center, centre), "the ring is on screen already: no zoom"
+    assert np.allclose(viewer.scene.camera.center, centre), "the ring is on screen already: no zoom"
     assert sorted(edge_keys(graph)) == sorted(edge_keys(G)), "choosing edits nothing"
 
     _click(page, (20.0, 20.0, 0.0))  # in no ring
@@ -1737,7 +1742,7 @@ def test_ringed_junctions_vessels_are_magenta_and_a_click_on_a_ring_chooses_it(m
     # Picking from the list still zooms, and recolours the rings the same way.
     c.junction_list.setCurrentRow(0)
     assert _ring_colours(viewer, HIGH_DEGREE_JUNCTIONS) == [_rgba(AT_JUNCTION), _rgba(LISTED)]
-    shown = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    shown = np.asarray(viewer.scene.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(shown, [10, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
 
 
@@ -1790,8 +1795,8 @@ def test_ringed_items_vessels_are_magenta_and_a_click_on_a_ring_chooses_the_item
     assert _colour_of(viewer, graph, (1, 2)) == _rgba(CONNECTED)
     assert _ring_colours(viewer, REVIEW_MARKERS) == [_rgba(AT_JUNCTION), _rgba(LISTED)]
 
-    viewer.camera.zoom = 10.0
-    centre = np.asarray(viewer.camera.center, dtype=float).copy()
+    viewer.scene.camera.zoom = 10.0
+    centre = np.asarray(viewer.scene.camera.center, dtype=float).copy()
     _click(page, tuple(np.asarray(other.centre_um) + (0.0, 1.0, 1.0)))
 
     assert c.state.review_item is other and c.review_items.currentRow() == 1
@@ -1799,7 +1804,7 @@ def test_ringed_items_vessels_are_magenta_and_a_click_on_a_ring_chooses_the_item
     assert _colour_of(viewer, graph, far_end(other)) == _rgba(AT_JUNCTION)
     assert _colour_of(viewer, graph, far_end(chosen)) == _rgba(LISTED)
     assert _ring_colours(viewer, REVIEW_MARKERS) == [_rgba(LISTED), _rgba(AT_JUNCTION)]
-    assert np.allclose(viewer.camera.center, centre), "the ring is on screen already: no zoom"
+    assert np.allclose(viewer.scene.camera.center, centre), "the ring is on screen already: no zoom"
 
     # Kept, an item is no longer ringed, and its vessel no longer magenta.
     c.review_buttons[ACTION_KEEP].click()
@@ -1982,7 +1987,7 @@ def test_the_two_point_nodes_are_found_and_changed_from_the_list(make_napari_vie
         "1. Node 0 (two-point start, inlet)", "2. Node 4 (two-point end, outlet)", "3. Node 5 (dead end)",
     ]
     assert c.state.review_item.nodes == (0,)
-    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    centre = np.asarray(viewer.scene.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(centre, np.asarray(c.state.review_item.centre_um)[-len(viewer.dims.displayed):], atol=1e-6)
     assert not c.review_buttons[ACTION_RESISTANCE_START].isEnabled()
     assert c.review_buttons[ACTION_RESISTANCE_END].isEnabled()
