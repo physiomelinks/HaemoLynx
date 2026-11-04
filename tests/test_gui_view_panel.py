@@ -1937,6 +1937,20 @@ def test_the_show_boxes_sit_in_the_display_box_greyed_out_before_a_run(make_napa
         assert box.toolTip()
 
 
+def test_the_segmented_image_box_sits_under_the_skeleton_box():
+    panel = settings_widget(napari_viewer=None)
+    layout = panel._haemolynx_view_toggle_row.layout()
+    boxes = _show_boxes(panel)
+
+    def cell(role):
+        row, column, _rows, _columns = layout.getItemPosition(layout.indexOf(boxes[role]))
+        return row, column
+
+    assert cell("skeleton") == (1, 1)
+    assert cell("segmented image") == (2, 1)
+    assert cell("terminal nodes") == (1, 0)
+
+
 def test_the_show_boxes_are_built_and_greyed_out_with_no_viewer():
     panel = settings_widget(napari_viewer=None)
     for box in _show_boxes(panel).values():

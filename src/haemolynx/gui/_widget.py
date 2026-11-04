@@ -16286,19 +16286,24 @@ def settings_widget(napari_viewer=None):
     # layer list always agree.
     from qtpy.QtWidgets import QGridLayout
 
-    from haemolynx.gui.layer_sets import VIEW_TOGGLES, toggle_layer_name, toggle_states
+    from haemolynx.gui.layer_sets import (
+        VIEW_TOGGLE_CELLS,
+        VIEW_TOGGLES,
+        toggle_layer_name,
+        toggle_states,
+    )
 
     view_toggle_row = QWidget()
     view_toggle_row.setObjectName("haemolynx_view_toggle_row")
     view_toggle_layout = QGridLayout(view_toggle_row)
     view_toggle_layout.setContentsMargins(0, 0, 0, 0)
     view_toggles: dict[str, QCheckBox] = {}
-    for index, (role, label) in enumerate(VIEW_TOGGLES):
+    for role, label in VIEW_TOGGLES:
         box = QCheckBox(label)
         box.setObjectName(f"haemolynx_show_{role.replace(' ', '_')}")
         box.setToolTip(VIEW_TOGGLE_TOOLTIPS[role])
         box.setEnabled(False)
-        view_toggle_layout.addWidget(box, index // 2, index % 2)
+        view_toggle_layout.addWidget(box, *VIEW_TOGGLE_CELLS[role])
         view_toggles[role] = box
 
     def refresh_view_toggles(*_args) -> None:

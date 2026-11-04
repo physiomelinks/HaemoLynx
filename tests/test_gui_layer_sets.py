@@ -10,6 +10,7 @@ import pytest
 from haemolynx.gui.layer_sets import (
     BASELINE,
     BASELINE_LABEL,
+    VIEW_TOGGLE_CELLS,
     VIEW_TOGGLES,
     carried_roles,
     layer_set,
@@ -164,6 +165,13 @@ def test_the_show_boxes_are_arrows_nodes_terminal_nodes_skeleton_and_image_in_th
     assert [label for _role, label in VIEW_TOGGLES] == [
         "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmented image",
     ]
+
+
+def test_every_show_box_has_a_cell_of_its_own_and_the_segmented_image_sits_under_the_skeleton():
+    assert list(VIEW_TOGGLE_CELLS) == [role for role, _label in VIEW_TOGGLES]
+    assert len(set(VIEW_TOGGLE_CELLS.values())) == len(VIEW_TOGGLE_CELLS)
+    row, column = VIEW_TOGGLE_CELLS["skeleton"]
+    assert VIEW_TOGGLE_CELLS["segmented image"] == (row + 1, column)
 
 
 def test_arrows_and_nodes_boxes_follow_the_network_shown():
