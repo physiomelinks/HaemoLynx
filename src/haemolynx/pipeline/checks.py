@@ -1746,19 +1746,27 @@ def _check_surround_shell_room(settings: Mapping[str, Any], image, boundaries) -
     return report
 
 
-def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True) -> CheckReport:
+def preflight(
+    settings: Mapping[str, Any], schema: Schema, *, echo: bool = True, resume: Any = None
+) -> CheckReport:
     """Every pre-run check, printed as a checklist (unless *echo* is False:
     a batch checks every image and reports them itself).
 
     Called for you by the examples before a run starts; call it yourself to
     check a configuration without running anything.
+
+    *resume* is the ``stages.PipelineResume`` a run from a later tab is
+    handed. When no stage that run does reads the segmented image
+    (``stages.resumed_image_readers``), it goes on from the saved network
+    without it, so ``input_path`` need not be there; when one does and it
+    is not, the report says what reads it.
     """
     # The raw image is optional: check_raw_image checks it when it is set. A
     # synthetic network reads no file but its template: a path left set under
     # a switch the Input tab hides (an ilastik classifier, a vessel mask) is
     # not demanded, since check_settings reads a path's own gate only.
     skip: tuple[str, ...] = ("raw_image_path",)
-    from haemolynx.pipeline.stages import ilastik_segments
+    from haemolynx.pipeline.stages import ilastik_segments, resumed_image_readers, segmented_input_path
 
     if settings.get("use_ilastik_segmentation") and not ilastik_segments(settings):
         # Its switch is out of effect without a raw image (segment reads the
@@ -1768,7 +1776,28 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
         skip += tuple(
             setting.name for setting in schema if setting.must_exist and setting.name != "synthetic_template_path"
         )
+    readers = (
+        None if resume is None
+        else resumed_image_readers(settings, resume.start_from, getattr(resume, "graph", None))
+    )
+    # Unread, it is still named: a resumed run is held to the image its
+    # network's record names (stages._check_resumed_input).
+    unread = (
+        readers == () and not network_is_synthetic(settings)
+        and segmented_input_path(dict(settings)) is not None
+    )
+    if unread:
+        skip += ("input_path",)
     report = check_settings(schema, settings, skip=skip)
+    if unread:
+        report.add_pass("input_path", "not read: the run goes on from the saved network")
+    elif readers and not ilastik_segments(settings) and not resolve_existing_path(settings.get("input_path"))[0]:
+        from haemolynx.pipeline.progress import STAGES
+
+        tab = next((s.tab or s.title for s in STAGES if s.call == resume.start_from), resume.start_from)
+        report.add_warning(
+            f"The run from {tab} reads the segmented image (input_path) for: {'; '.join(readers)}."
+        )
     report.extend(check_synthetic_template(settings))
     report.extend(check_synthetic_surround(settings))
     report.extend(check_cached_artefacts(settings))

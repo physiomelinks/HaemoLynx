@@ -970,6 +970,62 @@ def test_run_from_a_tab_leaves_earlier_tabs_as_they_were(make_napari_viewer, qtb
 
 @pytest.mark.slow
 @pytest.mark.integration
+def test_a_loaded_run_reruns_late_tabs_without_its_image(make_napari_viewer, qtbot, tmp_path, capsys):
+    """Regression: Run from this stage on a run loaded from a file read the
+    segmented image and its skeleton again from whichever tab, so on a
+    machine without the image its checks refused it. From Haemodynamics and
+    from Export nothing reads it: the same flows. With mask diameters on,
+    the network handling measures the vessels it joins from the image, and
+    the run is refused, naming it, the later work kept."""
+    import shutil
+
+    image = tmp_path / FIXTURE.name
+    shutil.copy(FIXTURE, image)
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    rows["input_path"].value = image
+    rows["remove_interior_dead_ends"].value = False
+    rows["output_dir"].value = tmp_path / "out"
+    running = widget._haemolynx_run_state
+
+    def wait():
+        qtbot.waitUntil(lambda: not running.running, timeout=600_000)
+        qtbot.wait(200)
+
+    widget._haemolynx_run()
+    wait()
+    checkpoints = widget._haemolynx_checkpoints
+    full_flows = _flows(checkpoints.get("solve").graph)
+    saved = tmp_path / "run.haemorun"
+    assert widget._haemolynx_save_run(saved) is True
+    widget._haemolynx_clear()
+    image.unlink()
+    assert widget._haemolynx_load_run(saved) is True
+
+    for tab in ("6. Haemodynamics", "10. Export"):
+        widget._haemolynx_run_from(tab)
+        wait()
+        assert "Checks failed" not in widget._haemolynx_report(), tab
+        assert checkpoints.stages[-1] == "export_results", tab
+        assert _flows(checkpoints.get("solve").graph) == full_flows, tab
+        # No stand-in is kept for the next run, which may read the image.
+        assert checkpoints.get("skeletonise").output is None, tab
+
+    rows["use_edt_diameter_crosscheck"].value = True
+    rows["boundary_handling"].value = "remove_disconnected"
+    recorded = checkpoints.stages
+    capsys.readouterr()
+    widget._haemolynx_run_from("6. Haemodynamics")
+
+    assert "Checks failed" in widget._haemolynx_report()
+    assert checkpoints.stages == recorded
+    checks = capsys.readouterr().out
+    assert any("input_path" in line and image.name in line for line in checks.splitlines() if "[ERROR]" in line), checks
+
+
+@pytest.mark.slow
+@pytest.mark.integration
 def test_run_from_perturbations_repeats_the_full_runs_perturbations(
     make_napari_viewer, qtbot, tmp_path, monkeypatch
 ):

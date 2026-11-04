@@ -101,6 +101,7 @@ from haemolynx.io.downsample import (
     downsample_factor,
     downsample_from_settings,
     downsample_volume,
+    graph_downsample,
     raw_volume_like_graph,
     record_on_graph as record_downsample_on_graph,
 )
@@ -5994,6 +5995,8 @@ def _orders_and_diameters_after_edit(
     mask_volume = (
         network.volume.image if network is not None and network.volume is not None else None
     )
+    if isinstance(mask_volume, ImageNotRead):
+        mask_volume = None  # nothing measured here reads it (resumed_image_readers)
     # Even with no vessel to measure (only deletions): a table or class
     # median diameter follows the branch order just assigned.
     if settings.get("run_haemodynamics"):
@@ -9395,15 +9398,211 @@ def _check_resumed_input(settings: Mapping[str, Any], recorded: Any, what: str) 
         )
 
 
+class ImageNotReadError(RuntimeError):
+    """A stage reached for the voxels of an :class:`ImageNotRead`."""
+
+
+class ImageNotRead:
+    """Stands in for the segmented image, or the skeleton made from it, of a
+    run resumed on a saved network without reading either: no stage the run
+    does reads them (:func:`resumed_image_readers`), and the file may not be
+    on this machine at all. It has the image's shape, which the network
+    records (:func:`recorded_image_shape`); anything that reads its voxels
+    raises, naming the file."""
+
+    def __init__(self, what: str, path: Any, shape: Sequence[int]):
+        self.what = what
+        self.path = path
+        self.shape = tuple(int(n) for n in shape)
+        self.ndim = len(self.shape)
+
+    def _refuse(self):
+        raise ImageNotReadError(
+            f"This run resumed on the saved network without reading the {self.what} "
+            f"({self.path}): no stage it runs was to read it, yet one did. Run it from an "
+            "earlier tab with the image at that path."
+        )
+
+    def __array__(self, *_args, **_kwargs):
+        self._refuse()
+
+    def __getitem__(self, _key):
+        self._refuse()
+
+    def __iter__(self):
+        self._refuse()
+
+    def __len__(self):
+        self._refuse()
+
+    def __getattr__(self, name: str):
+        # What an array has and this lacks (dtype, max, ...); private and
+        # special names stay unknown, for copy and pickle.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        self._refuse()
+
+    def __repr__(self) -> str:
+        return f"ImageNotRead({self.what!r}, {str(self.path)!r}, shape={self.shape})"
+
+
+def volume_holds_image(volume: Any) -> bool:
+    """Whether *volume* (a stage's output) holds the image it names: False
+    for the :class:`ImageNotRead` a run resumed without it carries."""
+    return not isinstance(getattr(volume, "image", None), ImageNotRead)
+
+
+def recorded_image_shape(G: nx.Graph) -> tuple[int, ...] | None:
+    """The shape of the image *G* was built on, from the extent and voxel
+    size graph building records on it (the inverse of
+    ``graph.dead_ends.image_extent_um``); None when it records neither."""
+    extent = graph.dead_ends.graph_image_extent_um(G)
+    voxel = G.graph.get("image_voxel_size_zyx") or G.graph.get("voxel_size")
+    if extent is None or voxel is None or len(voxel) != len(extent):
+        return None
+    return tuple(int(round(float(e) / float(v))) + 1 for e, v in zip(extent, voxel))
+
+
+#: The export's settings that read the segmented image, and what each does.
+_EXPORT_IMAGE_READERS = (
+    ("measure_tissue_volume", "the tissue volume (measure_tissue_volume), measured against it"),
+    ("measurement_3d_to_cell_mask", "the 3D distances to the cell mask (measurement_3d_to_cell_mask)"),
+    ("measure_pericytes", "the pericyte measurements (measure_pericytes), read off it"),
+    ("visualize_results", "the plots (visualize_results), drawn over it"),
+)
+
+
+def resumed_image_readers(
+    settings: Mapping[str, Any], start_from: str | None, resumed_graph: Any = None
+) -> tuple[str, ...]:
+    """What reads the segmented image, or the skeleton made from it, in a run
+    resumed at *start_from* on *resumed_graph* (the saved run's network): a
+    phrase each, empty when nothing does. A resumed run handed no volume
+    (one on a run loaded from a file) then goes on from that network without
+    loading either (:class:`ImageNotRead` stands in), and preflight does not
+    ask for the file: the image need not be on this machine.
+
+    Every stage up to Diameters reads it, so a run starting at one does, as
+    does one with no network to resume on, or a network that does not record
+    the image's shape. After Diameters: the network handling, when
+    ``remove_disconnected`` measures the vessels it joins from the image
+    (mask or raw-image diameters, or a network classed by size); Post
+    processing, with hand edits to bring in line; every perturbation but a
+    sweep, whose plots are drawn over the image; and the export settings in
+    :data:`_EXPORT_IMAGE_READERS`. A synthetic network has no image.
+    """
+    if graph.network_is_synthetic(settings):
+        return ()
+    if start_from not in STAGE_CALLS or _stage_index(start_from) <= _stage_index("assign_diameters"):
+        return ("the stages up to Diameters, which build on it",)
+    if resumed_graph is None:
+        return ("graph building, with no saved network to resume on",)
+    if recorded_image_shape(resumed_graph) is None:
+        return ("the image's shape, which the saved network does not record",)
+
+    def runs(stage: str) -> bool:
+        return _stage_index(stage) >= _stage_index(start_from)
+
+    readers: list[str] = []
+    measures_joins = graph.size_convention_of(resumed_graph) is not None or (
+        bool(settings.get("run_haemodynamics"))
+        and bool(settings.get("use_edt_diameter_crosscheck") or measures_diameters_from_raw_image(settings))
+    )
+    if (
+        runs("build_haemodynamic_model")
+        and settings.get("boundary_handling") == BOUNDARY_HANDLING_REMOVE_DISCONNECTED
+        and measures_joins
+    ):
+        readers.append("the network handling (remove_disconnected), measuring the vessels it joins")
+    if runs("post_process") and graph.has_pending_edits(resumed_graph):
+        readers.append("Post processing, bringing the hand-edited vessels in line")
+    if runs("run_perturbations") and settings.get("run_perturbations") and settings.get("run_haemodynamics"):
+        readers.extend(
+            f"perturbation '{spec.name}', whose plots are drawn over it"
+            for spec in perturbations_from_settings(settings)
+            if spec.type != "none" and not is_sweep_perturbation(spec.type)
+        )
+    readers.extend(what for name, what in _EXPORT_IMAGE_READERS if settings.get(name))
+    return tuple(readers)
+
+
+def _resumes_without_image(
+    settings: Mapping[str, Any], resume: PipelineResume | None, start_from: str | None
+) -> bool:
+    """Whether a run resumed on *resume* goes on without loading the
+    segmented image and its skeleton: it is handed no volume of this
+    session's to use, no stage it runs reads them
+    (:func:`resumed_image_readers`), and the settings name the image, as
+    the network's record of them does."""
+    if resume is None or graph.network_is_synthetic(settings):
+        return False
+    if _earlier_output(resume, start_from, "skeletonise", "volume") is not None:
+        return False
+    if segmented_input_path(dict(settings)) is None:
+        return False
+    resumed_graph = _earlier_output(resume, start_from, "build_network", "graph")
+    return resumed_graph is not None and not resumed_image_readers(settings, start_from, resumed_graph)
+
+
+def _segmented_inputs_unread(settings: dict) -> SegmentedInputs:
+    """What :func:`segment` settles, for a run resumed without reading the
+    segmented image: the image named as the run names it
+    (:func:`segmented_input_path`) and the settings the later stages read
+    normalised as `segment` leaves them. Nothing is read, unzipped or
+    segmented."""
+    settings["input_path"] = Path(segmented_input_path(settings))
+    settings["image_axis_order"] = io.normalize_axis_order(
+        settings["image_axis_order"], label="IMAGE_AXIS_ORDER", allow_auto=True
+    )
+    settings["output_dir"] = Path(settings["output_dir"])
+    logger.info(
+        "Resuming on the saved network: no stage this run does reads the segmented image "
+        f"or its skeleton, so neither is loaded ({settings['input_path']})."
+    )
+    return SegmentedInputs(
+        image_path=settings["input_path"],
+        output_dir=settings["output_dir"],
+        input_format=settings["input_path"].suffix[1:].lower(),
+    )
+
+
+def _volume_not_read(
+    settings: Mapping[str, Any], inputs: SegmentedInputs, resume: PipelineResume, start_from: str
+) -> SkeletonisedVolume:
+    """The volume of a run resumed without reading the image: its image and
+    skeleton :class:`ImageNotRead`, the rest as the saved network records it
+    (voxel size, crop box, downsample) or *resume* carries it (the thick
+    region)."""
+    G = _earlier_output(resume, start_from, "build_network", "graph")
+    shape = recorded_image_shape(G)
+    voxel_size_zyx = tuple(float(v) for v in (G.graph.get("image_voxel_size_zyx") or G.graph["voxel_size"]))
+    voxel_size_xyz = G.graph.get("image_voxel_size_xyz") or tuple(reversed(voxel_size_zyx))
+    crop = G.graph.get(CROP_GRAPH_ATTRIBUTE)
+    return SkeletonisedVolume(
+        image=ImageNotRead("segmented image", inputs.image_path, shape),
+        skeleton=ImageNotRead("skeleton", inputs.output_dir / f"{run_stem(settings)}_skeleton.npy", shape),
+        voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
+        voxel_size_zyx=voxel_size_zyx,
+        output_dir=inputs.output_dir,
+        thick_vessel_mask=resume.thick_vessel_mask,
+        crop=None if not crop else CropBox.from_record(crop),
+        downsample=graph_downsample(G),
+        input_settings=input_volume_settings(settings),
+    )
+
+
 def _earlier_output(
     resume: PipelineResume | None, start_from: str | None, stage: str, attribute: str
 ) -> Any | None:
-    """*resume*'s output for *stage*, when the run starts after that stage."""
+    """*resume*'s output for *stage*, when the run starts after that stage.
+    Not a volume that only stands in for its image (:class:`ImageNotRead`),
+    nor a network on one: this run may read the image."""
     if resume is None or start_from not in STAGE_CALLS:
         return None
     if _stage_index(stage) >= _stage_index(start_from):
         return None
-    return getattr(resume, attribute, None)
+    output = getattr(resume, attribute, None)
+    return output if volume_holds_image(getattr(output, "volume", output)) else None
 
 
 def _resumed_segmented_path(
@@ -9688,7 +9887,10 @@ def run_pipeline_stages(
     *resume*'s stored outputs when it has them (else ilastik's existing output
     and the saved skeleton are loaded, and *resume*'s graph is used without
     touching ``{stem}_graph.pkl``); boundaries / diameters / haemodynamics /
-    solve / perturbations are reconstructed from *resume*.
+    solve / perturbations are reconstructed from *resume*. With no stored
+    volume, and no stage from *start_from* on reading the segmented image
+    (:func:`resumed_image_readers`), neither it nor the skeleton is loaded:
+    :class:`ImageNotRead` stands in for both.
 
     *stop_after* names the last stage call to run: the run returns the graph
     as that stage left it (None before there is one), and the stages after it
@@ -9735,18 +9937,25 @@ def _run_stages(
     stop_after: str | None,
 ) -> nx.MultiGraph | None:
     """:func:`run_pipeline_stages`'s stages, each reported through *run*."""
+    # A run resumed past every stage that reads the image goes on without it.
+    unread = _resumes_without_image(settings, resume, start_from)
     with run.stage("segment") as segmenting:
-        inputs = segment(
-            settings,
-            segmented_path=_resumed_segmented_path(settings, resume, start_from),
-            progress=segmenting,
-        )
+        if unread:
+            inputs = _segmented_inputs_unread(settings)
+        else:
+            inputs = segment(
+                settings,
+                segmented_path=_resumed_segmented_path(settings, resume, start_from),
+                progress=segmenting,
+            )
     _produced(on_stage_output, "segment", inputs)
     if stop_after == "segment":
         return None
     with run.stage("skeletonise") as skeletonising:
         volume = _earlier_output(resume, start_from, "skeletonise", "volume")
-        if volume is None:
+        if unread:
+            volume = _volume_not_read(settings, inputs, resume, start_from)
+        elif volume is None:
             volume = skeletonise(
                 settings, inputs, progress=skeletonising,
                 thick_region=resume.thick_vessel_mask if resume is not None else None,
@@ -9765,7 +9974,11 @@ def _run_stages(
         if resumed_graph is not None:
             _check_resumed_input(settings, resumed_graph.graph.get(INPUT_SETTINGS_RECORD), "network")
         earlier = _earlier_output(resume, start_from, "build_network", "network")
-        if earlier is not None and resumed_graph is not None:
+        if unread:
+            # No vessel masks loaded: the stages it runs read the Boundaries
+            # stage's, which the resume carries (_boundaries_from_resume).
+            network = VesselNetwork(graph=resumed_graph, volume=volume)
+        elif earlier is not None and resumed_graph is not None:
             logger.info("Resuming with the network and vessel masks already built.")
             network = replace(earlier, graph=resumed_graph, volume=volume)
             if _run_stage_body("assign_boundaries", start_from):

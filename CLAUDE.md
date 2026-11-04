@@ -969,7 +969,10 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   stage's dataclass, so a caller can run them one at a time and intervene. `run_pipeline_stages`
   runs all ten and returns the graph; `start_from` / `resume` re-run from a stage on a saved run's
   state (`PipelineResume` carries every boundary list and the thick region), `stop_after` ends after
-  a named stage. `post_process` measures only the vessels an edit marked
+  a named stage. A resume handed no volume (a run loaded from a file) whose stages read no segmented
+  image (`resumed_image_readers`; a new stage reading it must be named there) loads neither it nor
+  the skeleton: `ImageNotRead` stands in, and `preflight(resume=)` asks for no `input_path` file.
+  `post_process` measures only the vessels an edit marked
   (`assign_edge_diameters(edges=...)`), bridges them (`insert_thick_vessel_junction_nodes(edges=...)`),
   re-judges boundary nodes and dead ends at the touched nodes, assigns branch orders over the whole
   network, then `solve_post_processed`. `apply_network_handling(settings, model, boundaries, network)`

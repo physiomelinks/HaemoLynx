@@ -21,7 +21,9 @@ outputs, so the run neither re-segments, re-loads and re-checks the image,
 skeleton and masks, nor loads or writes ``{stem}_graph.pkl`` -- that file
 stays the one graph building made. Without stored outputs (a run loaded from
 a file), ``{stem}_skeleton.npy`` is made sure of and ``do_skeletonize``
-turned off instead. Starting after diameters also turns off
+turned off instead -- or, when no stage the run does reads the image
+(``stages.resumed_image_readers``), neither is loaded, and the image need
+not be on this machine. Starting after diameters also turns off
 ``do_fwhm_measurement``, so Haemodynamics does not wipe FWHM approvals.
 """
 from __future__ import annotations
@@ -50,6 +52,7 @@ from haemolynx.pipeline.stages import (
     recorded_raw_image_stain,
     saved_skeleton_grid,
     segmented_input_path,
+    volume_holds_image,
 )
 
 logger = logging.getLogger(__name__)
@@ -546,6 +549,8 @@ def _stored_output(stage: str, output: Any) -> Any | None:
     """
     if output is None or stage not in RESUMABLE_OUTPUTS:
         return None
+    if not volume_holds_image(getattr(output, "volume", output)):
+        return None  # resumed without its image: the next run loads it, or resumes so again
     try:
         return replace(output)
     except TypeError:  # not a dataclass: a test double or an older stage

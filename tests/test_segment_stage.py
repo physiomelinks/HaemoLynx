@@ -631,3 +631,119 @@ def test_a_run_resumed_on_a_volume_made_with_other_input_settings_is_refused(tmp
             # No stored volume (a loaded run's): the graph's own record decides.
             resume=PipelineResume(start_from="assign_boundaries", inputs=inputs, graph=G),
         )
+
+
+# -- a run resumed on a saved network without its image -----------------------
+
+
+def test_preflight_asks_a_late_resume_for_no_image_nothing_reads(tmp_path):
+    """Regression: a run from a late tab on a run loaded from a file was
+    refused on a machine without its segmented image, though no stage it
+    runs reads it. A stage that does still needs it, and the report says
+    which."""
+    import networkx as nx
+
+    from haemolynx.pipeline import preflight
+    from haemolynx.pipeline.stages import PipelineResume
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.graph.update(image_voxel_size_zyx=(1.0, 1.0, 1.0), image_extent_um=(3.0, 3.0, 3.0))
+    resume = PipelineResume(start_from="build_haemodynamic_model", graph=G)
+    settings = settings_for(tmp_path, input_path=tmp_path / "gone.tif", visualize_results=False)
+
+    def image_errors(report):
+        return [e for e in report.errors if "input_path" in e]
+
+    assert image_errors(_preflight(settings)), "a whole run reads it"
+    resumed = preflight(settings, SCHEMA, echo=False, resume=resume)
+    assert not image_errors(resumed), resumed.errors
+    assert ("input_path", "not read: the run goes on from the saved network") in resumed.passed
+    # Unread, it still names the image the network was built on.
+    unset = preflight(dict(settings, input_path=None), SCHEMA, echo=False, resume=resume)
+    assert any("'input_path' is not set" in e for e in unset.errors), unset.errors
+
+    reading = dict(settings, boundary_handling="remove_disconnected", use_edt_diameter_crosscheck=True)
+    refused = preflight(reading, SCHEMA, echo=False, resume=resume)
+    assert image_errors(refused)
+    (why,) = [w for w in refused.warnings if "segmented image" in w]
+    assert "6. Haemodynamics" in why and "remove_disconnected" in why
+
+
+FIXTURE = Path(__file__).resolve().parent / "data" / "seven_vessel_noisy_3d.tif"
+
+
+def _flows(G):
+    return sorted(
+        (min(u, v), max(u, v), key, round(float(d["flow_signed"]) * (1 if u < v else -1), 12))
+        for u, v, key, d in G.edges(keys=True, data=True)
+    )
+
+
+@pytest.mark.integration
+def test_a_saved_network_reruns_from_a_late_tab_without_its_image(tmp_path):
+    """A whole run on the fixture, its image deleted, then the stages from
+    Haemodynamics and from Export again on the networks it left, as the
+    panel's Run from this stage does on a run loaded from a file: the same
+    flows and statistics. Mask diameters on, the network handling measures
+    the vessels it joins from the image, and the run is refused, naming it;
+    so is one with an Input setting changed since the network was built."""
+    import copy
+    import re
+    import shutil
+
+    from haemolynx.pipeline import preflight
+    from haemolynx.pipeline.stages import PipelineResume, run_pipeline_stages
+
+    image = tmp_path / FIXTURE.name
+    shutil.copy(FIXTURE, image)
+    # The fixture's tree ends inside the image: remove_interior_dead_ends
+    # would cut it to one vessel (test_gui_stage_checkpoints_widget.py).
+    settings = settings_for(
+        tmp_path, input_path=image, output_dir=tmp_path / "out",
+        remove_interior_dead_ends=False, visualize_results=False,
+        statistics=True,  # measured on the image's box: its shape the network records
+    )
+    kept = {}
+
+    def keep(stage, output):
+        if stage == "assign_boundaries":
+            kept["roles"] = {
+                name: tuple(getattr(output, name))
+                for name in ("inlet_nodes", "outlet_nodes", "arteriole_boundary_nodes",
+                             "venule_boundary_nodes", "large_arteriole_boundary_nodes",
+                             "large_venule_boundary_nodes")
+            }
+        elif stage in ("assign_diameters", "solve"):
+            kept[stage] = copy.deepcopy(output.graph)
+
+    full = run_pipeline_stages(dict(settings), SCHEMA, on_stage_output=keep)
+    statistics_csv = tmp_path / "out" / f"{image.stem}_statistics.csv"
+
+    def statistics():  # but for the row saying when it was written
+        stamped = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d")
+        return [row for row in statistics_csv.read_text().splitlines() if not stamped.search(row)]
+
+    full_statistics = statistics()
+    image.unlink()
+
+    def resume(start_from, graph_of):
+        return PipelineResume(start_from=start_from, graph=copy.deepcopy(kept[graph_of]), **kept["roles"])
+
+    for start_from, graph_of in (("build_haemodynamic_model", "assign_diameters"), ("export_results", "solve")):
+        assert preflight(dict(settings), SCHEMA, echo=False, resume=resume(start_from, graph_of)).ok
+        statistics_csv.unlink()
+        G = run_pipeline_stages(dict(settings), SCHEMA, resume=resume(start_from, graph_of))
+        assert _flows(G) == _flows(full), start_from
+        assert statistics() == full_statistics, start_from
+
+    measured = dict(settings, boundary_handling="remove_disconnected", use_edt_diameter_crosscheck=True)
+    report = preflight(dict(measured), SCHEMA, echo=False, resume=resume("build_haemodynamic_model", "assign_diameters"))
+    assert any("input_path" in e and image.name in e for e in report.errors), report.errors
+    with pytest.raises(FileNotFoundError, match=image.name):
+        run_pipeline_stages(dict(measured), SCHEMA, resume=resume("build_haemodynamic_model", "assign_diameters"))
+
+    with pytest.raises(ValueError, match="image_axis_order changed"):
+        run_pipeline_stages(
+            dict(settings, image_axis_order="xyz"), SCHEMA, resume=resume("export_results", "solve")
+        )

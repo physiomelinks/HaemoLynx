@@ -17477,7 +17477,7 @@ def settings_widget(napari_viewer=None):
             # loads its template: off the panel's thread, which froze for it.
             _checks_in_background(settings, then=proceed)
             return
-        if not preflight(settings, schema).ok:
+        if not preflight(settings, schema, resume=resume).ok:
             report.value = CHECKS_FAILED_NOTHING_RUN
             return
         proceed()
@@ -17626,7 +17626,7 @@ def settings_widget(napari_viewer=None):
         """
         planned = dict(settings)
         planned.update({name: False for name in plan.skip_settings})
-        if preflight(planned, schema).ok:
+        if preflight(planned, schema, resume=plan.resume).ok:
             return True
         report.value = CHECKS_FAILED_NOTHING_RUN
         refresh_revert_buttons()

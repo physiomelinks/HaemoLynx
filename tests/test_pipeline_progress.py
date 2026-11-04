@@ -864,6 +864,147 @@ def test_a_resume_reuses_ilastiks_existing_output_instead_of_segmenting_again(
     assert calls["segment"] == {"segmented_path": None}  # nothing to reuse: segment
 
 
+def _saved_network() -> nx.MultiGraph:
+    """A network as graph building leaves it, the image's extent and voxel
+    size on it: 10 x 20 x 10 voxels (z, y, x) of 2 x 0.5 x 0.5 um."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.graph["image_voxel_size_zyx"] = (2.0, 0.5, 0.5)
+    G.graph["image_voxel_size_xyz"] = (0.5, 0.5, 2.0)
+    G.graph["image_extent_um"] = (18.0, 9.5, 4.5)
+    return G
+
+
+def test_a_late_resume_loads_neither_the_image_nor_the_skeleton_when_nothing_reads_them(
+    stubbed, monkeypatch, tmp_path
+):
+    """Regression: Run from a late tab on a run loaded from a file read the
+    segmented image and its skeleton again whatever the tab, and on a machine
+    without the image could not run at all. Nothing from Haemodynamics on
+    reads them here: the volume stands in with the image's shape, and says
+    what it lacks when a stage reads it."""
+    import numpy as np
+
+    from haemolynx.pipeline.stages import ImageNotRead, ImageNotReadError, PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    outputs: dict[str, object] = {}
+    resumed = _saved_network()
+    gone = tmp_path / "gone.tif"
+    settings = {"input_path": str(gone), "output_dir": str(tmp_path), "image_axis_order": "ZYX"}
+
+    run_pipeline_stages(
+        settings, schema=None,
+        resume=PipelineResume(start_from="build_haemodynamic_model", graph=resumed),
+        on_stage_output=lambda stage, output: outputs.setdefault(stage, output),
+    )
+
+    assert calls == {}, "nothing segmented, loaded or built"
+    assert outputs["segment"].image_path == gone and settings["image_axis_order"] == "zyx"
+    volume = outputs["skeletonise"]
+    assert isinstance(volume.image, ImageNotRead) and isinstance(volume.skeleton, ImageNotRead)
+    assert volume.image.shape == (10, 20, 10) and np.shape(volume.skeleton) == (10, 20, 10)
+    assert volume.voxel_size_zyx == (2.0, 0.5, 0.5) and volume.voxel_size_xyz == (0.5, 0.5, 2.0)
+    assert outputs["build_network"].graph is resumed
+    with pytest.raises(ImageNotReadError, match="gone.tif"):
+        np.count_nonzero(volume.image)
+
+
+@pytest.mark.parametrize(
+    "start_from, overrides",
+    [
+        ("export_results", {"measure_tissue_volume": True}),
+        ("export_results", {"visualize_results": True}),
+        ("assign_diameters", {}),
+    ],
+)
+def test_a_resume_loads_the_image_when_a_stage_it_runs_reads_it(
+    stubbed, monkeypatch, start_from, overrides
+):
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+
+    run_pipeline_stages(
+        {"use_ilastik_segmentation": False, **overrides}, schema=None,
+        resume=PipelineResume(start_from=start_from, graph=_saved_network()),
+    )
+
+    assert {"segment", "skeletonise", "build_network"} <= set(calls)
+
+
+def test_a_volume_resumed_without_its_image_is_not_handed_to_a_run_that_reads_it(
+    stubbed, monkeypatch, tmp_path
+):
+    """The panel keeps what a resumed run passed through for the next one: a
+    stand-in kept so would be read by the next run that needs the image."""
+    from haemolynx.pipeline.stages import (
+        ImageNotRead, PipelineResume, SkeletonisedVolume, VesselNetwork,
+    )
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    G = _saved_network()
+    stand_in = SkeletonisedVolume(
+        image=ImageNotRead("segmented image", tmp_path / "gone.tif", (10, 20, 10)),
+        skeleton=ImageNotRead("skeleton", tmp_path / "gone_skeleton.npy", (10, 20, 10)),
+        voxel_size_xyz=(0.5, 0.5, 2.0), voxel_size_zyx=(2.0, 0.5, 0.5), output_dir=tmp_path,
+    )
+
+    run_pipeline_stages(
+        {"use_ilastik_segmentation": False, "measure_tissue_volume": True}, schema=None,
+        resume=PipelineResume(
+            start_from="export_results", graph=G, volume=stand_in,
+            network=VesselNetwork(graph=G, volume=stand_in),
+        ),
+    )
+
+    assert "skeletonise" in calls and calls["build_network"]["resumed_graph"] is G
+
+
+def test_what_reads_the_segmented_image_in_a_resumed_run():
+    from haemolynx.graph.post_processing import PENDING
+    from haemolynx.pipeline.stages import resumed_image_readers as readers
+
+    G = _saved_network()
+    late = "build_haemodynamic_model"
+    assert readers({}, late, G) == () and readers({}, "export_results", G) == ()
+    # Every stage up to Diameters builds on it; so does a resume with no
+    # network, or one that does not say how big the image was.
+    assert readers({}, "assign_diameters", G) and readers({}, "segment", G)
+    assert readers({}, late, None) and readers({}, late, nx.MultiGraph())
+    # The network handling's joins, when they measure the joined vessels
+    # from the image, and only while the run does the network handling.
+    joins = {"boundary_handling": "remove_disconnected", "run_haemodynamics": True}
+    assert readers(joins, late, G) == ()
+    measured = {**joins, "use_edt_diameter_crosscheck": True}
+    (why,) = readers(measured, late, G)
+    assert "remove_disconnected" in why
+    assert readers(measured, "post_process", G) == ()
+    # Hand edits, while Post processing is still to bring them in line.
+    edited = G.copy()
+    edited.graph[PENDING] = True
+    assert readers({}, "post_process", edited) and readers({}, "run_perturbations", edited) == ()
+    # A perturbation draws its plots over the image, but for a sweep.
+    perturbing = {
+        "run_perturbations": True, "run_haemodynamics": True,
+        "perturbations": [
+            {"name": "block", "type": "capillary_block"},
+            {"name": "dilate", "type": "pericyte_dilation_sweep"},
+        ],
+    }
+    (why,) = readers(perturbing, "run_perturbations", G)
+    assert "'block'" in why
+    assert readers(perturbing, "export_results", G) == ()
+    for name in ("measure_tissue_volume", "measurement_3d_to_cell_mask", "measure_pericytes", "visualize_results"):
+        (why,) = readers({name: True}, "export_results", G)
+        assert name in why
+    # A synthetic network has no image to read.
+    assert readers({"network_source": "synthetic", "visualize_results": True}, late, G) == ()
+
+
 # --- heartbeats ----------------------------------------------------------------
 
 
