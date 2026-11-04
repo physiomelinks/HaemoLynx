@@ -61,10 +61,13 @@ def fill_derived_settings(settings: dict) -> None:
 
     The branch-order tables are functions of the manual diameter settings, so
     the config file states those and leaves these null rather than duplicating
-    a 150-entry table that could then disagree with them.
+    a 150-entry table that could then disagree with them. A
+    ``diameter_by_branch_order`` stated whole is read only with
+    ``all_diams_const`` off, as its row says: ticked, every order is the
+    default diameter whatever table is set.
     """
     settings.setdefault("plot_dir", plot_folder(settings))
-    if settings.get("diameter_by_branch_order") is None:
+    if settings.get("diameter_by_branch_order") is None or settings.get("all_diams_const"):
         settings["diameter_by_branch_order"] = haemodynamics.build_diameter_by_branch_order(
             all_diams_const=settings["all_diams_const"],
             max_branch_order=settings["max_branch_order"],

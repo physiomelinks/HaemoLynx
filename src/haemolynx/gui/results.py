@@ -105,13 +105,48 @@ BOUNDARY_COORDINATE_POINT_SIZE = 8.0
 #: while they were depth-tested like the other points. So they are drawn with
 #: no depth test and kept last in the layer list, since a layer drawn after
 #: one still paints over it; the white rim keeps a red outlet readable on a
-#: red vessel.
-DRAWN_ON_TOP = (BOUNDARY_NODES,)
+#: red vessel. The flow arrows lie along their vessels' centrelines, inside
+#: the tubes, which hid every one of them; they go under the terminal nodes.
+DRAWN_ON_TOP = (FLOW_DIRECTION, BOUNDARY_NODES)
 ON_TOP_POINTS_OPTIONS: dict[str, Any] = {
     "blending": "translucent_no_depth",
     "border_color": "white",
     "border_width": 0.2,
 }
+
+#: The flow arrows' one colour, and the depth test they go without.
+FLOW_ARROW_COLOUR = "white"
+FLOW_ARROW_OPTIONS: dict[str, Any] = {"blending": "translucent_no_depth"}
+#: An arrow is at least this many of its own vessel's diameters long
+#: (``flow_direction_vectors(arrow_diameter_scale=)``) ...
+FLOW_ARROW_DIAMETERS = 2.0
+#: ... and the arrowheads this many of the median vessel's diameter wide, or
+#: the narrowest they were before they followed the vessels.
+FLOW_ARROW_WIDTH_DIAMETERS = 0.5
+FLOW_ARROW_MIN_WIDTH_UM = 1.2
+
+
+def drawn_on_top(name: str) -> bool:
+    """Whether layer *name* is drawn over every other: one of
+    :data:`DRAWN_ON_TOP`, or a perturbation's own flow arrows."""
+    name = str(name)
+    return name in DRAWN_ON_TOP or (is_ours_name(name) and name.endswith(" flow direction"))
+
+
+def flow_arrow_width_um(graph: Any) -> float:
+    """How wide the flow arrows are drawn (µm): one width for the layer,
+    from the median measured vessel diameter."""
+    diameters = []
+    for _u, _v, _key, data in _iter_edges(graph):
+        try:
+            diameter = float(data.get("diameter_um"))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(diameter) and diameter > 0:
+            diameters.append(diameter)
+    if not diameters:
+        return FLOW_ARROW_MIN_WIDTH_UM
+    return max(FLOW_ARROW_MIN_WIDTH_UM, FLOW_ARROW_WIDTH_DIAMETERS * float(np.median(diameters)))
 
 #: Mask field on VesselNetwork -> the layer it becomes.
 MASK_LAYERS = {
@@ -122,17 +157,22 @@ MASK_LAYERS = {
 }
 
 #: Translucent RGBA for each mask role in 3D volume rendering (widget builds
-#: a two-stop colormap: transparent at 0, this colour at 1). Hex equivalents:
-#: large arteriole dark red ``#8C0D0D``, small arteriole light red ``#FF7373``,
-#: large venule dark green ``#0D661A``, small venule light green ``#73E673``.
+#: a two-stop colormap: transparent at 0, this colour at 1). Arterial red and
+#: venous blue, as the signed branch order colours them; red beside green is
+#: the pair a red-green colour-blind eye loses. Hex equivalents: large
+#: arteriole dark red ``#8C0D0D``, small arteriole light red ``#FF7373``,
+#: large venule dark blue ``#0D268C``, small venule light blue ``#73A6FF``.
 MASK_COLOURS: dict[str, tuple[float, float, float, float]] = {
     "large_arteriole_mask": (0.55, 0.05, 0.05, 0.70),
     "small_arteriole_mask": (1.00, 0.45, 0.45, 0.55),
-    "large_venule_mask": (0.05, 0.40, 0.10, 0.70),
-    "small_venule_mask": (0.45, 0.90, 0.45, 0.55),
+    "large_venule_mask": (0.05, 0.15, 0.55, 0.70),
+    "small_venule_mask": (0.45, 0.65, 1.00, 0.55),
 }
 
 #: Shared napari Image options for vessel-mask volumes (plus per-role colour).
+#: Their maximum along each ray, not their lit surface ("iso"): E14.5's large
+#: masks lie inside the thick vessels' tubes, where a surface is never seen,
+#: and a mask filling the box (an AIA run's) drew as a wall over every tube.
 MASK_VOLUME_OPTIONS: dict[str, Any] = {
     "blending": "translucent",
     "opacity": 0.55,
@@ -615,7 +655,7 @@ FLOW_SOLUTION = "flow_solution"
 #: list, ``graph.SOLVE_DERIVED_EDGE_ATTRIBUTES``), drawn from it here (the
 #: flow directions), or computed from it by an analysis. An unsolved vessel
 #: has none of them (NaN), so a flow-based colouring draws it in the
-#: uncoloured grey and leaves it out of its colour range. ``flow_state`` says
+#: missing-value grey and leaves it out of its colour range. ``flow_state`` says
 #: why a vessel is unsolved: it is never blanked.
 SOLVED_FLOW_COLUMNS: frozenset[str] = frozenset(
     set(SOLVE_DERIVED_EDGE_ATTRIBUTES)
@@ -846,21 +886,99 @@ TEXT_COLUMNS = frozenset(
     }
 )
 
+#: A vessel's resistance as its log10, for colouring: like flow, it spans
+#: orders of magnitude (it goes as the fourth power of the width).
+RESISTANCE_LOG10 = "resistance_log10"
+
+#: Each log10 column a stage colours by, and the column it is the log of: the
+#: colouring a network falls back on when it has no log column (no flows).
+LOG10_COLUMNS = {"flow_abs_log10": "flow_abs", RESISTANCE_LOG10: "resistance"}
+
 #: What each stage colours the vessels by once it has run, unless the user has
-#: chosen otherwise. `flow_abs`, not `flow_signed`: the sign follows the order
-#: the MultiGraph happens to store an edge in, so a signed colouring shows an
-#: arbitrary pattern that reads as a physics bug.
+#: chosen otherwise. Flow and resistance as their log10: on a straight scale
+#: from least to most, 96% of the E14.5 network's flow and 99% of its
+#: resistance sat in the bottom tenth, one colour. `flow_abs`, not
+#: `flow_signed`: the sign follows the order the MultiGraph happens to store
+#: an edge in, so a signed colouring shows an arbitrary pattern that reads as
+#: a physics bug.
 DEFAULT_VESSEL_COLOUR = {
     "build_network": "segment_id",
     "assign_diameters": "diameter_um",
-    "build_haemodynamic_model": "resistance",
-    "solve": "flow_abs",
+    "build_haemodynamic_model": RESISTANCE_LOG10,
+    "solve": "flow_abs_log10",
 }
 
 #: What a perturbation's own vessels are coloured by. The same quantity the
 #: solved baseline is, so switching a perturbation on and off compares like
 #: with like -- which is the only thing these layers are for.
-PERTURBATION_COLOUR = "flow_abs"
+PERTURBATION_COLOUR = DEFAULT_VESSEL_COLOUR["solve"]
+
+
+def _add_resistance_log10(columns: dict[str, np.ndarray]) -> None:
+    """Add :data:`RESISTANCE_LOG10` beside a ``resistance`` column with values."""
+    resistance = columns.get("resistance")
+    if resistance is None:
+        return
+    values = np.asarray(resistance, dtype=float)
+    positive = np.isfinite(values) & (values > 0)
+    if not positive.any():
+        return
+    logs = np.full(values.shape, np.nan)
+    logs[positive] = np.log10(values[positive])
+    columns[RESISTANCE_LOG10] = logs
+
+
+def default_colour_column(column: str | None, columns: Mapping[str, Any]) -> str | None:
+    """*column*, or the column it is the log10 of when the network has no log
+    column (no flows yet, or none at all), or None when it has neither."""
+    if column is None or column in columns:
+        return column
+    linear = LOG10_COLUMNS.get(column)
+    return linear if linear in columns else None
+
+
+def log10_flow_floor() -> float:
+    """``flow_abs_log10`` of a vessel carrying no flow at all: the floor
+    ``flow_abs_log10_value`` puts zero at, not a flow."""
+    from haemolynx.haemodynamics.resistance import FLOW_ABS_LOG10_FLOOR
+
+    return float(np.log10(FLOW_ABS_LOG10_FLOOR))
+
+
+def colour_values_for_range(column: str | None, values: Any) -> np.ndarray:
+    """The finite *values* a colour range for *column* spans.
+
+    A vessel with no flow sits at log10 flow's floor (-20), orders of
+    magnitude below the least real flow, so a range reaching down to it puts
+    every vessel that does carry flow in the top of the map. Its colour is the
+    bottom of the range all the same.
+    """
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if column == "flow_abs_log10":
+        flowing = finite[finite > log10_flow_floor() + 1e-9]
+        if flowing.size:
+            return flowing
+    return finite
+
+
+def sweep_flow_colour_limits(sweep: Any, column: str | None) -> tuple[float, float] | None:
+    """One range for *column* over every point of a sweep's grid, so moving
+    its slider does not re-stretch the colours: flow's least to most, or the
+    log10 of the least flow above none to the most. None for any other column,
+    which fits itself."""
+    if column == "flow_abs":
+        return sweep.global_flow_abs_limits()
+    if column != "flow_abs_log10":
+        return None
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    flows = np.asarray(sweep.flow_abs, dtype=float)
+    flowing = flows[np.isfinite(flows) & (flows > 0)]
+    if flowing.size == 0:
+        return None
+    low, high = flow_abs_log10_value(flowing.min()), flow_abs_log10_value(flowing.max())
+    return (low, high) if high > low else (low, low + 1.0)
 
 
 @dataclass(frozen=True)
@@ -926,15 +1044,22 @@ def merge_stage_layers(groups: Sequence[StageLayers]) -> StageLayers | None:
     smaller than the one before it (a boundary cut), a Vectors or Points
     layer is removed and re-added, and that GL teardown is what crashed
     napari on "Run from this stage". None for no groups.
+
+    A layer is shown only if every spec of it was: one spec hiding it hides
+    it for good, as applying them in turn would (a later spec keeps what is
+    on screen), so a layer that starts hidden -- the nodes -- does not come
+    back shown on Load run.
     """
     if not groups:
         return None
     specs: dict[str, LayerSpec] = {}
+    shown: dict[str, bool] = {}
     recolour: dict[str, str] = {}
     ndisplay = None
     for group in groups:
         for spec in group.layers:
             specs[spec.name] = spec
+            shown[spec.name] = shown.get(spec.name, True) and spec.visible
             recolour.pop(spec.name, None)
         for name, column in group.recolour:
             recolour[name] = column
@@ -944,11 +1069,28 @@ def merge_stage_layers(groups: Sequence[StageLayers]) -> StageLayers | None:
     return StageLayers(
         stage=last.stage,
         title=last.title,
-        layers=tuple(specs.values()),
+        layers=tuple(
+            spec if spec.visible == shown[name] else replace(spec, visible=shown[name])
+            for name, spec in specs.items()
+        ),
         recolour=tuple(recolour.items()),
         note=last.note,
         ndisplay=ndisplay,
     )
+
+
+#: The volumes drawn over the whole image box: the segmented image and the
+#: vessel masks. Shown with the network, they hid every vessel tube.
+VOLUMES_ROUND_THE_NETWORK = (IMAGE, *MASK_LAYERS.values())
+
+
+def hidden_on_first_view(group: StageLayers) -> tuple[str, ...]:
+    """The layers *group* hides once its own are drawn: the volumes round the
+    network, when it is the network's first view -- the group turning the
+    view to 3D, which only the first geometry does, in a run or a replay of
+    one. They stay a tick away (the view panel's Show boxes, the layer list),
+    and a later stage's spec leaves them as the user set them."""
+    return VOLUMES_ROUND_THE_NETWORK if group.ndisplay == 3 else ()
 
 
 def tissue_surface_layer(tissue: Any) -> LayerSpec | None:
@@ -1516,6 +1658,8 @@ class ResultLayers:
         self._emitted = []
         self._thick_vessel_mask = None
         self._raw_segmented_image = None
+        # A low-RAM run's skeleton is on disk: kept, its file stayed in use.
+        self._skeleton = None
 
     def export_state(self) -> dict[str, Any]:
         """Pickle-safe copy of the memory a loaded run needs to look finished.
@@ -1679,6 +1823,7 @@ class ResultLayers:
             columns, graph,
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
+        _add_resistance_log10(columns)
         _add_branch_order_scales(columns, graph)
         _mark_unsolved(columns, graph)
         _mark_bridges(columns, graph)
@@ -1688,14 +1833,8 @@ class ResultLayers:
             name: np.asarray(values)[owner] for name, values in columns.items()
         }
 
-        colour_by = DEFAULT_VESSEL_COLOUR.get(stage)
-        if colour_by is not None and colour_by not in columns:
-            colour_by = None
-        elif (
-            colour_by is not None
-            and colour_by not in TEXT_COLUMNS
-            and colour_by in columns
-        ):
+        colour_by = default_colour_column(DEFAULT_VESSEL_COLOUR.get(stage), columns)
+        if colour_by is not None and colour_by not in TEXT_COLUMNS:
             numeric = np.asarray(columns[colour_by], dtype=float)
             if numeric.size == 0 or not np.any(np.isfinite(numeric)):
                 colour_by = "branch_order" if "branch_order" in columns else None
@@ -2251,7 +2390,7 @@ class ResultLayers:
         return StageLayers(
             stage="build_haemodynamic_model",
             title=_title_for("build_haemodynamic_model"),
-            recolour=((VESSELS, "resistance"),),
+            recolour=((VESSELS, DEFAULT_VESSEL_COLOUR["build_haemodynamic_model"]),),
             note=f"Resistance on {with_resistance} of {total} vessels.",
         )
 
@@ -2352,6 +2491,7 @@ class ResultLayers:
             columns, graph,
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
+        _add_resistance_log10(columns)
         _add_branch_order_scales(columns, graph)
         _mark_unsolved(columns, graph)
         _mark_bridges(columns, graph)
@@ -2362,7 +2502,7 @@ class ResultLayers:
         hover_columns, hover_options = _branch_hover_columns(graph, owner)
         if hover_columns:
             per_segment.update(hover_columns)
-        colour_by = PERTURBATION_COLOUR if PERTURBATION_COLOUR in columns else None
+        colour_by = default_colour_column(PERTURBATION_COLOUR, columns)
 
         layers = [
             LayerSpec(
@@ -2464,6 +2604,7 @@ class ResultLayers:
             and name not in stale
         ]
         columns.update(edge_features(graph, non_flow))
+        _add_resistance_log10(columns)
         _add_branch_order_scales(columns, graph)
 
         flow0 = np.asarray(sweep.flow_abs_at(*([0] * len(sweep.axis_names))), dtype=float)
@@ -2505,11 +2646,11 @@ class ResultLayers:
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
         }
-        colour_by = PERTURBATION_COLOUR if PERTURBATION_COLOUR in columns else None
+        colour_by = default_colour_column(PERTURBATION_COLOUR, columns)
         colouring = _colouring(per_segment, colour_by)
         # Stable contrast across the whole grid so sliding does not re-stretch.
-        global_limits = sweep.global_flow_abs_limits()
-        if colour_by == "flow_abs" and global_limits is not None:
+        global_limits = sweep_flow_colour_limits(sweep, colour_by)
+        if global_limits is not None:
             colouring = {**colouring, "contrast_limits": global_limits}
 
         return (
@@ -2606,17 +2747,24 @@ class ResultLayers:
     def _flow_direction_layers(
         self, graph: Any = None, *, name: str = FLOW_DIRECTION, visible: bool = True
     ) -> tuple[LayerSpec, ...]:
-        """Mid-edge flow arrows coloured by 3D direction RGB, or empty when none exist.
+        """Mid-edge flow arrows, or empty when none exist.
 
         The baseline's by default; a perturbation passes its own *graph* and
-        layer *name*, hidden like the rest of its layers.
+        layer *name*, hidden like the rest of its layers. The baseline's start
+        hidden too, and once shown stay as the user leaves them: drawn over
+        every tube (:func:`drawn_on_top`), a network's thousand arrows are
+        a lot to start with. One colour, :data:`FLOW_ARROW_COLOUR`, saying
+        which way and nothing else over a network coloured by flow; the 3D
+        direction colours are still a Colour by on the layer.
         """
         from haemolynx.visualization.flow_direction import flow_direction_vectors
 
         graph = self._graph if graph is None else graph
         if graph is None:
             return ()
-        vectors, features = flow_direction_vectors(graph)
+        vectors, features = flow_direction_vectors(
+            graph, arrow_diameter_scale=FLOW_ARROW_DIAMETERS
+        )
         if len(vectors) == 0:
             return ()
         if not self.settings.get("flow_direction_colouring", True):
@@ -2625,15 +2773,6 @@ class ResultLayers:
             # the colour-by dropdown; flow_dir_rgb/flow_heading_deg (derived,
             # composite encodings, not "axis components") stay available.
             features = {k: v for k, v in features.items() if k not in FLOW_DIR_COLUMNS}
-        colour_by = (
-            FLOW_DIR_RGB_COLUMN
-            if FLOW_DIR_RGB_COLUMN in features
-            else (
-                FLOW_HEADING_COLUMN
-                if FLOW_HEADING_COLUMN in features
-                else ("flow_abs" if "flow_abs" in features else None)
-            )
-        )
         scale = float(self.settings.get("flow_arrow_scale", 1.0))
         hover_index = _flow_direction_drawable_edge_index(graph)
         hover_columns, hover_options = (
@@ -2649,14 +2788,14 @@ class ResultLayers:
                 name=name,
                 data=vectors,
                 features=features,
-                colour_by=colour_by,
-                **_colouring(features, colour_by),
-                visible=visible,
+                visible=visible and name in self._emitted,
                 options={
                     "vector_style": "triangle",
-                    "edge_width": 1.2,
+                    "edge_width": flow_arrow_width_um(graph),
+                    "edge_color": FLOW_ARROW_COLOUR,
                     "length": scale,
                     "out_of_slice_display": True,
+                    **FLOW_ARROW_OPTIONS,
                     **hover_options,
                 },
             ),
@@ -2724,7 +2863,10 @@ def _colouring(columns: Mapping[str, np.ndarray], colour_by: str | None) -> dict
             "colour_kind": "continuous",
             "contrast_limits": _flow_heading_contrast_limits(values),
         }
-    return {"colour_kind": "continuous", "contrast_limits": _limits(values)}
+    return {
+        "colour_kind": "continuous",
+        "contrast_limits": _limits(colour_values_for_range(colour_by, values)),
+    }
 
 
 def role_colours() -> tuple[tuple[str, tuple[float, float, float, float]], ...]:

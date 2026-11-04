@@ -715,7 +715,8 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     assert "diameter_by_branch_order" not in shown
     assert "measure_diameters_from_raw_image" in shown
     assert "do_fwhm_measurement" not in shown
-    assert "fwhm_sample_spacing_along_edge_um" not in shown
+    # The mask's widths sample at FWHM's spacing too, so it shows with FWHM off.
+    assert "fwhm_sample_spacing_along_edge_um" in shown
 
     const_off = {**const_on, "all_diams_const": False}
     shown = visible_diameter_settings(SCHEMA, const_off)
@@ -754,8 +755,13 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
 # entirely (stamp_edge_diameters falls back to the EDT estimate for every
 # edge, not just ones FWHM measured and failed on) -- only
 # use_edt_diameter_crosscheck itself gates them.
-_EDT_CHILDREN = (
-    "edt_diameter_prefer_over_table_on_fwhm_failure",
+_EDT_CHILDREN = ("edt_diameter_prefer_over_table_on_fwhm_failure",)
+# How the mask is read: by the cross-check, and also by the endothelial ring
+# fit (its junction zones) and the size convention without haemodynamics, so
+# no prerequisite.
+_EDT_READING = (
+    "edt_diameter_method",
+    "edt_min_resolvable_diameter_um",
     "edt_junction_proximity_exclusion_um",
 )
 # Unlike the above, comparing FWHM against EDT genuinely needs both
@@ -803,6 +809,11 @@ def test_edt_diameter_crosscheck_works_standalone_or_nested_under_fwhm():
     assert "use_edt_diameter_crosscheck" in shown
     for name in (*_EDT_CHILDREN, _EDT_FWHM_ONLY_CHILD):
         assert name not in shown
+
+    # How the mask is read shows whatever the cross-check says.
+    for values in (no_haemo, edt_on_fwhm_off, both_on, fwhm_on_edt_off):
+        shown = visible_diameter_settings(SCHEMA, values)
+        assert all(name in shown for name in _EDT_READING)
 
 
 _MEASUREMENT_3D_CHILDREN = (

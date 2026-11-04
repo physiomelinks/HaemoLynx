@@ -91,12 +91,12 @@ def test_the_stain_decides_which_methods_rows_show(
     rows["raw_image_stain"].value = stain
     panel._haemolynx_expand_advanced(True)
     _process()
-    assert not _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+    assert not _shown(panel, rows["fwhm_min_accepted_samples"])
     assert not _shown(panel, rows["endothelial_min_ring_contrast"])
 
     rows["raw_image_path"].value = _a_raw_image(tmp_path)
     _process()
-    assert _shown(panel, rows["fwhm_sample_spacing_along_edge_um"]) is fwhm_shown
+    assert _shown(panel, rows["fwhm_min_accepted_samples"]) is fwhm_shown
     assert _shown(panel, rows["endothelial_min_ring_contrast"]) is endothelial_shown
     assert _shown(panel, panel._haemolynx_optimise_fwhm_box) is fwhm_shown
 
@@ -106,7 +106,7 @@ def test_measuring_nothing_shows_neither_method(panel):
     rows["measure_diameters_from_raw_image"].value = False
     panel._haemolynx_expand_advanced(True)
     _process()
-    assert not _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+    assert not _shown(panel, rows["fwhm_min_accepted_samples"])
     assert not _shown(panel, rows["endothelial_min_ring_contrast"])
 
 
@@ -181,7 +181,7 @@ def test_the_stain_row_says_what_a_run_read_an_auto_stain_as(panel, tmp_path):
     panel._haemolynx_expand_advanced(True)
     _process()
     assert not _shown(panel, label, "Input")
-    assert _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+    assert _shown(panel, rows["fwhm_min_accepted_samples"])
 
     G = nx.MultiGraph()
     G.graph["raw_image_stain"] = "endothelial"
@@ -192,11 +192,11 @@ def test_the_stain_row_says_what_a_run_read_an_auto_stain_as(panel, tmp_path):
 
     assert _shown(panel, label, "Input")
     assert label.value == "Read as: Endothelial (wall stain) (contrast -0.36 over 64 blocks)"
-    assert not _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+    assert not _shown(panel, rows["fwhm_min_accepted_samples"])
     assert _shown(panel, rows["endothelial_min_ring_contrast"])
     assert not _shown(panel, panel._haemolynx_optimise_fwhm_box)
 
     rows["raw_image_stain"].value = "plasma_column"
     _process()
     assert not _shown(panel, label, "Input")
-    assert _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+    assert _shown(panel, rows["fwhm_min_accepted_samples"])

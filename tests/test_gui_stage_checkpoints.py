@@ -907,6 +907,32 @@ def test_the_large_vessel_hand_off_nodes_reach_a_resumed_run(tmp_path):
     assert plan.resume.inlet_nodes == (0,) and plan.resume.outlet_nodes == (3,)
 
 
+def test_a_boundaries_run_with_the_masks_off_carries_none_of_an_earlier_runs():
+    """Regression: the Boundaries checkpoint took masks carried from an
+    earlier one whenever its own output had none, so a run from Boundaries
+    with the masks switched off still resumed later stages with the old masks;
+    and it read the hand-off nodes only while it drew boundary nodes."""
+    from dataclasses import replace
+
+    graph = a_graph()
+    results = ResultLayers()
+    first = replace(
+        _boundaries_output(graph),
+        large_arteriole_mask=np.ones((2, 3, 4), dtype=bool),
+        large_venule_mask=np.zeros((2, 3, 4), dtype=bool),
+    )
+    checkpoints = StageCheckpoints()
+    checkpoints.record("assign_boundaries", results.stage_finished("assign_boundaries", first), results, output=first)
+    assert checkpoints.get("assign_boundaries").large_arteriole_mask is not None
+
+    again = _boundaries_output(graph)  # masks off now: none on the output
+    checkpoints.record("assign_boundaries", _group("assign_boundaries"), results, output=again)
+
+    record = checkpoints.get("assign_boundaries")
+    assert record.large_arteriole_mask is None and record.large_venule_mask is None
+    assert record.large_arteriole_boundary_nodes == (1,) and record.large_venule_boundary_nodes == (2,)
+
+
 def test_the_thick_vessel_region_reaches_a_resumed_run(tmp_path):
     """Where post_process makes a hand-drawn vessel's bridge, when the resumed
     run loads its skeleton rather than making it."""
@@ -1059,3 +1085,69 @@ def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_t
     assert plan.resume.small_venule_mask is small_venule
     # Before post processing ran, the solve's checkpoint held Boundaries' own.
     assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)
+
+
+@pytest.mark.parametrize(
+    "now, starts_at",
+    [
+        ({"boundary_handling": "leave_unsolved"}, "6. Haemodynamics"),
+        ({"boundary_handling": "remove_disconnected", "run_haemodynamics": True,
+          "open_end_model": "closed"}, "5. Diameters"),
+    ],
+)
+def test_a_run_from_haemodynamics_starts_at_diameters_when_its_calibration_sample_changed(
+    tmp_path, now, starts_at
+):
+    """The Diameters stage samples its image calibrations (blur, wall, decoy
+    check) from the vessels the network handling keeps. Changing
+    boundary_handling or open_end_model and running from Haemodynamics kept
+    the old sample, where a fresh run takes the new one: the run starts at
+    Diameters instead, and says why."""
+    from haemolynx.gui.stage_checkpoints import restore_message
+    from haemolynx.pipeline.stages import CALIBRATION_SAMPLE
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, *_rest = _record_with_outputs(tmp_path, settings)
+    measured = built(a_graph(resistance=1.0))
+    measured._graph.graph[CALIBRATION_SAMPLE] = ["leave_unsolved"]
+    checkpoints.record("assign_diameters", _group("assign_diameters"), measured, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings={**settings, **now})
+
+    assert plan.tab_title == starts_at
+    if starts_at == "5. Diameters":
+        assert plan.start_from == "assign_diameters"
+        assert "leave_unsolved keeps" in restore_message(plan)
+        assert "remove_disconnected / closed keeps" in restore_message(plan)
+    else:
+        assert plan.start_from == "build_haemodynamic_model" and plan.note == ""
+
+
+def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
+    """After Load run, a later run's skeleton left in the folder was loaded
+    instead of the loaded run's: the graph was built from another skeleton
+    than the one on screen. It is replaced by the run's own; the run's own
+    is left alone."""
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    checkpoints, skeleton = _through_post_processing(tmp_path, settings)
+    later = np.zeros_like(skeleton)
+    later[0, :, 1] = True
+    np.save(skeleton_path, later)
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert np.array_equal(np.load(skeleton_path), skeleton)
+    assert not skeleton_path.with_name(f"{skeleton_path.name}.part").exists()
+
+    groups = [checkpoints.get("skeletonise").group]
+    before = skeleton_path.stat().st_mtime_ns
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert skeleton_path.stat().st_mtime_ns == before  # its own: not written again
+
+    skeleton_path.write_bytes(b"not a skeleton")
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert np.array_equal(np.load(skeleton_path), skeleton)

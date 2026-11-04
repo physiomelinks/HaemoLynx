@@ -120,6 +120,8 @@ Written to the run's output folder (output_dir). The voxel size the run read and
 | `voxel_size_override_xyz` | `um` | The voxel_size_override_xyz setting, if any. |
 | `downsample` | `-` | The downsample-on-import record, or null. |
 | `crop` | `voxel` | The crop-on-import box the skeleton was cut to, its (z, y, x) start and stop (stop not kept), or null for the whole image. |
+| `mask_digest` | `-` | A digest of the segmented mask the skeleton was made from, after its clean-up: a run loading the skeleton warns when its mask differs. |
+| `thick_region_key` | `-` | The key of the thick-vessel region the skeleton was made with (the mask and the settings deciding the region), or null with thickness-gated skeletonisation off. |
 
 ## `{stem}_statistics.csv`
 

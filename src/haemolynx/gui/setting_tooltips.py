@@ -1271,12 +1271,14 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "deviations of its texture, to count. Each vessel needs two such readings"
     ),
     "raw_section_psf_sigma_xy_um": (
-        "The raw image's blur across each slice, as a Gaussian's standard deviation. Set it with"
-        " the z blur, or leave both empty to estimate them from wide vessels"
+        "The raw image's blur across each slice, as a Gaussian's standard deviation, which FWHM "
+        "and the raw-section fit both use. Set it with the z blur, or leave both empty to "
+        "estimate them"
     ),
     "raw_section_psf_sigma_z_um": (
-        "The raw image's blur along z, as a Gaussian's standard deviation. Set it with the "
-        "in-slice blur, or leave both empty to estimate them from wide vessels"
+        "The raw image's blur along z, as a Gaussian's standard deviation, which FWHM and the "
+        "raw-section fit both use. Set it with the in-slice blur, or leave both empty to "
+        "estimate them"
     ),
     "endothelial_min_ring_contrast": (
         "How clearly the stained wall must stand out above the lumen, in multiples of the fit's "

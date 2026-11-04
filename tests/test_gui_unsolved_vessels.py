@@ -95,7 +95,7 @@ def test_a_vessel_behind_a_dead_end_is_drawn_unsolved_and_says_why(state):
     for name in ("flow_abs", "flow_abs_log10", "flow_signed", "pressure_drop"):
         values = np.asarray(vessels.features[name], dtype=float)
         assert np.isnan(values[2]) and np.isfinite(values[:2]).all(), name
-    assert vessels.contrast_limits == pytest.approx(FLOWS[:2])
+    assert vessels.contrast_limits == pytest.approx(np.log10(FLOWS[:2]))
     hover = _metric_value(graph, last[0], last[1], last[3], "flow_solution")
     assert hover == FLOW_STATE_TEXT[state] and hover.startswith("Unsolved")
     assert _metric_value(graph, last[0], last[1], last[3], "flow") is None
@@ -120,8 +120,8 @@ def test_a_flow_colouring_leaves_the_unsolved_vessel_out_of_its_range():
         assert np.isnan(values[2]) and np.isfinite(values[:2]).all(), name
     # The geometry is no less real for being unsolved.
     assert np.asarray(vessels.features["length"], dtype=float)[2] == 10.0
-    assert vessels.colour_by == "flow_abs"
-    assert vessels.contrast_limits == pytest.approx(FLOWS[:2])
+    assert vessels.colour_by == "flow_abs_log10"
+    assert vessels.contrast_limits == pytest.approx(np.log10(FLOWS[:2]))
     # The per-vessel table the panel colours from says the same.
     assert np.isnan(np.asarray(spec_named(group, VESSEL_LABELS).features["flow_abs"])[2])
 

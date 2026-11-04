@@ -613,7 +613,9 @@ RAM, each worker holds its own volumes.
     button under the law) holds every vessel to one form (`in_vivo_1994`, `in_vitro_1992`,
     `in_vivo_2005`) or `auto`; it resolves through `viscosity.run_viscosity_law`, so the graph's
     `viscosity_law` names the form that ran. Plasma is 1.2 mPa·s, with no red-cell-size scaling
-    (unlike Secomb's NetFlow).
+    (unlike Secomb's NetFlow). Under the 1994 form, singular at 1.1 µm, a vessel narrower than
+    3.3 µm has its viscosity read at 3.3 µm, its own width still in the d⁴
+    (`viscosity.reads_in_vivo_1994`, `PoiseuilleModel.calculate_viscosity`).
   - `viscosity_law="capillary_power_law"` is the earlier law, kept for comparison (raises
     `haemodynamics.PlaceholderViscosityWarning` between 7 and 100 µm); `"constant"` is plasma
     everywhere, for separating geometry from viscosity.
@@ -1242,7 +1244,8 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   as set for greying (`BatchSetup.gates`); Load run leaves it, and is refused while a batch runs.
   The Batch run button greys under a synthetic network and while one image runs, never while a
   batch is set or running (`batch_button_greyed`, `RunState.on_change`). Each image's on-disk caches (its decompressed input, checkpoint
-  pickles, thick-vessel region) are deleted once it ends (`batch_run.clear_image_caches`).
+  pickles) are deleted once it ends (`batch_run.clear_image_caches`); its thick-vessel region stays,
+  as a later run loading its skeleton would find it again.
 - **`synthetic/`** — a network drawn to a previous run (see *A synthetic network* above).
   `template.py`'s `NetworkTemplate` (from the saved statistics report or the graph), `generate.py`
   (+ `trees.py`, `bed.py`, `polylines.py`) draws it, `compare.py` scores it per characteristic,

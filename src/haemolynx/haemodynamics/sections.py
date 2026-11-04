@@ -32,6 +32,7 @@ __all__ = [
     "averaged_section",
     "bootstrap_interval",
     "calibration_sites",
+    "is_planar",
     "lumen_image",
     "nearest_section",
     "projected_sigma",
@@ -85,6 +86,27 @@ def projected_sigma(axis: np.ndarray, psf_sigma_zyx) -> float:
     return float(np.sqrt((axis[0] * sz) ** 2 + (axis[1] * sy) ** 2 + (axis[2] * sx) ** 2))
 
 
+def is_planar(volume) -> bool:
+    """Whether *volume* is a single plane (a 2D image read as ``(1, y, x)``):
+    its vessels have no cross-section, only a line across them."""
+    return len(getattr(volume, "shape", ())) == 3 and int(volume.shape[0]) == 1
+
+
+def _revolved(line: np.ndarray, offsets: np.ndarray) -> np.ndarray:
+    """A section made from a single plane's *line* across a vessel (its
+    values at *offsets* along ``a``), revolved about the centreline: each
+    point of the ``(a, b)`` plane takes the line's value at its distance
+    from the centre, on its own side of it -- the round vessel the line is a
+    diameter of. NaN beyond the line's ends and wherever the line is NaN."""
+    line = np.asarray(line, dtype=float)
+    a, b = offsets[:, None], offsets[None, :]
+    signed = np.hypot(a, b) * np.where(a < 0, -1.0, 1.0)
+    finite = np.isfinite(line)
+    values = np.interp(signed, offsets, np.where(finite, line, 0.0), left=np.nan, right=np.nan)
+    known = np.interp(signed, offsets, finite.astype(float), left=0.0, right=0.0)
+    return np.where(known > 0.999, values, np.nan)
+
+
 def averaged_section(
     volume: np.ndarray,
     poly: np.ndarray,
@@ -98,7 +120,10 @@ def averaged_section(
     """*volume* in the plane normal to the centreline at arc length *at*,
     averaged over *average_um* of the vessel along its curve -- each plane in
     its own frame, so a curved vessel stays centred. Read in one call for
-    every plane. NaN outside the volume."""
+    every plane. NaN outside the volume. A single-plane volume
+    (:func:`is_planar`) has only the line across the vessel in it: that
+    line, averaged likewise, is revolved into the section (see
+    :func:`_revolved`)."""
     spacing = np.asarray(voxel_size_zyx, dtype=float)
     half = 0.5 * max(float(average_um), 0.0)
     step = 0.5 * float(np.min(spacing))
@@ -110,6 +135,14 @@ def averaged_section(
     frames = [section_axes(tangent) for tangent in tangents]
     a = np.array([frame[1] for frame in frames])
     b = np.array([frame[2] for frame in frames])
+    if is_planar(volume):
+        lines = points[:, None, :] + offsets[None, :, None] * a[:, None, :]
+        lines[..., 0] = 0.0  # the one plane, not a rounding error off it
+        values = map_coordinates(
+            volume, (lines / spacing).reshape(-1, 3).T, order=1, mode="constant",
+            cval=np.nan, output=np.float64,
+        )
+        return _revolved(values.reshape(len(points), len(offsets)).mean(axis=0), offsets)
     planes = (
         points[:, None, None, :]
         + offsets[None, :, None, None] * a[:, None, None, :]
@@ -128,8 +161,18 @@ def averaged_section(
 def nearest_section(volume, point, a, b, offsets, voxel_size_zyx) -> np.ndarray:
     """Whether the voxel nearest each point of the plane through *point*
     spanned by *a* and *b* is non-zero; False outside the volume. Reads only
-    those voxels, so a memory-mapped mask stays on disk."""
+    those voxels, so a memory-mapped mask stays on disk. A single-plane
+    volume's line across the vessel is revolved into the section, as
+    :func:`averaged_section` revolves the image's."""
     spacing = np.asarray(voxel_size_zyx, dtype=float)
+    if is_planar(volume):
+        nearest = np.rint((np.asarray(point) + offsets[:, None] * a) / spacing).astype(np.intp)
+        nearest[:, 0] = 0
+        inside = np.all((nearest >= 0) & (nearest < np.asarray(volume.shape)), axis=1)
+        line = np.zeros(len(nearest))
+        hits = nearest[inside]
+        line[inside] = np.asarray(volume[hits[:, 0], hits[:, 1], hits[:, 2]]) != 0
+        return np.nan_to_num(_revolved(line, offsets)) >= 0.5
     plane = point + offsets[:, None, None] * a + offsets[None, :, None] * b
     nearest = np.rint((plane / spacing).reshape(-1, 3)).astype(np.intp)
     inside = np.all((nearest >= 0) & (nearest < np.asarray(volume.shape)), axis=1)

@@ -889,6 +889,30 @@ def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
     assert "do_graph_building" not in widget._haemolynx_report()
 
 
+def test_a_config_saved_after_a_run_from_keeps_the_users_own_skip_toggles(panel):
+    """Regression: a config saved after a run from Haemodynamics wrote that
+    run's do_fwhm_measurement off, and a run from the file measured no FWHM
+    width. The file now says the user's own, as Run pipeline would put back."""
+    import yaml
+
+    widget, viewer, tmp_path = panel
+    _seed_run(widget, viewer, through="solve")
+    rows = widget._haemolynx_rows()
+    rows["raw_image_path"].value = tmp_path / "raw.tif"
+    rows["measure_diameters_from_raw_image"].value = True
+    rows["do_fwhm_measurement"].value = True
+    widget._haemolynx_revert("6. Haemodynamics")
+    assert rows["do_fwhm_measurement"].value is False  # the run-from's own
+
+    dest = tmp_path / "saved.yaml"
+    assert widget._haemolynx_save_config(dest)
+
+    saved = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    values = {name: value for section in saved.values() if isinstance(section, dict)
+              for name, value in section.items()}
+    assert values["do_fwhm_measurement"] is True
+
+
 FIXTURE = Path(__file__).resolve().parent / "data" / "seven_vessel_noisy_3d.tif"
 # The fixture is a tree whose ends all lie inside the image: on by default,
 # remove_interior_dead_ends cuts its 10 vessels to 1 (94d26a26), and the solve

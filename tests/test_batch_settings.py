@@ -109,7 +109,19 @@ def test_a_batch_takes_its_inlets_and_outlets_from_each_images_masks(base, schem
     assert error.endswith("turn on inlets_outlets_from_vessel_masks.")
     # One mask and no venule mask tells no inlet from an outlet.
     (error,) = check_batch({**base, "large_venule_mask_path": None}, schema).errors
-    assert "both an arteriole and a venule mask (large)" in error
+    assert "a venule mask beside its arteriole one (large)" in error
+    assert "inlets_outlets_from_vessel_masks" not in error
+    # Regression: under ilastik the fix is a venule classifier, not a file, and
+    # with the switch off as well both fixes were needed and one was named.
+    ilastik = {
+        **base, "large_venule_mask_path": None, "use_ilastik_large_vessel_segmentation": True,
+        "ilastik_venule_classifier_path": None,
+    }
+    (error,) = check_batch(ilastik, schema).errors
+    assert "a venule classifier beside its arteriole one (large)" in error
+    (error,) = check_batch({**base, "large_venule_mask_path": None, "inlets_outlets_from_vessel_masks": False}, schema).errors
+    assert "a venule mask beside its arteriole one" in error
+    assert error.endswith("and turn on inlets_outlets_from_vessel_masks.")
     # The masks choosing, the tabs' methods are not read, whatever they hold.
     for method in INLET_METHODS:
         assert check_batch({**base, "inlet_node_selection_method": method}, schema).errors == []
@@ -130,7 +142,7 @@ def test_each_images_own_masks_decide_whether_they_choose(base, schema, tmp_path
     # An image whose venule mask was not found is refused on its own.
     (alone,) = _match(tmp_path / "other", "E15_seg.tif", "E15_large_arteriole.tif", sizes=("large",))
     (error,) = check_batch(rows_empty, schema, match=alone).errors
-    assert "both an arteriole and a venule mask (large)" in error
+    assert "a venule mask beside its arteriole one (large)" in error
 
 
 def test_the_large_tier_takes_each_images_mask_stumps(base, schema):

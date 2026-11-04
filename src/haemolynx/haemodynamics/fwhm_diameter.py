@@ -66,7 +66,12 @@ def load_single_channel_tiff_volume(
     axis_order = axis_order_for_file(axis_order, path)
     if channel is not None:
         vol = _read_tiff_channel(path, int(channel))
-        vol = apply_axis_order(vol, axis_order)
+        # A 2D channel comes back as one plane, (1, y, x) -- its singleton
+        # axes squeezed away, only a 2D one is -- and is reordered no more
+        # than a 2D single-channel file or the segmented image is: an xyz
+        # order would stand it on its side, off the mask's grid.
+        if vol.shape[0] != 1:
+            vol = apply_axis_order(vol, axis_order)
         if not use_memmap:
             return np.asarray(vol, dtype=np.float32)
         from haemolynx.preprocessing.memmap_support import map_by_slab, new_memmap_array
@@ -1171,6 +1176,20 @@ def float32_volume(
     return map_by_slab(volume, lambda slab: slab.astype(np.float32), out)
 
 
+def _assign_branch_label_ids(G: nx.MultiGraph) -> tuple[list, dict[tuple[int, int, int], int]]:
+    """Each edge's ``graph_edge_label_id`` (and ``image_branch_label``),
+    ``1 .. E`` in ``(u, v, key)`` order: the same for every copy of *G*, so a
+    label volume built from one serves them all. Returns the sorted edges
+    and their labels."""
+    sorted_edges = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
+    edge_key_to_label: dict[tuple[int, int, int], int] = {}
+    for i, (u, v, key) in enumerate(sorted_edges, start=1):
+        edge_key_to_label[(u, v, key)] = i
+        G[u][v][key]["graph_edge_label_id"] = i
+        G[u][v][key]["image_branch_label"] = i
+    return sorted_edges, edge_key_to_label
+
+
 def build_graph_branch_label_volume(
     G: nx.MultiGraph,
     volume_shape: tuple[int, int, int],
@@ -1215,12 +1234,7 @@ def build_graph_branch_label_volume(
                 labels[z] = int(background_label)
     else:
         labels = np.full(shape, int(background_label), dtype=np.int32)
-    sorted_edges = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
-    edge_key_to_label: dict[tuple[int, int, int], int] = {}
-    for i, (u, v, key) in enumerate(sorted_edges, start=1):
-        edge_key_to_label[(u, v, key)] = i
-        G[u][v][key]["graph_edge_label_id"] = i
-        G[u][v][key]["image_branch_label"] = i
+    sorted_edges, edge_key_to_label = _assign_branch_label_ids(G)
 
     jlab = int(junction_label)
     bg = int(background_label)
@@ -1422,6 +1436,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     raw_channel: int | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
     at_positions: Mapping[tuple[Any, Any, Any], Sequence[float]] | None = None,
+    branch_labels: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -1665,6 +1680,13 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         the sampling plane (and at least 1um): narrower, and a one-pixel
         noise dip inside the vessel ends the lobe, so the fit measures one
         spike.
+    branch_labels :
+        The label volume :func:`build_graph_branch_label_volume` makes of
+        *G* (or of any copy of it: the edges and their voxels the same) with
+        this call's *background_label* and *junction_label*, made once by a
+        caller measuring the same vessels many times -- the settings
+        optimiser -- instead of painted again on every call; the caller's to
+        release. ``None`` (default) builds it.
     at_positions :
         Read each edge it names (``(u, v, key)``, either way round) at these
         arc lengths -- microns along the edge's ``voxels`` from their first
@@ -1756,17 +1778,26 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         )
         vessel_mask = None
     try:
-        labels, _ = build_graph_branch_label_volume(
-            G,
-            raw.shape,
-            voxel_size_zyx,
-            background_label=background_label,
-            junction_label=junction_label,
-            use_memmap=use_memmap,
-            memmap_directory=memmap_directory,
-        )
-        if use_memmap:
-            owned.append(labels)
+        if branch_labels is not None:
+            if tuple(branch_labels.shape) != tuple(raw.shape):
+                raise ValueError(
+                    f"branch_labels is {tuple(branch_labels.shape)} but the raw image is "
+                    f"{tuple(raw.shape)}: a label volume of another grid."
+                )
+            _assign_branch_label_ids(G)
+            labels = branch_labels
+        else:
+            labels, _ = build_graph_branch_label_volume(
+                G,
+                raw.shape,
+                voxel_size_zyx,
+                background_label=background_label,
+                junction_label=junction_label,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+            )
+            if use_memmap:
+                owned.append(labels)
 
         summary: dict[str, Any] = {
             "edges_measured": 0,

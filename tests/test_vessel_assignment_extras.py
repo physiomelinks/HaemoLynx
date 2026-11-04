@@ -205,6 +205,55 @@ def test_the_fallback_adds_hop_nodes_only_for_the_seeds_the_masks_miss(tmp_path)
     assert settings["arteriole_boundary_nodes"] == expected["arteriole_boundary_nodes"], "off: nothing added"
 
 
+def test_the_fallback_adds_the_nodes_its_hop_distance_away_not_the_nearest(tmp_path):
+    """small_vessel_boundary_fallback_hop_distance=2 adds the node two vessels
+    from the inlet the masks miss -- node 20 on its spur 21-22-20-3 -- not its
+    neighbour 22, which a distance of 1 adds."""
+    from haemolynx.graph import infer_boundary_nodes_from_small_vessel_masks
+    from haemolynx.pipeline.stages import assign_boundaries
+
+    def network_with_spur():
+        network = _large_vessel_network_with_small_masks()
+        G = network.graph
+        scale = np.asarray(network.volume.voxel_size_zyx)
+
+        def at(x):
+            return tuple(np.array([3, 5, x]) * scale)
+
+        # Off node 3, out of every mask (x 4-6) after its first voxel.
+        for node, x in ((20, 9), (22, 10), (21, 11)):
+            G.add_node(node, pos=at(x))
+        G.add_edge(3, 20, voxels=[at(5), at(9)], length=2.0)
+        G.add_edge(20, 22, voxels=[at(9), at(10)], length=0.5)
+        G.add_edge(22, 21, voxels=[at(10), at(11)], length=0.5)
+        return network
+
+    network = network_with_spur()
+    expected = infer_boundary_nodes_from_small_vessel_masks(
+        network.graph.copy(), network.small_arteriole_mask, network.small_venule_mask,
+        voxel_size_zyx=network.volume.voxel_size_zyx,
+    )
+    assert expected["arteriole_boundary_nodes"] == [1, 3, 5]
+    chosen = {}
+    for hops in (1, 2):
+        settings = _large_vessel_mode_settings(
+            tmp_path,
+            inlets_outlets_from_vessel_masks=False,
+            inlet_node_selection_method="node_ids",
+            inlet_node_ids=[0, 21],
+            outlet_node_selection_method="node_ids",
+            outlet_node_ids=[9],
+            small_vessel_boundary_fallback_hop_distance=hops,
+        )
+        assign_boundaries(settings, network_with_spur())
+        assert settings["inlet_nodes"] == [0, 21]
+        assert settings["venule_boundary_nodes"] == expected["venule_boundary_nodes"]
+        chosen[hops] = settings["arteriole_boundary_nodes"]
+
+    assert chosen[1] == [1, 3, 5, 22]
+    assert chosen[2] == [1, 3, 5, 20]
+
+
 def test_remove_components_without_connected_io_keeps_shared_component():
     G = nx.MultiGraph()
     # Component A: inlet 0 -- 1 -- outlet 2

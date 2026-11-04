@@ -3135,9 +3135,11 @@ SCHEMA = Schema(
                 "missing, raise; when they were never assigned, still label "
                 "capillary B* orders from inlets and warn. Also raise when the "
                 "Art or Ven tier crosses the capillary bed because a branch has "
-                "no boundary node of its own (otherwise a warning)"
+                "no boundary node of its own (otherwise a warning). Unread while vessels "
+                "are classed by size, which assigns no branch orders"
             ),
             section=_BOUNDARY_ASSIGNMENT,
+            requires=("!classify_vessels_by_size",),
             advanced=True,
         ),
         Setting(
@@ -5823,6 +5825,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_HANDLING,
             unit="Pa",
+            minimum=0.0,
             requires=("run_haemodynamics", "open_end_model=estimated"),
             advanced=True,
             placeholder="auto",
@@ -6205,11 +6208,15 @@ SCHEMA = Schema(
             name="fwhm_sample_spacing_along_edge_um",
             kind="float",
             default=2.0,
-            help="Sample a transverse profile every this far along the centerline",
+            help=(
+                "Sample a transverse profile every this far along the centerline. The raw-section "
+                "fit and the mask's own widths (the EDT cross-check, and the size convention "
+                "without haemodynamics) sample at it too; it needs only a segmented image"
+            ),
             section=_FWHM,
+            requires=("network_source=segmented_image",),
             minimum=0.0,
             unit="um",
-            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
         ),
         Setting(
             name="fwhm_transverse_profile_step_um",
@@ -6668,10 +6675,14 @@ SCHEMA = Schema(
             name="fwhm_edge_diameter_aggregation",
             kind="choice",
             default="median",
-            help="Collapse an edge's accepted per-sample diameters to one value by median or mean",
+            help=(
+                "Collapse an edge's accepted per-sample diameters to one value by median or mean. "
+                "The raw-section fit and the mask's own widths collapse theirs by it too; it "
+                "needs only a segmented image"
+            ),
             section=_FWHM,
+            requires=("network_source=segmented_image",),
             choices=("median", "mean"),
-            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -6780,12 +6791,13 @@ SCHEMA = Schema(
             help=(
                 "The image's blur across the y-x plane, as a Gaussian sigma. Read only with "
                 "raw_section_psf_sigma_z_um set too: leave both unset, or set one alone, and both"
-                " are estimated from the image's own wide vessels"
+                " are estimated from the image's own wide vessels. FWHM holds its blur at it "
+                "(fwhm_fix_blur_to_image_psf), and the raw-section fit fits with it"
             ),
             section=_FWHM,
             unit="um",
             minimum=0.0,
-            requires=("use_raw_section_fallback",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial"),
             advanced=True,
             placeholder="estimate",
         ),
@@ -6796,12 +6808,13 @@ SCHEMA = Schema(
             help=(
                 "The image's blur along z, as a Gaussian sigma. Read only with "
                 "raw_section_psf_sigma_xy_um set too: leave both unset, or set one alone, and "
-                "both are estimated from the image's own wide vessels"
+                "both are estimated from the image's own wide vessels. FWHM holds its blur at it "
+                "(fwhm_fix_blur_to_image_psf), and the raw-section fit fits with it"
             ),
             section=_FWHM,
             unit="um",
             minimum=0.0,
-            requires=("use_raw_section_fallback",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial"),
             advanced=True,
             placeholder="estimate",
         ),
@@ -6901,8 +6914,9 @@ SCHEMA = Schema(
             # stamp_edge_diameters (haemodynamics.poiseuille) then uses the
             # EDT estimate for every edge instead of just the ones FWHM
             # failed on, which is a fully working diameter pipeline on its
-            # own, not a degenerate one. Only run_haemodynamics is required.
-            requires=("run_haemodynamics",),
+            # own, not a degenerate one. Only run_haemodynamics is required,
+            # and a segmentation to read (a synthetic network has none).
+            requires=("run_haemodynamics", "network_source=segmented_image"),
             # The widths are read from the run's own segmented image (the
             # Input tab's, or ilastik's output). A mask path of its own,
             # carried over in a config from another dataset, named a file
@@ -6927,10 +6941,11 @@ SCHEMA = Schema(
                 "section normal to the centreline, as a circle's diameter (within ~3% on "
                 "synthetic vessels at any orientation); inscribed_radius is twice the EDT "
                 "radius at the centreline (30-40% wide on small axis-aligned vessels, up to "
-                "~30% narrow on oblique or flattened ones)"
+                "~30% narrow on oblique or flattened ones). Also how the size convention reads "
+                "the mask without haemodynamics; it needs only a segmented image"
             ),
             section=_EDT_DIAMETER,
-            requires=("use_edt_diameter_crosscheck",),
+            requires=("network_source=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -6941,23 +6956,28 @@ SCHEMA = Schema(
                 "Readings narrower than this are a strand of mask a voxel or so thick -- a vessel "
                 "the segmentation caught a sliver of -- not its width, and are left out; a vessel "
                 "with no other reading falls back to the branch-order table. About two voxels "
-                "across; 0 keeps every reading"
+                "across; 0 keeps every reading. The size convention's mask widths without "
+                "haemodynamics read it too; it needs only a segmented image"
             ),
             section=_EDT_DIAMETER,
+            requires=("network_source=segmented_image",),
             minimum=0.0,
             unit="um",
-            requires=("use_edt_diameter_crosscheck",),
             advanced=True,
         ),
         Setting(
             name="edt_junction_proximity_exclusion_um",
             kind="float",
             default=10.0,
-            help="Skip EDT sample positions within this distance of a branch endpoint",
+            help=(
+                "Skip EDT sample positions within this distance of a branch endpoint. The "
+                "endothelial ring fit keeps clear of the same zones, and the size convention's "
+                "mask widths without haemodynamics read it too; it needs only a segmented image"
+            ),
             section=_EDT_DIAMETER,
+            requires=("network_source=segmented_image",),
             minimum=0.0,
             unit="um",
-            requires=("use_edt_diameter_crosscheck",),
             advanced=True,
         ),
         Setting(

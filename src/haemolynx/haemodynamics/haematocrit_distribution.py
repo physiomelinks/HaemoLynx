@@ -464,6 +464,7 @@ def iterate_flow_and_haematocrit(
     solver: str = FLOW_SOLVER_DENSE,
     final_solve: bool = True,
     open_ends=None,
+    on_pass: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Solve flow and distribute haematocrit together, to a fixed point.
 
@@ -519,6 +520,10 @@ def iterate_flow_and_haematocrit(
     pressure solve gives them -- rounding, up to about 1e-20 m^3/s either
     way -- a blind stub at a bifurcation counted as a third outflow, and the
     junction was mixed rather than divided by the phase-separation law.
+
+    *on_pass* is called with ``(pass, max_iterations)`` as each pass ends:
+    the solve stage reports progress through it, and a run asked to stop is
+    stopped there, between passes, rather than at the end of the stage.
 
     Returns a dict with ``pressure``, ``node_list`` (matching
     :func:`~haemolynx.haemodynamics.resistance.solve_flow_from_conductance_matrix`'s
@@ -624,6 +629,8 @@ def iterate_flow_and_haematocrit(
         # The model built before the loop logged the same resistances.
         with repeated_pass_logs_at_debug():
             recompute_resistances()
+        if on_pass is not None:
+            on_pass(iteration, max_iterations)
 
         if has_converged:
             converged = True

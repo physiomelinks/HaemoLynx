@@ -383,6 +383,49 @@ def check_manual_inlets_outlets_while_masks_choose(
     return report
 
 
+#: The list each listing method reads, by its key in BOUNDARY_ROLE_SETTINGS.
+_LISTED_BY_METHOD = {"coordinates": "coordinates", "volume": "volume_boxes", "node_ids": "node_ids"}
+
+
+def check_boundary_selection(settings: Mapping[str, Any]) -> CheckReport:
+    """The inlet and outlet methods the run reads (and the large-vessel
+    network's, with its tier on): one whose list is empty is refused here, as
+    the Boundaries stage would refuse it once every stage before it had run;
+    and ``edge_percent`` along z on a one-slice image is warned about, since
+    every terminal lies in that one plane and no band holds an outlet."""
+    from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS, inlets_outlets_from_vessel_masks
+    from haemolynx.io import axis_order_for_run
+
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    roles = [] if inlets_outlets_from_vessel_masks(settings) else ["inlet", "outlet"]
+    if assigns_large_vessel_branch_orders(settings):
+        roles += ["large_vessel_inlet", "large_vessel_outlet"]
+    banded = False
+    for role in roles:
+        names = BOUNDARY_ROLE_SETTINGS[role]
+        method = str(settings.get(names["method"]) or "").strip().lower()
+        banded = banded or method == "edge_percent"
+        listed = _LISTED_BY_METHOD.get(method)
+        if listed is not None and not settings.get(names[listed]):
+            report.add_error(
+                f"{names['method']} is '{method}', but {names[listed]} is empty, so the "
+                f"Boundaries stage would find no {role.replace('_', ' ')} node. Fix: fill "
+                f"{names[listed]} (on the Boundaries tab), or choose another method."
+            )
+    if banded and settings.get("boundary_axis") == 0:
+        image = settings.get("raw_image_path") if settings.get("use_ilastik_segmentation") else settings.get("input_path")
+        header = _tiff_header(image, axis_order_for_run(settings))
+        if header is not None and (len(header[0]) == 2 or header[0][0] == 1):
+            report.add_warning(
+                "boundary_axis is 0 (z), but the image is one slice: every terminal lies in "
+                "that plane, so edge_percent finds no outlet. Fix: set boundary_axis to 1 (y) "
+                "or 2 (x)."
+            )
+    return report
+
+
 def check_global_vessel_masks(settings: Mapping[str, Any]) -> CheckReport:
     """Say what a run with global vessel masks does instead, and warn of the
     settings it then leaves unread.
@@ -695,6 +738,17 @@ def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
             "that many times its own vessel's resistance, so it must be above 0 "
             "(open_end_model=outlet holds the open ends at the outlet pressure)."
         )
+    pressure = settings.get("open_end_estimate_pressure_target_pa")
+    inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
+    if model == ESTIMATED and None not in (pressure, inlet, outlet) and not (
+        min(float(inlet), float(outlet)) <= float(pressure) <= max(float(inlet), float(outlet))
+    ):
+        report.add_warning(
+            f"open_end_estimate_pressure_target_pa ({pressure} Pa) lies outside the boundary "
+            f"pressures ({outlet} to {inlet} Pa): the estimate pulls the open ends towards a "
+            "pressure no inlet or outlet holds, and those that pass the inlet or outlet "
+            "pressure are held just inside it."
+        )
     target = settings.get("open_end_estimate_shear_target_pa")
     if model == ESTIMATED and target is not None and not float(target) > 0:
         report.add_error(
@@ -991,6 +1045,40 @@ def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
         settings.get("raw_image_path"), settings.get("raw_image_channel"),
         "raw_image_path", "raw_image_channel",
     )
+
+
+#: The image blur pairs the Diameters stage reads, each with what reads it
+#: and the stain it is read for: a blur is read only as a pair.
+_DIAMETER_BLUR_PAIRS = (
+    ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um",
+     "FWHM and the raw-section fit", "endothelial"),
+    ("endothelial_psf_sigma_xy_um", "endothelial_psf_sigma_z_um",
+     "the endothelial ring fit", "plasma_column"),
+)
+
+
+def check_diameter_blur_pairs(settings: Mapping[str, Any]) -> CheckReport:
+    """Warn of an image blur set across the slices or along z, not both,
+    where diameters are measured from the raw image: each blur is read only
+    as a pair, so the run estimates both from the image and the one set is
+    not read -- said before the run rather than in its log."""
+    from haemolynx.pipeline.stages import measures_diameters_from_raw_image
+
+    report = CheckReport()
+    if not settings.get("run_haemodynamics", True) or not measures_diameters_from_raw_image(settings):
+        return report
+    for xy, z, readers, unread_for in _DIAMETER_BLUR_PAIRS:
+        if settings.get("raw_image_stain") == unread_for:
+            continue
+        given = [name for name in (xy, z) if settings.get(name) is not None]
+        if len(given) == 1:
+            other = z if given[0] == xy else xy
+            report.add_warning(
+                f"{given[0]} is set but {other} is not: {readers} read the image's blur only "
+                f"as a pair, so both are estimated from the image and {given[0]} is not read. "
+                f"Fix: set {other} too, or clear {given[0]}."
+            )
+    return report
 
 
 def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
@@ -1632,6 +1720,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_ilastik_vessel_mask_channels(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
+    report.extend(check_boundary_selection(settings))
     report.extend(check_global_vessel_masks(settings))
     report.extend(check_large_vessel_mask_split(settings))
     report.extend(check_vessel_size_classes(settings))
@@ -1643,6 +1732,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
     report.extend(check_raw_image(settings))
+    report.extend(check_diameter_blur_pairs(settings))
     report.extend(check_image_channels(settings))
     report.extend(check_raw_image_shape(settings))
     report.extend(check_tissue_volume_image(settings))
