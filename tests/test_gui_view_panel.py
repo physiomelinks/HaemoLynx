@@ -226,6 +226,32 @@ def test_the_view_tab_scrolls_rather_than_holding_the_strip_as_tall_as_itself(
     assert snapshot.height() <= snapshot.sizeHint().height() + 2
 
 
+def test_a_short_strip_scrolls_the_view_tab_rather_than_squashing_its_boxes(
+    make_napari_viewer,
+):
+    """Regression: the Snapshot box's own minimum was 48 px, below its title
+    and button, so a strip shorter than the view panel squashed Save snapshot
+    until its label was cut through instead of scrolling."""
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    viewer.window._qt_window.resize(1200, 420)
+    _settle()
+
+    view_panel = panel._haemolynx_view_panel
+    assert view_panel.height() < view_panel.sizeHint().height()
+    button = panel._haemolynx_snapshot_button
+    assert button.height() >= button.sizeHint().height(), (
+        f"Save snapshot squashed to {button.height()} px "
+        f"(needs {button.sizeHint().height()} px)"
+    )
+    for group in (
+        panel._haemolynx_display_group,
+        panel._haemolynx_illumination_group,
+        panel._haemolynx_snapshot_group,
+    ):
+        assert group.height() >= group.minimumSizeHint().height(), group.objectName()
+
+
 def test_the_four_tabs_are_equal_and_fill_the_panel(make_napari_viewer):
     """Qt sizes a dock tab to its label and leaves the rest of the bar empty."""
     from qtpy.QtCore import Qt

@@ -18641,7 +18641,6 @@ def settings_widget(napari_viewer=None):
     snapshot_button.setToolTip(SNAPSHOT_TOOLTIP)
     snapshot_button.clicked.connect(on_save_snapshot)
     snapshot_layout.addWidget(snapshot_button)
-    snapshot_group.setMinimumHeight(48)
     from haemolynx.gui.canvas_illumination import illumination_box
 
     illumination = illumination_box(viewer)
