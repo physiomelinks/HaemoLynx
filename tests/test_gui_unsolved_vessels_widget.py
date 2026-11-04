@@ -1,9 +1,11 @@
-"""Unsolved vessels on screen: light grey under every flow-based colouring.
+"""Unsolved vessels on screen: a dark grey under every flow-based colouring.
 
 napari's colormaps draw NaN transparent, so a vessel whose flow the solve
 could not give (blanked by ``results.mask_unsolved_flow_columns``) used to
 vanish. The panel colours through a copy of each map whose NaN colour is the
-uncoloured grey. The pure side is in ``test_gui_unsolved_vessels.py``.
+missing-value grey: darker than the light grey of no colouring, which was the
+brightest thing on the canvas. The pure side is in
+``test_gui_unsolved_vessels.py``.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
     GREY_NAN_SUFFIX,
+    MISSING_VALUE_RGBA,
     UNCOLOURED_RGBA,
     _apply_colormap,
     _apply_layers,
@@ -30,7 +33,18 @@ from test_gui_unsolved_vessels import _graph, _solve_layers  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
-GREY = np.asarray(UNCOLOURED_RGBA)
+GREY = np.asarray(MISSING_VALUE_RGBA)
+
+
+def test_a_missing_value_is_a_darker_grey_than_no_colouring():
+    """The light grey of no colouring is the brightest thing on a dark canvas,
+    and the middle of the diverging maps (signed branch order's capillaries,
+    at 0): a missing value drawn in it drew the eye, and read as a capillary."""
+    from napari.utils.colormaps import ensure_colormap
+
+    assert sum(MISSING_VALUE_RGBA[:3]) < sum(UNCOLOURED_RGBA[:3]) - 0.9
+    middle = ensure_colormap("RdBu").map(np.array([0.5]))[0]
+    assert np.abs(middle[:3] - GREY[:3]).max() > 0.4
 
 
 def _a_vectors_layer():
@@ -65,7 +79,7 @@ def test_the_grey_nan_copy_is_the_same_map_with_a_grey_nan():
     assert _grey_nan_colormap("not a colormap") == "not a colormap"
 
 
-def test_a_flow_colouring_draws_the_unsolved_vessel_light_grey():
+def test_a_flow_colouring_draws_the_unsolved_vessel_grey():
     layer = _a_vectors_layer()
 
     _colour_layer(layer, "flow_abs", "continuous")
