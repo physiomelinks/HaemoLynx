@@ -4717,6 +4717,10 @@ def _haemodynamics_apply_config(
     diameters["do_pericyte_construction"] = False
     diameters["run_pericyte_resistance_comparison"] = False
     edt = dict(schema.section_values(settings, "EDT mask diameter estimate"))
+    # A synthetic network has no segmentation to measure: the cross-check, on
+    # by default, is off there as its prerequisites say.
+    if graph.network_is_synthetic(settings):
+        edt["use_edt_diameter_crosscheck"] = False
     # The mask is the run's own segmented input -- what the skeleton was made
     # from -- read only when the stage has none in memory (a resumed run).
     edt["edt_mask_path"] = segmented_input_path(settings)

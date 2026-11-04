@@ -841,7 +841,13 @@ def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
         return None
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
-    path = io.resolve_image_path_with_optional_zip(Path(mask_path))
+    try:
+        path = io.resolve_image_path_with_optional_zip(Path(mask_path))
+    except FileNotFoundError as error:
+        # A run resumed without its segmentation (a .haemorun moved, its image
+        # not): no mask widths, and the diameter chain's next sources stand in.
+        logger.warning("No mask widths measured: %s", error)
+        return None
     raw = fwhm_diameter.load_single_channel_tiff_volume(
         path,
         axis_order=config.axis_order,

@@ -766,6 +766,10 @@ Only the measures of the item's own list are filled.
 | `radius_um` | `um` | Uncovered mask: its widest inscribed radius. |
 | `voxels` | `count` | Uncovered mask, skeleton the graph does not follow: its voxel count. |
 | `reason` | `-` | Skeleton the graph does not follow: why the skeleton re-trace leaves the piece. |
+| `made_by` | `-` | Bridging vessels: what made the bridge: by_hand, junction (a narrow vessel opening into a wider one), thick_fork, thick_drawn (into a thick vessel, along its vessel) or thick_vessel. |
+| `width_um` | `um` | Bridging vessels: the diameter the bridge carries (a bridge is not measured). |
+| `narrowest_beside_um` | `um` | Bridging vessels: the narrowest vessel meeting either end of the bridge. |
+| `widest_beside_um` | `um` | Bridging vessels: the widest vessel meeting either end of the bridge. |
 | `hole_um` | `um` | Skeleton the graph does not follow: the tissue hole the loop the piece would close runs round. |
 | `far_fraction` | `fraction` | Skeleton the graph does not follow: the share of the piece a separate tube from every centreline. |
 | `mask_fraction` | `fraction` | Skeleton the graph does not follow: the share of the piece in the segmentation. |

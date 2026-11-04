@@ -178,6 +178,14 @@ _REVIEW_MEASURES = (
     _c("radius_um", "um", "Uncovered mask: its widest inscribed radius."),
     _c("voxels", "count", "Uncovered mask, skeleton the graph does not follow: its voxel count."),
     _c("reason", "-", "Skeleton the graph does not follow: why the skeleton re-trace leaves the piece."),
+    _c(
+        "made_by", "-",
+        "Bridging vessels: what made the bridge: by_hand, junction (a narrow vessel opening into a "
+        "wider one), thick_fork, thick_drawn (into a thick vessel, along its vessel) or thick_vessel.",
+    ),
+    _c("width_um", "um", "Bridging vessels: the diameter the bridge carries (a bridge is not measured)."),
+    _c("narrowest_beside_um", "um", "Bridging vessels: the narrowest vessel meeting either end of the bridge."),
+    _c("widest_beside_um", "um", "Bridging vessels: the widest vessel meeting either end of the bridge."),
     _c("hole_um", "um", "Skeleton the graph does not follow: the tissue hole the loop the piece would close runs round."),
     _c("far_fraction", "fraction", "Skeleton the graph does not follow: the share of the piece a separate tube from every centreline."),
     _c("mask_fraction", "fraction", "Skeleton the graph does not follow: the share of the piece in the segmentation."),

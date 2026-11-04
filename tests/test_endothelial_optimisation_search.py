@@ -408,7 +408,8 @@ def test_with_nothing_to_calibrate_on_the_report_says_what_to_set(monkeypatch, r
         calibrate=lambda psf, gate: (None, None, {"reason": "0 rings of 0 wide vessels showed their wall"}),
     )
 
-    result = _optimise(_chain(), raw_path)
+    # The mask cross-check off (on by default since 2026-11-04): the report names it.
+    result = _optimise(_chain(), raw_path, starting_values={**DEFAULTS, "use_edt_diameter_crosscheck": False})
 
     assert result.settings == DEFAULTS
     text = "\n".join(result.notes)

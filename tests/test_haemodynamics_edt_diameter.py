@@ -741,6 +741,25 @@ def test_the_diameters_stage_measures_the_mask_widths_in_workers(monkeypatch):
     assert seen == [(7, "D:/volumes")]
 
 
+def test_a_segmentation_no_longer_on_disk_measures_no_mask_widths(tmp_path, caplog):
+    """Regression: with the cross-check on by default, a run resumed without
+    its segmentation (post processing on a moved .haemorun) stopped with
+    FileNotFoundError where it had measured nothing before. It now warns and
+    leaves the widths to the diameter chain's next sources."""
+    import logging
+
+    from haemolynx.haemodynamics import apply
+    from haemolynx.haemodynamics.apply import HaemodynamicsApplyConfig
+
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": {"B01": 5.0}},
+        edt={"use_edt_diameter_crosscheck": True, "edt_mask_path": str(tmp_path / "gone.tif")},
+    )
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.apply"):
+        assert apply.load_edt_mask_volume(config) is None
+    assert "No mask widths measured" in caplog.text and "gone.tif" in caplog.text
+
+
 def _planar_strip(width: int, *, length: int = 100):
     """A 2D image read as one plane: a straight vessel *width* voxels wide
     along x, and its centreline."""
