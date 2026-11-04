@@ -1951,6 +1951,16 @@ def test_the_segmented_image_box_sits_under_the_skeleton_box():
     assert cell("terminal nodes") == (1, 0)
 
 
+def test_the_scale_bar_box_sits_beside_the_segmented_image_box():
+    panel = settings_widget(napari_viewer=None)
+    layout = panel._haemolynx_view_toggle_row.layout()
+    index = layout.indexOf(panel._haemolynx_scale_bar)
+    assert index >= 0
+    row, column, _rows, _columns = layout.getItemPosition(index)
+    assert (row, column) == (2, 0)
+    assert layout.rowCount() == 3
+
+
 def test_the_show_boxes_are_built_and_greyed_out_with_no_viewer():
     panel = settings_widget(napari_viewer=None)
     for box in _show_boxes(panel).values():

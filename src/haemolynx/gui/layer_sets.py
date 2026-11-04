@@ -49,6 +49,7 @@ __all__ = [
     "BASELINE",
     "BASELINE_LABEL",
     "ROLES",
+    "SCALE_BAR_CELL",
     "VIEW_TOGGLES",
     "VIEW_TOGGLE_CELLS",
     "carried_roles",
@@ -89,6 +90,9 @@ VIEW_TOGGLE_CELLS = {
     "skeleton": (1, 1),
     "segmented image": (2, 1),
 }
+
+#: The Scale bar box shares the grid, in the cell left of the segmented image.
+SCALE_BAR_CELL = (2, 0)
 
 #: The toggles that are one layer for the whole run, whatever is shown.
 _RUN_TOGGLE_LAYERS = {

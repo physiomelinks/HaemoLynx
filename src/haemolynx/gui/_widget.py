@@ -16515,6 +16515,7 @@ def settings_widget(napari_viewer=None):
     from qtpy.QtWidgets import QGridLayout
 
     from haemolynx.gui.layer_sets import (
+        SCALE_BAR_CELL,
         VIEW_TOGGLE_CELLS,
         VIEW_TOGGLES,
         toggle_layer_name,
@@ -16533,6 +16534,7 @@ def settings_widget(napari_viewer=None):
         box.setEnabled(False)
         view_toggle_layout.addWidget(box, *VIEW_TOGGLE_CELLS[role])
         view_toggles[role] = box
+    view_toggle_layout.addWidget(scale_bar_box, *SCALE_BAR_CELL)
 
     def refresh_view_toggles(*_args) -> None:
         """Tick each box as its layer is; grey it out when there is no layer."""
@@ -18420,7 +18422,6 @@ def settings_widget(napari_viewer=None):
 
     refresh_layer_sets()
     display_form.addRow(view_toggle_row)
-    display_form.addRow(scale_bar_box)
 
     def on_save_snapshot() -> None:
         folder = output_folder_from_settings(current_values())

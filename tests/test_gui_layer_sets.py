@@ -10,6 +10,7 @@ import pytest
 from haemolynx.gui.layer_sets import (
     BASELINE,
     BASELINE_LABEL,
+    SCALE_BAR_CELL,
     VIEW_TOGGLE_CELLS,
     VIEW_TOGGLES,
     carried_roles,
@@ -172,6 +173,16 @@ def test_every_show_box_has_a_cell_of_its_own_and_the_segmented_image_sits_under
     assert len(set(VIEW_TOGGLE_CELLS.values())) == len(VIEW_TOGGLE_CELLS)
     row, column = VIEW_TOGGLE_CELLS["skeleton"]
     assert VIEW_TOGGLE_CELLS["segmented image"] == (row + 1, column)
+
+
+def test_the_scale_bar_fills_the_cell_left_of_the_segmented_image():
+    row, column = VIEW_TOGGLE_CELLS["segmented image"]
+    assert SCALE_BAR_CELL == (row, column - 1)
+    assert SCALE_BAR_CELL not in VIEW_TOGGLE_CELLS.values()
+    # Every cell of the two columns, down to the last row, holds a box.
+    cells = set(VIEW_TOGGLE_CELLS.values()) | {SCALE_BAR_CELL}
+    last_row = max(r for r, _c in cells)
+    assert cells == {(r, c) for r in range(last_row + 1) for c in (0, 1)}
 
 
 def test_arrows_and_nodes_boxes_follow_the_network_shown():
