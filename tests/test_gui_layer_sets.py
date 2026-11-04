@@ -164,7 +164,7 @@ def test_the_show_boxes_are_arrows_nodes_terminal_nodes_skeleton_and_image_in_th
         "flow direction", "nodes", "terminal nodes", "skeleton", "segmented image",
     ]
     assert [label for _role, label in VIEW_TOGGLES] == [
-        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmented image",
+        "Flow arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmentation",
     ]
 
 

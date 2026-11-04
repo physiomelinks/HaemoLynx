@@ -336,7 +336,7 @@ def test_the_view_button_sits_left_of_the_run_file_buttons_and_has_a_tooltip(mak
     assert layout.indexOf(view_button.native) < layout.indexOf(panel._haemolynx_save_run_button.native)
 
 
-def test_the_view_button_is_disabled_with_no_viewer():
+def test_the_view_button_is_disabled_with_no_viewer(qapp):
     panel = settings_widget(napari_viewer=None)
     assert panel._haemolynx_view_dock is None
     assert not panel._haemolynx_view_button.enabled
@@ -454,7 +454,7 @@ def test_the_view_panel_is_not_on_the_right_settings_column(make_napari_viewer):
             ancestor = ancestor.parentWidget()
 
 
-def test_the_panel_still_builds_the_view_chrome_with_no_viewer():
+def test_the_panel_still_builds_the_view_chrome_with_no_viewer(qapp):
     panel = settings_widget(napari_viewer=None)
     assert panel._haemolynx_view_dock is None
     assert panel._haemolynx_view_panel is not None
@@ -503,7 +503,9 @@ def test_the_view_tab_fits_its_width_with_a_run_shown(make_napari_viewer):
     """Regression: once a run coloured the vessels, the colour range's 150 px
     bar beside its label held the view panel at 439 px in a 286 px tab, so
     the Z-depth min and max bars ran past the tab's edge. The Z-depth and
-    colour range labels sit above their controls."""
+    colour range labels sit above their controls. Later, "Segmented image"
+    under "Skeleton" beside "Flow direction arrows" held it at 327 px: the
+    Show boxes' labels are short."""
     from qtpy.QtCore import Qt
 
     viewer = make_napari_viewer(show=True)
@@ -1364,7 +1366,7 @@ def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari
 
 
 def test_a_sweeps_nodes_and_arrows_follow_its_slider(make_napari_viewer, tmp_path):
-    """Showing a sweep greyed the Nodes and Flow direction arrows boxes: it
+    """Showing a sweep greyed the Nodes and Flow arrows boxes: it
     drew neither. Its nodes now take each grid point's pressures and its
     arrows that point's flows as the slider moves."""
     from qtpy.QtWidgets import QAbstractSlider
@@ -1951,7 +1953,7 @@ def test_the_show_boxes_sit_in_the_display_box_greyed_out_before_a_run(make_napa
         "flow direction", "nodes", "terminal nodes", "skeleton", "segmented image",
     ]
     assert [box.text() for box in boxes.values()] == [
-        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmented image",
+        "Flow arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmentation",
     ]
     assert boxes["nodes"].objectName() == "haemolynx_show_nodes"
     assert boxes["terminal nodes"].objectName() == "haemolynx_show_terminal_nodes"
@@ -1963,7 +1965,7 @@ def test_the_show_boxes_sit_in_the_display_box_greyed_out_before_a_run(make_napa
         assert box.toolTip()
 
 
-def test_the_segmented_image_box_sits_under_the_skeleton_box():
+def test_the_segmented_image_box_sits_under_the_skeleton_box(qapp):
     panel = settings_widget(napari_viewer=None)
     layout = panel._haemolynx_view_toggle_row.layout()
     boxes = _show_boxes(panel)
@@ -1977,7 +1979,7 @@ def test_the_segmented_image_box_sits_under_the_skeleton_box():
     assert cell("terminal nodes") == (1, 0)
 
 
-def test_the_scale_bar_box_sits_beside_the_segmented_image_box():
+def test_the_scale_bar_box_sits_beside_the_segmented_image_box(qapp):
     panel = settings_widget(napari_viewer=None)
     layout = panel._haemolynx_view_toggle_row.layout()
     index = layout.indexOf(panel._haemolynx_scale_bar)
@@ -1987,7 +1989,7 @@ def test_the_scale_bar_box_sits_beside_the_segmented_image_box():
     assert layout.rowCount() == 3
 
 
-def test_the_show_boxes_are_built_and_greyed_out_with_no_viewer():
+def test_the_show_boxes_are_built_and_greyed_out_with_no_viewer(qapp):
     panel = settings_widget(napari_viewer=None)
     for box in _show_boxes(panel).values():
         assert not box.isEnabled()

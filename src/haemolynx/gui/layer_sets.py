@@ -72,13 +72,14 @@ ROLES = ("vessels", "nodes", "flow direction", "pericytes")
 #: The view panel's "Show" checkboxes: ``(role, label)`` in the order drawn.
 #: The first two are kinds of layer a network has (:data:`ROLES`), so their
 #: boxes follow the network shown and a swap carries them; the rest are
-#: the run's own single layers.
+#: the run's own single layers. The labels are kept short: two columns of
+#: them must fit a left panel 300 px wide.
 VIEW_TOGGLES = (
-    ("flow direction", "Flow direction arrows"),
+    ("flow direction", "Flow arrows"),
     ("nodes", "Nodes"),
     ("terminal nodes", "Terminal nodes"),
     ("skeleton", "Skeleton"),
-    ("segmented image", "Segmented image"),
+    ("segmented image", "Segmentation"),
 )
 
 #: Where each "Show" checkbox sits in the panel's grid, ``(row, column)``:
