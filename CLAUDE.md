@@ -10,7 +10,7 @@ HaemoLynx turns 3D microvascular microscopy into **NetworkX graphs** with haemod
 
 ```
 haemolynx/
-├── src/haemolynx/          # Installable package (setuptools, pythonpath = src in pytest)
+├── src/haemolynx/          # Installable package (setuptools; pytest's pythonpath is src and scripts)
 │   ├── geometry.py         # Polyline arc length, shared by haemodynamics and visualization
 │   ├── io/                 # load.py (TIFF/H5 -> skeleton), load_2d.py (a 2D image as a
 │   │                       #   z=1 volume), crop.py (crop on import: one box of voxels cut
@@ -133,7 +133,9 @@ haemolynx/
 │   │                       #   line between its ends),
 │   │                       #   current_flow, occlusion, loops,
 │   │                       #   strahler, spectral, over _route_graph.py / _flow_system.py;
-│   │                       #   csv_export.py, _sampling.py (one shared seed constant),
+│   │                       #   _contracted.py (the network as the statistics measure it:
+│   │                       #   each bridge's two ends one node, each vessel spanning its
+│   │                       #   own ends); csv_export.py, _sampling.py (one shared seed constant),
 │   │                       #   three_dim_distances.py (cell-to-vessel distances),
 │   │                       #   layout.py (how the vessels lie: junction shape, tissue
 │   │                       #   coverage, vessel columns along z),
@@ -211,7 +213,7 @@ haemolynx/
 │   │                       #   the .haemobatch file), surround.py + hole.py (a network drawn
 │   │                       #   round an image's own: its open ends, the box left empty, the
 │   │                       #   two joined; PLAN_synthetic_surround.md)
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 450 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 500+ settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -264,7 +266,8 @@ haemolynx/
 │   ├── *_review/           # The other marked grids' builders and mark fitters (see Marked
 │   │                       #   example grids): bridge_review (M), doubled_run_review (H, H2),
 │   │                       #   loop_review (I), stub_protrusion_review (S), thick_bridge_review,
-│   │                       #   thick_junction_review, uncovered_review (UR1)
+│   │                       #   thick_junction_review, uncovered_review (UR1),
+│   │                       #   vessel_class_review (AV1, SZ1, SZ2, SZR)
 │   ├── release_review.py   # The release review's scorer, package release_review/ (TEMPORARY:
 │   │                       #   see Release review)
 │   ├── open_end_sensitivity.py # One solved network under every open_end_model
@@ -428,10 +431,15 @@ On Windows the venv's interpreter is `.venv\Scripts\python.exe`; run tests as
 
 - **Python:** ≥ 3.10 for the library (CI matrix: 3.10, 3.11, 3.12); the napari panel needs 3.11+
 - **Dependencies:** `pyproject.toml` only — there is no `requirements.txt`. Extras: `dev`
-  (pytest, nbconvert, nbformat, npe2), `notebook` (ipykernel, for running the tutorial
-  interactively), `napari` (napari with PyQt6, magicgui, npe2 — the GUI panel) and
+  (pytest, pytest-cov, pytest-xdist, ruff, nbconvert, nbformat, npe2, psutil), `notebook`
+  (ipykernel, for running the tutorial interactively), `napari` (napari ≥ 0.9 with PyQt6,
+  magicgui, npe2, imageio-ffmpeg for the rotation movie's MP4 — the GUI panel) and
   `napari-plugin` (the same, taking the Qt binding from an existing napari installation). `pytest-qt` is deliberately in none of
   them: it aborts a run that has no Qt binding, so only the GUI CI job installs it.
+- **napari:** the panel uses what replaced napari 0.9's deprecations (`viewer.scene.camera`,
+  `viewer.canvas.size`, `projection_mode` in place of `out_of_slice_display`); `pyproject.toml`'s
+  `filterwarnings` makes either old name fail the suite. napari 0.10 also calls mouse-move
+  callbacks during drags, so a hover callback skips a drag.
 - **Run package tests:** from repo root: `pytest -s` or `pytest`
 - **Skip slow tests:** `pytest -m "not slow"`
 - **Integration only:** `pytest -m integration`
@@ -455,8 +463,6 @@ On Windows the venv's interpreter is `.venv\Scripts\python.exe`; run tests as
 
 ### Where to put tests
 
-| Change area | Typical test location |
-|-------------|----------------------|
 Most modules have a test file named after them (`gui/run_snapshot.py` → `tests/test_gui_run_snapshot.py`,
 `haemodynamics/capillary_block.py` → `tests/test_capillary_block.py`); check for one before adding a new file.
 
@@ -1324,7 +1330,6 @@ is in [`docs/notes/`](docs/notes/README.md), one file per area, named in each he
   "+ Add a perturbation" adds one to the end of the run's list (`add_saved_entry`, renamed if its
   name is taken), never replacing the list as a preset does; it re-reads the folder as it opens.
   Read back through `Schema.upgrade`; what a run cannot take is passed over and named.
----
 
 ---
 
