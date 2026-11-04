@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Union
 
 import networkx as nx
-from networkx.algorithms.community import greedy_modularity_communities
 
 #: The four ways a vascular-community partition can be weighted -- shared by
 #: :func:`communities_for_weighting`/:func:`assign_vascular_communities` and
@@ -54,6 +53,18 @@ DEFAULT_MAX_NODES_EXACT = 1500
 #: An edge whose two endpoints fall in different communities gets this label
 #: instead of a domain id -- see :func:`assign_vascular_communities`.
 BOUNDARY_LABEL = "boundary"
+
+
+def greedy_modularity_partition(G: nx.Graph, weight: Optional[str] = None) -> list[frozenset]:
+    """``greedy_modularity_communities(G, weight=weight)``, with every node its
+    own community when no tie carries any weight: modularity divides by the
+    total, and networkx answers so only for an edgeless graph and only from
+    some release after 3.2. Before that (the floor is 2.8.8), and on ties that
+    all weigh 0 in every release, it raises ZeroDivisionError. Called through
+    ``nx.community`` so that a test counting partitions sees each one."""
+    if G.size(weight=weight) == 0:
+        return [frozenset([node]) for node in G]
+    return list(nx.community.greedy_modularity_communities(G, weight=weight))
 
 
 class DegenerateCommunityWeightingWarning(UserWarning):
@@ -135,11 +146,10 @@ def communities_for_weighting(
 
     Above *max_nodes_exact*, falls back to connected components (fast and
     stable, if not modular) -- same guard already used for the statistics
-    report's own community counts. Never raises on an edgeless graph:
-    ``greedy_modularity_communities`` returns every node as its own singleton
-    community in that case (confirmed empirically), which is what a
-    weighting with no populated source attribute (e.g. "resistance" before
-    haemodynamics has run) degenerates to.
+    report's own community counts. Never raises on an edgeless graph: every
+    node is its own singleton community then (:func:`greedy_modularity_partition`),
+    which is what a weighting with no populated source attribute (e.g.
+    "resistance" before haemodynamics has run) degenerates to.
     """
     if weighting not in COMMUNITY_WEIGHTINGS:
         raise ValueError(
@@ -174,7 +184,7 @@ def communities_for_weighting(
     if n_nodes == 0:
         return [], exact_method
     if n_nodes <= max_nodes_exact:
-        return list(greedy_modularity_communities(G_s, **weight_kwargs)), exact_method
+        return greedy_modularity_partition(G_s, **weight_kwargs), exact_method
     return list(nx.connected_components(G_s)), "connected_components_fallback"
 
 

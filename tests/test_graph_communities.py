@@ -144,6 +144,33 @@ def test_communities_for_weighting_degenerates_gracefully_with_no_populated_attr
     assert sorted(len(c) for c in communities) == [1, 1, 1]
 
 
+def test_a_graph_with_no_weight_to_share_is_every_node_its_own_community():
+    """Regression: networkx 2.8 to 3.2 divide by the graph's total weight and
+    raise on an edgeless graph, and every release does on ties that all weigh
+    0 (the dependency-floors CI job, 2026-11-04). Each node is its own
+    community instead, in node order, as current networkx answers an
+    edgeless graph."""
+    edgeless = nx.Graph()
+    edgeless.add_nodes_from([3, 1, 2])
+    assert gc.greedy_modularity_partition(edgeless) == [{3}, {1}, {2}]
+
+    zero = nx.Graph()
+    zero.add_edge(1, 2, analysis_weight=0.0)
+    zero.add_edge(2, 3, analysis_weight=0.0)
+    zero.add_node(9)
+    with pytest.raises(ZeroDivisionError):
+        nx.community.greedy_modularity_communities(zero, weight="analysis_weight")
+    assert gc.greedy_modularity_partition(zero, weight="analysis_weight") == [{1}, {2}, {3}, {9}]
+
+
+def test_a_graph_with_weight_is_partitioned_as_networkx_partitions_it():
+    G = nx.Graph(_two_clusters_joined_by_one_bridge())
+    assert gc.greedy_modularity_partition(G) == list(nx.community.greedy_modularity_communities(G))
+    assert gc.greedy_modularity_partition(G, weight="length") == list(
+        nx.community.greedy_modularity_communities(G, weight="length")
+    )
+
+
 def test_communities_for_weighting_does_not_warn_when_the_attribute_is_populated():
     G = _two_clusters_joined_by_one_bridge()
     with warnings.catch_warnings():

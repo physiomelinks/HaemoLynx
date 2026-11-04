@@ -8690,7 +8690,7 @@ def shared_vascular_community_partition(
             return None
         if settings["statistics_mode"] == "full":
             simple = nx.Graph(G) if G.is_multigraph() else G
-            return list(nx.community.greedy_modularity_communities(simple)), "greedy_modularity"
+            return graph.communities.greedy_modularity_partition(simple), "greedy_modularity"
         return graph.communities_for_weighting(G, "topology")
     if weighted_report and (weighting == "length" or settings["run_haemodynamics"]):
         return graph.communities_for_weighting(G, weighting)

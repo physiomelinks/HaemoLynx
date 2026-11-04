@@ -331,8 +331,8 @@ def test_unknown_view_is_refused():
         connectivity_map_html("", view="sideways")
 
 
-def test_the_module_is_valid_python_3_9():
-    """A backslash inside an f-string's braces parses on 3.12 only; on 3.9 to
+def test_the_module_is_valid_python_3_10():
+    """A backslash inside an f-string's braces parses on 3.12 only; on 3.10 and
     3.11 it stopped the whole package importing."""
     import ast
     from pathlib import Path
@@ -340,4 +340,4 @@ def test_the_module_is_valid_python_3_9():
     import haemolynx.visualization.connectivity_map as module
 
     source = Path(module.__file__).read_text(encoding="utf-8")
-    ast.parse(source, feature_version=(3, 9))
+    ast.parse(source, feature_version=(3, 10))

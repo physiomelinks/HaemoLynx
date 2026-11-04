@@ -279,13 +279,15 @@ def _spy_on_partitioning(monkeypatch):
         return original_for_weighting(graph_arg, weighting, *args, **kwargs)
 
     def _greedy(*args, **kwargs):
-        calls.append(("greedy", None))
+        # By weight: ("greedy", None) is a topology partition, the one shared.
+        calls.append(("greedy", kwargs.get("weight")))
         return original_greedy(*args, **kwargs)
 
     for module in (graph_pkg, gc, nm):
         monkeypatch.setattr(module, "communities_for_weighting", _for_weighting)
+    # Every partition goes through graph.communities.greedy_modularity_partition,
+    # which looks the function up on nx.community as it calls it.
     monkeypatch.setattr(nx.community, "greedy_modularity_communities", _greedy)
-    monkeypatch.setattr(nm, "greedy_modularity_communities", _greedy)
     return calls
 
 

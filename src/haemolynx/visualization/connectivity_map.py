@@ -87,7 +87,7 @@ def connectivity_map_html(csv_text: str, *, name: str = "", view: str = "inlet")
     data = {"csv": csv_text, "name": name, "view": view, "config": map_config()}
     title = html.escape(f"{name or 'Network connectivity'} — 2D connectivity map")
     # Escaped outside the f-string: a backslash inside an f-string's braces is
-    # Python 3.12+ only, and this package supports 3.9.
+    # Python 3.12+ only, and this package supports 3.10.
     script = map_script().replace("</script", "<\\/script")
     return f"""<!doctype html>
 <html lang="en">

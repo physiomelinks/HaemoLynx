@@ -6,11 +6,10 @@ from typing import Any, Dict, Union
 
 import numpy as np
 import networkx as nx
-from networkx.algorithms.community import greedy_modularity_communities
-
 from haemolynx.graph.communities import (
     DEFAULT_MAX_NODES_EXACT,
     communities_for_weighting,
+    greedy_modularity_partition,
     simple_graph_with_edge_attr,
 )
 
@@ -63,7 +62,7 @@ def compute_communities(G: nx.Graph):
     # resistance, geometry/length, or solved |flow|) is
     # compute_weighted_communities_summary, all three reported together by
     # compute_betweenness_and_community_measurements.
-    return list(greedy_modularity_communities(G))
+    return greedy_modularity_partition(G)
 
 
 def compute_betweenness_summary(
@@ -201,7 +200,7 @@ def compute_weighted_communities_summary(
         if n_nodes == 0:
             communities, method = [], "greedy_modularity_weighted"
         elif n_nodes <= max_nodes_exact:
-            communities = list(greedy_modularity_communities(G_s, weight="analysis_weight"))
+            communities = greedy_modularity_partition(G_s, weight="analysis_weight")
             method = "greedy_modularity_weighted"
         else:
             communities = list(nx.connected_components(G_s))

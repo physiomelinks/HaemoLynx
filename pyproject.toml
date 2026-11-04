@@ -7,7 +7,7 @@ name = "HaemoLynx"
 version = "0.1.0"
 description = "Vascular network analysis from 3D microscopy"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
@@ -27,7 +27,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -43,7 +42,7 @@ dependencies = [
     "numpy>=1.23",
     "tifffile>=2022.8.12",
     "matplotlib>=3.6",
-    "networkx>=2.8",
+    "networkx>=2.8.8",
     "scikit-image>=0.24",
     "scipy>=1.9",
     "pandas>=2.0.2",
@@ -67,9 +66,9 @@ Issues = "https://github.com/physiomelinks/HaemoLynx/issues"
 #
 # psutil is for the tests alone (the memory a process hands back, the workers
 # a pool leaves running); the library reads it only when it is there.
-dev = ["pytest", "pytest-cov", "pytest-xdist", "ruff", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'", "psutil"]
+dev = ["pytest", "pytest-cov", "pytest-xdist", "ruff", "nbconvert", "nbformat", "npe2>=0.8", "psutil"]
 notebook = ["ipykernel"]
-# The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
+# The napari panel. napari 0.8 requires Python 3.11, above this library's 3.10,
 # so this extra is installable only there -- deliberately, rather than
 # resolving to an old napari that has not been tested against.
 #

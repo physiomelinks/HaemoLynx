@@ -37,9 +37,7 @@ from haemolynx.pipeline.stages import HaemodynamicModel, run_pipeline_stages
 #: The stages a run reports, in order. Anything else is a mistake in STAGES.
 STAGE_NAMES = [stage.call for stage in STAGES if stage.call]
 
-#: Every module `haemolynx.pipeline.progress` may import. All standard library:
-#: `sys.stdlib_module_names` would say so directly, but it needs Python 3.10 and
-#: this library supports 3.9.
+#: Every module `haemolynx.pipeline.progress` may import, all standard library.
 STDLIB_IMPORTS_ALLOWED_IN_PROGRESS = {
     "__future__",
     "contextlib",

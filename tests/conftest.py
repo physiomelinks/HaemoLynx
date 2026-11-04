@@ -25,6 +25,14 @@ import pytest
 import numpy as np
 import networkx as nx
 
+# Loaded before any test runs, in pytest-xdist's controller too. The controller
+# rebuilds a worker's warning by importing the module its class lives in, from
+# that worker's own thread: two such imports at once into a package not yet
+# loaded (haemolynx.graph.communities beside another of haemolynx's) deadlock
+# on the import locks, and take the run down (Windows, -n 6, 2026-11-04).
+import haemolynx  # noqa: E402,F401
+import haemolynx.parsers  # noqa: E402,F401
+
 #: Plots produced by tests are written here rather than displayed.
 #: Covered by the `tests/plots/` .gitignore rule.
 PLOT_OUTPUT_DIR = Path(__file__).resolve().parent / "plots"

@@ -532,7 +532,13 @@ def test_the_estimate_covers_what_the_eigendecomposition_allocates():
         calc_two_point_from_laplacian_matrix_nodeID(laplacian, G, 0, n - 1)
 
     estimate = dense_solver_memory_bytes(n, "eigendecomposition")
-    assert 0.6 * estimate <= _traced_peak_bytes(run) <= 1.1 * estimate
+    peak = _traced_peak_bytes(run)
+    assert peak <= 1.1 * estimate
+    # The estimate is numpy 2.5's. Before it the eigendecomposition allocates
+    # about half as much (numpy 1.23 to 2.4 on CI), which the estimate only
+    # overstates: the warning comes early there, never late.
+    if tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 5):
+        assert 0.6 * estimate <= peak
 
 
 def test_both_dense_solvers_are_warned_about_with_what_they_need_and_the_fix(caplog):

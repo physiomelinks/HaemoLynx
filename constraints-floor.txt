@@ -8,10 +8,13 @@
 # "SetPoints argument 1: method requires a VTK object" on 0.42-0.44, which
 # failed every VTK export test.
 # pandas is at 2.0.2 and skan at 0.11.1 because skan requires that pandas.
+# networkx is at 2.8.8 because 2.8's greedy modularity let its generator's
+# StopIteration out on a disconnected graph, and its relabel_nodes read a
+# type such as str as a mapping.
 numpy==1.23.0
 scipy==1.9.0
 scikit-image==0.24.0
-networkx==2.8
+networkx==2.8.8
 pandas==2.0.2
 matplotlib==3.6.0
 tifffile==2022.8.12

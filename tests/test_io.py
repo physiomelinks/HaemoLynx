@@ -307,14 +307,23 @@ def test_an_imagej_stack_is_read_in_its_own_unit(tmp_path, unit, per_um):
 
     from haemolynx.io import load_3d_tif_with_voxel_size, read_voxel_size_xyz
 
+    from fractions import Fraction
+
     x_um, y_um, z_um = ANISOTROPIC_XYZ
     path = tmp_path / "calibrated.tif"
     description = (
         f"ImageJ=1.54f\nimages=4\nslices=4\nunit={unit}\nspacing={z_um * per_um}\nloop=false\n"
     )
+
+    def pixels_per_unit(size_um):
+        # As an exact fraction: tifffile 2022.8 and 2025.5 store a float's
+        # rational coarsely enough to put 0.4 um in cm at 0.4000007.
+        exact = 1 / (Fraction(str(size_um)) * Fraction(str(per_um)))
+        return exact.numerator, exact.denominator
+
     tifffile.imwrite(
         path, np.zeros((4, 6, 8), dtype=np.uint8),
-        resolution=(1.0 / (x_um * per_um), 1.0 / (y_um * per_um)), resolutionunit="NONE",
+        resolution=(pixels_per_unit(x_um), pixels_per_unit(y_um)), resolutionunit="NONE",
         description=description, metadata=None,
     )
 

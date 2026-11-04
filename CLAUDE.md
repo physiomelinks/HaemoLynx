@@ -426,7 +426,7 @@ python scripts/install_git_hooks.py   # bring back local-only files a pull delet
 On Windows the venv's interpreter is `.venv\Scripts\python.exe`; run tests as
 `.\.venv\Scripts\python.exe -m pytest ...` (a bare `python` may not be on `PATH`).
 
-- **Python:** ≥ 3.9 for the library (CI matrix: 3.9, 3.10, 3.11, 3.12); the napari panel needs 3.11+
+- **Python:** ≥ 3.10 for the library (CI matrix: 3.10, 3.11, 3.12); the napari panel needs 3.11+
 - **Dependencies:** `pyproject.toml` only — there is no `requirements.txt`. Extras: `dev`
   (pytest, nbconvert, nbformat, npe2), `notebook` (ipykernel, for running the tutorial
   interactively), `napari` (napari with PyQt6, magicgui, npe2 — the GUI panel) and
@@ -497,7 +497,7 @@ push never cancels the weekly run. Seven jobs:
   no formatter: `ruff format` would rewrite most of the codebase, which is Harvey's decision.
   `tutorials/pipeline_tutorial.py` and the notebook are excluded; `__init__.py` re-exports are
   exempt from `F401`.
-- **`pytest`** — `pip install -e .[dev]` and `pytest` across a Python 3.9 / 3.10 / 3.11 / 3.12 matrix
+- **`pytest`** — `pip install -e .[dev]` and `pytest` across a Python 3.10 / 3.11 / 3.12 matrix
   (`fail-fast: false`, so one version failing still reports the others). The 3.11 run measures
   line coverage of `src/haemolynx` without `gui/` (`[tool.coverage]`, no threshold) into the job
   summary and a `coverage-xml` artifact: 92.7% on the not-slow subset at `2e59fb68`.

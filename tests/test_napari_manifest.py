@@ -173,7 +173,7 @@ def test_the_manifest_is_declared_as_package_data():
 
 
 def test_napari_is_an_extra_not_a_dependency():
-    """napari needs Python 3.11; the library supports 3.9 and must keep doing so."""
+    """napari needs Python 3.11; the library supports 3.10 and must keep doing so."""
     text = PYPROJECT.read_text(encoding="utf-8")
     runtime = text.split("dependencies = [", 1)[1].split("]", 1)[0]
     assert "napari" not in runtime, "napari must not be a runtime dependency"

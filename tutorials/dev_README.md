@@ -21,7 +21,7 @@ everything after that.
 | `napari-plugin` | the panel, for an environment that already has a binding |
 | `notebook` | the Jupyter kernel for the tutorial notebook |
 
-Python 3.9 or newer for the library; **3.11+ for the napari panel**, which is
+Python 3.10 or newer for the library; **3.11+ for the napari panel**, which is
 napari's floor rather than ours.
 
 ## Testing
@@ -135,7 +135,7 @@ deliberately different in how easy they are:
 | Real | push a tag `vX.Y.Z` | PyPI | **no** |
 
 Both build the wheel and sdist, run `twine check`, then install what was built
-into an empty environment on 3.9 and 3.12 and use it from a directory that is
+into an empty environment on 3.10 and 3.12 and use it from a directory that is
 not the repository — so a packaging mistake is caught before the upload rather
 than by whoever installs it next. The suite runs against `src/` and cannot see
 one. A tagged run additionally refuses to publish if the tag and the version in

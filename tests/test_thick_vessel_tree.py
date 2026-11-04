@@ -21,6 +21,7 @@ import tracemalloc
 import networkx as nx
 import numpy as np
 import pytest
+import skimage
 from scipy.ndimage import distance_transform_edt, generate_binary_structure, label
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
@@ -305,7 +306,13 @@ _IN_RAM_DIGESTS = {
     "ridge-cross": "5873e3d93c570434",
 }
 
+#: The digests are scikit-image 0.26's skeletons. 0.24 (the floor) and 0.25
+#: (the newest for Python 3.10) draw some of them otherwise (CI, 2026-11-04),
+#: so there they are not compared; everything else still is.
+_DIGESTS_HOLD = tuple(int(part) for part in skimage.__version__.split(".")[:2]) >= (0, 26)
 
+
+@pytest.mark.skipif(not _DIGESTS_HOLD, reason="the digests are scikit-image 0.26's skeletons")
 @pytest.mark.parametrize("large_stack_tree", [False, True])
 def test_the_in_ram_skeleton_and_tree_are_what_they_were(large_stack_tree):
     """Without the low-RAM option the setting does nothing."""
@@ -345,7 +352,8 @@ def test_with_the_setting_a_small_network_keeps_its_low_ram_skeleton(tmp_path, m
 
     assert np.array_equal(low_ram_thick, plain_thick)
     assert np.array_equal(low_ram, plain)
-    assert _digest(plain) == _IN_RAM_DIGESTS[f"gated-{case}"]
+    if _DIGESTS_HOLD:
+        assert _digest(plain) == _IN_RAM_DIGESTS[f"gated-{case}"]
 
 
 def test_with_the_setting_a_large_component_takes_the_bucketed_walk(tmp_path, monkeypatch):

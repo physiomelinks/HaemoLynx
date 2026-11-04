@@ -666,7 +666,9 @@ def test_intensity_cost_is_cheap_on_bright_voxels_and_dear_on_dark_ones():
     window = field[0:1, 0:25, 0:35]
     assert window.shape == (1, 25, 35)
     assert window.min() == pytest.approx(1.0)
-    assert window.max() <= 1.0 / 0.01 + 1e-9
+    # Older numpy (1.23) floors the brightness in float32, at 0.0099999998,
+    # so the dearest voxel costs 100.0000022 there.
+    assert window.max() <= (1.0 / 0.01) * (1 + 1e-6)
     assert window[0, 0, 20] == pytest.approx(1.0)  # on the L
     assert window[0, 10, 20] > 10.0  # in the dark middle
     with pytest.raises(ValueError, match="3D"):
