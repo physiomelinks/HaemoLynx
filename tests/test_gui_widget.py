@@ -1060,7 +1060,7 @@ def test_scaling_the_layer_does_not_change_what_the_run_is_told(
     assert values["voxel_size_policy"] != "override"
 
 
-def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
+def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel, tmp_path):
     """Shared ilastik rows move between Input and Boundaries.
 
     Showing a magicgui row with no Qt parent opens a top-level window next to
@@ -1106,6 +1106,13 @@ def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
 
     # The block's own Advanced button open, so every shared row can show.
     widget._haemolynx_advanced["shared:ilastik"].toggle(True)
+    # The main ilastik hosts the rows only with a raw image to segment.
+    import numpy as np
+    import tifffile
+
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, np.zeros((4, 8, 8), dtype=np.uint8))
+    rows["raw_image_path"].value = raw
     rows["use_ilastik_segmentation"].value = True
     QApplication.processEvents()
     select_tab("Input")
