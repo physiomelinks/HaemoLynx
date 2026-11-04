@@ -1356,8 +1356,8 @@ def find_broken_vessels(
     ends = classify_dead_ends(G, extent_um=extent, support=support, stub_radius_multiple=stub_radius_multiple)
 
     def runs_out(node: Any) -> bool:
-        # The face test itself: an end of a piece with no junction is an
-        # island end first, whether or not it leaves the image.
+        # The face test itself as well as the kind: a kind a person set (a
+        # blind end, say) is kept whether or not the tip leaves the image.
         end = ends.get(node)
         return end is not None and (end.kind == LEAVES_IMAGE or leaves_image(
             end.tip_um, extent, heading=end.heading, support=support, tip_radius_um=end.tip_radius_um,

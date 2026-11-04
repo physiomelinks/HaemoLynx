@@ -426,7 +426,10 @@ def write_resume_artefacts(
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         existed = skeleton_resume_path(output_dir, stem).is_file()
-        skeleton_path = ensure_skeleton_artefact(replay_groups(snapshot), output_dir, stem)
+        made = next((item for item in snapshot.checkpoints if item.stage == "skeletonise"), None)
+        skeleton_path = ensure_skeleton_artefact(
+            replay_groups(snapshot), output_dir, stem, grid=getattr(made, "skeleton_grid", None)
+        )
     except OSError as error:
         logger.warning("Could not write the loaded run's skeleton to %s: %s", output_dir, error)
         return (

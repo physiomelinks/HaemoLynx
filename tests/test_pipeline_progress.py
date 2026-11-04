@@ -944,3 +944,25 @@ def test_stop_after_must_name_a_stage():
 def test_stop_after_cannot_come_before_the_start():
     with pytest.raises(ValueError, match="comes before"):
         _run(start_from="post_process", stop_after="solve")
+
+
+def test_a_resumed_graph_never_replaces_a_network_the_run_built(stubbed, monkeypatch):
+    """Regression: a resume carrying a graph replaced build_network's output
+    whatever stage the run started at, so a script resuming at graph
+    building had the network it had just built swapped for the old one."""
+    from types import SimpleNamespace
+
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    _recording_stages(monkeypatch)
+    built, old = nx.MultiGraph(), nx.MultiGraph()
+    built.add_edge("built", "here")
+    monkeypatch.setattr(stages, "build_network", lambda *_a, **_k: SimpleNamespace(graph=built))
+
+    result = run_pipeline_stages(
+        {"use_ilastik_segmentation": False}, schema=None, start_from="build_network",
+        resume=PipelineResume(start_from="build_network", graph=old), stop_after="build_network",
+    )
+
+    assert result is built

@@ -117,9 +117,10 @@ def test_load_binary_mask_rejects_unsupported_format(tmp_path):
         load_binary_mask_and_voxel_size(path, description="pericyte mask")
 
 
-def test_load_binary_mask_rejects_non_3d_volume(tmp_path):
-    path = tmp_path / "flat.tif"
-    tifffile.imwrite(str(path), np.zeros((4, 4), dtype=np.uint8))
+def test_load_binary_mask_rejects_a_volume_of_more_than_three_axes(tmp_path):
+    # A 2D mask is read as one plane (test_io.py's 2D mask test).
+    path = tmp_path / "stack.tif"
+    tifffile.imwrite(str(path), np.zeros((2, 2, 4, 4), dtype=np.uint8))
     with pytest.raises(ValueError, match="Expected a 3D mask"):
         load_binary_mask_and_voxel_size(path)
 

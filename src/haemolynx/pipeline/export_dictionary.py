@@ -329,6 +329,11 @@ FILES: tuple[OutputFile, ...] = (
                 "the settings deciding the region), or null with thickness-gated "
                 "skeletonisation off.",
             ),
+            _c(
+                "large_stack_thick_tree", "-",
+                "Whether the thick vessels' centreline tree was the large-stack one "
+                "(true) or the exact one (false); only with thickness-gated skeletonisation.",
+            ),
         ),
     ),
     # -- statistics ---------------------------------------------------------
