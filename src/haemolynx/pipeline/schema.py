@@ -4562,8 +4562,9 @@ SCHEMA = Schema(
         ),
         # This and cartwheel_hub_tangent_length_um are read by the guard and by
         # cluster_collapse_method=direction_aware alike. A `requires` holds all
-        # of its entries and can name only one of the two, so they carry none:
-        # gated on the guard, the panel hid them from a direction-aware run.
+        # of its entries and can name only one of the two, so they name
+        # neither, only the segmented image both readers need: gated on the
+        # guard, the panel hid them from a direction-aware run.
         Setting(
             name="cartwheel_hub_min_degree",
             kind="int",
