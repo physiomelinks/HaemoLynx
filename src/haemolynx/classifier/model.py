@@ -33,8 +33,36 @@ from .forest import FOREST_MAX_DEPTH, FOREST_TREES, Forest, train_forest
 PURPOSES: dict[str, tuple[str, ...]] = {
     "vessels": ("Background", "Vessel"),
     "vessel_classes": ("Background", "Arteriole", "Venule"),
+    "vessels_and_classes": ("Background", "Vessel", "Arteriole", "Venule"),
     "pericytes": ("Background", "Pericyte"),
     "blocks": ("Background", "Block"),
+    "cells": ("Background", "Cell"),
+}
+
+#: The mask each purpose can write, and the labels it holds. A combined
+#: classifier (``vessels_and_classes``, a vessel neither arteriole nor venule
+#: painted "Vessel") makes the main vessel mask of every vessel label, so an
+#: arteriole is in the vessel mask and in the arteriole mask both.
+MASK_LABELS: dict[str, dict[str, tuple[str, ...]]] = {
+    "vessels": {"Vessel": ("Vessel",)},
+    "vessel_classes": {"Arteriole": ("Arteriole",), "Venule": ("Venule",)},
+    "vessels_and_classes": {
+        "Vessel": ("Vessel", "Arteriole", "Venule"),
+        "Arteriole": ("Arteriole",),
+        "Venule": ("Venule",),
+    },
+    "pericytes": {"Pericyte": ("Pericyte",)},
+    "blocks": {"Block": ("Block",)},
+    "cells": {"Cell": ("Cell",)},
+}
+
+#: The purposes a classifier for each job may have.
+JOB_PURPOSES: dict[str, tuple[str, ...]] = {
+    "vessels": ("vessels", "vessels_and_classes"),
+    "vessel_classes": ("vessel_classes", "vessels_and_classes"),
+    "pericytes": ("pericytes",),
+    "blocks": ("blocks",),
+    "cells": ("cells",),
 }
 
 #: The label each purpose writes the main mask from.
@@ -132,6 +160,18 @@ class PixelClassifier:
 
     def label_index(self, name: str) -> int:
         return self.labels.index(name)
+
+    def mask_labels(self, mask: str) -> tuple[int, ...]:
+        """The label indices mask *mask* holds (:data:`MASK_LABELS`), those
+        the classifier was trained on; raises for a mask it cannot make."""
+        masks = MASK_LABELS[self.purpose]
+        if mask not in masks:
+            raise ValueError(f"A {self.purpose} classifier makes no {mask} mask; it makes {', '.join(masks)}.")
+        trained = set(self.trained_labels())
+        found = tuple(self.label_index(name) for name in masks[mask] if name in trained)
+        if not found:
+            raise ValueError(f"This classifier was never shown any {' or '.join(masks[mask])} voxels.")
+        return found
 
     def trained_labels(self) -> list[str]:
         """The labels with at least one training voxel, in label order."""

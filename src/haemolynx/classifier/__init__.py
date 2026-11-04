@@ -12,14 +12,19 @@ Training needs scikit-learn; reading and applying a classifier needs only
 NumPy and SciPy.
 """
 from .apply import (
+    Job,
     RawChannels,
     classifier_output_current,
     classifier_output_is_current,
     classifier_provenance,
+    classify_slabs,
     classify_volume,
     read_raw_channels,
     segment_with_classifier,
+    segment_with_classifiers,
+    shared_spec,
 )
+from .lazy import LazyTiffChannel, can_read_lazily
 from .features import (
     DEFAULT_SCALES_UM,
     SCALE_CHOICES_UM,
@@ -33,6 +38,8 @@ from .features import (
 from .forest import Forest, scikit_learn_available, train_forest
 from .model import (
     FILE_SUFFIX,
+    JOB_PURPOSES,
+    MASK_LABELS,
     PURPOSES,
     VESSEL_LABEL,
     PixelClassifier,
@@ -47,20 +54,26 @@ from .model import (
 __all__ = [
     "DEFAULT_SCALES_UM",
     "FILE_SUFFIX",
+    "JOB_PURPOSES",
+    "MASK_LABELS",
     "PURPOSES",
     "SCALE_CHOICES_UM",
     "VESSEL_LABEL",
     "FeatureSpec",
     "Forest",
+    "Job",
+    "LazyTiffChannel",
     "PixelClassifier",
     "RawChannels",
     "TrainingImage",
     "TrainingVoxels",
     "box_features",
     "boxes",
+    "can_read_lazily",
     "classifier_output_current",
     "classifier_output_is_current",
     "classifier_provenance",
+    "classify_slabs",
     "classify_volume",
     "feature_halo",
     "features_at",
@@ -72,5 +85,7 @@ __all__ = [
     "save_classifier",
     "scikit_learn_available",
     "segment_with_classifier",
+    "segment_with_classifiers",
+    "shared_spec",
     "train_forest",
 ]

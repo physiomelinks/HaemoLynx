@@ -119,6 +119,22 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "The classifier file, saved from the training window, that finds capillary blocks in the "
         "raw image. Each blob it finds is one block"
     ),
+    "use_pixel_classifier_cell_segmentation": (
+        "Make the cell mask from the raw image with a classifier trained in this panel, instead "
+        "of reading a cell mask file"
+    ),
+    "pixel_classifier_cell_path": (
+        "The classifier file, saved from the training window, that finds cells in the raw image. "
+        "Each blob it finds is one cell"
+    ),
+    "use_pixel_classifier_3d_vessel_segmentation": (
+        "Make the vessel mask the cell distances are measured to from the raw image, with a "
+        "classifier trained in this panel"
+    ),
+    "pixel_classifier_3d_vessel_path": (
+        "The classifier file, saved from the training window, that finds the vessels the cell "
+        "distances are measured to"
+    ),
     "use_pixel_classifier_large_vessel_segmentation": (
         "Segment the large arteriole and venule masks from the raw image with a classifier "
         "trained in this panel, instead of reading mask files"

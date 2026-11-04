@@ -4794,7 +4794,31 @@ SCHEMA = Schema(
             default=None,
             help="Read this cell mask, the input image's shape, for the 3D distance measurement",
             section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
+            requires=("measurement_3d_to_cell_mask", "!use_pixel_classifier_cell_segmentation"),
+            must_exist=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_cell_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the cell mask from the raw image with a classifier trained in HaemoLynx's "
+                "own training window, instead of reading cell_mask_path. Written into output_dir "
+                "as {raw image stem}_cells_segmented.tif; each blob it finds is one cell"
+            ),
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask", "raw_image_path"),
+        ),
+        Setting(
+            name="pixel_classifier_cell_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the cells with this classifier (.haemoclf), trained in the panel to tell "
+                "cells from background"
+            ),
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask", "use_pixel_classifier_cell_segmentation"),
             must_exist=True,
         ),
         Setting(
@@ -4812,7 +4836,7 @@ SCHEMA = Schema(
             default=None,
             help="Use this vessel mask for the 3D distance measurement instead of the run's segmented image",
             section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
+            requires=("measurement_3d_to_cell_mask", "!use_pixel_classifier_3d_vessel_segmentation"),
             # Optional: the placeholder lets it be unset (the run's own
             # segmentation is measured to); one that is set must be there.
             must_exist=True,
@@ -4832,6 +4856,33 @@ SCHEMA = Schema(
             help="Read this dataset from the 3D-distance vessel mask when it is an H5 file",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            advanced=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_3d_vessel_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the 3D distance measurement's vessel mask from the raw image with a "
+                "classifier trained in HaemoLynx's own training window, instead of reading "
+                "measurement_3d_vessel_mask_path or using the run's segmented image. Written "
+                "into output_dir as {raw image stem}_vessels_3d_segmented.tif"
+            ),
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask", "raw_image_path"),
+            advanced=True,
+        ),
+        Setting(
+            name="pixel_classifier_3d_vessel_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the vessels the 3D distances are measured to with this classifier "
+                "(.haemoclf), one trained to find vessels, or vessels with arterioles and venules"
+            ),
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask", "use_pixel_classifier_3d_vessel_segmentation"),
+            must_exist=True,
             advanced=True,
         ),
         Setting(

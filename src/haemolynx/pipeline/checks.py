@@ -1778,8 +1778,18 @@ def pixel_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str, 
 
         for word in object_masks_made(settings):
             name = OBJECT_MASKS[word].classifier_setting
-            found.append((name, settings.get(name), word))
+            found.append((name, settings.get(name), OBJECT_MASKS[word].job))
     return found
+
+
+#: The mask each job's classifier must make (``classifier.MASK_LABELS``).
+_JOB_MASKS = {
+    "vessels": "Vessel",
+    "vessel_classes": "Arteriole",
+    "pericytes": "Pericyte",
+    "blocks": "Block",
+    "cells": "Cell",
+}
 
 
 def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
@@ -1791,7 +1801,7 @@ def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
     if not classifiers:
         return report
     from haemolynx.classifier import read_classifier_record
-    from haemolynx.classifier.model import PURPOSES
+    from haemolynx.classifier.model import JOB_PURPOSES, MASK_LABELS
     from haemolynx.io.channels import tiff_channels
 
     raw = settings.get("raw_image_path")
@@ -1807,18 +1817,18 @@ def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
         except (OSError, ValueError) as error:
             report.add_error(f"{name}: {error}")
             continue
-        if record.get("purpose") != purpose:
-            wanted = " and ".join(PURPOSES[purpose][1:])
+        mask = _JOB_MASKS[purpose]
+        if record.get("purpose") not in JOB_PURPOSES[purpose]:
             report.add_error(
                 f"{name}: {Path(path).name} was trained to find "
-                f"{' and '.join(record.get('labels', [])[1:])}, not {wanted}. Fix: train one for this "
-                "job in the training window."
+                f"{' and '.join(record.get('labels', [])[1:])}, so it makes no {mask} mask. Fix: train "
+                "one for this job in the training window."
             )
             continue
         counts = record.get("voxels_per_label") or {}
-        found = PURPOSES[purpose][1]
-        if not counts.get(found):
-            report.add_error(f"{name}: {Path(path).name} was never shown any {found} voxels.")
+        labels = MASK_LABELS[record["purpose"]][mask]
+        if not any(counts.get(label) for label in labels):
+            report.add_error(f"{name}: {Path(path).name} was never shown any {' or '.join(labels)} voxels.")
             continue
         channels = [c for c in (record.get("spec") or {}).get("channels", [None]) if c is not None]
         if channel_count is not None:

@@ -590,29 +590,17 @@ def ilastik_output_paths(settings: Mapping[str, Any]) -> list[Path]:
 
 def classifier_output_paths(settings: Mapping[str, Any]) -> list[Path]:
     """The masks the HaemoLynx classifier writes in ``output_dir``, each with
-    its record beside it: the main image's while it segments it, and each
-    vessel-mask role's while it makes them (arteriole and venule, or one
-    global mask for a classifier never shown a venule)."""
+    its record beside it (``stages.classifier_requests``): the main image's,
+    each vessel-mask role's (arteriole and venule, or one global mask for a
+    classifier never shown a venule), and each pericyte, block, cell or
+    3D-distance vessel mask something reads."""
     from haemolynx.io.ilastik import sidecar_path
-    from haemolynx.io.vessel_masks import classifier_finds_venules, ilastik_vessel_mask_output_path
-    from haemolynx.pipeline.naming import CLASSIFIER_OUTPUT_SUFFIX, classifier_segmented_path, classifier_segments
+    from haemolynx.pipeline.stages import classifier_requests
 
     files: list[Path] = []
-    raw = settings.get("raw_image_path")
-    if raw in (None, "") or network_is_synthetic(settings):
-        return files
-    if classifier_segments(settings):
-        main = Path(os.path.abspath(classifier_segmented_path(settings)))
-        files.extend((main, sidecar_path(main)))
-    folder = settings.get("output_dir") or "."
-    for role, names in VESSEL_MASK_SETTINGS.items():
-        if not vessel_mask_classifier_in_use(settings, role):
-            continue
-        venules = classifier_finds_venules(settings.get(names["classifier_path"]))
-        for vessel_class in (("arteriole", "venule") if venules else ("global",)):
-            mask = Path(os.path.abspath(
-                ilastik_vessel_mask_output_path(folder, raw, role, vessel_class, CLASSIFIER_OUTPUT_SUFFIX)
-            ))
+    for _classifier, outputs in classifier_requests(settings):
+        for output in outputs.values():
+            mask = Path(os.path.abspath(output))
             files.extend((mask, sidecar_path(mask)))
     return files
 

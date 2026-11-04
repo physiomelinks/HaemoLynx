@@ -1173,6 +1173,10 @@ TRAIN_CLASSIFIER_TOOLTIP = (
 
 #: The classifier training window's controls.
 CLASSIFIER_TRAINING_TOOLTIPS: dict[str, str] = {
+    "job": (
+        "What the classifier is trained to find. Vessels, arterioles and venules together makes "
+        "the vessel mask and the arteriole and venule masks from one set of strokes"
+    ),
     "labels": (
         "The label your brush paints. Paint a few strokes of each, in several places: "
         "clear examples teach more than many"

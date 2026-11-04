@@ -334,7 +334,7 @@ def test_the_raw_image_is_segmented_into_a_mask_with_its_record(tmp_path, caplog
     stamp = output.stat().st_mtime_ns
     caplog.set_level("INFO")
     segment_with_classifier(raw, classifier_path, {"Vessel": output})
-    assert output.stat().st_mtime_ns == stamp and "Reusing the classifier's segmentation" in caplog.text
+    assert output.stat().st_mtime_ns == stamp and "Reusing the segmentation of raw.tif" in caplog.text
 
 
 def test_another_classifier_segments_again(tmp_path):
@@ -447,17 +447,31 @@ def test_painting_trains_on_the_same_features_as_listing_the_strokes():
     assert np.array_equal(live.painted_labels(), labels)
 
 
-def test_the_plane_cache_keeps_within_its_budget():
-    from haemolynx.classifier.preview import LiveClassifier
+def test_the_feature_cache_keeps_within_its_budget():
+    from haemolynx.classifier.preview import PLANES_PER_SLAB, LiveClassifier
 
     volume, _ = tube_volume()
     spec = FeatureSpec(scales_um=(1.0,))
-    per_plane = volume.shape[1] * volume.shape[2] * spec.n_features * 4
+    per_slab = PLANES_PER_SLAB * volume.shape[1] * volume.shape[2] * spec.n_features * 4
     live = LiveClassifier(new_classifier("vessels", scales_um=(1.0,)), [volume], VOXEL, path="t.tif",
-                          cache_bytes=3 * per_plane)
+                          cache_bytes=2 * per_slab)
     for index in range(volume.shape[0]):
         live.plane_features(0, index)
-        assert len(live._planes) * per_plane <= 3 * per_plane
+        assert sum(tile.nbytes for tile in live._tiles.values()) <= 2 * per_slab
+
+
+def test_the_preview_classifies_only_the_window_on_screen():
+    from haemolynx.classifier.preview import LiveClassifier, clip_window
+
+    volume, truth = tube_volume()
+    live = LiveClassifier(new_classifier("vessels", scales_um=(1.0, 2.0)), [volume], VOXEL, path="t.tif")
+    classifier = live.train(painted(truth))
+    whole = classify_volume([volume], VOXEL, classifier, workers=1)
+    window = ((5, 30), (11, 40))
+    assert np.array_equal(live.predict_plane(0, 7, window=window), whole[7, 5:30, 11:40])
+    assert np.array_equal(live.predict_plane(2, 9, window=((0, 20), (3, 33))), whole[0:20, 3:33, 9])
+    assert clip_window(((0, 4000), (0, 4000)), (4000, 4000), limit=1000 * 1000) == ((1500, 2500), (1500, 2500))
+    assert clip_window(((-5, 9), (2, 3)), (8, 8)) == ((0, 8), (2, 3))
 
 
 def test_a_label_the_classifier_never_saw_is_refused(tmp_path):

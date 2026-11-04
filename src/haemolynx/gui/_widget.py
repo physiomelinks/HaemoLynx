@@ -10677,12 +10677,14 @@ class _ClassifierTrainingWindow:
 
     Paint labels on the run's raw image in a strokes layer; with Live
     update on, every stroke and every move through the image trains the
-    forest again and classifies only the plane in view
+    forest again and classifies only the part of the plane on screen
     (``classifier.preview.LiveClassifier``), as ilastik does. Save classifier
     writes it and points the panel's row for this job at it; Segment whole
-    image classifies the whole raw image now, as the run would, and adds it to
-    the viewer. The heavy work runs on a worker thread, one job at a time; a
-    request that comes while one runs is done once it ends.
+    image segments the whole raw image now, into the files the run would
+    write and then uses, and shows them. A large image (or any under the
+    low-RAM option) is read lazily and painted sparsely: nothing the size of
+    the image is ever held. The heavy work runs on a worker thread, one job
+    at a time; a request that comes while one runs is done once it ends.
 
     *synchronous* runs every job on the calling thread (the tests).
     """
@@ -10703,24 +10705,25 @@ class _ClassifierTrainingWindow:
         from qtpy.QtWidgets import (
             QButtonGroup,
             QCheckBox,
+            QComboBox,
             QGroupBox,
             QHBoxLayout,
             QLabel,
             QLineEdit,
             QPushButton,
-            QRadioButton,
             QVBoxLayout,
             QWidget,
         )
 
-        from haemolynx.classifier import PURPOSES, SCALE_CHOICES_UM, load_classifier
+        from haemolynx.classifier import SCALE_CHOICES_UM, load_classifier
         from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
         from haemolynx.gui.classifier_training import (
-            CLASSIFIER_ROWS,
             JOB_TITLES,
+            PURPOSE_TITLES,
             default_channels,
             default_classifier_path,
             default_scales,
+            purposes_for,
         )
         from haemolynx.io import tiff_channels
 
@@ -10730,8 +10733,7 @@ class _ClassifierTrainingWindow:
         self.viewer = viewer
         self.values = dict(values)
         self.row = row
-        self.purpose = CLASSIFIER_ROWS[row]
-        self.labels = PURPOSES[self.purpose]
+        self.purposes = purposes_for(row)
         self.raw_path = Path(raw)
         self.on_saved = on_saved
         self.synchronous = synchronous
@@ -10740,8 +10742,9 @@ class _ClassifierTrainingWindow:
         self._busy = False
         self._queued: Callable[[], None] | None = None
         self._retrain = True
-        self._shown_plane: tuple[int, int] | None = None
+        self._shown: tuple[int, int, Any] | None = None
         self.strokes = self.preview = self.segmentation = self.image = None
+        self.segmentations: dict[str, Any] = {}
         self.channel_count = max(1, len(tiff_channels(self.raw_path)))
 
         existing = values.get(row)
@@ -10751,8 +10754,9 @@ class _ClassifierTrainingWindow:
                 loaded = load_classifier(existing)
             except (OSError, ValueError):
                 loaded = None
-            if loaded is not None and loaded.purpose == self.purpose:
+            if loaded is not None and loaded.purpose in self.purposes:
                 self.loaded = loaded
+        self.purpose = self.loaded.purpose if self.loaded is not None else self.purposes[0]
         if self.loaded is not None:
             scales, channels = self.loaded.spec.scales_um, self.loaded.spec.channels
             path = Path(existing)
@@ -10766,17 +10770,21 @@ class _ClassifierTrainingWindow:
         layout = QVBoxLayout(self.window)
         layout.addWidget(QLabel(f"Raw image: {self.raw_path.name}"))
 
-        label_box = QGroupBox("Paint")
-        label_layout = QHBoxLayout(label_box)
+        self.job_box = QComboBox()
+        for purpose in self.purposes:
+            self.job_box.addItem(PURPOSE_TITLES[purpose], purpose)
+        self.job_box.setCurrentIndex(self.purposes.index(self.purpose))
+        self.job_box.setToolTip(TIPS["job"])
+        self.job_box.currentIndexChanged.connect(lambda *_a: self._purpose_changed())
+        self.job_box.setVisible(len(self.purposes) > 1)
+        layout.addWidget(self.job_box)
+
+        self.label_box = QGroupBox("Paint")
+        self.label_layout = QHBoxLayout(self.label_box)
         self.label_group = QButtonGroup(self.window)
-        for index, name in enumerate(self.labels):
-            button = QRadioButton(name)
-            button.setToolTip(TIPS["labels"])
-            self.label_group.addButton(button, index + 1)
-            label_layout.addWidget(button)
-        self.label_group.button(min(2, len(self.labels))).setChecked(True)
         self.label_group.idClicked.connect(self._choose_label)
-        layout.addWidget(label_box)
+        self._label_buttons()
+        layout.addWidget(self.label_box)
 
         preview_row = QHBoxLayout()
         self.live_box = QCheckBox("Live update")
@@ -10858,6 +10866,28 @@ class _ClassifierTrainingWindow:
     def is_open(self) -> bool:
         return bool(self.window.isVisible())
 
+    @property
+    def labels(self) -> tuple[str, ...]:
+        from haemolynx.classifier import PURPOSES
+
+        return PURPOSES[self.purpose]
+
+    def _label_buttons(self) -> None:
+        from qtpy.QtWidgets import QRadioButton
+
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
+
+        for button in list(self.label_group.buttons()):
+            self.label_group.removeButton(button)
+            self.label_layout.removeWidget(button)
+            button.deleteLater()
+        for index, name in enumerate(self.labels):
+            button = QRadioButton(name)
+            button.setToolTip(TIPS["labels"])
+            self.label_group.addButton(button, index + 1)
+            self.label_layout.addWidget(button)
+        self.label_group.button(min(2, len(self.labels))).setChecked(True)
+
     def _set_enabled(self, enabled: bool) -> None:
         for widget in (self.update_button, self.save_button, self.segment_button):
             widget.setEnabled(enabled)
@@ -10931,6 +10961,8 @@ class _ClassifierTrainingWindow:
         return [self._volumes[c] for c in channels]
 
     def _make_live(self, scales, channels):
+        import os
+
         from haemolynx.classifier import new_classifier
         from haemolynx.classifier.preview import LiveClassifier
 
@@ -10940,12 +10972,13 @@ class _ClassifierTrainingWindow:
             raise ValueError("Tick at least one channel.")
         volumes = self._volumes_for(channels)
         loaded = self.loaded
-        if loaded is not None and loaded.spec.scales_um == tuple(sorted(scales)) and loaded.spec.channels == tuple(channels):
+        if (
+            loaded is not None and loaded.purpose == self.purpose
+            and loaded.spec.scales_um == tuple(sorted(scales)) and loaded.spec.channels == tuple(channels)
+        ):
             classifier = loaded
         else:
             classifier = new_classifier(self.purpose, scales_um=scales, channels=channels)
-        import os
-
         workers = max(1, min(8, (os.cpu_count() or 2) - 1))
         return LiveClassifier(classifier, volumes, self.voxel_size_zyx, path=str(self.raw_path), workers=workers)
 
@@ -10953,10 +10986,12 @@ class _ClassifierTrainingWindow:
         return self._make_live(*self._spec_choice())
 
     def _loaded(self, live) -> None:
+        from haemolynx.classifier.sparse import SparseLabels
         from haemolynx.gui.classifier_training import (
             IMAGE_LAYER,
             PREVIEW_LAYER,
             STROKES_LAYER,
+            is_large,
             layer_name,
             result_colours,
             stroke_colours,
@@ -10965,24 +11000,33 @@ class _ClassifierTrainingWindow:
         self.live = live
         scale = tuple(float(v) for v in live.voxel_size_zyx)
         shape = live.shape
+        self.sparse = is_large(shape, self.values)
         if self.image is None:
             self.image = self.viewer.add_image(
-                live.volumes[0], name=layer_name(IMAGE_LAYER, self.row), scale=scale, colormap="gray"
+                live.volumes[0], name=layer_name(IMAGE_LAYER, self.row), scale=scale, colormap="gray",
+                contrast_limits=list(live.ranges[0]),
             )
         if self.preview is None:
-            self.preview = self._labels_layer(np.zeros(shape, np.uint8), PREVIEW_LAYER, result_colours(self.purpose), scale)
+            blank = SparseLabels(shape) if self.sparse else np.zeros(shape, np.uint8)
+            self.preview = self._labels_layer(blank, PREVIEW_LAYER, result_colours(self.purpose), scale)
             self.preview.opacity = 0.5
         if self.strokes is None:
-            self.strokes = self._labels_layer(live.painted_labels(), STROKES_LAYER, stroke_colours(self.purpose), scale)
+            self.strokes = self._labels_layer(
+                live.painted_labels(sparse=self.sparse), STROKES_LAYER, stroke_colours(self.purpose), scale
+            )
             self.strokes.brush_size = 3
             self.strokes.mode = "paint"
             self.strokes.events.paint.connect(lambda *_a: self._changed(retrain=True))
             self.viewer.dims.events.current_step.connect(lambda *_a: self._changed(retrain=False))
             self.viewer.dims.events.order.connect(lambda *_a: self._changed(retrain=False))
+            self.viewer.camera.events.center.connect(lambda *_a: self._changed(retrain=False))
+            self.viewer.camera.events.zoom.connect(lambda *_a: self._changed(retrain=False))
         self.strokes.selected_label = self.label_group.checkedId()
         self.viewer.layers.selection.active = self.strokes
         self._set_enabled(True)
-        painted = int(np.count_nonzero(self.strokes.data))
+        from haemolynx.classifier.sparse import painted_points
+
+        painted = len(painted_points(self.strokes.data)[0])
         self._say(
             f"Paint a few strokes of each label on {self.raw_path.name}"
             + (f" ({painted} voxels painted before)." if painted else ".")
@@ -10990,12 +11034,12 @@ class _ClassifierTrainingWindow:
         if painted:
             self.update(retrain=True)
 
-    def _labels_layer(self, data, kind: str, colours, scale):
+    def _labels_layer(self, data, kind: str, colours, scale, *, name: str | None = None):
         from napari.utils.colormaps import DirectLabelColormap
 
         from haemolynx.gui.classifier_training import layer_name
 
-        name = layer_name(kind, self.row)
+        name = name or layer_name(kind, self.row)
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
         layer = self.viewer.add_labels(data, name=name, scale=scale)
@@ -11007,8 +11051,33 @@ class _ClassifierTrainingWindow:
             self.strokes.selected_label = int(label)
             self.strokes.mode = "paint"
 
+    def _purpose_changed(self) -> None:
+        """Another job (e.g. vessels, arterioles and venules together): the
+        labels change, strokes keep theirs by name, the classifier starts anew."""
+        from napari.utils.colormaps import DirectLabelColormap
+
+        from haemolynx.classifier.sparse import painted_points
+        from haemolynx.gui.classifier_training import remap_strokes, result_colours, stroke_colours
+
+        purpose = self.job_box.currentData()
+        if purpose == self.purpose:
+            return
+        mapping = remap_strokes(self.purpose, purpose)
+        self.purpose = purpose
+        self._label_buttons()
+        if self.strokes is not None:
+            points, values = painted_points(self.strokes.data)
+            if len(points):
+                new = np.array([mapping.get(int(v), 0) for v in values], dtype=np.uint8)
+                self.strokes.data[tuple(points.T.astype(np.int64))] = new
+            self.strokes.colormap = DirectLabelColormap(color_dict={None: (0, 0, 0, 0), **stroke_colours(purpose)})
+            self.preview.colormap = DirectLabelColormap(color_dict={None: (0, 0, 0, 0), **result_colours(purpose)})
+            self.strokes.refresh()
+        self._features_changed()
+
     def _features_changed(self) -> None:
-        """Other scales or channels: a new classifier, the strokes kept."""
+        """Another job, other scales or channels: a new classifier, the
+        strokes kept."""
         if self.live is None:
             return
         self._set_enabled(False)
@@ -11051,11 +11120,24 @@ class _ClassifierTrainingWindow:
         point = self.strokes.world_to_data(self.viewer.dims.point)
         return plane_in_view(self.viewer.dims.displayed, point, self.strokes.data.shape)
 
+    def window_in_view(self, axis: int):
+        """The part of the plane on screen, cut down to what the preview
+        classifies at once."""
+        from haemolynx.classifier.preview import clip_window
+        from haemolynx.gui.classifier_training import window_in_view
+
+        shape = self.live.shape
+        window = window_in_view(axis, getattr(self.image, "corner_pixels", None), shape)
+        others = [a for a in range(3) if a != axis]
+        return clip_window(window, (shape[others[0]], shape[others[1]]))
+
     def update(self, *, retrain: bool = True) -> None:
-        """Train (when there are new strokes) and classify the plane in view."""
+        """Train (when there are new strokes) and classify the part of the
+        plane on screen."""
         if self.live is None:
             return
         plane = self.plane_in_view()
+        window = self.window_in_view(plane[0]) if plane is not None else None
         retrain = retrain or self._retrain or self.live.classifier.forest is None
         self._retrain = False
         labels = self.strokes.data
@@ -11066,9 +11148,17 @@ class _ClassifierTrainingWindow:
                 live.train(labels)
             if plane is None:
                 return None
-            return plane, live.predict_plane(*plane)
+            return plane, window, live.predict_plane(*plane, window=window)
 
         self._run(work, self._show_plane)
+
+    def _region(self, axis: int, index: int, window) -> tuple:
+        place: list = [slice(None)] * 3
+        place[axis] = index
+        others = [a for a in range(3) if a != axis]
+        for a, (low, high) in zip(others, window):
+            place[a] = slice(low, high)
+        return tuple(place)
 
     def _show_plane(self, result) -> None:
         counts = self.live.classifier.voxels_per_label()
@@ -11076,17 +11166,12 @@ class _ClassifierTrainingWindow:
         if result is None:
             self._say(f"Trained on {trained} voxels. The preview shows in 2D view.")
             return
-        (axis, index), labels = result
+        (axis, index), window, labels = result
         data = self.preview.data
-        if self._shown_plane is not None:
-            old_axis, old_index = self._shown_plane
-            clear = [slice(None)] * 3
-            clear[old_axis] = old_index
-            data[tuple(clear)] = 0
-        place = [slice(None)] * 3
-        place[axis] = index
-        data[tuple(place)] = labels
-        self._shown_plane = (axis, index)
+        if self._shown is not None:
+            data[self._region(*self._shown)] = 0
+        data[self._region(axis, index, window)] = labels
+        self._shown = (axis, index, window)
         self.preview.refresh()
         self._say(f"Trained on {trained} voxels; showing {'zyx'[axis]} = {index}.")
 
@@ -11115,38 +11200,46 @@ class _ClassifierTrainingWindow:
         self._run(work, saved)
 
     def segment_whole_image(self) -> None:
-        """The whole raw image classified as a run would, as a layer."""
-        from haemolynx.classifier import classify_volume
-        from haemolynx.gui.classifier_training import SEGMENTATION_LAYER, result_colours
+        """Save the classifier, segment the whole raw image with it into the
+        files the run writes (lazily, under the low-RAM option), and show them."""
+        from haemolynx.classifier import save_classifier, segment_with_classifiers
+        from haemolynx.gui.classifier_training import SEGMENTATION_LAYER, layer_name, mask_colours, row_outputs
+        from haemolynx.pipeline.stages import classifier_run_arguments
 
         if self.live is None:
             return
+        path = Path(self.path_edit.text().strip() or "classifier")
         labels = self.strokes.data
         live = self.live
         self._say("Segmenting the whole image...")
 
         def work():
-            classifier = live.train(labels)
-            out = None
-            if self.values.get("use_memmap_loading"):
-                from haemolynx.preprocessing.memmap_support import new_memmap_array
+            save_classifier(live.train(labels), path)
+            outputs = row_outputs(self.values, self.row, path)
+            segment_with_classifiers(self.raw_path, [(path, outputs)], **classifier_run_arguments(self.values))
+            return outputs
 
-                out = new_memmap_array(live.shape, np.uint8, directory=self.values.get("memmap_directory"))
-            return classify_volume(
-                live.volumes, live.voxel_size_zyx, classifier, ranges=live.ranges, out=out,
-                box_voxels=1_000_000 if out is not None else None,
-            )
+        def done(outputs) -> None:
+            import tifffile
 
-        def done(result) -> None:
-            self.segmentation = self._labels_layer(
-                result, SEGMENTATION_LAYER, result_colours(self.purpose), tuple(self.live.voxel_size_zyx)
-            )
-            self.segmentation.opacity = 0.6
-            found = ", ".join(
-                f"{name} {100.0 * np.count_nonzero(result == index) / result.size:.1f}%"
-                for index, name in enumerate(self.labels) if index
-            )
-            self._say(f"Segmented the whole image: {found} of its voxels.")
+            from haemolynx.classifier.lazy import LazyTiffChannel
+
+            self.loaded = self.live.classifier
+            if self.on_saved is not None:
+                self.on_saved(path)
+            scale = tuple(float(v) for v in self.live.voxel_size_zyx)
+            for mask, output in outputs.items():
+                data = LazyTiffChannel(output) if self.sparse else tifffile.imread(output)
+                if getattr(data, "ndim", 3) == 2:
+                    data = data[np.newaxis]
+                layer = self._labels_layer(
+                    data, SEGMENTATION_LAYER, mask_colours(mask), scale,
+                    name=f"{layer_name(SEGMENTATION_LAYER, self.row)} {mask}",
+                )
+                layer.opacity = 0.6
+                self.segmentations[mask] = layer
+            self.segmentation = next(iter(self.segmentations.values()), None)
+            self._say("Segmented the whole image: " + ", ".join(str(p) for p in outputs.values()) + ".")
 
         self._run(work, done)
 

@@ -868,7 +868,9 @@ def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
         child = fields[name]
         assert child.hide_when_unmet, name
         assert child.section == "Statistics and measurements", name
-        assert SCHEMA[name].requires == ("measurement_3d_to_cell_mask",), name
+        # The mask rows also stand aside for a classifier making the mask.
+        assert SCHEMA[name].requires[0] == "measurement_3d_to_cell_mask", name
+        assert all(gate.startswith("!use_pixel_classifier_") for gate in SCHEMA[name].requires[1:]), name
         assert not child.is_visible(
             {"measurement_3d_to_cell_mask": False, **_MEASUREMENT_3D_H5_PATHS}
         ), name

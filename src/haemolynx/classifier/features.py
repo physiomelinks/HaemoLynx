@@ -172,39 +172,70 @@ def box_features(
     voxel_size_zyx: Sequence[float],
     spec: FeatureSpec,
     core: tuple[slice, slice, slice],
+    *,
+    needed: np.ndarray | None = None,
 ) -> np.ndarray:
     """The features of the voxels in *core* of a padded box: *channels* are
     the box's scaled channels (:func:`scaled`), in *spec*'s order, and *core*
     the slices of the box whose features are wanted. Returns float32 of
-    ``core shape + (spec.n_features,)``."""
+    ``core shape + (spec.n_features,)``.
+
+    *needed* (a bool per feature) skips the work for features no tree reads:
+    a scale none of whose features is read is not smoothed, the Hessian is
+    not taken where neither its trace nor its eigenvalues are read. A feature
+    computed is the same value either way; one skipped is 0."""
     core_shape = tuple(s.stop - s.start for s in core)
-    out = np.empty(core_shape + (spec.n_features,), dtype=np.float32)
+    if needed is None:
+        needed = np.ones(spec.n_features, dtype=bool)
+        out = np.empty(core_shape + (spec.n_features,), dtype=np.float32)
+    else:
+        needed = np.asarray(needed, dtype=bool)
+        out = np.zeros(core_shape + (spec.n_features,), dtype=np.float32)
     column = 0
     spacing = [float(v) for v in voxel_size_zyx]
     for channel in channels:
+        channel_needed = needed[column: column + 1 + len(PER_SCALE) * len(spec.scales_um)]
+        if not channel_needed.any():
+            column += len(channel_needed)
+            continue
         channel = np.asarray(channel, dtype=np.float32)
-        out[..., column] = channel[core]
+        if needed[column]:
+            out[..., column] = channel[core]
         column += 1
         for scale in spec.scales_um:
+            want = needed[column: column + len(PER_SCALE)]
+            if not want.any():
+                column += len(PER_SCALE)
+                continue
             smooth = ndi.gaussian_filter(
                 channel, sigma_voxels(scale, spacing), truncate=TRUNCATE, mode="reflect"
             )
+            if want[0]:
+                out[..., column] = smooth[core]
+            if not want[1:].any():
+                column += len(PER_SCALE)
+                continue
             gz, gy, gx = (_difference(smooth, axis, spacing[axis]) for axis in range(3))
-            out[..., column] = smooth[core]
             del smooth
-            out[..., column + 1] = np.sqrt(gz[core] ** 2 + gy[core] ** 2 + gx[core] ** 2)
-            hzz = _difference(gz, 0, spacing[0])[core]
-            hzy = _difference(gz, 1, spacing[1])[core]
-            hzx = _difference(gz, 2, spacing[2])[core]
-            del gz
-            hyy = _difference(gy, 1, spacing[1])[core]
-            hyx = _difference(gy, 2, spacing[2])[core]
-            del gy
-            hxx = _difference(gx, 2, spacing[2])[core]
-            del gx
-            out[..., column + 2] = hzz + hyy + hxx
-            for offset, eigenvalue in enumerate(symmetric_eigenvalues(hzz, hyy, hxx, hzy, hzx, hyx)):
-                out[..., column + 3 + offset] = eigenvalue
+            if want[1]:
+                out[..., column + 1] = np.sqrt(gz[core] ** 2 + gy[core] ** 2 + gx[core] ** 2)
+            if want[2:].any():
+                eigen = bool(want[3:].any())
+                hzz = _difference(gz, 0, spacing[0])[core]
+                hzy = _difference(gz, 1, spacing[1])[core] if eigen else None
+                hzx = _difference(gz, 2, spacing[2])[core] if eigen else None
+                del gz
+                hyy = _difference(gy, 1, spacing[1])[core]
+                hyx = _difference(gy, 2, spacing[2])[core] if eigen else None
+                del gy
+                hxx = _difference(gx, 2, spacing[2])[core]
+                del gx
+                if want[2]:
+                    out[..., column + 2] = hzz + hyy + hxx
+                if eigen:
+                    for offset, eigenvalue in enumerate(symmetric_eigenvalues(hzz, hyy, hxx, hzy, hzx, hyx)):
+                        if want[3 + offset]:
+                            out[..., column + 3 + offset] = eigenvalue
             column += len(PER_SCALE)
     return out
 
@@ -264,11 +295,21 @@ def features_of_box(
     spec: FeatureSpec,
     padded: tuple[slice, ...],
     inner: tuple[slice, ...],
+    *,
+    needed: np.ndarray | None = None,
 ) -> np.ndarray:
     """The features of one box's core, read from the whole *volumes* (one
-    per channel, canonical order, memory-mapped or not) on their *ranges*."""
-    channels = [scaled(volume[padded], value_range) for volume, value_range in zip(volumes, ranges)]
-    return box_features(channels, voxel_size_zyx, spec, inner)
+    per channel, canonical order, in memory, memory-mapped or read lazily)
+    on their *ranges*. A channel none of whose features is *needed* is not
+    read."""
+    channels = []
+    width = 1 + len(PER_SCALE) * len(spec.scales_um)
+    for index, (volume, value_range) in enumerate(zip(volumes, ranges)):
+        if needed is not None and not np.asarray(needed)[index * width:(index + 1) * width].any():
+            channels.append(None)
+        else:
+            channels.append(scaled(volume[padded], value_range))
+    return box_features(channels, voxel_size_zyx, spec, inner, needed=needed)
 
 
 def features_at(

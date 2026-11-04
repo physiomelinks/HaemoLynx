@@ -666,14 +666,22 @@ cartwheel_hub_guard:
 statistics_and_measurements:
   # Measure how far each object in a 3D object mask (e.g. a cell mask) lies from the vessels: the gap between them, 0 where they touch or overlap, and the vessel it is nearest to  [needs network_source = segmented_image]
   measurement_3d_to_cell_mask: false
-  # Read this cell mask, the input image's shape, for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
+  # Read this cell mask, the input image's shape, for the 3D distance measurement  [needs measurement_3d_to_cell_mask and use_pixel_classifier_cell_segmentation off; must exist]
   cell_mask_path: null
+  # Make the cell mask from the raw image with a classifier trained in HaemoLynx's own training window, instead of reading cell_mask_path. Written into output_dir as {raw image stem}_cells_segmented.tif; each blob it finds is one cell  [needs measurement_3d_to_cell_mask and raw_image_path]
+  use_pixel_classifier_cell_segmentation: false
+  # Segment the cells with this classifier (.haemoclf), trained in the panel to tell cells from background  [needs measurement_3d_to_cell_mask and use_pixel_classifier_cell_segmentation; must exist]
+  pixel_classifier_cell_path: null
   # Read this dataset from the cell mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
   cell_mask_h5_dataset_name: null
-  # Use this vessel mask for the 3D distance measurement instead of the run's segmented image  [needs measurement_3d_to_cell_mask; must exist if set]
+  # Use this vessel mask for the 3D distance measurement instead of the run's segmented image  [needs measurement_3d_to_cell_mask and use_pixel_classifier_3d_vessel_segmentation off; must exist if set]
   measurement_3d_vessel_mask_path: null
   # Read this dataset from the 3D-distance vessel mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
   measurement_3d_vessel_mask_h5_dataset_name: null
+  # Make the 3D distance measurement's vessel mask from the raw image with a classifier trained in HaemoLynx's own training window, instead of reading measurement_3d_vessel_mask_path or using the run's segmented image. Written into output_dir as {raw image stem}_vessels_3d_segmented.tif  [needs measurement_3d_to_cell_mask and raw_image_path]
+  use_pixel_classifier_3d_vessel_segmentation: false
+  # Segment the vessels the 3D distances are measured to with this classifier (.haemoclf), one trained to find vessels, or vessels with arterioles and venules  [needs measurement_3d_to_cell_mask and use_pixel_classifier_3d_vessel_segmentation; must exist]
+  pixel_classifier_3d_vessel_path: null
   # Compute and export the global vessel statistics
   statistics: false
   # Node/edge counts, total length, mean diameter and the other basic vessel statistics  [needs statistics]

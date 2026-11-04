@@ -930,7 +930,8 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
     on = {"measurement_3d_to_cell_mask": True, "statistics": False, **h5_paths}
     for name in _MEASUREMENT_3D_CHILDREN:
         assert fields[name].hide_when_unmet, name
-        assert SCHEMA[name].requires == ("measurement_3d_to_cell_mask",), name
+        assert SCHEMA[name].requires[0] == "measurement_3d_to_cell_mask", name
+        assert all(gate.startswith("!use_pixel_classifier_") for gate in SCHEMA[name].requires[1:]), name
         assert not fields[name].is_visible(off), name
         assert fields[name].is_visible(on), name
 

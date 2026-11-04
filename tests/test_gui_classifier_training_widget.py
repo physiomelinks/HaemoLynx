@@ -107,6 +107,49 @@ def test_the_whole_image_segmented_in_the_window_is_the_runs(panel, tmp_path):
     assert np.array_equal(shown == 1, tifffile.imread(made) == 1)
 
 
+def test_low_ram_paints_sparsely_and_reads_lazily(make_napari_viewer, tmp_path):
+    from haemolynx.classifier.lazy import LazyTiffChannel
+    from haemolynx.classifier.sparse import SparseLabels
+
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    volume, truth = tube_volume()
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    rows = widget._haemolynx_rows()
+    rows["raw_image_path"].value = raw
+    rows["use_memmap_loading"].value = True
+    rows["output_dir"].value = tmp_path / "out"
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert isinstance(window.strokes.data, SparseLabels) and isinstance(window.preview.data, SparseLabels)
+    assert isinstance(window.live.volumes[0], LazyTiffChannel)
+    points, classes = strokes(truth, per_class=120)
+    window.strokes.data[tuple(points.T.astype(np.int64))] = classes + 1
+    viewer.dims.ndisplay = 2
+    viewer.dims.set_point(0, 6 * VOXEL[0])
+    window.update(retrain=True)
+    whole = classify_volume([volume], VOXEL, window.live.classifier, workers=2)
+    assert np.array_equal(np.asarray(window.preview.data[6]), whole[6])
+    window.path_edit.setText(str(tmp_path / "c.haemoclf"))
+    window.segment_whole_image()
+    made = tmp_path / "out" / "raw_segmented.tif"
+    assert made.exists() and np.array_equal(tifffile.imread(made), (whole == 1).astype(np.uint8))
+    assert widget._haemolynx_values()["use_pixel_classifier_segmentation"] is True
+
+
+def test_choosing_the_combined_job_keeps_the_strokes_by_name(panel):
+    _viewer, widget, _rows, _volume, truth, _raw = panel
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_large_vessel_path", synchronous=True)
+    assert window.purpose == "vessel_classes" and window.job_box.isVisible() is not None
+    points, classes = strokes(truth, per_class=40)
+    window.live_box.setChecked(False)
+    window.strokes.data[tuple(points.T)] = np.where(classes == 1, 3, 1)  # Venule and Background
+    window.job_box.setCurrentIndex(window.purposes.index("vessels_and_classes"))
+    assert window.purpose == "vessels_and_classes"
+    assert window.labels == ("Background", "Vessel", "Arteriole", "Venule")
+    values = np.asarray(window.strokes.data)[tuple(points.T)]
+    assert set(np.unique(values)) == {1, 4}  # Venule is now the fourth label
+
+
 def test_no_raw_image_says_what_to_do(make_napari_viewer):
     viewer = make_napari_viewer()
     widget = settings_widget(napari_viewer=viewer)

@@ -62,16 +62,13 @@ def _used_ilastik(settings: Mapping[str, Any]) -> bool:
 
 def _used_pixel_classifier(settings: Mapping[str, Any]) -> bool:
     """Whether the HaemoLynx classifier segmented anything this run: the
-    main image (its switch in effect) or a vessel-mask role's masks (its
-    switch on with the role's masks in use)."""
-    from haemolynx.graph.boundaries import vessel_mask_classifier_in_use
-    from haemolynx.pipeline.naming import classifier_segments
+    main image, a vessel-mask role's masks, or a pericyte, block, cell or
+    3D-distance vessel mask something reads (``stages.classifier_requests``)."""
+    from haemolynx.pipeline.stages import classifier_requests
 
     if _synthetic(settings) or not _is_set(settings.get("raw_image_path")):
         return False
-    return classifier_segments(settings) or any(
-        vessel_mask_classifier_in_use(settings, role) for role in ("large", "small")
-    )
+    return bool(classifier_requests(settings))
 
 
 def _synthetic(settings: Mapping[str, Any]) -> bool:

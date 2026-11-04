@@ -200,9 +200,13 @@ def test_measurement_3d_to_cell_mask_is_declared_right_before_statistics():
     children = (
         "measurement_3d_to_cell_mask",
         "cell_mask_path",
+        "use_pixel_classifier_cell_segmentation",
+        "pixel_classifier_cell_path",
         "cell_mask_h5_dataset_name",
         "measurement_3d_vessel_mask_path",
         "measurement_3d_vessel_mask_h5_dataset_name",
+        "use_pixel_classifier_3d_vessel_segmentation",
+        "pixel_classifier_3d_vessel_path",
     )
     assert names[end - len(children) : end] == children
 

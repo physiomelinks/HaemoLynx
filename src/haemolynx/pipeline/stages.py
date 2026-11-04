@@ -485,25 +485,37 @@ def classifier_run_arguments(settings: Mapping[str, Any]) -> dict:
 
 @dataclass(frozen=True)
 class ObjectMask:
-    """A mask of objects the HaemoLynx classifier can make from the raw image."""
+    """A mask the HaemoLynx classifier can make from the raw image for a
+    setting that otherwise names a mask file."""
 
     switch: str
     classifier_setting: str
     label: str
     #: The mask path settings it stands in for.
     readers: tuple[str, ...]
+    #: The job its classifier is trained for (``classifier.JOB_PURPOSES``).
+    job: str
 
 
-#: The masks of objects (each blob one object) the classifier can make, by
-#: the word their output is named with: ``{raw stem}_{word}_segmented.tif``.
+#: The masks of objects (each blob one object), and the 3D distances' vessel
+#: mask, the classifier can make, by the word their output is named with:
+#: ``{raw stem}_{word}_segmented.tif``.
 OBJECT_MASKS: dict[str, ObjectMask] = {
     "pericytes": ObjectMask(
         "use_pixel_classifier_pericyte_segmentation", "pixel_classifier_pericyte_path", "Pericyte",
-        ("pericyte_mask_path", "pericyte_measurement_mask_path"),
+        ("pericyte_mask_path", "pericyte_measurement_mask_path"), "pericytes",
     ),
     "blocks": ObjectMask(
         "use_pixel_classifier_block_segmentation", "pixel_classifier_block_path", "Block",
-        ("capillary_block_mask_path",),
+        ("capillary_block_mask_path",), "blocks",
+    ),
+    "cells": ObjectMask(
+        "use_pixel_classifier_cell_segmentation", "pixel_classifier_cell_path", "Cell",
+        ("cell_mask_path",), "cells",
+    ),
+    "vessels_3d": ObjectMask(
+        "use_pixel_classifier_3d_vessel_segmentation", "pixel_classifier_3d_vessel_path", "Vessel",
+        ("measurement_3d_vessel_mask_path",), "vessels",
     ),
 }
 
@@ -548,6 +560,8 @@ def object_masks_made(settings: Mapping[str, Any]) -> tuple[str, ...]:
         spec.type == "capillary_block_mask" for spec in perturbations
     ):
         made.append("blocks")
+    if settings.get("measurement_3d_to_cell_mask"):
+        made += [word for word in ("cells", "vessels_3d") if settings.get(OBJECT_MASKS[word].switch)]
     return tuple(made)
 
 
@@ -555,6 +569,61 @@ def object_mask_output_path(settings: Mapping[str, Any], word: str) -> Path:
     """``{output_dir}/{raw image stem}_{word}_segmented.tif``."""
     stem = Path(settings["raw_image_path"]).stem
     return Path(settings.get("output_dir") or ".") / f"{stem}_{word}_segmented.tif"
+
+
+def classifier_requests(settings: Mapping[str, Any], *, main: bool = True) -> list[tuple[Path, dict[str, Path]]]:
+    """Every ``(classifier, {mask: output})`` the HaemoLynx classifier makes
+    this run: the main image's (with *main*), each vessel-mask role's, and
+    the masks of :func:`object_masks_made`. Named as their own steps name them,
+    so each finds its output current once :func:`segment_with_run_classifiers`
+    has made it."""
+    if graph.network_is_synthetic(settings) or not raw_image_is_set(settings):
+        return []
+    from haemolynx.io.vessel_masks import classifier_finds_venules, ilastik_vessel_mask_output_path
+
+    requests: list[tuple[Path, dict[str, Path]]] = []
+    if main and classifier_segments(settings) and settings.get("pixel_classifier_path") not in (None, ""):
+        requests.append((Path(settings["pixel_classifier_path"]), {"Vessel": naming_classifier_segmented_path(settings)}))
+    raw = Path(settings["raw_image_path"])
+    folder = Path(settings.get("output_dir") or ".")
+    for role in ("large", "small"):
+        if not main or not graph.vessel_mask_classifier_in_use(settings, role):
+            continue
+        path = settings.get(f"pixel_classifier_{role}_vessel_path")
+        if path in (None, ""):
+            continue
+        if classifier_finds_venules(path):
+            outputs = {
+                "Arteriole": ilastik_vessel_mask_output_path(folder, raw, role, "arteriole", ".tif"),
+                "Venule": ilastik_vessel_mask_output_path(folder, raw, role, "venule", ".tif"),
+            }
+        else:
+            outputs = {"Arteriole": ilastik_vessel_mask_output_path(folder, raw, role, "global", ".tif")}
+        requests.append((Path(path), outputs))
+    for word in object_masks_made(settings):
+        mask = OBJECT_MASKS[word]
+        path = settings.get(mask.classifier_setting)
+        if path not in (None, ""):
+            requests.append((Path(path), {mask.label: object_mask_output_path(settings, word)}))
+    return requests
+
+
+def segment_with_run_classifiers(
+    settings: Mapping[str, Any], *, main: bool = True, progress: StageProgress | None = None
+) -> None:
+    """Make every mask the HaemoLynx classifier makes this run
+    (:func:`classifier_requests`) in one pass over the raw image, the
+    features the classifiers share computed once; masks already current are
+    left as they are. The steps that read each mask then find it current."""
+    from haemolynx.classifier import segment_with_classifiers
+
+    requests = classifier_requests(settings, main=main)
+    if not requests:
+        return
+    raw = io.resolve_image_path_with_optional_zip(Path(settings["raw_image_path"]))
+    segment_with_classifiers(
+        raw, requests, poll=progress.alive if progress is not None else None, **classifier_run_arguments(settings)
+    )
 
 
 def segment_object_masks(settings: dict, *, progress: StageProgress | None = None) -> dict[str, Path]:
@@ -10196,6 +10265,8 @@ def _run_stages(
     # A run resumed past every stage that reads the image goes on without it.
     unread = _resumes_without_image(settings, resume, start_from)
     with run.stage("segment") as segmenting:
+        # Every mask the classifier makes, in one pass over the raw image.
+        segment_with_run_classifiers(settings, main=not unread, progress=segmenting)
         if unread:
             inputs = _segmented_inputs_unread(settings)
         else:
