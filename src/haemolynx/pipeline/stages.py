@@ -1689,6 +1689,17 @@ def _crop_record(crop: CropBox | None) -> dict | None:
     return {"start_zyx": [int(v) for v in crop.start_zyx], "stop_zyx": [int(v) for v in crop.stop_zyx]}
 
 
+def saved_skeleton_grid(crop: CropBox | None, downsample: Downsample | None) -> dict:
+    """The grid a skeleton was made on, as its record keeps it (the
+    ``downsample`` and ``crop`` of ``{stem}_voxel_size.json``): what a run
+    loading it checks against its own (:func:`_check_saved_skeleton_grid`).
+    The panel writes it with a skeleton it saves for a resumed run too."""
+    return {
+        "downsample": None if downsample is None else downsample.to_record(),
+        "crop": _crop_record(crop),
+    }
+
+
 def _saved_skeleton_record(path: Path, skeleton_path: Path) -> dict:
     """What a run making its skeleton kept beside it (``{stem}_voxel_size.json``);
     empty when there is none, it cannot be read, or it is older than the
@@ -1967,10 +1978,9 @@ def skeletonise(
                     "voxel_metadata_status": voxel_meta_status,
                     "voxel_size_policy": settings["voxel_size_policy"],
                     "voxel_size_override_xyz": settings["voxel_size_override_xyz"],
-                    # For the record: the saved skeleton is on the reduced grid.
-                    "downsample": None if downsample is None else downsample.to_record(),
-                    # And cut to this box: a run loading it checks it is its own.
-                    "crop": _crop_record(crop),
+                    # For the record: the saved skeleton is on the reduced grid,
+                    # cut to this box: a run loading it checks it is its own.
+                    **saved_skeleton_grid(crop, downsample),
                     # And made from this mask, with these thick-vessel settings.
                     "mask_digest": made_from,
                     "thick_region_key": region_key[0] if region_key else None,
