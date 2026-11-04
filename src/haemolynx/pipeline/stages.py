@@ -579,27 +579,19 @@ def classifier_requests(settings: Mapping[str, Any], *, main: bool = True) -> li
     has made it."""
     if graph.network_is_synthetic(settings) or not raw_image_is_set(settings):
         return []
-    from haemolynx.io.vessel_masks import classifier_finds_venules, ilastik_vessel_mask_output_path
+    from haemolynx.io.vessel_masks import classifier_role_outputs
 
     requests: list[tuple[Path, dict[str, Path]]] = []
     if main and classifier_segments(settings) and settings.get("pixel_classifier_path") not in (None, ""):
         requests.append((Path(settings["pixel_classifier_path"]), {"Vessel": naming_classifier_segmented_path(settings)}))
     raw = Path(settings["raw_image_path"])
-    folder = Path(settings.get("output_dir") or ".")
     for role in ("large", "small"):
         if not main or not graph.vessel_mask_classifier_in_use(settings, role):
             continue
         path = settings.get(f"pixel_classifier_{role}_vessel_path")
         if path in (None, ""):
             continue
-        if classifier_finds_venules(path):
-            outputs = {
-                "Arteriole": ilastik_vessel_mask_output_path(folder, raw, role, "arteriole", ".tif"),
-                "Venule": ilastik_vessel_mask_output_path(folder, raw, role, "venule", ".tif"),
-            }
-        else:
-            outputs = {"Arteriole": ilastik_vessel_mask_output_path(folder, raw, role, "global", ".tif")}
-        requests.append((Path(path), outputs))
+        requests.append((Path(path), classifier_role_outputs(settings.get("output_dir"), raw, role, path)))
     for word in object_masks_made(settings):
         mask = OBJECT_MASKS[word]
         path = settings.get(mask.classifier_setting)
@@ -621,8 +613,14 @@ def segment_with_run_classifiers(
     if not requests:
         return
     raw = io.resolve_image_path_with_optional_zip(Path(settings["raw_image_path"]))
+    # The raw image read as the steps after `segment` read it: under an auto
+    # axis order an unlabelled file follows the segmented image, which is
+    # then the classifier's output, not whatever input_path held before.
+    reading = dict(settings)
+    if classifier_segments(settings):
+        reading["input_path"] = naming_classifier_segmented_path(settings)
     segment_with_classifiers(
-        raw, requests, poll=progress.alive if progress is not None else None, **classifier_run_arguments(settings)
+        raw, requests, poll=progress.alive if progress is not None else None, **classifier_run_arguments(reading)
     )
 
 

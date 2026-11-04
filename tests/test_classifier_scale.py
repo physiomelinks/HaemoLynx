@@ -270,3 +270,66 @@ def test_training_on_sparse_strokes_is_training_on_dense_ones():
     b = LiveClassifier(new_classifier("vessels", scales_um=(1.0,)), [volume], VOXEL, path="t").train(sparse)
     assert np.array_equal(a.training.features, b.training.features)
     assert np.array_equal(a.forest.votes(a.training.features), b.forest.votes(a.training.features))
+
+
+# --------------------------------------------------------- the coarse grid
+
+
+@pytest.mark.parametrize("voxel", [(2.0, 0.6, 0.6), (1.0, 1.0, 1.0), (0.5, 0.7, 0.9)])
+@pytest.mark.parametrize("core", [(1, 16, 19), (5, 23, 11), (9, 40, 56)])
+def test_coarse_features_in_any_box_are_the_whole_volumes_bit_for_bit(voxel, core):
+    from haemolynx.classifier.features import boxes, coarse_factors, feature_halo
+
+    volume, _ = tube_volume(shape=(24, 60, 70))
+    spec = FeatureSpec(scales_um=(1.0, 4.0, 8.0), coarse=True)
+    assert coarse_factors(spec, 8.0, voxel) != (1, 1, 1)
+    ranges = [intensity_range(volume)]
+    whole = tuple(slice(0, n) for n in volume.shape)
+    reference = features_of_box([volume], ranges, voxel, spec, whole, whole)
+    for padded, inner, box_core in boxes(volume.shape, feature_halo(spec, voxel), core_zyx=core):
+        part = features_of_box([volume], ranges, voxel, spec, padded, inner)
+        assert np.array_equal(part, reference[box_core]), box_core
+
+
+def test_a_coarse_classifier_still_finds_the_tubes_and_reads_unlike_an_old_one():
+    from test_pixel_classifier import trained_classifier
+
+    volume, truth = tube_volume(seed=0)
+    coarse = trained_classifier(volume, truth, spec=FeatureSpec(scales_um=(1.0, 2.0, 4.0), coarse=True))
+    fresh, fresh_truth = tube_volume(seed=5)
+    found = classify_volume([fresh], (2.0, 0.8, 0.8), coarse, workers=2) == 1
+    assert 2 * (found & fresh_truth).sum() / (found.sum() + fresh_truth.sum()) > 0.85
+    assert FeatureSpec.from_record({"scales_um": [1.0]}).coarse is False  # a classifier saved before
+    assert FeatureSpec.from_record(coarse.spec.to_record()) == coarse.spec
+
+
+def test_an_old_and_a_new_classifier_share_a_run_each_on_its_own_grid(tmp_path):
+    from test_pixel_classifier import trained_classifier
+
+    volume, truth = tube_volume()
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    old = save_classifier(trained_classifier(volume, truth, spec=FeatureSpec(scales_um=(1.0, 2.0))), tmp_path / "o.haemoclf")
+    new = save_classifier(trained(volume, truth, "pericytes"), tmp_path / "n.haemoclf")
+    assert trained(volume, truth, "pericytes").spec.coarse
+    with pytest.raises(ValueError, match="coarse grid"):
+        shared_spec([FeatureSpec(coarse=True), FeatureSpec()])
+    both = segment_with_classifiers(raw, [(old, {"Vessel": tmp_path / "a.tif"}), (new, {"Pericyte": tmp_path / "b.tif"})])
+    alone = segment_with_classifier(raw, old, {"Vessel": tmp_path / "c.tif"})
+    assert np.array_equal(tifffile.imread(both[0]["Vessel"]), tifffile.imread(alone["Vessel"]))
+
+
+@pytest.mark.parametrize("tile", [16, 23, 1024])
+def test_coarse_scales_shared_by_a_tile_label_every_voxel_as_the_whole_volume_does(monkeypatch, tile):
+    from haemolynx.classifier import apply as apply_module
+    from test_pixel_classifier import trained_classifier
+
+    voxel = (2.0, 0.6, 0.6)
+    volume, truth = tube_volume(shape=(20, 64, 72))
+    classifier = trained_classifier(volume, truth, spec=FeatureSpec(scales_um=(1.0, 4.0, 8.0), coarse=True), voxel=voxel)
+    ranges = [intensity_range(volume)]
+    whole = tuple(slice(0, n) for n in volume.shape)
+    features = features_of_box([volume], ranges, voxel, classifier.spec, whole, whole)
+    expected = classifier.forest.predict(features.reshape(-1, classifier.spec.n_features)).reshape(volume.shape)
+    monkeypatch.setattr(apply_module, "COARSE_TILE", tile)
+    got = classify_volume([volume], voxel, classifier, workers=3, planes_per_slab=7, box_voxels=20_000)
+    assert np.array_equal(got, expected)

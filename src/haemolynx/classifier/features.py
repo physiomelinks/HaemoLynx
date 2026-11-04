@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterator, Sequence
+from typing import Iterator, Mapping, Sequence
 
 import numpy as np
 from scipy import ndimage as ndi
@@ -54,10 +54,15 @@ class FeatureSpec:
 
     *channels* are the raw image's channels, counting from 0 as
     ``raw_image_channel`` does; ``(None,)`` is a file with one channel.
+    *coarse*: each wide scale is smoothed on a grid coarser by
+    :func:`coarse_factors` and interpolated back (:func:`box_features`), at a
+    fraction of the cost; a classifier saved before records none and reads
+    every scale on the image's own grid, as it was trained.
     """
 
     scales_um: tuple[float, ...] = DEFAULT_SCALES_UM
     channels: tuple[int | None, ...] = (None,)
+    coarse: bool = False
 
     def __post_init__(self):
         scales = tuple(float(scale) for scale in self.scales_um)
@@ -74,6 +79,7 @@ class FeatureSpec:
             raise ValueError(f"Channels are listed twice: {self.channels!r}.")
         object.__setattr__(self, "scales_um", tuple(sorted(scales)))
         object.__setattr__(self, "channels", channels)
+        object.__setattr__(self, "coarse", bool(self.coarse))
 
     @property
     def n_features(self) -> int:
@@ -85,18 +91,20 @@ class FeatureSpec:
         for channel in self.channels:
             prefix = "image" if channel is None else f"C{channel + 1}"
             names.append(f"{prefix} intensity")
+            grid = " (coarse grid)" if self.coarse else ""
             for scale in self.scales_um:
-                names += [f"{prefix} {kind} {scale:g} um" for kind in PER_SCALE]
+                names += [f"{prefix} {kind} {scale:g} um{grid}" for kind in PER_SCALE]
         return names
 
     def to_record(self) -> dict:
-        return {"scales_um": list(self.scales_um), "channels": list(self.channels)}
+        return {"scales_um": list(self.scales_um), "channels": list(self.channels), "coarse": self.coarse}
 
     @classmethod
     def from_record(cls, record: dict) -> "FeatureSpec":
         return cls(
             scales_um=tuple(record["scales_um"]),
             channels=tuple(record.get("channels", [None])),
+            coarse=bool(record.get("coarse", False)),
         )
 
 
@@ -105,14 +113,57 @@ def sigma_voxels(scale_um: float, voxel_size_zyx: Sequence[float]) -> tuple[floa
     return tuple(float(scale_um) / float(size) for size in voxel_size_zyx)  # type: ignore[return-value]
 
 
+#: On a coarse grid a scale keeps at least this sigma, in coarse voxels.
+COARSE_SIGMA_VOXELS = 2.0
+
+
+def coarse_factors(spec: FeatureSpec, scale_um: float, voxel_size_zyx: Sequence[float]) -> tuple[int, int, int]:
+    """How many of the image's voxels one coarse voxel of *scale_um* spans
+    along z, y and x: the sigma in voxels over :data:`COARSE_SIGMA_VOXELS`,
+    rounded down, at least 1; all 1 unless *spec* is coarse."""
+    if not spec.coarse:
+        return (1, 1, 1)
+    return tuple(  # type: ignore[return-value]
+        max(1, int(sigma // COARSE_SIGMA_VOXELS)) for sigma in sigma_voxels(scale_um, voxel_size_zyx)
+    )
+
+
+def scale_halo(spec: FeatureSpec, scale_um: float, voxel_size_zyx: Sequence[float]) -> tuple[int, int, int]:
+    """The margin (voxels, per axis) one scale's features need to be the
+    whole volume's: its Gaussian's reach (as ``scipy.ndimage`` rounds it)
+    and two more for the second differences -- on a coarse grid, in coarse
+    voxels, two more for the interpolation and the grid's alignment, times
+    the factor."""
+    factors = coarse_factors(spec, scale_um, voxel_size_zyx)
+    sigmas = sigma_voxels(scale_um, voxel_size_zyx)
+    if factors == (1, 1, 1):
+        return tuple(int(TRUNCATE * sigma + 0.5) + 2 for sigma in sigmas)  # type: ignore[return-value]
+    return tuple(  # type: ignore[return-value]
+        (int(TRUNCATE * sigma / f + 0.5) + 4) * f for sigma, f in zip(sigmas, factors)
+    )
+
+
 def feature_halo(spec: FeatureSpec, voxel_size_zyx: Sequence[float]) -> tuple[int, int, int]:
     """The margin (voxels, per axis) a box needs for its core's features to
-    be the whole volume's: the widest Gaussian's reach (as ``scipy.ndimage``
-    rounds it), and two more for the second differences."""
-    widest = max(spec.scales_um)
-    return tuple(  # type: ignore[return-value]
-        int(TRUNCATE * sigma + 0.5) + 2 for sigma in sigma_voxels(widest, voxel_size_zyx)
-    )
+    be the whole volume's: the largest a scale on the image's own grid needs
+    (:func:`scale_halo`). A scale on a coarse grid reads its own, wider,
+    region from the image (:func:`coarse_reach`) and is not counted: the box
+    pays for its margin only in a block average."""
+    halos = [
+        scale_halo(spec, scale, voxel_size_zyx)
+        for scale in spec.scales_um
+        if coarse_factors(spec, scale, voxel_size_zyx) == (1, 1, 1)
+    ]
+    if not halos:
+        return (2, 2, 2)
+    return tuple(max(h[axis] for h in halos) for axis in range(3))  # type: ignore[return-value]
+
+
+def coarse_reach(spec: FeatureSpec, voxel_size_zyx: Sequence[float]) -> tuple[int, int, int]:
+    """The margin (voxels, per axis) round a box the coarse scales read from
+    the image: what a box's pages must reach, with :func:`feature_halo`."""
+    reach = [scale_halo(spec, scale, voxel_size_zyx) for scale in spec.scales_um]
+    return tuple(max(h[axis] for h in reach) for axis in range(3))  # type: ignore[return-value]
 
 
 def intensity_range(volume: np.ndarray) -> tuple[float, float]:
@@ -167,6 +218,205 @@ def symmetric_eigenvalues(a11, a22, a33, a12, a13, a23) -> tuple[np.ndarray, np.
     return largest, 3 * q - largest - smallest, smallest
 
 
+def _scale_features(smooth: np.ndarray, spacing, core, want: np.ndarray) -> list:
+    """A scale's six features at *core* of its smoothed region (None where
+    not *want*-ed): the smoothed intensity, its gradient magnitude, its
+    Laplacian and the Hessian's eigenvalues, largest first."""
+    found: list = [None] * len(PER_SCALE)
+    if want[0]:
+        found[0] = smooth[core]
+    if not want[1:].any():
+        return found
+    gz, gy, gx = (_difference(smooth, axis, spacing[axis]) for axis in range(3))
+    if want[1]:
+        found[1] = np.sqrt(gz[core] ** 2 + gy[core] ** 2 + gx[core] ** 2)
+    if want[2:].any():
+        eigen = bool(want[3:].any())
+        hzz = _difference(gz, 0, spacing[0])[core]
+        hzy = _difference(gz, 1, spacing[1])[core] if eigen else None
+        hzx = _difference(gz, 2, spacing[2])[core] if eigen else None
+        del gz
+        hyy = _difference(gy, 1, spacing[1])[core]
+        hyx = _difference(gy, 2, spacing[2])[core] if eigen else None
+        del gy
+        hxx = _difference(gx, 2, spacing[2])[core]
+        del gx
+        if want[2]:
+            found[2] = hzz + hyy + hxx
+        if eigen:
+            for offset, eigenvalue in enumerate(symmetric_eigenvalues(hzz, hyy, hxx, hzy, hzx, hyx)):
+                if want[3 + offset]:
+                    found[3 + offset] = eigenvalue
+    return found
+
+
+def _block_mean(values: np.ndarray, factors: Sequence[int]) -> np.ndarray:
+    """The mean of each block of *factors* voxels (fewer at the far end,
+    where the region stops at the volume's face), float32, axis by axis."""
+    out = np.asarray(values, dtype=np.float32)
+    for axis, f in enumerate(factors):
+        if f == 1:
+            continue
+        n = out.shape[axis]
+        blocks = -(-n // f)
+        pad = [(0, 0)] * out.ndim
+        pad[axis] = (0, blocks * f - n)
+        padded = np.pad(out, pad)
+        shape = list(padded.shape)
+        shape[axis:axis + 1] = [blocks, f]
+        sums = padded.reshape(shape).sum(axis=axis + 1, dtype=np.float32)
+        counts = np.full(blocks, f, dtype=np.float32)
+        counts[-1] = n - (blocks - 1) * f
+        view = [1] * out.ndim
+        view[axis] = blocks
+        out = sums / counts.reshape(view)
+    return out
+
+
+def _interpolate(values: np.ndarray, starts: Sequence[int], factors: Sequence[int], first: Sequence[int],
+                 core_global: Sequence[slice], coarse_size: Sequence[int]) -> np.ndarray:
+    """*values* (coarse voxels from global coarse index *first*) linearly
+    interpolated, axis by axis, at the image voxels *core_global*: an image
+    voxel ``i`` sits at coarse position ``(i + 0.5) / f - 0.5``, held at the
+    first and last coarse voxels."""
+    out = values
+    for axis, (f, part, nc) in enumerate(zip(factors, core_global, coarse_size)):
+        if f == 1:
+            index = np.arange(part.start, part.stop) - first[axis]
+            out = np.take(out, index, axis=axis)
+            continue
+        position = (np.arange(part.start, part.stop, dtype=np.float64) + 0.5) / f - 0.5
+        lower = np.floor(position).astype(np.int64)
+        weight = (position - lower).astype(np.float32)
+        weight[lower < 0] = 0
+        lower = np.clip(lower, 0, nc - 1)
+        upper = np.minimum(lower + 1, nc - 1)
+        view = [1] * out.ndim
+        view[axis] = len(weight)
+        weight = weight.reshape(view)
+        low = np.take(out, lower - first[axis], axis=axis)
+        high = np.take(out, upper - first[axis], axis=axis)
+        out = low + weight * (high - low)
+    return out
+
+
+def _coarse_scale_features(channel, origin, volume_shape, core, spacing, sigmas, factors, want, source=None) -> list:
+    """A scale's features at *core* (slices of the padded *channel*, whose
+    first voxel is the image's *origin*), computed on a grid *factors*
+    coarser: block means aligned to the whole image, smoothed and
+    differentiated there, interpolated back to the image's voxels. A voxel's
+    values depend only on the image, never on the box. *source* --
+    ``(volume, range)`` -- is where the region past the box is read from."""
+    core_global = [slice(o + c.start, o + c.stop) for o, c in zip(origin, core)]
+    coarse_size = [-(-n // f) for n, f in zip(volume_shape, factors)]
+    halo = [int(TRUNCATE * s / f + 0.5) + 2 for s, f in zip(sigmas, factors)]
+    first, last = [], []
+    for part, f, nc, h in zip(core_global, factors, coarse_size, halo):
+        low = int(np.floor((part.start + 0.5) / f - 0.5))
+        high = int(np.floor((part.stop - 1 + 0.5) / f - 0.5)) + 1
+        first.append(max(0, min(low, nc - 1) - h))
+        last.append(min(nc, max(high, 0) + 1 + h))
+    region = tuple(
+        slice(lo * f - o, min(n, hi * f) - o)
+        for lo, hi, f, n, o in zip(first, last, factors, volume_shape, origin)
+    )
+    if all(r.start >= 0 and r.stop <= s for r, s in zip(region, channel.shape)):
+        values = channel[region]
+    elif source is not None:
+        volume, value_range = source
+        values = scaled(volume[tuple(slice(r.start + o, r.stop + o) for r, o in zip(region, origin))], value_range)
+    else:
+        raise ValueError("The box reaches past its channel and no volume was given to read the rest from.")
+    coarse = _block_mean(values, factors)
+    smooth = ndi.gaussian_filter(
+        coarse, tuple(s / f for s, f in zip(sigmas, factors)), truncate=TRUNCATE, mode="reflect"
+    )
+    whole = tuple(slice(0, n) for n in smooth.shape)
+    found = _scale_features(smooth, [sp * f for sp, f in zip(spacing, factors)], whole, want)
+    return [
+        None if values is None else _interpolate(values, region, factors, first, core_global, coarse_size)
+        for values in found
+    ]
+
+
+@dataclass
+class CoarseFeatures:
+    """One coarse scale's features over a region, on its coarse grid: what
+    the boxes inside the region interpolate theirs from."""
+
+    first: list  # the coarse index the arrays start at, per axis
+    factors: tuple
+    coarse_size: list
+    found: list  # per feature of the scale: a coarse array, or None
+
+
+def coarse_scale_features(source, voxel_size_zyx, spec, scale, region, volume_shape, want) -> CoarseFeatures:
+    """The coarse features of *scale* for the image voxels of *region*
+    (global slices): read from *source* -- ``(volume, range)`` -- with the
+    coarse margin, block-averaged, smoothed and differentiated, and kept for
+    the coarse voxels *region* interpolates from. The values a voxel gets
+    from them are those :func:`box_features` gives it computing alone."""
+    spacing = [float(v) for v in voxel_size_zyx]
+    factors = coarse_factors(spec, scale, spacing)
+    sigmas = sigma_voxels(scale, spacing)
+    coarse_size = [-(-n // f) for n, f in zip(volume_shape, factors)]
+    halo = [int(TRUNCATE * s / f + 0.5) + 2 for s, f in zip(sigmas, factors)]
+    first, last, keep_first, keep_last = [], [], [], []
+    for part, f, nc, h in zip(region, factors, coarse_size, halo):
+        low = min(max(int(np.floor((part.start + 0.5) / f - 0.5)), 0), nc - 1)
+        high = min(max(int(np.floor((part.stop - 1 + 0.5) / f - 0.5)) + 1, 0), nc - 1)
+        first.append(max(0, low - h))
+        last.append(min(nc, high + 1 + h))
+        keep_first.append(low)
+        keep_last.append(high + 1)
+    read = tuple(slice(lo * f, min(n, hi * f)) for lo, hi, f, n in zip(first, last, factors, volume_shape))
+    volume, value_range = source
+    coarse = _block_mean(scaled(volume[read], value_range), factors)
+    smooth = ndi.gaussian_filter(
+        coarse, tuple(s / f for s, f in zip(sigmas, factors)), truncate=TRUNCATE, mode="reflect"
+    )
+    keep = tuple(slice(k0 - f0, k1 - f0) for k0, k1, f0 in zip(keep_first, keep_last, first))
+    found = _scale_features(smooth, [sp * f for sp, f in zip(spacing, factors)], keep, want)
+    return CoarseFeatures(first=keep_first, factors=factors, coarse_size=coarse_size, found=found)
+
+
+def interpolate_coarse(features: CoarseFeatures, core_global) -> list:
+    """*features*' values at the image voxels *core_global*."""
+    return [
+        None if values is None
+        else _interpolate(values, None, features.factors, features.first, core_global, features.coarse_size)
+        for values in features.found
+    ]
+
+
+def coarse_context(volumes, ranges, voxel_size_zyx, spec: FeatureSpec, region, needed=None) -> dict:
+    """Every coarse scale's features for the image voxels of *region*,
+    ``{(channel number, scale): CoarseFeatures}``: computed once for a large
+    region and shared by the boxes inside it, so none of them reads or
+    averages the coarse margin itself."""
+    if needed is None:
+        needed = np.ones(spec.n_features, dtype=bool)
+    needed = np.asarray(needed, dtype=bool)
+    volume_shape = tuple(int(n) for n in np.shape(volumes[0]))
+    width = 1 + len(PER_SCALE) * len(spec.scales_um)
+    context = {}
+    for number, (volume, value_range) in enumerate(zip(volumes, ranges)):
+        for index, scale in enumerate(spec.scales_um):
+            if coarse_factors(spec, scale, voxel_size_zyx) == (1, 1, 1):
+                continue
+            start = number * width + 1 + index * len(PER_SCALE)
+            want = needed[start:start + len(PER_SCALE)]
+            if want.any():
+                context[(number, scale)] = coarse_scale_features(
+                    (volume, value_range), voxel_size_zyx, spec, scale, region, volume_shape, want
+                )
+    return context
+
+
+def has_coarse_scales(spec: FeatureSpec, voxel_size_zyx: Sequence[float]) -> bool:
+    return any(coarse_factors(spec, scale, voxel_size_zyx) != (1, 1, 1) for scale in spec.scales_um)
+
+
 def box_features(
     channels: Sequence[np.ndarray],
     voxel_size_zyx: Sequence[float],
@@ -174,6 +424,10 @@ def box_features(
     core: tuple[slice, slice, slice],
     *,
     needed: np.ndarray | None = None,
+    origin: Sequence[int] = (0, 0, 0),
+    volume_shape: Sequence[int] | None = None,
+    sources: Sequence | None = None,
+    coarse: Mapping | None = None,
 ) -> np.ndarray:
     """The features of the voxels in *core* of a padded box: *channels* are
     the box's scaled channels (:func:`scaled`), in *spec*'s order, and *core*
@@ -183,7 +437,16 @@ def box_features(
     *needed* (a bool per feature) skips the work for features no tree reads:
     a scale none of whose features is read is not smoothed, the Hessian is
     not taken where neither its trace nor its eigenvalues are read. A feature
-    computed is the same value either way; one skipped is 0."""
+    computed is the same value either way; one skipped is 0.
+
+    Each scale is computed over its own margin round the core
+    (:func:`scale_halo`), not the widest scale's. A coarse *spec*'s wide
+    scales are computed on their coarse grid (:func:`coarse_factors`), which
+    needs the box's place in the image: *origin*, its first voxel, and
+    *volume_shape* (the box's own shape when not given), and *sources* --
+    each channel's ``(volume, range)`` -- to read its region past the box.
+    *coarse* (:func:`coarse_context` of a region holding the box) gives the
+    coarse scales' values ready to interpolate, the same values."""
     core_shape = tuple(s.stop - s.start for s in core)
     if needed is None:
         needed = np.ones(spec.n_features, dtype=bool)
@@ -193,7 +456,7 @@ def box_features(
         out = np.zeros(core_shape + (spec.n_features,), dtype=np.float32)
     column = 0
     spacing = [float(v) for v in voxel_size_zyx]
-    for channel in channels:
+    for number, channel in enumerate(channels):
         channel_needed = needed[column: column + 1 + len(PER_SCALE) * len(spec.scales_um)]
         if not channel_needed.any():
             column += len(channel_needed)
@@ -207,35 +470,31 @@ def box_features(
             if not want.any():
                 column += len(PER_SCALE)
                 continue
-            smooth = ndi.gaussian_filter(
-                channel, sigma_voxels(scale, spacing), truncate=TRUNCATE, mode="reflect"
-            )
-            if want[0]:
-                out[..., column] = smooth[core]
-            if not want[1:].any():
-                column += len(PER_SCALE)
-                continue
-            gz, gy, gx = (_difference(smooth, axis, spacing[axis]) for axis in range(3))
-            del smooth
-            if want[1]:
-                out[..., column + 1] = np.sqrt(gz[core] ** 2 + gy[core] ** 2 + gx[core] ** 2)
-            if want[2:].any():
-                eigen = bool(want[3:].any())
-                hzz = _difference(gz, 0, spacing[0])[core]
-                hzy = _difference(gz, 1, spacing[1])[core] if eigen else None
-                hzx = _difference(gz, 2, spacing[2])[core] if eigen else None
-                del gz
-                hyy = _difference(gy, 1, spacing[1])[core]
-                hyx = _difference(gy, 2, spacing[2])[core] if eigen else None
-                del gy
-                hxx = _difference(gx, 2, spacing[2])[core]
-                del gx
-                if want[2]:
-                    out[..., column + 2] = hzz + hyy + hxx
-                if eigen:
-                    for offset, eigenvalue in enumerate(symmetric_eigenvalues(hzz, hyy, hxx, hzy, hzx, hyx)):
-                        if want[3 + offset]:
-                            out[..., column + 3 + offset] = eigenvalue
+            factors = coarse_factors(spec, scale, spacing)
+            if factors == (1, 1, 1):
+                # Only this scale's own margin: the same values, less work.
+                halo = scale_halo(spec, scale, spacing)
+                region = tuple(
+                    slice(max(0, c.start - h), min(n, c.stop + h)) for c, h, n in zip(core, halo, channel.shape)
+                )
+                inner = tuple(slice(c.start - r.start, c.stop - r.start) for c, r in zip(core, region))
+                smooth = ndi.gaussian_filter(
+                    channel[region], sigma_voxels(scale, spacing), truncate=TRUNCATE, mode="reflect"
+                )
+                found = _scale_features(smooth, spacing, inner, want)
+                del smooth
+            elif coarse is not None and (number, scale) in coarse:
+                core_global = [slice(o + c.start, o + c.stop) for o, c in zip(origin, core)]
+                found = interpolate_coarse(coarse[(number, scale)], core_global)
+            else:
+                found = _coarse_scale_features(
+                    channel, origin, volume_shape or channel.shape, core, spacing,
+                    sigma_voxels(scale, spacing), factors, want,
+                    source=None if sources is None else sources[number],
+                )
+            for offset, values in enumerate(found):
+                if values is not None:
+                    out[..., column + offset] = values
             column += len(PER_SCALE)
     return out
 
@@ -297,6 +556,7 @@ def features_of_box(
     inner: tuple[slice, ...],
     *,
     needed: np.ndarray | None = None,
+    coarse: Mapping | None = None,
 ) -> np.ndarray:
     """The features of one box's core, read from the whole *volumes* (one
     per channel, canonical order, in memory, memory-mapped or read lazily)
@@ -309,7 +569,11 @@ def features_of_box(
             channels.append(None)
         else:
             channels.append(scaled(volume[padded], value_range))
-    return box_features(channels, voxel_size_zyx, spec, inner, needed=needed)
+    return box_features(
+        channels, voxel_size_zyx, spec, inner, needed=needed,
+        origin=tuple(p.start for p in padded), volume_shape=tuple(int(n) for n in np.shape(volumes[0])),
+        sources=list(zip(volumes, ranges)), coarse=coarse,
+    )
 
 
 def features_at(

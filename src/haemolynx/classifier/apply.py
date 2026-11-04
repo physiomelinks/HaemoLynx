@@ -37,7 +37,16 @@ from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
-from .features import BOX_VOXELS, FeatureSpec, feature_halo, features_of_box, intensity_range
+from .features import (
+    BOX_VOXELS,
+    FeatureSpec,
+    coarse_context,
+    coarse_reach,
+    feature_halo,
+    features_of_box,
+    has_coarse_scales,
+    intensity_range,
+)
 from .model import PixelClassifier, load_classifier
 
 logger = logging.getLogger(__name__)
@@ -72,6 +81,11 @@ LOW_RAM_BOX_VOXELS = 4_000_000
 #: Planes a slab holds at most, and the memory a low-RAM pass keeps its slabs
 #: and decoded pages within (less when less is free).
 MAX_SLAB_PLANES = 64
+
+#: The side (voxels) of the tiles of a slab whose coarse scales are computed
+#: once and shared by the boxes inside: wide, so their coarse margin is a
+#: small part of them.
+COARSE_TILE = 1024
 LOW_RAM_BUDGET_BYTES = 4 << 30
 
 #: How the masks are compressed: fast, and a 0/1 mask shrinks some fifty-fold.
@@ -288,9 +302,12 @@ def shared_spec(specs: Sequence[FeatureSpec]) -> FeatureSpec:
             "One classifier reads the whole one-channel raw image and another a channel of a "
             "composite: they cannot both read this raw image."
         )
+    grids = {spec.coarse for spec in specs}
+    if len(grids) > 1:
+        raise ValueError("Classifiers on the coarse grid and on the image's own share no features.")
     scales = sorted({s for spec in specs for s in spec.scales_um})
     ordered = (None,) if channels == {None} else tuple(sorted(channels))
-    return FeatureSpec(scales_um=tuple(scales), channels=ordered)
+    return FeatureSpec(scales_um=tuple(scales), channels=ordered, coarse=grids.pop())
 
 
 def spec_columns(spec: FeatureSpec, shared: FeatureSpec) -> np.ndarray:
@@ -389,29 +406,43 @@ def classify_slabs(
     box_voxels = int(box_voxels or BOX_VOXELS)
     if planes_per_slab is None:
         planes_per_slab = slab_planes(
-            shape, halo, channels=len(volumes), itemsize=2,
+            shape, halo, channels=len(volumes),
+            itemsize=int(np.dtype(getattr(volumes[0], "dtype", np.uint16)).itemsize),
             outputs=sum(len(job.outputs) for job in jobs), budget_bytes=LOW_RAM_BUDGET_BYTES,
         )
     slabs = [(z0, min(z0 + planes_per_slab, shape[0])) for z0 in range(0, shape[0], planes_per_slab)]
+    # Coarse scales are computed once per tile of the slab, large in y and x,
+    # and shared by the boxes inside it (features.coarse_context): no box
+    # reads or averages the coarse margin itself.
+    tiled = has_coarse_scales(shared, voxel_size_zyx)
+    tile = COARSE_TILE if tiled else max(shape[1], shape[2])
     plans = []
     for z0, z1 in slabs:
         by, bx = _slab_core(shape, halo, (z0, z1), box_voxels)
-        for y0 in range(0, shape[1], by):
-            for x0 in range(0, shape[2], bx):
-                core = (slice(z0, z1), slice(y0, min(y0 + by, shape[1])), slice(x0, min(x0 + bx, shape[2])))
-                plans.append(((z0, z1), core))
-    largest = max(
-        int(np.prod([s.stop - s.start for s in core])) for _slab, core in plans
-    )
+        for ty in range(0, shape[1], tile):
+            for tx in range(0, shape[2], tile):
+                region = (slice(z0, z1), slice(ty, min(ty + tile, shape[1])), slice(tx, min(tx + tile, shape[2])))
+                for y0 in range(ty, region[1].stop, by):
+                    for x0 in range(tx, region[2].stop, bx):
+                        core = (
+                            slice(z0, z1),
+                            slice(y0, min(y0 + by, region[1].stop)),
+                            slice(x0, min(x0 + bx, region[2].stop)),
+                        )
+                        plans.append(((z0, z1), region, core))
+    largest = max(int(np.prod([s.stop - s.start for s in core])) for _slab, _region, core in plans)
     count = worker_count(box_voxels, largest, int(needed.sum()), workers=workers)
     nf = shared.n_features
 
-    def one(core):
+    def one(core, context):
         padded = tuple(
             slice(max(0, c.start - h), min(n, c.stop + h)) for c, h, n in zip(core, halo, shape)
         )
         inner = tuple(slice(c.start - p.start, c.stop - p.start) for c, p in zip(core, padded))
-        features = features_of_box(volumes, ranges, voxel_size_zyx, shared, padded, inner, needed=needed)
+        features = features_of_box(
+            volumes, ranges, voxel_size_zyx, shared, padded, inner, needed=needed,
+            coarse=None if context is None else context.result(),
+        )
         flat = features.reshape(-1, nf)
         results = []
         for job, cols in zip(jobs, columns):
@@ -431,17 +462,38 @@ def classify_slabs(
     with ThreadPoolExecutor(max_workers=count) as pool:
         for z0, z1 in slabs:
             buffers = {key: np.zeros((z1 - z0,) + shape[1:], dtype=np.uint8) for key in keys}
-            mine = [core for slab, core in plans[position:] if slab == (z0, z1)]
+            mine = [(region, core) for slab, region, core in plans[position:] if slab == (z0, z1)]
             position += len(mine)
             pending: set = set()
             queued = iter(mine)
+            # Each tile's coarse context is started a few tiles ahead of its
+            # boxes, so the boxes rarely wait on one: the pool runs in order,
+            # so a box waits only on a context already running.
+            regions = list(dict.fromkeys(tuple((r.start, r.stop) for r in region) for region, _core in mine))
+            contexts: dict = {}
+            ahead = max(2, count // 2)
+
+            def context_for(key):
+                at = regions.index(key)
+                for upcoming in regions[at:at + ahead]:
+                    if upcoming not in contexts:
+                        contexts[upcoming] = pool.submit(
+                            coarse_context, volumes, ranges, voxel_size_zyx, shared,
+                            tuple(slice(a, b) for a, b in upcoming), needed,
+                        )
+                for passed in [k for k in contexts if regions.index(k) < at]:
+                    del contexts[passed]  # its boxes hold their own reference
+                return contexts[key]
+
             try:
                 while True:
                     while len(pending) < 2 * count:
-                        core = next(queued, None)
-                        if core is None:
+                        item = next(queued, None)
+                        if item is None:
                             break
-                        pending.add(pool.submit(one, core))
+                        region, core = item
+                        context = context_for(tuple((r.start, r.stop) for r in region)) if tiled else None
+                        pending.add(pool.submit(one, core, context))
                     if not pending:
                         break
                     finished, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
@@ -772,9 +824,14 @@ def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memma
     jobs = [Job(classifier, tuple(outputs)) for classifier, outputs in grouped.values()]
     if not jobs:
         return results
-    used = shared_spec([job.classifier.spec for job in jobs])
-    volumes = [raw.volume(channel) for channel in used.channels]
-    ranges = [intensity_range(volume) for volume in volumes]
+    # Classifiers on the coarse grid and on the image's own share no
+    # features: one pass for each (a classifier saved before beside a new one).
+    passes: dict[bool, list[Job]] = {}
+    for job in jobs:
+        passes.setdefault(job.classifier.spec.coarse, []).append(job)
+    channels = sorted({c for job in jobs for c in job.classifier.spec.channels}, key=lambda c: -1 if c is None else c)
+    volumes = [raw.volume(channel) for channel in channels]
+    ranges_by_channel = {channel: intensity_range(raw.volume(channel)) for channel in channels}
     keys = [key for job in jobs for key, _marks in job.outputs]
     logger.info(
         "Segmenting %s with %d classifier(s) in one pass (%s), %s.",
@@ -814,23 +871,33 @@ def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memma
     free = available_memory_bytes()
     if free is not None:
         budget = min(budget, int(0.4 * free)) if use_memmap else max(budget, int(0.4 * free))
-    per_slab = slab_planes(
-        raw.shape_zyx, feature_halo(used, raw.voxel_size_zyx), channels=len(volumes),
-        itemsize=int(np.dtype(getattr(volumes[0], "dtype", np.uint16)).itemsize),
-        outputs=len(keys), budget_bytes=budget,
-    )
     try:
-        for volume in volumes:
-            if hasattr(volume, "cache_bytes"):
-                halo = feature_halo(used, raw.voxel_size_zyx)[0]
-                volume.cache_bytes = (per_slab + 2 * halo + 1) * volume._plane_bytes
-        classify_slabs(
-            volumes, ranges, raw.voxel_size_zyx, jobs, sink=sink, workers=workers, poll=poll,
-            progress=report, box_voxels=box_size(budget_bytes=budget, workers=workers), planes_per_slab=per_slab,
-        )
+        for group in passes.values():
+            used = shared_spec([job.classifier.spec for job in group])
+            group_volumes = [raw.volume(channel) for channel in used.channels]
+            halo = feature_halo(used, raw.voxel_size_zyx)
+            per_slab = slab_planes(
+                raw.shape_zyx, halo, channels=len(group_volumes),
+                itemsize=int(np.dtype(getattr(group_volumes[0], "dtype", np.uint16)).itemsize),
+                outputs=sum(len(job.outputs) for job in group), budget_bytes=budget,
+            )
+            for volume in group_volumes:
+                if hasattr(volume, "cache_bytes"):
+                    # The slab's pages with their margin, within the budget:
+                    # past it pages are decoded again rather than memory run out.
+                    reach = coarse_reach(used, raw.voxel_size_zyx)[0]
+                    wanted = (per_slab + 2 * reach + 1) * volume._plane_bytes
+                    share = budget // (2 * max(len(group_volumes), 1))
+                    volume.cache_bytes = int(min(wanted, max(share, 2 * volume._plane_bytes)))
+            classify_slabs(
+                group_volumes, [ranges_by_channel[c] for c in used.channels], raw.voxel_size_zyx, group,
+                sink=sink, workers=workers, poll=poll, progress=report,
+                box_voxels=box_size(budget_bytes=budget, workers=workers), planes_per_slab=per_slab,
+            )
     except BaseException:
         for writer in writers.values():
             writer.abort()
+        _release(*whole.values())
         raise
     counts: dict[str, int] = {}
     if streaming:

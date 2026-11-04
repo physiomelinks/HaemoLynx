@@ -10703,6 +10703,7 @@ class _ClassifierTrainingWindow:
         *,
         on_saved: Callable[[Path], None] | None = None,
         synchronous: bool = False,
+        current_values: Callable[[], Mapping[str, Any]] | None = None,
     ):
         from qtpy.QtCore import QTimer
         from qtpy.QtWidgets import (
@@ -10739,6 +10740,9 @@ class _ClassifierTrainingWindow:
         self.purposes = purposes_for(row)
         self.raw_path = Path(raw)
         self.on_saved = on_saved
+        #: The panel's settings as they are now: where Segment whole image
+        #: writes, and how the run reads the raw image, can change after opening.
+        self.current_values = current_values
         self.synchronous = synchronous
         self.live = None
         self._volumes: dict[Any, Any] = {}
@@ -11218,8 +11222,10 @@ class _ClassifierTrainingWindow:
 
         def work():
             save_classifier(live.train(labels), path)
-            outputs = row_outputs(self.values, self.row, path)
-            segment_with_classifiers(self.raw_path, [(path, outputs)], **classifier_run_arguments(self.values))
+            values = {**self.values, **(self.current_values() if self.current_values else {})}
+            values["raw_image_path"] = self.raw_path  # the image the strokes were painted on
+            outputs = row_outputs(values, self.row, path)
+            segment_with_classifiers(self.raw_path, [(path, outputs)], **classifier_run_arguments(values))
             return outputs
 
         def done(outputs) -> None:
@@ -16105,7 +16111,8 @@ def settings_widget(napari_viewer=None):
 
         try:
             window = _ClassifierTrainingWindow(
-                viewer, current_values(), row_name, on_saved=saved, synchronous=synchronous
+                viewer, current_values(), row_name, on_saved=saved, synchronous=synchronous,
+                current_values=current_values,
             )
         except (OSError, ValueError) as error:
             report.value = str(error)

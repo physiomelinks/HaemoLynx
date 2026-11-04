@@ -444,6 +444,22 @@ def classifier_finds_venules(classifier_path: str | Path | None) -> bool:
     return int((record.get("voxels_per_label") or {}).get("Venule", 0)) > 0
 
 
+def classifier_role_outputs(
+    output_dir, raw_image_path, mask_role: str, classifier_path
+) -> dict[str, Path]:
+    """The masks the HaemoLynx classifier writes for a role, ``{mask: path}``
+    in *output_dir*, named as ilastik's: arteriole and venule, or one global
+    mask for a classifier never shown a venule. The one naming rule the run's
+    single pass, the mask loading and the training window share."""
+    folder, raw = Path(output_dir or "."), Path(raw_image_path)
+    if classifier_finds_venules(classifier_path):
+        return {
+            "Arteriole": ilastik_vessel_mask_output_path(folder, raw, mask_role, "arteriole", ".tif"),
+            "Venule": ilastik_vessel_mask_output_path(folder, raw, mask_role, "venule", ".tif"),
+        }
+    return {"Arteriole": ilastik_vessel_mask_output_path(folder, raw, mask_role, "global", ".tif")}
+
+
 def _segment_vessel_masks_with_classifier(
     mask_role: str,
     *,
@@ -468,12 +484,8 @@ def _segment_vessel_masks_with_classifier(
                 "segments the run's raw image."
             )
     raw_image = resolve_image_path_with_optional_zip(Path(raw_image_path))
-    folder = Path(output_dir or ".")
-    global_mask = not classifier_finds_venules(classifier_path)
-    arteriole_class = "global" if global_mask else "arteriole"
-    outputs = {"Arteriole": ilastik_vessel_mask_output_path(folder, raw_image, mask_role, arteriole_class, ".tif")}
-    if not global_mask:
-        outputs["Venule"] = ilastik_vessel_mask_output_path(folder, raw_image, mask_role, "venule", ".tif")
+    outputs = classifier_role_outputs(output_dir, raw_image, mask_role, classifier_path)
+    global_mask = "Venule" not in outputs
     logger.info(
         f"Segmenting the {mask_role} {'global mask' if global_mask else 'arteriole and venule masks'} "
         f"with the HaemoLynx classifier: {raw_image}"

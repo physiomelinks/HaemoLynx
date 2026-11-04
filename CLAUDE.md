@@ -374,8 +374,11 @@ are the whole volume's in any box (`feature_halo`), the forest votes as scikit-l
 thresholds rounded down), the numba walk and the NumPy walk give the same labels, and a segmentation
 is bit for bit the same in RAM or low-RAM, lazily or not, with any workers, slab or box size, and
 whatever other classifiers share its pass (`tests/test_pixel_classifier.py`,
-`test_classifier_scale.py`). Only training needs scikit-learn (`dev` and `napari` extras); a
-`.haemoclf` holds no pickle.
+`test_classifier_scale.py`). A new classifier smooths its wide scales on a coarse grid
+(`FeatureSpec.coarse`, `features.coarse_factors`: block means aligned to the whole image,
+interpolated back), computed once per 1024-voxel tile of a slab and shared by its boxes; one saved
+before records none and reads every scale on the image's grid, as it was trained. Only training
+needs scikit-learn (`dev` and `napari` extras); a `.haemoclf` holds no pickle.
 
 **One raw image per run.** The Input tab's `raw_image_path`, `raw_image_channel` and
 `raw_image_stain` are the only raw image a run reads: ilastik segments it (the vessel masks'

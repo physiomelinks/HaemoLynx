@@ -30,6 +30,9 @@ PLANE_CACHE_BYTES = 1 << 30
 #: Planes computed together along the axis in view, so their margin is paid once.
 PLANES_PER_SLAB = 4
 
+#: Painted voxels whose features are remembered, at most.
+REMEMBERED_POINTS = 500_000
+
 #: The side of a cached tile of a plane, in voxels.
 TILE = 256
 
@@ -126,12 +129,20 @@ class LiveClassifier:
         self.workers = max(1, int(workers))
         self.cache_bytes = int(cache_bytes)
         self._tiles: OrderedDict[tuple[int, int, int, int], np.ndarray] = OrderedDict()
-        self._points: dict[int, np.ndarray] = {}
+        self._points: OrderedDict[int, np.ndarray] = OrderedDict()
         self._lock = threading.Lock()
 
     @property
     def spec(self):
         return self.classifier.spec
+
+    def _remember(self, key: int, values: np.ndarray) -> None:
+        """Keep a painted voxel's features, the oldest dropped past
+        :data:`REMEMBERED_POINTS` (they are recomputed if painted again)."""
+        self._points[key] = values
+        self._points.move_to_end(key)
+        while len(self._points) > REMEMBERED_POINTS:
+            self._points.popitem(last=False)
 
     def _plane_axes(self, axis: int) -> tuple[int, int]:
         return tuple(a for a in range(3) if a != axis)  # type: ignore[return-value]
@@ -223,7 +234,7 @@ class LiveClassifier:
             if known is None:
                 known = self._cached_point(point)
                 if known is not None:
-                    self._points[key] = np.array(known)
+                    self._remember(key, np.array(known))
             if known is None:
                 missing.append(row)
             else:
@@ -249,7 +260,8 @@ class LiveClassifier:
                 z, y, x = (int(v) for v in points[row])
                 values = np.array(tile[z - start, y - tile_row * TILE, x - tile_column * TILE])
                 out[row] = values
-                self._points[int(flat[row])] = values
+                with self._lock:
+                    self._remember(int(flat[row]), values)
 
         items = list(groups.items())
         if self.workers > 1 and len(items) > 1:

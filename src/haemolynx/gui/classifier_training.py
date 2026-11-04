@@ -210,22 +210,15 @@ def row_outputs(values: Mapping[str, Any], row: str, classifier_path: str | Path
     """The masks a row's classifier writes, ``{mask: path}``, named as the
     run names them (``stages.classifier_requests``), so the run finds them
     current and uses them."""
-    from haemolynx.io.vessel_masks import classifier_finds_venules, ilastik_vessel_mask_output_path
+    from haemolynx.io.vessel_masks import classifier_role_outputs
     from haemolynx.pipeline.naming import classifier_segmented_path
     from haemolynx.pipeline.stages import object_mask_output_path
 
-    raw = Path(values["raw_image_path"])
-    folder = Path(values.get("output_dir") or ".")
     if row == "pixel_classifier_path":
         return {"Vessel": classifier_segmented_path(values)}
     if row in ("pixel_classifier_large_vessel_path", "pixel_classifier_small_vessel_path"):
         role = "large" if "large" in row else "small"
-        if classifier_finds_venules(classifier_path):
-            return {
-                "Arteriole": ilastik_vessel_mask_output_path(folder, raw, role, "arteriole", ".tif"),
-                "Venule": ilastik_vessel_mask_output_path(folder, raw, role, "venule", ".tif"),
-            }
-        return {"Arteriole": ilastik_vessel_mask_output_path(folder, raw, role, "global", ".tif")}
+        return classifier_role_outputs(values.get("output_dir"), values["raw_image_path"], role, classifier_path)
     word, mask = {
         "pixel_classifier_pericyte_path": ("pericytes", "Pericyte"),
         "pixel_classifier_block_path": ("blocks", "Block"),

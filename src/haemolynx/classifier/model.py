@@ -325,9 +325,12 @@ def load_classifier(path: str | Path) -> PixelClassifier:
     )
 
 
-def new_classifier(purpose: str, *, scales_um: Sequence[float] | None = None, channels=(None,)) -> PixelClassifier:
-    """An untrained classifier for *purpose*."""
-    spec = FeatureSpec(channels=tuple(channels)) if scales_um is None else FeatureSpec(
-        scales_um=tuple(scales_um), channels=tuple(channels)
+def new_classifier(
+    purpose: str, *, scales_um: Sequence[float] | None = None, channels=(None,), coarse: bool = True
+) -> PixelClassifier:
+    """An untrained classifier for *purpose*. A new classifier computes its
+    wide scales on a coarse grid (*coarse*, ``FeatureSpec.coarse``)."""
+    spec = FeatureSpec(channels=tuple(channels), coarse=coarse) if scales_um is None else FeatureSpec(
+        scales_um=tuple(scales_um), channels=tuple(channels), coarse=coarse
     )
     return PixelClassifier(purpose=purpose, spec=spec)
