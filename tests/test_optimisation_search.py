@@ -1045,10 +1045,24 @@ def test_a_skeleton_of_isolated_voxels_stops_the_search_at_the_graph_settings():
 
 
 def test_optimise_settings_respects_anisotropic_voxel_size(y_shaped_mask):
+    """The voxel size reaches the trials' scores: the same mask read at 2 um
+    in z scores otherwise than at 1 um. It asserted only that every setting
+    came back, which a search ignoring the voxel size passed too."""
     result = optimise_skeleton_and_graph_settings(
         y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 2.0), starting_values=_DEFAULT_STARTING_VALUES,
     )
     assert set(result.settings) == set(OPTIMISE_SETTING_NAMES)
+
+    isotropic, stretched = (
+        optimise_skeleton_and_graph_settings(
+            y_shaped_mask, voxel_size_xyz=voxel_size_xyz, starting_values=_DEFAULT_STARTING_VALUES,
+            groups=("segmentation_cleanup",),
+        )
+        for voxel_size_xyz in ((1.0, 1.0, 1.0), (1.0, 1.0, 2.0))
+    )
+    first = [trial.metrics["mask_score"] for trial in (isotropic.trials[0], stretched.trials[0])]
+    assert isotropic.trials[0].value == stretched.trials[0].value
+    assert first[0] != pytest.approx(first[1], abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

@@ -959,3 +959,134 @@ def test_a_mask_rewrite_that_keeps_mtime_and_size_returns_the_new_mask(tmp_path:
 
     assert np.array_equal(first, old.astype(bool))
     assert np.array_equal(second, new.astype(bool))
+
+
+#: The masks every clean-up setting below changes, (z, y, x) voxels of
+#: VOXEL_SIZE_XYZ (2.0 x 0.5 x 0.4 um, 0.4 um3 each).
+CLEANUP_SHAPE = (6, 12, 16)
+
+
+def _write_masks_every_cleanup_changes(tmp_path: Path) -> None:
+    """An arteriole and a venule mask holding one case for each clean-up:
+    a speck (component volume), a two-voxel arteriole piece against the
+    venule (minority swap, opposite-attached removal), one a voxel short of
+    it (attach distance) and one lying inside a venule piece (overlap). No
+    voxel size of their own, so they take the image's, and a downsample's
+    source voxel size, under the auto policy."""
+    arteriole = np.zeros(CLEANUP_SHAPE, dtype=np.uint8)
+    venule = np.zeros(CLEANUP_SHAPE, dtype=np.uint8)
+    arteriole[0:3, 0:5, 0:6] = 1  # the arteriole, 90 voxels
+    arteriole[5, 11, 15] = 1  # a speck
+    venule[0:3, 6:12, 8:16] = 1  # the venule, 144 voxels
+    arteriole[1, 5, 10:12] = 1  # against the venule, 0.5 um from it
+    arteriole[1, 8, 6] = 1  # a voxel short of the venule, 0.8 um from it
+    venule[4:6, 0:3, 0:3] = 1  # a venule piece, 18 voxels
+    arteriole[4:6, 0:2, 0:2] = 1  # lying inside it
+    for name, volume in (("arteriole.tif", arteriole), ("venule.tif", venule)):
+        tifffile.imwrite(tmp_path / name, volume)
+        _backdate(tmp_path / name)
+
+
+def _cleanup_call(tmp_path: Path, **options):
+    return {**_loader_call(tmp_path), "image_shape": CLEANUP_SHAPE, **options}
+
+
+def _crop_box(start_x: int):
+    from haemolynx.io.crop import CropBox
+
+    return CropBox((0, 0, start_x), (6, 12, start_x + 8), CLEANUP_SHAPE)
+
+
+def _downsample_z(factor: int):
+    """Blocks of *factor* planes in z: 3 and 4 both reduce the 6 planes to 2,
+    on the image's grid of VOXEL_SIZE_XYZ either way, but group them apart."""
+    from haemolynx.io.downsample import Downsample
+
+    return Downsample(factor, (factor, 1, 1), CLEANUP_SHAPE, (2.0 / factor, 0.5, 0.4))
+
+
+_SWAP_ON = {"swap_minority_components": True}
+_OPPOSITE_ON = {
+    "remove_small_opposite_attached_components": True,
+    "opposite_attached_max_component_volume_um3": 5.0,
+}
+
+#: (setting, the settings it is changed from, its new value).
+CLEANUP_CHANGES = [
+    ("dilation_microns", {}, 1.0),
+    ("min_component_volume_um3", {}, 1.0),
+    ("swap_minority_components", {}, True),
+    ("swap_max_size_ratio", _SWAP_ON, 0.001),
+    ("swap_min_contact_fraction", _SWAP_ON, 0.99),
+    (
+        "remove_small_opposite_attached_components",
+        {"opposite_attached_max_component_volume_um3": 5.0},
+        True,
+    ),
+    ("opposite_attached_max_component_volume_um3", _OPPOSITE_ON, 1.0),
+    ("opposite_attached_max_distance_microns", _OPPOSITE_ON, 0.6),
+    ("exclude_smaller_overlapping_volumes", {}, True),
+    ("crop", {"crop": _crop_box(0), "image_shape": (6, 12, 8)}, _crop_box(8)),
+    ("downsample", {"downsample": _downsample_z(3), "image_shape": (2, 12, 16)}, _downsample_z(4)),
+]
+
+
+@pytest.mark.parametrize(
+    "name, base, changed", CLEANUP_CHANGES, ids=[name for name, _base, _changed in CLEANUP_CHANGES]
+)
+def test_a_changed_cleanup_setting_loads_the_masks_again(
+    tmp_path: Path, monkeypatch, name, base, changed
+) -> None:
+    """Every setting that changes the cleaned masks is in the cache key. One
+    left out hands back the masks cleaned the old way -- the same files, so
+    nothing else in the key differs -- and here each change alters the masks,
+    so that is a wrong answer, not only a load saved."""
+    from haemolynx.io import vessel_masks as module
+    from haemolynx.io import clear_vessel_mask_cache
+
+    _write_masks_every_cleanup_changes(tmp_path)
+    clear_vessel_mask_cache()
+    expected = load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **{**base, name: changed}))
+    clear_vessel_mask_cache()
+    loads = []
+    real = module._load_mask_image
+
+    def counted(path, **kwargs):
+        loads.append(Path(path).name)
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(module, "_load_mask_image", counted)
+    try:
+        first = load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **base))
+        load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **base))
+        assert len(loads) == 2, "the same settings again: served from the cache"
+        second = load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **{**base, name: changed}))
+    finally:
+        clear_vessel_mask_cache()
+
+    assert len(loads) == 4, f"{name} changed: loaded again"
+    assert not (
+        np.array_equal(first[0], expected[0]) and np.array_equal(first[1], expected[1])
+    ), f"the change of {name} alters these masks"
+    assert np.array_equal(second[0], expected[0])
+    assert np.array_equal(second[1], expected[1])
+    assert second[2:] == expected[2:]
+
+
+def test_a_changed_voxel_size_override_is_not_served_from_the_cache(tmp_path: Path) -> None:
+    """The override is read before the masks are checked against the image:
+    masks said to be twice as coarse as it are refused, not handed back as
+    the ones remembered from a load without the override."""
+    from haemolynx.io import clear_vessel_mask_cache
+
+    _write_masks_every_cleanup_changes(tmp_path)
+    clear_vessel_mask_cache()
+    try:
+        first = load_and_validate_vessel_masks(**_cleanup_call(tmp_path))
+        assert first[2] == VOXEL_SIZE_XYZ, "no spacing of their own: the image's"
+        with pytest.raises(ValueError, match="Voxel-size mismatch"):
+            load_and_validate_vessel_masks(
+                **_cleanup_call(tmp_path, voxel_size_override_xyz=(0.8, 1.0, 4.0))
+            )
+    finally:
+        clear_vessel_mask_cache()

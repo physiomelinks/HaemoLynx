@@ -270,11 +270,16 @@ def _inlets_not_from_masks(settings: Mapping[str, Any]) -> str:
             "inlets_outlets_from_vessel_masks"
         )
     elif global_sizes:
+        # ilastik makes a role's masks from its classifiers: a venule one is
+        # what it needs, not a file.
+        by_ilastik = all(settings.get(VESSEL_MASK_SETTINGS[size]["use_ilastik"]) for size in global_sizes)
         fix = (
-            f"give each image both an arteriole and a venule mask "
-            f"({' and '.join(global_sizes)}): without a venule mask the masks tell no "
+            f"give each image {'a venule classifier' if by_ilastik else 'a venule mask'} beside "
+            f"its arteriole one ({' and '.join(global_sizes)}): without one the masks tell no "
             "inlet from an outlet"
         )
+        if not settings.get("inlets_outlets_from_vessel_masks", True):
+            fix += ", and turn on inlets_outlets_from_vessel_masks"
     else:
         fix = "take them from each image's large vessel masks: turn on inlets_outlets_from_vessel_masks"
     convention = (
@@ -384,6 +389,14 @@ def check_batch(
     if settings.get("crop_on_import") and settings.get("crop_method") == "coordinates":
         report.add_warning(
             "crop_method is 'coordinates': the same box is cut from every image."
+        )
+    if str(settings.get("voxel_size_policy", "auto")).lower() == "override" or (
+        settings.get("voxel_size_override_xyz") is not None
+        and str(settings.get("voxel_size_policy", "auto")).lower() == "auto"
+    ):
+        report.add_warning(
+            "voxel_size_override_xyz is one voxel size for every image: read in place of "
+            "each image's own (policy override), or where its metadata lacks one (auto)."
         )
     for name in ("do_skeletonize", "do_graph_building"):
         if settings.get(name, True) is False:

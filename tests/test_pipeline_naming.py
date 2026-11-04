@@ -48,3 +48,20 @@ def test_no_image_and_no_template_give_no_stem():
     assert run_stem({"network_source": "synthetic"}) is None
     assert run_stem({"network_source": "synthetic", "synthetic_template_path": ""}) is None
     assert run_input_path({}) is None
+
+
+def test_while_ilastik_segments_a_run_is_named_after_its_output(tmp_path):
+    """Regression: the panel's checkpoints, its saved run's name and the plot
+    folder took the stem of input_path, which under ilastik is empty or a
+    stale file from before, and named their files after it."""
+    settings = {
+        "use_ilastik_segmentation": True,
+        "raw_image_path": tmp_path / "rawC.tif",
+        "ilastik_output_dir": tmp_path / "seg",
+        "ilastik_output_suffix": ".tif",
+        "input_path": tmp_path / "old_unrelated.tif",
+    }
+    assert run_stem(settings) == "rawC_segmented"
+    made = tmp_path / "seg" / "rawC_segmented.tiff"
+    assert run_input_path({**settings, "input_path": made}) == made
+    assert run_stem({**settings, "raw_image_path": None}) == "old_unrelated"

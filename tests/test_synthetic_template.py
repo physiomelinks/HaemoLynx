@@ -488,6 +488,26 @@ def test_provenance_reads_the_runs_manifest_when_it_is_there(tmp_path):
     assert template.provenance.haemolynx_version is not None
 
 
+def test_provenance_finds_the_manifest_of_a_run_ilastik_segmented(tmp_path):
+    """Regression: the manifest was looked for under the input_path row's
+    stem, a file left from before ilastik was on; the run named its outputs
+    after ilastik's segmentation of the raw image."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "claudin_segmented_run_manifest.json").write_text(
+        json.dumps({"haemolynx_version": "9.9.9", "git": {"commit": "abc123"}}), encoding="utf-8"
+    )
+    settings = {
+        "input_path": tmp_path / "stale.tif",
+        "output_dir": out,
+        "use_ilastik_segmentation": True,
+        "raw_image_path": tmp_path / "claudin.tif",
+        "ilastik_output_dir": tmp_path / "ilastik",
+    }
+    template = load_template(write_fixture_run(tmp_path, settings=settings), "statistics")
+    assert template.provenance.run_version == "9.9.9"
+
+
 def test_load_template_remembers_a_file_until_it_changes(tmp_path):
     path = write_fixture_run(tmp_path)
     first = load_template(path, "statistics")

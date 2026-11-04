@@ -312,7 +312,9 @@ def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
         assert shared.hide_when_unmet, name
         assert name in SHARED_ILASTIK_SETTING_SET
         assert not shared.is_visible({"use_ilastik_segmentation": False}), name
-        assert shared.is_visible({"use_ilastik_segmentation": True}), name
+        assert shared.is_visible({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}), name
+        # Ticked with no raw image, it segments nothing: no rows for it.
+        assert not shared.is_visible({"use_ilastik_segmentation": True}), name
 
 
 def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
@@ -366,7 +368,21 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
 def test_shared_ilastik_host_prefers_input_then_boundaries():
     assert shared_ilastik_host({}) is None
     assert shared_ilastik_host({"use_ilastik_segmentation": False}) is None
-    assert shared_ilastik_host({"use_ilastik_segmentation": True}) == "input"
+    assert shared_ilastik_host({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}) == "input"
+    # Ticked with no raw image, main ilastik segments nothing: no host for it,
+    # and a vessel-mask classifier's rows go to Boundaries (below).
+    assert shared_ilastik_host({"use_ilastik_segmentation": True}) is None
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": True,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": True,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        == "boundaries"
+    )
     assert (
         shared_ilastik_host(
             {
@@ -407,6 +423,7 @@ def test_shared_ilastik_host_prefers_input_then_boundaries():
         shared_ilastik_host(
             {
                 "use_ilastik_segmentation": True,
+                "raw_image_path": "raw.tif",
                 "use_ilastik_large_vessel_segmentation": True,
             }
         )
@@ -455,6 +472,7 @@ def test_shared_ilastik_shows_on_boundaries_when_hidden_on_input():
     # Both main and vessel: Input hosts; Boundaries does not duplicate.
     both = {
         "use_ilastik_segmentation": True,
+        "raw_image_path": "raw.tif",
         "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
         "use_ilastik_large_vessel_segmentation": True,
@@ -837,8 +855,10 @@ def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
     parent = fields["measurement_3d_to_cell_mask"]
-    assert not parent.hide_when_unmet
     assert parent.is_visible({})
+    # Lined up with the run's image: gone for a synthetic network, which
+    # preflight refused it on after showing it.
+    assert not parent.is_visible({"network_source": "synthetic"})
     assert parent.section == "Statistics and measurements"
 
     for name in _MEASUREMENT_3D_CHILDREN:
@@ -1564,3 +1584,12 @@ def test_shared_ilastik_rows_host_nowhere_under_a_synthetic_network():
     values = {"network_source": "synthetic", "use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}
     assert shared_ilastik_host(values) is None
     assert shared_ilastik_host({**values, "network_source": "segmented_image"}) == "input"
+
+
+def test_the_image_measurements_are_gone_for_a_synthetic_network():
+    """Regression: the tissue volume, cell distance and pericyte rows showed
+    under a synthetic network, then preflight refused them."""
+    for name in ("measure_tissue_volume", "measurement_3d_to_cell_mask", "measure_pericytes"):
+        assert not unmet_chain(SCHEMA, name, {"network_source": "segmented_image"}), name
+        for source in ("synthetic", "synthetic_surround"):
+            assert unmet_chain(SCHEMA, name, {"network_source": source}), (name, source)

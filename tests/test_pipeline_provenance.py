@@ -289,6 +289,41 @@ def test_every_input_file_in_effect_is_fingerprinted_once(tmp_path):
     assert records[1]["checksum"] == f"sha256:{_sha256(mask)}"
 
 
+def test_a_file_under_a_gate_out_of_effect_is_not_listed(tmp_path):
+    """Regression: a path setting was listed when its own prerequisites held,
+    though a gate above it was out of effect: the ilastik project with no raw
+    image to segment, a vessel mask on a synthetic run."""
+    project = tmp_path / "classifier.ilp"
+    project.write_bytes(b"project")
+    mask = tmp_path / "Large_arteriole.tif"
+    mask.write_bytes(b"mask")
+    template = tmp_path / "template.haemorun"
+    template.write_bytes(b"run")
+    no_raw_image = _settings(
+        tmp_path, use_ilastik_segmentation=True, ilastik_classifier_path=project, raw_image_path=None,
+    )
+    assert "ilastik_classifier_path" not in [r["setting"] for r in provenance.input_files(no_raw_image, SCHEMA)]
+
+    masks = dict(automated_vessel_assignment=True, use_large_vessel_masks=True, large_arteriole_mask_path=mask)
+    on_an_image = _settings(tmp_path, **masks)
+    assert "large_arteriole_mask_path" in [r["setting"] for r in provenance.input_files(on_an_image, SCHEMA)]
+    synthetic = _settings(tmp_path, network_source="synthetic", synthetic_template_path=template, **masks)
+    listed = [r["setting"] for r in provenance.input_files(synthetic, SCHEMA)]
+    assert "large_arteriole_mask_path" not in listed and "synthetic_template_path" in listed
+
+
+def test_in_effect_follows_the_whole_chain():
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(use_ilastik_segmentation=True, raw_image_path=None)
+    assert SCHEMA["ilastik_classifier_path"].requires == ("use_ilastik_segmentation",)
+    assert not SCHEMA.in_effect("ilastik_classifier_path", values)
+    values["raw_image_path"] = "raw.tif"
+    assert SCHEMA.in_effect("ilastik_classifier_path", values)
+    # A !gate holds while the gate is out of effect: what it replaces is read.
+    values.update(use_ilastik_segmentation=True, raw_image_path=None)
+    assert SCHEMA.in_effect("input_path", values)
+
+
 # --- a staged run on fixture data ----------------------------------------------
 
 

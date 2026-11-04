@@ -90,6 +90,8 @@ from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.run_state import (
     ALREADY_RUNNING,
     CANCELLED,
+    CHECKS_FAILED_NOTHING_RUN,
+    RUNNING_CHECKS,
     FINISHED_FIRST,
     POST_PROCESS,
     RunCancelled,
@@ -97,6 +99,7 @@ from haemolynx.gui.run_state import (
     clear_message,
     mid_run_stop_after,
     paused_bar_text,
+    slow_checks,
     paused_message,
     post_processing_tab_title,
     regenerate_stop_after,
@@ -167,7 +170,7 @@ from haemolynx.gui.vessel_tubes import (
     vessel_tube_mesh,
     vessel_tubes_layer_name,
 )
-from haemolynx.io.crop import crop_volume_from_settings
+from haemolynx.io.crop import CropBox, crop_volume, crop_volume_from_settings
 from haemolynx.io.downsample import (
     RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
     Downsample,
@@ -207,11 +210,9 @@ from haemolynx.parsers import (
 )
 from haemolynx.pipeline import (
     default_schema,
-    load_volume_for_skeletonise,
     preflight,
     resolve_settings,
     run_pipeline_stages,
-    run_voxel_size_xyz,
     segment,
 )
 from haemolynx.pipeline import stages as pipeline_stages
@@ -6883,6 +6884,7 @@ def _load_raw_reference_image_or_none(
     downsample: "Mapping[str, Any] | Downsample | None" = None,
     voxel_size_xyz: "tuple[float, float, float] | None" = None,
     use_memmap: bool = False,
+    crop: "CropBox | None" = None,
 ) -> tuple["np.ndarray | None", "str | None"]:
     """Load the optional raw reference image from ``raw_image_path``.
 
@@ -6899,7 +6901,10 @@ def _load_raw_reference_image_or_none(
     the caller has around this load.
 
     The raw image goes through the segmented image's ``crop_on_import`` box
-    and then onto its grid: *downsample* is how the mask was reduced (the
+    (*crop*, the box the mask was cut by, after checking the raw image is
+    the whole stack that box was cut from: worked out from the raw image's
+    own shape instead, one of another size was cut at its own place and
+    passed the check after) and then onto its grid: *downsample* is how the mask was reduced (the
     record ``load_volume_for_skeletonise`` returns in its status, or a
     ``Downsample``), and with none, *voxel_size_xyz* -- the run's -- is what
     a ``raw_image_downsample`` of its own is read against.
@@ -6933,7 +6938,15 @@ def _load_raw_reference_image_or_none(
             **on_disk,
         )
         # The mask came through crop_on_import's box; the raw image goes too.
-        raw_image = crop_volume_from_settings(whole, local_settings, description="raw image")
+        if crop is not None:
+            if tuple(whole.shape) != tuple(crop.source_shape_zyx):
+                raise ValueError(
+                    "raw_image shape does not match the segmented image's whole shape: "
+                    f"{tuple(whole.shape)} != {tuple(crop.source_shape_zyx)}"
+                )
+            raw_image = crop_volume(whole, crop, **on_disk)
+        else:
+            raw_image = crop_volume_from_settings(whole, local_settings, description="raw image")
         release_superseded(whole, raw_image, keep=None)
         # And onto the mask's grid, as the run reads it.
         reduction = (
@@ -7146,6 +7159,13 @@ def _optimise_settings_for_run(
     raw_mask = _to_binary_volume_for_skeletonization(
         volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
     )
+    if not raw_mask.any():
+        # It ran for seconds, tried nothing and proposed nothing, unsaid why.
+        raise _OptimiseRefused(
+            "The segmented image holds no vessel (in its crop box, if it is cropped): there is "
+            "nothing to optimise settings on. Check the image, its crop box and which label is "
+            "vessel, then press Optimise settings."
+        )
     # The run's whole settings: the search changes only the ones it
     # tunes and builds every trial with the rest as a run would. Voxel
     # counts go in on the run's grid, as a run counts them there.
@@ -7168,6 +7188,7 @@ def _optimise_settings_for_run(
         downsample=volume.downsample,
         voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
         use_memmap=use_memmap,
+        crop=volume.crop,
     )
     raw_image_stain = "plasma_column"
     if raw_image is not None:
@@ -7754,13 +7775,15 @@ def _run_segmentation_quality_check_in_background(
     def run():
         local_settings = dict(settings)
         inputs = segment(local_settings, segmented_path=segmented_path)
-        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
-            local_settings, inputs.input_format
+        # As the run's skeletonise reads it, with the box and the reduction
+        # it came through, which the raw image is cut and reduced by too;
+        # under the low-RAM option, onto disk.
+        volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+        voxel_size_xyz = volume.voxel_size_xyz
+        use_memmap = bool(local_settings.get("use_memmap_loading"))
+        mask = _to_binary_volume_for_skeletonization(
+            volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
         )
-        voxel_size_xyz, _source = run_voxel_size_xyz(
-            local_settings, metadata_voxel_size, voxel_meta_status
-        )
-        mask = _to_binary_volume_for_skeletonization(image)
         voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
         score = score_segmented_mask(
             mask,
@@ -7808,8 +7831,10 @@ def _run_segmentation_quality_check_in_background(
         raw_image, raw_comparison_error = _load_raw_reference_image_or_none(
             local_settings,
             expected_shape=mask.shape,
-            downsample=(voxel_meta_status or {}).get("downsample"),
+            downsample=volume.downsample,
             voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
+            use_memmap=use_memmap,
+            crop=volume.crop,
         )
         if raw_image is not None:
             try:
@@ -8045,6 +8070,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         BC_NODE_IDS,
         BC_REGION_NAMES,
         band_boxes,
+        node_made_after_boundaries,
         box_colours,
         box_from_view_drag,
         box_mesh,
@@ -9526,6 +9552,13 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             report.value = (
                 f"No node under that click. Click on one of the node dots to "
                 f"add it to {owner}'s node IDs."
+            )
+            return
+        if node_made_after_boundaries(hit.node_id, box_graph(), graph()):
+            report.value = (
+                f"Node {hit.node_id} was added after the Boundaries stage, by an edit: a run "
+                "from Boundaries does not have it and would stop on its ID. Pick a node the "
+                "network had before the edits."
             )
             return
         proposed, action = toggle_node_id(current_values(), owner, hit.node_id)
@@ -14952,6 +14985,11 @@ def settings_widget(napari_viewer=None):
     last_run_path: list[str] = [RUN_SNAPSHOT_FILENAME]
     #: The worker writing a run in the background, while there is one.
     saving_run: list[Any] = [None]
+    #: The worker running the checks in the background, while there is one.
+    checking: list[Any] = [None]
+    #: The rows the run on show was made with (started, or loaded), which a
+    #: saved run keeps as its settings; None with no run.
+    run_values: list[dict[str, Any] | None] = [None]
 
     #: What pointing the run at an open layer put into the form, and which
     #: layer it was. `settings` is None until a layer has been adopted.
@@ -16374,7 +16412,7 @@ def settings_widget(napari_viewer=None):
     #: shown, which is never the batch's. The optimisers are off too
     #: while the run draws a synthetic network: there is no image to try
     #: settings on.
-    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+    from haemolynx.gui.chrome_tooltips import CHECK_SYNTHETIC_TOOLTIP, OPTIMISE_SYNTHETIC_TOOLTIP
 
     single_image_buttons = [
         (button, button.tooltip)
@@ -16400,6 +16438,10 @@ def settings_widget(napari_viewer=None):
                 reason = SINGLE_IMAGE_IN_BATCH
             elif synthetic and any(button is optimiser for optimiser in optimiser_buttons):
                 reason = OPTIMISE_SYNTHETIC_TOOLTIP
+            elif synthetic and button is check_image_button:
+                # No segmented image: with one left in the row it was read as
+                # the template, and failed on its format.
+                reason = CHECK_SYNTHETIC_TOOLTIP
             if reason is not None:
                 button.enabled = False
                 button.tooltip = reason
@@ -17033,6 +17075,11 @@ def settings_widget(napari_viewer=None):
         if batch_mode.setup is not None:
             report.value = SINGLE_IMAGE_IN_BATCH
             return
+        from haemolynx.gui.chrome_tooltips import CHECK_SYNTHETIC_TOOLTIP
+
+        if network_is_synthetic(current_values()):
+            report.value = CHECK_SYNTHETIC_TOOLTIP
+            return
         segmented_path, refusal = _segmented_image_to_optimise(
             current_values(), action="Check segmented image"
         )
@@ -17047,14 +17094,58 @@ def settings_widget(napari_viewer=None):
             segmented_path=segmented_path,
         )
 
+    def check_lines(result) -> str:
+        lines = [f"FAILED: {message}" for message in result.errors]
+        lines += [f"warning: {message}" for message in result.warnings]
+        return "\n".join(lines) if lines else "All checks passed."
+
+    def _checks_in_background(settings, *, then=None) -> None:
+        """Run preflight on a worker, the Run checks and Run buttons greyed
+        meanwhile: the report gets its result, or *then* runs if it passed."""
+        from napari.qt.threading import thread_worker
+
+        @thread_worker
+        def check():
+            return preflight(settings, schema)
+
+        def checked(result) -> None:
+            if then is None:
+                report.value = check_lines(result)
+            elif not result.ok:
+                report.value = CHECKS_FAILED_NOTHING_RUN
+            else:
+                then()
+
+        def failed(error) -> None:
+            report.value = f"Could not run the checks:\n{error}"
+
+        def finished() -> None:
+            checking[0] = None
+            check_button.enabled = True
+            if not run_state.running:
+                run_button.enabled = True
+
+        report.value = RUNNING_CHECKS
+        check_button.enabled = False
+        run_button.enabled = False
+        # Claimed at creation, or superqt also re-raises the error unasked.
+        worker = check(
+            _connect={"returned": checked, "errored": failed, "finished": finished},
+            _start_thread=False,
+        )
+        checking[0] = worker
+        worker.start()
+
     def on_check() -> None:
         if batch_mode.setup is not None:
             on_check_batch()
             return
-        result = preflight(_settings(), schema)
-        lines = [f"FAILED: {message}" for message in result.errors]
-        lines += [f"warning: {message}" for message in result.warnings]
-        report.value = "\n".join(lines) if lines else "All checks passed."
+        try:
+            settings = _settings()
+        except Exception as error:  # noqa: BLE001 - reported in the panel
+            report.value = f"Could not read settings:\n{error}"
+            return
+        _checks_in_background(settings)
 
     def on_check_batch() -> None:
         """Run checks with a batch set: every ticked image's, as the Batch run
@@ -17258,75 +17349,87 @@ def settings_widget(napari_viewer=None):
         except Exception as error:
             report.value = f"Could not read settings:\n{error}"
             return
-        if not preflight(settings, schema).ok:
-            report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
+        started_with = current_values()
+
+        def proceed() -> None:
+            nonlocal stop_after
+            if start_from is None:
+                # A full run starts from a clean slate: old layers, checkpoints
+                # and cached resume pickles from a previous run must not leak
+                # into this one. "Run from this stage" resumes deliberately keep
+                # them, so this only fires for a genuine fresh run.
+                on_clear(ask=False)
+            results = None
+            if show_results.value and viewer is not None:
+                if replace_checkpoints or view.results is None:
+                    results = ResultLayers(
+                        show_steps=bool(show_steps.value),
+                        settings=settings,
+                    )
+                    view.results = results
+                    if boundaries is not None:
+                        boundaries.state.results = results
+                else:
+                    results = view.results
+                # A full run that will show layers replaces the previous run's
+                # checkpoints. "Run from this stage" has already dropped later
+                # ones and must keep the previous tab's snapshot.
+                if replace_checkpoints:
+                    checkpoints.clear()
+            # How much of the run to show follows the setting that already means
+            # "tell me everything"; the window itself is a panel control, like
+            # `show_results`, because a config file is read by CLI runs too.
+            log_view.set_level(
+                VERBOSE_LEVEL if settings.get("verbose_logging") else DEFAULT_LEVEL
+            )
+            show_log()
+            refresh_revert_buttons()
+            if stop_after == "auto":
+                # A pause needs the run on screen: the tab edits the viewer's graph.
+                stop_after = mid_run_stop_after(settings, start_from) if results is not None else None
+            run_state.paused_after = None
+            run_values[0] = started_with
+            worker = _run_in_background(
+                settings, schema, report, run_button, bars,
+                viewer=viewer if show_results.value else None,
+                results=results,
+                state=run_state,
+                log=log_view,
+                checkpoints=checkpoints if results is not None else None,
+                after_layers=_after_layers_applied if show_results.value else None,
+                start_from=start_from,
+                resume=resume,
+                restored_stages=restored_stages,
+                stop_after=stop_after,
+                on_paused=on_paused,
+            )
+            # After start(): running is True, so run-from buttons grey out for
+            # the length of the run. They come back when the worker stops.
+            refresh_revert_buttons()
+            post_processing.refresh()
+            if worker is not None:
+                for signal in (worker.returned, worker.errored, worker.finished):
+                    signal.connect(lambda *_: refresh_revert_buttons())
+                    signal.connect(lambda *_: post_processing.refresh())
+                run_flag = run_state.cancel_flag
+
+                def statistics_of_the_run(graph) -> None:
+                    # The graph the run returns, shown in the viewer or not -- unless
+                    # Clear, or a newer run, has taken this one's place.
+                    if run_state.cancel_flag is run_flag and not run_flag["cancelled"]:
+                        statistics_panel.show(statistics_report(graph))
+
+                worker.returned.connect(statistics_of_the_run)
+
+        if slow_checks(settings, start_from):
+            # The quality score reads the whole image, and a synthetic run
+            # loads its template: off the panel's thread, which froze for it.
+            _checks_in_background(settings, then=proceed)
             return
-        if start_from is None:
-            # A full run starts from a clean slate: old layers, checkpoints
-            # and cached resume pickles from a previous run must not leak
-            # into this one. "Run from this stage" resumes deliberately keep
-            # them, so this only fires for a genuine fresh run.
-            on_clear(ask=False)
-        results = None
-        if show_results.value and viewer is not None:
-            if replace_checkpoints or view.results is None:
-                results = ResultLayers(
-                    show_steps=bool(show_steps.value),
-                    settings=settings,
-                )
-                view.results = results
-                if boundaries is not None:
-                    boundaries.state.results = results
-            else:
-                results = view.results
-            # A full run that will show layers replaces the previous run's
-            # checkpoints. "Run from this stage" has already dropped later
-            # ones and must keep the previous tab's snapshot.
-            if replace_checkpoints:
-                checkpoints.clear()
-        # How much of the run to show follows the setting that already means
-        # "tell me everything"; the window itself is a panel control, like
-        # `show_results`, because a config file is read by CLI runs too.
-        log_view.set_level(
-            VERBOSE_LEVEL if settings.get("verbose_logging") else DEFAULT_LEVEL
-        )
-        show_log()
-        refresh_revert_buttons()
-        if stop_after == "auto":
-            # A pause needs the run on screen: the tab edits the viewer's graph.
-            stop_after = mid_run_stop_after(settings, start_from) if results is not None else None
-        run_state.paused_after = None
-        worker = _run_in_background(
-            settings, schema, report, run_button, bars,
-            viewer=viewer if show_results.value else None,
-            results=results,
-            state=run_state,
-            log=log_view,
-            checkpoints=checkpoints if results is not None else None,
-            after_layers=_after_layers_applied if show_results.value else None,
-            start_from=start_from,
-            resume=resume,
-            restored_stages=restored_stages,
-            stop_after=stop_after,
-            on_paused=on_paused,
-        )
-        # After start(): running is True, so run-from buttons grey out for
-        # the length of the run. They come back when the worker stops.
-        refresh_revert_buttons()
-        post_processing.refresh()
-        if worker is not None:
-            for signal in (worker.returned, worker.errored, worker.finished):
-                signal.connect(lambda *_: refresh_revert_buttons())
-                signal.connect(lambda *_: post_processing.refresh())
-            run_flag = run_state.cancel_flag
-
-            def statistics_of_the_run(graph) -> None:
-                # The graph the run returns, shown in the viewer or not -- unless
-                # Clear, or a newer run, has taken this one's place.
-                if run_state.cancel_flag is run_flag and not run_flag["cancelled"]:
-                    statistics_panel.show(statistics_report(graph))
-
-            worker.returned.connect(statistics_of_the_run)
+        if not preflight(settings, schema).ok:
+            report.value = CHECKS_FAILED_NOTHING_RUN
+            return
+        proceed()
 
     def on_paused() -> None:
         """A run stopped before Post processing (or after a Regenerate graph
@@ -17382,6 +17485,7 @@ def settings_widget(napari_viewer=None):
             arrow_length_slider.setVisible(False)
             apply_view_z(force=True)
         view.results = None
+        run_values[0] = None
         refresh_statistics()
         if boundaries is not None:
             boundaries.state.results = None
@@ -17473,7 +17577,7 @@ def settings_widget(napari_viewer=None):
         planned.update({name: False for name in plan.skip_settings})
         if preflight(planned, schema).ok:
             return True
-        report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
+        report.value = CHECKS_FAILED_NOTHING_RUN
         refresh_revert_buttons()
         return False
 
@@ -17645,11 +17749,15 @@ def settings_widget(napari_viewer=None):
         if saving_run[0] is not None:
             report.value = RUN_SAVE_IN_PROGRESS
             return False
+        rows = current_values()
         try:
             snapshot = capture_run(
                 checkpoints=checkpoints,
                 results=view.results,
-                settings=current_values(),
+                # What the run was made with; the rows changed since are kept
+                # apart, so the file does not name them as what made it.
+                settings=run_values[0] if run_values[0] is not None else rows,
+                panel_values=rows,
                 skip_toggle_snapshot=skip_toggle_snapshot,
                 show_results=bool(show_results.value),
                 show_steps=bool(show_steps.value),
@@ -17772,7 +17880,9 @@ def settings_widget(napari_viewer=None):
         # a value the way it used to; the rows only take today's.
         restoring_settings[0] = True
         try:
-            for name, value in schema.upgrade(snapshot.settings).items():
+            # The panel as it was saved: the run's settings, and the rows
+            # changed after it.
+            for name, value in schema.upgrade(snapshot.panel_values).items():
                 if name not in rows:
                     continue
                 if schema[name].kind == "path" and value is not None:
@@ -17789,6 +17899,7 @@ def settings_widget(napari_viewer=None):
         if not skip_toggle_snapshot:
             snapshot_skip_toggles()
         apply_prerequisites()
+        run_values[0] = dict(schema.upgrade(snapshot.settings))
         apply_snapshot_to_checkpoints(checkpoints, snapshot)
         results = ResultLayers(
             show_steps=snapshot.show_steps,
@@ -17821,6 +17932,12 @@ def settings_widget(napari_viewer=None):
             report.value += (
                 f" {len(relocated)} path(s) from the machine it was made on now point "
                 f"here: {', '.join(m.name for m in relocated)}."
+            )
+        if snapshot.edited_since_run:
+            report.value += (
+                f" {len(snapshot.edited_since_run)} setting(s) were changed after the run "
+                f"and are shown as changed, not as it ran: "
+                f"{', '.join(sorted(snapshot.edited_since_run))}."
             )
         if resume_note:
             report.value += f" {resume_note}"
@@ -18209,6 +18326,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_refresh_revert = refresh_revert_buttons
     panel._haemolynx_run_state = run_state
     panel._haemolynx_run_button = run_button
+    panel._haemolynx_check_button = check_button
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
     panel._haemolynx_show_steps = show_steps

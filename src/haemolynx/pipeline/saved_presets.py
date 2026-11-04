@@ -2,8 +2,8 @@
 
 A saved preset is the panel's settings as they were when it was saved, less
 what belongs to one image (:func:`held_by_saved_presets`): the files and
-folders a run reads and writes, the channels, labels, voxel size and axis
-order that describe those files, the crop on import, the nodes, vessels and
+folders a run reads and writes, the channels, labels, voxel size (how it
+is read and the override alike) and axis order that describe those files, the crop on import, the nodes, vessels and
 positions of one image's network, and the switches that reuse one image's
 cached outputs.
 
@@ -66,6 +66,9 @@ _ONE_IMAGE_ENDINGS = (
 #: (:data:`_ONE_IMAGE_PREFIXES`).
 _ONE_IMAGE_NAMES = frozenset(
     {
+        # The policy with its override, or neither: kept alone, a preset
+        # saved on "override" set it for the next image with no override.
+        "voxel_size_policy",
         "voxel_size_override_xyz",
         "image_axis_order",
         "custom_edges",

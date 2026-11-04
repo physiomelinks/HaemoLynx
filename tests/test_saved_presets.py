@@ -80,6 +80,7 @@ def test_a_saved_preset_holds_nothing_describing_one_image():
         "ilastik_vessel_label",
         "ilastik_small_venule_vessel_label",
         "cell_mask_h5_dataset_name",
+        "voxel_size_policy",
         "voxel_size_override_xyz",
         "image_axis_order",
         "crop_on_import",
@@ -112,7 +113,6 @@ def test_a_saved_preset_holds_how_images_are_analysed():
         "open_end_model",
         "perturbations",
         "manual_capillary_diameter_by_branch_order",
-        "voxel_size_policy",
         "segmented_image_downsample",
         "use_large_vessel_masks",
         "inlet_node_selection_method",
@@ -325,3 +325,13 @@ def test_presets_are_kept_where_the_environment_says_then_in_the_users_settings(
 def test_the_tests_never_see_the_users_own_presets():
     assert saved_presets() == []
     assert "saved_presets" in saved_preset_dir().name
+
+
+def test_a_voxel_size_override_is_kept_with_its_policy_or_not_at_all(tmp_path):
+    """Regression: the policy was kept and its override left out, so a
+    preset saved on "override" set it for the next image with that image's
+    override, or none, which preflight refuses."""
+    values = {**DEFAULTS, "voxel_size_policy": "override", "voxel_size_override_xyz": (0.5, 0.5, 2.0)}
+    preset = save_preset("Override", values, SCHEMA, directory=tmp_path)
+    settings, _ = saved_preset_settings(preset, SCHEMA)
+    assert "voxel_size_policy" not in settings and "voxel_size_override_xyz" not in settings

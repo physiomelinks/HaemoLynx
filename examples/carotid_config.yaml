@@ -624,7 +624,7 @@ cartwheel_hub_guard:
 # Statistics and measurements
 # ------------------------------------------------------------------------
 statistics_and_measurements:
-  # Measure how far each object in a 3D object mask (e.g. a cell mask) lies from the vessels: the gap between them, 0 where they touch or overlap, and the vessel it is nearest to
+  # Measure how far each object in a 3D object mask (e.g. a cell mask) lies from the vessels: the gap between them, 0 where they touch or overlap, and the vessel it is nearest to  [needs network_source = segmented_image]
   measurement_3d_to_cell_mask: false
   # Read this cell mask, the input image's shape, for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
   cell_mask_path: null
@@ -666,7 +666,7 @@ statistics_and_measurements:
   statistics_dead_ends: true
   # Leave every vessel within this distance of an image face out of the per-vessel flow statistics -- the vessel classes' flow rows, flux heterogeneity and its red cells, and flow hierarchy -- as though it carried no flow: every boundary condition put on the vessels leaving the image (open_end_model) is least certain next to the faces. 0 keeps every vessel  [um; range 0.0..; needs statistics]
   statistics_flow_face_margin_um: 0.0
-  # Measure the tissue's volume and surface mesh from the raw image -- the region whose background is brighter than the empty space around it -- and divide vessel density by that volume instead of by the box the network spans
+  # Measure the tissue's volume and surface mesh from the raw image -- the region whose background is brighter than the empty space around it -- and divide vessel density by that volume instead of by the box the network spans  [needs network_source = segmented_image]
   measure_tissue_volume: false
   # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use the raw image (raw_image_path)  [needs measure_tissue_volume; must exist if set]
   tissue_raw_tiff_path: null
@@ -689,7 +689,7 @@ statistics_and_measurements:
 # Pericyte measurements
 # ------------------------------------------------------------------------
 pericyte_measurements:
-  # Measure around each pericyte of a pericyte mask, placed on the nearest capillary as the pericyte perturbations place it: the vessel's diameter along it, and how far it is from the vessel's nearest junction
+  # Measure around each pericyte of a pericyte mask, placed on the nearest capillary as the pericyte perturbations place it: the vessel's diameter along it, and how far it is from the vessel's nearest junction  [needs network_source = segmented_image]
   measure_pericytes: false
   # Read the pericytes from this binary or labelled mask, the input image's shape: each connected component is one pericyte  [needs measure_pericytes; must exist]
   pericyte_measurement_mask_path: null

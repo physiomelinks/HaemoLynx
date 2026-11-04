@@ -32,7 +32,7 @@ import pickle
 import threading
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
@@ -103,7 +103,7 @@ from haemolynx.io.downsample import (
     raw_volume_like_graph,
     record_on_graph as record_downsample_on_graph,
 )
-from haemolynx.io.ilastik import ilastik_segmented_path, ilastik_segmented_stem
+from haemolynx.io.ilastik import ilastik_segmented_path
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -118,7 +118,7 @@ from haemolynx.visualization.perturbation_plots import (
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.checks import tissue_raw_image
 from haemolynx.pipeline.citations import write_citations
-from haemolynx.pipeline.naming import run_stem
+from haemolynx.pipeline.naming import run_input_path, run_stem
 from haemolynx.synthetic.template import GRAPH_TEMPLATE_RECORD, ROLES as SYNTHETIC_ROLES
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 from haemolynx.pipeline.provenance import record_run
@@ -226,6 +226,10 @@ class SkeletonisedVolume:
     downsample: Downsample | None = None
     #: A synthetic run's volume: no image, no skeleton (see the class).
     synthetic: bool = False
+    #: The Input tab's settings this volume was made with
+    #: (:func:`input_volume_settings`): a run resumed on it with others is
+    #: refused (:func:`_check_resumed_input`). None when not recorded.
+    input_settings: dict | None = None
     #: The thick region's centreline tree as skeletonisation drew it: its
     #: voxels in C order, ``graph.thick_vessel_junctions.thick_vessel_centreline_voxels``
     #: of ``thick_vessel_mask``, which graph building reads instead of
@@ -479,21 +483,7 @@ def segmented_input_path(settings: dict) -> Path | None:
     another raw image's segmentation, or a vessel mask's. Otherwise the
     output is derived where `segment` writes it -- that stage's own naming
     rule. None for a synthetic network, which has no segmented image."""
-    if graph.network_is_synthetic(settings):
-        return None
-    produced = settings.get("input_path")
-    if ilastik_segments(settings):
-        output_dir = Path(settings["ilastik_output_dir"])
-        if (
-            produced is not None
-            and Path(produced).parent == output_dir
-            and Path(produced).stem == ilastik_segmented_stem(settings["raw_image_path"])
-        ):
-            return Path(produced)
-        return ilastik_segmented_path(
-            output_dir, settings["raw_image_path"], settings["ilastik_output_suffix"]
-        )
-    return None if produced is None else Path(produced)
+    return run_input_path(settings)
 
 
 def current_ilastik_output(settings: Mapping[str, Any]) -> tuple[Path | None, str]:
@@ -830,6 +820,10 @@ def _assign_synthetic_boundaries(settings: dict, network: VesselNetwork) -> Boun
         name = f"{role}_nodes"
         _reset_run_node_list(settings, name)
         settings[name].extend(roles[role])
+    # The large-vessel network's own inlet and outlet are an image run's,
+    # from its masks' stumps: nodes of another graph here.
+    _reset_run_node_list(settings, "large_vessel_inlet_nodes")
+    _reset_run_node_list(settings, "large_vessel_outlet_nodes")
     if not settings["inlet_nodes"] or not settings["outlet_nodes"]:
         raise ValueError(
             "The synthetic network has no inlet or no outlet to solve between: "
@@ -3032,6 +3026,9 @@ def build_network(
         # from, so a run loading it can tell.
         _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
         G.graph[SKELETON_DIGEST] = skeleton_digest(skeleton)
+        # And with the Input settings its volume was made with, so a run
+        # resumed on it with others is refused (_check_resumed_input).
+        G.graph[INPUT_SETTINGS_RECORD] = getattr(volume, "input_settings", None) or input_volume_settings(settings)
         _graph_build_step_callback(G, BUILD_TAIL_STEPS[0], draw=False)
         # Written whole or not at all: a cancelled or failed save never leaves
         # half a graph for do_graph_building off to load.
@@ -3065,6 +3062,15 @@ def build_network(
         )
         _warn_if_built_from_another_skeleton(G, graph_path, skeleton)
         report_support = None
+        if any(graph.cut_at_large_vessel_volumes.CUT_FROM_LARGE_VESSEL in data for _node, data in G.nodes(data=True)):
+            # Until 2026-11-03 the Boundaries stage wrote its cut network over
+            # this file: the large vessels are gone from it, whatever the
+            # masks and the cut now say.
+            logger.warning(
+                f"The graph loaded from {graph_path} was already cut at the large-vessel "
+                "masks by an earlier run's Boundaries stage, so the vessels inside them are "
+                "missing. Turn do_graph_building on to build it again."
+            )
 
     (
         large_arteriole_mask, large_venule_mask, small_arteriole_mask, small_venule_mask,
@@ -3893,23 +3899,23 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ),
             )
             network.graph = G
-            stem = run_stem(settings)
-            if stem is not None:
-                graph_path = network.volume.output_dir / f"{stem}_graph.pkl"
-                with graph_path.open("wb") as handle:
-                    pickle.dump(G, handle)
-                logger.info(
-                    "Applied large-vessel volume network cut on filtered masks before "
-                    "automated terminal assignment "
-                    f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain); "
-                    f"rewrote {graph_path}."
-                )
-            else:
-                logger.info(
-                    "Applied large-vessel volume network cut on filtered masks before "
-                    "automated terminal assignment "
-                    f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
-                )
+            # The ends the cut made, judged as graph building judged the rest
+            # (geometry only: the stage holds no mask support), so every dead
+            # end carries its kind.
+            cut_ends = [
+                node for node, data in G.nodes(data=True)
+                if data.get(graph.cut_at_large_vessel_volumes.CUT_FROM_LARGE_VESSEL) is not None and G.degree(node) == 1
+            ]
+            graph.dead_ends.reclassify_dead_ends(
+                G, cut_ends, stub_radius_multiple=dead_end_stub_radius_multiple(settings)
+            )
+            # {stem}_graph.pkl stays graph building's: a run loading it
+            # (do_graph_building off) cuts it again by the masks it then has.
+            logger.info(
+                "Applied large-vessel volume network cut on filtered masks before "
+                "automated terminal assignment "
+                f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
+            )
         if large_vessel_tier:
             # A manual override (e.g. degree_1_from_inlet) reads settings
             # like inlet_nodes through the normal graph.select_boundary_nodes_for_role
@@ -4087,16 +4093,19 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     if io_from_masks:
         # Use direct terminal-node overlap assignment from vessel masks.
         inlet_nodes = auto_inlet_nodes
+        settings["inlet_nodes"].extend(inlet_nodes)
         outlet_nodes = [node_id for node_id in auto_outlet_nodes if node_id not in set(inlet_nodes)]
     else:
         # Each role reads its own three settings; naming the role is enough.
         inlet_nodes = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "inlet"
         )
+        # Written before the outlets are chosen: degree_1_from_inlet measures
+        # from them, and found none when they were written after.
+        settings["inlet_nodes"].extend(inlet_nodes)
         outlet_nodes = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "outlet", exclude_nodes=inlet_nodes
         )
-    settings["inlet_nodes"].extend(inlet_nodes)
     settings["outlet_nodes"].extend(outlet_nodes)
     if large_vessel_tier:
         settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
@@ -4811,7 +4820,8 @@ def _small_vessel_boundary_fallback(
     given *large_masks* (the large vessels kept in the network), in the large
     one, and the nodes ``small_vessel_boundary_fallback_hop_distance``
     vessels from those that the fallback makes boundary nodes (none with it
-    off), inlets and outlets left out. The Boundaries stage adds them to the
+    off), inlets, outlets and the other side's boundary nodes left out. The
+    Boundaries stage adds them to the
     masks' boundary nodes; Post processing judges an edited place by it."""
     enabled = bool(settings["small_vessel_boundary_fallback_to_hop_distance"])
     hops = int(settings["small_vessel_boundary_fallback_hop_distance"])
@@ -4834,8 +4844,13 @@ def _small_vessel_boundary_fallback(
         uncovered = graph.seed_nodes_without_mask_coverage(
             G, list(settings[seed_key]), coverage_mask, voxel_size_zyx=voxel_size_zyx
         )
+        # Nor a node the other side's masks made its boundary: one node on
+        # both lists ended both tiers at once.
+        other_side = "venule_boundary_nodes" if index == 0 else "arteriole_boundary_nodes"
         hop_nodes = (
-            graph.select_nodes_at_hop_distance(G, uncovered, hops, exclude_nodes=exclude_io_nodes)
+            graph.select_nodes_at_hop_distance(
+                G, uncovered, hops, exclude_nodes=exclude_io_nodes | set(settings.get(other_side) or ())
+            )
             if enabled and uncovered
             else []
         )
@@ -9194,6 +9209,64 @@ def _run_stage_body(name: str, start_from: str | None) -> bool:
     return _stage_index(name) >= _stage_index(start_from)
 
 
+#: Where a graph keeps :func:`input_volume_settings` as it was built
+#: (``G.graph[INPUT_SETTINGS_RECORD]``), for a run resumed on it.
+INPUT_SETTINGS_RECORD = "input_settings"
+
+
+def input_volume_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The Input tab's settings that decide the volume, and so the network,
+    a run builds on, as plain values: the image read (ilastik's output,
+    once `segment` has made it), its axis order and voxel size, the crop
+    box, the downsample and the clean-up -- or, for a synthetic network,
+    the template and every synthetic_ setting. What a run resumed on a
+    stored volume or network must still hold (:func:`_check_resumed_input`)."""
+
+    def plain(value: Any) -> Any:
+        if isinstance(value, PurePath):
+            return str(value)
+        if isinstance(value, (list, tuple)):
+            return [plain(item) for item in value]
+        return value
+
+    synthetic = graph.network_is_synthetic(settings)
+    if synthetic:
+        names = {"network_source", *(name for name in settings if name.startswith("synthetic_"))}
+    else:
+        names = {
+            "network_source", "image_axis_order", "voxel_size_policy",
+            "segmented_image_downsample", "crop_on_import", "segmentation_cleanup",
+        }
+        if str(settings.get("voxel_size_policy", "auto")) != "metadata_only":
+            names.add("voxel_size_override_xyz")
+        if settings.get("crop_on_import"):
+            names.update(name for name in settings if name.startswith("crop_"))
+        if settings.get("segmentation_cleanup"):
+            names.update(name for name in settings if name.startswith("segmentation_cleanup_"))
+    recorded = {name: plain(settings.get(name)) for name in sorted(names)}
+    if not synthetic:
+        image = segmented_input_path(dict(settings))
+        recorded["input_path"] = None if image is None else str(Path(image).resolve())
+    return recorded
+
+
+def _check_resumed_input(settings: Mapping[str, Any], recorded: Any, what: str) -> None:
+    """Refuse a run resumed on a stored *what* (a volume or a network) made
+    with other Input settings than these: it was built on the old volume
+    without a word, and its manifest and settings file named the new ones.
+    Nothing to compare for one made before this was recorded."""
+    if not isinstance(recorded, Mapping):
+        return
+    now = input_volume_settings(settings)
+    changed = sorted(name for name in set(recorded) | set(now) if recorded.get(name) != now.get(name))
+    if changed:
+        raise ValueError(
+            f"The Input tab's {', '.join(changed)} changed since this run's {what} was made, "
+            "and a run resumed on it would not use the new values. Run the pipeline from the "
+            "Input tab to use them, or put them back to resume."
+        )
+
+
 def _earlier_output(
     resume: PipelineResume | None, start_from: str | None, stage: str, attribute: str
 ) -> Any | None:
@@ -9210,22 +9283,37 @@ def _resumed_segmented_path(
 ) -> Path | None:
     """The segmented image a run resumed past segmentation already has.
 
-    The resumed run's own, else -- when ilastik segments and its output is
-    on disk (a run loaded from a file carries no stage outputs) -- that
-    output, so resuming never runs ilastik again. None: segment as usual.
+    The resumed run's own, while it is still the image these settings
+    read -- else, when ilastik segments and its current output is on disk
+    (a run loaded from a file carries no stage outputs), that output, so
+    resuming never runs ilastik again. None: segment as usual. The resumed
+    run's own image was kept though input_path, or the raw image ilastik
+    segments, had changed since, and the Skeletonise tab built on the old
+    one while every other Input change took effect.
     """
+    if resume is None or start_from not in STAGE_CALLS:
+        return None
+    current = current_ilastik_output(settings)[0] if ilastik_segments(settings) else None
     inputs = _earlier_output(resume, start_from, "segment", "inputs")
     if inputs is not None:
-        return inputs.image_path
-    resumed_past_segment = (
-        resume is not None
-        and start_from in STAGE_CALLS
-        and _stage_index(start_from) > _stage_index("segment")
-    )
-    if not resumed_past_segment or not settings.get("use_ilastik_segmentation"):
+        if ilastik_segments(settings):
+            wanted = current
+        elif graph.network_is_synthetic(settings) or settings.get("input_path") in (None, ""):
+            wanted = inputs.image_path
+        else:
+            wanted = io.resolve_image_path_with_optional_zip(Path(settings["input_path"]))
+        if wanted is not None and Path(wanted).resolve() == Path(inputs.image_path).resolve():
+            return inputs.image_path
+        logger.info(
+            "The segmented image is not the one the resumed run read (%s): it is read again.",
+            inputs.image_path,
+        )
+        return current
+    if _stage_index(start_from) <= _stage_index("segment"):
         return None
-    produced = segmented_input_path(settings)
-    return produced if produced is not None and produced.is_file() else None
+    # Only an output its record vouches for: one left without a record (a
+    # binarisation that raised) was taken as this run's.
+    return current
 
 
 def _volume_writing_to(volume: SkeletonisedVolume, output_dir: Path) -> SkeletonisedVolume:
@@ -9535,7 +9623,10 @@ def _run_stages(
                 settings, inputs, progress=skeletonising,
                 thick_region=resume.thick_vessel_mask if resume is not None else None,
             )
+            if isinstance(volume, SkeletonisedVolume):
+                volume = replace(volume, input_settings=input_volume_settings(settings))
         else:
+            _check_resumed_input(settings, getattr(volume, "input_settings", None), "image and skeleton")
             logger.info("Resuming with the image and skeleton already loaded.")
             volume = _volume_writing_to(volume, inputs.output_dir)
     _produced(on_stage_output, "skeletonise", volume)
@@ -9543,6 +9634,8 @@ def _run_stages(
         return None
     with run.stage("build_network") as building:
         resumed_graph = _earlier_output(resume, start_from, "build_network", "graph")
+        if resumed_graph is not None:
+            _check_resumed_input(settings, resumed_graph.graph.get(INPUT_SETTINGS_RECORD), "network")
         earlier = _earlier_output(resume, start_from, "build_network", "network")
         if earlier is not None and resumed_graph is not None:
             logger.info("Resuming with the network and vessel masks already built.")

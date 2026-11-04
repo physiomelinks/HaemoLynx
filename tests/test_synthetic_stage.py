@@ -198,6 +198,20 @@ def test_the_boundaries_stage_takes_the_generators_roles(template_run, tmp_path)
     assert settings["venule_boundary_nodes"] == roles["venule_boundary"]
 
 
+def test_the_boundaries_stage_leaves_no_image_runs_large_vessel_inlet(template_run, tmp_path):
+    """Regression: only the generator's roles were reset, so the large-vessel
+    inlet and outlet an image run chose stayed in the run's lists: nodes of
+    another graph."""
+    settings = _settings(template_run, tmp_path)
+    settings["large_vessel_inlet_nodes"] = [3316]
+    settings["large_vessel_outlet_nodes"] = [17]
+    network = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA)
+
+    assign_boundaries(settings, network)
+
+    assert settings["large_vessel_inlet_nodes"] == [] and settings["large_vessel_outlet_nodes"] == []
+
+
 def test_the_boundaries_stage_refuses_a_network_without_an_outlet(template_run, tmp_path):
     settings = _settings(template_run, tmp_path)
     network = build_network(settings, skeletonise(settings, segment(settings)), SCHEMA)
@@ -732,3 +746,23 @@ def test_a_surrounded_run_is_no_template(tmp_path):
     with pytest.raises(TemplateError) as raised:
         load_template(path)
     assert raised.value.reason == "synthetic_run"
+
+
+def test_preflight_refuses_a_mask_perturbation_on_a_synthetic_network(template_run, tmp_path):
+    """Regression: a block mask or pericyte-mask perturbation was read with the
+    image's axis order and voxel size, rows the tab hides for a synthetic
+    network, and lined up with no image: preflight passed it."""
+    perturbations = [
+        {"name": "blocked", "type": "capillary_block_mask", "overrides": {}},
+        {"name": "dilated", "type": "pericyte_diameter_change", "overrides": {}},
+    ]
+    settings = _settings(
+        template_run, tmp_path, run_perturbations=True, perturbations=perturbations,
+        use_pericyte_mask_constriction=True,
+    )
+
+    errors = [e for e in check_synthetic_template(settings).errors if "reads a mask" in e]
+
+    assert len(errors) == 2 and "'blocked'" in errors[0] and "'dilated'" in errors[1]
+    plain = _settings(template_run, tmp_path, run_perturbations=True, perturbations=perturbations[1:])
+    assert not [e for e in check_synthetic_template(plain).errors if "reads a mask" in e]

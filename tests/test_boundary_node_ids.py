@@ -242,6 +242,72 @@ def test_the_stage_uses_listed_inlets_and_outlets(tmp_path):
     assert boundaries.resistance_node_pair == (0, 4)
 
 
+def test_the_stage_measures_degree_1_from_inlet_outlets_from_the_inlets_it_chose(tmp_path):
+    """Regression: the stage wrote the inlets into the run's list only after
+    choosing the outlets, so an outlet chosen by its distance from the inlets
+    always found none and stopped the run, telling the user to choose the
+    inlets first -- which they had."""
+    settings = _defaults(
+        inlet_node_selection_method="node_ids",
+        inlet_node_ids=[0],
+        outlet_node_selection_method="degree_1_from_inlet",
+        boundary_distance_from_inlet_node=30.0,
+        boundary_open_end_max_distance_um=None,
+        plot_dir=tmp_path,
+    )
+
+    boundaries = stages.assign_boundaries(
+        settings, _network_for_stages(_branching_network(), tmp_path)
+    )
+
+    # 4 and 5 are 37.7 um from inlet 0; nothing else is a terminal past 30 um.
+    assert boundaries.inlet_nodes == [0]
+    assert boundaries.outlet_nodes == [4, 5]
+
+
+@pytest.mark.parametrize(
+    "role, says",
+    [
+        ("inlet", "which this role is the one to choose"),
+        ("large_vessel_inlet", "which this role is the one to choose"),
+        ("outlet", "inlet_node_selection_method chose none"),
+        ("large_vessel_outlet", "large_vessel_inlet_node_selection_method chose none"),
+    ],
+)
+def test_degree_1_from_inlet_with_no_inlets_names_what_would_choose_them(role, says):
+    """Regression: every role was told to change inlet_node_selection_method,
+    which does not choose the large-vessel network's inlet, and cannot help
+    an inlet role measuring from itself."""
+    names = BOUNDARY_ROLE_SETTINGS[role]
+    settings = _defaults(**{names["method"]: "degree_1_from_inlet"}, inlet_nodes=[])
+
+    with pytest.raises(ValueError, match=says):
+        graph.select_boundary_nodes_for_role(_branching_network(), IMAGE_SHAPE, settings, role)
+
+
+def test_an_edge_percent_outlet_band_keeps_terminals_the_unused_inlet_band_holds(tmp_path):
+    """Regression: the outlet band left out every terminal of the first band,
+    though the inlets came from node IDs and that band (its row hidden) chose
+    nothing: with the outlet band over every terminal, the stem's end, in the
+    first 10%, was no outlet -- and with only it besides the inlet, the run
+    found none."""
+    settings = _defaults(
+        inlet_node_selection_method="node_ids",
+        inlet_node_ids=[4],
+        outlet_node_selection_method="edge_percent",
+        boundary_last_percent=100.0,
+        boundary_open_end_max_distance_um=None,
+        plot_dir=tmp_path,
+    )
+
+    boundaries = stages.assign_boundaries(
+        settings, _network_for_stages(_branching_network(), tmp_path)
+    )
+
+    assert boundaries.inlet_nodes == [4]
+    assert boundaries.outlet_nodes == [0, 5]
+
+
 def test_vessel_boundaries_named_only_by_id_are_selected(tmp_path):
     """The stage used to skip the arteriole/venule roles unless coordinates or
     volume boxes were set, so node IDs alone would have been ignored."""
@@ -340,3 +406,67 @@ def test_preflight_counts_node_ids_as_a_source_of_vessel_boundaries():
     assert without.warnings
     assert not with_ids.warnings
     assert leftover.warnings
+
+
+# --- preflight, and the hop fallback ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "role, method, listed",
+    [
+        ("inlet", "coordinates", "inlet_node_coordinates"),
+        ("outlet", "volume", "outlet_node_volumes"),
+        ("inlet", "node_ids", "inlet_node_ids"),
+    ],
+)
+def test_preflight_refuses_an_inlet_or_outlet_method_with_an_empty_list(role, method, listed):
+    """The Boundaries stage refused it only once every stage before had run;
+    a list the masks or an unread method leave unread is no error."""
+    from haemolynx.pipeline.checks import check_boundary_selection
+
+    settings = _defaults(**{BOUNDARY_ROLE_SETTINGS[role]["method"]: method})
+
+    (error,) = check_boundary_selection(settings).errors
+    assert listed in error
+    filled = {**settings, listed: [[1.0, 2.0, 3.0]] if method == "coordinates" else [[[0, 0, 0], [1, 1, 1]]] if method == "volume" else [0]}
+    assert not check_boundary_selection(filled).errors
+    masks_choose = {**settings, "automated_vessel_assignment": True, "use_large_vessel_masks": True,
+                    "large_venule_mask_path": "v.tif", "inlets_outlets_from_vessel_masks": True}
+    assert not check_boundary_selection(masks_choose).errors
+
+
+def test_preflight_warns_of_edge_percent_along_z_on_a_one_slice_image(tmp_path):
+    import tifffile
+
+    from haemolynx.pipeline.checks import check_boundary_selection
+
+    image = tmp_path / "flat.tif"
+    tifffile.imwrite(image, np.zeros((1, 20, 30), dtype=np.uint8))
+    settings = _defaults(input_path=image, boundary_axis=0)
+
+    (warning,) = check_boundary_selection(settings).warnings
+    assert "one slice" in warning
+    assert not check_boundary_selection({**settings, "boundary_axis": 1}).warnings
+    tifffile.imwrite(tmp_path / "stack.tif", np.zeros((4, 20, 30), dtype=np.uint8))
+    assert not check_boundary_selection({**settings, "input_path": tmp_path / "stack.tif"}).warnings
+
+
+def test_the_hop_fallback_takes_no_node_the_other_sides_masks_chose():
+    """Regression: an uncovered inlet's hop neighbours could include a venule
+    boundary node the masks found, which then ended both tiers at once."""
+    G = _branching_network()
+    settings = _defaults(
+        inlet_nodes=[0], outlet_nodes=[4, 5],
+        arteriole_boundary_nodes=[], venule_boundary_nodes=[1],
+        small_vessel_boundary_fallback_to_hop_distance=True,
+        small_vessel_boundary_fallback_hop_distance=1,
+    )
+    empty = np.zeros(IMAGE_SHAPE, dtype=bool)
+
+    fallback = stages._small_vessel_boundary_fallback(
+        settings, G, small_masks=(empty, empty), large_masks=None, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+
+    uncovered, hop_nodes = fallback["arteriole_boundary_nodes"]
+    assert uncovered == [0]
+    assert 1 not in hop_nodes

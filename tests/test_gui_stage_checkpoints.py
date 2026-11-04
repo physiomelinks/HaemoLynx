@@ -907,6 +907,32 @@ def test_the_large_vessel_hand_off_nodes_reach_a_resumed_run(tmp_path):
     assert plan.resume.inlet_nodes == (0,) and plan.resume.outlet_nodes == (3,)
 
 
+def test_a_boundaries_run_with_the_masks_off_carries_none_of_an_earlier_runs():
+    """Regression: the Boundaries checkpoint took masks carried from an
+    earlier one whenever its own output had none, so a run from Boundaries
+    with the masks switched off still resumed later stages with the old masks;
+    and it read the hand-off nodes only while it drew boundary nodes."""
+    from dataclasses import replace
+
+    graph = a_graph()
+    results = ResultLayers()
+    first = replace(
+        _boundaries_output(graph),
+        large_arteriole_mask=np.ones((2, 3, 4), dtype=bool),
+        large_venule_mask=np.zeros((2, 3, 4), dtype=bool),
+    )
+    checkpoints = StageCheckpoints()
+    checkpoints.record("assign_boundaries", results.stage_finished("assign_boundaries", first), results, output=first)
+    assert checkpoints.get("assign_boundaries").large_arteriole_mask is not None
+
+    again = _boundaries_output(graph)  # masks off now: none on the output
+    checkpoints.record("assign_boundaries", _group("assign_boundaries"), results, output=again)
+
+    record = checkpoints.get("assign_boundaries")
+    assert record.large_arteriole_mask is None and record.large_venule_mask is None
+    assert record.large_arteriole_boundary_nodes == (1,) and record.large_venule_boundary_nodes == (2,)
+
+
 def test_the_thick_vessel_region_reaches_a_resumed_run(tmp_path):
     """Where post_process makes a hand-drawn vessel's bridge, when the resumed
     run loads its skeleton rather than making it."""

@@ -64,7 +64,8 @@ LABEL_NAMES_DATASET = "PixelClassification/LabelNames"
 SIDECAR_SUFFIX = ".haemolynx.json"
 
 #: The sidecar's layout. A sidecar of any other version is not trusted.
-PROVENANCE_VERSION = 1
+#: 2: the input is known by a sample of its bytes too.
+PROVENANCE_VERSION = 2
 
 #: The fields of a sidecar that must match this run's for its output to be
 #: reused (the rest are there for a person reading it).
@@ -303,8 +304,17 @@ def sidecar_path(output_path: str | Path) -> Path:
 
 
 def _file_identity(path: Path) -> dict:
+    from haemolynx.io.raw_volume_cache import _content_sample_digest
+
     stat = path.stat()
-    return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    return {
+        "path": str(path.resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        # A stack copied over the input keeping its size and old time (copy2,
+        # robocopy, unzipping) was otherwise the input the output was made from.
+        "sample_sha1": _content_sample_digest(path, stat.st_size),
+    }
 
 
 def ilastik_provenance(
@@ -317,9 +327,10 @@ def ilastik_provenance(
 ) -> dict:
     """What an output made from *input_image_path* by *classifier_path*,
     binarised at *vessel_label*, depends on: the project by its bytes, the
-    input by path, size and modification time (hashing a raw volume of many
-    GB on every run would cost more than the segmentation it saves), and the
-    input's *channels* ilastik read, when it read only those."""
+    input by path, size, modification time and a sample of its bytes (4 MiB
+    spread through it, as the raw-volume cache keys it: hashing a raw volume
+    of many GB on every run would cost more than the segmentation it saves),
+    and the input's *channels* ilastik read, when it read only those."""
     classifier_path = Path(classifier_path)
     record = {
         "version": PROVENANCE_VERSION,

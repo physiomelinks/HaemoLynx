@@ -19,7 +19,11 @@ import numpy as np
 import pytest
 import tifffile
 
-from haemolynx.graph import assigns_large_vessel_branch_orders, vessel_masks_in_use
+from haemolynx.graph import (
+    SMALL_MASK_VESSEL_TYPE,
+    assigns_large_vessel_branch_orders,
+    vessel_masks_in_use,
+)
 from haemolynx.gui.boundary_picking import role_manual_controls_enabled
 from haemolynx.gui.form import shared_ilastik_host
 from haemolynx.parsers import check_settings
@@ -274,7 +278,19 @@ def test_the_small_masks_alone_assign_the_boundaries(tmp_path):
     boundaries = assign_boundaries(settings, _network_with_small_masks(tmp_path))
 
     assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
-    assert settings["arteriole_boundary_nodes"] and settings["venule_boundary_nodes"]
+    # The arteriole mask's vessels end at node 3, the venule mask's at node 6:
+    # each list from its own mask, not the other's.
+    assert settings["arteriole_boundary_nodes"] == [3]
+    assert settings["venule_boundary_nodes"] == [6]
+    tags = {
+        (u, v): data.get(SMALL_MASK_VESSEL_TYPE)
+        for u, v, data in boundaries.graph.edges(data=True)
+    }
+    assert tags == {
+        (0, 1): "arteriole", (1, 2): "arteriole", (2, 3): "arteriole",
+        (3, 4): None, (4, 5): None, (5, 6): None,
+        (6, 7): "venule", (7, 8): "venule", (8, 9): "venule",
+    }
     assert boundaries.small_arteriole_mask is not None
     assert boundaries.large_arteriole_mask is None
 

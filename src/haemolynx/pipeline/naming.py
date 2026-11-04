@@ -29,11 +29,31 @@ def synthetic_run_stem(template_path: Path | str, *, surrounded: bool = False) -
 
 
 def run_input_path(settings: Mapping[str, Any]) -> Optional[Path]:
-    """The image a run analyses (``input_path``), or None: unset, or a
-    synthetic run, which reads no image whatever the setting holds."""
+    """The segmented image a run analyses, or None: unset, or a synthetic
+    run, which reads no image whatever the setting holds.
+
+    The Input tab's ``input_path`` -- or, while ilastik segments (its switch
+    on and a raw image to segment), ilastik's output from the raw image,
+    ``{raw image stem}_segmented`` in ``ilastik_output_dir``: ``input_path``
+    counts only once `segment` has put that output there, and is otherwise
+    an unrelated file left from before ilastik was switched on. The panel's
+    checkpoints, its saved run's name and the plots' folder read it before
+    `segment` runs, and named their files after that stale file."""
     if network_is_synthetic(settings):
         return None
     value = settings.get("input_path")
+    raw = settings.get("raw_image_path")
+    if settings.get("use_ilastik_segmentation") and raw not in (None, ""):
+        from haemolynx.io.ilastik import ilastik_segmented_path, ilastik_segmented_stem
+
+        output_dir = Path(settings.get("ilastik_output_dir") or ".")
+        if (
+            value not in (None, "")
+            and Path(value).parent == output_dir
+            and Path(value).stem == ilastik_segmented_stem(raw)
+        ):
+            return Path(value)
+        return ilastik_segmented_path(output_dir, raw, settings.get("ilastik_output_suffix") or ".tif")
     return None if value in (None, "") else Path(value)
 
 

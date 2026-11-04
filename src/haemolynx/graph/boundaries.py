@@ -131,8 +131,14 @@ def select_boundary_terminal_nodes(
     edge_percent: float,
     end_percent: float,
     axis: int = 1,
+    disjoint: bool = True,
 ) -> tuple[list[Any], list[Any]]:
     """Select the degree-1 nodes in the first and last bands along one axis.
+
+    With *disjoint* (the default) a terminal in both bands is an inlet only;
+    without, each band is returned whole, for a caller that leaves out the
+    inlets actually chosen -- which need not be the first band's, when the
+    inlets are chosen another way.
 
     The bands are measured across the span the terminal nodes themselves cover
     along ``axis``, not across the image. Two reasons, both of which made the
@@ -170,8 +176,9 @@ def select_boundary_terminal_nodes(
 
     inlets = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
     outlets = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
-    inlet_set = set(inlets)
-    outlets = [node for node in outlets if node not in inlet_set]
+    if disjoint:
+        inlet_set = set(inlets)
+        outlets = [node for node in outlets if node not in inlet_set]
 
     inlets.sort(key=lambda n: (axis_coord(n), n))
     outlets.sort(key=lambda n: (-axis_coord(n), n))
@@ -440,6 +447,9 @@ def select_boundary_nodes_by_method(
             edge_percent=edge_percent,
             end_percent=end_percent,
             axis=axis,
+            # The inlets this run chose are excluded below (exclude_nodes): the
+            # first band is not them when they were chosen another way.
+            disjoint=False,
         )
         selected = inlet_nodes if node_role == "inlet" else outlet_nodes
         if filters:
@@ -888,12 +898,23 @@ def select_boundary_nodes_for_role(
             "this dataset."
         )
     if method == "degree_1_from_inlet" and not inlet_nodes:
+        if names["node_role"] == "inlet" and role in ("inlet", "large_vessel_inlet"):
+            # The inlets are what this role chooses: there are none to measure from.
+            raise ValueError(
+                f"{names['method']}='degree_1_from_inlet' measures each terminal's "
+                "distance from the inlet nodes, which this role is the one to choose. "
+                f"Fix: set {names['method']} to another method."
+            )
+        chooser = (
+            "large_vessel_inlet_node_selection_method"
+            if role == "large_vessel_outlet"
+            else "inlet_node_selection_method"
+        )
         raise ValueError(
             f"{names['method']}='degree_1_from_inlet' measures each terminal's "
-            "distance from the inlet nodes, and none have been chosen. Fix: "
-            f"set {names['method']} to another method, or pick the inlet "
-            "nodes first by giving inlet_node_selection_method one of the "
-            "other methods."
+            f"distance from the inlet nodes, and {chooser} chose none. Fix: set "
+            f"{names['method']} to another method, or change {chooser} or what it "
+            "reads so it finds the inlets."
         )
 
     # Settings the config does not carry fall through to the selector's own

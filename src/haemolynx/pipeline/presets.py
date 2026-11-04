@@ -8,9 +8,13 @@ flag both read :data:`PRESETS`.
 
 The :data:`USAGE_PRESETS` are what a run is for. Between them they name
 every setting any of them sets, wherever it would be read, so choosing one
-gives the same run whichever was chosen before it. The rest add one thing --
-vessel masks, thick vessels, a large image, a full report -- and name only
-their own settings, so they go on top of a usage.
+gives the same run whichever was chosen before it, whatever the rows held.
+The rest add one thing -- vessel masks, thick vessels, a large image, a full
+report -- and go on top of a usage: each names its own settings and the
+switches they need to be read, never what decides the usage (whether blood
+flow is solved, how diameters are measured, which measurements are made). So
+a full report turns the statistics and VTK files on over any usage, Cell-to-
+vessel distances' too, which leaves them off alone.
 
 A preset picks switches and choices only. It names no file, which belongs to
 the image being analysed, and no numeric threshold, which is calibrated on
@@ -69,6 +73,8 @@ PRESETS: dict[str, dict[str, Any]] = {
             "statistics": True,
             "statistics_network_analysis": True,
             "measurement_3d_to_cell_mask": False,
+            "measure_tissue_volume": False,
+            "compute_vascular_communities": False,
             "vtk_export": True,
         },
     },
@@ -88,6 +94,8 @@ PRESETS: dict[str, dict[str, Any]] = {
             "statistics": True,
             "statistics_network_analysis": True,
             "measurement_3d_to_cell_mask": False,
+            "measure_tissue_volume": False,
+            "compute_vascular_communities": False,
             "vtk_export": True,
         },
     },
@@ -108,6 +116,8 @@ PRESETS: dict[str, dict[str, Any]] = {
             "statistics": True,
             "statistics_network_analysis": True,
             "measurement_3d_to_cell_mask": False,
+            "measure_tissue_volume": False,
+            "compute_vascular_communities": False,
             "vtk_export": True,
         },
     },
@@ -122,6 +132,8 @@ PRESETS: dict[str, dict[str, Any]] = {
             "run_haemodynamics": False,
             "statistics": False,
             "measurement_3d_to_cell_mask": True,
+            "measure_tissue_volume": False,
+            "compute_vascular_communities": False,
             "vtk_export": False,
         },
     },

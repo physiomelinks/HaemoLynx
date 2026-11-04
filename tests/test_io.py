@@ -514,6 +514,17 @@ def _stopped_growing(path, *, settle=0.6):
     return path.stat().st_size == before
 
 
+def _wait_for(path, *, limit=60.0):
+    """Wait for *path* to appear: the stand-in ilastik's first heartbeat.
+    Under load it can take longer to start than a short timeout or a few
+    polls, which then stopped it before it had written anything."""
+    import time
+
+    deadline = time.monotonic() + limit
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
 def _segment(tmp_path, image, project, output, **kwargs):
     from haemolynx.io.ilastik import run_ilastik_headless_segmentation
 
@@ -675,7 +686,7 @@ def test_ilastik_timeout_kills_the_process_and_raises_an_actionable_error(tmp_pa
     monkeypatch.setenv("FAKE_ILASTIK_BEAT", str(beat))
 
     with pytest.raises(RuntimeError, match="ilastik_timeout_seconds"):
-        _segment(tmp_path, image, project, output, timeout=1.5)
+        _segment(tmp_path, image, project, output, timeout=1.5, poll=lambda: _wait_for(beat))
 
     assert beat.exists()
     assert _stopped_growing(beat)
@@ -704,6 +715,7 @@ def test_a_poll_that_raises_stops_ilastik_and_propagates(tmp_path, monkeypatch):
     def poll():
         polls.append(1)
         if len(polls) >= 3:
+            _wait_for(beat)
             raise Stopped()
 
     with pytest.raises(Stopped):
@@ -850,6 +862,27 @@ def test_an_output_that_cannot_vouch_for_this_run_is_made_again(tmp_path, monkey
     else:
         reuse = False
     _segment(tmp_path, image, project, output, reuse_existing=reuse, vessel_label=label)
+
+    assert runs() == 2
+
+
+def test_an_image_copied_over_the_input_keeping_its_size_and_time_is_segmented_again(tmp_path, monkeypatch):
+    """Regression: the input was known by path, size and time alone, and a
+    copy that keeps the old file's time (copy2, robocopy, unzipping) of a
+    stack the same size reused the old image's segmentation."""
+    import os
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    runs = _count_runs(tmp_path, monkeypatch)
+    _segment(tmp_path, image, project, output, reuse_existing=True)
+
+    stat = image.stat()
+    data = bytearray(image.read_bytes())
+    data[-1] ^= 0xFF  # another stack of the same size
+    image.write_bytes(bytes(data))
+    os.utime(image, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert (image.stat().st_size, image.stat().st_mtime_ns) == (stat.st_size, stat.st_mtime_ns)
+    _segment(tmp_path, image, project, output, reuse_existing=True)
 
     assert runs() == 2
 
@@ -1199,7 +1232,8 @@ def test_a_2d_mask_is_read_as_one_plane_beside_a_2d_image(tmp_path):
 
     assert mask.shape == vessel.shape == (1, 10, 12)
     assert np.array_equal(mask[0], plane > 0) and np.array_equal(vessel[0], plane > 0)
-    assert voxel_xyz[:2] == pytest.approx((0.5, 0.5)) and status["missing_axes"] == ["z"]
+    # z, which the file gives none of, takes the finest in-plane spacing.
+    assert voxel_xyz == pytest.approx((0.5, 0.5, 0.5)) and status["z_from_in_plane"]
 
 
 def test_a_2d_h5_keeps_its_element_size(tmp_path):
@@ -1212,5 +1246,21 @@ def test_a_2d_h5_keeps_its_element_size(tmp_path):
     image, x, y, z, status = load_image_with_voxel_size_2d_aware(str(path), input_format="h5")
 
     assert image.shape == (1, 10, 12)
-    assert (x, y) == pytest.approx((0.25, 0.5))
-    assert status["status"] == "partial" and status["missing_axes"] == ["z"]
+    assert (x, y, z) == pytest.approx((0.25, 0.5, 0.25))
+    assert status["missing_axes"] == ["z"] and status["z_from_in_plane"]
+
+
+def test_a_float_label_h5_cut_by_a_box_reads_as_its_whole_volume_does(tmp_path):
+    """Regression: the rule a box of an H5 is read by took a float dataset by
+    its range alone, so a float 1/2 label mask cut by a crop box was solid
+    vessel in RAM, and its minority label under the low-RAM option."""
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization, h5_binarization_rule
+
+    labels = np.full((4, 10, 20), 2.0, dtype=np.float32)
+    labels[1:3, 4:6, 2:18] = 1.0
+    path = _write_h5(tmp_path / "labels.h5", labels)
+
+    rule = h5_binarization_rule(path)
+
+    assert np.array_equal(rule(labels), _to_binary_volume_for_skeletonization(labels))
+    assert int(rule(labels).sum()) == 2 * 2 * 16

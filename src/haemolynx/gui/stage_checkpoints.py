@@ -710,7 +710,10 @@ class StageCheckpoints:
                 pickle_path = None
 
         roles = _boundary_ids_from_group(group)
-        if any(roles.values()):
+        # The Boundaries stage's own lists and masks are its output's, as it
+        # left them -- never carried from an earlier stage, whatever it drew.
+        boundaries_stage = stage == "assign_boundaries" and output is not None
+        if any(roles.values()) or boundaries_stage:
             # Only assign_boundaries draws boundary nodes; its output has the
             # large-vessel hand-off nodes, which it does not draw.
             for role in ("large_arteriole_boundary", "large_venule_boundary"):
@@ -729,7 +732,14 @@ class StageCheckpoints:
         masks: dict[str, Any | None] = {}
         for size in ("large", "small"):
             arteriole, venule = _boundary_masks_from_group(group, size)
-            if arteriole is None and venule is None:
+            if boundaries_stage:
+                # What it drew, else its output's; a role the run leaves off
+                # has none -- carried, a run from Boundaries with it off kept
+                # an earlier run's masks.
+                if arteriole is None and venule is None:
+                    arteriole = getattr(output, f"{size}_arteriole_mask", None)
+                    venule = getattr(output, f"{size}_venule_mask", None)
+            elif arteriole is None and venule is None:
                 carried_masks = self._carried_boundary_masks(size)
                 if carried_masks is not None:
                     arteriole, venule = carried_masks

@@ -744,6 +744,48 @@ def test_save_then_load_run_restores_layers_and_checkpoints(panel):
     assert "Loaded run" in widget._haemolynx_report()
 
 
+def test_a_saved_run_keeps_what_it_ran_with_and_shows_the_rows_changed_since(panel, qtbot, monkeypatch):
+    """Regression: Save run wrote the rows as they were when saved, so a row
+    changed after the run was saved as what made it."""
+    from types import SimpleNamespace
+
+    import haemolynx.gui._widget as widget_module
+    from haemolynx.gui.run_snapshot import read_run_snapshot
+    from haemolynx.gui.stage_checkpoints import stages_before
+
+    widget, viewer, tmp_path = panel
+    _seed_run(widget, viewer, through="post_process")
+    rows = widget._haemolynx_rows()
+    rows["verbose_logging"].value = False
+    monkeypatch.setattr(widget_module, "run_pipeline_stages", lambda *_a, **_k: None)
+    monkeypatch.setattr(widget_module, "preflight", lambda *_a, **_k: SimpleNamespace(ok=True))
+    widget._haemolynx_run(
+        start_from="post_process", resume=None, replace_checkpoints=False,
+        restored_stages=stages_before("post_process"),
+    )
+    qtbot.waitUntil(lambda: not widget._haemolynx_run_state.running, timeout=60000)
+
+    rows["verbose_logging"].value = True  # after the run, not run since
+    dest = tmp_path / "session.haemorun"
+    assert widget._haemolynx_save_run(dest) is True
+    saved = read_run_snapshot(dest)
+    assert saved.settings["verbose_logging"] is False
+    assert saved.edited_since_run == {"verbose_logging": True}
+
+    widget._haemolynx_clear()
+    rows["verbose_logging"].value = False
+    assert widget._haemolynx_load_run(dest) is True
+    assert rows["verbose_logging"].value is True
+    assert "changed after the run" in widget._haemolynx_report()
+    assert "verbose_logging" in widget._haemolynx_report()
+
+    # Saved again unchanged, it still says what the run was made with.
+    assert widget._haemolynx_save_run(tmp_path / "again.haemorun") is True
+    again = read_run_snapshot(tmp_path / "again.haemorun")
+    assert again.settings["verbose_logging"] is False
+    assert again.edited_since_run == {"verbose_logging": True}
+
+
 def _save_run_from_the_button(widget, monkeypatch, dest, write):
     """Press Save run, choosing *dest* in its dialogue, with *write* in place
     of the file writer."""

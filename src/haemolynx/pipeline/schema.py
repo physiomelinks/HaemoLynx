@@ -4628,6 +4628,8 @@ SCHEMA = Schema(
                 "overlap, and the vessel it is nearest to"
             ),
             section=_STATISTICS,
+            # Lined up with the run's image; a synthetic network has none.
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="cell_mask_path",
@@ -4867,6 +4869,7 @@ SCHEMA = Schema(
                 "network spans"
             ),
             section=_STATISTICS,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="tissue_raw_tiff_path",
@@ -4996,6 +4999,7 @@ SCHEMA = Schema(
                 "along it, and how far it is from the vessel's nearest junction"
             ),
             section=_PERICYTE_MEASUREMENTS,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="pericyte_measurement_mask_path",

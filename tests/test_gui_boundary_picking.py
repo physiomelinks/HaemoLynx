@@ -590,6 +590,7 @@ def test_a_method_shows_only_what_it_reads():
         {
             "inlet_node_selection_method": "coordinates",
             "outlet_node_selection_method": "volume",
+            "large_vessel_outlet_node_selection_method": "degree_1_from_inlet",
             "arteriole_boundary_selection_method": "all_degree_1",
             "venule_boundary_selection_method": "degree_1_from_inlet",
         }
@@ -599,6 +600,10 @@ def test_a_method_shows_only_what_it_reads():
     assert "boundary_distance_from_inlet_node" in wanted
     # `all_degree_1` takes every terminal, so it configures nothing.
     assert "arteriole_boundary_node_coordinates" not in wanted
+    # And a vessel boundary is only ever a list: no distance row for it alone.
+    assert "boundary_distance_from_inlet_node" not in visible_settings(
+        {"venule_boundary_selection_method": "degree_1_from_inlet"}
+    )
     assert "inlet_node_volumes" not in wanted
     assert "boundary_axis" not in wanted
 
@@ -608,11 +613,11 @@ def test_the_band_settings_appear_for_any_role_that_uses_them():
     only asks for the percentage at its own end of the axis."""
     from haemolynx.gui.boundary_picking import visible_settings
 
-    wanted = visible_settings({"venule_boundary_selection_method": "edge_percent"})
+    wanted = visible_settings({"outlet_node_selection_method": "edge_percent"})
     assert {"boundary_axis", "boundary_last_percent"} <= wanted
     assert "boundary_first_percent" not in wanted
 
-    both = visible_settings({"venule_boundary_selection_method": "edge_percent",
+    both = visible_settings({"outlet_node_selection_method": "edge_percent",
                              "inlet_node_selection_method": "edge_percent"})
     assert {"boundary_axis", "boundary_first_percent", "boundary_last_percent"} <= both
 
@@ -845,9 +850,6 @@ def test_an_inlet_role_reads_the_first_percentage():
     assert settings_for_method("inlet", "edge_percent") == (
         "boundary_axis", "boundary_first_percent",
     )
-    assert settings_for_method("arteriole_boundary", "edge_percent") == (
-        "boundary_axis", "boundary_first_percent",
-    )
 
 
 def test_an_outlet_role_reads_the_last_percentage():
@@ -857,9 +859,31 @@ def test_an_outlet_role_reads_the_last_percentage():
     assert settings_for_method("outlet", "edge_percent") == (
         "boundary_axis", "boundary_last_percent",
     )
-    assert settings_for_method("venule_boundary", "edge_percent") == (
-        "boundary_axis", "boundary_last_percent",
-    )
+
+
+
+@pytest.mark.parametrize("method", ["edge_percent", "degree_1_from_inlet", "all_degree_1"])
+def test_a_method_that_chooses_no_vessel_boundary_shows_no_rows_and_draws_no_band(method):
+    """Regression: the arteriole and venule boundaries are only ever a list
+    (coordinates, boxes or node IDs) -- any other method the run reads as no
+    boundary -- yet the panel showed the band or distance rows for them and
+    drew an arteriole band that chose nothing. Now it says so instead."""
+    from haemolynx.gui.boundary_picking import band_boxes, group_for, settings_for_method
+
+    values = {
+        "inlet_node_selection_method": "edge_percent",
+        "outlet_node_selection_method": "node_ids",
+        "arteriole_boundary_selection_method": method,
+        "venule_boundary_selection_method": "coordinates",
+        "boundary_axis": 1,
+        "boundary_first_percent": 10.0,
+        "boundary_last_percent": 10.0,
+    }
+
+    assert settings_for_method("arteriole_boundary", method) == ()
+    assert set(band_boxes(values, (0, 0, 0), (10, 10, 10))) == {"inlet"}
+    assert "Arteriole boundary: " + method + " chooses no nodes" in group_for(values).note
+    assert "Venule boundary" not in group_for(values).note
 
 
 def test_the_percentage_split_matches_the_selector():
@@ -1417,3 +1441,25 @@ def test_a_synthetic_network_greys_every_role_with_its_own_note():
     image = {"network_source": "segmented_image", "automated_vessel_assignment": False}
     assert role_manual_controls_enabled("inlet", image) is True
     assert role_disabled_note("inlet", image) == DISABLED_ROLE_TOOLTIP["inlet"]
+
+
+def test_a_node_an_edit_added_is_not_taken_as_a_boundary_node_id():
+    """Regression: a click read the network on screen, where an edit on the
+    Post processing tab may have added nodes the Boundaries stage never has,
+    so the ID it listed stopped the next run from Boundaries. A terminal the
+    large-vessel cut made is no such node: the cut makes it again."""
+    import networkx as nx
+
+    from haemolynx.gui.boundary_picking import node_made_after_boundaries
+
+    boundaries = nx.MultiGraph()
+    boundaries.add_edge(0, 1)
+    shown = nx.MultiGraph()
+    shown.add_edge(0, 1)
+    shown.add_edge(1, 7)                      # drawn on the Post processing tab
+    shown.add_node(8, cut_from_large_vessel="arteriole")
+
+    assert node_made_after_boundaries(7, boundaries, shown)
+    assert not node_made_after_boundaries(1, boundaries, shown)
+    assert not node_made_after_boundaries(8, boundaries, shown)
+    assert not node_made_after_boundaries(7, None, shown)
