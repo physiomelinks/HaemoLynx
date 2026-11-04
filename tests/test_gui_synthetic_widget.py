@@ -13,6 +13,7 @@ pytest.importorskip("magicgui")
 from haemolynx.gui._widget import settings_widget  # noqa: E402
 from haemolynx.gui.boundary_picking import ROLES, SYNTHETIC_CHOOSES_NOTE  # noqa: E402
 from haemolynx.gui.form import PATH_FILTERS  # noqa: E402
+from haemolynx.gui.run_state import RUNNING_CHECKS  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -200,7 +201,12 @@ def test_a_surround_runs_from_the_panel_into_the_viewer(make_napari_viewer, qtbo
     rows["output_dir"].value = tmp_path / "out"
     running = widget._haemolynx_run_state
     widget._haemolynx_run()
-    qtbot.waitUntil(lambda: not running.running, timeout=600_000)
+    # A synthetic run's checks load its template off the panel's thread, and the
+    # run starts only once they pass: not running yet is not finished.
+    qtbot.waitUntil(
+        lambda: not running.running and widget._haemolynx_report() != RUNNING_CHECKS,
+        timeout=600_000,
+    )
     qtbot.wait(200)
 
     assert widget._haemolynx_report().startswith("Finished:"), widget._haemolynx_report()

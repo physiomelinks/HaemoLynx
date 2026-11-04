@@ -60,7 +60,11 @@ def test_one_run_averaged_with_itself_is_itself():
     assert twice.dead_ends == T.dead_ends and twice.loops.independent_loops == T.loops.independent_loops
     for mine, theirs in ((twice.inlets, T.inlets), (twice.outlets, T.outlets)):
         assert sorted(e.face for e in mine) == sorted(e.face for e in theirs)
-        assert sorted(e.position_rel for e in mine) == pytest.approx(sorted(e.position_rel for e in theirs))
+        # Each position is a tuple, and pytest.approx takes no nesting (9.2 refuses it).
+        got, want = sorted(e.position_rel for e in mine), sorted(e.position_rel for e in theirs)
+        assert len(got) == len(want)
+        for position, expected in zip(got, want):
+            assert position == pytest.approx(expected)
 
 
 def test_an_order_a_run_lacks_counts_none_for_it():

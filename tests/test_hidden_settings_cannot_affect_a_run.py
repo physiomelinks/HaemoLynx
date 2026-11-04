@@ -439,6 +439,25 @@ def _stage_level_cases():
 
 _STAGE_CASES, _STAGE_SKIPPED = _stage_level_cases()
 
+# A gate switched on to leave a setting unmet may not run without settings of
+# its own: the size convention has no default thresholds, and refuses to class
+# vessels with either unset.
+_SWITCHED_ON_GATE_NEEDS = {
+    "classify_vessels_by_size": {
+        "vessel_size_mid_min_diameter_um": 6.0,
+        "vessel_size_wide_min_diameter_um": 15.0,
+    },
+}
+
+
+def _unmet_and_runnable(setting) -> dict[str, Any]:
+    unmet = _first_unmet_prerequisite(setting)
+    needs = {}
+    for gate, value in unmet.items():
+        if value is True:
+            needs.update(_SWITCHED_ON_GATE_NEEDS.get(gate, {}))
+    return {**needs, **unmet}
+
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
@@ -446,7 +465,7 @@ _STAGE_CASES, _STAGE_SKIPPED = _stage_level_cases()
 )
 def test_a_hidden_setting_cannot_change_a_real_stage_run(name, owner, probe, tmp_path):
     setting = SCHEMA[name]
-    unmet = _first_unmet_prerequisite(setting)
+    unmet = _unmet_and_runnable(setting)
     runner = STAGE_RUNNERS[owner]
 
     default_output = runner({name: setting.coerce(setting.default), **unmet}, tmp_path)

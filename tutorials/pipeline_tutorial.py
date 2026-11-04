@@ -399,11 +399,6 @@ if INPUT_TIFF is not None:
 # for each branch order.
 settings = resolve_settings(schema=SCHEMA, config_path=CONFIG_PATH, overrides=TUTORIAL_OVERRIDES)
 
-# The pre-run checks the examples run for you: every path a stage will need,
-# checked before any work starts.
-report = preflight(settings, SCHEMA)
-assert report.ok, "settings are not runnable; see the checklist above"
-
 
 # In[ ]:
 
@@ -433,6 +428,13 @@ settings["outlet_node_volumes"] = [
 ]
 print(f"Inlet box (um):  {settings['inlet_node_volumes'][0]}")
 print(f"Outlet box (um): {settings['outlet_node_volumes'][0]}")
+
+# The pre-run checks the examples run for you: every path a stage will need,
+# checked before the graph is built. They run here, not before Stage 1,
+# because the boxes above are the volume's own extent, and the checks refuse
+# a box method with no boxes.
+report = preflight(settings, SCHEMA)
+assert report.ok, "settings are not runnable; see the checklist above"
 
 # Both are written by skeletonise(): the skeleton as loaded, and after the
 # cleaning pass that bridges gaps and drops the smallest components.

@@ -405,7 +405,11 @@ def test_the_followed_samples_answer_as_ones_built_over_the_graph_as_it_stands(m
         for q in queries[:40]:
             point, owner = centrelines.nearest_vessel(q)
             assert G.has_edge(*owner) and not G.edges[owner].get(R.IS_ZERO_RESISTANCE)
-            assert np.linalg.norm(point - q) == _fresh_distances(G, q[None], vessels_only=True)[0][0]
+            # The point's distance, worked out again by norm here and by the
+            # tree there: the two may differ in the last bit by numpy version.
+            assert np.linalg.norm(point - q) == pytest.approx(
+                _fresh_distances(G, q[None], vessels_only=True)[0][0], rel=1e-12
+            )
             skipped, skipped_owner = centrelines.nearest_vessel(q, skip=lambda e: e == owner)
             assert skipped_owner != owner and np.linalg.norm(skipped - q) >= np.linalg.norm(point - q)
 

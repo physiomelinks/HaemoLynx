@@ -1298,7 +1298,12 @@ def test_a_real_batch_of_raw_images_is_segmented_by_ilastik_and_run(tmp_path, sc
     for result in summary.results:
         stem = result.match.stem
         folder = out / stem
-        segmentation = next((folder / "segmentations").glob(f"{stem}.tif*"))
+        # Not the record beside it ({stem}.tif.haemolynx.json), which a Linux
+        # listing may give first.
+        segmentation = next(
+            path for path in (folder / "segmentations").glob(f"{stem}.tif*")
+            if path.suffix in {".tif", ".tiff"}
+        )
         assert json.loads(sidecar_path(segmentation).read_text(encoding="utf-8"))["vessel_label"]
         snapshot = read_run_snapshot(folder / f"{stem}.haemorun")
         assert Path(snapshot.settings["raw_image_path"]) == raw / f"{stem.rsplit('_', 1)[0]}.tif"
