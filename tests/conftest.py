@@ -95,13 +95,17 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True, scope="session")
 def _saved_presets_kept_apart(tmp_path_factory):
-    """Saved presets read from and written to an empty folder, never the
-    folder of the user running the tests: a preset saved there would show in
-    every panel's Preset menu."""
+    """Saved presets and perturbations read from and written to empty
+    folders, never the folder of the user running the tests: one saved there
+    would show in every panel's menus."""
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV
     from haemolynx.pipeline.saved_presets import PRESET_DIR_ENV
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv(PRESET_DIR_ENV, str(tmp_path_factory.mktemp("saved_presets")))
+        patch.setenv(
+            PERTURBATION_DIR_ENV, str(tmp_path_factory.mktemp("saved_perturbations"))
+        )
         yield
 
 

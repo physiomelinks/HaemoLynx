@@ -112,21 +112,27 @@ def held_by_saved_presets(setting: Setting) -> bool:
     return not setting.name.endswith(_ONE_IMAGE_ENDINGS)
 
 
+def user_settings_dir() -> Path:
+    """The user's own settings folder for HaemoLynx, which holds what the
+    panel keeps on this machine: saved presets, saved perturbations."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Roaming"
+        return root / "HaemoLynx"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "HaemoLynx"
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "haemolynx"
+
+
 def saved_preset_dir() -> Path:
     """Where saved presets are kept: :data:`PRESET_DIR_ENV` if set, else a
     ``presets`` folder in the user's own settings folder for HaemoLynx."""
     override = os.environ.get(PRESET_DIR_ENV)
     if override:
         return Path(override).expanduser()
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA")
-        root = Path(base) if base else Path.home() / "AppData" / "Roaming"
-        return root / "HaemoLynx" / "presets"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "HaemoLynx" / "presets"
-    base = os.environ.get("XDG_CONFIG_HOME")
-    root = Path(base) if base else Path.home() / ".config"
-    return root / "haemolynx" / "presets"
+    return user_settings_dir() / "presets"
 
 
 @dataclass(frozen=True)
@@ -352,4 +358,5 @@ __all__ = [
     "saved_preset_settings",
     "saved_preset_values",
     "saved_presets",
+    "user_settings_dir",
 ]

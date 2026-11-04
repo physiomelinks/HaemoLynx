@@ -506,3 +506,276 @@ def test_orphaned_pericyte_rows_are_not_top_level_windows_at_startup(
         for name in _FLOATER_REGRESSION_SETTINGS:
             assert rows[name].visible is False, name
             assert not rows[name].native.isWindow(), name
+
+
+# --- saved for later runs -----------------------------------------------------
+
+
+def _saved_panel(make_napari_viewer):
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    return widget, widget._haemolynx_perturbations
+
+
+def _arteriole_entry(perturbations, name="art_dilate_20", percent=20):
+    perturbations.add()
+    index = len(perturbations.editors()) - 1
+    perturbations.editors()[index].name.value = name
+    perturbations.choose_type(index, A_TYPE)
+    perturbations.editors()[index].editors[A_PERCENT].value = percent
+    return index
+
+
+def _choose_saved(perturbations, key):
+    """Pick *key* in the saved-perturbation menu as a user does."""
+    menu = perturbations.saved_menu
+    index = menu.findData(key)
+    assert index > 0, key
+    menu.activated.emit(index)
+
+
+def test_a_perturbation_saved_in_one_panel_is_added_to_the_list_in_another(
+    make_napari_viewer, monkeypatch, tmp_path
+):
+    """Saved under its name with its options; in a later panel the menu lists
+    it, and choosing it adds it to the end of the list -- its options in its
+    editor, the baseline rows untouched."""
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV, read_saved_perturbation
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path))
+    first, perturbations = _saved_panel(make_napari_viewer)
+    index = _arteriole_entry(perturbations)
+
+    perturbations.editors()[index].save.native.click()
+
+    saved = read_saved_perturbation(tmp_path / "art_dilate_20.yaml")
+    assert saved.entry == {"name": "art_dilate_20", "type": A_TYPE, "overrides": {A_PERCENT: 20}}
+    assert first._haemolynx_report().startswith(
+        "Saved the perturbation art_dilate_20 (arteriole constriction/dilation) in "
+    )
+    menu = perturbations.saved_menu
+    assert menu.itemText(menu.findData("art_dilate_20")) == (
+        "art_dilate_20 (arteriole constriction/dilation)"
+    )
+    assert menu.currentIndex() == 0
+
+    second, later = _saved_panel(make_napari_viewer)
+    later.add()
+    later.choose_type(0, "pressure_sweep")
+    baseline = second._haemolynx_values()[A_PERCENT]
+
+    _choose_saved(later, "art_dilate_20")
+
+    assert [entry["name"] for entry in later.entries()] == ["perturbation_1", "art_dilate_20"]
+    assert later.entries()[1] == {"name": "art_dilate_20", "type": A_TYPE, "overrides": {A_PERCENT: 20.0}}
+    editor = later.editors()[1]
+    assert editor.type.value == A_TYPE
+    assert editor.editors[A_PERCENT].value == 20
+    values = second._haemolynx_values()
+    assert values["perturbations"] == later.entries()
+    assert values[A_PERCENT] == baseline
+    assert second._haemolynx_report().startswith("Added the saved perturbation art_dilate_20\n")
+    assert later.saved_menu.currentIndex() == 0
+
+
+def test_one_added_twice_is_numbered_on(make_napari_viewer, monkeypatch, tmp_path):
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path))
+    widget, perturbations = _saved_panel(make_napari_viewer)
+    _arteriole_entry(perturbations)
+    assert perturbations.save(0) is True
+
+    assert perturbations.add_saved("art_dilate_20") is True
+
+    assert [entry["name"] for entry in perturbations.entries()] == ["art_dilate_20", "art_dilate_20_2"]
+    assert widget._haemolynx_report().startswith(
+        "Added the saved perturbation art_dilate_20 as art_dilate_20_2, as another already has its name"
+    )
+
+
+def test_saving_asks_before_replacing_one_saved_under_the_same_name(
+    make_napari_viewer, monkeypatch, tmp_path
+):
+    from qtpy.QtWidgets import QMessageBox
+
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV, read_saved_perturbation
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path))
+    _widget, perturbations = _saved_panel(make_napari_viewer)
+    index = _arteriole_entry(perturbations)
+    assert perturbations.save(index) is True
+    perturbations.editors()[index].editors[A_PERCENT].value = -30
+    asked = []
+    # Only the title kept: holding the parent window would leak the viewer.
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **_k: asked.append(a[1]) or QMessageBox.No)
+    )
+
+    assert perturbations.save(index) is False
+
+    assert asked == ["Replace the saved perturbation?"]
+    path = tmp_path / "art_dilate_20.yaml"
+    assert read_saved_perturbation(path).entry["overrides"] == {A_PERCENT: 20}
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *_a, **_k: QMessageBox.Yes))
+    assert perturbations.save(index) is True
+    assert read_saved_perturbation(path).entry["overrides"] == {A_PERCENT: -30}
+
+
+def test_one_with_no_type_yet_is_not_saved(make_napari_viewer, monkeypatch, tmp_path):
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path))
+    widget, perturbations = _saved_panel(make_napari_viewer)
+    perturbations.add()
+
+    assert perturbations.save(0) is False
+
+    assert list(tmp_path.iterdir()) == []
+    assert "no type yet" in widget._haemolynx_report()
+
+
+def test_a_saved_pericyte_perturbation_leaves_this_images_mask_behind(
+    make_napari_viewer, monkeypatch, tmp_path
+):
+    from haemolynx.gui.form import field_for
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV, read_saved_perturbation
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path / "saved"))
+    mask = tmp_path / "pericytes.tif"
+    mask.write_bytes(b"")
+    widget, perturbations = _saved_panel(make_napari_viewer)
+    perturbations.add()
+    perturbations.editors()[0].name.value = "tight"
+    perturbations.choose_type(0, "pericyte_diameter_change")
+    editor = perturbations.editors()[0]
+    editor.editors["use_pericyte_mask_constriction"].value = True
+    editor.editors["pericyte_mask_path"].value = mask
+    editor.editors["pericyte_constriction_factor"].value = 0.5
+    assert "pericyte_mask_path" in perturbations.entries()[0]["overrides"]
+
+    assert perturbations.save(0) is True
+
+    held = read_saved_perturbation(tmp_path / "saved" / "tight.yaml").entry["overrides"]
+    assert "pericyte_mask_path" not in held
+    assert held["use_pericyte_mask_constriction"] is True
+    assert held["pericyte_constriction_factor"] == 0.5
+    report = widget._haemolynx_report()
+    assert "Not kept, as they belong to this image" in report
+    assert field_for(default_schema()["pericyte_mask_path"]).label in report
+
+
+def test_the_menu_reads_the_folder_as_it_opens(make_napari_viewer, monkeypatch, tmp_path):
+    """One saved from another panel, or copied in by hand, is listed."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV, save_perturbation
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path))
+    _widget, perturbations = _saved_panel(make_napari_viewer)
+    menu = perturbations.saved_menu
+    assert menu.findData("copied_in") == -1
+    save_perturbation(
+        {"name": "copied_in", "type": A_TYPE, "overrides": {A_PERCENT: 5}}, default_schema()
+    )
+
+    menu.showPopup()
+    menu.hidePopup()
+
+    assert menu.findData("copied_in") > 0
+    assert menu.currentIndex() == 0
+
+
+def test_one_gone_from_disk_says_so_and_adds_nothing(make_napari_viewer, monkeypatch, tmp_path):
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path))
+    widget, perturbations = _saved_panel(make_napari_viewer)
+    _arteriole_entry(perturbations, name="gone")
+    perturbations.save(0)
+    (tmp_path / "gone.yaml").unlink()
+
+    _choose_saved(perturbations, "gone")
+
+    assert len(perturbations.entries()) == 1
+    assert widget._haemolynx_report().startswith("Could not add the saved perturbation")
+    assert perturbations.saved_menu.findData("gone") == -1
+
+
+def test_deleting_one_from_the_menu_asks_which_and_then_again(make_napari_viewer, monkeypatch, tmp_path):
+    from qtpy.QtWidgets import QInputDialog, QMessageBox
+
+    from haemolynx.gui.perturbation_editing import DELETE_SAVED
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV
+
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(tmp_path))
+    widget, perturbations = _saved_panel(make_napari_viewer)
+    menu = perturbations.saved_menu
+    assert menu.findData(DELETE_SAVED) == -1
+    _arteriole_entry(perturbations, name="keep")
+    _arteriole_entry(perturbations, name="drop")
+    perturbations.save(0)
+    perturbations.save(1)
+    assert menu.findData(DELETE_SAVED) == menu.count() - 1
+
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *_a, **_k: ("drop", True)))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *_a, **_k: QMessageBox.No))
+    _choose_saved(perturbations, DELETE_SAVED)
+    assert (tmp_path / "drop.yaml").is_file()
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *_a, **_k: QMessageBox.Yes))
+    _choose_saved(perturbations, DELETE_SAVED)
+    assert not (tmp_path / "drop.yaml").exists()
+    assert (tmp_path / "keep.yaml").is_file()
+    assert menu.findData("drop") == -1
+    assert menu.currentIndex() == 0
+    assert widget._haemolynx_report().startswith("Deleted the saved perturbation drop")
+    # The run's own list is not touched.
+    assert [entry["name"] for entry in perturbations.entries()] == ["keep", "drop"]
+
+    assert perturbations.delete_saved("keep") is True
+    assert menu.findData(DELETE_SAVED) == -1
+
+
+def test_the_menu_opens_the_folder_they_are_kept_in(make_napari_viewer, monkeypatch, tmp_path):
+    from haemolynx.gui import _widget as widget_module
+    from haemolynx.gui.perturbation_editing import OPEN_SAVED_FOLDER
+    from haemolynx.pipeline.saved_perturbations import PERTURBATION_DIR_ENV
+
+    folder = tmp_path / "not yet made"
+    monkeypatch.setenv(PERTURBATION_DIR_ENV, str(folder))
+    opened = []
+    monkeypatch.setattr(widget_module, "_open_in_system", lambda path: opened.append(path) or True)
+    widget, perturbations = _saved_panel(make_napari_viewer)
+
+    _choose_saved(perturbations, OPEN_SAVED_FOLDER)
+
+    assert opened == [folder]
+    assert folder.is_dir()
+    assert widget._haemolynx_report() == f"Opened {folder}"
+    assert perturbations.saved_menu.currentIndex() == 0
+
+
+def test_the_saved_perturbation_controls_sit_on_the_tab_with_their_hover_text(panel):
+    from qtpy.QtCore import Qt
+
+    from haemolynx.gui.perturbation_editing import (
+        OPEN_SAVED_FOLDER,
+        OPEN_SAVED_FOLDER_TOOLTIP,
+        SAVE_TOOLTIP,
+        SAVED_MENU_TOOLTIP,
+    )
+
+    widget, _viewer, perturbations = panel
+    perturbations.add()
+    editor = perturbations.editors()[0]
+    page = tab_page(widget, TAB_TITLE)
+
+    assert page.isAncestorOf(perturbations.saved_menu)
+    assert editor.container.native.isAncestorOf(editor.save.native)
+    assert editor.container.native.isAncestorOf(editor.remove.native)
+    assert editor.save.tooltip == SAVE_TOOLTIP
+    menu = perturbations.saved_menu
+    assert menu.toolTip() == SAVED_MENU_TOOLTIP
+    assert menu.itemData(menu.findData(OPEN_SAVED_FOLDER), Qt.ToolTipRole) == OPEN_SAVED_FOLDER_TOOLTIP

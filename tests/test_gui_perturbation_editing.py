@@ -490,3 +490,79 @@ def test_bidirectional_settings_use_constriction_dilation_labels():
     assert display_label_for_setting("inlet_pressure_min_pa") == (
         "Inlet pressure min pa"
     )
+
+
+# --- saved perturbations ------------------------------------------------------
+
+
+def test_a_saved_perturbation_goes_on_the_end_under_its_own_name():
+    from haemolynx.gui.perturbation_editing import add_saved_entry
+
+    entries = [new_entry([])]
+    before = copy.deepcopy(entries)
+    saved = {
+        "name": "art_dilate_20",
+        "type": "arteriole_diameter_change",
+        "overrides": {"arteriole_diameter_change_percent": np.float64(20.0)},
+    }
+
+    added = add_saved_entry(entries, saved)
+
+    assert entries == before
+    assert added[:-1] == before
+    assert added[-1] == {
+        "name": "art_dilate_20",
+        "type": "arteriole_diameter_change",
+        "overrides": {"arteriole_diameter_change_percent": 20.0},
+    }
+    assert type(added[-1]["overrides"]["arteriole_diameter_change_percent"]) is float
+
+
+def test_a_saved_perturbation_whose_name_is_taken_is_numbered_on():
+    from haemolynx.gui.perturbation_editing import add_saved_entry, unique_name
+
+    saved = {"name": "Dilate", "type": "arteriole_diameter_change", "overrides": {}}
+    entries = add_saved_entry([], saved)
+    # Ignoring case, as a Windows folder is: "dilate" would share its folder.
+    entries = add_saved_entry(entries, {**saved, "name": "dilate"})
+    entries = add_saved_entry(entries, saved)
+
+    assert [entry["name"] for entry in entries] == ["Dilate", "dilate_2", "Dilate_3"]
+    assert name_problems(entries) == ()
+    assert unique_name("other", entries) == "other"
+    assert add_saved_entry([], {**saved, "name": " "})[0]["name"] == "perturbation_1"
+
+
+def test_the_saved_menu_lists_each_by_name_and_type_then_its_commands():
+    from types import SimpleNamespace
+
+    from haemolynx.gui.perturbation_editing import (
+        DELETE_SAVED,
+        DELETE_SAVED_TEXT,
+        OPEN_SAVED_FOLDER,
+        OPEN_SAVED_FOLDER_TEXT,
+        SAVED_MENU_PROMPT,
+        saved_menu,
+    )
+
+    saved = [
+        SimpleNamespace(name="art_dilate_20", type="arteriole_diameter_change", key="art_dilate_20"),
+        SimpleNamespace(name="Block 5%", type="capillary_block", key="Block 5_"),
+    ]
+
+    assert saved_menu(saved) == [
+        (SAVED_MENU_PROMPT, None),
+        ("art_dilate_20 (arteriole constriction/dilation)", "art_dilate_20"),
+        ("Block 5% (capillary blocks)", "Block 5_"),
+        None,
+        (OPEN_SAVED_FOLDER_TEXT, OPEN_SAVED_FOLDER),
+        (DELETE_SAVED_TEXT, DELETE_SAVED),
+    ]
+    # Nothing to delete, so no Delete entry.
+    assert saved_menu([]) == [
+        (SAVED_MENU_PROMPT, None),
+        None,
+        (OPEN_SAVED_FOLDER_TEXT, OPEN_SAVED_FOLDER),
+    ]
+    # A command key is never a saved perturbation's file stem.
+    assert ":" in DELETE_SAVED and ":" in OPEN_SAVED_FOLDER

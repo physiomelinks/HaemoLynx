@@ -189,3 +189,19 @@ centrelines grey dots, a 5 um bar. Off until ticked: the raw image is read the f
 the page's own loader (the Diameters stage's copy in the viewer, else the Input tab's file, kept
 for Add vessel too). Each picture reads one window of the volume round its plane, so a
 memory-mapped raw image stays on disk. It shows; it decides nothing, and no list is ordered by it.
+
+## Saved perturbations
+
+`pipeline/saved_perturbations.py` and the Perturbations tab's "Save for later runs" button and
+"Add a saved perturbation..." menu (2026-11-04, Harvey asked for the easiest way to make custom
+perturbations reusable when saved locally). A saved preset could already hold a run's
+perturbation list, but loading one sets the panel's whole settings, so perturbations from two
+presets could not be asked of one network. A saved perturbation is one entry instead, *added* to
+the list. It is the entry a config's `perturbations` list holds, under `perturbation:` in its
+file, so it can also be pasted into a config as it is. It keeps only what its type reads, and
+leaves out what `held_by_saved_presets` leaves out of a preset (a pericyte or block mask, an H5
+dataset, vessels by ID): the run it is added to gives its own, as the editor shows the run's
+values for every option the entry does not set. Saving under a name already saved asks before
+replacing it; adding one whose name the list already has numbers it on (`_2`, `_3`), since each
+name is its own output folder. New kinds of perturbation (logic none of the types has) were left
+for later: the first step would be a type chosen by its settings, not Python plug-ins.

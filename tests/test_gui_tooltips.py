@@ -62,7 +62,20 @@ def _chrome_strings() -> dict[str, str]:
     found: dict[str, str] = {}
     for module, names in (
         (chrome_tooltips, None),
-        (perturbation_editing, ("NAME_TOOLTIP", "TYPE_TOOLTIP", "ADD_TOOLTIP", "REMOVE_TOOLTIP")),
+        (
+            perturbation_editing,
+            (
+                "NAME_TOOLTIP",
+                "TYPE_TOOLTIP",
+                "ADD_TOOLTIP",
+                "REMOVE_TOOLTIP",
+                "SAVE_TOOLTIP",
+                "SAVED_MENU_TOOLTIP",
+                "SAVED_ITEM_TOOLTIP",
+                "DELETE_SAVED_TOOLTIP",
+                "OPEN_SAVED_FOLDER_TOOLTIP",
+            ),
+        ),
         (boundary_picking, ("DISABLED_ROLE_TOOLTIP", "SYNTHETIC_CHOOSES_NOTE", "GLOBAL_MASKS_NOTE")),
     ):
         for name in names or [name for name in vars(module) if not name.startswith("_")]:

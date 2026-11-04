@@ -30,7 +30,7 @@ Two hazards, both silent, both handled at the one boundary:
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from haemolynx.haemodynamics.perturbations import (
     PERTURBATION_TYPES,
@@ -45,16 +45,27 @@ from haemolynx.haemodynamics.perturbations import (
 __all__ = [
     "ADD_TOOLTIP",
     "ALWAYS_VISIBLE_TAB_SETTINGS",
+    "DELETE_SAVED",
+    "DELETE_SAVED_TEXT",
+    "DELETE_SAVED_TOOLTIP",
     "EDITOR_SETTINGS",
     "NAME_TOOLTIP",
+    "OPEN_SAVED_FOLDER",
+    "OPEN_SAVED_FOLDER_TEXT",
+    "OPEN_SAVED_FOLDER_TOOLTIP",
     "PERTURBATION_TYPES",
     "PERTURBATION_TYPE_DISPLAY_NAMES",
     "REMOVE_TOOLTIP",
+    "SAVED_ITEM_TOOLTIP",
+    "SAVED_MENU_PROMPT",
+    "SAVED_MENU_TOOLTIP",
+    "SAVE_TOOLTIP",
     "SETTING_DISPLAY_LABELS",
     "TYPE_STARTING_VALUES",
     "TYPE_TOOLTIP",
     "UNCHOSEN",
     "add_entry",
+    "add_saved_entry",
     "default_name",
     "display_label_for_setting",
     "display_name_for_type",
@@ -66,12 +77,14 @@ __all__ = [
     "perturbation_type_choices",
     "remove_entry",
     "rows_for_type",
+    "saved_menu",
     "set_name",
     "set_overrides",
     "set_type",
     "starting_values_for_type",
     "summary",
     "to_settings",
+    "unique_name",
     "orphaned_tab_settings",
     "vessel_ids_with_ends",
     "visible_tab_settings",
@@ -163,6 +176,36 @@ ADD_TOOLTIP = (
 REMOVE_TOOLTIP = (
     "Remove this perturbation from the list"
 )
+SAVE_TOOLTIP = (
+    "Keep this perturbation on this computer under its name, to add to later "
+    "runs from the menu below. Its masks and vessels by number belong to this "
+    "image and are not kept"
+)
+SAVED_MENU_TOOLTIP = (
+    "Add a perturbation saved on this computer to this run's list. Masks and "
+    "vessels by number come from this run"
+)
+SAVED_ITEM_TOOLTIP = (
+    "Add this saved perturbation to the list"
+)
+DELETE_SAVED_TOOLTIP = (
+    "Delete a saved perturbation from this computer. Asks which one, and "
+    "again before its file is removed"
+)
+OPEN_SAVED_FOLDER_TOOLTIP = (
+    "Open the folder the saved perturbations are kept in, to copy them to "
+    "another computer or share them"
+)
+
+#: The saved-perturbation menu's first entry, which adds nothing: the menu
+#: shows it again once an entry chosen has been acted on.
+SAVED_MENU_PROMPT = "Add a saved perturbation..."
+#: The menu's commands, keyed apart from any saved perturbation's (a file
+#: stem holds no colon).
+DELETE_SAVED = ":delete"
+DELETE_SAVED_TEXT = "Delete a saved perturbation..."
+OPEN_SAVED_FOLDER = ":folder"
+OPEN_SAVED_FOLDER_TEXT = "Open the folder of saved perturbations"
 
 
 def display_name_for_type(perturbation_type: Any) -> str:
@@ -347,6 +390,44 @@ def add_entry(
     """*entries* with one more on the end. What the "+" button does."""
     kept = _normalised(entries)
     return kept + [new_entry(kept, perturbation_type)]
+
+
+def unique_name(name: str, entries: Sequence[Mapping[str, Any]]) -> str:
+    """*name*, or *name* with the first free ``_2``, ``_3``, ... after it, so
+    it names no entry of *entries* (ignoring case, as a Windows folder does)."""
+    taken = {str(entry.get("name")).casefold() for entry in entries}
+    candidate, number = name, 2
+    while candidate.casefold() in taken:
+        candidate = f"{name}_{number}"
+        number += 1
+    return candidate
+
+
+def add_saved_entry(
+    entries: Sequence[Mapping[str, Any]], entry: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """*entries* with a saved perturbation's *entry* on the end, renamed if
+    another already has its name: each name names its own output folder."""
+    kept = _normalised(entries)
+    name = str(entry.get("name") or "").strip() or default_name(kept)
+    return _normalised([*kept, {**entry, "name": unique_name(name, kept)}])
+
+
+def saved_menu(saved: Sequence[Any]) -> list[tuple[str, Optional[str]] | None]:
+    """The saved-perturbation menu, in order: ``(text, key)`` entries,
+    :data:`SAVED_MENU_PROMPT` first (``None``), then each of *saved* (a
+    `SavedPerturbation`: its name and type, keyed by its file), then the
+    folder and, with any saved, :data:`DELETE_SAVED`, after a separator (a
+    ``None`` entry)."""
+    menu: list[tuple[str, Optional[str]] | None] = [(SAVED_MENU_PROMPT, None)]
+    menu.extend(
+        (f"{item.name} ({display_name_for_type(item.type)})", item.key) for item in saved
+    )
+    menu.append(None)
+    menu.append((OPEN_SAVED_FOLDER_TEXT, OPEN_SAVED_FOLDER))
+    if saved:
+        menu.append((DELETE_SAVED_TEXT, DELETE_SAVED))
+    return menu
 
 
 def remove_entry(

@@ -9887,19 +9887,29 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
 
     from haemolynx.gui.perturbation_editing import (
         ADD_TOOLTIP,
+        DELETE_SAVED,
+        DELETE_SAVED_TOOLTIP,
         EDITOR_SETTINGS,
         NAME_TOOLTIP,
+        OPEN_SAVED_FOLDER,
+        OPEN_SAVED_FOLDER_TOOLTIP,
         PERTURBATION_TYPES,
         REMOVE_TOOLTIP,
+        SAVE_TOOLTIP,
+        SAVED_ITEM_TOOLTIP,
+        SAVED_MENU_TOOLTIP,
         TYPE_TOOLTIP,
         add_entry,
+        add_saved_entry,
         display_label_for_setting,
+        display_name_for_type,
         editor_layout_order,
         from_settings,
         name_problems,
         perturbation_type_choices,
         remove_entry,
         rows_for_type,
+        saved_menu,
         set_name,
         set_overrides,
         set_type,
@@ -9908,6 +9918,15 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         to_settings,
         vessel_ids_with_ends,
         visible_tab_settings,
+    )
+    from haemolynx.pipeline.saved_perturbations import (
+        delete_saved_perturbation,
+        save_perturbation,
+        saved_perturbation_dir,
+        saved_perturbation_entry,
+        saved_perturbation_for_key,
+        saved_perturbation_path,
+        saved_perturbations,
     )
 
     #: The one row the list actually travels in. Everything below edits this.
@@ -10060,7 +10079,8 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
                 editor.container.append(editor.editors[name])
         editor.container.append(editor.advanced.container)
         _hide_row_label(editor.advanced.container)
-        editor.container.append(editor.remove)
+        editor.container.append(editor.buttons)
+        _hide_row_label(editor.buttons)
         refresh_entry(editor)
         editor.shown = frozenset(name for name in editor.editors if name in shown)
         editor.hidden = frozenset(
@@ -10126,6 +10146,8 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
 
         remove_button = PushButton(text="Remove")
         remove_button.tooltip = REMOVE_TOOLTIP
+        save_button = PushButton(text="Save for later runs")
+        save_button.tooltip = SAVE_TOOLTIP
         editor = SimpleNamespace(
             index=index,
             name=name_box,
@@ -10135,6 +10157,10 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             hidden=frozenset(),
             layout_order=(),
             remove=remove_button,
+            save=save_button,
+            buttons=Container(
+                widgets=[save_button, remove_button], layout="horizontal", labels=False
+            ),
             # Empty shell; lay_out_editors fills it in SETTINGS_FOR_TYPE order.
             container=Container(widgets=[], labels=True),
             # The chosen type's advanced options; lay_out_editors fills it.
@@ -10180,11 +10206,17 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
                 return
             remove_at(index)
 
+        def on_save(*_args) -> None:
+            if state.applying:
+                return
+            save_at(index)
+
         name_box.changed.connect(on_name)
         type_box.changed.connect(on_type)
         for widget in editors.values():
             widget.changed.connect(on_override)
         remove_button.changed.connect(on_remove)
+        save_button.changed.connect(on_save)
         lay_out_editors(editor)
         return editor
 
@@ -10217,6 +10249,193 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         state.entries = remove_entry(state.entries, index)
         rebuild()
         write_row(rebuilt=True)
+
+    def save_at(index: int) -> bool:
+        """What pressing entry *index*'s "Save for later runs" does: keep it
+        on this machine under its name (`pipeline/saved_perturbations.py`),
+        asking before replacing one saved under the same file name. True once
+        written."""
+        from qtpy.QtWidgets import QMessageBox
+
+        if not 0 <= index < len(state.entries):
+            return False
+        entry = state.entries[index]
+        name = str(entry.get("name") or "")
+        try:
+            path = saved_perturbation_path(name)
+        except ValueError as error:
+            report.value = f"Could not save the perturbation {name!r}:\n{error}"
+            return False
+        if path.exists():
+            answer = QMessageBox.question(
+                _dialog_parent(viewer),
+                "Replace the saved perturbation?",
+                f"A perturbation is already saved as {path.name}. Replace it "
+                "with this one?",
+            )
+            if answer != QMessageBox.Yes:
+                return False
+        try:
+            saved = save_perturbation(entry, schema)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not save the perturbation {name!r}:\n{error}"
+            return False
+        fill_saved_menu()
+        lines = [
+            f"Saved the perturbation {saved.name} ({display_name_for_type(saved.type)}) "
+            f"in {saved.path}"
+        ]
+        if saved.left_out:
+            left_out = [fields[key].label if key in fields else key for key in saved.left_out]
+            lines.append(
+                "Not kept, as they belong to this image (a run it is added to "
+                f"gives its own): {', '.join(left_out)}"
+            )
+        report.value = "\n".join(lines)
+        return True
+
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QComboBox
+
+    class SavedMenu(QComboBox):
+        """Read from disk as it opens, so a perturbation saved from another
+        panel, or copied into the folder by hand, is listed."""
+
+        def showPopup(self):
+            fill_saved_menu()
+            super().showPopup()
+
+    # Below "+ Add a perturbation": the perturbations saved on this machine,
+    # each added to the end of the list when chosen, and the entries that
+    # open their folder and delete one.
+    saved_dropdown = SavedMenu()
+    saved_dropdown.setObjectName("haemolynx_saved_perturbations")
+    saved_dropdown.setToolTip(SAVED_MENU_TOOLTIP)
+    command_tooltips = {
+        DELETE_SAVED: DELETE_SAVED_TOOLTIP,
+        OPEN_SAVED_FOLDER: OPEN_SAVED_FOLDER_TOOLTIP,
+    }
+
+    def fill_saved_menu() -> None:
+        """List the saved perturbations, read from disk now, showing the
+        menu's prompt."""
+        found = saved_perturbations()
+        saved_dates = {item.key: item.saved for item in found}
+        saved_dropdown.blockSignals(True)
+        try:
+            saved_dropdown.clear()
+            for entry in saved_menu(found):
+                if entry is None:
+                    saved_dropdown.insertSeparator(saved_dropdown.count())
+                    continue
+                text, key = entry
+                saved_dropdown.addItem(text, key)
+                if key is None:
+                    continue
+                if key in command_tooltips:
+                    tooltip = command_tooltips[key]
+                else:
+                    when = (saved_dates.get(key) or "").replace("T", " ")
+                    tooltip = f"{SAVED_ITEM_TOOLTIP} (saved {when})" if when else SAVED_ITEM_TOOLTIP
+                saved_dropdown.setItemData(saved_dropdown.count() - 1, tooltip, Qt.ToolTipRole)
+            saved_dropdown.setCurrentIndex(0)
+        finally:
+            saved_dropdown.blockSignals(False)
+
+    def add_saved(key: str) -> bool:
+        """Add the perturbation saved under *key* to the end of the list,
+        renamed if another already has its name. True once added."""
+        try:
+            saved = saved_perturbation_for_key(key)
+            entry, passed_over = saved_perturbation_entry(saved, schema)
+        except ValueError as error:
+            report.value = f"Could not add the saved perturbation:\n{error}"
+            fill_saved_menu()
+            return False
+        state.entries = add_saved_entry(state.entries, entry)
+        rebuild()
+        write_row(rebuilt=True)
+        added = str(state.entries[-1]["name"])
+        lines = [
+            f"Added the saved perturbation {saved.name}"
+            + (f" as {added}, as another already has its name" if added != saved.name else "")
+        ]
+        if passed_over:
+            lines.append(
+                f"Not added, as this version cannot use them here: {', '.join(passed_over)}"
+            )
+        report.value = "\n".join([*lines, report.value])
+        return True
+
+    def delete_saved(key: str) -> bool:
+        """Delete the perturbation saved under *key*. True once it is gone."""
+        try:
+            saved = saved_perturbation_for_key(key)
+            delete_saved_perturbation(saved)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not delete the saved perturbation:\n{error}"
+            fill_saved_menu()
+            return False
+        fill_saved_menu()
+        report.value = f"Deleted the saved perturbation {saved.name} ({saved.path})"
+        return True
+
+    def on_delete_saved() -> None:
+        from qtpy.QtWidgets import QInputDialog, QMessageBox
+
+        found = saved_perturbations()
+        if not found:
+            return
+        names = [item.name for item in found]
+        name, ok = QInputDialog.getItem(
+            _dialog_parent(viewer),
+            "Delete a saved perturbation",
+            "Saved perturbation to delete:",
+            names,
+            0,
+            False,
+        )
+        if not ok or name not in names:
+            return
+        saved = found[names.index(name)]
+        answer = QMessageBox.question(
+            _dialog_parent(viewer),
+            "Delete the saved perturbation?",
+            f"Delete the saved perturbation {saved.name}? Its file is removed "
+            "and cannot be brought back.",
+        )
+        if answer == QMessageBox.Yes:
+            delete_saved(saved.key)
+
+    def open_saved_folder() -> bool:
+        """Open the folder the saved perturbations are kept in, made first if
+        nothing has been saved yet. True once the system opened it."""
+        folder = saved_perturbation_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            report.value = f"Could not make the folder {folder}:\n{error}"
+            return False
+        opened = _open_in_system(folder)
+        report.value = (
+            f"Opened {folder}" if opened else f"Could not open {folder}; the saved perturbations are there"
+        )
+        return opened
+
+    def on_saved_chosen(index: int) -> None:
+        key = saved_dropdown.itemData(index)
+        if key == DELETE_SAVED:
+            on_delete_saved()
+        elif key == OPEN_SAVED_FOLDER:
+            open_saved_folder()
+        elif key is not None:
+            add_saved(key)
+        saved_dropdown.blockSignals(True)
+        saved_dropdown.setCurrentIndex(0)
+        saved_dropdown.blockSignals(False)
+
+    saved_dropdown.activated.connect(on_saved_chosen)
+    fill_saved_menu()
 
     def choose_type(index: int, perturbation_type: str) -> None:
         """What choosing a type in entry *index*'s dropdown does."""
@@ -10280,6 +10499,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             widgets=[stage_summary, settings, explanation, holder, add_button],
             labels=False,
         )
+        body.native.layout().addWidget(saved_dropdown)
         body.native.layout().setContentsMargins(0, 0, 0, 0)
         # Vertical policy Minimum: the page may grow but never shrinks below
         # its natural height, so a short dock scrolls the tab instead of the
@@ -10301,6 +10521,12 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         editors=lambda: list(state.editors),
         add=on_add,
         remove=remove_at,
+        save=save_at,
+        add_saved=add_saved,
+        delete_saved=delete_saved,
+        open_saved_folder=open_saved_folder,
+        saved_menu=saved_dropdown,
+        fill_saved_menu=fill_saved_menu,
         choose_type=choose_type,
         rebuild=rebuild,
         holder=holder,
