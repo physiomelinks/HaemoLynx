@@ -83,7 +83,19 @@ Remove inlet/outlet, `graph.set_terminal_role`: the lists kept on the graph as
 removed; `post_process` takes them in place of the run's, `_take_edited_terminal_roles`, and
 draws the boundary-nodes layer again), unmeasured diameters and diameter jumps (Set diameter,
 `graph.set_vessel_diameter`: an override, the vessel *not* marked edited, so `post_process`
-does not measure it again and replace it). The lists that read the segmented image run off
+does not measure it again and replace it), and bridging vessels (`find_bridges`: every
+zero-resistance bridge, longest first, with what made it; Make a normal vessel,
+`graph.unbridge_vessel`). Bridges are also edited by clicking (Harvey's request 2026-11-04):
+Remove bridge makes the bridge clicked a vessel, joined into the vessel it opened through the
+degree-2 node where they met (that node only: the junction bridge's marked end, else the end
+whose other vessel is narrower, else the one running on in line), and Add bridge cuts the
+vessel clicked (the cut drawn until the second click, `BRIDGE_CUT`) and makes the side clicked
+next a bridge (`graph.bridge_vessel_side`: the widest vessel at its ends' width, no order, its
+mask tags kept; refused where it would end at a dead end). Both mark the edge
+`BRIDGE_SET_BY_HAND` (True / False), which every regenerate keeps: `_bridge_edited_vessels`
+leaves a vessel made of a bridge whole, and `insert_junction_bridges` never cuts it again;
+`post_process` then gives orders and diameters as for any edit, and the solve gives the bridge
+its negligible resistance. The lists that read the segmented image run off
 the GUI thread, and after an edit only drop what it took away (the list says it may be out
 of date); the others are made again. Their thresholds only decide what is listed. Each
 decision is a `ReviewDecision`, matched by kind and centre, kept with the run (the

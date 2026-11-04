@@ -29,6 +29,7 @@ from .connectivity import (
     write_connectivity_csv,
 )
 from .post_processing import (
+    BRIDGE_SET_BY_HAND,
     DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
     DRAWN_BACKGROUND_RUN_UM,
     DRAWN_BESIDE_VESSEL,
@@ -44,6 +45,7 @@ from .post_processing import (
     add_traced_vessel,
     add_vessel_between,
     boundary_roles_with_edits,
+    bridge_vessel_side,
     clear_edit_marks,
     delete_loop_side,
     delete_vessels,
@@ -70,6 +72,7 @@ from .post_processing import (
     split_junction,
     split_vessel_at,
     trace_path,
+    unbridge_vessel,
     vessel_path,
     vessel_path_between,
 )
@@ -334,6 +337,7 @@ __all__ = [
     "remove_vessels_off_inlet_outlet_paths",
     "unsolved_pieces",
     "write_connectivity_csv",
+    "BRIDGE_SET_BY_HAND",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "DRAWN_BACKGROUND_RUN_UM",
     "DRAWN_BESIDE_VESSEL",
@@ -349,6 +353,7 @@ __all__ = [
     "add_traced_vessel",
     "add_vessel_between",
     "boundary_roles_with_edits",
+    "bridge_vessel_side",
     "clear_edit_marks",
     "delete_loop_side",
     "delete_vessels",
@@ -375,6 +380,7 @@ __all__ = [
     "split_junction",
     "split_vessel_at",
     "trace_path",
+    "unbridge_vessel",
     "vessel_path",
     "vessel_path_between",
     "validate_skeleton_connection",

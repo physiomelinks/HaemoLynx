@@ -25,6 +25,8 @@ from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 __all__ = [
     "BOUNDARY_NODES",
+    "BRIDGES",
+    "BRIDGE_MADE_BY",
     "CLOSE_JUNCTIONS",
     "DEAD_ENDS",
     "DIAMETER_JUMPS",
@@ -47,7 +49,9 @@ __all__ = [
     "UNCOVERED_MASK",
     "UNMEASURED_DIAMETERS",
     "UNSOLVED_PIECES",
+    "bridge_made_by",
     "find_boundary_issues",
+    "find_bridges",
     "find_close_junctions",
     "find_dead_ends",
     "find_dead_ends_at_thick_walls",
@@ -105,6 +109,9 @@ TERMINAL_NODES = "terminal_nodes"
 RESISTANCE_NODES = "resistance_nodes"
 UNMEASURED_DIAMETERS = "unmeasured_diameters"
 DIAMETER_JUMPS = "diameter_jumps"
+#: The "Bridging vessels" list: every zero-resistance bridge, to make a
+#: vessel of by hand or keep.
+BRIDGES = "bridges"
 #: Every kind a finder here returns, in the order the dropdown lists them.
 REVIEW_KINDS = (
     CLOSE_JUNCTIONS,
@@ -124,6 +131,7 @@ REVIEW_KINDS = (
     RESISTANCE_NODES,
     UNMEASURED_DIAMETERS,
     DIAMETER_JUMPS,
+    BRIDGES,
 )
 
 #: Hairpins: a vessel at least this many times longer than the straight line
@@ -532,6 +540,78 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
             points_um=path,
         ))
     items.sort(key=lambda item: -(item.measures["flow_share"] or 0.0))
+    return items
+
+
+#: What made a bridge (its ``made_by`` measure, :func:`bridge_made_by`), in
+#: words: a person, the junction bridges, or the thick-vessel split -- at a
+#: fork of its centreline, drawn the way its vessel ran, or straight.
+BRIDGE_MADE_BY = {
+    "by_hand": "made by hand",
+    "junction": "where a narrow vessel opens into a wider one",
+    "thick_fork": "at a fork of a thick vessel",
+    "thick_drawn": "into a thick vessel, along its vessel",
+    "thick_vessel": "into a thick vessel",
+}
+
+
+def bridge_made_by(data: Mapping[str, Any]) -> str:
+    """What made the bridge with edge attributes *data*: a key of
+    :data:`BRIDGE_MADE_BY`."""
+    from .junction_bridges import JUNCTION_BRIDGE
+    from .post_processing import BRIDGE_SET_BY_HAND
+    from .thick_vessel_junctions import DRAWN_BRIDGE, THICK_FORK_BRIDGE
+
+    if data.get(BRIDGE_SET_BY_HAND):
+        return "by_hand"
+    if data.get(JUNCTION_BRIDGE):
+        return "junction"
+    if data.get(THICK_FORK_BRIDGE):
+        return "thick_fork"
+    if data.get(DRAWN_BRIDGE):
+        return "thick_drawn"
+    return "thick_vessel"
+
+
+def find_bridges(G: nx.MultiGraph) -> list[ReviewItem]:
+    """Every zero-resistance bridge (:data:`IS_ZERO_RESISTANCE`): the
+    stretches the network counts as no vessel -- no resistance, no branch
+    order, contracted by the statistics. Longest first, since a long one
+    hides the most vessel."""
+    pos = _node_pos(G)
+    name = _namer(G)
+    items = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if not data.get(IS_ZERO_RESISTANCE):
+            continue
+        edge = name(u, v, key)
+        path = _path(G, edge, pos)
+        length = _length(G, edge, pos)
+        made_by = bridge_made_by(data)
+        beside = [
+            width for node in dict.fromkeys((u, v)) for a, b, k, other in G.edges(node, keys=True, data=True)
+            if not (k == key and {a, b} == {u, v}) and not other.get(IS_ZERO_RESISTANCE)
+            for width in (_diameter(other),) if width is not None
+        ]
+        items.append(ReviewItem(
+            kind=BRIDGES,
+            nodes=edge[:2],
+            edges=(edge,),
+            centre_um=_centre(path, pos.get(u, (0.0, 0.0, 0.0))),
+            why=(
+                f"A {length:.3g} µm zero-resistance bridge {BRIDGE_MADE_BY[made_by]}: "
+                "it has no resistance and no branch order of its own."
+            ),
+            measures={
+                "length_um": length,
+                "made_by": made_by,
+                "width_um": _diameter(data),
+                "narrowest_beside_um": min(beside) if beside else None,
+                "widest_beside_um": max(beside) if beside else None,
+            },
+            points_um=path,
+        ))
+    items.sort(key=lambda item: -item.measures["length_um"])
     return items
 
 

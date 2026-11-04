@@ -5609,11 +5609,15 @@ def _bridge_edited_vessels(
     zero-resistance bridge. Only with thickness-gated skeletonisation, the one
     thing that makes bridges. The region is the run's own when its volume
     carries it, else *thick_vessel_mask*, else found again from the
-    segmentation.
+    segmentation. A vessel a person made of a bridge
+    (``graph.BRIDGE_SET_BY_HAND`` False) is left whole.
     """
     if not settings.get("use_thick_vessel_skeletonisation"):
         return G
-    edited = graph.edited_edges(G)
+    edited = [
+        edge for edge in graph.edited_edges(G)
+        if G.edges[edge].get(graph.BRIDGE_SET_BY_HAND) is not False
+    ]
     if not edited:
         return G
     mask = network.volume.thick_vessel_mask if network is not None else None

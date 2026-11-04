@@ -79,6 +79,7 @@ from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 __all__ = [
     "APPLIED",
     "BOUNDARY_ROLES",
+    "BRIDGE_SET_BY_HAND",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "DIAMETER_SET_BY_HAND",
     "DRAWN_BACKGROUND_RUN_UM",
@@ -102,6 +103,7 @@ __all__ = [
     "add_traced_vessel",
     "add_vessel_between",
     "boundary_roles_with_edits",
+    "bridge_vessel_side",
     "clear_edit_marks",
     "delete_loop_side",
     "delete_vessels",
@@ -129,6 +131,7 @@ __all__ = [
     "split_vessel_at",
     "touched_nodes",
     "trace_path",
+    "unbridge_vessel",
     "vessel_path",
     "vessel_path_between",
 ]
@@ -186,6 +189,14 @@ DRAWN_BESIDE_VESSEL = "drawn_beside_vessel"
 #: vessel it made until it is measured. Read with ``diameter_source``
 #: ``"override"``: once the vessel is measured again it is no longer theirs.
 DIAMETER_SET_BY_HAND = "diameter_set_by_hand"
+
+#: Edge attribute: a person decided on this tab whether this stretch is a
+#: zero-resistance bridge -- True on a bridge they made
+#: (:func:`bridge_vessel_side`), False on a vessel they made of one
+#: (:func:`unbridge_vessel`). Kept through every regenerate, so neither the
+#: thick-vessel split nor the junction bridges make a bridge of a vessel a
+#: person made whole again.
+BRIDGE_SET_BY_HAND = "bridge_set_by_hand"
 
 #: Edge attribute: which network a vessel of a surround network is, the
 #: image's or the one drawn round it (``synthetic.surround.NETWORK_PART``;
@@ -1127,6 +1138,196 @@ def split_vessel_at(
         mark_edited(G, [(a, b, half)])
     G.remove_edge(u, v, k)
     return node
+
+
+def _widths_beside(G: nx.MultiGraph, edge: EdgeKey) -> list[float]:
+    """The widths of the vessels other than *edge* meeting either of its
+    ends, bridges left out: what a bridge takes its width from."""
+    u, v, k = edge
+    widths = []
+    for node in dict.fromkeys((u, v)):
+        for a, b, key, data in G.edges(node, keys=True, data=True):
+            if (key == k and {a, b} == {u, v}) or _is_bridge(data):
+                continue
+            width = _optional_float(data.get("diameter_um"))
+            if width is not None and width > 0:
+                widths.append(width)
+    return widths
+
+
+def _bridge_end_is_dead(G: nx.MultiGraph, end: Any, protected: set) -> bool:
+    return G.degree(end) == 1 and end not in protected
+
+
+def bridge_vessel_side(
+    G: nx.MultiGraph,
+    edge: EdgeKey,
+    cut_um: Sequence[float],
+    side_um: Sequence[float],
+    *,
+    reserved_ids: Iterable[Any] = (),
+    protected: Iterable[Any] = (),
+    snap_um: float = SPLIT_SNAP_UM,
+) -> EdgeKey:
+    """Make one side of vessel *edge* a zero-resistance bridge, by hand.
+
+    The vessel is cut at the point of its path nearest *cut_um*
+    (:func:`split_vessel_at`), and the piece between there and the end on
+    *side_um*'s side of the cut -- the side a second click fell on -- becomes
+    a bridge, as the thick-vessel split makes one: :data:`IS_ZERO_RESISTANCE`,
+    nothing measured, no branch order, the width of the widest vessel at its
+    ends (``diameter_source`` ``"bridge"``), its vessel's mask tags kept; and
+    :data:`BRIDGE_SET_BY_HAND`. A cut within *snap_um* of an end makes the
+    whole vessel the bridge. The rest of the vessel is marked :data:`EDITED`,
+    to be measured afresh, and the bridge's ends :data:`TOUCHED`.
+
+    Refused, before anything changes, for a vessel already a bridge, a loop,
+    and a bridge that would end at a dead end that is not one of *protected*
+    (a bridge joins two vessels). New ids avoid *reserved_ids*. Returns the
+    bridge's ``(u, v, key)``.
+    """
+    from haemolynx.haemodynamics.poiseuille import clear_edge_measurements
+
+    from .branch_order import BRANCH_ORDER_BASIS
+
+    u, v, k = edge
+    if not G.has_edge(u, v, key=k):
+        raise ValueError(f"No vessel ({u!r}, {v!r}, {k!r}) to make a bridge of")
+    if _is_bridge(G.edges[edge]):
+        raise ValueError(f"The vessel {u}-{v} is already a bridge")
+    if u == v:
+        raise ValueError(f"The vessel {u}-{v} is a loop; a bridge joins two nodes")
+    points = vessel_path(G, edge)
+    cut = _place_on_vessel(points, cut_um)
+    whole = _snapped_end(edge, cut, snap_um) is not None
+    side = _place_on_vessel(points, side_um)
+    ends = (u, v) if whole else ((u,) if side.along_um < cut.along_um else (v,))
+    protected_set = set(protected)
+    dead = [end for end in ends if _bridge_end_is_dead(G, end, protected_set)]
+    if dead:
+        raise ValueError(
+            f"A bridge there would end at dead end {dead[0]}: a bridge joins a vessel to the "
+            "one it opens into. Click the other side of the cut"
+        )
+    width = _optional_float(G.edges[edge].get("diameter_um"))
+    if whole:
+        bridge = edge
+    else:
+        node = split_vessel_at(G, edge, cut_um, reserved_ids=reserved_ids, snap_um=snap_um)
+        bridge = next((node, b, key) for _a, b, key in G.edges(node, keys=True) if b == ends[0])
+    data = G.edges[bridge]
+    clear_edge_measurements(data)
+    for name in ("branch_order", BRANCH_ORDER_BASIS, EDITED, DIAMETER_SET_BY_HAND):
+        data.pop(name, None)
+    widths = _widths_beside(G, bridge)
+    data.update({
+        IS_ZERO_RESISTANCE: True,
+        BRIDGE_SET_BY_HAND: True,
+        "diameter_source": "bridge",
+    })
+    if widths or width is not None:
+        data["diameter_um"] = max(widths) if widths else width
+    mark_edited(G, nodes=bridge[:2])
+    return bridge
+
+
+def _vessel_through(G: nx.MultiGraph, node: Any, edge: EdgeKey) -> tuple[Any, dict] | None:
+    """The one other vessel at *node*, ``(its far end, its attributes)``,
+    where *edge* could be joined into it through *node* as
+    :func:`merge_pass_through` joins two: *node* a plain pass-through of two
+    vessels to two different neighbours, neither a bridge, of one
+    :data:`NETWORK_PART`. None where it could not."""
+    if node not in G or G.degree(node) != 2 or G.nodes[node].get("pos") is None:
+        return None
+    others = [
+        (b, data) for _a, b, key, data in G.edges(node, keys=True, data=True)
+        if not (key == edge[2] and {node, b} == set(edge[:2]))
+    ]
+    if len(others) != 1:
+        return None
+    far, vessel = others[0]
+    own = G.edges[edge]
+    beyond = edge[1] if edge[0] == node else edge[0]
+    if far == beyond or _is_bridge(vessel) or _is_bridge(own) or vessel.get(NETWORK_PART) != own.get(NETWORK_PART):
+        return None
+    return far, vessel
+
+
+def _merge_vessel_through(G: nx.MultiGraph, node: Any, edge: EdgeKey) -> EdgeKey | None:
+    """*edge* joined into the one other vessel at *node* (:func:`_vessel_through`),
+    the other vessel's attributes kept, and *node* gone; None where it is
+    left as it is."""
+    through = _vessel_through(G, node, edge)
+    if through is None:
+        return None
+    far, vessel = through
+    beyond = edge[1] if edge[0] == node else edge[0]
+    merged = create_trivial_merged_edge(vessel, G.edges[edge], G.nodes[node].get("pos"))
+    G.remove_node(node)
+    return (far, beyond, G.add_edge(far, beyond, **merged))
+
+
+def unbridge_vessel(G: nx.MultiGraph, edge: EdgeKey, *, protected: Iterable[Any] = ()) -> EdgeKey:
+    """Make bridge *edge* a vessel again, by hand.
+
+    The bridge's marks come off (:data:`IS_ZERO_RESISTANCE`, and what made it:
+    a drawn or fork bridge of the thick-vessel split, a junction bridge).
+    Where it met the vessel it opened -- the node a junction bridge marks,
+    else its end whose other vessel is the narrower (it opened into the
+    wider), and of two as wide the one running on in line with it (it was cut
+    from that vessel) -- the two are joined into one vessel and the node
+    goes, the vessel's attributes kept, when that node is then a plain
+    pass-through. Only there: its other end joins the vessel it opened into,
+    a vessel of its own. A node of *protected* (inlets, outlets, boundary
+    nodes) is never merged away. The vessel left is
+    marked :data:`BRIDGE_SET_BY_HAND` ``False``, so no later regenerate
+    makes a bridge of it again, and :data:`EDITED`, to be measured afresh:
+    until it is, one that took no vessel's width carries the narrowest of the
+    vessels at its ends. Raises ``ValueError`` for a vessel that is not a
+    bridge. Returns the vessel's ``(u, v, key)``.
+    """
+    from haemolynx.haemodynamics.poiseuille import clear_edge_measurements, set_edge_diameter_override
+
+    from .junction_bridges import JUNCTION_BRIDGE, JUNCTION_BRIDGE_END
+    from .thick_vessel_junctions import DRAWN_BRIDGE, THICK_FORK_BRIDGE
+
+    u, v, k = edge
+    if not G.has_edge(u, v, key=k):
+        raise ValueError(f"No vessel ({u!r}, {v!r}, {k!r}) to make a vessel of")
+    data = G.edges[edge]
+    if not _is_bridge(data):
+        raise ValueError(f"The vessel {u}-{v} is not a bridge")
+    for name in (IS_ZERO_RESISTANCE, JUNCTION_BRIDGE, DRAWN_BRIDGE, THICK_FORK_BRIDGE):
+        data.pop(name, None)
+    widths = _widths_beside(G, edge)
+    width = min(widths) if widths else _optional_float(data.get("diameter_um"))
+    clear_edge_measurements(data)
+    if width is not None and width > 0:
+        set_edge_diameter_override(data, width)
+    protected_set = set(protected)
+    vessel = (u, v, k)
+
+    def opened_at(node) -> tuple[bool, float, float]:
+        far, other = _vessel_through(G, node, vessel)
+        opened = _optional_float(other.get("diameter_um"))
+        start = _node_position(G, node)
+        beyond = vessel[1] if vessel[0] == node else vessel[0]
+        # Running on in line, the two leave the node in opposite directions.
+        turn = float(np.dot(
+            _direction(_path_from(G, node, beyond, G.edges[vessel]), start),
+            _direction(_path_from(G, node, far, other), start),
+        ))
+        return (not G.nodes[node].get(JUNCTION_BRIDGE_END), np.inf if opened is None else opened, turn)
+
+    ends = [node for node in dict.fromkeys((u, v)) if node not in protected_set and _vessel_through(G, node, vessel)]
+    if ends:
+        vessel = _merge_vessel_through(G, min(ends, key=opened_at), vessel)
+    for node in vessel[:2]:
+        if not any(d.get(JUNCTION_BRIDGE) for *_e, d in G.edges(node, data=True)):
+            G.nodes[node].pop(JUNCTION_BRIDGE_END, None)
+    G.edges[vessel][BRIDGE_SET_BY_HAND] = False
+    mark_edited(G, [vessel], nodes=[n for n in (u, v) if n in G])
+    return vessel
 
 
 class IntensityCostField:

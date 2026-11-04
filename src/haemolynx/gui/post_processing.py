@@ -20,8 +20,11 @@ more vessels meet, magenta, and the one chosen cyan (:func:`marker_colours`);
 with no edit armed, a click on a ring chooses it (:func:`marker_under_click`,
 :func:`junction_under_click`); while Add vessel traces, :data:`NEW_VESSEL_TRACE` draws
 the path so far and :data:`NEW_VESSEL_POINTS` the clicks along it
-(:func:`trace_layers`); and :data:`ADDED_NODES` marks the nodes Add vessel
-formed on existing vessels (:func:`added_nodes_layer`).
+(:func:`trace_layers`); :data:`ADDED_NODES` marks the nodes Add vessel
+formed on existing vessels (:func:`added_nodes_layer`); and :data:`BRIDGE_CUT`
+where Add bridge will cut the vessel clicked (:func:`bridge_cut_layer`). Add
+bridge and Remove bridge pick only vessels or only bridges
+(:func:`segments_where`).
 
 The Review dropdown (:data:`REVIEW_LISTS`) picks which list a scan makes.
 Short loops lists the network's short loops still to review
@@ -75,6 +78,7 @@ __all__ = [
     "ACTION_RESISTANCE_START",
     "ACTION_SET_DIAMETER",
     "ACTION_TRACE_ON",
+    "ACTION_UNBRIDGE",
     "action_applies",
     "DEAD_END_SHOW",
     "DEAD_END_SHOW_ALL",
@@ -134,6 +138,7 @@ __all__ = [
     "ADDED",
     "ADDED_NODES",
     "AT_JUNCTION",
+    "BRIDGE_CUT",
     "CONNECTED",
     "HIGH_DEGREE_JUNCTIONS",
     "JUNCTION_TABLE_COLUMNS",
@@ -166,6 +171,7 @@ __all__ = [
     "append_loop_review",
     "branch_id_of",
     "branch_ids_of",
+    "bridge_cut_layer",
     "camera_center_for",
     "describe_vessels",
     "edits_lost_by_running_from",
@@ -188,6 +194,7 @@ __all__ = [
     "point_on_path_under_click",
     "point_under_click",
     "scan_network",
+    "segments_where",
     "status_colours",
     "trace_layers",
     "vessel_status",
@@ -201,13 +208,17 @@ NEW_VESSEL_TRACE = f"{PREFIX}new vessel trace"
 NEW_VESSEL_POINTS = f"{PREFIX}new vessel points"
 #: The nodes Add vessel formed on existing vessels, until Regenerate.
 ADDED_NODES = f"{PREFIX}added nodes"
+#: Where Add bridge will cut the vessel clicked, until a second click picks
+#: the side that becomes the bridge.
+BRIDGE_CUT = f"{PREFIX}bridge cut"
 #: A ring round each item of the review list shown, and the voxels of the
 #: piece of uncovered mask chosen in it.
 REVIEW_MARKERS = f"{PREFIX}review items"
 REVIEW_REGION = f"{PREFIX}review region"
 #: Every layer this tab adds, for removing them all at once.
 POST_PROCESSING_LAYERS = (
-    HIGH_DEGREE_JUNCTIONS, NEW_VESSEL_TRACE, NEW_VESSEL_POINTS, ADDED_NODES, REVIEW_MARKERS, REVIEW_REGION,
+    HIGH_DEGREE_JUNCTIONS, NEW_VESSEL_TRACE, NEW_VESSEL_POINTS, ADDED_NODES, BRIDGE_CUT, REVIEW_MARKERS,
+    REVIEW_REGION,
 )
 
 CONNECTED = "connected"
@@ -810,6 +821,53 @@ def added_nodes_layer(graph: Any, nodes: Iterable[Any]) -> LayerSpec:
     )
 
 
+def segments_where(
+    graph: Any, layer_data: Any, features: Mapping[str, Any], keep
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """The segments of the vessels layer (its *layer_data* and *features*,
+    one row per segment with the ``u``, ``v`` and ``key`` of its vessel)
+    whose vessel ``keep(edge, data)`` keeps, *graph*'s attributes as *data*:
+    what a click may hit, so Remove bridge picks only bridges and Add bridge
+    only vessels. A segment of a vessel *graph* no longer has is left out.
+    Each vessel is judged once (its segments share an ``edge_index``)."""
+    data = np.asarray(layer_data, dtype=float)
+    count = len(data)
+    columns = {name: np.asarray(features[name]) for name in features if len(features[name]) == count}
+    if not count or not all(name in columns for name in ("u", "v", "key")):
+        return data[:0], {name: values[:0] for name, values in columns.items()}
+
+    def plain(value):
+        return value.item() if isinstance(value, np.generic) else value
+
+    def kept(i: int) -> bool:
+        edge = (plain(columns["u"][i]), plain(columns["v"][i]), plain(columns["key"][i]))
+        return graph.has_edge(*edge) and bool(keep(edge, graph.edges[edge]))
+
+    vessel = columns.get("edge_index", np.arange(count))
+    _ids, first, inverse = np.unique(vessel, return_index=True, return_inverse=True)
+    wanted = np.asarray([kept(int(i)) for i in first], dtype=bool)[np.ravel(inverse)]
+    return data[wanted], {name: values[wanted] for name, values in columns.items()}
+
+
+def bridge_cut_layer(point_um: Sequence[float] | None) -> LayerSpec:
+    """A green marker where Add bridge will cut the vessel clicked -- the
+    node that forms there, as Add vessel's do -- or none."""
+    data = np.asarray(() if point_um is None else [point_um], dtype=float).reshape(-1, 3)
+    return LayerSpec(
+        kind="points",
+        name=BRIDGE_CUT,
+        data=data,
+        features={},
+        options={
+            "size": TRACE_POINT_SIZE,
+            "face_color": list(NEW_NODE_COLOUR),
+            "border_color": "black",
+            "border_width": 0.1,
+            "out_of_slice_display": True,
+        },
+    )
+
+
 def camera_center_for(
     position_zyx: Sequence[float], displayed: Sequence[int]
 ) -> tuple[float, float, float]:
@@ -1295,6 +1353,8 @@ ACTION_DRAW_ALONG = "draw_along"
 #: The two-point resistance list's own buttons: the node it is found from, or to.
 ACTION_RESISTANCE_START = "resistance_start"
 ACTION_RESISTANCE_END = "resistance_end"
+#: The bridging-vessel list's own button: the bridge made a vessel again.
+ACTION_UNBRIDGE = "unbridge"
 ACTION_LABELS = {
     ACTION_DELETE_SELECTED: "Delete selected vessels",
     ACTION_DELETE_ITEM: "Delete all its vessels",
@@ -1312,6 +1372,7 @@ ACTION_LABELS = {
     ACTION_DRAW_ALONG: "Draw along the skeleton",
     ACTION_RESISTANCE_START: "Use as two-point start",
     ACTION_RESISTANCE_END: "Use as two-point end",
+    ACTION_UNBRIDGE: "Make a normal vessel",
 }
 
 
@@ -1402,6 +1463,7 @@ def _review_lists() -> tuple[ReviewList, ...]:
                    (ACTION_RESISTANCE_START, ACTION_RESISTANCE_END)),
         ReviewList(nr.UNMEASURED_DIAMETERS, "Unmeasured diameters", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
         ReviewList(nr.DIAMETER_JUMPS, "Diameter jumps", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
+        ReviewList(nr.BRIDGES, "Bridging vessels", (), (ACTION_UNBRIDGE, ACTION_KEEP)),
     )
 
 
@@ -1488,6 +1550,8 @@ def review_label(item: Any, number: int) -> str:
         )
     elif kind == nr.DIAMETER_JUMPS:
         text = f"Node {nodes}: ×{_g(m.get('ratio'))} ({m.get('at')})"
+    elif kind == nr.BRIDGES:
+        text = f"Nodes {nodes}: {_g(m.get('length_um'))} µm, {nr.BRIDGE_MADE_BY.get(m.get('made_by'), 'a bridge')}"
     else:
         text = item.why
     return f"{number}. {text}"
@@ -2206,4 +2270,6 @@ def find_review_items(
         return nr.find_unmeasured_diameters(graph, inlets)
     if key == nr.DIAMETER_JUMPS:
         return nr.find_diameter_jumps(graph)
+    if key == nr.BRIDGES:
+        return nr.find_bridges(graph)
     raise ValueError(f"{key!r} is not a review list")

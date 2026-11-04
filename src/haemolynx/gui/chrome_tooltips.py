@@ -876,6 +876,11 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "and re-solves"
     ),
     "review_diameter": "The diameter Set diameter gives, in microns",
+    "review_unbridge": (
+        "Make the chosen bridge an ordinary vessel with its own resistance and "
+        "branch order, joined into the vessel it opened. Regenerate graph "
+        "measures it and re-solves"
+    ),
     "review_keep": (
         "Keep the chosen item as it is and move on to the next. Every decision "
         "is saved with the run and in a review CSV beside its outputs"
@@ -935,6 +940,15 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Draw a new vessel: click a node or vessel to start, click along its "
         "course, and click another node or vessel to finish. Each leg is traced "
         "through the chosen image. Press again to cancel"
+    ),
+    "add_bridge": (
+        "Make part of a vessel a bridge with no resistance: click the vessel "
+        "where the bridge should stop, then click the side that bridges. Press "
+        "again to stop"
+    ),
+    "remove_bridge": (
+        "Then click bridges (drawn dashed) in the viewer to make each an "
+        "ordinary vessel, joined into the vessel it opened. Press it again to stop"
     ),
     "trace_source": (
         "What Add vessel traces each leg through: the segmented mask, or the "

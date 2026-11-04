@@ -1523,3 +1523,75 @@ def test_a_node_is_not_made_the_end_of_the_pair_it_already_is():
     assert action_applies(other, ACTION_RESISTANCE_START) and action_applies(other, ACTION_RESISTANCE_END)
     for action in (ACTION_RESISTANCE_START, ACTION_RESISTANCE_END):
         assert ACTION_LABELS[action] and POST_PROCESSING_TOOLTIPS[f"review_{action}"]
+
+
+# --- Bridging vessels: the list, Add bridge and Remove bridge -----------------------
+
+
+def test_bridging_vessels_is_a_graph_list_of_bridges_made_vessels_or_kept():
+    from haemolynx.gui.post_processing import ACTION_KEEP, ACTION_UNBRIDGE, REVIEW_LIST_BY_LABEL, action_applies
+
+    entry = REVIEW_LIST_BY_LABEL["Bridging vessels"]
+    assert entry.key == nr.BRIDGES and entry.needs == () and not entry.uses_mask
+    assert entry.actions == (ACTION_UNBRIDGE, ACTION_KEEP)
+    assert ACTION_LABELS[ACTION_UNBRIDGE] == "Make a normal vessel"
+    assert POST_PROCESSING_TOOLTIPS["review_unbridge"]
+    item = _item(nr.BRIDGES, nodes=(3, 8), length_um=4.25, made_by="thick_vessel")
+    assert review_label(item, 2) == "2. Nodes 3, 8: 4.25 µm, into a thick vessel"
+    assert action_applies(item, ACTION_UNBRIDGE)
+
+    G = _network()
+    G.edges[1, 5, 0]["is_zero_resistance"] = True
+    (found,) = find_review_items(nr.BRIDGES, G)
+    assert found.edges == ((1, 5, 0),)
+
+
+def _vessels_layer(G):
+    """Two segments per vessel, as the vessels layer draws them, with each one's vessel."""
+    data, us, vs, keys, index = [], [], [], [], []
+    for i, (u, v, k) in enumerate(G.edges(keys=True)):
+        a, b = np.asarray(G.nodes[u]["pos"], float), np.asarray(G.nodes[v]["pos"], float)
+        middle = (a + b) / 2
+        for start, end in ((a, middle), (middle, b)):
+            data.append([start, end - start])
+            us.append(np.int64(u))
+            vs.append(np.int64(v))
+            keys.append(np.int64(k))
+            index.append(i)
+    features = {"u": np.asarray(us), "v": np.asarray(vs), "key": np.asarray(keys), "edge_index": np.asarray(index)}
+    return np.asarray(data), features
+
+
+def test_segments_where_keeps_the_segments_of_the_vessels_a_click_may_pick():
+    from haemolynx.gui.post_processing import segments_where
+
+    G = _network()
+    G.edges[1, 5, 0]["is_zero_resistance"] = True
+    data, features = _vessels_layer(G)
+
+    bridges, bridge_features = segments_where(G, data, features, lambda _e, d: bool(d.get("is_zero_resistance")))
+    assert len(bridges) == 2
+    assert set(zip(bridge_features["u"].tolist(), bridge_features["v"].tolist())) == {(1, 5)}
+    assert np.array_equal(bridges, data[features["edge_index"] == list(G.edges(keys=True)).index((1, 5, 0))])
+
+    vessels, vessel_features = segments_where(G, data, features, lambda _e, d: not d.get("is_zero_resistance"))
+    assert len(vessels) == 10 and (1, 5) not in set(zip(vessel_features["u"].tolist(), vessel_features["v"].tolist()))
+
+    # A vessel an edit took away since the layer was drawn is no target.
+    G.remove_edge(0, 1)
+    left, left_features = segments_where(G, data, features, lambda _e, _d: True)
+    assert len(left) == 10 and 0 not in left_features["u"].tolist()
+    # A layer without its vessels' ids gives nothing to pick.
+    nothing, _ = segments_where(G, data, {"edge_index": features["edge_index"]}, lambda _e, _d: True)
+    assert len(nothing) == 0
+
+
+def test_the_bridge_cut_is_one_green_point_or_none():
+    from haemolynx.gui.post_processing import BRIDGE_CUT, NEW_NODE_COLOUR, bridge_cut_layer
+
+    assert BRIDGE_CUT in POST_PROCESSING_LAYERS
+    spec = bridge_cut_layer((1.0, 2.0, 3.0))
+    assert spec.name == BRIDGE_CUT and spec.kind == "points"
+    assert spec.data.tolist() == [[1.0, 2.0, 3.0]]
+    assert spec.options["face_color"] == list(NEW_NODE_COLOUR)
+    assert bridge_cut_layer(None).data.shape == (0, 3)

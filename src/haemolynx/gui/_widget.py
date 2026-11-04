@@ -11744,8 +11744,8 @@ JUNCTION_ZOOM_BOX_UM = 60.0
 #: Status line of the post-processing tab's click-in-the-viewer edits.
 _POST_PROCESSING_EDIT_STATUS = {
     "idle": (
-        "Not editing. Press Delete vessel or Add vessel, then click in the viewer. "
-        "A click on a ring chooses its item in the list."
+        "Not editing. Press Delete vessel, Add vessel, Add bridge or Remove bridge, "
+        "then click in the viewer. A click on a ring chooses its item in the list."
     ),
     "delete-armed": (
         "Delete vessel: click a vessel in the viewer to remove it. Press Delete "
@@ -11756,6 +11756,14 @@ _POST_PROCESSING_EDIT_STATUS = {
         "new node should form."
     ),
     "deleted": "Vessel deleted. Click another, or press Delete vessel again to stop.",
+    "bridge-armed": (
+        "Add bridge: click a vessel where the bridge should stop; a node forms "
+        "there. Then click the part of the vessel on the side that bridges."
+    ),
+    "unbridge-armed": (
+        "Remove bridge: click a bridge (drawn dashed) to make it a normal vessel. "
+        "Press Remove bridge again to stop."
+    ),
 }
 
 #: A press that moves further than this (screen pixels) before it is let go
@@ -11889,8 +11897,10 @@ def _post_processing_controls(
     Continue, while paused, does the same and carries the run on.
 
     The page edits one working copy of the graph: the junction table's
-    Delete and Split, and the edit box's click-in-the-viewer Delete vessel and
-    Add vessel. The Review dropdown chooses the one list Scan network makes
+    Delete and Split, and the edit box's click-in-the-viewer Delete vessel,
+    Add vessel, Add bridge (a first click cuts a vessel, a second on it makes
+    that side of the cut a zero-resistance bridge) and Remove bridge (the
+    bridge clicked becomes a vessel again). The Review dropdown chooses the one list Scan network makes
     (None at first: a scan then neither lists, marks nor zooms to anything).
     "4+ junctions" shows the junction list, its table and their buttons.
     The others are :mod:`haemolynx.graph.network_review`'s checks, made off
@@ -11940,6 +11950,7 @@ def _post_processing_controls(
         VesselEnd,
         add_traced_vessel,
         boundary_roles_with_edits,
+        bridge_vessel_side,
         connectivity_rows,
         delete_loop_side,
         delete_vessels,
@@ -11955,10 +11966,12 @@ def _post_processing_controls(
         short_loops,
         split_junction,
         trace_path,
+        unbridge_vessel,
         vessel_path,
         write_connectivity_csv,
     )
     from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
     from haemolynx.graph.network_review import (
         DEAD_ENDS,
         LOST_SKELETON,
@@ -11987,6 +12000,7 @@ def _post_processing_controls(
         ACTION_RESISTANCE_START,
         ACTION_SET_DIAMETER,
         ACTION_TRACE_ON,
+        ACTION_UNBRIDGE,
         DEAD_END_SHOW,
         DEAD_END_SHOW_ALL,
         DEAD_END_SHOW_BY_LABEL,
@@ -12028,6 +12042,7 @@ def _post_processing_controls(
         vessel_end_nearest,
         view_centre_zyx,
         ADDED_NODES,
+        BRIDGE_CUT,
         NEEDS_SKELETON,
         HIGH_DEGREE_JUNCTIONS,
         JUNCTION_TABLE_COLUMNS,
@@ -12046,6 +12061,7 @@ def _post_processing_controls(
         append_loop_review,
         branch_id_of,
         branch_ids_of,
+        bridge_cut_layer,
         junction_under_click,
         loop_branch_ids,
         loop_label,
@@ -12069,6 +12085,7 @@ def _post_processing_controls(
         point_on_path_under_click,
         point_under_click,
         scan_network,
+        segments_where,
         status_colours,
         trace_layers,
         vessel_status,
@@ -12093,8 +12110,13 @@ def _post_processing_controls(
         decisions={},
         node=None,
         vessels=[],
-        #: "idle", "delete" (click a vessel) or "add" (trace a new one).
+        #: "idle", "delete" (click a vessel), "add" (trace a new one),
+        #: "bridge" (make part of a vessel a bridge) or "unbridge" (a bridge
+        #: a vessel again).
         mode="idle",
+        #: Where Add bridge cuts the vessel clicked first, ``(edge, point)``,
+        #: until a second click picks the side that becomes the bridge.
+        bridge_cut=None,
         #: The vessel Add vessel is tracing (a VesselTrace), until it finishes.
         trace=None,
         #: Nodes Add vessel formed on existing vessels, drawn until Regenerate.
@@ -12239,9 +12261,21 @@ def _post_processing_controls(
     trace_source.setObjectName("haemolynx_post_processing_trace_source")
     trace_source.addItems(list(TRACE_SOURCES))
     trace_source.setToolTip(tips["trace_source"])
+    add_bridge_button = QPushButton("Add bridge")
+    add_bridge_button.setObjectName("haemolynx_post_processing_add_bridge")
+    add_bridge_button.setToolTip(tips["add_bridge"])
+    add_bridge_button.setCheckable(True)
+    remove_bridge_button = QPushButton("Remove bridge")
+    remove_bridge_button.setObjectName("haemolynx_post_processing_remove_bridge")
+    remove_bridge_button.setToolTip(tips["remove_bridge"])
+    remove_bridge_button.setCheckable(True)
     edit_layout.addWidget(edit_status)
     edit_row = QHBoxLayout()
     for button in (click_delete_button, add_button, trace_source):
+        edit_row.addWidget(button)
+    edit_layout.addLayout(edit_row)
+    edit_row = QHBoxLayout()
+    for button in (add_bridge_button, remove_bridge_button):
         edit_row.addWidget(button)
     edit_layout.addLayout(edit_row)
     branch_ids = QLineEdit()
@@ -12462,6 +12496,7 @@ def _post_processing_controls(
         row.addWidget(review_buttons[action])
     review_layout.addLayout(row)
     row = QHBoxLayout()
+    row.addWidget(review_buttons[ACTION_UNBRIDGE])
     row.addWidget(review_buttons[ACTION_SET_DIAMETER])
     row.addWidget(review_diameter)
     row.addWidget(review_buttons[ACTION_KEEP])
@@ -12795,6 +12830,10 @@ def _post_processing_controls(
             return
         state.added_nodes = [n for n in state.added_nodes if n in state.graph]
         put_layers([added_nodes_layer(state.graph, state.added_nodes)], (ADDED_NODES,))
+
+    def draw_bridge_cut() -> None:
+        """Mark where Add bridge will cut, or take the mark away."""
+        put_layers([bridge_cut_layer(state.bridge_cut[1] if state.bridge_cut else None)], (BRIDGE_CUT,))
 
     def redraw_network() -> None:
         """Rebuild the vessels/nodes layers from the edited graph, then recolour."""
@@ -14115,7 +14154,10 @@ def _post_processing_controls(
 
     def show_mode() -> None:
         """Light the button of the mode clicks are in, and only that one."""
-        for button, mode in ((click_delete_button, "delete"), (add_button, "add")):
+        for button, mode in (
+            (click_delete_button, "delete"), (add_button, "add"),
+            (add_bridge_button, "bridge"), (remove_bridge_button, "unbridge"),
+        ):
             button.blockSignals(True)
             button.setChecked(state.mode == mode)
             button.blockSignals(False)
@@ -14127,8 +14169,21 @@ def _post_processing_controls(
             state.trace = None
             draw_trace()
 
+    def drop_bridge_cut() -> None:
+        """Forget where Add bridge would cut; the network was never cut there."""
+        if state.bridge_cut is not None:
+            state.bridge_cut = None
+            draw_bridge_cut()
+
     def drop_trace_after_edit() -> None:
-        """Another edit changed the network under a trace: start it again."""
+        """Another edit changed the network under a trace or a bridge's cut:
+        start it again."""
+        if state.bridge_cut is not None:
+            drop_bridge_cut()
+            set_edit_status(
+                "The network changed, so the bridge's cut was dropped: click the "
+                "vessel to cut it again."
+            )
         if state.trace is None:
             return
         drop_trace()
@@ -14140,6 +14195,7 @@ def _post_processing_controls(
     def stop_editing() -> None:
         state.mode = "idle"
         drop_trace()
+        drop_bridge_cut()
         show_mode()
         set_edit_status("idle")
 
@@ -14159,11 +14215,15 @@ def _post_processing_controls(
         if state.mode == mode:
             # The lit button pressed again: stop, dropping an unfinished vessel.
             tracing = state.trace is not None
+            cutting = state.bridge_cut is not None
             stop_editing()
             if tracing:
                 set_edit_status("Add vessel cancelled: the network is as it was before.")
+            elif cutting:
+                set_edit_status("Add bridge cancelled: the vessel was not cut.")
             return
         drop_trace()
+        drop_bridge_cut()
         state.mode = mode
         attach_click_callbacks()
         # napari hands a click to the selected layer: make it one that listens.
@@ -14405,17 +14465,28 @@ def _post_processing_controls(
             note=note or " (no segmented image in the viewer to trace through)",
         )
 
-    def vessel_hit(event):
+    def vessel_hit(event, keep=None):
+        """The vessel a click hit -- among those ``keep(edge, data)`` keeps,
+        when given (``segments_where``)."""
         from haemolynx.gui.graph_click import hit_test_vessels
 
         vessels = layer(VESSELS)
         if vessels is None:
             return None
+        data, features = vessels.data, _layer_features(vessels)
+        if keep is not None:
+            data, features = segments_where(state.graph, data, features, keep)
+            if not len(data):
+                return None
         return hit_test_vessels(
-            vessels.data, _layer_features(vessels), event.position,
+            data, features, event.position,
             view_direction=getattr(event, "view_direction", None),
             dims=list(getattr(event, "dims_displayed", ()) or ()),
         )
+
+    def hit_edge(hit):
+        """The ``(u, v, key)`` of a vessel hit, as plain values."""
+        return tuple(c.item() if isinstance(c, np.generic) else c for c in (hit.u, hit.v, hit.key))
 
     def end_under_click(event, position, view, dims):
         """The node, or the point on a vessel, a click landed on -- or None."""
@@ -14445,6 +14516,119 @@ def _post_processing_controls(
         log_edit(f"Deleted {described} (clicked in the viewer)")
         rescan(prefer=state.node)
         set_edit_status("deleted")
+
+    def bridge_clicked(event) -> None:
+        """One click of Add bridge: the first cuts a vessel (the cut is only
+        drawn until the second), the second -- on the same vessel -- picks
+        the side of the cut that becomes the bridge."""
+        position = np.asarray(event.position, dtype=float)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view = getattr(event, "view_direction", None) if len(dims) == 3 else None
+        if state.bridge_cut is not None and not state.graph.has_edge(*state.bridge_cut[0]):
+            drop_bridge_cut()
+        if state.bridge_cut is None:
+            hit = vessel_hit(event, lambda _edge, data: not data.get(IS_ZERO_RESISTANCE))
+            if hit is None:
+                set_edit_status(
+                    "Add bridge: that missed. Click a vessel (not a bridge) where the "
+                    "bridge should stop."
+                )
+                return
+            edge = hit_edge(hit)
+            point = point_on_path_under_click(
+                vessel_path(state.graph, edge), position, view_direction=view, dims=dims or None
+            )
+            state.bridge_cut = (edge, tuple(float(c) for c in point))
+            draw_bridge_cut()
+            set_edit_status(
+                f"Cutting {branch_label(edge)} at the green point. Click it on the side "
+                "of the point that bridges; press Add bridge again to cancel."
+            )
+            return
+        edge, cut = state.bridge_cut
+        cut_vessel = (frozenset(edge[:2]), edge[2])
+        hit = vessel_hit(event, lambda other, _data: (frozenset(other[:2]), other[2]) == cut_vessel)
+        if hit is None:
+            set_edit_status(
+                f"Click {branch_label(edge)} itself, on the side of the green point "
+                "that bridges, or press Add bridge again to cancel."
+            )
+            return
+        side = point_on_path_under_click(
+            vessel_path(state.graph, edge), position, view_direction=view, dims=dims or None
+        )
+        side = tuple(float(c) for c in side)
+        graph = state.graph
+        described = describe_vessels(graph, [edge])
+        before = set(graph.nodes)
+        try:
+            bridge = edit(
+                f"making part of {described} a bridge", bridge_vessel_side, edge, cut, side,
+                reserved_ids=state.protected, protected=state.protected,
+            )
+        except ValueError as error:
+            set_edit_status(f"{error}. Or press Add bridge again to cancel.")
+            return
+        new_nodes = [n for n in bridge[:2] if n not in before]
+        state.added_nodes.extend(new_nodes)
+        state.bridge_cut = None
+        draw_bridge_cut()
+        length = float(graph.edges[bridge].get("length") or 0.0)
+        log_edit(
+            f"Made {length:.3g} µm of {described} a bridge, from node {bridge[0]} to node {bridge[1]}"
+            + (f"; new node {new_nodes[0]} cut it" if new_nodes else "")
+        )
+        rescan(prefer=state.node)
+        set_edit_status(
+            f"Made {length:.3g} µm a bridge ({branch_label(bridge)}), from node {bridge[0]} to node "
+            f"{bridge[1]}. Click another vessel to cut, or press Add bridge to stop."
+        )
+
+    def unbridge_clicked(event) -> None:
+        """One click of Remove bridge: the bridge clicked becomes a vessel."""
+        hit = vessel_hit(event, lambda _edge, data: bool(data.get(IS_ZERO_RESISTANCE)))
+        if hit is None:
+            set_edit_status(
+                "Remove bridge: that missed. Click a bridge (drawn dashed), or press "
+                "Remove bridge again to stop."
+            )
+            return
+        unbridge(hit_edge(hit), "clicked in the viewer")
+
+    def unbridge(edge, how: str, review=None) -> bool:
+        """Make bridge *edge* a vessel, kept for Undo and logged; *review* is
+        the list decision and CSV row it records. Says why when refused."""
+        described = describe_vessels(state.graph, [edge])
+        try:
+            vessel = edit(f"making {described} a vessel", unbridge_vessel, edge, protected=state.protected)
+        except ValueError as error:
+            set_edit_status(str(error))
+            if review is not None:
+                review_summary.setText(str(error))
+            log_edit(f"Making {described} a vessel refused, {error}")
+            return False
+        written = keep_record(*review) if review is not None else ""
+        log_edit(
+            f"Made {described} a normal vessel ({how}): now {branch_label(vessel)}, "
+            f"node {vessel[0]} to node {vessel[1]}"
+        )
+        drop_trace_after_edit()
+        rescan(prefer=state.node)
+        text = (
+            f"{described[0].upper()}{described[1:]} is a normal vessel now: {branch_label(vessel)}, "
+            f"node {vessel[0]} to node {vessel[1]}; Regenerate graph measures it."
+        )
+        set_edit_status(text)
+        if review is not None:
+            review_summary.setText(review_counts() + written)
+            report.value = f"Post processing: {text} {review_counts()}"
+        return True
+
+    def on_review_unbridge() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        unbridge(tuple(item.edges[0]), "from the list", record_for(item, "unbridged"))
 
     def add_clicked(event) -> None:
         """One click of Add vessel: start, trace on to a point, or finish."""
@@ -14627,6 +14811,10 @@ def _post_processing_controls(
                 hit = vessel_hit(event)
                 if hit is not None:
                     delete_clicked(hit)
+            elif state.mode == "bridge":
+                bridge_clicked(event)
+            elif state.mode == "unbridge":
+                unbridge_clicked(event)
             else:
                 add_clicked(event)
         except Exception as error:  # noqa: BLE001 - a click must not crash the viewer
@@ -14801,6 +14989,7 @@ def _post_processing_controls(
         lambda: on_review_mark_dead_end("leaves_image", "leaving the image")
     )
     review_buttons[ACTION_SET_DIAMETER].clicked.connect(on_review_set_diameter)
+    review_buttons[ACTION_UNBRIDGE].clicked.connect(on_review_unbridge)
     review_buttons[ACTION_MAKE_INLET].clicked.connect(lambda: on_review_set_terminal_role("inlet"))
     review_buttons[ACTION_MAKE_OUTLET].clicked.connect(lambda: on_review_set_terminal_role("outlet"))
     review_buttons[ACTION_REMOVE_TERMINAL].clicked.connect(lambda: on_review_set_terminal_role(None))
@@ -14820,6 +15009,8 @@ def _post_processing_controls(
     connectivity_map_button.clicked.connect(on_connectivity_map)
     click_delete_button.clicked.connect(lambda: arm("delete"))
     add_button.clicked.connect(lambda: arm("add"))
+    add_bridge_button.clicked.connect(lambda: arm("bridge"))
+    remove_bridge_button.clicked.connect(lambda: arm("unbridge"))
 
     def on_trace_source_changed(_text) -> None:
         # Choosing again retries raw data that could not be had (a Raw data
@@ -14912,6 +15103,8 @@ def _post_processing_controls(
         remove_dead_ends_button=remove_dead_ends_button,
         click_delete_button=click_delete_button,
         add_button=add_button,
+        add_bridge_button=add_bridge_button,
+        remove_bridge_button=remove_bridge_button,
         trace_source=trace_source,
         branch_ids=branch_ids,
         delete_ids_button=delete_ids_button,

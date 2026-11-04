@@ -1423,3 +1423,201 @@ def test_the_chosen_pair_outlasts_the_edit_marks_but_not_its_nodes():
     G.remove_node(9)
     assert resistance_node_pair_with_edits((0, 3), G) == (0, 3)
     assert resistance_node_pair_with_edits(None, None) is None
+
+
+# --- bridges by hand: Add bridge / Remove bridge -----------------------------------
+
+from haemolynx.graph import BRIDGE_SET_BY_HAND, bridge_vessel_side, unbridge_vessel  # noqa: E402
+from haemolynx.graph.junction_bridges import JUNCTION_BRIDGE, JUNCTION_BRIDGE_END  # noqa: E402
+
+
+def _thin_into_wide() -> nx.MultiGraph:
+    """A 5 um vessel 0-2, 20 um long along z, opening into a 20 um vessel 3-2-4
+    at node 2; node 0 is a junction of 5 um vessels (5, 6, 7 dead ends)."""
+    positions = {
+        0: (0.0, 0.0, 0.0),
+        2: (0.0, 0.0, 20.0),
+        3: (0.0, -20.0, 20.0),
+        4: (0.0, 20.0, 20.0),
+        5: (0.0, 0.0, -10.0),
+        6: (0.0, 10.0, 0.0),
+        7: (0.0, -10.0, 0.0),
+    }
+    G = _network(positions, [(3, 2), (2, 4)], diameter_um=20.0, diameter_source="fwhm", branch_order="Art1")
+    for u, v in [(0, 2), (5, 0), (0, 6), (0, 7)]:
+        voxels = _straight(positions[u], positions[v])
+        G.add_edge(
+            u, v, voxels=voxels, length=calculate_path_length(voxels),
+            diameter_um=5.0, diameter_source="fwhm", fwhm_diameter_um=5.0, branch_order="B01",
+            vessel_type="large_arteriole",
+        )
+    return G
+
+
+def test_bridge_vessel_side_makes_the_side_clicked_a_bridge_and_leaves_the_rest_a_vessel():
+    G = _thin_into_wide()
+    bridge = bridge_vessel_side(G, (0, 2, 0), (0.0, 1.0, 13.0), (0.0, 0.0, 18.0), reserved_ids={8})
+
+    new = 9  # past the reserved id
+    assert set(bridge[:2]) == {new, 2}
+    assert np.allclose(G.nodes[new]["pos"], (0, 0, 13))
+    data = G.edges[bridge]
+    assert data[IS_ZERO_RESISTANCE] and data[BRIDGE_SET_BY_HAND] is True
+    assert data["length"] == pytest.approx(7.0)
+    # As every bridge: the widest vessel at its ends, nothing measured, no order.
+    assert data["diameter_um"] == 20.0 and data["diameter_source"] == "bridge"
+    assert "fwhm_diameter_um" not in data and "branch_order" not in data
+    assert data["vessel_type"] == "large_arteriole", "its vessel's mask tags stay"
+    assert EDITED not in data
+    # The rest of the vessel, marked to be measured afresh.
+    rest = G.edges[0, new, 0]
+    assert not rest.get(IS_ZERO_RESISTANCE) and rest[EDITED]
+    assert rest["length"] == pytest.approx(13.0) and rest["branch_order"] == "B01"
+    assert has_pending_edits(G) and set(touched_nodes(G)) >= {0, new, 2}
+
+
+def test_bridge_vessel_side_takes_the_side_of_the_cut_the_second_click_is_on():
+    G = _thin_into_wide()
+    bridge = bridge_vessel_side(G, (0, 2, 0), (0.0, 0.0, 13.0), (0.0, 0.0, 2.0))
+
+    assert 0 in bridge[:2] and 2 not in bridge[:2]
+    assert G.edges[bridge]["length"] == pytest.approx(13.0)
+    # Bridges are never measured from what the vessel had: its 5 um vessels beside it.
+    assert G.edges[bridge]["diameter_um"] == 5.0
+
+
+def test_a_cut_at_an_end_makes_the_whole_vessel_a_bridge():
+    G = _thin_into_wide()
+    before = sorted(G.nodes)
+    bridge = bridge_vessel_side(G, (0, 2, 0), (0.0, 0.0, 19.6), (0.0, 0.0, 5.0))
+
+    assert sorted(G.nodes) == before, "no node formed"
+    assert set(bridge[:2]) == {0, 2} and G.edges[bridge][IS_ZERO_RESISTANCE]
+    assert G.edges[bridge]["length"] == pytest.approx(20.0)
+
+
+def test_bridge_vessel_side_refuses_a_bridge_a_loop_and_a_bridge_ending_at_a_dead_end():
+    G = _thin_into_wide()
+    bridge = bridge_vessel_side(G, (0, 2, 0), (0.0, 0.0, 13.0), (0.0, 0.0, 18.0))
+    edges_before = {(u, v, k): dict(d) for u, v, k, d in G.edges(keys=True, data=True)}
+
+    with pytest.raises(ValueError, match="already a bridge"):
+        bridge_vessel_side(G, bridge, (0.0, 0.0, 15.0), (0.0, 0.0, 18.0))
+    with pytest.raises(ValueError, match="dead end 5"):
+        bridge_vessel_side(G, (5, 0, 0), (0.0, 0.0, -5.0), (0.0, 0.0, -9.0))
+    with pytest.raises(ValueError, match="No vessel"):
+        bridge_vessel_side(G, (0, 4, 0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+    loop = G.copy()
+    voxels = [(0.0, 0.0, 20.0), (0.0, 5.0, 25.0), (0.0, 0.0, 30.0), (0.0, 0.0, 20.0)]
+    key = loop.add_edge(2, 2, voxels=voxels, length=calculate_path_length(voxels))
+    with pytest.raises(ValueError, match="loop"):
+        bridge_vessel_side(loop, (2, 2, key), (0.0, 5.0, 25.0), (0.0, 0.0, 30.0))
+
+    assert {(u, v, k): dict(d) for u, v, k, d in G.edges(keys=True, data=True)} == edges_before
+    # Towards the vessel's other end, or with the dead end a boundary node, it is a bridge.
+    assert bridge_vessel_side(G.copy(), (5, 0, 0), (0.0, 0.0, -5.0), (0.0, 0.0, -1.0))
+    assert bridge_vessel_side(G, (5, 0, 0), (0.0, 0.0, -5.0), (0.0, 0.0, -9.0), protected={5})
+
+
+def test_unbridge_vessel_joins_the_bridge_into_the_vessel_it_opened():
+    G = _bridged()
+    G.edges[0, 1, 0].update(diameter_um=5.0, diameter_source="fwhm", branch_order="B02")
+    bridge = next((u, v, k) for u, v, k, d in G.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE))
+
+    vessel = unbridge_vessel(G, bridge, protected={3, 4})
+
+    assert 1 not in G, "the degree-2 node where the bridge met its vessel is gone"
+    assert set(vessel[:2]) == {0, 2}
+    data = G.edges[vessel]
+    assert not data.get(IS_ZERO_RESISTANCE) and data[BRIDGE_SET_BY_HAND] is False
+    assert data[EDITED], "measured afresh at the next regenerate"
+    assert data["length"] == pytest.approx(15.0)
+    assert data["diameter_um"] == 5.0 and data["branch_order"] == "B02", "the vessel's attributes"
+    path = np.asarray(data["voxels"], dtype=float)
+    ends = {tuple(np.round(path[0])), tuple(np.round(path[-1]))}
+    assert ends == {(0.0, 0.0, 0.0), (0.0, 0.0, 15.0)}
+    assert np.all(np.linalg.norm(np.diff(path, axis=0), axis=1) <= 1.0 + 1e-9), "one continuous path"
+    assert not any(d.get(IS_ZERO_RESISTANCE) for *_e, d in G.edges(data=True))
+    assert set(touched_nodes(G)) >= {0, 2}
+
+
+def test_unbridge_vessel_keeps_a_node_more_vessels_meet_and_a_boundary_node():
+    G = _bridged()
+    for protected in ({1}, set()):
+        H = G.copy()
+        if not protected:
+            # A second vessel at the bridge's outer end: a junction stays.
+            H.add_node(8, pos=np.asarray((0.0, 10.0, 10.0)))
+            H.add_edge(1, 8, voxels=_straight((0, 0, 10), (0, 10, 10)), length=10.0, diameter_um=3.0)
+        H.edges[0, 1, 0]["diameter_um"] = 6.0
+        H.edges[3, 2, 0]["diameter_um"] = 30.0
+        vessel = unbridge_vessel(H, (1, 2, 0), protected=protected)
+
+        assert 1 in H and set(vessel[:2]) == {1, 2}
+        data = H.edges[vessel]
+        assert not data.get(IS_ZERO_RESISTANCE) and data[BRIDGE_SET_BY_HAND] is False
+        # Until measured: the narrowest vessel at its ends, as a width given by hand.
+        assert data["diameter_um"] == (3.0 if not protected else 6.0)
+        assert data["diameter_source"] == "override"
+
+
+def test_unbridge_vessel_joins_only_the_vessel_it_opened_not_the_one_it_opened_into():
+    """At a thick centreline's end the bridge's inner end is a pass-through
+    too; joining there would make the thin vessel and the thick one one."""
+    G = _bridged()
+    G.remove_edge(2, 4)
+    G.remove_node(4)
+    G.edges[0, 1, 0]["diameter_um"] = 5.0
+    G.edges[3, 2, 0]["diameter_um"] = 20.0
+
+    vessel = unbridge_vessel(G, (1, 2, 0), protected={3})
+
+    assert 1 not in G and 2 in G
+    assert set(vessel[:2]) == {0, 2} and G.edges[vessel]["diameter_um"] == 5.0
+    assert G.edges[3, 2, 0]["diameter_um"] == 20.0, "the thick vessel stays a vessel of its own"
+
+
+def test_unbridge_vessel_takes_a_junction_bridges_marks_off():
+    G = _bridged()
+    G.edges[1, 2, 0][JUNCTION_BRIDGE] = True
+    G.nodes[1][JUNCTION_BRIDGE_END] = True
+    G.add_node(8, pos=np.asarray((0.0, 10.0, 10.0)))
+    G.add_edge(1, 8, voxels=_straight((0, 0, 10), (0, 10, 10)), length=10.0)
+
+    vessel = unbridge_vessel(G, (1, 2, 0))
+
+    assert JUNCTION_BRIDGE not in G.edges[vessel]
+    assert JUNCTION_BRIDGE_END not in G.nodes[1]
+
+
+def test_unbridge_vessel_refuses_a_vessel_that_is_not_a_bridge():
+    G = _bridged()
+    with pytest.raises(ValueError, match="not a bridge"):
+        unbridge_vessel(G, (0, 1, 0))
+    with pytest.raises(ValueError, match="No vessel"):
+        unbridge_vessel(G, (0, 4, 0))
+    assert not has_pending_edits(G)
+
+
+def test_a_bridge_made_by_hand_and_made_a_vessel_again_is_the_vessel_it_was():
+    G = _thin_into_wide()
+    bridge = bridge_vessel_side(G, (0, 2, 0), (0.0, 0.0, 13.0), (0.0, 0.0, 18.0))
+    vessel = unbridge_vessel(G, bridge)
+
+    assert set(vessel[:2]) == {0, 2} and sorted(G.nodes) == [0, 2, 3, 4, 5, 6, 7]
+    assert G.edges[vessel]["length"] == pytest.approx(20.0)
+    assert G.edges[vessel]["branch_order"] == "B01"
+    assert G.edges[vessel][BRIDGE_SET_BY_HAND] is False
+
+
+def test_the_junction_bridges_leave_a_vessel_a_person_made_whole():
+    from haemolynx.graph.junction_bridges import insert_junction_bridges
+
+    G = _thin_into_wide()
+    assert insert_junction_bridges(G.copy(), nodes=[2])["bridges"] == 1, "bridged, left to the rule"
+
+    G.edges[0, 2, 0][BRIDGE_SET_BY_HAND] = False
+    counts = insert_junction_bridges(G, nodes=[2])
+
+    assert counts["bridges"] == 0 and counts["vessels_unbridged_by_hand"] == 1
+    assert G.has_edge(0, 2) and not any(d.get(IS_ZERO_RESISTANCE) for *_e, d in G.edges(data=True))

@@ -2271,3 +2271,114 @@ def test_undo_puts_back_what_a_prune_removed(page):
     assert _vessel_pairs(c.state.graph) == scanned and 5 in c.state.graph
     assert c.state.graph.degree(1) == 4
     assert "Undid: the prune" in c.log_box.toPlainText()
+
+
+# --- bridges: Add bridge, Remove bridge and the Bridging vessels list ---------------
+
+from haemolynx.graph import BRIDGE_SET_BY_HAND, IS_ZERO_RESISTANCE  # noqa: E402
+from haemolynx.gui.post_processing import ACTION_UNBRIDGE, BRIDGE_CUT  # noqa: E402
+
+BRIDGES = "Bridging vessels"
+
+
+def _bridges(graph) -> list:
+    return [(u, v, k) for u, v, k, d in graph.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE)]
+
+
+def test_add_bridge_cuts_where_clicked_and_bridges_the_side_clicked_next(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.click_delete_button.click()
+    c.add_bridge_button.click()
+    assert c.add_bridge_button.isChecked() and not c.click_delete_button.isChecked()
+    assert c.add_bridge_button.toolTip() and c.remove_bridge_button.toolTip()
+    _click(page, (10.0, 10.0, 0.0))  # halfway along 1 -> 5
+
+    assert c.state.bridge_cut is not None and BRIDGE_CUT in viewer.layers
+    assert viewer.layers[BRIDGE_CUT].data.tolist() == [[10.0, 10.0, 0.0]]
+    assert c.state.graph.number_of_edges() == 6, "nothing is cut until the side is picked"
+    _click(page, (20.0, 5.0, 0.0))  # another vessel: not the one cut
+    assert "itself" in c.edit_status.text() and c.state.graph.number_of_edges() == 6
+    _click(page, (10.0, 17.0, 0.0))  # towards node 5, a dead end: refused
+    assert "dead end 5" in c.edit_status.text() and c.state.graph.number_of_edges() == 6
+    assert c.state.bridge_cut is not None, "the cut stays for the other side"
+
+    _click(page, (10.0, 3.0, 0.0))  # towards junction 1
+
+    graph = c.state.graph
+    (bridge,) = _bridges(graph)
+    (new,) = set(bridge[:2]) - {1}
+    assert 1 in bridge[:2] and np.allclose(graph.nodes[new]["pos"], (10.0, 10.0, 0.0))
+    assert graph.edges[bridge][BRIDGE_SET_BY_HAND] is True
+    assert graph.edges[bridge]["length"] == pytest.approx(10.0)
+    assert graph.number_of_edges() == 7 and len(viewer.layers[VESSELS].data) > 6
+    assert c.state.bridge_cut is None and BRIDGE_CUT not in viewer.layers
+    assert new in c.state.added_nodes and ADDED_NODES in viewer.layers
+    assert c.add_bridge_button.isChecked(), "armed for the next one"
+    assert c.regenerate_graph_button.isEnabled()
+    assert "a bridge" in c.log_box.toPlainText()
+
+    c.undo_button.click()
+    assert not _bridges(c.state.graph) and c.state.graph.number_of_edges() == 6
+
+
+def test_add_bridge_pressed_again_drops_the_cut(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.add_bridge_button.click()
+    _click(page, (10.0, 10.0, 0.0))
+    c.add_bridge_button.click()
+
+    assert c.state.mode == "idle" and c.state.bridge_cut is None
+    assert BRIDGE_CUT not in viewer.layers
+    assert "cancelled" in c.edit_status.text() and c.state.graph.number_of_edges() == 6
+
+
+def _bridged_four_way() -> nx.MultiGraph:
+    """The four-way network with 1 -> 5 cut at y = 10 and its half at 1 a bridge."""
+    G = _four_way_network()
+    G.remove_edge(1, 5)
+    G.add_node(6, pos=np.asarray((10.0, 10.0, 0.0)))
+    for u, v, bridge in ((1, 6, True), (6, 5, False)):
+        voxels = [tuple(map(float, G.nodes[u]["pos"])), tuple(map(float, G.nodes[v]["pos"]))]
+        G.add_edge(u, v, voxels=voxels, length=calculate_path_length(voxels), diameter_um=5.0,
+                   **({IS_ZERO_RESISTANCE: True, "diameter_source": "bridge"} if bridge else {"branch_order": "B01"}))
+    return G
+
+
+def test_remove_bridge_makes_the_bridge_clicked_a_vessel_and_takes_its_node_away(make_napari_viewer):
+    page = _review_page(make_napari_viewer(), graph=_bridged_four_way())
+    c = page.controls
+    c.scan_button.click()
+    c.remove_bridge_button.click()
+    assert c.remove_bridge_button.isChecked()
+    _click(page, (20.0, 5.0, 0.0))  # a vessel, not a bridge: it picks only bridges
+    assert "missed" in c.edit_status.text() and _bridges(c.state.graph)
+
+    _click(page, (10.0, 5.0, 0.0))  # the bridge 1 -> 6
+
+    graph = c.state.graph
+    assert not _bridges(graph) and 6 not in graph
+    (key,) = graph[1][5]
+    assert graph.edges[1, 5, key][BRIDGE_SET_BY_HAND] is False
+    assert graph.edges[1, 5, key]["length"] == pytest.approx(20.0)
+    assert c.remove_bridge_button.isChecked() and c.regenerate_graph_button.isEnabled()
+    assert "a normal vessel" in c.edit_status.text()
+
+
+def test_the_bridging_vessels_list_makes_its_bridge_a_vessel_and_records_it(make_napari_viewer, tmp_path):
+    page = _review_page(make_napari_viewer(), tmp_path, graph=_bridged_four_way())
+    c = page.controls
+    c.review_choice.setCurrentText(BRIDGES)
+    c.scan_button.click()
+    assert c.review_items.count() == 1
+    assert c.review_items.item(0).text().startswith("1. Nodes 1, 6: 10 µm")
+    assert _shown_buttons(c) == {ACTION_UNBRIDGE, ACTION_KEEP}
+
+    c.review_buttons[ACTION_UNBRIDGE].click()
+
+    assert not _bridges(c.state.graph) and 6 not in c.state.graph
+    assert c.review_items.count() == 0, "the list is made again after the edit"
+    (decision,) = c.state.review_decisions
+    assert decision.decision == "unbridged" and decision.kind == "bridges"
+    assert (tmp_path / "run_bridges_review.csv").is_file()

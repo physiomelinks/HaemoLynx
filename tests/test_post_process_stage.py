@@ -1986,3 +1986,93 @@ def test_the_two_point_resistance_is_solved_between_the_nodes_chosen_and_stays_t
         resume=_resume_from_post_processing(again), on_stage_output=outputs.__setitem__,
     )
     assert outputs["post_process"].equivalent_resistance_nodes == (0, 2)
+
+
+# --- bridges made and taken away by hand ---------------------------------------------
+
+
+def test_a_bridge_made_by_hand_gets_no_order_and_no_resistance_and_its_vessel_is_measured_again(tmp_path):
+    """The rest of the vessel cut keeps its order and is re-measured, and its
+    resistance falls with its length; the bridge is no vessel of any order."""
+    from haemolynx.graph import BRIDGE_SET_BY_HAND, bridge_vessel_side
+    from haemolynx.haemodynamics.apply import ZERO_RESISTANCE_FRACTION
+
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    before = build_haemodynamic_model(run_settings, copy.deepcopy(model), SCHEMA).graph
+    order = model.graph.edges[1, 2, 0]["branch_order"]
+    bridge = bridge_vessel_side(
+        model.graph, (1, 2, 0), (0.0, 0.0, 1.75 * EDGE_LENGTH_UM), (0.0, 0.0, 1.9 * EDGE_LENGTH_UM),
+    )
+    (new,) = set(bridge[:2]) - {2}
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    data = G.edges[bridge]
+    assert data[IS_ZERO_RESISTANCE] and data[BRIDGE_SET_BY_HAND] is True
+    assert "branch_order" not in data and data["diameter_source"] == "bridge"
+    assert data["length"] == pytest.approx(EDGE_LENGTH_UM / 4)
+    (key,) = G[1][new]
+    rest = G.edges[1, new, key]
+    assert rest["branch_order"] == order and rest["length"] == pytest.approx(0.75 * EDGE_LENGTH_UM)
+    assert rest["diameter_um"] == pytest.approx(before.edges[1, 2, 0]["diameter_um"])
+    assert not has_pending_edits(G)
+
+    solved = build_haemodynamic_model(run_settings, out, SCHEMA).graph
+    assert solved.edges[1, new, key]["resistance"] == pytest.approx(0.75 * before.edges[1, 2, 0]["resistance"])
+    real = [d["resistance"] for *_e, d in solved.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)]
+    assert solved.edges[bridge]["resistance"] == pytest.approx(min(real) * ZERO_RESISTANCE_FRACTION)
+
+
+def test_a_bridge_made_a_vessel_by_hand_is_never_bridged_again(tmp_path):
+    """Regression: the edited vessel used to be cut into a bridge inside the
+    thick vessel again at the next regenerate, undoing the person's edit."""
+    from haemolynx.graph import BRIDGE_SET_BY_HAND, unbridge_vessel
+
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    (bridge,) = [(u, v, k) for u, v, k, d in model.graph.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE)]
+
+    vessel = unbridge_vessel(model.graph, bridge, protected={0, 3})
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    assert not any(d.get(IS_ZERO_RESISTANCE) for *_e, d in G.edges(data=True))
+    (piece,) = _pieces_between(G, 1, 2)
+    assert piece[2] is G.edges[vessel] and set(vessel[:2]) == {1, 2}
+    data = G.edges[vessel]
+    assert data[BRIDGE_SET_BY_HAND] is False, "kept for every later regenerate"
+    assert data["length"] == pytest.approx(10.0)
+    assert data["branch_order"] and data["diameter_um"] > 0 and data["diameter_source"] != "bridge"
+
+    solved = build_haemodynamic_model(run_settings, out, SCHEMA).graph
+    resistances = [d["resistance"] for *_e, d in solved.edges(data=True)]
+    assert solved.edges[vessel]["resistance"] >= 0.01 * max(resistances), "a vessel's own resistance"
+
+
+def test_a_regenerate_after_a_bridge_made_by_hand_solves_the_flow_through_it(tmp_path, monkeypatch):
+    from haemolynx.graph import bridge_vessel_side
+
+    _stub_early_stages(monkeypatch, tmp_path)
+    before: dict = {}
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve", on_stage_output=before.__setitem__)
+    edited = copy.deepcopy(paused)
+    bridge = bridge_vessel_side(
+        edited, (1, 2, 0), (0.0, 0.0, 1.5 * EDGE_LENGTH_UM), (0.0, 0.0, 1.9 * EDGE_LENGTH_UM),
+    )
+
+    outputs: dict = {}
+    solved = run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, start_from="post_process",
+        resume=_resume_from_post_processing(edited), on_stage_output=outputs.__setitem__,
+    )
+
+    # One chain: the bridge carries what every vessel of it carries.
+    flows = [abs(d["flow_signed"]) for *_e, d in solved.edges(data=True)]
+    assert abs(solved.edges[bridge]["flow_signed"]) == pytest.approx(max(flows))
+    assert min(flows) == pytest.approx(max(flows))
+    assert "branch_order" not in solved.edges[bridge]
+    assert all(d.get("branch_order") for *_e, d in solved.edges(data=True) if not d.get(IS_ZERO_RESISTANCE))
+    # Half a capillary's resistance is gone from the chain.
+    assert outputs["post_process"].network_resistance < before["solve"].network_resistance
+    assert outputs["post_process"].post_processed["edited_vessels"] == 1

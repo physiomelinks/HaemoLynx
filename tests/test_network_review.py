@@ -880,3 +880,45 @@ def test_a_junction_in_the_pair_is_listed_and_a_node_gone_is_not():
     assert [item.measures["two_point"] for item in gone[:2]] == ["start", ""]
     assert "to node" not in gone[0].why
     assert nr.find_resistance_nodes(G, {"inlet": [0], "outlet": [5]}, None)[0].measures["two_point"] == ""
+
+
+# --- bridging vessels ---------------------------------------------------------------
+
+
+def test_every_bridge_is_listed_longest_first_with_what_made_it_and_the_widths_beside_it():
+    from haemolynx.graph.junction_bridges import JUNCTION_BRIDGE
+    from haemolynx.graph.post_processing import BRIDGE_SET_BY_HAND
+    from haemolynx.graph.thick_vessel_junctions import DRAWN_BRIDGE
+
+    G = _graph({
+        "j": (0, 0, 0), "a": (0, 0, 4), "b": (0, 6, 0), "c": (0, 0, -2), "d": (0, -9, 0),
+        "a1": (0, 0, 30), "b1": (0, 30, 0), "c1": (0, 0, -30), "d1": (0, -30, 0),
+    })
+    for end, far, width in (("a", "a1", 4.0), ("b", "b1", 5.0), ("c", "c1", 6.0), ("d", "d1", 7.0)):
+        _vessel(G, end, far, diameter_um=width)
+    _vessel(G, "j", "a", **{IS_ZERO_RESISTANCE: True, "diameter_um": 7.0})
+    _vessel(G, "j", "b", **{IS_ZERO_RESISTANCE: True, JUNCTION_BRIDGE: True, "diameter_um": 7.0})
+    _vessel(G, "j", "c", **{IS_ZERO_RESISTANCE: True, BRIDGE_SET_BY_HAND: True})
+    _vessel(G, "j", "d", **{IS_ZERO_RESISTANCE: True, DRAWN_BRIDGE: True})
+    _vessel(G, "j", "c1", diameter_um=6.0)  # a vessel, not listed
+    before = _unchanged(G)
+
+    items = nr.find_bridges(G)
+
+    assert _unchanged(G) == before
+    assert [item.measures["length_um"] for item in items] == [9.0, 6.0, 4.0, 2.0]
+    assert [item.measures["made_by"] for item in items] == ["thick_drawn", "junction", "thick_vessel", "by_hand"]
+    assert all(item.kind == nr.BRIDGES and len(item.edges) == 1 for item in items)
+    assert [set(item.nodes) for item in items] == [{"j", "d"}, {"j", "b"}, {"j", "a"}, {"j", "c"}]
+    junction = items[1]
+    # The vessels at either end, bridges left out: the one it opens and the one beyond.
+    assert junction.measures["narrowest_beside_um"] == 5.0 and junction.measures["widest_beside_um"] == 6.0
+    assert junction.measures["width_um"] == 7.0
+    assert items[3].measures["width_um"] is None
+    assert junction.centre_um == pytest.approx((0.0, 3.0, 0.0))
+    assert "where a narrow vessel opens into a wider one" in junction.why
+    from haemolynx.graph.thick_vessel_junctions import THICK_FORK_BRIDGE
+
+    assert nr.bridge_made_by({IS_ZERO_RESISTANCE: True, THICK_FORK_BRIDGE: True}) == "thick_fork"
+    assert set(nr.BRIDGE_MADE_BY) == {item.measures["made_by"] for item in items} | {"thick_fork"}
+    assert nr.find_bridges(_two_junctions(1.0)) == []

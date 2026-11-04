@@ -156,10 +156,14 @@ def insert_junction_bridges(G: nx.MultiGraph, *, nodes: Iterable[Any] | None = N
 
     Widths are each vessel's ``diameter_um``; a junction where a vessel has
     none is left as it is. A vessel the bridges at its ends would leave
-    shorter than :data:`MIN_VESSEL_LEFT_UM` keeps its whole length. Returns
+    shorter than :data:`MIN_VESSEL_LEFT_UM` keeps its whole length, and so
+    does one a person made of a bridge on the Post processing tab
+    (``post_processing.BRIDGE_SET_BY_HAND`` False). Returns
     counts: ``bridges`` drawn, ``junctions`` bridged at, and the junctions
     and vessels left as they were, by why.
     """
+    from .post_processing import BRIDGE_SET_BY_HAND
+
     counts: Counter = Counter({"bridges": 0, "junctions": 0})
     thick = _ThickLumen(G)
     wanted: dict[tuple, dict[Any, float]] = {}
@@ -178,8 +182,10 @@ def insert_junction_bridges(G: nx.MultiGraph, *, nodes: Iterable[Any] | None = N
             counts["junctions_unmeasured"] += 1
             continue
         widest = max(widths)
-        for (_j, other, key, _data), width in zip(incident, widths):
-            if other != junction and width < NARROWER_THAN * widest:
+        for (_j, other, key, data), width in zip(incident, widths):
+            if data.get(BRIDGE_SET_BY_HAND) is False:
+                counts["vessels_unbridged_by_hand"] += 1
+            elif other != junction and width < NARROWER_THAN * widest:
                 wanted.setdefault(edge_id(junction, other, key), {})[junction] = widest
 
     reserved: set[Any] = set()
