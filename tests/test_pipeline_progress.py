@@ -745,7 +745,8 @@ def _recording_stages(monkeypatch):
         # what these tests check is which segmented image a resume hands on.
         assert kwargs.pop("progress") is not None
         calls["segment"] = kwargs
-        return SimpleNamespace(image_path=kwargs.get("segmented_path"))
+        # The resumed volume's folder: a resumed run writes into the inputs'.
+        return SimpleNamespace(image_path=kwargs.get("segmented_path"), output_dir=Path("out"))
 
     def skeletonise(*_args, **_kwargs):
         calls["skeletonise"] = {}
@@ -792,7 +793,7 @@ def test_a_resumed_run_is_handed_the_early_stages_instead_of_redoing_them(stubbe
     )
 
     run_pipeline_stages(
-        {}, schema=None, resume=resume,
+        {"run_haemodynamics": True}, schema=None, resume=resume,
         on_stage_output=lambda stage, output: outputs.setdefault(stage, output),
     )
 
