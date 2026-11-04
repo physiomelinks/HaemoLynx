@@ -556,7 +556,10 @@ def _even_out_tabs(bar) -> None:
         current = 100
         bar.setStyleSheet(EVEN_TAB_RULE.format(width=current))
         bar.setProperty(EVEN_TAB_WIDTH_PROPERTY, current)
-    border = bar.tabSizeHint(0).width() - int(current)
+    # A tab's width at the rule's, its padding and border included, read from
+    # the bar's size hint (its tabs' hints side by side): tabSizeHint is
+    # protected, and PyQt on Linux refuses it on a tab bar Qt made itself.
+    border = round(bar.sizeHint().width() / count) - int(current)
     wanted = max(bar.width() // count - border, 8)
     if wanted != current:
         bar.setStyleSheet(EVEN_TAB_RULE.format(width=wanted))

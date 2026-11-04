@@ -24,6 +24,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     STATISTICS_DOCK_NAME,
     VIEW_DOCK_NAME,
     _apply_layers,
+    _even_out_tabs,
     _scale_bar_overlay,
     _store_z_window_cache,
     data_for_pipeline,
@@ -272,6 +273,57 @@ def test_the_four_tabs_are_equal_and_fill_the_panel(make_napari_viewer):
         assert max(widths) - min(widths) <= 1, widths
         assert sum(widths) == bar.width(), (widths, bar.width())
         assert abs(bar.width() - dock.width()) <= 2, (bar.width(), dock.width())
+
+
+class _TabBarQtMade:
+    """A dock tab bar as PyQt hands over one Qt made itself, on Linux: its
+    protected tabSizeHint refuses to be called. Each tab is the rule's width
+    plus *border*."""
+
+    def __init__(self, count: int, width: int, border: int) -> None:
+        self._count, self._width, self._border = count, width, border
+        self._properties: dict = {}
+        self.sheet = ""
+        self.expanding = False
+
+    def count(self):
+        return self._count
+
+    def width(self):
+        return self._width
+
+    def property(self, name):
+        return self._properties.get(name)
+
+    def setProperty(self, name, value):  # noqa: N802 - Qt's name
+        self._properties[name] = value
+
+    def setStyleSheet(self, sheet):  # noqa: N802 - Qt's name
+        self.sheet = sheet
+
+    def setExpanding(self, on):  # noqa: N802 - Qt's name
+        self.expanding = on
+
+    def tabSizeHint(self, index):  # noqa: N802 - Qt's name
+        raise RuntimeError("no access to protected functions or signals for objects not created from Python")
+
+    def sizeHint(self):  # noqa: N802 - Qt's name
+        from qtpy.QtCore import QSize
+
+        return QSize((self._properties[EVEN_TAB_WIDTH_PROPERTY] + self._border) * self._count, 20)
+
+
+def test_the_tabs_are_evened_without_the_protected_tab_size_hint():
+    """Regression: a tab's width came from QTabBar.tabSizeHint, protected, which
+    PyQt on Linux refuses on a tab bar Qt made itself. Raised there, it
+    stopped the view's tab opening and the four tabs evening out, on Linux
+    alone (the napari-gui CI job, 2026-11-04)."""
+    bar = _TabBarQtMade(count=4, width=300, border=6)
+
+    _even_out_tabs(bar)
+
+    assert bar.property(EVEN_TAB_WIDTH_PROPERTY) == 300 // 4 - 6
+    assert "width: 69px" in bar.sheet and bar.expanding
 
 
 def test_tabs_of_other_docks_keep_their_own_widths(make_napari_viewer):
