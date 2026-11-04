@@ -287,6 +287,25 @@ def test_resume_keeps_measured_and_override_and_does_not_remeasure(monkeypatch):
     assert stamped[2][3][0]["diameter_um"] == pytest.approx(6.0)
 
 
+def test_fwhm_off_with_nothing_measured_to_keep_measures_anyway(monkeypatch):
+    """Regression: a run from Haemodynamics or later turns
+    do_fwhm_measurement off to keep the widths it measured, and the settings
+    it saves say so; a run started from them, on a network FWHM never
+    measured, kept nothing and measured nothing -- every vessel took the
+    class median or the table. It measures now, and says why."""
+    seen = _measurement_spies(monkeypatch)
+    graph = _network()
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": False, "fwhm_decoy_check": False},
+    )
+
+    _graph, summary, _raw = assign_edge_diameters(graph, config)
+
+    assert len(seen["fwhm"]) == 1 and seen["fwhm"][0][0] is None  # every vessel
+    assert "skipped" not in summary["fwhm"]
+
+
 def test_fresh_fwhm_run_wipes_overrides(monkeypatch):
     def fake_measure(G, _config, raw_volume=None, **_kwargs):
         for _u, _v, _key, data in G.edges(keys=True, data=True):
@@ -1129,6 +1148,27 @@ def test_a_speck_width_steps_aside_for_the_next_source():
     assert set(_sources(graph).values()) == {DIAMETER_SOURCE_EDT}
 
 
+def test_keeping_existing_diameters_does_not_bring_back_a_width_set_aside():
+    """Regression: stamping again with the diameters kept -- post processing
+    after an edit, or a run with do_fwhm_measurement off -- stamped every
+    vessel whose FWHM width had been set aside and had fallen to the table
+    as measured, at the width set aside."""
+    from haemolynx.haemodynamics.poiseuille import mark_fwhm_demotions
+
+    graph = _network()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_diameter_um"] = 1.5
+        data["fwhm_in_speck_width_range"] = True
+    mark_fwhm_demotions(graph)
+    stamp_edge_diameters(graph, dict(DIAMETERS))
+
+    stamp_edge_diameters(graph, dict(DIAMETERS), keep_existing=True, fresh_edges=[(0, 1, 0)])
+
+    for (u, v), order in zip(((0, 1), (1, 2), (2, 3), (3, 4)), BRANCH_ORDERS):
+        assert graph.edges[u, v, 0]["diameter_source"] == DIAMETER_SOURCE_TABLE
+        assert graph.edges[u, v, 0]["diameter_um"] == pytest.approx(DIAMETERS[order])
+
+
 # --- class median: an unmeasured vessel takes its label's measured median -----
 
 
@@ -1330,6 +1370,46 @@ def test_a_subset_is_measured_by_fwhm_even_with_do_fwhm_measurement_off(monkeypa
     assert graph.edges[0, 1, 0]["diameter_um"] == pytest.approx(9.0)
 
 
+def test_an_edited_vessel_is_fitted_per_profile_where_the_run_was(monkeypatch):
+    """Regression: where the run's FWHM held no blur (none could be
+    estimated), measuring an edited vessel estimated one again over the whole
+    edited network each time, and fitted the vessel with it."""
+    seen = _measurement_spies(monkeypatch)
+    graph = _network()
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": True, "fwhm_decoy_check": False},
+    )
+    assign_edge_diameters(graph, config)
+    assert graph.graph["fwhm_psf_source"] == "image"  # the run's own, recorded
+    graph.graph["fwhm_psf_source"] = "per_profile"
+    graph.graph.pop("fwhm_psf_sigma_zyx")
+    seen["fwhm"].clear()
+    seen["psf"] = 0
+
+    _graph, summary, _raw = assign_edge_diameters(graph, config, edges=[(2, 1, 0)])
+
+    assert seen["psf"] == 0
+    assert seen["fwhm"] == [([(2, 1, 0)], None)]
+    assert summary["fwhm_psf"] == {"source": "recorded", "psf_sigma_zyx": None}
+
+
+def test_an_edited_vessels_raw_section_is_fitted_with_the_runs_own_blur(monkeypatch, tmp_path):
+    """Regression: with FWHM fitting each profile's blur, the raw-section fit
+    of a vessel post processing measured estimated the image's blur again
+    over the whole edited network, not with the one the run's fit recorded."""
+    seen, raw_path = _fake_measurements(monkeypatch, tmp_path, fwhm_um=None)
+    graph = _network()
+    graph.graph["raw_section_psf_sigma_zyx"] = (1.1, 0.3, 0.3)
+
+    assign_edge_diameters(
+        graph, _fwhm_config(raw_path, fwhm_fix_blur_to_image_psf=False), edges=[(0, 1, 0)]
+    )
+
+    assert seen["fwhm_psf"] == [None]
+    assert seen["raw_psf"] == [(1.1, 0.3, 0.3)]
+
+
 def test_an_empty_subset_measures_nothing_and_still_restamps_the_table(monkeypatch):
     """Only a deletion was made: no image is read, but a table diameter follows
     the branch order just assigned."""
@@ -1373,6 +1453,48 @@ def test_a_bridge_is_not_measured_and_takes_the_thick_vessels_diameter():
     assert summary["bridges"] == 1
     assert summary["diameters"]["table"] == stamped.number_of_edges() - 2
     assert summary["diameters"]["override"] == 1
+
+
+def test_a_bridged_network_is_measured_from_the_raw_image_it_was_handed(monkeypatch):
+    """Regression: with a zero-resistance bridge in the network the vessels
+    were measured without the raw image the Diameters stage had loaded to
+    read its stain, so FWHM loaded the file a second time -- or, given no
+    path to load, failed the run."""
+    import haemolynx.haemodynamics.apply as apply_module
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    handed = []
+
+    def fake_fwhm(G, **kwargs):
+        handed.append(kwargs.get("raw_volume"))
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            data["fwhm_diameter_um"] = 5.0
+        return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
+
+    monkeypatch.setattr(
+        apply_module.fwhm_diameter, "measure_edge_diameters_fwhm_from_raw_tiff", fake_fwhm
+    )
+    graph = _network()
+    last = graph.number_of_nodes()
+    graph.add_node(last, pos=np.asarray([0.0, 7.0, EDGE_LENGTH_UM]))
+    graph.add_edge(1, last, key=0, length=7.0, voxels=[[0.0, 0.0, EDGE_LENGTH_UM], [0.0, 7.0, EDGE_LENGTH_UM]],
+                   **{IS_ZERO_RESISTANCE: True})
+    raw = np.zeros((2, 2, 2), dtype=np.float32)
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={
+            "use_fwhm_edge_diameters": True,
+            "do_fwhm_measurement": True,
+            "fwhm_decoy_check": False,
+            "fwhm_fix_blur_to_image_psf": False,
+        },
+    )
+
+    stamped, summary, returned = assign_edge_diameters(graph, config, raw_volume=raw)
+
+    assert handed and all(volume is raw for volume in handed)
+    assert returned is raw
+    assert summary["diameters"]["measured"] == stamped.number_of_edges() - 1
 
 
 def test_the_apply_config_takes_the_runs_basis_from_the_segmentation_source(tmp_path):
@@ -1420,3 +1542,126 @@ def test_measuring_from_the_raw_image_is_off_without_a_raw_image(tmp_path):
         config = _haemodynamics_apply_config(given, schema, voxel_size_zyx=(1.0, 1.0, 1.0))
         assert config.fwhm_setting("use_fwhm_edge_diameters") is fwhm
         assert config.endothelial_setting("use_endothelial_diameters") is endothelial
+
+
+# --- a row is in effect wherever the run reads it ---------------------------------
+
+
+_RAW = {"run_haemodynamics": True, "raw_image_path": "raw.tif", "measure_diameters_from_raw_image": True}
+
+
+@pytest.mark.parametrize(
+    "name, reader",
+    [
+        # FWHM holds its blur at the raw-section blur with the fallback off.
+        ("raw_section_psf_sigma_xy_um", {**_RAW, "raw_image_stain": "plasma_column"}),
+        ("raw_section_psf_sigma_z_um", {**_RAW, "raw_image_stain": "plasma_column"}),
+        # The ring fit keeps clear of the mask reading's junction zones.
+        ("edt_junction_proximity_exclusion_um", {**_RAW, "raw_image_stain": "endothelial"}),
+        # The mask widths sample and collapse by FWHM's spacing and aggregation.
+        ("fwhm_sample_spacing_along_edge_um", {"run_haemodynamics": True, "use_edt_diameter_crosscheck": True}),
+        ("fwhm_edge_diameter_aggregation", {"run_haemodynamics": True, "use_edt_diameter_crosscheck": True}),
+        # The size convention without haemodynamics reads the mask's widths.
+        ("edt_diameter_method", {"run_haemodynamics": False, "classify_vessels_by_size": True}),
+        ("edt_min_resolvable_diameter_um", {"run_haemodynamics": False, "classify_vessels_by_size": True}),
+        ("edt_junction_proximity_exclusion_um", {"run_haemodynamics": False, "classify_vessels_by_size": True}),
+    ],
+)
+def test_a_diameter_setting_is_in_effect_wherever_the_run_reads_it(name, reader):
+    """Regression: these rows were hidden, and warned set but unread, in
+    runs that read them -- FWHM's held blur under the raw-section fallback,
+    the ring fit's junction zones and the mask widths' reading under the EDT
+    cross-check, the mask widths' sampling under FWHM."""
+    from haemolynx.gui.form import unmet_chain
+
+    values = {**{setting.name: setting.default for setting in SCHEMA}, **reader}
+
+    assert unmet_chain(SCHEMA, name, values) == ()
+
+
+@pytest.mark.parametrize("constant", [True, False])
+def test_a_ticked_constant_box_beats_a_table_set_beside_it(tmp_path, constant):
+    """Regression: a diameter_by_branch_order table set beside a ticked "all
+    diameters constant" was used, while its row was hidden and the settings
+    warned it unread; every order now takes the default diameter."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        settings = _settings(
+            tmp_path,
+            all_diams_const=constant,
+            default_diameter=7.0,
+            diameter_by_branch_order={"B01": 20.0, "Art1": 30.0},
+        )
+
+    table = settings["diameter_by_branch_order"]
+    if constant:
+        assert table["B01"] == table["Art1"] == table["B03"] == 7.0
+    else:
+        assert table == {"B01": 20.0, "Art1": 30.0}
+
+
+@pytest.mark.parametrize(
+    "stain, given, warned",
+    [
+        ("plasma_column", {"raw_section_psf_sigma_xy_um": 0.4}, "raw_section_psf_sigma_xy_um"),
+        ("auto", {"raw_section_psf_sigma_z_um": 1.2}, "raw_section_psf_sigma_z_um"),
+        ("endothelial", {"endothelial_psf_sigma_xy_um": 0.4}, "endothelial_psf_sigma_xy_um"),
+        ("endothelial", {"raw_section_psf_sigma_xy_um": 0.4}, None),  # not read for this stain
+        ("plasma_column", {"raw_section_psf_sigma_xy_um": 0.4, "raw_section_psf_sigma_z_um": 1.2}, None),
+    ],
+)
+def test_preflight_warns_of_a_blur_set_on_one_axis_alone(tmp_path, stain, given, warned):
+    """A blur is read only as a pair: one set alone is estimated over by the
+    run, which said so only in its log once the image was being read."""
+    from haemolynx.pipeline.checks import check_diameter_blur_pairs, preflight
+
+    settings = _run_settings(
+        input_path=tmp_path / "mask.tif", raw_image_path=tmp_path / "raw.tif",
+        measure_diameters_from_raw_image=True, run_haemodynamics=True, raw_image_stain=stain,
+        **given,
+    )
+
+    warnings = check_diameter_blur_pairs(settings).warnings
+    in_preflight = [w for w in preflight(settings, SCHEMA).warnings if " estimated from the image and " in w]
+    if warned is None:
+        assert warnings == [] and in_preflight == []
+    else:
+        (warning,) = warnings
+        assert warning.startswith(f"{warned} is set but")
+        assert in_preflight == [warning]
+
+
+@pytest.mark.parametrize("by_size, masks, greyed", [(True, False, True), (False, False, False), (True, True, False)])
+def test_strict_branch_orders_are_out_of_effect_while_vessels_are_classed_by_size(by_size, masks, greyed):
+    """Regression: the strict box stayed in effect under the size convention,
+    which assigns no branch orders -- preflight warned nothing read it while
+    the panel offered it. With masks on the convention is off, and it is back."""
+    from haemolynx.gui.form import unmet_chain
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(classify_vessels_by_size=by_size, automated_vessel_assignment=masks)
+
+    assert bool(unmet_chain(SCHEMA, "strict_branch_order_assignment", values)) is greyed
+
+
+@pytest.mark.parametrize("source", ["synthetic", "synthetic_surround"])
+def test_the_mask_reading_rows_are_out_of_effect_for_a_synthetic_network(source):
+    """A synthetic network has no segmentation for the mask's widths, nor a
+    raw image for FWHM: the rows widened to every run that reads them were
+    shown, and warned unread by nothing, for one that reads none."""
+    from haemolynx.gui.form import unmet_chain
+
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(network_source=source, run_haemodynamics=True, use_edt_diameter_crosscheck=True)
+
+    for name in (
+        "use_edt_diameter_crosscheck",
+        "fwhm_sample_spacing_along_edge_um",
+        "fwhm_edge_diameter_aggregation",
+        "edt_diameter_method",
+        "edt_min_resolvable_diameter_um",
+        "edt_junction_proximity_exclusion_um",
+    ):
+        assert unmet_chain(SCHEMA, name, values), name

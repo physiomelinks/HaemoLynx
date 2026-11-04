@@ -92,6 +92,8 @@ def compare_baseline_vs_pericyte_constriction(
     rng: np.random.Generator | None = None,
     seed: int | None = None,
     equivalent_resistance_solver: str = EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
@@ -108,6 +110,9 @@ def compare_baseline_vs_pericyte_constriction(
     *equivalent_resistance_solver* is how each arm's two-point resistance is
     found: ``"eigendecomposition"`` (the default) or ``"sparse"``, one sparse
     solve -- see :func:`~haemolynx.haemodynamics.resistance.calc_two_point_resistance_sparse`.
+
+    *voxel_size_override_xyz* and *voxel_size_policy* are the run's, for the
+    pericyte mask's voxel size as every other path reads it.
     """
     source_node, target_node = resistance_node_pair
     if source_node not in graph.nodes or target_node not in graph.nodes:
@@ -149,6 +154,8 @@ def compare_baseline_vs_pericyte_constriction(
         "max_pericyte_diameter_um": max_pericyte_diameter_um,
         "axis_order": axis_order,
         "rng": generator,
+        "voxel_size_override_xyz": voxel_size_override_xyz,
+        "voxel_size_policy": voxel_size_policy,
     }
 
     graph_baseline, _strategy, baseline_resistance_results = (

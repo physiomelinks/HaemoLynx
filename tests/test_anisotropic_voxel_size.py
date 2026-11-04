@@ -6,6 +6,7 @@ indices swaps the z and x spacings, which is invisible for isotropic voxels and
 wrong for every real microscopy stack. Every test here uses three *distinct*
 spacings so the two orders cannot be confused.
 """
+import networkx as nx
 import numpy as np
 import pytest
 import tifffile
@@ -144,3 +145,67 @@ def test_terminal_node_mask_lookup_uses_array_axis_spacing():
 
     assert start_nodes == [0]
     assert outlet_nodes == [1]
+
+
+def _tube_along_x(diameter_um: float, voxel_size_zyx, *, blur_um=None, seed=0):
+    """A round vessel *diameter_um* wide along x, as a mask and (with
+    *blur_um*, a (z, y, x) blur) a raw image, on a grid of *voxel_size_zyx*;
+    and its centreline."""
+    from scipy.ndimage import gaussian_filter
+
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    shape = tuple(int(n) for n in np.ceil(np.array([30.0, 30.0, 60.0]) / spacing))
+    z, y, _x = np.indices(shape)
+    distance = np.hypot(z * spacing[0] - 15.0, y * spacing[1] - 15.0)
+    mask = distance <= diameter_um / 2
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, voxels=[(15.0, 15.0, float(x)) for x in range(12, 49)], length=36.0)
+    raw = None
+    if blur_um is not None:
+        lumen = (distance <= diameter_um / 2).astype(float)
+        raw = gaussian_filter(lumen, np.asarray(blur_um) / spacing) * 100.0
+        raw += np.random.default_rng(seed).normal(0.0, 1.0, raw.shape)
+    return mask, raw, graph
+
+
+VOXELS = [(1.0, 1.0, 1.0), (2.0, 0.5, 0.5), (0.5, 1.0, 1.0)]
+
+
+@pytest.mark.parametrize("voxel_size_zyx", VOXELS, ids=["isotropic", "coarse_z", "fine_z"])
+@pytest.mark.parametrize("diameter", [4.0, 8.0])
+def test_the_mask_reads_a_vessels_width_on_any_voxel_grid(voxel_size_zyx, diameter):
+    """The mask's widths (FWHM's first guess, the fallback, the size
+    classes) on two-photon-like grids, coarse and fine in z: within the
+    grid's own discretisation of the vessel."""
+    from haemolynx.haemodynamics.edt_diameter import measure_edge_diameters_from_binary_mask
+
+    mask, _raw, graph = _tube_along_x(diameter, voxel_size_zyx)
+
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=voxel_size_zyx, sample_spacing_along_edge_um=2.0
+    )
+
+    assert graph[0][1][0]["edt_diameter_um"] == pytest.approx(diameter, rel=0.1)
+
+
+@pytest.mark.parametrize("voxel_size_zyx", VOXELS, ids=["isotropic", "coarse_z", "fine_z"])
+def test_fwhm_reads_a_vessels_width_on_any_voxel_grid(voxel_size_zyx):
+    """FWHM across a plasma-filled vessel, its blur held at the image's, on
+    grids coarse and fine in z: the lines run in the y-x plane, and read the
+    vessel at its width whatever the z spacing."""
+    from haemolynx.haemodynamics.fwhm_diameter import measure_edge_diameters_fwhm_from_raw_tiff
+
+    # The same blur every way: a blur long in z narrows a round lumen read
+    # across the y-x plane, which the planted vessels score; this is the grid.
+    blur = (0.6, 0.6, 0.6)
+    _mask, raw, graph = _tube_along_x(8.0, voxel_size_zyx, blur_um=blur)
+
+    measure_edge_diameters_fwhm_from_raw_tiff(
+        graph, raw_volume=raw.astype(np.float32), voxel_size_zyx=voxel_size_zyx,
+        sample_spacing_along_edge_um=2.0, transverse_profile_step_um=0.25,
+        transverse_half_extent_um=8.0, diameter_guess_um=8.0, profile_psf_sigma_zyx=blur,
+    )
+
+    data = graph[0][1][0]
+    assert data["fwhm_status"] == "measured"
+    assert data["fwhm_diameter_um"] == pytest.approx(8.0, rel=0.1)

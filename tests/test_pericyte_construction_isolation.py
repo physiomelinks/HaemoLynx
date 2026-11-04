@@ -324,3 +324,53 @@ def test_pericyte_perturbation_still_applies_constrictions(tmp_path):
     assert run.results[0].ok
     assert run.results[0].summary.get("strategy")
     assert _resistances(run.results[0].graph) != _resistances(baseline.graph)
+
+
+def test_the_library_paths_read_a_pericyte_masks_voxel_size_as_the_run_does(monkeypatch, tmp_path):
+    """Regression (found by the Input tab's review): the library's baseline
+    constriction and its pericyte comparison read a pericyte mask's voxel
+    size without the run's voxel_size_override_xyz and voxel_size_policy,
+    which every perturbation passes; the pipeline's own config now carries
+    them, and both paths hand them on."""
+    import haemolynx.haemodynamics.apply as apply_module
+    import haemolynx.haemodynamics.pericyte_comparison as comparison_module
+    from haemolynx.pipeline.stages import _haemodynamics_apply_config
+
+    seen = []
+
+    def spy(graph, **kwargs):
+        seen.append((kwargs.get("voxel_size_override_xyz"), kwargs.get("voxel_size_policy")))
+        return graph, "constrictions", {}
+
+    monkeypatch.setattr(apply_module, "set_resistances_for_constriction_strategy", spy)
+    monkeypatch.setattr(comparison_module, "set_resistances_for_constriction_strategy", spy)
+    monkeypatch.setattr(comparison_module, "_compute_two_point_resistance", lambda *_a, **_k: 1.0)
+    config = HaemodynamicsApplyConfig(
+        diameters={
+            "diameter_by_branch_order": dict(DIAMETERS),
+            "constriction_by_branch_order": dict(CONSTRICTION),
+            "do_pericyte_construction": True,
+            "run_pericyte_resistance_comparison": True,
+            "use_pericyte_mask_constriction": True,
+            "pericyte_mask_path": tmp_path / "pericytes.tif",
+            "pericyte_comparison_baseline_value": 1.0,
+            "pericyte_comparison_constricted_value": 0.8,
+            "use_probabilistic_pericyte_constriction": False,
+            "pericyte_constriction_probability": 1.0,
+            "viscosity_law": "constant",
+        },
+        voxel_size_override_xyz=(0.4, 0.5, 2.0),
+        voxel_size_policy="override",
+        resistance_node_pair=(0, len(BRANCH_ORDERS)),
+        comparison_output_csv_path=tmp_path / "comparison.csv",
+    )
+
+    apply_module.apply_poiseuille_resistances(_network(), config)
+
+    assert seen == [((0.4, 0.5, 2.0), "override")] * 3  # two comparison arms, the baseline
+    run_config = _haemodynamics_apply_config(
+        _settings(tmp_path / "run", voxel_size_override_xyz=[0.4, 0.5, 2.0], voxel_size_policy="override"),
+        SCHEMA, voxel_size_zyx=(2.0, 0.5, 0.4),
+    )
+    assert tuple(run_config.voxel_size_override_xyz) == (0.4, 0.5, 2.0)
+    assert run_config.voxel_size_policy == "override"

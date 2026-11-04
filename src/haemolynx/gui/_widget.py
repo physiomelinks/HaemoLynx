@@ -56,6 +56,7 @@ from haemolynx.gui.results import (
     BRANCH_HOVER,
     BRANCH_ORDER_SIGNED,
     DRAWN_ON_TOP,
+    FLOW_DIRECTION,
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
     FLOW_HEADING_COLUMN,
@@ -72,8 +73,11 @@ from haemolynx.gui.results import (
     _flow_heading_contrast_limits,
     clip_volume_to_z,
     colour_cycle_for,
+    colour_values_for_range,
+    drawn_on_top,
     filter_points_by_z,
     filter_vectors_by_z,
+    hidden_on_first_view,
     is_z_depth_filtered_layer,
     is_z_depth_windowed_volume_layer,
     mask_unsolved_flow_columns,
@@ -138,6 +142,7 @@ from haemolynx.gui.pericyte_mask_search import (
     MEASUREMENT_FIELD as PERICYTE_MEASUREMENT_FIELD,
     REFERENCE_SETTINGS as PERICYTE_REFERENCE_SETTINGS,
     TRIGGER_SETTINGS as PERICYTE_MASK_TRIGGERS,
+    filled_after_renumbering as pericyte_filled_after_renumbering,
     perturbation_field as pericyte_perturbation_field,
     perturbation_index as pericyte_perturbation_index,
     update_pericyte_mask_rows,
@@ -235,6 +240,12 @@ UNCOLOURED = "#cccccc"
 
 #: The same grey, as RGBA, for the places that build a colour array by hand.
 UNCOLOURED_RGBA = (0.8, 0.8, 0.8, 1.0)
+
+#: A row with no value in the column shown -- above all the flow of a vessel
+#: the solve left unsolved -- drawn dark enough to sit back. In the light grey
+#: of no colouring it was the brightest thing on the canvas, and the middle
+#: of the diverging maps, so a capillary at signed order 0 read as unsolved.
+MISSING_VALUE_RGBA = (0.4, 0.4, 0.4, 1.0)
 
 #: Settings the panel starts with switched off, because they put a run's
 #: results somewhere other than napari. ``visualize_results`` (Produce IDE
@@ -943,6 +954,21 @@ def output_folder_from_settings(values: Mapping[str, Any]) -> Path | None:
     return output_dir_from_settings(values)
 
 
+def _confirm_run_without_hand_edits(parent, tab_title: str) -> bool:
+    """Ask before a run from *tab_title* goes ahead without the Post
+    processing tab's edits not yet regenerated."""
+    from qtpy.QtWidgets import QMessageBox
+
+    answer = QMessageBox.question(
+        parent,
+        "Run without the hand edits?",
+        f"The edits on {POST_PROCESSING_TAB} are not in the model yet: running from "
+        f"{tab_title} leaves them out, though the tab keeps them. Regenerate graph "
+        "there takes them in. Run anyway?",
+    )
+    return answer == QMessageBox.Yes
+
+
 def _confirm_discard_hand_edits(parent, tab_title: str) -> bool:
     """Ask before a run from *tab_title* drops the Post processing tab's edits."""
     from qtpy.QtWidgets import QMessageBox
@@ -1414,10 +1440,12 @@ class _OptimiseReview:
     """One optimiser's proposal, shown under its button until Apply or Discard.
 
     An optimisation run hands :meth:`propose` its result and a function that
-    writes it into the panel; this shows what would change against the
-    panel's current values (see :mod:`haemolynx.gui.optimise_review`) and
-    keeps the function until the user decides. Nothing reaches the panel's
-    rows before Apply. Built and used on the GUI thread only.
+    writes the settings it names into the panel; this shows what would
+    change against the panel's current values (see
+    :mod:`haemolynx.gui.optimise_review`) and keeps the function until the
+    user decides. Nothing reaches the panel's rows before Apply, and Apply
+    writes the changes listed and nothing else: a row edited since is left
+    as it is. Built and used on the GUI thread only.
     """
 
     def __init__(self, current_values, report, *, what: str) -> None:
@@ -1453,7 +1481,8 @@ class _OptimiseReview:
         status line to report."""
         changes = proposed_changes(result.settings, self._current_values())
         self.text.value = review_text(changes, result.scorecard)
-        self._apply = apply
+        names = tuple(change.name for change in changes)
+        self._apply = lambda: apply(names)
         self.container.visible = True
         count = len(changes)
         worse = worse_rows(result.scorecard)
@@ -2311,18 +2340,20 @@ def _option_holds(current: Any, value: Any) -> bool:
 
 
 def _draw_on_top(viewer) -> None:
-    """Draw the ``DRAWN_ON_TOP`` layers over everything else.
+    """Draw the ``drawn_on_top`` layers over everything else.
 
-    Without a depth test, rimmed and last in the layer list. Their specs ask
-    for the first two, but a layer from a run saved before they did, or one
-    the Z-depth filter rebuilt, comes back without them, and a layer added
-    after one -- the tubes, always -- paints over it.
+    Without a depth test, rimmed and last in the layer list, the terminal
+    nodes last of all. Their specs ask for the first two, but a layer from a
+    run saved before they did, or one the Z-depth filter rebuilt, comes back
+    without them, and a layer added after one -- the tubes, always -- paints
+    over it.
     """
     layers = viewer.layers
-    on_top = [
-        layers[name] for name in DRAWN_ON_TOP
-        if name in layers and _is_ours(layers[name])
-    ]
+    order = {name: index for index, name in enumerate(DRAWN_ON_TOP)}
+    on_top = sorted(
+        (layer for layer in layers if drawn_on_top(layer.name) and _is_ours(layer)),
+        key=lambda layer: order.get(layer.name, order[FLOW_DIRECTION]),
+    )
     if list(layers)[len(layers) - len(on_top):] != on_top:
         for layer in on_top:
             layers.move(layers.index(layer), len(layers))
@@ -3509,6 +3540,10 @@ def _apply_layers(viewer, group, report=None) -> None:
         layer = viewer.layers[name] if name in viewer.layers else None
         if layer is not None and _is_ours(layer):
             _colour_layer(layer, column)
+    for name in hidden_on_first_view(group):
+        layer = viewer.layers[name] if name in viewer.layers else None
+        if layer is not None and _is_ours(layer):
+            layer.visible = False
     if group.ndisplay is not None:
         viewer.dims.ndisplay = group.ndisplay
     reparent_arrow = getattr(viewer, "_haemolynx_reparent_arrow_length_slider", None)
@@ -3633,7 +3668,7 @@ def _flow_dir_rgba(layer) -> np.ndarray:
 
         # The same grey every other flow-based colouring draws them in.
         unsolved = np.asarray(features[FLOW_SOLUTION], dtype=object) == FLOW_SOLUTION_TEXT[False]
-        rgba[unsolved] = UNCOLOURED_RGBA
+        rgba[unsolved] = MISSING_VALUE_RGBA
     return rgba
 
 
@@ -3651,10 +3686,16 @@ def _flow_heading_colormap() -> str:
 
 
 def _default_colormap_for(column: str | None) -> str:
-    """The map a colour-by column starts with, before the user overrides it."""
+    """The map a colour-by column starts with, before the user overrides it.
+
+    Signed branch order runs red to blue: its arterial side is negative, and
+    arteries are red, veins blue, as the vessel masks are drawn. coolwarm put
+    them the other way round."""
     if column == FLOW_HEADING_COLUMN:
         return _flow_heading_colormap()
-    if column in FLOW_DIR_COLUMNS or column == BRANCH_ORDER_SIGNED:
+    if column == BRANCH_ORDER_SIGNED:
+        return "RdBu"
+    if column in FLOW_DIR_COLUMNS:
         return "coolwarm"
     return "viridis"
 
@@ -3664,12 +3705,12 @@ GREY_NAN_SUFFIX = " (grey NaN)"
 
 
 def _grey_nan_colormap(name: str):
-    """Colormap *name*, drawing NaN in the uncoloured grey.
+    """Colormap *name*, drawing NaN in :data:`MISSING_VALUE_RGBA`'s grey.
 
     NaN is a value a row has not got -- the flow of a vessel the solve left
     unsolved, above all (``results.SOLVED_FLOW_COLUMNS``) -- and napari's own
     maps draw it transparent, so those vessels vanished instead of showing
-    light grey. *name* itself for anything napari cannot read as a map.
+    grey. *name* itself for anything napari cannot read as a map.
     """
     from napari.utils.colormaps import Colormap, ensure_colormap
 
@@ -3682,7 +3723,7 @@ def _grey_nan_colormap(name: str):
         controls=base.controls,
         interpolation=base.interpolation,
         name=f"{base.name}{GREY_NAN_SUFFIX}",
-        nan_color=UNCOLOURED_RGBA,
+        nan_color=MISSING_VALUE_RGBA,
         low_color=base.low_color,
         high_color=base.high_color,
     )
@@ -3697,13 +3738,13 @@ def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
     """One RGBA row per item, looked up from *cycle* by the item's label.
 
     A value the cycle does not name -- a role from a newer config, a blank in a
-    half-filled column -- takes the uncoloured grey rather than borrowing some
-    other label's colour.
+    half-filled column -- takes the missing-value grey rather than borrowing
+    some other label's colour.
     """
     lookup = {label: colour for label, colour in cycle}
     values = layer.features[column]
     return np.array(
-        [lookup.get(value, UNCOLOURED_RGBA) for value in values], dtype=float
+        [lookup.get(value, MISSING_VALUE_RGBA) for value in values], dtype=float
     )
 
 
@@ -4616,30 +4657,22 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
 def _sweep_contrast_limits(sweep, tag: Mapping[str, Any], column: str | None):
     """The range a sweep layer's colouring keeps as its slider moves.
 
-    Flow spans the whole grid (the layer's own limits, else the grid's), so
-    sliding does not re-stretch the colours; log10 flow spans the log of that
-    same range. Any other column fits itself (None): the limits kept on the
-    layer are flow's, in m^3/s, and applied to log10 flow -- about -13 --
-    they put every vessel below the bottom of the colormap the moment the
-    slider moved, so a network coloured by log flow went dark.
+    Flow and log10 flow span the whole grid -- the range the layer was drawn
+    with (``results.sweep_flow_colour_limits``) -- so sliding does not
+    re-stretch the colours. Any other column fits itself (None). The limits
+    kept on the layer are for whichever column it was drawn coloured by:
+    flow's, in m^3/s, applied to log10 flow -- about -13 -- put every vessel
+    below the bottom of the colormap the moment the slider moved, so a network
+    coloured by log flow went dark.
 
     A range the user set for *column* (typed, or a Fit button) wins over
     all of that, so moving the slider never undoes it."""
     chosen = (tag.get(USER_CONTRAST_LIMITS) or {}).get(column)
     if chosen is not None:
         return tuple(chosen)
-    if column == "flow_abs":
-        limits = tag.get("contrast_limits")
-        return limits if limits is not None else sweep.global_flow_abs_limits()
-    if column == "flow_abs_log10":
-        limits = sweep.global_flow_abs_limits()
-        if limits is None:
-            return None
-        from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+    from haemolynx.gui.results import sweep_flow_colour_limits
 
-        low, high = (flow_abs_log10_value(v) for v in limits)
-        return (low, high) if high > low else None
-    return None
+    return sweep_flow_colour_limits(sweep, column)
 
 
 def _apply_sweep_points(viewer, layer_set: str | None, row: int) -> None:
@@ -4865,6 +4898,8 @@ _FLOW_COLOUR_COLUMN_ORDER = (
     "pressure_drop",
     "pressure_u",
     "pressure_v",
+    "resistance",
+    "resistance_log10",
 )
 
 #: Colormaps offered on Vectors/Points layer controls, grouped for scanning.
@@ -4986,7 +5021,7 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
         values = np.asarray(layer.features[column], dtype=float)
     except (TypeError, ValueError):
         return None
-    finite = values[np.isfinite(values)]
+    finite = colour_values_for_range(column, values)
     if finite.size == 0:
         return None
     if column == FLOW_HEADING_COLUMN:
@@ -5270,10 +5305,28 @@ class _ColourScale:
                 # A colouring chosen in napari's own dropdown is applied with
                 # whatever range the last one used, so a column of flows lands on
                 # a scale of branch orders and every vessel comes out one colour.
-                # Fit it, exactly as the button does.
-                self.autoscale(0.0, 100.0)
+                # Fit it, exactly as the button does -- but a sweep's flows to
+                # its whole grid, as its slider keeps them: the values it holds
+                # are one grid point's, often all one flow.
+                if not self._fit_to_sweep_grid():
+                    self.autoscale(0.0, 100.0)
         finally:
             self._following = False
+
+    def _fit_to_sweep_grid(self) -> bool:
+        """Span a sweep layer's flow colouring over its whole grid
+        (:func:`_sweep_contrast_limits`); False for any other layer or column."""
+        layer = self._layer()
+        tag = getattr(layer, "metadata", {}).get(OURS) if layer is not None else None
+        sweep = tag.get("sweep") if isinstance(tag, dict) else None
+        if sweep is None or self._column is None:
+            return False
+        limits = _sweep_contrast_limits(sweep, tag, self._column)
+        if limits is None or not _apply_contrast_limits(layer, *limits):
+            return False
+        self.low.setText(_format_limit(float(limits[0])))
+        self.high.setText(_format_limit(float(limits[1])))
+        return True
 
     def refresh(self, column: str | None) -> None:
         """Show the range of *column*, or hide if there is nothing to show."""
@@ -5511,7 +5564,12 @@ class _FeatureChooser:
         return layer if layer is not None and _is_ours(layer) else None
 
     def refresh(self) -> None:
-        """Offer the columns the layer holds now, keeping the current one."""
+        """Offer the columns the layer holds now, keeping the current one.
+
+        A layer coloured by none of them (the flow arrows' one colour) shows
+        none chosen: the combo picks its first item when filled, which named a
+        colouring that was not on screen, and choosing that item did nothing.
+        """
         layer = self._layer()
         if layer is None:
             return
@@ -5522,8 +5580,7 @@ class _FeatureChooser:
         with _blocked(self.native):
             self.native.clear()
             self.native.addItems(columns)
-            if active in columns:
-                self.native.setCurrentIndex(columns.index(active))
+            self.native.setCurrentIndex(columns.index(active) if active in columns else -1)
 
     def _items(self):
         return (self.native.itemText(i) for i in range(self.native.count()))
@@ -6467,6 +6524,10 @@ def _run_in_background(
         if stage in restored:
             try:
                 results.stage_restored(stage, output)
+                # A run loaded from a file kept no stage outputs: what this
+                # one loaded is kept, so the next resume is handed it.
+                if checkpoints is not None and not cancel_flag["cancelled"]:
+                    checkpoints.keep_output(stage, output)
             except Exception:  # noqa: BLE001 - reported, never raised at the run
                 logger.exception("could not follow restored stage %s", stage)
             return
@@ -7185,9 +7246,6 @@ def _run_optimisation_in_background(
     from napari.qt.threading import thread_worker
 
     cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
-    # What the search started from: Apply writes only what it changed from
-    # these, so a row edited (or a config loaded) since keeps its new value.
-    started_from = dict(settings)
 
     @thread_worker
     def run():
@@ -7210,12 +7268,11 @@ def _run_optimisation_in_background(
             return
         result, input_path, raw_image_error, restriction_error = payload
 
-        def apply_result() -> None:
-            # Only the search's changes: every setting it kept was written
-            # back as at the press, undoing edits made since.
-            for change in proposed_changes(result.settings, started_from):
-                if change.name in rows:
-                    rows[change.name].value = display_value_for(schema[change.name], change.now)
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
+                if name in rows:
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
             apply_prerequisites()
 
         out_path = Path(input_path).parent / config_filename(input_path)
@@ -7291,6 +7348,28 @@ def _run_optimisation_in_background(
     )
 
 
+def _run_segmentation_on_its_grid(settings: Mapping[str, Any]) -> "np.ndarray | None":
+    """The run's segmented image as its skeletonise read it -- cut and
+    reduced onto the run's grid, binarised -- for a Diameters optimiser after
+    Load run, whose checkpoints keep no image in memory; a run resumed there
+    reads it too. None, said in the log, when there is none to read."""
+    local_settings = dict(settings)
+    segmented_path, refusal = _segmented_image_to_optimise(local_settings)
+    if segmented_path is None:
+        logger.warning("The optimiser's trials read no segmentation: %s", refusal)
+        return None
+    ilastik = pipeline_stages.ilastik_segments(local_settings)
+    if not ilastik:
+        local_settings["input_path"] = segmented_path
+    inputs = segment(local_settings, segmented_path=segmented_path if ilastik else None)
+    volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+    return _to_binary_volume_for_skeletonization(
+        volume.image,
+        use_memmap=bool(local_settings.get("use_memmap_loading")),
+        memmap_directory=local_settings.get("memmap_directory"),
+    )
+
+
 #: Settings outside the ``fwhm_`` group the FWHM optimiser reads and never
 #: changes: the image PSF its trials hold the blur at, and the FWHM/EDT ratio a
 #: width is set aside at.
@@ -7333,6 +7412,8 @@ def _optimise_fwhm_settings_for_run(
         None if boundaries is None
         else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
     )
+    if vessel_mask is None:
+        vessel_mask = _run_segmentation_on_its_grid(settings)
     return optimise_fwhm_settings(
         graph,
         voxel_size_zyx=voxel_size_zyx,
@@ -7412,10 +7493,11 @@ def _run_fwhm_optimisation_in_background(
             return
         result, raw_path = payload
 
-        def apply_result() -> None:
-            for name, value in result.settings.items():
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
                 if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
             apply_prerequisites()
 
         out_path = Path(raw_path).parent / config_filename(raw_path)
@@ -7500,6 +7582,8 @@ def _optimise_endothelial_settings_for_run(
         None if boundaries is None
         else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
     )
+    if vessel_mask is None:
+        vessel_mask = _run_segmentation_on_its_grid(settings)
     return optimise_endothelial_settings(
         graph,
         starting_values={name: settings.get(name) for name in ENDOTHELIAL_SETTING_NAMES},
@@ -7572,10 +7656,11 @@ def _run_endothelial_optimisation_in_background(
             return
         result, raw_path = payload
 
-        def apply_result() -> None:
-            for name, value in result.settings.items():
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
                 if name in rows:
-                    rows[name].value = display_value_for(schema[name], value)
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
             apply_prerequisites()
 
         out_path = Path(raw_path).parent / config_filename(raw_path)
@@ -11479,7 +11564,7 @@ def _raw_panel_pixmap(picture, view, pixels: int = _RAW_PANEL_PIXELS):
 
 def _post_processing_controls(
     viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
-    paused=None,
+    paused=None, paused_after=None, segmentation=None,
 ):
     """The "7. Post processing" page: fix the solved network by hand.
 
@@ -11489,8 +11574,13 @@ def _post_processing_controls(
     or the end) and says whether it started, *running* says whether a run is
     under way and *settings* (optional) returns the panel's settings -- where
     Add vessel finds the raw data file and the run's centreline smoothing.
-    *paused* says whether a run is paused here (Mid-run postprocessing).
-    Callables, because the panel builds them before what they read.
+    *paused* says whether a run is paused here (Mid-run postprocessing), and
+    *paused_after* after which stage call (``"solve"``, or ``"post_process"``
+    after a Regenerate graph while paused). *segmentation(image, settings)*
+    returns the MaskSupport post processing keeps for the run's segmented
+    *image*, or None, so the review lists read the segmentation through the
+    same one rather than a second copy. Callables, because the panel builds
+    them before what they read.
 
     Two buttons at the foot of the page take the edits on. Regenerate graph
     brings them in line -- branch orders, lengths, diameters by the run's own
@@ -12161,6 +12251,8 @@ def _post_processing_controls(
             decisions=dict(state.decisions),
             review_decisions=len(state.review_decisions),
             loop_reviews=len(state.loop_reviews),
+            # The list these items are of: put back only while it is still the one made.
+            review_key=state.review_key,
             review_acted=list(state.review_acted),
             review_unfiltered=list(state.review_unfiltered),
         )
@@ -12232,8 +12324,13 @@ def _post_processing_controls(
         state.decisions = before.decisions
         del state.review_decisions[before.review_decisions:]
         del state.loop_reviews[before.loop_reviews:]
-        state.review_acted = before.review_acted
-        state.review_unfiltered = before.review_unfiltered
+        if before.review_key is not None and before.review_key == state.review_key:
+            state.review_acted = before.review_acted
+            state.review_unfiltered = before.review_unfiltered
+        else:
+            # Another list has been made since: its items stay its own, less
+            # the decisions taken back.
+            state.review_acted = [d for d in state.review_acted if d in state.review_decisions]
         withdrawn = 0
         for path, row in reversed(entry.written):
             try:
@@ -12472,16 +12569,22 @@ def _post_processing_controls(
         regenerate_graph_button.setEnabled(not busy and pending)
         continue_button.setEnabled(not busy and held)
         undo_button.setEnabled(not busy and bool(state.undo) and state.graph is not None)
+        # Paused after the first solve, or after a Regenerate graph while paused.
+        where = (
+            "Paused after Regenerate graph"
+            if paused_after is not None and paused_after() == POST_PROCESS
+            else "Paused after Haemodynamics"
+        )
         if busy:
             text = "A run is going."
         elif held and pending:
             text = (
-                "Paused after Haemodynamics, with edits not yet in the model. "
+                f"{where}, with edits not yet in the model. "
                 "Regenerate graph brings them in line, reruns Haemodynamics and "
                 "stays paused; Continue does the same and runs Perturbations onwards."
             )
         elif held:
-            text = "Paused after Haemodynamics. Continue runs Perturbations onwards."
+            text = f"{where}. Continue runs Perturbations onwards."
         elif pending:
             text = (
                 "Edits not yet in the model. Regenerate graph brings them in line, "
@@ -13193,7 +13296,7 @@ def _post_processing_controls(
         z_range = None
         if uses_mask:
             if support is None:
-                support = review_mask_support(image, voxel, values)
+                support = kept_support(image, values) or review_mask_support(image, voxel, values)
             z_range = z_range_around(centre, radius, voxel, int(np.shape(image)[-3]))
         items = find_review_items(
             key, graph, support=support if uses_mask else None, roles=roles, settings=values,
@@ -13822,8 +13925,20 @@ def _post_processing_controls(
         if image is None:
             return None
         if state.support is None or state.support[0] is not image:
-            state.support = (image, review_mask_support(image, voxel_size(), read_settings() or {}))
+            values = read_settings() or {}
+            state.support = (image, kept_support(image, values) or review_mask_support(image, voxel_size(), values))
         return state.support[1]
+
+    def kept_support(image, values):
+        """Post processing's own reading of the segmented *image*, kept on the
+        run's volume, or None: the lists then make one of their own."""
+        if segmentation is None or image is None:
+            return None
+        try:
+            return segmentation(image, values)
+        except Exception:  # noqa: BLE001 - the lists make their own instead
+            logger.exception("Post processing: could not reuse the run's reading of the segmentation")
+            return None
 
     def segmentation_note(edge) -> str:
         """How the vessel just drawn sits in the segmentation, for its log
@@ -13890,12 +14005,12 @@ def _post_processing_controls(
         if fwhm is not None:
             data = fwhm.data
             if state.raw is None or state.raw[0] is not data:
-                state.raw = (data, IntensityCostField(data))
+                state.raw = (data, IntensityCostField(data, voxel_size_zyx=voxel_size()))
             return state.raw, None
         if state.raw is None and state.raw_problem is None:
             data, state.raw_problem = load_raw(say)
             if data is not None:
-                state.raw = (data, IntensityCostField(data))
+                state.raw = (data, IntensityCostField(data, voxel_size_zyx=voxel_size()))
         return state.raw, state.raw_problem
 
     # --- The raw image at the chosen item -----------------------------------------
@@ -14666,6 +14781,8 @@ def settings_widget(napari_viewer=None):
         running=lambda: run_state.running,
         settings=lambda: _settings(),
         paused=lambda: run_state.paused,
+        paused_after=lambda: run_state.paused_after,
+        segmentation=lambda image, values: _kept_segmentation_support(image, values),
     )
     pages[POST_PROCESS] = lambda _summary, _names: post_processing.page
 
@@ -14673,6 +14790,17 @@ def settings_widget(napari_viewer=None):
     #: stage" on a tab needs from the previous tab. Cleared when the layers
     #: are, and replaced when a new run that shows layers starts.
     checkpoints = StageCheckpoints()
+
+    def _kept_segmentation_support(image, values):
+        """The MaskSupport post processing keeps on the run's volume, when the
+        viewer's segmented *image* is that volume's; None otherwise (a run
+        loaded from a file before its first Regenerate)."""
+        checkpoint = checkpoints.get("skeletonise")
+        volume = getattr(checkpoint, "output", None)
+        if volume is None or getattr(volume, "image", None) is not image:
+            return None
+        return pipeline_stages.post_process_segmentation_support(values or {}, volume)
+
     revert_buttons: dict[str, Any] = {}
     from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP, stage_tab_tooltip
 
@@ -14950,15 +15078,19 @@ def settings_widget(napari_viewer=None):
         """Whether every gate above *name* holds (haemolynx.gui.form.unmet_chain)."""
         return not unmet_chain(schema, name, values)
 
-    def row_shows(name: str, values: Mapping[str, Any]) -> bool:
+    def row_shows(name: str, values: Mapping[str, Any], gates: Mapping[str, Any]) -> bool:
         """Whether *name*'s row would show: a hidden row needs its whole chain
-        met, bar a path gate it names itself (the raw image), which greys it."""
-        return fields[name].is_visible(values, unmet_chain(schema, name, values))
+        met by *gates* (as the rows themselves are judged: an auto stain as
+        read, a set batch's image rows filled), bar a path gate it names
+        itself (the raw image), which greys it."""
+        return fields[name].is_visible(values, unmet_chain(schema, name, gates))
 
     #: What the last run read the raw image's stain as when the setting is
     #: auto (the graph's raw_image_stain, with its reading): None until a run
-    #: has read it. Filled by refresh_stain_reading, below the view.
-    stain_read: dict[str, Any] = {"stain": None, "reading": None}
+    #: has read it, or once another raw image or channel is named. Filled by
+    #: refresh_stain_reading, below the view; "graph" and "image" are the
+    #: run's graph it was read off and the raw image named when it arrived.
+    stain_read: dict[str, Any] = {"stain": None, "reading": None, "graph": None, "image": None}
 
     def resolved_raw_image_stain(values: Mapping[str, Any]) -> str | None:
         """The stain the run measures by: the setting, or what the last run
@@ -15059,13 +15191,13 @@ def settings_widget(napari_viewer=None):
             # call) state -- reading it here would latch the group hidden
             # forever once hidden once. `field.is_visible` is the pure,
             # ancestor-independent answer the per-row loop above just used.
-            group.setVisible(any(row_shows(name, values) for name in section_names))
+            group.setVisible(any(row_shows(name, values, gates) for name in section_names))
 
         # Each Advanced button hides when none of its rows would show, and
         # counts the rows holding something other than where the panel started.
         for disclosure in advanced_disclosures.values():
             disclosure.refresh(
-                lambda name: row_shows(name, values), values, schema, ADVANCED_BASELINE
+                lambda name: row_shows(name, values, gates), values, schema, ADVANCED_BASELINE
             )
         if perturbations is not None:
             perturbations.refresh_entries()
@@ -15090,8 +15222,13 @@ def settings_widget(napari_viewer=None):
         # only ever toggles `.enabled`. Hiding it entirely (rather than
         # greying it out) matches every other `hide_when_unmet` FWHM row
         # right next to it.
+        # Without haemodynamics the Diameters stage measures nothing, whatever
+        # the measuring box (hidden then) still holds.
+        measures_diameters = bool(values.get("run_haemodynamics")) and bool(
+            values.get("measure_diameters_from_raw_image")
+        )
         fwhm_could_run = (
-            bool(values.get("measure_diameters_from_raw_image"))
+            measures_diameters
             and bool(values.get("raw_image_path"))
             and resolved_raw_image_stain(values) != "endothelial"
         )
@@ -15106,7 +15243,7 @@ def settings_widget(napari_viewer=None):
         from haemolynx.graph.boundaries import network_is_synthetic
 
         ring_fit_could_run = (
-            bool(values.get("measure_diameters_from_raw_image"))
+            measures_diameters
             and bool(values.get("raw_image_path"))
             and resolved_raw_image_stain(values) == "endothelial"
             and not network_is_synthetic(values)
@@ -15243,9 +15380,10 @@ def settings_widget(napari_viewer=None):
         pericyte_references_seen[0] = reference_key
         if rebuilt:
             # The entries were numbered afresh: what the panel filled an
-            # entry's row with is not known by its index any more.
-            for name in [name for name in pericyte_rows_filled if name != PERICYTE_MEASUREMENT_FIELD]:
-                pericyte_rows_filled.pop(name)
+            # entry's row with is known by the mask it still holds.
+            refilled = pericyte_filled_after_renumbering(pericyte_rows_filled, after)
+            pericyte_rows_filled.clear()
+            pericyte_rows_filled.update(refilled)
         if restoring_settings[0] or rebuilt:
             return
         fill = update_pericyte_mask_rows(
@@ -16353,21 +16491,37 @@ def settings_widget(napari_viewer=None):
         """Say what the last run read the raw image's stain as, and let the
         Diameters tab's method rows follow it when that answer changed."""
         graph = getattr(view.results, "_graph", None) if view.results is not None else None
-        record = graph.graph if graph is not None else {}
+        values = current_values()
+        named = (str(values.get("raw_image_path") or ""), values.get("raw_image_channel"))
+        known = stain_read["graph"]() if stain_read["graph"] is not None else None
+        if graph is not None and known is not graph:
+            # A run's reading is of the raw image named as its graph arrives
+            # (a graph saved before it recorded its own image).
+            stain_read["graph"], stain_read["image"] = weakref.ref(graph), named
+        # Another image or channel named since has not been read yet.
+        if graph is None:
+            same_image = False
+        elif graph.graph.get(pipeline_stages.RAW_STAIN_IMAGE) is not None:
+            same_image = pipeline_stages._recorded_stain(values, graph) is not None
+        else:
+            same_image = stain_read["image"] == named
+        record = graph.graph if same_image else {}
         read = record.get("raw_image_stain")
         before = stain_read["stain"]
         stain_read["stain"] = read if read in ("plasma_column", "endothelial") else None
         stain_read["reading"] = record.get("raw_image_stain_reading")
         stain_reading_label.value = raw_image_stain_note(
-            current_values().get("raw_image_stain"), stain_read["stain"], stain_read["reading"]
+            values.get("raw_image_stain"), stain_read["stain"], stain_read["reading"]
         )
         stain_reading_label.visible = bool(stain_reading_label.value)
         if stain_read["stain"] != before:
             apply_prerequisites()
 
-    if "raw_image_stain" in rows:
-        # A stain named by hand needs no note; back on auto, the run's stands.
-        rows["raw_image_stain"].changed.connect(lambda *_args: refresh_stain_reading())
+    for name in ("raw_image_stain", "raw_image_path", "raw_image_channel"):
+        # A stain named by hand needs no note; back on auto, the run's stands,
+        # for as long as the raw image it read is the one named.
+        if name in rows:
+            rows[name].changed.connect(lambda *_args: refresh_stain_reading())
 
     def reparent_arrow_length_slider() -> None:
         if viewer is None:
@@ -16539,6 +16693,9 @@ def settings_widget(napari_viewer=None):
             # YAML from an older save) is a user-facing message, not a crash.
             report.value = f"Could not load {path}:\n{error}"
             return
+        # A pending proposal listed its changes against the settings replaced here.
+        for review in (optimise_review, fwhm_review, endothelial_review):
+            review.clear()
         loaded_paths.clear()
         loaded_config_dir[0] = Path(path).parent
         last_config_path[0] = str(path)
@@ -16777,6 +16934,11 @@ def settings_widget(napari_viewer=None):
     def _values_for_save(dest: Path) -> dict[str, Any]:
         """Form values with relative loaded paths rebased if *dest* left cwd."""
         values = current_values()
+        # A run from a later tab turns these off for itself (FWHM keeps its
+        # widths); the file says the user's own, which Run pipeline puts back.
+        for name in SKIP_FOR_RESUME:
+            if name in values and name in skip_toggle_snapshot:
+                values[name] = skip_toggle_snapshot[name]
         try:
             dest_dir = dest.parent.resolve()
             keep_relative = dest_dir == Path.cwd().resolve()
@@ -17379,7 +17541,7 @@ def settings_widget(napari_viewer=None):
 
     def on_revert(tab_title: str) -> None:
         """Prepare the previous tab's work, then rerun from this stage."""
-        from haemolynx.gui.post_processing import edits_lost_by_running_from
+        from haemolynx.gui.post_processing import edits_left_out_by_running_from, edits_lost_by_running_from
         from haemolynx.gui.stage_checkpoints import tab_start_stage
 
         if batch_mode.setup is not None:
@@ -17393,6 +17555,14 @@ def settings_widget(napari_viewer=None):
         )
         if edits_lost and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
             report.value = f"Kept the hand edits on {POST_PROCESSING_TAB}: nothing was run."
+            return
+        if edits_left_out_by_running_from(
+            tab_start_stage(tab_title), post_processing.state.graph
+        ) and not _confirm_run_without_hand_edits(_dialog_parent(viewer), tab_title):
+            report.value = (
+                f"Nothing was run: the edits on {POST_PROCESSING_TAB} are not in the model yet. "
+                "Regenerate graph there takes them in."
+            )
             return
         plan = prepare_run_from(tab_title, check=True)
         if plan is None:

@@ -435,6 +435,37 @@ def test_a_channel_of_an_auto_composite_is_read_in_its_labels_order(tmp_path):
     assert np.array_equal(loaded, volume + 1)
 
 
+@pytest.mark.parametrize("axis_order", ["zyx", "xyz", "yzx"])
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_a_2d_composites_channel_stays_one_plane_under_any_axis_order(tmp_path, axis_order, use_memmap):
+    """Regression (found by the Input tab's review): a channel of a 2D
+    composite came back as one plane, (1, y, x), and was then reordered as a
+    stack -- (x, y, 1) under xyz -- while the 2D segmented image and a 2D
+    single-channel raw image are left as one plane. Mask and raw no longer
+    matched, and the Diameters stage failed."""
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
+
+    rng = np.random.default_rng(0)
+    plane = rng.integers(0, 1000, size=(30, 50)).astype(np.uint16)
+    composite = tmp_path / "composite.tif"
+    tifffile.imwrite(
+        str(composite), np.stack([plane, plane + 1]), imagej=True,
+        metadata={"axes": "CYX", "mode": "composite"},
+    )
+    single = tmp_path / "single.tif"
+    tifffile.imwrite(str(single), plane)
+
+    channel = load_single_channel_tiff_volume(
+        composite, axis_order=axis_order, channel=1, use_memmap=use_memmap, memmap_directory=tmp_path
+    )
+    alone = load_single_channel_tiff_volume(
+        single, axis_order=axis_order, use_memmap=use_memmap, memmap_directory=tmp_path
+    )
+
+    assert channel.shape == alone.shape == (1, 30, 50)
+    assert np.array_equal(channel[0], plane + 1)
+
+
 def test_a_run_reads_a_file_without_labels_in_the_segmented_images_order(tmp_path):
     """The segmented image names its axes (an ilastik HDF5 stored x, y, z); a
     mask written beside it without labels is in the same order, and one that

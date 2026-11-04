@@ -205,6 +205,23 @@ def test_decoys_are_made_only_beside_the_edges_given():
     assert report["measured_in_speck_width_range"] == pytest.approx(3 / 6)
 
 
+def test_a_decoy_carries_a_first_guess_only_where_its_vessel_has_one():
+    """Regression: a vessel with no mask width (a run with the EDT
+    cross-check off measures none) gave its decoy 4 um as FWHM's first
+    guess, so the run's decoy check measured decoys from another first guess
+    than the vessels it judges."""
+    graph, mask = _measured_network([3.0, 4.0])
+    del graph[0][1][0]["edt_diameter_um"]
+    measure, seen = _fake_measure([None])
+
+    fwhm_decoy_check(graph, measure, vessel_mask=mask, voxel_size_zyx=VOXEL)
+
+    (probe,) = seen
+    assert sorted(data.get("edt_diameter_um", 0.0) for _u, _v, data in probe.edges(data=True)) == [
+        0.0, 5.0,
+    ]
+
+
 def test_no_measured_vessel_among_the_edges_given_makes_no_decoys():
     graph, mask = _measured_network([3.0, 4.0])
     del graph[0][1][0]["fwhm_diameter_um"]

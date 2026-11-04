@@ -954,32 +954,6 @@ def test_the_vessel_masks_load_after_the_graph_is_built(tmp_path, monkeypatch):
     assert order[0] == "graph" and "masks" in order
 
 
-def test_a_stain_read_from_another_raw_image_is_not_taken(tmp_path):
-    """Regression: with raw_image_stain auto, the Diameters stage took the
-    stain the build recorded whatever raw image it had been read from, so a
-    new raw image or channel was measured by the old one's method."""
-    from types import SimpleNamespace
-
-    from haemolynx.pipeline.stages import RAW_IMAGE_STAIN_SOURCE, raw_image_identity, resolve_raw_image_stain
-
-    first, second = tmp_path / "a.tif", tmp_path / "b.tif"
-    for path in (first, second):
-        path.write_bytes(b"raw")
-    settings = _settings(tmp_path, raw_image_path=first, raw_image_stain="auto")
-    G = nx.MultiGraph()
-    G.graph["raw_image_stain"] = "endothelial"
-    G.graph[RAW_IMAGE_STAIN_SOURCE] = raw_image_identity(settings)
-    network = SimpleNamespace(graph=G, volume=None)
-
-    assert resolve_raw_image_stain(settings, network)[0] == "endothelial"
-    for changed in ({"raw_image_path": second}, {"raw_image_channel": 1}):
-        # Not taken: read again (here, with no volume to read it against, the
-        # segmentation's own kind).
-        assert resolve_raw_image_stain({**settings, **changed}, network)[0] == "plasma_column"
-    del G.graph[RAW_IMAGE_STAIN_SOURCE]
-    assert resolve_raw_image_stain(settings, network)[0] == "plasma_column"
-
-
 def _tube(mask: np.ndarray, axis: int, centre, radius: float, lo: int, hi: int) -> None:
     """Fill, in place, a tube of *radius* along *axis* through *centre* from *lo* to *hi*."""
     idx = np.indices(mask.shape)

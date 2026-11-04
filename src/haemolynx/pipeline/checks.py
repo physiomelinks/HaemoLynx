@@ -28,6 +28,7 @@ from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_i
 from haemolynx.haemodynamics.viscosity import run_diameter_basis
 from haemolynx.haemodynamics.open_ends import ESTIMATED, TERMINAL_RESISTANCE
 from haemolynx.haemodynamics.perturbations import (
+    MEASURED_CONSTRICTION_TYPE,
     perturbation_problems,
     perturbations_from_settings,
 )
@@ -445,10 +446,10 @@ def check_large_vessel_mask_split(settings: Mapping[str, Any]) -> CheckReport:
         return report
     report.add_pass(
         "large vessel masks split by width",
-        f"each large mask's part at least {diameter:g} um wide stays large, and the "
-        "rest is the small mask of its side, which assigns the arteriole and venule "
-        "boundaries as given small masks would, with the small-vessel settings as "
-        "they stand",
+        f"each large mask's part at least {diameter:g} um wide, read on the segmented "
+        "image, stays large, and the rest is the small mask of its side, which assigns "
+        "the arteriole and venule boundaries as given small masks would, with the "
+        "small-vessel settings as they stand",
     )
     return report
 
@@ -693,6 +694,17 @@ def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
             f"open_end_terminal_resistance_multiple is {multiple}: each open end drains through "
             "that many times its own vessel's resistance, so it must be above 0 "
             "(open_end_model=outlet holds the open ends at the outlet pressure)."
+        )
+    pressure = settings.get("open_end_estimate_pressure_target_pa")
+    inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
+    if model == ESTIMATED and None not in (pressure, inlet, outlet) and not (
+        min(float(inlet), float(outlet)) <= float(pressure) <= max(float(inlet), float(outlet))
+    ):
+        report.add_warning(
+            f"open_end_estimate_pressure_target_pa ({pressure} Pa) lies outside the boundary "
+            f"pressures ({outlet} to {inlet} Pa): the estimate pulls the open ends towards a "
+            "pressure no inlet or outlet holds, and those that pass the inlet or outlet "
+            "pressure are held just inside it."
         )
     target = settings.get("open_end_estimate_shear_target_pa")
     if model == ESTIMATED and target is not None and not float(target) > 0:
@@ -992,6 +1004,40 @@ def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
     )
 
 
+#: The image blur pairs the Diameters stage reads, each with what reads it
+#: and the stain it is read for: a blur is read only as a pair.
+_DIAMETER_BLUR_PAIRS = (
+    ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um",
+     "FWHM and the raw-section fit", "endothelial"),
+    ("endothelial_psf_sigma_xy_um", "endothelial_psf_sigma_z_um",
+     "the endothelial ring fit", "plasma_column"),
+)
+
+
+def check_diameter_blur_pairs(settings: Mapping[str, Any]) -> CheckReport:
+    """Warn of an image blur set across the slices or along z, not both,
+    where diameters are measured from the raw image: each blur is read only
+    as a pair, so the run estimates both from the image and the one set is
+    not read -- said before the run rather than in its log."""
+    from haemolynx.pipeline.stages import measures_diameters_from_raw_image
+
+    report = CheckReport()
+    if not settings.get("run_haemodynamics", True) or not measures_diameters_from_raw_image(settings):
+        return report
+    for xy, z, readers, unread_for in _DIAMETER_BLUR_PAIRS:
+        if settings.get("raw_image_stain") == unread_for:
+            continue
+        given = [name for name in (xy, z) if settings.get(name) is not None]
+        if len(given) == 1:
+            other = z if given[0] == xy else xy
+            report.add_warning(
+                f"{given[0]} is set but {other} is not: {readers} read the image's blur only "
+                f"as a pair, so both are estimated from the image and {given[0]} is not read. "
+                f"Fix: set {other} too, or clear {given[0]}."
+            )
+    return report
+
+
 def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
     """``measure_tissue_volume`` needs a raw image -- its own, or the run's
     -- that is there, with a channel chosen if it has several."""
@@ -1049,9 +1095,21 @@ def check_pericyte_measurements(settings: Mapping[str, Any]) -> CheckReport:
     """``measure_pericytes`` runs in the export stage, so what would stop it
     there is checked here: a pericyte size range that admits nothing, or
     nothing for it to measure. Whether the mask is there is check_settings'
-    (it must_exist); a synthetic network is check_synthetic_template's."""
+    (it must_exist); a synthetic network is check_synthetic_template's.
+
+    The ``pericyte_measured_constriction`` perturbation reads its pericytes'
+    diameter profiles the same way, whether ``measure_pericytes`` is on or
+    not, so its raw image is checked here too."""
     report = CheckReport()
-    if not settings.get("measure_pericytes") or network_is_synthetic(settings):
+    if network_is_synthetic(settings):
+        return report
+    if settings.get("run_perturbations"):
+        for spec in perturbations_from_settings(settings):
+            if spec.type == MEASURED_CONSTRICTION_TYPE:
+                _check_raw_image_profiles(
+                    report, {**settings, **spec.overrides}, f"The {spec.name} perturbation's "
+                )
+    if not settings.get("measure_pericytes"):
         return report
     low = settings.get("pericyte_measurement_min_diameter_um")
     high = settings.get("pericyte_measurement_max_diameter_um")
@@ -1062,25 +1120,34 @@ def check_pericyte_measurements(settings: Mapping[str, Any]) -> CheckReport:
             "Fix: lower the first or raise the second."
         )
     profiles = bool(settings.get("measure_pericyte_diameter_profiles"))
-    if profiles and settings.get("pericyte_profile_reading") == "raw_image_fwhm":
-        if settings.get("raw_image_path") in (None, ""):
-            report.add_error(
-                "pericyte_profile_reading is raw_image_fwhm, which fits a FWHM across each "
-                "vessel in the raw image, and raw_image_path is not set. Fix: set the raw "
-                "image, or read the profiles off the segmentation."
-            )
-        elif settings.get("raw_image_stain") == "endothelial":
-            report.add_warning(
-                "pericyte_profile_reading is raw_image_fwhm but the raw image stains the vessel "
-                "wall (raw_image_stain: endothelial): a FWHM across a wall stain is not the "
-                "lumen's width."
-            )
+    if profiles:
+        _check_raw_image_profiles(report, settings)
     if not (profiles or settings.get("measure_pericyte_junction_distances")):
         report.add_warning(
             "measure_pericytes is on with both its measurements off: the run lists where each "
             "pericyte sits and measures nothing else."
         )
     return report
+
+
+def _check_raw_image_profiles(report: CheckReport, settings: Mapping[str, Any], reader: str = "") -> None:
+    """Diameter profiles read off the raw image (``pericyte_profile_reading``
+    raw_image_fwhm) need a raw image, and a FWHM across a wall stain is not a
+    lumen. *reader* starts each message when it is not measure_pericytes."""
+    if settings.get("pericyte_profile_reading") != "raw_image_fwhm":
+        return
+    if settings.get("raw_image_path") in (None, ""):
+        report.add_error(
+            f"{reader}pericyte_profile_reading is raw_image_fwhm, which fits a FWHM across each "
+            "vessel in the raw image, and raw_image_path is not set. Fix: set the raw "
+            "image, or read the profiles off the segmentation."
+        )
+    elif settings.get("raw_image_stain") == "endothelial":
+        report.add_warning(
+            f"{reader}pericyte_profile_reading is raw_image_fwhm but the raw image stains the vessel "
+            "wall (raw_image_stain: endothelial): a FWHM across a wall stain is not the "
+            "lumen's width."
+        )
 
 
 def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
@@ -1495,6 +1562,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema, *, echo: bool = True)
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
     report.extend(check_raw_image(settings))
+    report.extend(check_diameter_blur_pairs(settings))
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))

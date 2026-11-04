@@ -147,6 +147,10 @@ names it lists.
 | Fitted Murray Exponent IQR Low | dimensionless | The 25th percentile of the fitted exponents. |
 | Fitted Murray Exponent IQR High | dimensionless | The 75th percentile of the fitted exponents. |
 | Fitted Murray Exponent Sample Count | count | Junctions an exponent was fitted at. |
+| Median Tier Fitted Murray Exponent | dimensionless | The fitted exponent's median over the arteriole and venule tiers' own branchings only: a parent and every daughter in one tier, no capillary or large vessel among them. What a synthetic network draws its arteriole and venule tiers to. |
+| Tier Fitted Murray Exponent IQR Low | dimensionless | The 25th percentile of the tiers' fitted exponents. |
+| Tier Fitted Murray Exponent IQR High | dimensionless | The 75th percentile of the tiers' fitted exponents. |
+| Tier Fitted Murray Exponent Sample Count | count | Arteriole and venule branchings an exponent was fitted at. |
 
 ## Intercapillary distance
 
@@ -279,6 +283,7 @@ names it lists.
 | Occlusion Hypoperfused Length Unit | (text) | The unit of the hypoperfused lengths: um, or vessels when a vessel has no length. |
 | Occlusion Impact (Network) / By Vessel Type / By Branch Order | (text) | Sections: the single-vessel occlusion summary for the whole network, per vessel type and per branch order. |
 | Evaluated Count | vessels | Vessels whose single occlusion was evaluated. |
+| Status | (text) | Why a group's flow-loss rows are missing: none of its vessels was evaluated. |
 | Mean Flow Loss | fraction | Blocking one vessel alone: the share of total inlet-outlet flow lost (with the route weighting's fixed conductances). The mean over vessels. |
 | Median Flow Loss | fraction | The median of that flow loss. |
 | P90 Flow Loss | fraction | The 90th percentile of that flow loss. |
@@ -432,7 +437,7 @@ names it lists.
 | Average Shortest Path Length (microns) | um | The mean shortest path, by centreline length, between node pairs. |
 | Path Efficiency Pair Sample Size | count | Node pairs measured. |
 | Path Efficiency Pair Coverage | fraction | Node pairs measured over all node pairs. |
-| Community Count | count | Communities found by greedy modularity on the network's topology. |
+| Community Count | count | Communities found by greedy modularity on the network's topology; in the weighted reports, with each vessel tying its ends by its conductance, 1/length or |flow|. |
 | Largest Community Size | count | Nodes in the largest community. |
 | Mean Community Size | count | The mean nodes per community. |
 | Community Method | (text) | How the communities were found. |

@@ -361,6 +361,46 @@ def test_a_run_from_hands_over_what_the_early_stages_returned(tmp_path):
     assert not skeleton_resume_path(tmp_path / "out", "stack").exists()
 
 
+def test_a_run_loaded_from_a_file_keeps_what_its_first_resume_loaded(tmp_path):
+    """A loaded run keeps no stage outputs, so every Regenerate of it loaded
+    the image and skeleton again. The first resume's are now kept for the
+    next, where the checkpoint had none; one it has is never replaced."""
+    from dataclasses import replace
+
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, inputs, volume, _graph = _record_with_outputs(tmp_path, settings)
+    loaded = StageCheckpoints()
+    loaded.replace_all([replace(item, output=None) for item in checkpoints.records()])
+    assert "volume" not in loaded._stored_outputs("post_process")
+
+    again = SkeletonisedVolume(
+        image=np.ones((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=tmp_path / "out",
+    )
+    loaded.keep_output("skeletonise", again)
+    loaded.keep_output("segment", inputs)
+    loaded.keep_output("assign_boundaries", object())  # not a stage a resume is handed
+    loaded.keep_output("solve", again)  # not recorded at all
+
+    stored = loaded._stored_outputs("post_process")
+    assert stored["volume"].image is again.image and stored["inputs"] == inputs
+    assert loaded.get("assign_boundaries").output is None and not loaded.has("solve")
+    assert loaded.get("skeletonise").graph is not None, "its graph and layers stay"
+    loaded.keep_output("skeletonise", volume)
+    assert loaded._stored_outputs("post_process")["volume"].image is again.image, "never replaced"
+    from haemolynx.pipeline.stages import VesselNetwork
+
+    loaded.freeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded.get("build_network").output is None, "nothing kept after Clear"
+    loaded.unfreeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded._stored_outputs("post_process")["network"].volume is again
+
+
 def test_a_run_from_hands_over_only_the_stages_before_it(tmp_path):
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()
@@ -1034,12 +1074,10 @@ def _skeleton_groups(skeleton: np.ndarray) -> list[StageLayers]:
     ]
 
 
-def test_a_skeleton_another_run_wrote_since_is_replaced_by_the_runs_own(tmp_path, caplog):
+def test_a_skeleton_another_run_wrote_since_is_replaced_by_the_runs_own(tmp_path):
     """A loaded run's Run from this stage loads {stem}_skeleton.npy. Any file
     there was trusted: a later run in the same folder had rewritten it, and the
     loaded run was rebuilt from that run's skeleton."""
-    import logging
-
     from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
 
     other = np.zeros((5, 5, 5), dtype=bool)
@@ -1048,12 +1086,10 @@ def test_a_skeleton_another_run_wrote_since_is_replaced_by_the_runs_own(tmp_path
     own = np.zeros((5, 5, 5), dtype=bool)
     own[:, 2, 2] = True
 
-    with caplog.at_level(logging.WARNING, logger="haemolynx.gui.stage_checkpoints"):
-        path = ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")
+    path = ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")
 
     assert path == skeleton_resume_path(tmp_path, "input")
     assert np.array_equal(np.load(path), own)
-    assert any("not this run's skeleton" in record.getMessage() for record in caplog.records)
 
     # Another shape is another skeleton too.
     np.save(path, np.zeros((5, 5, 6), dtype=bool))
@@ -1103,3 +1139,69 @@ def test_a_checkpoint_not_keeping_its_output_still_reads_its_boundary_nodes(tmp_
     recorded = checkpoints.get("assign_boundaries")
     assert recorded.large_arteriole_boundary_nodes == (1,)
     assert recorded.large_venule_boundary_nodes == (2,)
+
+
+@pytest.mark.parametrize(
+    "now, starts_at",
+    [
+        ({"boundary_handling": "leave_unsolved"}, "6. Haemodynamics"),
+        ({"boundary_handling": "remove_disconnected", "run_haemodynamics": True,
+          "open_end_model": "closed"}, "5. Diameters"),
+    ],
+)
+def test_a_run_from_haemodynamics_starts_at_diameters_when_its_calibration_sample_changed(
+    tmp_path, now, starts_at
+):
+    """The Diameters stage samples its image calibrations (blur, wall, decoy
+    check) from the vessels the network handling keeps. Changing
+    boundary_handling or open_end_model and running from Haemodynamics kept
+    the old sample, where a fresh run takes the new one: the run starts at
+    Diameters instead, and says why."""
+    from haemolynx.gui.stage_checkpoints import restore_message
+    from haemolynx.pipeline.stages import CALIBRATION_SAMPLE
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, *_rest = _record_with_outputs(tmp_path, settings)
+    measured = built(a_graph(resistance=1.0))
+    measured._graph.graph[CALIBRATION_SAMPLE] = ["leave_unsolved"]
+    checkpoints.record("assign_diameters", _group("assign_diameters"), measured, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings={**settings, **now})
+
+    assert plan.tab_title == starts_at
+    if starts_at == "5. Diameters":
+        assert plan.start_from == "assign_diameters"
+        assert "leave_unsolved keeps" in restore_message(plan)
+        assert "remove_disconnected / closed keeps" in restore_message(plan)
+    else:
+        assert plan.start_from == "build_haemodynamic_model" and plan.note == ""
+
+
+def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
+    """After Load run, a later run's skeleton left in the folder was loaded
+    instead of the loaded run's: the graph was built from another skeleton
+    than the one on screen. It is replaced by the run's own; the run's own
+    is left alone."""
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    checkpoints, skeleton = _through_post_processing(tmp_path, settings)
+    later = np.zeros_like(skeleton)
+    later[0, :, 1] = True
+    np.save(skeleton_path, later)
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert np.array_equal(np.load(skeleton_path), skeleton)
+    assert not skeleton_path.with_name(f"{skeleton_path.name}.part").exists()
+
+    groups = [checkpoints.get("skeletonise").group]
+    before = skeleton_path.stat().st_mtime_ns
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert skeleton_path.stat().st_mtime_ns == before  # its own: not written again
+
+    skeleton_path.write_bytes(b"not a skeleton")
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert np.array_equal(np.load(skeleton_path), skeleton)

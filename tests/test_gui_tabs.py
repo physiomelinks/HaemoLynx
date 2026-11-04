@@ -851,6 +851,13 @@ def test_diameter_fields_on_diameters_declare_hide_when_unmet():
             assert field.is_visible(
                 {"run_haemodynamics": True, "measure_diameters_from_raw_image": True}
             ), field.name
+        elif field.name in ("fwhm_sample_spacing_along_edge_um", "fwhm_edge_diameter_aggregation"):
+            # The mask's widths read these too: shown with FWHM off, on any
+            # segmented image, and hidden for a synthetic network.
+            assert field.is_visible(
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": False}
+            ), field.name
+            assert not field.is_visible({"network_source": "synthetic"}), field.name
         elif field.name.startswith("fwhm_"):
             assert not field.is_visible(
                 {"run_haemodynamics": True, "measure_diameters_from_raw_image": False}

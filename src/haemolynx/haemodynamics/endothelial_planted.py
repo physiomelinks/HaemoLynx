@@ -254,13 +254,22 @@ def plant_rings(
     rng: np.random.Generator,
     sample_size: int = PLANTED_SAMPLE_SIZE,
     guide_attribute: str = "edt_diameter_um",
+    seed_guess: bool = True,
+    use_memmap: bool = False,
+    memmap_directory=None,
 ) -> Optional[PlantedRings]:
     """Plant a hollow vessel beside each of up to *sample_size* of *edges* of
     *G* (see the module docstring), in a copy of *raw_volume*, the
     endothelial channel; ``None`` when no sampled vessel shows a ring to draw
     them like, or none fits. *psf_sigma_zyx* and *wall_um* are the blur and
     wall the image's rings show (what a fit sees: the voxels' box included);
-    *rng* makes it repeatable."""
+    *rng* makes it repeatable.
+
+    Each is sized and placed by its vessel's *guide_attribute* width, and
+    carries one as the ring fit's guide only with *seed_guess*: a run's
+    vessels have one only when it measures the mask's widths. Under
+    *use_memmap* (the low-RAM option) the copies of the image and the mask
+    are on disk in *memmap_directory*."""
     spacing = np.asarray(voxel_size_zyx, dtype=float)
     psf = tuple(float(v) for v in psf_sigma_zyx)
     wall_um = float(wall_um)
@@ -288,8 +297,12 @@ def plant_rings(
     gain = fwhm_planted.image_noise_gain(
         raw_volume, [G.edges[e]["voxels"] for e in edges], voxel_size_zyx
     )
-    volume = np.array(raw_volume, dtype=np.float32, copy=True)
-    occupied = np.array(vessel_mask, dtype=bool, copy=True)
+    volume = fwhm_planted._working_copy(
+        raw_volume, np.float32, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    occupied = fwhm_planted._working_copy(
+        vessel_mask, bool, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
 
     probe = nx.MultiGraph()
     probe.graph.update(G.graph)
@@ -332,7 +345,7 @@ def plant_rings(
             voxels=[tuple(p) for p in line],
             length=float(np.sum(np.linalg.norm(np.diff(line, axis=0), axis=1))),
             planted_diameter_um=lumen,
-            **{guide_attribute: guide * factor},
+            **({guide_attribute: guide * factor} if seed_guess else {}),
         )
     if probe.number_of_edges() == 0:
         return None

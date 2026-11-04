@@ -503,6 +503,64 @@ def test_without_a_region_to_hand_it_is_found_again_in_the_segmentation(tmp_path
     assert sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_e, d in _pieces_between(out.graph, 1, 2)) == 1
 
 
+def _blind_stub_run(tmp_path):
+    """A thick vessel 2-4-3 (radius 4 round y = z = 10, from x = 30) fed by
+    0-1-2, and a vessel drawn by hand from its node 4 to a blind tip 7, 7 um
+    off its centreline: 3 um outside the thick vessel, short enough that the
+    split takes it out with its bridge, as graph building takes such a stub.
+    The tip is made an outlet on the Terminal nodes list."""
+    z, y, _x = np.indices((21, 31, 60))
+    mask = (z - 10) ** 2 + (y - 10) ** 2 <= THICK_RADIUS_UM ** 2
+    mask[:, :, : int(THICK_FROM_UM)] = False
+    positions = {
+        0: (10.0, 30.0, 40.0), 1: (10.0, 20.0, 40.0), 2: (10.0, 10.0, 40.0),
+        4: (10.0, 10.0, 48.0), 3: (10.0, 10.0, 59.0), 7: (10.0, 17.0, 48.0),
+    }
+    G = nx.MultiGraph()
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos))
+    for a, b in ((0, 1), (1, 2), (2, 4), (4, 3)):
+        voxels = [positions[a], positions[b]]
+        G.add_edge(a, b, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01")
+    run_settings = _settings(
+        tmp_path, use_thick_vessel_skeletonisation=True, inlet_nodes=[0], outlet_nodes=[3],
+        arteriole_boundary_nodes=[0], venule_boundary_nodes=[3],
+    )
+    network = _vessel_network(tmp_path, graph=G)
+    network.volume.thick_vessel_mask = mask
+    boundaries = SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[0],
+        venule_boundary_nodes=[3], large_arteriole_boundary_nodes=[],
+        large_venule_boundary_nodes=[], resistance_node_pair=(0, 3), graph=G,
+    )
+    add_vessel_between(G, 4, 7)
+    graph_module.set_terminal_role(G, {"inlet": [0], "outlet": [3]}, 7, "outlet")
+    return run_settings, network, boundaries, stages.HaemodynamicModel(graph=G)
+
+
+def test_a_boundary_node_the_split_takes_out_leaves_the_lists(tmp_path):
+    """The lists are trimmed after the split, not before it: they kept the
+    stub's tip, and the re-solve refused the outlet missing from the network."""
+    run_settings, network, boundaries, model = _blind_stub_run(tmp_path)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert 7 not in out.graph and 4 not in out.graph, "the stub and the node it hung from went"
+    assert boundaries.outlet_nodes == [3]
+    assert run_settings["outlet_nodes"] == [3]
+    assert out.results["post_process"]["boundary_nodes"]["outlet_nodes"] == [3]
+    solved = stages.solve_post_processed(run_settings, out, boundaries, SCHEMA, network=network)
+    assert all(data.get(graph_module.FLOW_SOLVED) for *_e, data in solved.graph.edges(data=True))
+
+
+def test_a_split_that_takes_out_the_only_outlet_is_refused(tmp_path):
+    run_settings, network, boundaries, model = _blind_stub_run(tmp_path)
+    graph_module.set_terminal_role(model.graph, {"inlet": [0], "outlet": [3, 7]}, 3, None)
+
+    with pytest.raises(ValueError, match="every inlet or every outlet"):
+        post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+
 def test_no_bridge_without_thickness_gated_skeletonisation(tmp_path, monkeypatch):
     run_settings, network, boundaries, model, _edge = _thick_run(
         tmp_path, use_thick_vessel_skeletonisation=False
@@ -1690,6 +1748,26 @@ def test_the_edits_readers_share_one_binarised_segmentation_and_one_support(tmp_
     )
 
 
+def test_the_tabs_review_lists_read_the_segmentation_post_processing_keeps(tmp_path):
+    """The tab's lists binarised the segmentation and built a support of
+    their own beside the one post processing keeps on the volume: two
+    copies of one image. Both are now one."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    network.volume.image = _thick_mask().astype(np.uint8) * 255
+
+    shared = stages.post_process_segmentation_support(run_settings, network.volume)
+    assert shared is not None
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    kept = network.volume.post_process_segmentation
+    assert kept.support() is shared, "post processing read it through the same support"
+    assert stages.post_process_segmentation_support(run_settings, network.volume) is shared
+    assert stages.post_process_segmentation_support({}, network.volume) is None, "no bridge settings"
+    assert stages.post_process_segmentation_support(run_settings, None) is None
+    network.volume.image = None
+    assert stages.post_process_segmentation_support(run_settings, network.volume) is None
+
+
 def test_the_next_regenerate_reads_the_segmentation_it_was_read_as_last(tmp_path, monkeypatch):
     """Every Regenerate binarised the image and built the support's surface
     tree again (E14.5: about 5 of 6 s). A Regenerate is handed the run's
@@ -1756,6 +1834,64 @@ def test_an_outlet_set_by_hand_replaces_the_runs_lists_and_the_resistance_pair(t
     # The lists are taken once: the marks are cleared with the others.
     assert BOUNDARY_ROLES not in out.graph.graph
     assert not has_pending_edits(out.graph)
+
+
+def test_the_lists_handed_on_are_the_resolves_not_post_processings(tmp_path):
+    """An inlet made by hand on a piece with no outlet: the re-solve's
+    network handling (remove_disconnected) removes the piece and the inlet.
+    post_process recorded the lists before that, and the checkpoint handed
+    the removed inlet to the next resume, whose solve then refused it."""
+    run_settings, network, boundaries, model = _diameters_run(
+        tmp_path, boundary_handling="remove_disconnected", run_haemodynamics=True
+    )
+    G = model.graph
+    a, b = max(G.nodes) + 1, max(G.nodes) + 2
+    G.add_node(a, pos=np.asarray((0.0, 80.0, 0.0)))
+    G.add_node(b, pos=np.asarray((0.0, 80.0, 30.0)))
+    add_vessel_between(G, a, b)
+    set_terminal_role(G, _chain_roles(), a, "inlet")
+
+    model = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    assert a in model.results["post_process"]["boundary_nodes"]["inlet_nodes"]
+    solution = stages.solve_post_processed(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert a not in solution.graph
+    handed_on = solution.post_processed["boundary_nodes"]
+    assert handed_on["inlet_nodes"] == boundaries.inlet_nodes == [0]
+    assert all(node in solution.graph for nodes in handed_on.values() for node in nodes)
+
+
+def test_a_dead_end_marked_as_leaving_the_image_is_opened_by_the_resolve(tmp_path, monkeypatch):
+    """A person's mark that a dead end leaves the image is the boundary
+    condition the solve puts on it: closed before the mark, the end drains
+    blood after the re-solve the mark now makes Continue run."""
+    from haemolynx.graph import FLOW_STATE
+    from haemolynx.graph import dead_ends as de
+    from haemolynx.graph.post_processing import mark_dead_end_kind
+
+    network = _stub_early_stages(monkeypatch, tmp_path)
+    G = network.graph
+    tip = LAST + 1
+    start = np.asarray(G.nodes[2]["pos"], dtype=float)
+    end = start + np.asarray([0.0, 300.0, 0.0])
+    G.add_node(tip, pos=end)
+    G.add_edge(2, tip, voxels=[start.tolist(), end.tolist()], length=300.0)
+    paused = run_pipeline_stages(_settings(tmp_path, open_end_model="outlet"), SCHEMA, stop_after="solve")
+    (key,) = paused[2][tip]
+    assert paused.edges[2, tip, key][FLOW_STATE] == "blind_end"
+    assert tip not in de.open_end_nodes(paused)
+    edited = copy.deepcopy(paused)
+    assert mark_dead_end_kind(edited, tip, de.LEAVES_IMAGE)
+
+    solved = run_pipeline_stages(
+        _settings(tmp_path, open_end_model="outlet"), SCHEMA,
+        start_from="post_process", resume=_resume_from_post_processing(edited),
+    )
+
+    data = solved.edges[2, tip, key]
+    assert data[FLOW_STATE] == "solved" and data["flow_abs"] > 0
+    assert tip in de.open_end_nodes(solved)
+    assert solved.nodes[tip][de.DEAD_END_KIND_SOURCE] == de.SOURCE_REVIEW
 
 
 def test_the_network_is_solved_between_the_inlets_and_outlets_set_by_hand(tmp_path, monkeypatch):

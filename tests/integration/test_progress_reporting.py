@@ -14,7 +14,7 @@ import pytest
 
 from haemolynx.graph import STEP_LABELS
 from haemolynx.pipeline import default_schema, resolve_settings, run_pipeline_stages
-from haemolynx.pipeline.stages import BUILD_TAIL_STEPS
+from haemolynx.pipeline.stages import BUILD_TAIL_STEPS, SKELETONISE_STEPS
 from haemolynx.pipeline.progress import (
     STAGE_FINISHED,
     STAGE_STARTED,
@@ -79,13 +79,18 @@ def test_a_real_run_reports_every_stage_and_every_graph_step(tmp_path):
     finished = [event.stage for event in events if event.kind == STAGE_FINISHED]
     assert started == finished == STAGE_NAMES
     steps = [event for event in events if event.kind == STEP]
-    labels = [event.step for event in steps]
+    assert {event.stage for event in steps} == {"skeletonise", "build_network"}
+    graph_steps = [event for event in steps if event.stage == "build_network"]
+    labels = [event.step for event in graph_steps]
     # The thirteen topology steps, then the finish's and saving and checking
     # the graph: every step the stage takes, each counted up front.
     assert labels[: len(STEP_LABELS)] == list(STEP_LABELS)
     assert labels[-len(BUILD_TAIL_STEPS):] == list(BUILD_TAIL_STEPS)
-    assert {event.stage for event in steps} == {"build_network"}
-    assert {event.step_total for event in steps} == {len(labels)}
-    assert [event.next_step for event in steps] == [*labels[1:], None]
+    assert {event.step_total for event in graph_steps} == {len(labels)}
+    assert [event.next_step for event in graph_steps] == [*labels[1:], None]
+    # Skeletonise reports its steps too: each a point a cancelled run stops at.
+    skeleton_steps = [event for event in steps if event.stage == "skeletonise"]
+    assert [event.step for event in skeleton_steps] == list(SKELETONISE_STEPS)
+    assert {event.step_total for event in skeleton_steps} == {len(SKELETONISE_STEPS)}
     assert graph.number_of_nodes() > 0
     assert graph.number_of_edges() > 0

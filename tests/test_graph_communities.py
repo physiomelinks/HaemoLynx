@@ -74,6 +74,48 @@ def test_communities_for_weighting_separates_the_two_clusters(weighting):
     assert len(communities) == 2
 
 
+@pytest.mark.parametrize(
+    "weighting, weak_link",
+    [
+        ("resistance", {"resistance": 1000.0}),
+        ("length", {"length": 1000.0}),
+        ("flow", {"flow_abs": 0.001}),
+    ],
+)
+def test_a_weak_tie_is_where_the_communities_part(weighting, weak_link):
+    """Regression: modularity reads an edge's weight as how strongly it ties
+    its ends, and it was handed distances -- resistance, length, 1/|flow| --
+    so the long, resistive or nearly empty link bound most strongly. Each
+    vessel now ties by its conductance, 1/length or |flow|."""
+    G = _two_clusters_joined_by_one_bridge()
+    G.edges[2, 3, 0].update(weak_link)
+    communities, _method = gc.communities_for_weighting(G, weighting)
+    assert sorted(sorted(c) for c in communities) == [[0, 1, 2], [3, 4, 5]]
+
+
+def test_a_strong_tie_holds_its_ends_together():
+    """The other way round: a link of low resistance between the triangles,
+    which are each held by vessels of high resistance, joins its two ends."""
+    G = _two_clusters_joined_by_one_bridge()
+    for u, v, data in G.edges(data=True):
+        data["resistance"] = 0.001 if {u, v} == {2, 3} else 1000.0
+    communities, _method = gc.communities_for_weighting(G, "resistance")
+    assert any({2, 3} <= set(c) for c in communities)
+
+
+def test_parallel_vessels_ties_add_up():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, resistance=2.0)
+    G.add_edge(0, 1, resistance=2.0)
+    G.add_edge(1, 0, resistance=4.0)
+    G_s = gc.simple_graph_with_edge_attr(
+        G, source_attr="resistance", transform=lambda x: 1.0 / x, combine="sum"
+    )
+    assert G_s[0][1]["analysis_weight"] == pytest.approx(1.25)
+    with pytest.raises(ValueError, match="combine"):
+        gc.simple_graph_with_edge_attr(G, source_attr="resistance", combine="mean")
+
+
 def test_communities_for_weighting_topology_accepts_a_multigraph_directly():
     """Regression: greedy_modularity_communities needs a simple graph --
     calling it on a raw MultiGraph must not raise."""

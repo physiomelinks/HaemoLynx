@@ -120,6 +120,8 @@ Written to the run's output folder (output_dir). The voxel size the run read and
 | `voxel_size_override_xyz` | `um` | The voxel_size_override_xyz setting, if any. |
 | `downsample` | `-` | The downsample-on-import record, or null. |
 | `crop` | `voxel` | The crop-on-import box the skeleton was cut to, its (z, y, x) start and stop (stop not kept), or null for the whole image. |
+| `mask_digest` | `-` | A digest of the segmented mask the skeleton was made from, after its clean-up: a run loading the skeleton warns when its mask differs. |
+| `thick_region_key` | `-` | The key of the thick-vessel region the skeleton was made with (the mask and the settings deciding the region), or null with thickness-gated skeletonisation off. |
 | `large_stack_thick_tree` | `-` | Whether the thick vessels' centreline tree was the large-stack one (true) or the exact one (false); only with thickness-gated skeletonisation. |
 
 ## `{stem}_statistics.csv`
@@ -162,19 +164,19 @@ Columns as {stem}_statistics.csv; rows in docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_resistance.json`
 
-Written to the run's output folder (output_dir). Weighted betweenness and vascular communities, edges weighted by resistance: the Weighted Betweenness and Communities section of the report, as JSON, written while the betweenness or community statistic is on, with each zero-resistance bridge's two ends one node as in the statistics. Without haemodynamics every value is the text 'N/A (haemodynamics disabled)'.
+Written to the run's output folder (output_dir). Weighted betweenness and vascular communities by resistance: betweenness with each vessel a distance of its resistance, communities with each vessel tying its ends by its conductance (parallel vessels' ties added). The Weighted Betweenness and Communities section of the report, as JSON, written while the betweenness or community statistic is on, with each zero-resistance bridge's two ends one node as in the statistics. Without haemodynamics every value is the text 'N/A (haemodynamics disabled)'.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_length.json`
 
-Written to the run's output folder (output_dir). The same, edges weighted by length (measured with or without haemodynamics).
+Written to the run's output folder (output_dir). The same by length: betweenness by length, communities tied by 1/length (measured with or without haemodynamics).
 
 Keys as the report's rows; docs/statistics_glossary.md.
 
 ## `{stem}_betweenness_communities_edge_flow.json`
 
-Written to the run's output folder (output_dir). The same, edges weighted by flow: 'N/A' values without haemodynamics too.
+Written to the run's output folder (output_dir). The same by flow: betweenness by 1/|flow|, communities tied by |flow|; 'N/A' values without haemodynamics too.
 
 Keys as the report's rows; docs/statistics_glossary.md.
 

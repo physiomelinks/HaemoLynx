@@ -379,11 +379,12 @@ def clear_image_caches(values: Mapping[str, Any], schema: Schema) -> tuple[Path,
     - scratch volumes Windows kept while they were mapped
       (:func:`~haemolynx.preprocessing.memmap_support.delete_dropped_memmap_files`);
     - its stage checkpoint pickles: its ``.haemorun`` holds every stage, and
-      Load run writes what a later Run from this stage needs;
-    - its thick-vessel region cache: only a run of this same image reads it.
+      Load run writes what a later Run from this stage needs.
 
     Its outputs -- the skeleton, graph and voxel size a skipped stage loads
-    among them -- stay.
+    among them -- stay, and so does its thick-vessel region (one bit a voxel):
+    a later run of this image loading its skeleton would find it again, minutes
+    of work.
     """
     from haemolynx.gui.stage_checkpoints import (
         discard_cached_artefacts,
@@ -392,7 +393,6 @@ def clear_image_caches(values: Mapping[str, Any], schema: Schema) -> tuple[Path,
     )
     from haemolynx.io import discard_cached_raw_volume
     from haemolynx.pipeline.settings import resolve_settings
-    from haemolynx.pipeline.stages import thick_vessel_region_cache
     from haemolynx.preprocessing.memmap_support import delete_dropped_memmap_files
 
     removed: list[Path] = []
@@ -411,7 +411,6 @@ def clear_image_caches(values: Mapping[str, Any], schema: Schema) -> tuple[Path,
         if output_dir is not None:
             for stem in stems_for_cached_artefacts(settings):
                 removed += discard_cached_artefacts(output_dir, stem)
-            removed += thick_vessel_region_cache(settings, output_dir).discard()
     except Exception:  # noqa: BLE001 - a cache left on disk never stops a batch
         logger.exception("could not clear this image's cached files")
     if removed:

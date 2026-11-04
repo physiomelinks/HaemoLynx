@@ -429,8 +429,8 @@ def test_the_trials_start_from_vessels_with_none_of_the_runs_results(monkeypatch
     _StandIn(monkeypatch, lambda settings, calibration, edge: None if edge == (0, 1, 0) else [6.0, 6.0])
 
     search, _estimate = s._prepared_search(
-        G, starting_values=dict(DEFAULTS), voxel_size_zyx=(1.0, 1.0, 1.0),
-        raw_tiff_path=raw_path, sample_edge_count=100,
+        G, starting_values={**DEFAULTS, "use_edt_diameter_crosscheck": True},
+        voxel_size_zyx=(1.0, 1.0, 1.0), raw_tiff_path=raw_path, sample_edge_count=100,
     )
     trial, _summary = search._run_trial({})
 

@@ -918,7 +918,7 @@ def test_the_model_stage_adds_no_layer_but_repaints_the_network():
         "build_haemodynamic_model", SimpleNamespace(graph=graph, results={})
     )
     assert group.layers == ()
-    assert group.recolour == ((VESSELS, "resistance"),)
+    assert group.recolour == ((VESSELS, "resistance_log10"),)
     assert "3 of 3" in group.note
 
 
@@ -933,7 +933,9 @@ def test_the_view_is_turned_to_3d_once_when_the_first_geometry_arrives():
 
 
 def test_masks_are_shown_as_translucent_volume_layers():
-    """Enabled masks arrive as Image volumes with the role colours, switched on."""
+    """Enabled masks arrive as Image volumes with the role colours. Their
+    spec shows them; the first view of the network hides them
+    (test_the_first_view_of_a_network_hides_the_volumes_round_it)."""
     from haemolynx.gui.results import MASK_COLOURS, MASK_LAYERS
 
     art = np.zeros((4, 4, 4), dtype=bool)
@@ -1029,19 +1031,21 @@ def test_vessel_mask_volume_layers_skip_missing_and_keep_role_colours():
     assert by_name[MASK_LAYERS["large_arteriole_mask"]].scale == (1.5, 1.0, 0.5)
 
 
-def test_mask_role_colours_are_dark_and_light_red_and_green():
-    """Large = dark, small = light; arterioles red, venules green."""
+def test_mask_role_colours_are_dark_and_light_red_and_blue():
+    """Large = dark, small = light; arterioles red, venules blue -- as signed
+    branch order colours the two sides, and not red beside green, the pair a
+    red-green colour-blind eye cannot tell apart."""
     from haemolynx.gui.results import MASK_COLOURS
 
     large_a = MASK_COLOURS["large_arteriole_mask"]
     small_a = MASK_COLOURS["small_arteriole_mask"]
     large_v = MASK_COLOURS["large_venule_mask"]
     small_v = MASK_COLOURS["small_venule_mask"]
-    # Red channel dominates for arterioles; green for venules.
+    # Red channel dominates for arterioles; blue for venules.
     assert large_a[0] > large_a[1] and large_a[0] > large_a[2]
     assert small_a[0] > small_a[1] and small_a[0] > small_a[2]
-    assert large_v[1] > large_v[0] and large_v[1] > large_v[2]
-    assert small_v[1] > small_v[0] and small_v[1] > small_v[2]
+    assert large_v[2] > large_v[0] and large_v[2] > large_v[1]
+    assert small_v[2] > small_v[0] and small_v[2] > small_v[1]
     # Light roles are brighter (higher RGB sum) than their dark counterparts.
     assert sum(small_a[:3]) > sum(large_a[:3])
     assert sum(small_v[:3]) > sum(large_v[:3])
@@ -1338,7 +1342,7 @@ def test_export_results_does_not_disturb_the_current_vessel_colouring():
         SimpleNamespace(node_list=list(graph.nodes),
                         pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
     )
-    assert spec_named(solve_group, VESSELS).colour_by == "flow_abs"
+    assert spec_named(solve_group, VESSELS).colour_by == "flow_abs_log10"
 
     export_group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
     assert spec_named(export_group, VESSELS).colour_by is None
@@ -1745,7 +1749,7 @@ def test_vessel_layers_always_include_flow_abs_log10_once_flows_exist():
         np.asarray(vessels.features["flow_abs_log10"], dtype=float),
         flow_abs_log10_value(1e-12),
     )
-    assert spec_named(group, VESSELS).colour_by == "flow_abs"
+    assert spec_named(group, VESSELS).colour_by == "flow_abs_log10"
 
 
 # --- the range a colour bar should span --------------------------------------
@@ -2623,6 +2627,143 @@ def test_merging_stage_groups_keeps_each_layers_final_state():
     assert merge_stage_layers([]) is None
 
 
+def test_a_merged_replay_keeps_a_layer_hidden_that_one_spec_hid():
+    """Applied in turn, a hidden spec hides a layer and a later shown one keeps
+    what is on screen, so the nodes -- hidden when the network is built --
+    stay hidden. The merge kept only the last spec, shown, so Load run opened
+    every saved run with its point cloud of nodes over the vessels."""
+    from haemolynx.gui.results import merge_stage_layers
+
+    results = ResultLayers()
+    built_group = results.stage_finished("build_network", network(a_graph()))
+    solved = results.stage_finished(
+        "solve", SimpleNamespace(node_list=[0, 1, 2, 3], pressure=np.zeros(4))
+    )
+    assert spec_named(built_group, NODES).visible is False
+    assert spec_named(solved, NODES).visible is True
+
+    merged = merge_stage_layers([built_group, solved])
+    assert spec_named(merged, NODES).visible is False
+    assert spec_named(merged, VESSELS).visible is True
+    # Its data and features are the last spec's, as before.
+    assert spec_named(merged, NODES).features["pressure"].tolist() == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_the_first_view_of_a_network_hides_the_volumes_round_it():
+    """The segmented image and the vessel masks fill the image box; shown with
+    the network they hid every vessel tube (a saved AIA run opened as dark red
+    and nothing else). The group that first draws the network -- the one
+    turning the view to 3D, in a run or a replay -- hides them; no other does."""
+    from haemolynx.gui.results import (
+        MASK_LAYERS,
+        VOLUMES_ROUND_THE_NETWORK,
+        hidden_on_first_view,
+        merge_stage_layers,
+    )
+
+    assert set(VOLUMES_ROUND_THE_NETWORK) == {IMAGE, *MASK_LAYERS.values()}
+    results = ResultLayers()
+    skeleton = results.stage_finished("skeletonise", SimpleNamespace(
+        image=np.zeros((4, 4, 4)), skeleton=np.zeros((4, 4, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    ))
+    mask = np.zeros((4, 4, 4), dtype=bool)
+    first = results.stage_finished("build_network", network(a_graph(), large_arteriole_mask=mask))
+    again = results.stage_finished("build_network", network(a_graph(), large_arteriole_mask=mask))
+
+    assert hidden_on_first_view(skeleton) == ()
+    assert set(hidden_on_first_view(first)) >= {IMAGE, MASK_LAYERS["large_arteriole_mask"]}
+    assert hidden_on_first_view(again) == ()
+    # A replay of the run (Load run) is its first view too.
+    assert hidden_on_first_view(merge_stage_layers([skeleton, first])) == VOLUMES_ROUND_THE_NETWORK
+
+
+def test_haemodynamics_colours_by_log_resistance_and_the_solve_by_log_flow():
+    """Resistance goes as the fourth power of the width and flow spans orders
+    of magnitude: on a straight scale 96% of E14.5's flow and 99% of its
+    resistance sat in the bottom tenth, one colour. Their log10 is what the
+    stages colour by, and the straight columns stay to pick."""
+    from haemolynx.gui.results import RESISTANCE_LOG10
+
+    graph = a_graph(conductance=1e-18)
+    resistances = (1e12, 1e15, 1e18)
+    for (_u, _v, _k, data), resistance in zip(graph.edges(keys=True, data=True), resistances):
+        data["resistance"] = resistance
+        data["flow_abs"] = data["flow_signed"] = 1e3 / resistance
+    group = built(graph).stage_finished(
+        "solve", SimpleNamespace(node_list=list(graph.nodes), pressure=np.zeros(4))
+    )
+    vessels = spec_named(group, VESSELS)
+
+    assert DEFAULT_VESSEL_COLOUR["build_haemodynamic_model"] == RESISTANCE_LOG10
+    np.testing.assert_allclose(
+        sorted(set(np.asarray(vessels.features[RESISTANCE_LOG10]))), [12.0, 15.0, 18.0]
+    )
+    assert "resistance" in vessels.features
+    assert vessels.colour_by == "flow_abs_log10"
+    assert vessels.contrast_limits == pytest.approx((-15.0, -9.0))
+
+
+def test_a_solve_with_no_flows_colours_by_branch_order_as_before():
+    """No flows: log flow is declared but blank, so the solve colours by
+    branch order, as it did when it coloured by flow."""
+    group = built(a_graph(branch_order="B01")).stage_finished(
+        "solve", SimpleNamespace(node_list=[0, 1, 2, 3], pressure=np.zeros(4))
+    )
+    vessels = spec_named(group, VESSELS)
+    assert np.isnan(np.asarray(vessels.features["flow_abs_log10"], dtype=float)).all()
+    assert vessels.colour_by == "branch_order"
+
+
+def test_a_default_log_column_a_layer_lacks_falls_back_to_its_straight_one():
+    from haemolynx.gui.results import default_colour_column
+
+    assert default_colour_column("flow_abs_log10", {"flow_abs_log10": 1}) == "flow_abs_log10"
+    assert default_colour_column("resistance_log10", {"resistance": 1}) == "resistance"
+    assert default_colour_column("resistance_log10", {}) is None
+    assert default_colour_column("diameter_um", {}) is None
+    assert default_colour_column(None, {"flow_abs": 1}) is None
+
+
+def test_log_flow_colours_span_the_flowing_vessels_only():
+    """A vessel carrying no flow sits at log10 flow's floor (-20), orders of
+    magnitude under the least real flow; spanning it put every flowing vessel
+    at the top of the map. It takes the bottom colour all the same."""
+    from haemolynx.gui.results import colour_values_for_range, log10_flow_floor
+
+    assert log10_flow_floor() == -20.0
+    values = np.array([-20.0, -14.0, -12.0, np.nan])
+    np.testing.assert_allclose(colour_values_for_range("flow_abs_log10", values), [-14.0, -12.0])
+    np.testing.assert_allclose(colour_values_for_range("diameter_um", values), [-20.0, -14.0, -12.0])
+    # Nothing flowing at all: the floor is all there is to span.
+    np.testing.assert_allclose(colour_values_for_range("flow_abs_log10", [-20.0]), [-20.0])
+
+    graph = a_graph(conductance=1e-18)
+    for (_u, _v, _k, data), flow in zip(graph.edges(keys=True, data=True), (0.0, 1e-14, 1e-12)):
+        data["flow_abs"] = data["flow_signed"] = flow
+    group = built(graph).stage_finished(
+        "solve", SimpleNamespace(node_list=list(graph.nodes), pressure=np.zeros(4))
+    )
+    assert spec_named(group, VESSELS).contrast_limits == pytest.approx((-14.0, -12.0))
+
+
+def test_a_sweep_keeps_one_log_flow_range_over_its_whole_grid():
+    """Moving a sweep's slider must not re-stretch its colours: log10 flow
+    spans the least flow above none to the most, over every grid point."""
+    from haemolynx.gui.results import sweep_flow_colour_limits
+
+    sweep = SimpleNamespace(
+        flow_abs=np.array([[0.0, 1e-14, 1e-12], [np.nan, 1e-13, 1e-10]]),
+        global_flow_abs_limits=lambda: (0.0, 1e-10),
+    )
+    assert sweep_flow_colour_limits(sweep, "flow_abs") == (0.0, 1e-10)
+    assert sweep_flow_colour_limits(sweep, "flow_abs_log10") == pytest.approx((-14.0, -10.0))
+    assert sweep_flow_colour_limits(sweep, "diameter_um") is None
+    assert sweep_flow_colour_limits(
+        SimpleNamespace(flow_abs=np.zeros(3)), "flow_abs_log10"
+    ) is None
+
+
 def test_a_restored_stage_is_followed_without_building_its_layers(monkeypatch):
     """A run from a later tab passes back through the earlier stages; their
     layers are already on screen, so only what stage_finished remembers is
@@ -2711,7 +2852,7 @@ def test_post_processing_draws_the_edited_network_as_the_solve_does():
     group = results.stage_finished("post_process", _post_processed_solution(graph, 2))
 
     (vessels,) = [spec for spec in group.layers if spec.name == VESSELS]
-    assert vessels.colour_by == DEFAULT_VESSEL_COLOUR["solve"] == "flow_abs"
+    assert vessels.colour_by == DEFAULT_VESSEL_COLOUR["solve"] == "flow_abs_log10"
     (nodes,) = [spec for spec in group.layers if spec.name == NODES]
     assert nodes.colour_by == "pressure"
     assert list(nodes.features["pressure"]) == pytest.approx([100.0, 200.0 / 3, 100.0 / 3, 0.0])
@@ -2877,3 +3018,23 @@ def test_the_export_note_names_only_what_was_written():
     )
     assert group.note.startswith("Wrote the statistics.")
     assert "plots" not in group.note
+
+
+def test_reset_lets_go_of_the_last_runs_skeleton():
+    """reset() kept the skeleton: a low-RAM run's stayed in use on disk into
+    the next run."""
+    import gc
+    import weakref
+
+    results = ResultLayers()
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    gone = weakref.ref(skeleton)
+    volume = SimpleNamespace(
+        image=np.zeros((4, 4, 4)), skeleton=skeleton,
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    results.stage_restored("skeletonise", volume)
+    del volume, skeleton
+    results.reset()
+    gc.collect()
+    assert gone() is None

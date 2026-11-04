@@ -68,6 +68,7 @@ from .sections import (
     averaged_section,
     bootstrap_interval,
     calibration_sites,
+    is_planar,
     lumen_image,
     nearest_section,
     projected_sigma,
@@ -220,7 +221,8 @@ def fit_section(
         sigma_a = sigma_b = 0.5
     else:
         sigma_a = projected_sigma(a, psf_sigma_zyx)
-        sigma_b = projected_sigma(b, psf_sigma_zyx)
+        # A single plane's section is its line revolved: blurred alike both ways.
+        sigma_b = sigma_a if is_planar(raw) else projected_sigma(b, psf_sigma_zyx)
     blur = max(sigma_a, sigma_b, 1.0 if free_sigma else 0.0)
     extent = max(5.0, 1.6 * float(guide_um) + 3.0 * blur)
     step = max(_PLANE_STEP_UM, 2.0 * extent / (_PLANE_MAX_POINTS_ACROSS - 1))
@@ -484,6 +486,37 @@ def _calibration_readings(volumes: tuple[np.ndarray, ...], payload: dict) -> lis
     ]
 
 
+def _read_edge(
+    volumes: tuple[np.ndarray, ...], payload: dict
+) -> tuple[list[float], list[float], dict[str, int]]:
+    """One edge's accepted readings ``(diameters, contrasts, rejected)``.
+
+    Self-contained -- the centreline, where to read it and every setting
+    travel in *payload* -- so it runs the same in a worker process (see
+    :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`). *volumes* is
+    the raw image, then its vessel mask when there is one."""
+    raw = volumes[0]
+    vessel_mask = volumes[1] if len(volumes) > 1 else None
+    poly = payload["poly"]
+    s, total_len = _arc_length_parameterize(poly)
+    diameters: list[float] = []
+    contrasts: list[float] = []
+    reasons: Counter = Counter()
+    for at in payload["targets"]:
+        fit, why = fit_section(
+            raw, poly, s, total_len, float(at), payload["spacing"], guide_um=payload["guide"],
+            psf_sigma_zyx=payload["psf"], vessel_mask=vessel_mask, average_um=payload["average"],
+        )
+        if fit is not None:
+            why = _gate(fit, min_contrast=payload["min_contrast"], min_diameter_um=payload["min_diameter"])
+        if why != "ok":
+            reasons[why] += 1
+            continue
+        diameters.append(fit.diameter_um)
+        contrasts.append(fit.contrast)
+    return diameters, contrasts, dict(reasons)
+
+
 def measure_edge_diameters_from_raw_sections(
     G: Any,
     *,
@@ -503,8 +536,12 @@ def measure_edge_diameters_from_raw_sections(
     calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
     calibration_workers: int = 1,
     memmap_directory=None,
+    workers: int = 1,
 ) -> dict[str, Any]:
-    """Measure *edges* (default every edge) from their raw cross-sections.
+    """Measure *edges* (default every edge) from their raw cross-sections,
+    over *workers* processes (see
+    :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`; the widths are
+    the same however many).
 
     Writes ``raw_section_diameter_um`` (the *aggregation* of the accepted
     readings), ``raw_section_diameter_samples_um``,
@@ -550,6 +587,11 @@ def measure_edge_diameters_from_raw_sections(
     rejected: Counter = Counter()
 
     chosen = list(G.edges(keys=True)) if edges is None else list(edges)
+    # Each edge in turn: a skip reason, or the payload its sections are read
+    # from; the sections go to worker processes, and the edges are finished
+    # in this order, so the summary is the same however many there were.
+    pending: list[tuple[tuple, Any]] = []
+    payloads: list[dict[str, Any]] = []
     for u, v, key in chosen:
         data = G.edges[u, v, key]
         for stale in ("raw_section_diameter_um", "raw_section_diameter_samples_um",
@@ -557,14 +599,12 @@ def measure_edge_diameters_from_raw_sections(
             data.pop(stale, None)
         vox = data.get("voxels")
         if not vox or len(vox) < 2:
-            summary["edges_skipped"].append((u, v, key, "no_voxels"))
-            data["raw_section_status"] = "failed:no_voxels"
+            pending.append(((u, v, key), "no_voxels"))
             continue
         poly = np.asarray(vox, dtype=float)
-        s, total_len = _arc_length_parameterize(poly)
+        _s, total_len = _arc_length_parameterize(poly)
         if total_len <= 0:
-            summary["edges_skipped"].append((u, v, key, "zero_length"))
-            data["raw_section_status"] = "failed:zero_length"
+            pending.append(((u, v, key), "zero_length"))
             continue
         targets, _short = edge_sample_targets(
             total_len, sample_spacing_along_edge_um, branch_endpoint_exclusion_um,
@@ -572,26 +612,29 @@ def measure_edge_diameters_from_raw_sections(
         )
         if len(targets) > MAX_READINGS_PER_EDGE:
             targets = targets[np.linspace(0, len(targets) - 1, MAX_READINGS_PER_EDGE).round().astype(int)]
-        guide = _guide_diameter(data, guide_attribute, fallback_guide_um)
-        diameters: list[float] = []
-        contrasts: list[float] = []
-        reasons: Counter = Counter()
-        for at in targets:
-            fit, why = fit_section(
-                raw_volume, poly, s, total_len, float(at), spacing, guide_um=guide,
-                psf_sigma_zyx=psf_sigma_zyx, vessel_mask=vessel_mask,
-                average_um=average_along_vessel_um,
-            )
-            if fit is not None:
-                why = _gate(fit, min_contrast=min_lumen_contrast, min_diameter_um=min_diameter_um)
-            if why != "ok":
-                reasons[why] += 1
-                continue
-            diameters.append(fit.diameter_um)
-            contrasts.append(fit.contrast)
+        pending.append(((u, v, key), len(payloads)))
+        payloads.append({
+            "poly": poly, "targets": [float(a) for a in targets],
+            "guide": _guide_diameter(data, guide_attribute, fallback_guide_um),
+            "spacing": tuple(float(x) for x in spacing), "psf": tuple(psf_sigma_zyx),
+            "average": float(average_along_vessel_um), "min_contrast": float(min_lumen_contrast),
+            "min_diameter": float(min_diameter_um),
+        })
+    results = run_edge_tasks(
+        _read_edge, payloads,
+        volume=(raw_volume,) if vessel_mask is None else (raw_volume, vessel_mask),
+        workers=int(workers), memmap_directory=memmap_directory,
+    )
+    for (u, v, key), outcome in pending:
+        data = G.edges[u, v, key]
+        if isinstance(outcome, str):
+            summary["edges_skipped"].append((u, v, key, outcome))
+            data["raw_section_status"] = f"failed:{outcome}"
+            continue
+        diameters, contrasts, reasons = results[outcome]
         rejected.update(reasons)
         if len(diameters) < MIN_ACCEPTED_READINGS:
-            reason = reasons.most_common(1)[0][0] if reasons else "too_few_readings"
+            reason = Counter(reasons).most_common(1)[0][0] if reasons else "too_few_readings"
             if diameters:
                 reason = "too_few_readings"
             summary["edges_skipped"].append((u, v, key, reason))
