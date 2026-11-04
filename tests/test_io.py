@@ -514,6 +514,17 @@ def _stopped_growing(path, *, settle=0.6):
     return path.stat().st_size == before
 
 
+def _wait_for(path, *, limit=60.0):
+    """Wait for *path* to appear: the stand-in ilastik's first heartbeat.
+    Under load it can take longer to start than a short timeout or a few
+    polls, which then stopped it before it had written anything."""
+    import time
+
+    deadline = time.monotonic() + limit
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
 def _segment(tmp_path, image, project, output, **kwargs):
     from haemolynx.io.ilastik import run_ilastik_headless_segmentation
 
@@ -675,7 +686,7 @@ def test_ilastik_timeout_kills_the_process_and_raises_an_actionable_error(tmp_pa
     monkeypatch.setenv("FAKE_ILASTIK_BEAT", str(beat))
 
     with pytest.raises(RuntimeError, match="ilastik_timeout_seconds"):
-        _segment(tmp_path, image, project, output, timeout=1.5)
+        _segment(tmp_path, image, project, output, timeout=1.5, poll=lambda: _wait_for(beat))
 
     assert beat.exists()
     assert _stopped_growing(beat)
@@ -704,6 +715,7 @@ def test_a_poll_that_raises_stops_ilastik_and_propagates(tmp_path, monkeypatch):
     def poll():
         polls.append(1)
         if len(polls) >= 3:
+            _wait_for(beat)
             raise Stopped()
 
     with pytest.raises(Stopped):
@@ -850,6 +862,27 @@ def test_an_output_that_cannot_vouch_for_this_run_is_made_again(tmp_path, monkey
     else:
         reuse = False
     _segment(tmp_path, image, project, output, reuse_existing=reuse, vessel_label=label)
+
+    assert runs() == 2
+
+
+def test_an_image_copied_over_the_input_keeping_its_size_and_time_is_segmented_again(tmp_path, monkeypatch):
+    """Regression: the input was known by path, size and time alone, and a
+    copy that keeps the old file's time (copy2, robocopy, unzipping) of a
+    stack the same size reused the old image's segmentation."""
+    import os
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    runs = _count_runs(tmp_path, monkeypatch)
+    _segment(tmp_path, image, project, output, reuse_existing=True)
+
+    stat = image.stat()
+    data = bytearray(image.read_bytes())
+    data[-1] ^= 0xFF  # another stack of the same size
+    image.write_bytes(bytes(data))
+    os.utime(image, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert (image.stat().st_size, image.stat().st_mtime_ns) == (stat.st_size, stat.st_mtime_ns)
+    _segment(tmp_path, image, project, output, reuse_existing=True)
 
     assert runs() == 2
 

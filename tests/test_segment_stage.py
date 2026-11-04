@@ -110,10 +110,13 @@ def test_ilastik_hands_on_the_path_it_produced(tmp_path, monkeypatch):
     produced.parent.mkdir()
     produced.write_bytes(raw.read_bytes())
 
-    monkeypatch.setattr(
-        io, "run_ilastik_headless_segmentation",
-        lambda **_kwargs: produced,
-    )
+    seen = {}
+
+    def fake_run(**kwargs):
+        seen.update(kwargs)
+        return produced
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", fake_run)
 
     settings = settings_for(
         tmp_path,
@@ -122,11 +125,20 @@ def test_ilastik_hands_on_the_path_it_produced(tmp_path, monkeypatch):
         raw_image_path=raw,
         ilastik_classifier_path=tmp_path / "classifier.ilp",
         ilastik_output_dir=tmp_path / "segmentations",
+        ilastik_vessel_label="Vessel",
+        ilastik_executable="C:/ilastik/ilastik.exe",
     )
     inputs = segment(settings)
 
     assert inputs.image_path == produced
     assert settings["input_path"] == produced
+    # What ilastik is handed: the stand-in returned its output whatever it
+    # was given, so a wrong input, project, output or label went unseen.
+    assert seen["input_image_path"] == raw
+    assert seen["classifier_path"] == tmp_path / "classifier.ilp"
+    assert seen["output_path"] == tmp_path / "segmentations" / "mask_segmented.tif"
+    assert seen["vessel_label"] == "Vessel" and seen["label_setting"] == "ilastik_vessel_label"
+    assert seen["ilastik_executable"] == "C:/ilastik/ilastik.exe"
 
 
 def test_ilastik_timeout_setting_reaches_the_subprocess_call(tmp_path, monkeypatch):

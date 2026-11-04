@@ -3157,18 +3157,21 @@ def _record_raw_evidence(
     kept on the graph too (``raw_image_stain``, ``raw_image_stain_reading``), so
     that stage takes the build's answer rather than reading the image again, and
     one graph never names its raw image two ways."""
-    for key in ("raw_image_stain", "raw_image_stain_reading"):
+    for key in ("raw_image_stain", "raw_image_stain_reading", RAW_IMAGE_STAIN_SOURCE):
         G.graph.pop(key, None)
     evidence = preprocessing.raw_evidence_from_settings(
         settings, binary_mask, voxel_size_zyx, box=crop, downsample=downsample
     )
     if evidence is None:
         G.graph.pop(preprocessing.raw_evidence.GRAPH_ATTRIBUTE, None)
+        G.graph.pop(RAW_EVIDENCE_SOURCE, None)
         return
     G.graph[preprocessing.raw_evidence.GRAPH_ATTRIBUTE] = evidence.calibration.as_dict()
+    G.graph[RAW_EVIDENCE_SOURCE] = raw_image_source(settings)
     if settings.get("raw_image_stain", "auto") not in raw_stain.STAINS:
         G.graph["raw_image_stain"] = evidence.calibration.stain
         G.graph["raw_image_stain_reading"] = evidence.calibration.reading
+        G.graph[RAW_IMAGE_STAIN_SOURCE] = raw_image_source(settings)
 
 
 def _record_crop(
@@ -4184,14 +4187,59 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     )
 
 
+#: Which raw image a graph's recorded ``raw_image_stain`` was read from
+#: (:func:`raw_image_source`).
+RAW_IMAGE_STAIN_SOURCE = "raw_image_stain_source"
+#: Which raw image the build's raw-evidence calibration was read from.
+RAW_EVIDENCE_SOURCE = "raw_evidence_source"
+
+
+def raw_image_source(settings: Mapping[str, Any]) -> dict | None:
+    """What the run's raw image is, for telling whether a stain recorded on a
+    graph was read from it: its file name, ``raw_image_channel`` and size in
+    bytes (None when the file is not there). Not its folder, so a run moved
+    with its images still matches. None without a raw image."""
+    path = settings.get("raw_image_path")
+    if not path:
+        return None
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = None
+    return {"name": path.name, "channel": settings.get("raw_image_channel"), "size_bytes": size}
+
+
+def recorded_stain_is_current(settings: Mapping[str, Any], G: nx.MultiGraph) -> bool:
+    """Whether *G*'s recorded ``raw_image_stain`` was read from the raw image
+    the settings name now. A stain recorded with no source (a graph saved
+    before the record) is taken as current: nothing says otherwise. A size
+    neither side knows (a file not found) is not compared."""
+    recorded = G.graph.get(RAW_IMAGE_STAIN_SOURCE)
+    if not isinstance(recorded, Mapping):
+        return True
+    current = raw_image_source(settings)
+    if current is None:
+        return False
+    if recorded.get("name") != current["name"] or recorded.get("channel") != current["channel"]:
+        return False
+    sizes = (recorded.get("size_bytes"), current["size_bytes"])
+    return None in sizes or sizes[0] == sizes[1]
+
+
 def recorded_raw_image_stain(settings: Mapping[str, Any], G: nx.MultiGraph | None = None) -> str:
     """The raw image's stain as this run knows it without reading the image:
     the setting, unless ``auto``; then what the Diameters stage resolved and
-    recorded on *G*; else plasma_column."""
+    recorded on *G*, while it was read from the raw image the settings name
+    (:func:`recorded_stain_is_current`); else plasma_column."""
     stain = settings.get("raw_image_stain", "auto")
     if stain in raw_stain.STAINS:
         return stain
-    if G is not None and G.graph.get("raw_image_stain") in raw_stain.STAINS:
+    if (
+        G is not None
+        and G.graph.get("raw_image_stain") in raw_stain.STAINS
+        and recorded_stain_is_current(settings, G)
+    ):
         return G.graph["raw_image_stain"]
     return raw_stain.PLASMA_COLUMN
 
@@ -4212,12 +4260,26 @@ def resolve_raw_image_stain(
     if stain in raw_stain.STAINS:
         return stain, None, None
     recorded = network.graph.graph.get("raw_image_stain") if network is not None else None
-    if recorded in raw_stain.STAINS:
+    stale = recorded in raw_stain.STAINS and not recorded_stain_is_current(settings, network.graph)
+    if recorded in raw_stain.STAINS and not stale:
         logger.info(f"raw_image_stain=auto: {recorded}, as the network build read the raw image.")
         return recorded, None, None
     path = settings.get("raw_image_path")
     if not path or network is None or network.volume is None or network.volume.image is None:
+        if stale and path:
+            # Reusing it unsaid measured a new raw image by the old one's stain.
+            logger.warning(
+                f"raw_image_stain=auto: the raw image is not the one the network build read its "
+                f"stain from ({recorded}), and the segmentation is not at hand to read it against; "
+                f"taking {recorded}. Set raw_image_stain if it is the other kind."
+            )
+            return recorded, None, None
         return raw_stain.PLASMA_COLUMN, None, None
+    if stale:
+        logger.info(
+            "raw_image_stain=auto: the raw image is not the one the network build read its stain "
+            "from; reading it again."
+        )
     from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
@@ -4863,8 +4925,12 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                     "the table) instead."
                 )
             if measures_diameters_from_raw_image(settings):
+                current = recorded_stain_is_current(settings, G)
                 stain, reading, raw_volume = resolve_raw_image_stain(settings, network)
                 G.graph["raw_image_stain"] = stain
+                # A stale answer kept for want of the segmentation stays marked stale.
+                if reading is not None or current:
+                    G.graph[RAW_IMAGE_STAIN_SOURCE] = raw_image_source(settings)
                 # The build's own reading stands unless the image was read here.
                 if reading is not None or "raw_image_stain_reading" not in G.graph:
                     G.graph["raw_image_stain_reading"] = None if reading is None else reading.as_dict()
