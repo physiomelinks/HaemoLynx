@@ -239,6 +239,14 @@ def flow_abs_log10_value(flow_abs: float) -> float:
     return math.log10(max(abs(float(flow_abs)), FLOW_ABS_LOG10_FLOOR))
 
 
+def flow_abs_log10_values(flow_abs: "np.typing.ArrayLike") -> np.ndarray:
+    """:func:`flow_abs_log10_value` of every value of *flow_abs* at once, to
+    the bit (NaN stays NaN): a sweep's slider recolours a whole network by it
+    at every step."""
+    with np.errstate(invalid="ignore"):
+        return np.log10(np.maximum(np.abs(np.asarray(flow_abs, dtype=float)), FLOW_ABS_LOG10_FLOOR))
+
+
 def build_conductance_matrix_from_graph(
     G: nx.Graph,
     conductance_attr: str = "conductance",

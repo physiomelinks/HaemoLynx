@@ -7074,8 +7074,9 @@ SCHEMA = Schema(
             default=1,
             help=(
                 "Start the pericyte constriction/dilation sweep at this "
-                "percentage (negative = constriction, positive = dilation; "
-                "scale = 1 + percent/100)"
+                "percentage of every capillary's diameter (arterioles and "
+                "venules keep theirs; negative = constriction, positive = "
+                "dilation; scale = 1 + percent/100)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -7088,7 +7089,8 @@ SCHEMA = Schema(
             default=30,
             help=(
                 "End the pericyte constriction/dilation sweep at this "
-                "percentage (negative = constriction, positive = dilation)"
+                "percentage of every capillary's diameter (negative = "
+                "constriction, positive = dilation)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -7203,7 +7205,9 @@ SCHEMA = Schema(
             help=(
                 "Vessels to block, by the branchID shown when hovering a "
                 "vessel after the Solve stage (e.g. [12, 40]), or as "
-                "[u, v, key]. Read when blocking listed vessels"
+                "[u, v, key]. The panel writes each as [branchID, u, v, key], "
+                "so one listed on a network since built again is refused. "
+                "Read when blocking listed vessels"
             ),
             section=_PERTURBATION_RUNS,
             requires=("capillary_block_selection=vessel_ids",),
@@ -7379,9 +7383,10 @@ SCHEMA = Schema(
             kind="int",
             default=0,
             help=(
-                "Fixed whole-network constriction/dilation for a pericyte "
-                "spacing or length sweep (scale = 1 + percent/100; negative "
-                "= constriction, positive = dilation); pressure stays at "
+                "Fixed constriction/dilation of every capillary for a "
+                "pericyte spacing or length sweep, arterioles and venules "
+                "keeping theirs (scale = 1 + percent/100; negative = "
+                "constriction, positive = dilation); pressure stays at "
                 "inlet_p_bc"
             ),
             section=_PERTURBATION_RUNS,

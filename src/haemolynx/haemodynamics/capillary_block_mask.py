@@ -103,10 +103,13 @@ def load_capillary_block_mask(
     axis_order: str = CANONICAL_AXIS_ORDER,
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """The block mask as a boolean volume on *graph*'s grid (cut to its crop
     box, reduced by its downsample on import, block max), and its voxel size
-    ``(z, y, x)``.
+    ``(z, y, x)``. A 2D mask is a single-slice volume, as a 2D image is;
+    *use_memmap* keeps it on disk (the low-RAM option).
 
     The voxel size is resolved as the pericyte mask's is, and must match the
     main image's (``graph.graph["image_voxel_size_zyx"]`` when recorded):
@@ -119,8 +122,13 @@ def load_capillary_block_mask(
         axis_order=axis_order,
         description=BLOCK_MASK_DESCRIPTION,
         objects=True,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
-    mask = mask_volume_like_graph(np.asarray(mask, dtype=bool), graph, description=BLOCK_MASK_DESCRIPTION)
+    mask = mask_volume_like_graph(
+        np.asanyarray(mask, dtype=bool), graph, description=BLOCK_MASK_DESCRIPTION,
+        use_memmap=use_memmap, memmap_directory=memmap_directory,
+    )
     voxel_size_xyz, _source = resolve_voxel_size_xyz(
         metadata_voxel_size_xyz=metadata_voxel_size,
         metadata_status=metadata_status,

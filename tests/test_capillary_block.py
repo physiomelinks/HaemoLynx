@@ -351,6 +351,91 @@ def test_zeroing_the_stopped_vessels_keeps_every_pressure():
     assert again[2][3][0]["flow_abs"] > 0
 
 
+def test_a_listed_vessel_names_its_ends_and_a_network_built_since_is_refused():
+    """A branchID is the vessel's place in the edge order, so one listed on
+    a network since built again blocked another vessel without a word. The
+    panel writes [branchID, u, v, key]; the vessel at that place must still
+    be that one."""
+    G = _many_capillaries(4)
+    edges = list(G.edges(keys=True))
+    listed = [[2, *edges[2]], [3, edges[3][1], edges[3][0], edges[3][2]]]
+
+    blocked, _summary = resolve_blocked_vessels(G, selection="vessel_ids", vessel_ids=listed)
+    assert blocked == [edges[2], edges[3]]
+
+    rebuilt = nx.relabel_nodes(G, {n: n + 100 for n in G.nodes})
+    with pytest.raises(ValueError, match="built again"):
+        resolve_blocked_vessels(rebuilt, selection="vessel_ids", vessel_ids=listed)
+    # A plain branchID still names the vessel at its place.
+    assert resolve_blocked_vessels(rebuilt, selection="vessel_ids", vessel_ids=[2])[0] == [
+        list(rebuilt.edges(keys=True))[2]
+    ]
+
+
+def test_a_vessel_draining_through_an_open_end_is_not_stopped():
+    """0-1-2-3 runs inlet to outlet and 1-4 leaves the image, draining through
+    the baseline's open-end condition. Blocking 2-3 stops 2-3 and 1-2 (fed
+    only through the block); blood still runs 0-1-4 and out, and kept its
+    flow. Judged by the designated inlet and outlet alone, 0-1 and 1-4 were
+    set to 0 too, and 1-4 even when the block was somewhere else."""
+    from haemolynx.haemodynamics import open_ends as oe
+
+    def network():
+        G = nx.MultiGraph()
+        for u, v in ((0, 1), (1, 2), (2, 3), (1, 4)):
+            _vessel(G, u, v)
+        oe.keep_on_graph(G, oe.OpenEndConditions(model=oe.TERMINAL_RESISTANCE, to_outlet={4: 0.1}))
+        return G
+
+    baseline = network()
+    _solve(baseline, [0], [3])
+    blocked = network()
+    block_vessels(blocked, [(2, 3, 0)], 1e6)
+    _solve(blocked, [0], [3])
+    solved = {edge: blocked.edges[edge]["flow_abs"] for edge in ((0, 1, 0), (1, 4, 0))}
+    assert all(flow > 0 for flow in solved.values())
+
+    assert zero_stopped_vessel_flows(blocked, [0], [3]) == [(1, 2, 0), (2, 3, 0)]
+    for edge, flow in solved.items():
+        assert blocked.edges[edge]["flow_abs"] == flow
+    summary, _ = compare_block_to_baseline(baseline, blocked, inlet_nodes=[0], outlet_nodes=[3])
+    assert summary["stopped_vessels"] == 2
+
+    elsewhere = network()
+    _vessel(elsewhere, 3, 5)
+    block_vessels(elsewhere, [(3, 5, 0)], 1e6)
+    _solve(elsewhere, [0], [3])
+    assert zero_stopped_vessel_flows(elsewhere, [0], [3]) == [(3, 5, 0)]
+    assert elsewhere[1][4][0]["flow_abs"] > 0
+
+
+def test_the_comparison_measures_a_bridge_as_the_statistics_do():
+    """0-1 and 2-3 are two vessels of one width, 1-2 a zero-resistance bridge
+    into a thick vessel. The statistics count two vessels, one velocity, CV 0;
+    the comparison counted the bridge as a third (CV 0.79 here)."""
+    from haemolynx.graph import FLOW_STATE
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
+    from haemolynx.statistics.flux_heterogeneity import compute_flux_heterogeneity
+
+    G = nx.MultiGraph()
+    _vessel(G, 0, 1, branch_order="Art1", diameter=5.0)
+    _vessel(G, 1, 2, branch_order=None, resistance=1e-9, length=3.0, diameter=20.0)
+    G[1][2][0][IS_ZERO_RESISTANCE] = True
+    _vessel(G, 2, 3, branch_order="Ven1", diameter=5.0)
+    _solve(G, [0], [3])
+    for *_e, data in G.edges(keys=True, data=True):
+        data[FLOW_STATE] = "solved"
+    blocked = G.copy()
+    block_vessels(blocked, [], 1e6)
+
+    summary, _ = compare_block_to_baseline(G, blocked, inlet_nodes=[0], outlet_nodes=[3])
+
+    statistics = compute_flux_heterogeneity(contract_bridges(G.copy())[0])
+    assert statistics["Vessel Velocity CV"] == pytest.approx(0.0, abs=1e-6)
+    assert summary["vessel_velocity_cv_baseline"] == pytest.approx(statistics["Vessel Velocity CV"], abs=1e-6)
+    assert summary["vessels_carrying_flow_baseline"] == statistics["Vessels Carrying Flow"] == 2
+
+
 def test_a_vessel_never_solved_is_left_alone_by_the_zeroing():
     G = _two_routes()
     block_vessels(G, [(1, 2, 0)], 1e6)

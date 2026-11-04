@@ -99,11 +99,14 @@ _BRANCH_ORDER = _c(
 _SWEEP_RESULTS = (
     _c("inlet_pressure_pa", "Pa", "Pressure held at the inlets for this point."),
     _c("outlet_pressure_pa", "Pa", "Pressure held at the outlets."),
-    _c("total_inlet_flow_m3_s", "m^3/s", "Total flow into the network through its inlets."),
+    _c("total_inlet_flow_m3_s", "m^3/s",
+       "Total flow into the network: through its inlets, and through any vessel leaving the "
+       "image that feeds it (open_end_model)."),
     _c("total_outlet_flow_m3_s", "m^3/s", "Total flow through the outlets (negative: leaving)."),
     _c("flow_balance_error_m3_s", "m^3/s", "Inlet plus outlet flow: 0 when flow is conserved."),
     _c("equivalent_resistance_pa_s_per_m3", "Pa.s/m^3",
-       "The network's resistance: inlet minus outlet pressure over total inflow."),
+       "The network's resistance, as the run's network resistance: inlet minus outlet "
+       "pressure over the flow in through the inlets."),
 )
 _DILATION = (
     _c("dilation_percent", "percent", "Diameter change applied at this point (+10 widens by 10%)."),
@@ -643,7 +646,8 @@ FILES: tuple[OutputFile, ...] = (
             _c("overrides", "-", "The settings it changed, as JSON."),
             *_SWEEP_RESULTS[:5],
             _c("equivalent_resistance_pa_s_per_m3", "Pa.s/m^3",
-               "The perturbed network's resistance: pressure drop over total inflow."),
+               "The perturbed network's resistance: pressure drop over the flow in through "
+               "the inlets, as the run's network resistance."),
             _c("baseline_equivalent_resistance_pa_s_per_m3", "Pa.s/m^3", "The baseline network's, the same way."),
             _c("delta_vs_baseline_pa_s_per_m3", "Pa.s/m^3", "Perturbed minus baseline."),
             _c("percent_change_vs_baseline", "percent", "That change over the baseline."),

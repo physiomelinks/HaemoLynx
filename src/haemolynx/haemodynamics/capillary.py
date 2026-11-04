@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -33,11 +33,46 @@ from .viscosity import run_diameter_basis, run_viscosity_law
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "dilate_capillaries",
     "is_capillary_branch_order",
     "percent_change_to_scale",
     "scale_capillary_diameters",
     "run_capillary_dilation_pressure_sweep",
 ]
+
+
+def dilate_capillaries(
+    graph: nx.MultiGraph,
+    diameter_by_branch_order: Mapping[str, float],
+    scale: float,
+) -> tuple[nx.MultiGraph, dict[str, float], int, int]:
+    """A copy of *graph* with every capillary's stored diameters scaled by
+    *scale*, and the branch-order table with its capillary orders scaled:
+    ``(graph, table, capillary edges, of them with a measured diameter)``.
+    Arterioles, venules and bridges keep theirs; no resistance is written.
+
+    A capillary is what :func:`is_capillary_branch_order` says, the vessels
+    pericytes are placed on: ``B...``, or the narrow class of a run classed
+    by size (``Unknown_Cap``).
+    """
+    scaled_table = {
+        branch_order: (
+            float(diameter) * scale
+            if is_capillary_branch_order(branch_order)
+            else float(diameter)
+        )
+        for branch_order, diameter in (diameter_by_branch_order or {}).items()
+    }
+    scaled = graph.copy()
+    capillary_edges = 0
+    edges_measured = 0
+    for _u, _v, _key, data in scaled.edges(keys=True, data=True):
+        if not is_capillary_branch_order(data.get("branch_order")):
+            continue
+        capillary_edges += 1
+        if scale_stored_edge_diameters(data, scale):
+            edges_measured += 1
+    return scaled, scaled_table, capillary_edges, edges_measured
 
 
 def scale_capillary_diameters(
@@ -61,24 +96,9 @@ def scale_capillary_diameters(
             "capillary diameters as they are."
         )
 
-    scaled_table = {
-        branch_order: (
-            float(diameter) * scale
-            if is_capillary_branch_order(branch_order)
-            else float(diameter)
-        )
-        for branch_order, diameter in (diameter_by_branch_order or {}).items()
-    }
-
-    scaled = graph.copy()
-    capillary_edges = 0
-    edges_measured = 0
-    for _u, _v, _key, data in scaled.edges(keys=True, data=True):
-        if not is_capillary_branch_order(data.get("branch_order")):
-            continue
-        capillary_edges += 1
-        if scale_stored_edge_diameters(data, scale):
-            edges_measured += 1
+    scaled, scaled_table, capillary_edges, edges_measured = dilate_capillaries(
+        graph, diameter_by_branch_order, scale
+    )
 
     scaled, results = model.set_poiseuille_resistances(
         scaled,
@@ -127,6 +147,7 @@ def run_capillary_dilation_pressure_sweep(
     output_dir: Path | str,
     sweep_dilation: bool = True,
     sweep_pressure: bool = True,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Sweep capillary whole-branch diameter and/or inlet pressure.
 
@@ -135,7 +156,8 @@ def run_capillary_dilation_pressure_sweep(
     focal constriction sites are placed.
 
     *sweep_dilation* and *sweep_pressure* choose which axes move; both True is
-    the combined capillary×pressure sweep.
+    the combined capillary×pressure sweep. *heartbeat* is called at each grid
+    point.
     """
     from .pericyte_sweep import (
         _inlet_pressures,
@@ -174,6 +196,8 @@ def run_capillary_dilation_pressure_sweep(
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
+        if heartbeat is not None:
+            heartbeat()
         scale = percent_change_to_scale(float(dilation_percent))
         scaled, scaled_table, _summary = scale_capillary_diameters(
             G,

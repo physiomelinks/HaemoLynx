@@ -177,7 +177,7 @@ def test_results_builder_emits_one_vectors_layer_for_a_sweep():
     sweep_vessels = perturbation_layer_names("dilate_grid")[0]
     sweep_nodes = perturbation_layer_names("dilate_grid")[1]
     assert sweep_vessels in names
-    assert sweep_nodes not in names  # sweeps: Vectors only
+    assert sweep_nodes not in names  # a grid with no node pressures has no nodes to draw
     vessels, nodes = perturbation_layer_names("art_dilate_20")
     assert vessels in names and nodes in names
     sweep_spec = next(spec for spec in group.layers if spec.name == sweep_vessels)
@@ -229,6 +229,115 @@ def test_a_sweeps_bridge_is_dashed_and_follows_the_slider():
         np.asarray(vessels.features["flow_abs"], dtype=float),
         sweep_flows.flow_abs_at(0)[edge],
     )
+
+
+def _turning_sweep(graph):
+    """Three grid points on *graph*: every vessel's flow doubling, then the
+    second vessel's turning round; the node pressures rising with them."""
+    n_edges, nodes = graph.number_of_edges(), list(graph.nodes)
+    signed = np.tile(np.arange(1, n_edges + 1, dtype=float) * 1e-12, (3, 1))
+    signed[1] *= 2.0
+    signed[2, 1] *= -1.0
+    return SweepFlowGrid(
+        axis_names=("dilation_percent",),
+        axis_values={"dilation_percent": np.asarray([0, 10, 20])},
+        flow_abs=np.abs(signed),
+        flow_signed=signed,
+        node_pressure=np.outer([1.0, 2.0, 3.0], np.arange(len(nodes), dtype=float) * 100.0),
+        node_list=tuple(nodes),
+    )
+
+
+def _sweep_layers(graph, sweep_flows, **settings):
+    group = ResultLayers(settings=settings).stage_finished(
+        "run_perturbations",
+        a_perturbation_run(PerturbationResult(
+            name="dilate_grid", type="pericyte_dilation_sweep", graph=graph,
+            sweep_flows=sweep_flows,
+        )),
+    )
+    return {spec.name: spec for spec in group.layers}
+
+
+def test_a_sweeps_nodes_take_each_grid_points_pressures():
+    """A sweep had no nodes layer, so its Nodes box stayed grey; its nodes now
+    show each grid point's pressures as its slider moves, on one colour range
+    for the whole grid."""
+    graph = solved_graph()
+    sweep_flows = _turning_sweep(graph)
+    layers = _sweep_layers(graph, sweep_flows)
+
+    nodes = layers[perturbation_layer_names("dilate_grid")[1]]
+    assert nodes.kind == "points" and nodes.visible is False
+    assert nodes.layer_set == "dilate_grid" and nodes.colour_by == "pressure"
+    rows = nodes.sweep_rows
+    assert len(rows) == 3
+    by_node = {node: index for index, node in enumerate(sweep_flows.node_list)}
+    for row in range(3):
+        data, features = rows.at(row)
+        np.testing.assert_array_equal(data, nodes.data)
+        expected = [sweep_flows.node_pressure[row, by_node[node]] for node in features["node_id"]]
+        np.testing.assert_array_equal(features["pressure"], expected)
+    np.testing.assert_array_equal(nodes.features["pressure"], rows.at(0)[1]["pressure"])
+    assert nodes.contrast_limits == (0.0, float(sweep_flows.node_pressure.max()))
+
+
+def test_a_sweeps_arrows_are_a_solved_networks_at_every_grid_point():
+    """A sweep had no flow arrows. At each grid point its arrows are the ones
+    a network solved to that point's flows would draw: the second vessel's
+    turns round at the last."""
+    from haemolynx.gui.results import perturbation_flow_direction_layer_name
+    from haemolynx.visualization.flow_direction import flow_direction_vectors
+
+    graph = solved_graph()
+    sweep_flows = _turning_sweep(graph)
+    layers = _sweep_layers(graph, sweep_flows)
+
+    arrows = layers[perturbation_flow_direction_layer_name("dilate_grid")]
+    assert arrows.kind == "vectors" and arrows.visible is False
+    assert arrows.colour_by == "flow_dir_rgb"
+    for row in range(3):
+        solved = graph.copy()
+        for (*_e, data), signed in zip(solved.edges(keys=True, data=True), sweep_flows.flow_signed[row]):
+            data["flow_signed"], data["flow_abs"] = float(signed), abs(float(signed))
+        expected_vectors, expected = flow_direction_vectors(solved)
+        data, features = arrows.sweep_rows.at(row)
+        np.testing.assert_allclose(data, expected_vectors)
+        assert set(features) == set(expected)
+        for name, values in expected.items():
+            np.testing.assert_allclose(features[name], values, err_msg=name)
+    # The turned vessel's arrow points the other way.
+    first, last = arrows.sweep_rows.at(0)[0], arrows.sweep_rows.at(2)[0]
+    np.testing.assert_allclose(last[1, 1], -first[1, 1])
+
+
+def test_a_sweeps_arrows_keep_the_axis_columns_out_when_asked():
+    from haemolynx.gui.results import FLOW_DIR_COLUMNS, perturbation_flow_direction_layer_name
+
+    graph = solved_graph()
+    layers = _sweep_layers(graph, _turning_sweep(graph), flow_direction_colouring=False)
+    arrows = layers[perturbation_flow_direction_layer_name("dilate_grid")]
+    assert not set(arrows.features) & FLOW_DIR_COLUMNS
+    assert not set(arrows.sweep_rows.at(2)[1]) & FLOW_DIR_COLUMNS
+
+
+def test_a_real_sweep_has_nodes_and_arrows_for_every_grid_point(tmp_path):
+    from haemolynx.gui.results import perturbation_flow_direction_layer_name
+
+    result = _run(tmp_path, [PRESSURE_AND_PERICYTE_SWEEP]).results[0]
+    group = ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+    )
+    layers = {spec.name: spec for spec in group.layers}
+    nodes = layers[perturbation_layer_names(result.name)[1]]
+    arrows = layers[perturbation_flow_direction_layer_name(result.name)]
+    points = result.sweep_flows.n_points
+    assert len(nodes.sweep_rows) == len(arrows.sweep_rows) == points
+    # Each inlet pressure moves the nodes; every vessel carries flow at each.
+    inlet = list(result.graph.nodes).index(0)
+    pressures = [nodes.sweep_rows.at(row)[1]["pressure"][inlet] for row in range(points)]
+    assert len(set(pressures)) == len(result.sweep_flows.axis_values["inlet_pressure_pa"])
+    assert all(len(arrows.sweep_rows.at(row)[0]) == result.graph.number_of_edges() for row in range(points))
 
 
 def test_sweeps_want_a_napari_flow_layer():

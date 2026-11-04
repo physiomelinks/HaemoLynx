@@ -1015,6 +1015,50 @@ class LayerSpec:
     #: per grid point, in the grid's row order. Its network's sweep sliders
     #: swap them in (a spacing or length sweep moves the pericytes).
     sweep_points: Any | None = None
+    #: The same, made when the slider reaches a grid point rather than held
+    #: for every one: an object whose ``at(row)`` gives ``(data, features)``
+    #: (:class:`SweepNodeRows`, :class:`SweepArrowRows`).
+    sweep_rows: Any | None = None
+
+
+@dataclass(frozen=True, eq=False)
+class SweepNodeRows:
+    """A sweep's nodes at each grid point: the same points, with that point's
+    pressures (NaN at a node every vessel of which is unsolved, as a solved
+    network's nodes layer has them)."""
+
+    points: np.ndarray
+    #: Every column but ``pressure``, one value per point.
+    features: Mapping[str, np.ndarray]
+    #: ``(grid points, points)`` pressures, Pa.
+    pressure: np.ndarray
+
+    def __len__(self) -> int:
+        return int(self.pressure.shape[0])
+
+    def at(self, row: int) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        return self.points, {**self.features, "pressure": self.pressure[row]}
+
+
+@dataclass(frozen=True, eq=False)
+class SweepArrowRows:
+    """A sweep's flow-direction arrows at each grid point, picked from both
+    of every vessel's arrows by that point's flows
+    (:class:`haemolynx.visualization.flow_direction.SweepFlowArrows`)."""
+
+    arrows: Any
+    #: ``(grid points, edges)`` signed flows, in ``edges(keys=True)`` order.
+    flow_signed: np.ndarray
+    #: Feature columns left out (the axis components, when
+    #: ``flow_direction_colouring`` is off).
+    dropped: frozenset = frozenset()
+
+    def __len__(self) -> int:
+        return int(self.flow_signed.shape[0])
+
+    def at(self, row: int) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        data, features = self.arrows.at(self.flow_signed[row])
+        return data, {name: values for name, values in features.items() if name not in self.dropped}
 
 
 @dataclass(frozen=True)
@@ -2612,11 +2656,9 @@ class ResultLayers:
 
         flow0 = np.asarray(sweep.flow_abs_at(*([0] * len(sweep.axis_names))), dtype=float)
         columns["flow_abs"] = flow0[edge_index]
-        from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+        from haemolynx.haemodynamics.resistance import flow_abs_log10_values
 
-        columns["flow_abs_log10"] = np.asarray(
-            [flow_abs_log10_value(v) for v in flow0[edge_index]], dtype=float
-        )
+        columns["flow_abs_log10"] = flow_abs_log10_values(flow0[edge_index])
         signed0 = sweep.flow_signed_at(*([0] * len(sweep.axis_names)))
         directions = None
         if signed0 is not None:
@@ -2672,7 +2714,92 @@ class ResultLayers:
                 sweep_edge_index=edge_index,
                 sweep_directions=directions,
             ),
-        ) + self._sweep_pericyte_layers(result.name, graph, sweep)
+        ) + (
+            self._sweep_pericyte_layers(result.name, graph, sweep)
+            + self._sweep_node_layers(result.name, graph, sweep)
+            + self._sweep_arrow_layers(result.name, graph, sweep)
+        )
+
+    def _sweep_node_layers(self, name: str, graph: Any, sweep: Any) -> tuple[LayerSpec, ...]:
+        """The sweep's nodes, coloured by pressure, which its sliders move
+        (:class:`SweepNodeRows`). One colour range for the whole grid, so a
+        pressure sweep's nodes redden as the inlet pressure rises."""
+        grid = getattr(sweep, "node_pressure", None)
+        if grid is None:
+            return ()
+        points, ids = node_points(graph)
+        if not len(points):
+            return ()
+        position = {node: index for index, node in enumerate(getattr(sweep, "node_list", ()))}
+        columns = np.asarray([position.get(node, -1) for node in ids], dtype=int)
+        grid = np.asarray(grid, dtype=float)
+        pressure = np.where(columns >= 0, grid[:, np.clip(columns, 0, None)], np.nan)
+        unsolved = np.isnan(unsolved_node_pressures(graph, ids, np.zeros(len(ids))))
+        pressure[:, unsolved] = np.nan
+        rows = SweepNodeRows(
+            points=points,
+            features={
+                "node_id": ids,
+                "end": node_end_texts(graph, ids),
+                "degree": np.asarray([graph.degree(node) for node in ids], dtype=float),
+            },
+            pressure=pressure,
+        )
+        data, features = rows.at(0)
+        return (
+            LayerSpec(
+                kind="points",
+                name=perturbation_layer_names(name)[1],
+                data=data,
+                features=features,
+                colour_by="pressure",
+                colour_kind="continuous",
+                contrast_limits=_limits(pressure.ravel()),
+                visible=False,
+                options={"size": NODE_POINT_SIZE, "out_of_slice_display": True},
+                sweep_rows=rows,
+            ),
+        )
+
+    def _sweep_arrow_layers(self, name: str, graph: Any, sweep: Any) -> tuple[LayerSpec, ...]:
+        """The sweep's flow-direction arrows, which its sliders turn and hide
+        as each grid point's flows run (:class:`SweepArrowRows`), drawn as a
+        solved network's are."""
+        from haemolynx.visualization.flow_direction import sweep_flow_arrows
+
+        flow_signed = getattr(sweep, "flow_signed", None)
+        if flow_signed is None:
+            return ()
+        dropped = (
+            frozenset()
+            if self.settings.get("flow_direction_colouring", True)
+            else frozenset(FLOW_DIR_COLUMNS)
+        )
+        rows = SweepArrowRows(
+            arrows=sweep_flow_arrows(graph), flow_signed=np.asarray(flow_signed, dtype=float), dropped=dropped
+        )
+        data, features = rows.at(0)
+        if not len(rows.arrows.edge_index):
+            return ()
+        colour_by = FLOW_DIR_RGB_COLUMN if FLOW_DIR_RGB_COLUMN in features else None
+        return (
+            LayerSpec(
+                kind="vectors",
+                name=perturbation_flow_direction_layer_name(name),
+                data=data,
+                features=features,
+                colour_by=colour_by,
+                **_colouring(features, colour_by),
+                visible=False,
+                options={
+                    "vector_style": "triangle",
+                    "edge_width": 1.2,
+                    "length": float(self.settings.get("flow_arrow_scale", 1.0)),
+                    "out_of_slice_display": True,
+                },
+                sweep_rows=rows,
+            ),
+        )
 
     def _sweep_pericyte_layers(
         self, name: str, graph: Any, sweep: Any

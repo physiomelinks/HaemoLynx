@@ -16,7 +16,9 @@ Which vessels are blocked is chosen one of two ways:
   each vessel independently, so 10% of 50 vessels is always 5.
 * ``vessel_ids`` -- listed vessels, by the ``branchID`` the vessels layer's
   hover tooltip shows (the vessel's position in the graph's edge order), or
-  as ``[u, v, key]``.
+  as ``[u, v, key]``. The panel writes each as ``[branchID, u, v, key]``, so
+  one listed on a network since built again (its branchIDs naming other
+  vessels) is refused rather than blocking another vessel.
 
 After the perturbed network is re-solved, its *stopped* vessels -- the
 blocked ones and, once those are taken out, every vessel no inlet-to-outlet
@@ -231,6 +233,19 @@ def _edge_index(vessel_id: Any, edges: list, position: Mapping) -> int:
                 f"vessel branchID {index} is not in this network (0 to {len(edges) - 1})"
             )
         return index
+    if isinstance(vessel_id, (list, tuple)) and len(vessel_id) == 4:
+        # [branchID, u, v, key]: the vessel the panel saw at that branchID.
+        # A network built again since numbers its vessels anew.
+        index = _edge_index(vessel_id[0], edges, position)
+        listed = tuple(_hashable(part) for part in vessel_id[1:])
+        u, v, key = edges[index][:3]
+        if listed not in ((u, v, key), (v, u, key)):
+            raise ValueError(
+                f"vessel branchID {index} was the vessel {list(listed)} (u, v, key) when it "
+                f"was listed and is {[u, v, key]} in this network: it has been built again "
+                "since, and its branchIDs name other vessels. List the vessels to block again"
+            )
+        return index
     if isinstance(vessel_id, (list, tuple)) and len(vessel_id) == 3:
         # A tuple node id read back from a config file arrives as a list.
         u, v, key = (_hashable(part) for part in vessel_id)
@@ -321,14 +336,23 @@ def stopped_vessels(
     inlets and outlets, every vessel no inlet-to-outlet path runs along once
     those are taken out -- fed only through a block, it carries the block's
     leak and nothing else. Read from :data:`BLOCK_EDGE_ATTRIBUTE` and the
-    network's shape, never from the flows."""
+    network's shape, never from the flows.
+
+    The open ends the baseline's solve gave a boundary condition (kept on
+    the graph, :mod:`haemolynx.haemodynamics.open_ends`) can be either, as
+    they are when the solve marks its vessels: a vessel draining through
+    one is perfused."""
     from haemolynx.graph.connectivity import inlet_to_outlet_vessels
+    from haemolynx.haemodynamics.open_ends import conditions_on_graph
 
     edges = list(G.edges(keys=True, data=True))
     blocked = {(u, v, k) for u, v, k, d in edges if d.get(BLOCK_EDGE_ATTRIBUTE) == "blocked"}
     perfused = None
     if inlets and outlets:
-        perfused = inlet_to_outlet_vessels(nx.restricted_view(G, [], blocked), inlets, outlets)
+        opened = conditions_on_graph(G).nodes
+        perfused = inlet_to_outlet_vessels(
+            nx.restricted_view(G, [], blocked), [*inlets, *opened], [*outlets, *opened]
+        )
     return [
         (u, v, k, d)
         for u, v, k, d in edges
@@ -393,6 +417,7 @@ def compare_block_to_baseline(
     (:data:`FLUX_HETEROGENEITY_SUMMARY_ROWS`) count red cells by
     *red_cell_volume_fl* (the ``red_cell_volume_fl`` setting).
     """
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
     from haemolynx.statistics.bifurcation import (
         _branch_order_sort_key,
         branch_order_label,
@@ -522,7 +547,14 @@ def compare_block_to_baseline(
             # pipeline solved carries these zeros already; one solved by
             # hand does not, and this keeps the comparison right for it.
             zero_stopped_vessel_flows(G, inlets, outlets)
-        times = compute_transit_times(G, inlets, outlets)
+        # Measured as the statistics measure a network: each zero-resistance
+        # bridge's two ends one node, so its baseline rows are the CSV's.
+        measured, terminals_in, terminals_out = G, inlets, outlets
+        if any(d.get(IS_ZERO_RESISTANCE) for *_e, d in G.edges(data=True)):
+            measured, became = contract_bridges(G)
+            terminals_in = list(dict.fromkeys(became.get(n, n) for n in inlets))
+            terminals_out = list(dict.fromkeys(became.get(n, n) for n in outlets))
+        times = compute_transit_times(measured, terminals_in, terminals_out)
         for key, name in (
             ("Mean Transit Time (s)", "mean_transit_time_s"),
             ("Transit Time SD (s)", "transit_time_sd_s"),
@@ -533,7 +565,7 @@ def compare_block_to_baseline(
                 summary[f"{name}_{label}"] = times[key]
         if "Transit Time Status" in times:
             summary[f"transit_time_status_{label}"] = times["Transit Time Status"]
-        flux = compute_flux_heterogeneity(G, red_cell_volume_fl=red_cell_volume_fl)
+        flux = compute_flux_heterogeneity(measured, red_cell_volume_fl=red_cell_volume_fl)
         for key, name in FLUX_HETEROGENEITY_SUMMARY_ROWS:
             if key in flux:
                 summary[f"{name}_{label}"] = flux[key]

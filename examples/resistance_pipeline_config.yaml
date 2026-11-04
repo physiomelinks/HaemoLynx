@@ -1057,9 +1057,9 @@ perturbation_runs:
   perturbation_output_dir: null
   # After the pipeline, sweep pericyte constriction/dilation against inlet pressure (whole-brain example script only; prefer a pericyte_dilation_sweep perturbation in the panel)
   run_pericyte_dilation_sweep: true
-  # Start the pericyte constriction/dilation sweep at this percentage (negative = constriction, positive = dilation; scale = 1 + percent/100)  [percent; range -99..100]
+  # Start the pericyte constriction/dilation sweep at this percentage of every capillary's diameter (arterioles and venules keep theirs; negative = constriction, positive = dilation; scale = 1 + percent/100)  [percent; range -99..100]
   pericyte_dilation_min_percent: 1
-  # End the pericyte constriction/dilation sweep at this percentage (negative = constriction, positive = dilation)  [percent; range -99..100]
+  # End the pericyte constriction/dilation sweep at this percentage of every capillary's diameter (negative = constriction, positive = dilation)  [percent; range -99..100]
   pericyte_dilation_max_percent: 30
   # Step size along the pericyte constriction/dilation percent axis (positive step; percent itself may be negative)  [percent; range 1..100]
   pericyte_dilation_step_percent: 1
@@ -1075,7 +1075,7 @@ perturbation_runs:
   capillary_block_seed: 20240917
   # Draw the random block this many times -- from the seed, then the seeds after it -- and report each comparison metric's mean, standard deviation and 2.5-97.5% range over the draws, beside the first draw's own results. One draw is one outcome: which vessels a block happens to hit can matter as much as how many. Read when blocking by branch order and probability  [range 1..; needs capillary_block_selection = branch_order_probability]
   capillary_block_replicates: 1
-  # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
+  # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. The panel writes each as [branchID, u, v, key], so one listed on a network since built again is refused. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
   capillary_block_vessel_ids: []
   # Mask of the blocks: blobs on an otherwise empty volume, on the segmented image's grid; each blob (connected component) is one block, and blocks the vessel it lies in  [must exist if set]
   capillary_block_mask_path: null
@@ -1101,7 +1101,7 @@ perturbation_runs:
   capillary_dilation_max_percent: 30
   # Step size along the capillary constriction/dilation percent axis (positive step; percent itself may be negative)  [percent; range 1..100]
   capillary_dilation_step_percent: 1
-  # Fixed whole-network constriction/dilation for a pericyte spacing or length sweep (scale = 1 + percent/100; negative = constriction, positive = dilation); pressure stays at inlet_p_bc  [percent; range -99..100]
+  # Fixed constriction/dilation of every capillary for a pericyte spacing or length sweep, arterioles and venules keeping theirs (scale = 1 + percent/100; negative = constriction, positive = dilation); pressure stays at inlet_p_bc  [percent; range -99..100]
   pericyte_geometry_dilation_percent: 0
   # Start the pericyte spacing sweep at this centre-to-centre inter-site distance  [um; range 0.0..]
   constriction_spacing_min_um: 50.0

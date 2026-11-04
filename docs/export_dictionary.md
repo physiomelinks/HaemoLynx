@@ -386,10 +386,10 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. One
 | `overrides` | `-` | The settings it changed, as JSON. |
 | `inlet_pressure_pa` | `Pa` | Pressure held at the inlets for this point. |
 | `outlet_pressure_pa` | `Pa` | Pressure held at the outlets. |
-| `total_inlet_flow_m3_s` | `m^3/s` | Total flow into the network through its inlets. |
+| `total_inlet_flow_m3_s` | `m^3/s` | Total flow into the network: through its inlets, and through any vessel leaving the image that feeds it (open_end_model). |
 | `total_outlet_flow_m3_s` | `m^3/s` | Total flow through the outlets (negative: leaving). |
 | `flow_balance_error_m3_s` | `m^3/s` | Inlet plus outlet flow: 0 when flow is conserved. |
-| `equivalent_resistance_pa_s_per_m3` | `Pa.s/m^3` | The perturbed network's resistance: pressure drop over total inflow. |
+| `equivalent_resistance_pa_s_per_m3` | `Pa.s/m^3` | The perturbed network's resistance: pressure drop over the flow in through the inlets, as the run's network resistance. |
 | `baseline_equivalent_resistance_pa_s_per_m3` | `Pa.s/m^3` | The baseline network's, the same way. |
 | `delta_vs_baseline_pa_s_per_m3` | `Pa.s/m^3` | Perturbed minus baseline. |
 | `percent_change_vs_baseline` | `percent` | That change over the baseline. |
@@ -611,10 +611,10 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A d
 | `dilation_factor` | `dimensionless` | The same change as a scale on the diameter (1.1 for +10%). |
 | `inlet_pressure_pa` | `Pa` | Pressure held at the inlets for this point. |
 | `outlet_pressure_pa` | `Pa` | Pressure held at the outlets. |
-| `total_inlet_flow_m3_s` | `m^3/s` | Total flow into the network through its inlets. |
+| `total_inlet_flow_m3_s` | `m^3/s` | Total flow into the network: through its inlets, and through any vessel leaving the image that feeds it (open_end_model). |
 | `total_outlet_flow_m3_s` | `m^3/s` | Total flow through the outlets (negative: leaving). |
 | `flow_balance_error_m3_s` | `m^3/s` | Inlet plus outlet flow: 0 when flow is conserved. |
-| `equivalent_resistance_pa_s_per_m3` | `Pa.s/m^3` | The network's resistance: inlet minus outlet pressure over total inflow. |
+| `equivalent_resistance_pa_s_per_m3` | `Pa.s/m^3` | The network's resistance, as the run's network resistance: inlet minus outlet pressure over the flow in through the inlets. |
 
 ## `pericyte_spacing_sweep.csv, pericyte_length_sweep.csv`
 
@@ -628,10 +628,10 @@ Written to the perturbation's folder: perturbation_output_dir/{name}_{type}. A p
 | `dilation_factor` | `dimensionless` | The same change as a scale on the diameter (1.1 for +10%). |
 | `inlet_pressure_pa` | `Pa` | Pressure held at the inlets for this point. |
 | `outlet_pressure_pa` | `Pa` | Pressure held at the outlets. |
-| `total_inlet_flow_m3_s` | `m^3/s` | Total flow into the network through its inlets. |
+| `total_inlet_flow_m3_s` | `m^3/s` | Total flow into the network: through its inlets, and through any vessel leaving the image that feeds it (open_end_model). |
 | `total_outlet_flow_m3_s` | `m^3/s` | Total flow through the outlets (negative: leaving). |
 | `flow_balance_error_m3_s` | `m^3/s` | Inlet plus outlet flow: 0 when flow is conserved. |
-| `equivalent_resistance_pa_s_per_m3` | `Pa.s/m^3` | The network's resistance: inlet minus outlet pressure over total inflow. |
+| `equivalent_resistance_pa_s_per_m3` | `Pa.s/m^3` | The network's resistance, as the run's network resistance: inlet minus outlet pressure over the flow in through the inlets. |
 
 ## `{stem}_connectivity.csv`
 

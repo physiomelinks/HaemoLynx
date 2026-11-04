@@ -1,7 +1,8 @@
 """Pericyte dilation and inlet-pressure sweeps over a vascular network.
 
-Repeatedly re-solves one network while dilating its vessels and/or varying the
-inlet pressure, producing the flow and equivalent-resistance curves used to
+Repeatedly re-solves one network while dilating its capillaries (the vessels
+pericytes sit on: arterioles and venules keep their diameters) and/or varying
+the inlet pressure, producing the flow and equivalent-resistance curves used to
 compare pericyte tone between conditions.
 
 Kept here rather than in an example because both the whole-network solve and
@@ -29,12 +30,14 @@ import numpy as np
 import scipy.sparse as sp
 
 from .apply import apply_final_resistance_overrides
+from .capillary import dilate_capillaries
 from .constriction_strategy import (
     constriction_strategy_kwargs,
+    placed_pericyte_mask,
     set_resistances_for_constriction_strategy,
 )
 from .haematocrit_distribution import JUNCTION_RULE_NO_SEPARATION, iterate_flow_and_haematocrit
-from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
+from .poiseuille import PoiseuilleModel
 from .viscosity import run_diameter_basis, run_viscosity_law
 from .resistance import (
     FLOW_SOLVER_DENSE,
@@ -103,14 +106,20 @@ def solve_pressure_and_boundary_flow(
     outlet_p_bc: float,
     inlet_nodes: list[int],
     outlet_nodes: list[int],
+    resistance_inlet_nodes: list[int] | None = None,
 ) -> dict[str, Any]:
     """Solve nodal pressures and total flow through the boundary node sets.
 
     Returns the pressure field, the flow summed over the inlets and over the
-    outlets, and the network's equivalent resistance.
+    outlets, and the network's equivalent resistance: the drop over the flow
+    in through *resistance_inlet_nodes* (every inlet when None).
     """
     return unit_pressure_solve(
-        conductance, node_list, inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes
+        conductance,
+        node_list,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
+        resistance_inlet_nodes=resistance_inlet_nodes,
     ).at(inlet_p_bc, outlet_p_bc)
 
 
@@ -139,6 +148,10 @@ class UnitPressureSolve:
     connected: bool
     #: Nodes listed as both an inlet and an outlet.
     both_ends: tuple
+    #: Flow per Pa of drop in through the designated inlets alone, which the
+    #: equivalent resistance divides by as the run's network resistance does;
+    #: None when every inlet is designated (no open end's ghost among them).
+    resistance_inlet_flow: float | None = None
 
     def at(self, inlet_p_bc: float, outlet_p_bc: float) -> dict[str, Any]:
         """Pressures, boundary flows and equivalent resistance at these pressures."""
@@ -158,10 +171,15 @@ class UnitPressureSolve:
             )
         pressure = np.where(self.reached, outlet_p_bc + drop * self.pressure, 0.0)
         total_inlet_flow = drop * self.inlet_flow
+        # The totals count the open ends' flows too, so the balance closes;
+        # the resistance is the designated inlets', as the run's own is.
+        resistance_inflow = drop * (
+            self.inlet_flow if self.resistance_inlet_flow is None else self.resistance_inlet_flow
+        )
         # Exact zero only: flows are in m^3/s and physiologically ~1e-14, so any
         # absolute tolerance would swallow every real result.
         equivalent_resistance = (
-            np.inf if total_inlet_flow == 0.0 else drop / total_inlet_flow
+            np.inf if resistance_inflow == 0.0 else drop / resistance_inflow
         )
         return {
             "pressure": pressure,
@@ -177,9 +195,14 @@ def unit_pressure_solve(
     *,
     inlet_nodes: list[int],
     outlet_nodes: list[int],
+    resistance_inlet_nodes: list[int] | None = None,
 ) -> UnitPressureSolve:
     """Solve *conductance* once at a unit pressure drop -- see
     :class:`UnitPressureSolve` for how that answers every other drop.
+
+    *resistance_inlet_nodes* are the inlets whose inflow the equivalent
+    resistance divides by: the designated ones, when *inlet_nodes* also holds
+    an open end's ghost (:func:`haemolynx.haemodynamics.open_ends.augment`).
 
     A ``scipy.sparse`` *conductance* (``haemodynamics_solver="sparse"``) is
     solved by sparse LU, to the same pressures to rounding."""
@@ -274,6 +297,11 @@ def unit_pressure_solve(
         outlet_flow=_boundary_flow(outlet_nodes),
         connected=connected,
         both_ends=tuple(both_ends),
+        resistance_inlet_flow=(
+            None
+            if resistance_inlet_nodes is None
+            else _boundary_flow(n for n in resistance_inlet_nodes if n in node_to_idx)
+        ),
     )
 
 
@@ -333,11 +361,15 @@ def solve_sweep_point(
     conductance, node_list = build_conductance_matrix_from_graph(G, solver=solver)
     matrix, names, _index, extra_in, extra_out = augment(conductance, list(node_list), open_ends)
     unit = unit_pressure_solve(
-        matrix, names, inlet_nodes=[*inlet_nodes, *extra_in], outlet_nodes=[*outlet_nodes, *extra_out]
+        matrix,
+        names,
+        inlet_nodes=[*inlet_nodes, *extra_in],
+        outlet_nodes=[*outlet_nodes, *extra_out],
+        resistance_inlet_nodes=list(inlet_nodes) if extra_in else None,
     )
     if open_ends:
         # The ghosts' flows stay in the totals (every drop of blood in and
-        # out); their pressures are not the graph's.
+        # out), not in the resistance; their pressures are not the graph's.
         n = len(node_list)
         unit = dataclasses.replace(unit, pressure=unit.pressure[:n], reached=unit.reached[:n])
     return unit, list(node_list), iterated
@@ -395,14 +427,14 @@ def haematocrit_sweep_report(iterations: Sequence[dict[str, Any] | None]) -> dic
     }
 
 
-def dilate_graph_diameters(
-    G: nx.MultiGraph, dilation_factor: float
-) -> nx.MultiGraph:
-    """A copy of *G* with every measured FWHM diameter scaled."""
-    dilated = G.copy()
-    for _, _, _, edge_data in dilated.edges(keys=True, data=True):
-        scale_stored_edge_diameters(edge_data, dilation_factor)
-    return dilated
+def is_capillary_custom_edge(G: nx.MultiGraph, pair: Sequence[Any]) -> bool:
+    """Whether a ``custom_edges`` pair ``(u, v)`` names a capillary of *G*,
+    so a pericyte sweep's capillary dilation reaches its fixed diameter."""
+    from .constriction import is_capillary_branch_order
+
+    u, v = pair
+    edges = G.get_edge_data(u, v) or G.get_edge_data(v, u) or {}
+    return any(is_capillary_branch_order(data.get("branch_order")) for data in edges.values())
 
 
 def inclusive_int_range(
@@ -448,6 +480,7 @@ def _apply_sweep_resistances(
     dilation_factor: float,
     sweep_dilation: bool,
     poiseuille_model: PoiseuilleModel,
+    pericyte_mask_placed=None,
 ) -> nx.MultiGraph:
     """Resistances for one sweep grid point.
 
@@ -469,7 +502,9 @@ def _apply_sweep_resistances(
         G, _strategy, _strategy_results = set_resistances_for_constriction_strategy(
             G,
             **constriction_strategy_kwargs(
-                settings, diameter_by_branch_order=scaled_diameters
+                settings,
+                diameter_by_branch_order=scaled_diameters,
+                pericyte_mask_placed=pericyte_mask_placed,
             ),
         )
     else:
@@ -479,7 +514,13 @@ def _apply_sweep_resistances(
             prefer_edge_fwhm_diameter=True,
         )
 
-    apply_baseline_overrides(G, settings, poiseuille_model, custom_edge_diameter_scale=dilation_factor)
+    apply_baseline_overrides(
+        G,
+        settings,
+        poiseuille_model,
+        custom_edge_diameter_scale=dilation_factor,
+        scaled_custom_edge=is_capillary_custom_edge,
+    )
     return G
 
 
@@ -489,16 +530,28 @@ def apply_baseline_overrides(
     poiseuille_model: PoiseuilleModel,
     *,
     custom_edge_diameter_scale: float = 1.0,
+    scaled_custom_edge: Callable[[nx.MultiGraph, Sequence[Any]], bool] | None = None,
 ) -> None:
     """The baseline's own last resistance writes (custom edges, thick-vessel
-    bridges), redone on a perturbed graph so those edges match the baseline."""
-    apply_final_resistance_overrides(
-        G,
-        poiseuille_model,
-        custom_edges=settings.get("custom_edges"),
-        custom_edge_diameter=settings.get("custom_edge_diameter"),
-        custom_edge_diameter_scale=custom_edge_diameter_scale,
-    )
+    bridges), redone on a perturbed graph so those edges match the baseline.
+
+    *custom_edge_diameter_scale* scales the custom edges' fixed diameter with
+    a dilation: every one's, or, given *scaled_custom_edge*, only those it
+    says the dilation reaches (a capillary dilation's capillaries)."""
+    custom = settings.get("custom_edges") or []
+    pairs = list(custom.keys() if isinstance(custom, Mapping) else custom)
+    groups = [(pairs, custom_edge_diameter_scale)]
+    if scaled_custom_edge is not None and custom_edge_diameter_scale != 1.0:
+        scaled = [pair for pair in pairs if scaled_custom_edge(G, pair)]
+        groups = [([pair for pair in pairs if pair not in scaled], 1.0), (scaled, custom_edge_diameter_scale)]
+    for edges, scale in groups:
+        apply_final_resistance_overrides(
+            G,
+            poiseuille_model,
+            custom_edges=edges,
+            custom_edge_diameter=settings.get("custom_edge_diameter"),
+            custom_edge_diameter_scale=scale,
+        )
 
 
 def run_pericyte_dilation_pressure_sweep(
@@ -510,6 +563,8 @@ def run_pericyte_dilation_pressure_sweep(
     output_dir: Path | str,
     sweep_dilation: bool = True,
     sweep_pressure: bool = True,
+    pericyte_mask_placed=None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Sweep dilation and/or inlet pressure, writing a CSV of curves.
 
@@ -519,16 +574,25 @@ def run_pericyte_dilation_pressure_sweep(
     * dilation only — pericyte tone at the run's fixed ``inlet_p_bc``
     * pressure only — inlet pressure on the undilated network
 
-    When dilation is swept, each grid point dilates diameters then applies the
-    existing constriction strategy (periodic / probabilistic / mask) using the
+    When dilation is swept, each grid point dilates the capillaries' diameters
+    (arterioles and venules keep theirs) then applies the existing constriction
+    strategy (periodic / probabilistic / mask) using the
     merged *settings*, so ``constriction_length_um``, ``constriction_spacing_um``
     and probability flags change the resistances. Pressure-only sweeps stay on
     uniform Poiseuille.
+
+    *pericyte_mask_placed* is the pericyte mask read and placed once
+    (:func:`~haemolynx.haemodynamics.constriction_strategy.placed_pericyte_mask`);
+    without it a mask the settings name is read and placed here, once, for
+    every grid point. *heartbeat* is called at each grid point: a cancelled
+    run raises from it.
     """
     if not sweep_dilation and not sweep_pressure:
         raise ValueError(
             "A sweep must vary dilation, inlet pressure, or both; got neither."
         )
+    if sweep_dilation and pericyte_mask_placed is None:
+        pericyte_mask_placed = placed_pericyte_mask(G, settings)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -552,12 +616,12 @@ def run_pericyte_dilation_pressure_sweep(
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
+        if heartbeat is not None:
+            heartbeat()
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
-        dilated = dilate_graph_diameters(G, dilation_factor)
-        scaled_diameters = {
-            branch_order: float(diameter_um) * dilation_factor
-            for branch_order, diameter_um in diameter_by_branch_order.items()
-        }
+        dilated, scaled_diameters, _capillaries, _measured = dilate_capillaries(
+            G, diameter_by_branch_order, dilation_factor
+        )
 
         def recompute_resistances(
             graph=dilated, scaled=scaled_diameters, factor=dilation_factor
@@ -569,6 +633,7 @@ def run_pericyte_dilation_pressure_sweep(
                 dilation_factor=factor,
                 sweep_dilation=sweep_dilation,
                 poiseuille_model=poiseuille_model,
+                pericyte_mask_placed=pericyte_mask_placed,
             )
 
         recompute_resistances()
@@ -664,6 +729,7 @@ def run_arteriole_dilation_pressure_sweep(
     output_dir: Path | str,
     sweep_dilation: bool = True,
     sweep_pressure: bool = True,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Sweep arteriole whole-branch diameter and/or inlet pressure.
 
@@ -674,7 +740,8 @@ def run_arteriole_dilation_pressure_sweep(
     placed.
 
     *sweep_dilation* and *sweep_pressure* choose which axes move; both True is
-    the combined arteriole×pressure sweep.
+    the combined arteriole×pressure sweep. *heartbeat* is called at each grid
+    point.
     """
     if not sweep_dilation and not sweep_pressure:
         raise ValueError(
@@ -706,6 +773,8 @@ def run_arteriole_dilation_pressure_sweep(
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
+        if heartbeat is not None:
+            heartbeat()
         scale = percent_change_to_scale(float(dilation_percent))
         scaled, scaled_table, _summary = scale_arteriole_diameters(
             G,
