@@ -20,6 +20,7 @@ import pytest
 
 SUBPACKAGES = [
     "haemolynx",
+    "haemolynx.classifier",
     "haemolynx.graph",
     "haemolynx.io",
     "haemolynx.haemodynamics",

@@ -60,12 +60,12 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
     output_dir = Path(output_dir)
 
     from haemolynx.io.ilastik import ilastik_segmented_stem
-    from haemolynx.pipeline.stages import ilastik_segments
+    from haemolynx.pipeline.naming import segments_raw_image
 
-    # Named as the stages name them: ilastik's output only while ilastik
-    # segments (its switch on and a raw image to segment).
+    # Named as the stages name them: the segmentation's output only while
+    # ilastik or the classifier segments (a switch on and a raw image to segment).
     input_path = settings.get("input_path")
-    if ilastik_segments(settings):
+    if segments_raw_image(settings):
         stem = ilastik_segmented_stem(settings["raw_image_path"])
     else:
         stem = Path(input_path).stem if input_path else "input"
@@ -297,10 +297,10 @@ def check_input_is_not_a_large_vessel_mask(
     """
     if network_is_synthetic(settings):
         return CheckReport()  # no image: nothing here applies
-    from haemolynx.pipeline.stages import ilastik_segments
+    from haemolynx.pipeline.naming import segments_raw_image
 
     report = CheckReport()
-    if ilastik_segments(settings):
+    if segments_raw_image(settings):
         return report
     input_path = settings.get("input_path")
     if not input_path:
@@ -417,7 +417,11 @@ def check_boundary_selection(settings: Mapping[str, Any]) -> CheckReport:
                 f"{names[listed]} (on the Boundaries tab), or choose another method."
             )
     if banded and settings.get("boundary_axis") == 0:
-        image = settings.get("raw_image_path") if settings.get("use_ilastik_segmentation") else settings.get("input_path")
+        image = (
+            settings.get("raw_image_path")
+            if settings.get("use_ilastik_segmentation") or settings.get("use_pixel_classifier_segmentation")
+            else settings.get("input_path")
+        )
         header = _tiff_header(image, axis_order_for_run(settings))
         if header is not None and (len(header[0]) == 2 or header[0][0] == 1):
             report.add_warning(
@@ -898,9 +902,9 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
 
     from haemolynx.io import voxel_size_zyx_from_xyz
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.pipeline.naming import segments_raw_image
     from haemolynx.pipeline.stages import (
         current_ilastik_output,
-        ilastik_segments,
         load_volume_for_skeletonise,
         segment,
     )
@@ -909,10 +913,10 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
 
     local_settings = dict(settings)
     segmented = None
-    if ilastik_segments(settings):
+    if segments_raw_image(settings):
         # Never segment here: preflight runs on the panel's own thread, and
-        # ilastik can take hours. Only an output a run of these settings
-        # already made is scored.
+        # a segmentation can take hours. Only an output a run of these
+        # settings already made is scored.
         segmented, why_not = current_ilastik_output(settings)
         if segmented is None:
             report.add_warning(
@@ -1008,6 +1012,8 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
     users = [
         name for name, on in (
             ("use_ilastik_segmentation", settings.get("use_ilastik_segmentation")),
+            ("use_pixel_classifier_segmentation",
+             settings.get("use_pixel_classifier_segmentation") and not settings.get("use_ilastik_segmentation")),
             ("measure_diameters_from_raw_image",
              settings.get("run_haemodynamics", True) and settings.get("measure_diameters_from_raw_image")),
         ) if on
@@ -1022,7 +1028,9 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
                 "the raw image, set raw_image_path (and raw_image_channel for a multi-channel "
                 "file) on the Input tab."
             )
-        if settings.get("use_ilastik_segmentation"):
+        segmenting = [name for name in ("use_ilastik_segmentation", "use_pixel_classifier_segmentation")
+                      if name in users]
+        if segmenting:
             # input_path's own must_exist check stands down while ilastik is
             # on (it is what ilastik would produce); here it is what is read.
             exists, detail = resolve_existing_path(settings.get("input_path"))
@@ -1030,7 +1038,7 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
                 report.add_pass("input_path", detail)
             else:
                 report.add_error(
-                    "use_ilastik_segmentation is on without a raw image to segment, and the "
+                    f"{segmenting[0]} is on without a raw image to segment, and the "
                     f"segmented image it would read instead is not there (input_path: {detail}). "
                     "Fix: set raw_image_path for ilastik, or input_path for a segmented image."
                 )
@@ -1510,6 +1518,11 @@ def check_downsample_on_import(settings: Mapping[str, Any]) -> CheckReport:
             f"raw_image_downsample is {raw}x, but ilastik segments the whole raw file as its "
             "project was trained on it; the choice applies to the raw image read afterwards."
         )
+    elif raw > 1 and settings.get("use_pixel_classifier_segmentation"):
+        report.add_warning(
+            f"raw_image_downsample is {raw}x, but the classifier segments the whole raw file at "
+            "its own voxel size; the choice applies to the raw image read afterwards."
+        )
     detail = f"segmented image {segmented}x"
     if settings.get("raw_image_path"):
         # A raw image left at none is read on the segmented image's grid too.
@@ -1587,6 +1600,7 @@ def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
         )
     unread = [
         ("use_ilastik_segmentation", "nothing is segmented"),
+        ("use_pixel_classifier_segmentation", "nothing is segmented"),
         ("measure_diameters_from_raw_image", "the vessels keep the widths they were drawn with"),
         ("automated_vessel_assignment", "the generator chooses the inlets, outlets and boundary nodes"),
         ("use_thick_vessel_skeletonisation", "nothing is skeletonised"),
@@ -1746,6 +1760,92 @@ def _check_surround_shell_room(settings: Mapping[str, Any], image, boundaries) -
     return report
 
 
+def pixel_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str, Any, str]]:
+    """``(path setting, path, purpose)`` for each HaemoLynx classifier the
+    run will apply: the main image's, and each vessel-mask role's."""
+    from haemolynx.graph.boundaries import vessel_mask_classifier_in_use
+    from haemolynx.pipeline.naming import classifier_segments
+
+    found = []
+    if classifier_segments(settings):
+        found.append(("pixel_classifier_path", settings.get("pixel_classifier_path"), "vessels"))
+    if settings.get("raw_image_path") not in (None, "") and not network_is_synthetic(settings):
+        for role in ("large", "small"):
+            if vessel_mask_classifier_in_use(settings, role):
+                name = f"pixel_classifier_{role}_vessel_path"
+                found.append((name, settings.get(name), "vessel_classes"))
+        from haemolynx.pipeline.stages import OBJECT_MASKS, object_masks_made
+
+        for word in object_masks_made(settings):
+            name = OBJECT_MASKS[word].classifier_setting
+            found.append((name, settings.get(name), word))
+    return found
+
+
+def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
+    """Each classifier the run applies is a HaemoLynx classifier trained for
+    its job (vessels for the main image; arterioles and venules for a mask
+    role), shown what it is to find, and reading channels the raw image has."""
+    report = CheckReport()
+    classifiers = pixel_classifiers_in_effect(settings)
+    if not classifiers:
+        return report
+    from haemolynx.classifier import read_classifier_record
+    from haemolynx.classifier.model import PURPOSES
+    from haemolynx.io.channels import tiff_channels
+
+    raw = settings.get("raw_image_path")
+    try:
+        channel_count = len(tiff_channels(raw)) if raw and Path(raw).is_file() else None
+    except Exception:  # noqa: BLE001 - an unreadable raw image is reported elsewhere
+        channel_count = None
+    for name, path, purpose in classifiers:
+        if path in (None, "") or not Path(path).is_file():
+            continue  # check_settings reports a missing file
+        try:
+            record = read_classifier_record(path)
+        except (OSError, ValueError) as error:
+            report.add_error(f"{name}: {error}")
+            continue
+        if record.get("purpose") != purpose:
+            wanted = " and ".join(PURPOSES[purpose][1:])
+            report.add_error(
+                f"{name}: {Path(path).name} was trained to find "
+                f"{' and '.join(record.get('labels', [])[1:])}, not {wanted}. Fix: train one for this "
+                "job in the training window."
+            )
+            continue
+        counts = record.get("voxels_per_label") or {}
+        found = PURPOSES[purpose][1]
+        if not counts.get(found):
+            report.add_error(f"{name}: {Path(path).name} was never shown any {found} voxels.")
+            continue
+        channels = [c for c in (record.get("spec") or {}).get("channels", [None]) if c is not None]
+        if channel_count is not None:
+            problem = None
+            missing = [c for c in channels if c >= channel_count]
+            if channels and channel_count <= 1:
+                problem = (
+                    f"reads channel(s) {', '.join(f'C{c + 1}' for c in channels)}, but the raw image "
+                    "has one channel"
+                )
+            elif missing:
+                problem = (
+                    f"reads channel(s) {', '.join(f'C{c + 1}' for c in missing)}, which the raw image "
+                    f"({channel_count} channels) does not have"
+                )
+            elif not channels and channel_count > 1:
+                problem = (
+                    f"was trained on a one-channel image, but the raw image has {channel_count} "
+                    "channels. Fix: train it on the channels it should read"
+                )
+            if problem:
+                report.add_error(f"{name}: {Path(path).name} {problem}.")
+                continue
+        report.add_pass(name, f"{Path(path).name}: " + ", ".join(f"{k} {v}" for k, v in counts.items()) + " voxels")
+    return report
+
+
 def preflight(
     settings: Mapping[str, Any], schema: Schema, *, echo: bool = True, resume: Any = None
 ) -> CheckReport:
@@ -1766,12 +1866,15 @@ def preflight(
     # a switch the Input tab hides (an ilastik classifier, a vessel mask) is
     # not demanded, since check_settings reads a path's own gate only.
     skip: tuple[str, ...] = ("raw_image_path",)
+    from haemolynx.pipeline.naming import classifier_segments, segments_raw_image
     from haemolynx.pipeline.stages import ilastik_segments, resumed_image_readers, segmented_input_path
 
     if settings.get("use_ilastik_segmentation") and not ilastik_segments(settings):
         # Its switch is out of effect without a raw image (segment reads the
         # segmented image instead), so the project is not read either.
         skip += ("ilastik_classifier_path",)
+    if settings.get("use_pixel_classifier_segmentation") and not classifier_segments(settings):
+        skip += ("pixel_classifier_path",)
     if network_is_synthetic(settings):
         skip += tuple(
             setting.name for setting in schema if setting.must_exist and setting.name != "synthetic_template_path"
@@ -1791,7 +1894,7 @@ def preflight(
     report = check_settings(schema, settings, skip=skip)
     if unread:
         report.add_pass("input_path", "not read: the run goes on from the saved network")
-    elif readers and not ilastik_segments(settings) and not resolve_existing_path(settings.get("input_path"))[0]:
+    elif readers and not segments_raw_image(settings) and not resolve_existing_path(settings.get("input_path"))[0]:
         from haemolynx.pipeline.progress import STAGES
 
         tab = next((s.tab or s.title for s in STAGES if s.call == resume.start_from), resume.start_from)
@@ -1804,6 +1907,7 @@ def preflight(
     report.extend(check_ilastik_executable(settings))
     report.extend(check_ilastik_vessel_labels(settings))
     report.extend(check_ilastik_vessel_mask_channels(settings))
+    report.extend(check_pixel_classifiers(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
     report.extend(check_boundary_selection(settings))

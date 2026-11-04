@@ -32,8 +32,10 @@ from haemolynx.graph.boundaries import (
     manual_vessel_boundaries_read,
     network_is_synthetic,
     vessel_classes_by_size,
+    vessel_mask_classifier_in_use,
     vessel_mask_files_in_use,
     vessel_masks_in_use,
+    vessel_masks_segmented_from_raw,
 )
 from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS, global_vessel_mask_roles
 from haemolynx.io.batch_matching import FILE_ROLES, BatchFolders, BatchMatch, FileRole, file_role
@@ -80,11 +82,14 @@ SMALL_MASK_BOUNDARY_ROLES = ("arteriole_boundary", "venule_boundary")
 
 
 def batch_from_raw(settings: Mapping[str, Any]) -> bool:
-    """Whether a batch on *settings* lists raw images for ilastik to segment
-    (``use_ilastik_segmentation``) rather than segmented images. Its raw
-    image is each image's own, so the switch is read whatever the panel's
-    one raw image row holds."""
-    return bool(settings.get("use_ilastik_segmentation")) and not network_is_synthetic(settings)
+    """Whether a batch on *settings* lists raw images to segment -- by ilastik
+    (``use_ilastik_segmentation``) or the HaemoLynx classifier
+    (``use_pixel_classifier_segmentation``) -- rather than segmented images.
+    Its raw image is each image's own, so the switches are read whatever the
+    panel's one raw image row holds."""
+    return bool(
+        settings.get("use_ilastik_segmentation") or settings.get("use_pixel_classifier_segmentation")
+    ) and not network_is_synthetic(settings)
 
 
 def _readers(schema: Schema, setting: str, settings: Mapping[str, Any]) -> list[tuple[str, Any]]:
@@ -188,7 +193,7 @@ def batch_mask_sizes(settings: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(
         size
         for size, names in VESSEL_MASK_SETTINGS.items()
-        if vessel_mask_files_in_use(settings, size) and not settings.get(names["use_ilastik"])
+        if vessel_mask_files_in_use(settings, size) and not vessel_masks_segmented_from_raw(settings, size)
     )
 
 
@@ -273,8 +278,14 @@ def _inlets_not_from_masks(settings: Mapping[str, Any]) -> str:
         # ilastik makes a role's masks from its classifiers: a venule one is
         # what it needs, not a file.
         by_ilastik = all(settings.get(VESSEL_MASK_SETTINGS[size]["use_ilastik"]) for size in global_sizes)
+        by_classifier = all(vessel_mask_classifier_in_use(settings, size) for size in global_sizes)
+        given = (
+            "a venule classifier" if by_ilastik
+            else "a classifier shown venules too" if by_classifier
+            else "a venule mask"
+        )
         fix = (
-            f"give each image {'a venule classifier' if by_ilastik else 'a venule mask'} beside "
+            f"give each image {given} beside "
             f"its arteriole one ({' and '.join(global_sizes)}): without one the masks tell no "
             "inlet from an outlet"
         )
@@ -355,12 +366,12 @@ def check_batch(
         return report
     if folders is not None and folders.from_raw != batch_from_raw(settings):
         report.add_error(
-            "use_ilastik_segmentation is on, so a batch's images are its raw folder's, "
-            "for ilastik to segment, but these were matched in the segmented folder: "
-            "match the folders again."
+            "ilastik or the classifier segments the raw images, so a batch's images are its "
+            "raw folder's, but these were matched in the segmented folder: match the folders again."
             if batch_from_raw(settings)
-            else "These images were matched in the raw folder, for ilastik to segment, "
-            "but use_ilastik_segmentation is off: match the folders again."
+            else "These images were matched in the raw folder, to be segmented, but neither "
+            "use_ilastik_segmentation nor use_pixel_classifier_segmentation is on: match the "
+            "folders again."
         )
     for role in FILE_ROLES:
         _check_one_file(
@@ -577,6 +588,35 @@ def ilastik_output_paths(settings: Mapping[str, Any]) -> list[Path]:
     return files
 
 
+def classifier_output_paths(settings: Mapping[str, Any]) -> list[Path]:
+    """The masks the HaemoLynx classifier writes in ``output_dir``, each with
+    its record beside it: the main image's while it segments it, and each
+    vessel-mask role's while it makes them (arteriole and venule, or one
+    global mask for a classifier never shown a venule)."""
+    from haemolynx.io.ilastik import sidecar_path
+    from haemolynx.io.vessel_masks import classifier_finds_venules, ilastik_vessel_mask_output_path
+    from haemolynx.pipeline.naming import CLASSIFIER_OUTPUT_SUFFIX, classifier_segmented_path, classifier_segments
+
+    files: list[Path] = []
+    raw = settings.get("raw_image_path")
+    if raw in (None, "") or network_is_synthetic(settings):
+        return files
+    if classifier_segments(settings):
+        main = Path(os.path.abspath(classifier_segmented_path(settings)))
+        files.extend((main, sidecar_path(main)))
+    folder = settings.get("output_dir") or "."
+    for role, names in VESSEL_MASK_SETTINGS.items():
+        if not vessel_mask_classifier_in_use(settings, role):
+            continue
+        venules = classifier_finds_venules(settings.get(names["classifier_path"]))
+        for vessel_class in (("arteriole", "venule") if venules else ("global",)):
+            mask = Path(os.path.abspath(
+                ilastik_vessel_mask_output_path(folder, raw, role, vessel_class, CLASSIFIER_OUTPUT_SUFFIX)
+            ))
+            files.extend((mask, sidecar_path(mask)))
+    return files
+
+
 def output_paths(settings: Mapping[str, Any]) -> tuple[list[Path], list[Path]]:
     """``(files, folders)`` a run writes, from its settings (a batch's from
     one image's :func:`item_settings`): each stage's checkpoint, its
@@ -608,6 +648,7 @@ def output_paths(settings: Mapping[str, Any]) -> tuple[list[Path], list[Path]]:
     files.append(folder / f"{stem}{SUFFIX}.part")
     files.extend(folder / name.replace("{stem}", stem) for name in run_names)
     files.extend(ilastik_output_paths(settings))
+    files.extend(classifier_output_paths(settings))
     folders = [folder]
     for setting in OUTPUT_FOLDERS:
         if settings.get(setting) not in (None, ""):
@@ -692,6 +733,7 @@ __all__ = [
     "check_output_path_lengths",
     "default_output_root",
     "ilastik_output_paths",
+    "classifier_output_paths",
     "image_output_folder",
     "item_settings",
     "output_paths",

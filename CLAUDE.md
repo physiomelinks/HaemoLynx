@@ -12,6 +12,11 @@ HaemoLynx turns 3D microvascular microscopy into **NetworkX graphs** with haemod
 haemolynx/
 ├── src/haemolynx/          # Installable package (setuptools; pytest's pythonpath is src and scripts)
 │   ├── geometry.py         # Polyline arc length, shared by haemodynamics and visualization
+│   ├── classifier/         # HaemoLynx's own pixel classifier (ilastik's way, in the panel):
+│   │                       #   features.py (the filter bank, exact in any box), forest.py
+│   │                       #   (the forest as plain arrays, its own walk), model.py (the
+│   │                       #   .haemoclf file), apply.py (a raw image segmented block by
+│   │                       #   block), preview.py (the plane in view, as labels are painted)
 │   ├── io/                 # load.py (TIFF/H5 -> skeleton), load_2d.py (a 2D image as a
 │   │                       #   z=1 volume), crop.py (crop on import: one box of voxels cut
 │   │                       #   from the image and every volume read alongside it, the box
@@ -345,6 +350,21 @@ label set (`io.load._warn_minority_guess`).
 
 Users may also supply **pre-segmented** masks only (no ilastik call) — typical for tutorial data and many tests.
 
+**The HaemoLynx classifier** (`haemolynx.classifier`, Harvey's request 2026-11-04) is the in-repo
+alternative to ilastik, trained in the panel: each classifier row's "Train..." opens
+`_widget._ClassifierTrainingWindow` (pure parts: `gui/classifier_training.py`), where painted labels
+train a random forest and only the plane in view is classified (`classifier.preview.LiveClassifier`).
+Its switches (`use_pixel_classifier_segmentation`, `use_pixel_classifier_{large,small}_vessel_segmentation`,
+`use_pixel_classifier_{pericyte,block}_segmentation`, each hidden while ilastik's is on) segment the
+run's raw image into `output_dir` (`{raw stem}_segmented.tif`, `..._{role}_{class}_segmented.tif`,
+`..._{pericytes,blocks}_segmented.tif`), reused by their `.haemolynx.json` record; "segmented from
+raw" is asked through `naming.segments_raw_image` / `graph.vessel_masks_segmented_from_raw`, never
+the raw switches. Rules a change must keep: a voxel's features are the whole volume's in any box
+(`feature_halo`), the forest votes as scikit-learn's did (float32 thresholds rounded down), the
+numba walk and the NumPy walk give the same labels, and a segmentation is bit for bit the same in
+RAM or low-RAM (`use_memmap_loading`), with any workers or box size (`tests/test_pixel_classifier.py`).
+Only training needs scikit-learn (`dev` and `napari` extras); a `.haemoclf` holds no pickle.
+
 **One raw image per run.** The Input tab's `raw_image_path`, `raw_image_channel` and
 `raw_image_stain` are the only raw image a run reads: ilastik segments it (the vessel masks'
 classifiers too, by their own channels), the Diameters stage
@@ -469,6 +489,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | Change area | Typical test location |
 |-------------|----------------------|
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_vessel_mask_split.py` (the large masks cut by width: tubes of known width, anisotropic grids, the dilation, thin masks read on the segmentation, a touching vessel lending no width, low-RAM bit for bit, the switches and preflight, a run's tiers with full and thin masks, a resumed run cut again), `test_ilastik_vessel_mask_channels.py` (the vessel masks' classifiers given their channels of the raw image: the channel file, reuse, the loader, preflight, the retired input files), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties, a batch of raw images, each image's other files) |
+| `src/haemolynx/classifier/` | `tests/test_pixel_classifier.py` (features exact in any box, the forest against scikit-learn, compiled walk `==` NumPy walk, the file, low-RAM `==` in-RAM, the plane preview `==` the whole image's plane), `test_classifier_pipeline.py` (the Segment stage, the vessel masks and global masks, pericyte and block masks, preflight, batches, citations), `test_gui_classifier_training_widget.py` (the window in the real panel) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_tree.py` (the large-stack tree and the join's bounded last resort; digests of the in-RAM skeleton), `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py` (the split, and one fixture per bridge shape of `thick_vessel_bridge_shapes`), `test_thick_bridge_review_grid.py` (the Phase 5 grid's cases), `test_junction_bridges.py` (the rule on tubes of known width, putting bridges back, branch orders unchanged, resistance, the Diameters stage, post processing's re-judging and the network handling), `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_doubled_stretches.py` (trim, zip, rejoin, a pair rewired, a join closing a loop inside one lumen refused), `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), `test_vessel_size_classes.py` (the size convention: the rule, the tagging, the diameter chain's hook, the stages and post processing on `tests/vessel_class_fixtures.py`'s tubes of known width, preflight, the outputs, a whole run), `test_graph_artefacts_tool.py` (the comparison harness, its re-trace and the census by place), `test_graph_crop.py` (vessels clipped at a box's faces, the pieces' sources), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_endothelial_planted.py` (planted vessels read at their lumen at several voxel sizes, walls and blurs), `test_pericyte_measurements.py` (profiles, junction distances and branch resistances on a tube of known width, the export stage, the measured-constriction perturbation, its batch and preflight), `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |

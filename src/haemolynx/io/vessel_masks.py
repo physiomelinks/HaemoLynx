@@ -322,6 +322,8 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
     "large": {
         "enabled": "use_large_vessel_masks",
         "use_ilastik": "use_ilastik_large_vessel_segmentation",
+        "use_classifier": "use_pixel_classifier_large_vessel_segmentation",
+        "classifier_path": "pixel_classifier_large_vessel_path",
         "arteriole_mask_path": "large_arteriole_mask_path",
         "venule_mask_path": "large_venule_mask_path",
         "ilastik_arteriole_channels": "ilastik_arteriole_channels",
@@ -349,6 +351,8 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
     "small": {
         "enabled": "use_small_vessel_masks_for_boundary_assignment",
         "use_ilastik": "use_ilastik_small_vessel_segmentation",
+        "use_classifier": "use_pixel_classifier_small_vessel_segmentation",
+        "classifier_path": "pixel_classifier_small_vessel_path",
         "arteriole_mask_path": "small_arteriole_mask_path",
         "venule_mask_path": "small_venule_mask_path",
         "ilastik_arteriole_channels": "ilastik_small_arteriole_channels",
@@ -377,6 +381,8 @@ _SHARED_VESSEL_MASK_SETTINGS = (
     "ilastik_reuse_existing_output",
     "voxel_size_override_xyz",
     "voxel_size_policy",
+    # Where the HaemoLynx classifier writes the masks it makes.
+    "output_dir",
 )
 
 
@@ -424,6 +430,67 @@ def ilastik_vessel_mask_output_path(
     return Path(output_dir) / f"{stem}_{mask_role}_{vessel_class}_segmented{suffix}"
 
 
+def classifier_finds_venules(classifier_path: str | Path | None) -> bool:
+    """Whether the HaemoLynx classifier at *classifier_path* was shown any
+    venule: one never shown one makes a global mask. False for no file."""
+    if classifier_path in (None, "") or not Path(classifier_path).is_file():
+        return False
+    from haemolynx.classifier import read_classifier_record
+
+    try:
+        record = read_classifier_record(classifier_path)
+    except (OSError, ValueError):
+        return False
+    return int((record.get("voxels_per_label") or {}).get("Venule", 0)) > 0
+
+
+def _segment_vessel_masks_with_classifier(
+    mask_role: str,
+    *,
+    classifier_path,
+    raw_image_path,
+    output_dir,
+    axis_order: str,
+    voxel_size_override_xyz,
+    voxel_size_policy: str,
+    use_memmap: bool,
+    memmap_directory,
+) -> tuple[Path, Path | None]:
+    """``(arteriole or global mask, venule mask or None)``: the role's masks
+    segmented from the raw image by the HaemoLynx classifier, in one pass."""
+    from haemolynx.classifier import segment_with_classifier
+
+    names = VESSEL_MASK_SETTINGS[mask_role]
+    for name, value in (("raw_image_path", raw_image_path), (names["classifier_path"], classifier_path)):
+        if value in (None, ""):
+            raise ValueError(
+                f"{name} must be set when {names['use_classifier']}=True: the classifier "
+                "segments the run's raw image."
+            )
+    raw_image = resolve_image_path_with_optional_zip(Path(raw_image_path))
+    folder = Path(output_dir or ".")
+    global_mask = not classifier_finds_venules(classifier_path)
+    arteriole_class = "global" if global_mask else "arteriole"
+    outputs = {"Arteriole": ilastik_vessel_mask_output_path(folder, raw_image, mask_role, arteriole_class, ".tif")}
+    if not global_mask:
+        outputs["Venule"] = ilastik_vessel_mask_output_path(folder, raw_image, mask_role, "venule", ".tif")
+    logger.info(
+        f"Segmenting the {mask_role} {'global mask' if global_mask else 'arteriole and venule masks'} "
+        f"with the HaemoLynx classifier: {raw_image}"
+    )
+    written = segment_with_classifier(
+        raw_image,
+        Path(classifier_path),
+        outputs,
+        axis_order=axis_order,
+        voxel_size_policy=voxel_size_policy,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    return written["Arteriole"], written.get("Venule")
+
+
 def load_and_validate_vessel_masks(
     *,
     mask_role: Literal["large", "small"],
@@ -445,6 +512,9 @@ def load_and_validate_vessel_masks(
     ilastik_executable: str | None = None,
     ilastik_timeout_seconds: float | None = None,
     ilastik_reuse_existing_output: bool = False,
+    use_classifier: bool = False,
+    classifier_path: str | Path | None = None,
+    output_dir: str | Path | None = None,
     dilation_microns: float = 0.0,
     min_component_volume_um3: float = 0.0,
     swap_minority_components: bool = False,
@@ -474,6 +544,13 @@ def load_and_validate_vessel_masks(
     one is a global mask of every vessel of the role's size, returned as
     ``(mask, None, voxel size, None)`` (:func:`_load_global_vessel_mask`).
 
+    With *use_classifier* (and ilastik off) the HaemoLynx classifier at
+    *classifier_path* segments the run's raw image once for both masks
+    (:func:`haemolynx.classifier.segment_with_classifier`), writing them into
+    *output_dir* named as ilastik's are; one never shown a venule makes a
+    global mask. It reads the raw image as the run does, on disk under the
+    low-RAM option (*use_memmap*).
+
     Under ilastik each classifier segments the run's raw image
     (*raw_image_path*): its own *ilastik_arteriole_channels* /
     *ilastik_venule_channels* of it, kept separate, or the whole file with
@@ -500,6 +577,7 @@ def load_and_validate_vessel_masks(
         raise ValueError(
             f"{config['ilastik_flag']}=True requires {config['enabled_flag']}=True."
         )
+    use_classifier = bool(use_classifier) and not use_ilastik
 
     effective_arteriole_mask_path = arteriole_mask_path or None
     effective_venule_mask_path = venule_mask_path or None
@@ -582,6 +660,19 @@ def load_and_validate_vessel_masks(
                 f"arteriole={effective_arteriole_mask_path}, "
                 f"venule={effective_venule_mask_path}"
             )
+
+    if enabled and use_classifier:
+        effective_arteriole_mask_path, effective_venule_mask_path = _segment_vessel_masks_with_classifier(
+            mask_role,
+            classifier_path=classifier_path,
+            raw_image_path=raw_image_path,
+            output_dir=output_dir,
+            axis_order=axis_order,
+            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_policy=voxel_size_policy,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+        )
 
     if enabled and effective_arteriole_mask_path is not None and effective_venule_mask_path is None:
         return _load_global_vessel_mask(
@@ -1014,6 +1105,8 @@ def vessel_mask_role_is_global(
     if mask_role == "small" and small_vessel_masks_split_from_large(settings):
         # Cut from the large masks: one global mask exactly when they are.
         return vessel_mask_role_is_global(settings, "large")
+    if settings.get(names["use_classifier"]) and not settings.get(names["use_ilastik"]):
+        return not classifier_finds_venules(settings.get(names["classifier_path"]))
     venule = (
         names["ilastik_venule_classifier_path"]
         if settings.get(names["use_ilastik"])

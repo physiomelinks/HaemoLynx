@@ -95,6 +95,46 @@ SETTING_TOOLTIPS: dict[str, str] = {
     ),
     "use_ilastik_segmentation": "Segment the raw image with a trained ilastik project instead of reading a segmented file",
     "ilastik_classifier_path": "The trained ilastik project (.ilp) that segments the raw image",
+    "use_pixel_classifier_segmentation": (
+        "Segment the raw image with a classifier you trained in this panel's training window, "
+        "instead of reading a segmented file. The mask is saved with the run's outputs and reused"
+    ),
+    "pixel_classifier_path": (
+        "The classifier file, saved from the training window, that tells vessel from background "
+        "in the raw image"
+    ),
+    "use_pixel_classifier_pericyte_segmentation": (
+        "Make the pericyte mask from the raw image with a classifier trained in this panel, "
+        "instead of reading a pericyte mask file"
+    ),
+    "pixel_classifier_pericyte_path": (
+        "The classifier file, saved from the training window, that finds pericytes in the raw "
+        "image. Each blob it finds is one pericyte"
+    ),
+    "use_pixel_classifier_block_segmentation": (
+        "Make the mask of capillary blocks from the raw image with a classifier trained in this "
+        "panel, instead of reading a block mask file"
+    ),
+    "pixel_classifier_block_path": (
+        "The classifier file, saved from the training window, that finds capillary blocks in the "
+        "raw image. Each blob it finds is one block"
+    ),
+    "use_pixel_classifier_large_vessel_segmentation": (
+        "Segment the large arteriole and venule masks from the raw image with a classifier "
+        "trained in this panel, instead of reading mask files"
+    ),
+    "pixel_classifier_large_vessel_path": (
+        "The classifier file, saved from the training window, that finds large arterioles and "
+        "venules. One never shown a venule makes one mask of every large vessel"
+    ),
+    "use_pixel_classifier_small_vessel_segmentation": (
+        "Segment the small arteriole and venule masks from the raw image with a classifier "
+        "trained in this panel, instead of reading mask files"
+    ),
+    "pixel_classifier_small_vessel_path": (
+        "The classifier file, saved from the training window, that finds small arterioles and "
+        "venules. One never shown a venule makes one mask of every small vessel"
+    ),
     "ilastik_vessel_label": (
         "Which ilastik label is vessel, by name or number (1 is the first label made). Every "
         "other label is background; the pre-run checks list the project's labels"

@@ -120,7 +120,13 @@ from haemolynx.visualization.perturbation_plots import (
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.checks import tissue_raw_image
 from haemolynx.pipeline.citations import write_citations
-from haemolynx.pipeline.naming import run_input_path, run_stem
+from haemolynx.pipeline.naming import classifier_segmented_path as naming_classifier_segmented_path
+from haemolynx.pipeline.naming import (
+    classifier_segments,
+    run_input_path,
+    run_stem,
+    segments_raw_image,
+)
 from haemolynx.synthetic.template import GRAPH_TEMPLATE_RECORD, ROLES as SYNTHETIC_ROLES
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 from haemolynx.pipeline.provenance import record_run
@@ -465,6 +471,123 @@ def ilastik_segments(settings: Mapping[str, Any]) -> bool:
     return bool(settings.get("use_ilastik_segmentation")) and raw_image_is_set(settings)
 
 
+def classifier_run_arguments(settings: Mapping[str, Any]) -> dict:
+    """How the classifier reads the run's raw image: its axis order and
+    voxel-size policy, and the low-RAM option (``use_memmap_loading``)."""
+    return dict(
+        axis_order=io.axis_order_for_run(settings),
+        voxel_size_policy=settings.get("voxel_size_policy") or "auto",
+        voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+        use_memmap=bool(settings.get("use_memmap_loading")),
+        memmap_directory=settings.get("memmap_directory"),
+    )
+
+
+@dataclass(frozen=True)
+class ObjectMask:
+    """A mask of objects the HaemoLynx classifier can make from the raw image."""
+
+    switch: str
+    classifier_setting: str
+    label: str
+    #: The mask path settings it stands in for.
+    readers: tuple[str, ...]
+
+
+#: The masks of objects (each blob one object) the classifier can make, by
+#: the word their output is named with: ``{raw stem}_{word}_segmented.tif``.
+OBJECT_MASKS: dict[str, ObjectMask] = {
+    "pericytes": ObjectMask(
+        "use_pixel_classifier_pericyte_segmentation", "pixel_classifier_pericyte_path", "Pericyte",
+        ("pericyte_mask_path", "pericyte_measurement_mask_path"),
+    ),
+    "blocks": ObjectMask(
+        "use_pixel_classifier_block_segmentation", "pixel_classifier_block_path", "Block",
+        ("capillary_block_mask_path",),
+    ),
+}
+
+
+def _perturbations_run(settings: Mapping[str, Any]) -> list:
+    if not (settings.get("run_perturbations") and settings.get("run_haemodynamics")):
+        return []
+    from haemolynx.haemodynamics.perturbations import perturbations_from_settings
+
+    try:
+        return list(perturbations_from_settings(settings))
+    except (TypeError, ValueError):
+        return []  # preflight reports a malformed entry
+
+
+def object_masks_made(settings: Mapping[str, Any]) -> tuple[str, ...]:
+    """The masks of objects (:data:`OBJECT_MASKS`) the classifier makes this
+    run: its switch on, a raw image to segment, and something that reads the
+    mask -- the pericyte measurements, mask-placed pericytes in the solve or a
+    perturbation, the measured-constriction perturbation; a capillary block
+    perturbation from a mask."""
+    if graph.network_is_synthetic(settings) or not raw_image_is_set(settings):
+        return ()
+    from haemolynx.haemodynamics.perturbations import places_pericytes
+
+    perturbations = _perturbations_run(settings)
+    made = []
+    if settings.get(OBJECT_MASKS["pericytes"].switch):
+        read = (
+            bool(settings.get("measure_pericytes"))
+            or bool(settings.get("run_haemodynamics") and settings.get("use_pericyte_mask_constriction"))
+            or any(
+                spec.type == "pericyte_measured_constriction"
+                or (places_pericytes(spec.type)
+                    and {**settings, **dict(spec.overrides)}.get("use_pericyte_mask_constriction"))
+                for spec in perturbations
+            )
+        )
+        if read:
+            made.append("pericytes")
+    if settings.get(OBJECT_MASKS["blocks"].switch) and any(
+        spec.type == "capillary_block_mask" for spec in perturbations
+    ):
+        made.append("blocks")
+    return tuple(made)
+
+
+def object_mask_output_path(settings: Mapping[str, Any], word: str) -> Path:
+    """``{output_dir}/{raw image stem}_{word}_segmented.tif``."""
+    stem = Path(settings["raw_image_path"]).stem
+    return Path(settings.get("output_dir") or ".") / f"{stem}_{word}_segmented.tif"
+
+
+def segment_object_masks(settings: dict, *, progress: StageProgress | None = None) -> dict[str, Path]:
+    """Make each mask of objects this run reads that the classifier is to
+    make (:func:`object_masks_made`), or find it current, and point every
+    setting that reads it there. Run with the Segment stage, never by
+    preflight or the optimisers."""
+    from haemolynx.classifier import segment_with_classifier
+
+    made: dict[str, Path] = {}
+    for word in object_masks_made(settings):
+        mask = OBJECT_MASKS[word]
+        classifier = settings.get(mask.classifier_setting)
+        if classifier in (None, ""):
+            raise ValueError(
+                f"{mask.classifier_setting} must be set when {mask.switch}=True: train one in the "
+                "panel's training window and save it."
+            )
+        raw = io.resolve_image_path_with_optional_zip(Path(settings["raw_image_path"]))
+        written = segment_with_classifier(
+            raw,
+            Path(classifier),
+            {mask.label: object_mask_output_path(settings, word)},
+            poll=progress.alive if progress is not None else None,
+            **classifier_run_arguments(settings),
+        )[mask.label]
+        for name in mask.readers:
+            settings[name] = written
+        made[word] = written
+        logger.info(f"Using the classifier's {word} mask: {written}")
+    return made
+
+
 def measures_diameters_from_raw_image(settings: Mapping[str, Any]) -> bool:
     """``measure_diameters_from_raw_image`` in effect: on, and a raw image to
     measure from. Without one the diameter chain starts at the mask."""
@@ -513,6 +636,24 @@ def current_ilastik_output(settings: Mapping[str, Any]) -> tuple[Path | None, st
     )
 
     output = segmented_input_path(dict(settings))
+    if output is not None and classifier_segments(settings):
+        from haemolynx.classifier import VESSEL_LABEL, classifier_output_current
+
+        classifier = settings.get("pixel_classifier_path")
+        if classifier in (None, "") or not Path(classifier).is_file():
+            return None, f"the classifier {classifier} does not exist"
+        arguments = classifier_run_arguments(settings)
+        try:
+            raw = io.resolve_image_path_with_optional_zip(Path(settings["raw_image_path"]))
+            current, reason = classifier_output_current(
+                raw, classifier, {VESSEL_LABEL: output},
+                axis_order=arguments["axis_order"],
+                voxel_size_policy=arguments["voxel_size_policy"],
+                voxel_size_override_xyz=arguments["voxel_size_override_xyz"],
+            )
+        except (OSError, ValueError) as error:
+            return None, str(error)
+        return (output, "") if current else (None, reason)
     if output is None or not ilastik_segments(settings):
         return None, "ilastik does not segment this run's image"
     classifier = settings.get("ilastik_classifier_path")
@@ -563,6 +704,40 @@ def segment(
         settings["input_path"] = Path(settings["input_path"])
     if segmented_path is not None:
         logger.info(f"Resuming with the segmented image already made: {settings['input_path']}")
+    elif (
+        settings.get("use_pixel_classifier_segmentation")
+        and not settings.get("use_ilastik_segmentation")
+        and not raw_image_is_set(settings)
+    ):
+        if settings["input_path"] is None:
+            raise ValueError(
+                "use_pixel_classifier_segmentation=True segments the raw image, but raw_image_path "
+                "is not set, and there is no segmented image (input_path) to read instead."
+            )
+        logger.warning(
+            "use_pixel_classifier_segmentation is on but raw_image_path is not set: the classifier "
+            f"is skipped and the segmented image is read instead: {settings['input_path']}"
+        )
+    elif classifier_segments(settings):
+        from haemolynx.classifier import VESSEL_LABEL, segment_with_classifier
+
+        classifier = settings.get("pixel_classifier_path")
+        if classifier in (None, ""):
+            raise ValueError(
+                "pixel_classifier_path must be set when use_pixel_classifier_segmentation=True: "
+                "train one in the panel's training window and save it."
+            )
+        raw_image = io.resolve_image_path_with_optional_zip(Path(settings["raw_image_path"]))
+        output = naming_classifier_segmented_path(settings)
+        logger.info(f"Segmenting the raw image with the HaemoLynx classifier: {raw_image}")
+        settings["input_path"] = segment_with_classifier(
+            raw_image,
+            Path(classifier),
+            {VESSEL_LABEL: output},
+            poll=progress.alive if progress is not None else None,
+            **classifier_run_arguments(settings),
+        )[VESSEL_LABEL]
+        logger.info(f"Using the classifier's segmentation: {settings['input_path']}")
     elif settings["use_ilastik_segmentation"] and not raw_image_is_set(settings):
         # The raw image is optional, and ilastik has nothing without it: the
         # run reads the segmented image instead, as it would with the switch
@@ -603,8 +778,8 @@ def segment(
     else:
         if settings["input_path"] is None:
             raise ValueError(
-                "input_path must name a segmented image, or "
-                "use_ilastik_segmentation must be on so that one is produced. "
+                "input_path must name a segmented image, or use_ilastik_segmentation or "
+                "use_pixel_classifier_segmentation must be on so that one is produced. "
                 "Neither is set, so there is nothing to analyse."
             )
         logger.info(f"Using segmented input image: {settings['input_path']}")
@@ -9701,10 +9876,10 @@ def _resumed_segmented_path(
     """
     if resume is None or start_from not in STAGE_CALLS:
         return None
-    current = current_ilastik_output(settings)[0] if ilastik_segments(settings) else None
+    current = current_ilastik_output(settings)[0] if segments_raw_image(settings) else None
     inputs = _earlier_output(resume, start_from, "segment", "inputs")
     if inputs is not None:
-        if ilastik_segments(settings):
+        if segments_raw_image(settings):
             wanted = current
         elif graph.network_is_synthetic(settings) or settings.get("input_path") in (None, ""):
             wanted = inputs.image_path
@@ -10029,6 +10204,7 @@ def _run_stages(
                 segmented_path=_resumed_segmented_path(settings, resume, start_from),
                 progress=segmenting,
             )
+        segment_object_masks(settings, progress=segmenting)
     _produced(on_stage_output, "segment", inputs)
     if stop_after == "segment":
         return None

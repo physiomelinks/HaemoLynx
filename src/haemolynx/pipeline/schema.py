@@ -376,7 +376,11 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
-            requires=("!use_ilastik_segmentation", "network_source=segmented_image"),
+            requires=(
+                "!use_ilastik_segmentation",
+                "!use_pixel_classifier_segmentation",
+                "network_source=segmented_image",
+            ),
         ),
         Setting(
             name="segmentation_source",
@@ -614,6 +618,86 @@ SCHEMA = Schema(
             default=".tif",
             help="Give ilastik segmentation outputs this file suffix",
             section=_INPUT_AND_SEGMENTATION,
+            advanced=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Segment the raw image (raw_image_path) with a classifier trained in "
+                "HaemoLynx's own training window instead of reading a segmented file. "
+                "The mask is written into output_dir as {raw image stem}_segmented.tif "
+                "and used again while its record says this classifier made it from "
+                "this image. Follows use_memmap_loading"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path", "!use_ilastik_segmentation"),
+        ),
+        Setting(
+            name="pixel_classifier_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the main image with this classifier (.haemoclf), trained in "
+                "the panel to tell vessel from background"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_pixel_classifier_segmentation",),
+            must_exist=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_pericyte_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the pericyte mask from the raw image with a classifier trained in "
+                "HaemoLynx's own training window, instead of reading pericyte_mask_path and "
+                "pericyte_measurement_mask_path. Written into output_dir as {raw image "
+                "stem}_pericytes_segmented.tif, only while something reads it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path",),
+            advanced=True,
+        ),
+        Setting(
+            name="pixel_classifier_pericyte_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the pericytes with this classifier (.haemoclf), trained in the panel "
+                "to tell pericytes from background; each blob it finds is one pericyte"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_pixel_classifier_pericyte_segmentation",),
+            must_exist=True,
+            advanced=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_block_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the capillary block mask from the raw image with a classifier trained in "
+                "HaemoLynx's own training window, instead of reading capillary_block_mask_path. "
+                "Written into output_dir as {raw image stem}_blocks_segmented.tif, only while a "
+                "capillary_block_mask perturbation reads it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path",),
+            advanced=True,
+        ),
+        Setting(
+            name="pixel_classifier_block_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the capillary blocks with this classifier (.haemoclf), trained in the "
+                "panel to tell blocks from background; each blob it finds is one block"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_pixel_classifier_block_segmentation",),
+            must_exist=True,
             advanced=True,
         ),
         Setting(
@@ -1167,6 +1251,7 @@ SCHEMA = Schema(
                 "use_large_vessel_masks",
                 "automated_vessel_assignment",
                 "!use_ilastik_large_vessel_segmentation",
+                "!use_pixel_classifier_large_vessel_segmentation",
             ),
             must_exist=True,
         ),
@@ -1187,6 +1272,7 @@ SCHEMA = Schema(
                 "use_large_vessel_masks",
                 "automated_vessel_assignment",
                 "!use_ilastik_large_vessel_segmentation",
+                "!use_pixel_classifier_large_vessel_segmentation",
             ),
             must_exist=True,
         ),
@@ -1317,6 +1403,40 @@ SCHEMA = Schema(
             migrate=_migrate_ilastik_mask_input(
                 "ilastik_unsegmented_venule_image_path", "use_ilastik_large_vessel_segmentation"
             ),
+        ),
+        Setting(
+            name="use_pixel_classifier_large_vessel_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Produce the large arteriole and venule masks from the raw image "
+                "(raw_image_path) with a classifier trained in HaemoLynx's own training "
+                "window, instead of reading pre-segmented files. Follows use_memmap_loading"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+                "raw_image_path",
+            ),
+        ),
+        Setting(
+            name="pixel_classifier_large_vessel_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the large arterioles and venules with this classifier (.haemoclf), "
+                "trained in the panel to tell them from background. One never shown a "
+                "venule makes a global mask of every large vessel"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_pixel_classifier_large_vessel_segmentation",
+            ),
+            must_exist=True,
         ),
         Setting(
             # Offered only while no small masks are given: with them, the
@@ -1955,6 +2075,7 @@ SCHEMA = Schema(
                 "use_small_vessel_masks_for_boundary_assignment",
                 "automated_vessel_assignment",
                 "!use_ilastik_small_vessel_segmentation",
+                "!use_pixel_classifier_small_vessel_segmentation",
             ),
             must_exist=True,
         ),
@@ -1973,6 +2094,7 @@ SCHEMA = Schema(
                 "use_small_vessel_masks_for_boundary_assignment",
                 "automated_vessel_assignment",
                 "!use_ilastik_small_vessel_segmentation",
+                "!use_pixel_classifier_small_vessel_segmentation",
             ),
             must_exist=True,
         ),
@@ -2105,6 +2227,40 @@ SCHEMA = Schema(
                 "ilastik_unsegmented_small_venule_image_path",
                 "use_ilastik_small_vessel_segmentation",
             ),
+        ),
+        Setting(
+            name="use_pixel_classifier_small_vessel_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Produce the small arteriole and venule masks from the raw image "
+                "(raw_image_path) with a classifier trained in HaemoLynx's own training "
+                "window, instead of reading pre-segmented files. Follows use_memmap_loading"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+                "raw_image_path",
+            ),
+        ),
+        Setting(
+            name="pixel_classifier_small_vessel_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the small arterioles and venules with this classifier (.haemoclf), "
+                "trained in the panel to tell them from background. One never shown a "
+                "venule makes a global mask of every small vessel"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_pixel_classifier_small_vessel_segmentation",
+            ),
+            must_exist=True,
         ),
         Setting(
             name="small_vessel_mask_min_overlap_fraction",
@@ -5011,7 +5167,7 @@ SCHEMA = Schema(
                 "shape: each connected component is one pericyte"
             ),
             section=_PERICYTE_MEASUREMENTS,
-            requires=("measure_pericytes",),
+            requires=("measure_pericytes", "!use_pixel_classifier_pericyte_segmentation"),
             must_exist=True,
         ),
         Setting(
@@ -5984,7 +6140,7 @@ SCHEMA = Schema(
                 "a mask named for pericytes beside the input image"
             ),
             section=_DIAMETERS_AND_PERICYTES,
-            requires=("use_pericyte_mask_constriction",),
+            requires=("use_pericyte_mask_constriction", "!use_pixel_classifier_pericyte_segmentation"),
             must_exist=True,
         ),
         Setting(
@@ -7248,6 +7404,7 @@ SCHEMA = Schema(
             # Only a capillary_block_mask entry reads it, and preflight says so
             # when one names none; set, it must be there.
             must_exist=True,
+            requires=("!use_pixel_classifier_block_segmentation",),
             placeholder="none (name it on the perturbation)",
         ),
         Setting(

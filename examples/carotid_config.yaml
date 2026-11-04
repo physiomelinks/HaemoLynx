@@ -28,7 +28,7 @@ input_and_segmentation:
   synthetic_open_ends: closed
   # How the synthetic capillary bed is drawn: delaunay joins jittered lattice points along Delaunay edges, voronoi runs the capillaries along the edges of a Voronoi tessellation of random points; both are pruned to the template's capillary count, loops and dead ends  [one of: delaunay, voronoi; needs network_source not segmented_image]
   synthetic_bed_model: delaunay
-  # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off and network_source = segmented_image; must exist]
+  # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off and use_pixel_classifier_segmentation off and network_source = segmented_image; must exist]
   input_path: examples/images/carotid_mask.tif
   # What the segmented vessels are, and so what a diameter taken from the segmentation measures: plasma_column for a mask of the channel blood flows in (a luminal label, as a plasma stain images it), or endothelial (anatomical) for a mask of the vessel wall to wall, which includes the ~1.1 um endothelial surface layer. The pries viscosity law takes the matching form for every diameter the segmentation gave -- the mask's own widths, the class medians and the table; a diameter measured from the raw image carries the raw image's own. Choosing endothelial for a plasma label subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, endothelial]
   segmentation_source: plasma_column
@@ -60,6 +60,18 @@ input_and_segmentation:
   ilastik_output_dir: outputs/segmentations
   # Give ilastik segmentation outputs this file suffix
   ilastik_output_suffix: .tif
+  # Segment the raw image (raw_image_path) with a classifier trained in HaemoLynx's own training window instead of reading a segmented file. The mask is written into output_dir as {raw image stem}_segmented.tif and used again while its record says this classifier made it from this image. Follows use_memmap_loading  [needs raw_image_path and use_ilastik_segmentation off]
+  use_pixel_classifier_segmentation: false
+  # Segment the main image with this classifier (.haemoclf), trained in the panel to tell vessel from background  [needs use_pixel_classifier_segmentation; must exist]
+  pixel_classifier_path: null
+  # Make the pericyte mask from the raw image with a classifier trained in HaemoLynx's own training window, instead of reading pericyte_mask_path and pericyte_measurement_mask_path. Written into output_dir as {raw image stem}_pericytes_segmented.tif, only while something reads it  [needs raw_image_path]
+  use_pixel_classifier_pericyte_segmentation: false
+  # Segment the pericytes with this classifier (.haemoclf), trained in the panel to tell pericytes from background; each blob it finds is one pericyte  [needs use_pixel_classifier_pericyte_segmentation; must exist]
+  pixel_classifier_pericyte_path: null
+  # Make the capillary block mask from the raw image with a classifier trained in HaemoLynx's own training window, instead of reading capillary_block_mask_path. Written into output_dir as {raw image stem}_blocks_segmented.tif, only while a capillary_block_mask perturbation reads it  [needs raw_image_path]
+  use_pixel_classifier_block_segmentation: false
+  # Segment the capillary blocks with this classifier (.haemoclf), trained in the panel to tell blocks from background; each blob it finds is one block  [needs use_pixel_classifier_block_segmentation; must exist]
+  pixel_classifier_block_path: null
   # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um; needs voxel_size_policy not metadata_only and network_source = segmented_image]
   voxel_size_override_xyz: null
   # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only; needs network_source = segmented_image]
@@ -145,9 +157,9 @@ vessel_masks:
   automated_vessel_assignment: false
   # Load large arteriole and venule masks for automated inlet/outlet node assignment. Ticked in the panel, it fills the mask rows from files beside the input image named like it with 'large' and 'arteriole' or 'venule' (artery, vein and plurals too) added; 'large' alone is a global mask, and while no file says 'large', 'arteriole' or 'venule' alone counts  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
-  # Read this pre-segmented large arteriole mask -- or, with no large venule mask entered, a global mask of every large vessel, arteriole or venule: the vessels in it are then unknown large vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
+  # Read this pre-segmented large arteriole mask -- or, with no large venule mask entered, a global mask of every large vessel, arteriole or venule: the vessels in it are then unknown large vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off and use_pixel_classifier_large_vessel_segmentation off; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
-  # Read this pre-segmented large venule mask. Leave it empty to read the arteriole/global mask as a global mask of every large vessel  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist if set]
+  # Read this pre-segmented large venule mask. Leave it empty to read the arteriole/global mask as a global mask of every large vessel  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off and use_pixel_classifier_large_vessel_segmentation off; must exist if set]
   large_venule_mask_path: null
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks and automated_vessel_assignment]
   use_ilastik_large_vessel_segmentation: false
@@ -163,6 +175,10 @@ vessel_masks:
   ilastik_venule_vessel_label: null
   # Give the venule classifier these channels of the raw image (raw_image_path), kept separate and in this order, e.g. [2]: the channels it was trained on, counting from 0 as raw_image_channel does (C1 is 0). Leave unset for the whole file  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation and ilastik_venule_classifier_path and raw_image_path]
   ilastik_venule_channels: null
+  # Produce the large arteriole and venule masks from the raw image (raw_image_path) with a classifier trained in HaemoLynx's own training window, instead of reading pre-segmented files. Follows use_memmap_loading  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off and raw_image_path]
+  use_pixel_classifier_large_vessel_segmentation: false
+  # Segment the large arterioles and venules with this classifier (.haemoclf), trained in the panel to tell them from background. One never shown a venule makes a global mask of every large vessel  [needs use_large_vessel_masks and automated_vessel_assignment and use_pixel_classifier_large_vessel_segmentation; must exist]
+  pixel_classifier_large_vessel_path: null
   # Cut each large mask in two by vessel width: the part at least large_vessel_mask_split_diameter_um wide stays the large arteriole (or venule) mask, and the rest becomes the small arteriole (or venule) mask, used as small vessel masks are for the arteriole and venule boundaries. A voxel is wide where a ball that wide fits in the segmented image around it, centred in the same mask: the mask says only which side a vessel is on, since a classifier's mask may be thinner than the vessel. Only while no small vessel masks are given; a global mask splits into a global large and small mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_small_vessel_masks_for_boundary_assignment off]
   split_large_vessel_masks_by_diameter: false
   # Split the large masks at this vessel width: wider stays large, narrower becomes small. Read on the segmented image the skeleton is made from, so neither the masks' own thickness nor their load-time dilation (large_vessel_mask_dilation_microns) moves it  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and use_small_vessel_masks_for_boundary_assignment off and split_large_vessel_masks_by_diameter]
@@ -233,9 +249,9 @@ vessel_masks:
   skeleton_thick_vessel_restrict_to_mask_warn_below: 0.5
   # Assign arteriole and venule boundary nodes from small-vessel masks. Ticked in the panel, it fills the mask rows from files beside the input image named like it with 'small' and 'arteriole' or 'venule' (artery, vein and plurals too) added; 'small' alone is a global mask  [needs automated_vessel_assignment]
   use_small_vessel_masks_for_boundary_assignment: false
-  # Read this pre-segmented small arteriole mask -- or, with no small venule mask entered, a global mask of every small vessel, arteriole or venule: the vessels in it are then unknown small vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
+  # Read this pre-segmented small arteriole mask -- or, with no small venule mask entered, a global mask of every small vessel, arteriole or venule: the vessels in it are then unknown small vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off and use_pixel_classifier_small_vessel_segmentation off; must exist]
   small_arteriole_mask_path: images/small_arteriole_mask.tif
-  # Read this pre-segmented small venule mask. Leave it empty to read the arteriole/global mask as a global mask of every small vessel  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist if set]
+  # Read this pre-segmented small venule mask. Leave it empty to read the arteriole/global mask as a global mask of every small vessel  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off and use_pixel_classifier_small_vessel_segmentation off; must exist if set]
   small_venule_mask_path: null
   # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   use_ilastik_small_vessel_segmentation: false
@@ -251,6 +267,10 @@ vessel_masks:
   ilastik_small_venule_vessel_label: null
   # Give the small venule classifier these channels of the raw image (raw_image_path), kept separate and in this order, e.g. [2]: the channels it was trained on, counting from 0 as raw_image_channel does (C1 is 0). Leave unset for the whole file  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation and ilastik_small_venule_classifier_path and raw_image_path]
   ilastik_small_venule_channels: null
+  # Produce the small arteriole and venule masks from the raw image (raw_image_path) with a classifier trained in HaemoLynx's own training window, instead of reading pre-segmented files. Follows use_memmap_loading  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off and raw_image_path]
+  use_pixel_classifier_small_vessel_segmentation: false
+  # Segment the small arterioles and venules with this classifier (.haemoclf), trained in the panel to tell them from background. One never shown a venule makes a global mask of every small vessel  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_pixel_classifier_small_vessel_segmentation; must exist]
+  pixel_classifier_small_vessel_path: null
   # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
   # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then at 1 µm and in 5 µm steps up to this value, each edge keeping the label of the first step that reaches it; the boundary nodes are read from the final labels. There is no separate load-time small-vessel dilation setting  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
@@ -691,7 +711,7 @@ statistics_and_measurements:
 pericyte_measurements:
   # Measure around each pericyte of a pericyte mask, placed on the nearest capillary as the pericyte perturbations place it: the vessel's diameter along it, and how far it is from the vessel's nearest junction  [needs network_source = segmented_image]
   measure_pericytes: false
-  # Read the pericytes from this binary or labelled mask, the input image's shape: each connected component is one pericyte  [needs measure_pericytes; must exist]
+  # Read the pericytes from this binary or labelled mask, the input image's shape: each connected component is one pericyte  [needs measure_pericytes and use_pixel_classifier_pericyte_segmentation off; must exist]
   pericyte_measurement_mask_path: null
   # Read this dataset from the pericyte measurements' mask when it is an H5 file  [needs measure_pericytes]
   pericyte_measurement_mask_h5_dataset_name: null
@@ -830,7 +850,7 @@ diameters_and_pericytes:
   constriction_spacing_um: 100.0
   # Place focal constrictions/dilations at pericyte centroids from a mask instead of at regular spacing along vessels  [needs run_haemodynamics]
   use_pericyte_mask_constriction: false
-  # Read pericyte centroids from this binary or labelled mask when mask-based placement is on; it must then be set, with no fallback. The panel fills it from a mask named for pericytes beside the input image  [needs use_pericyte_mask_constriction; must exist]
+  # Read pericyte centroids from this binary or labelled mask when mask-based placement is on; it must then be set, with no fallback. The panel fills it from a mask named for pericytes beside the input image  [needs use_pericyte_mask_constriction and use_pixel_classifier_pericyte_segmentation off; must exist]
   pericyte_mask_path: null
   # H5 dataset name inside the pericyte mask file; ignored for TIFF masks  [needs use_pericyte_mask_constriction]
   pericyte_mask_h5_dataset_name: null
@@ -1059,7 +1079,7 @@ perturbation_runs:
   capillary_block_replicates: 1
   # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. The panel writes each as [branchID, u, v, key], so one listed on a network since built again is refused. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
   capillary_block_vessel_ids: []
-  # Mask of the blocks: blobs on an otherwise empty volume, on the segmented image's grid; each blob (connected component) is one block, and blocks the vessel it lies in  [must exist if set]
+  # Mask of the blocks: blobs on an otherwise empty volume, on the segmented image's grid; each blob (connected component) is one block, and blocks the vessel it lies in  [needs use_pixel_classifier_block_segmentation off; must exist if set]
   capillary_block_mask_path: null
   # H5 dataset name inside the capillary block mask file; ignored for TIFF masks
   capillary_block_mask_h5_dataset_name: null

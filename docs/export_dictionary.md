@@ -783,7 +783,7 @@ Written to the batch's output folder. One row per image of a batch run.
 | `stem` | `-` | The image's stem. |
 | `status` | `-` | done, failed, skipped (done before), cancelled or not run. |
 | `condition` | `-` | Its condition (A or B), if any. |
-| `segmented` | `-` | Its segmented image (blank where ilastik segments its raw image). |
+| `segmented` | `-` | Its segmented image (blank where ilastik or the classifier segments its raw image). |
 | `raw` | `-` | Its raw image. |
 | `large_arteriole_mask` | `-` | Its large arteriole mask. |
 | `large_venule_mask` | `-` | Its large venule mask. |

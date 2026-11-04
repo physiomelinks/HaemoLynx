@@ -45,6 +45,8 @@ def test_every_trigger_is_a_setting_the_search_reads():
         "use_small_vessel_masks_for_boundary_assignment",
         "use_ilastik_large_vessel_segmentation",
         "use_ilastik_small_vessel_segmentation",
+        "use_pixel_classifier_large_vessel_segmentation",
+        "use_pixel_classifier_small_vessel_segmentation",
         "input_path",
         "raw_image_path",
     }
@@ -58,6 +60,8 @@ def test_a_role_is_searched_only_in_use_and_read_from_files():
     assert roles_searched({**BOTH_ON, "automated_vessel_assignment": False}) == ()
     # With ilastik making the masks, the mask rows are not read.
     assert roles_searched({**BOTH_ON, "use_ilastik_large_vessel_segmentation": True}) == ("small",)
+    # Nor with the HaemoLynx classifier making them.
+    assert roles_searched({**BOTH_ON, "use_pixel_classifier_small_vessel_segmentation": True}) == ("large",)
 
 
 def test_a_role_coming_into_use_is_searched_for_and_no_other():

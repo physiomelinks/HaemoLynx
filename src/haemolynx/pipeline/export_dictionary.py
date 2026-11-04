@@ -1000,7 +1000,7 @@ FILES: tuple[OutputFile, ...] = (
             _c("stem", "-", "The image's stem."),
             _c("status", "-", "done, failed, skipped (done before), cancelled or not run."),
             _c("condition", "-", "Its condition (A or B), if any."),
-            _c("segmented", "-", "Its segmented image (blank where ilastik segments its raw image)."),
+            _c("segmented", "-", "Its segmented image (blank where ilastik or the classifier segments its raw image)."),
             _c("raw", "-", "Its raw image."),
             _c("large_arteriole_mask", "-", "Its large arteriole mask."),
             _c("large_venule_mask", "-", "Its large venule mask."),

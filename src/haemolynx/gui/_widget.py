@@ -10672,6 +10672,485 @@ def _open_in_system(path) -> bool:
     return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
 
 
+class _ClassifierTrainingWindow:
+    """The classifier training window (``gui/classifier_training.py``).
+
+    Paint labels on the run's raw image in a strokes layer; with Live
+    update on, every stroke and every move through the image trains the
+    forest again and classifies only the plane in view
+    (``classifier.preview.LiveClassifier``), as ilastik does. Save classifier
+    writes it and points the panel's row for this job at it; Segment whole
+    image classifies the whole raw image now, as the run would, and adds it to
+    the viewer. The heavy work runs on a worker thread, one job at a time; a
+    request that comes while one runs is done once it ends.
+
+    *synchronous* runs every job on the calling thread (the tests).
+    """
+
+    #: How long after the last stroke or move the preview starts (ms).
+    DEBOUNCE_MS = 350
+
+    def __init__(
+        self,
+        viewer,
+        values: Mapping[str, Any],
+        row: str,
+        *,
+        on_saved: Callable[[Path], None] | None = None,
+        synchronous: bool = False,
+    ):
+        from qtpy.QtCore import QTimer
+        from qtpy.QtWidgets import (
+            QButtonGroup,
+            QCheckBox,
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QPushButton,
+            QRadioButton,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        from haemolynx.classifier import PURPOSES, SCALE_CHOICES_UM, load_classifier
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
+        from haemolynx.gui.classifier_training import (
+            CLASSIFIER_ROWS,
+            JOB_TITLES,
+            default_channels,
+            default_classifier_path,
+            default_scales,
+        )
+        from haemolynx.io import tiff_channels
+
+        raw = values.get("raw_image_path")
+        if raw in (None, "") or not Path(raw).is_file():
+            raise ValueError("Choose the raw image on the Input tab first, then train a classifier on it.")
+        self.viewer = viewer
+        self.values = dict(values)
+        self.row = row
+        self.purpose = CLASSIFIER_ROWS[row]
+        self.labels = PURPOSES[self.purpose]
+        self.raw_path = Path(raw)
+        self.on_saved = on_saved
+        self.synchronous = synchronous
+        self.live = None
+        self._volumes: dict[Any, Any] = {}
+        self._busy = False
+        self._queued: Callable[[], None] | None = None
+        self._retrain = True
+        self._shown_plane: tuple[int, int] | None = None
+        self.strokes = self.preview = self.segmentation = self.image = None
+        self.channel_count = max(1, len(tiff_channels(self.raw_path)))
+
+        existing = values.get(row)
+        self.loaded = None
+        if existing not in (None, "") and Path(existing).is_file():
+            try:
+                loaded = load_classifier(existing)
+            except (OSError, ValueError):
+                loaded = None
+            if loaded is not None and loaded.purpose == self.purpose:
+                self.loaded = loaded
+        if self.loaded is not None:
+            scales, channels = self.loaded.spec.scales_um, self.loaded.spec.channels
+            path = Path(existing)
+        else:
+            scales = default_scales(self.purpose)
+            channels = default_channels(values, self.channel_count)
+            path = default_classifier_path(self.raw_path, row)
+
+        self.window = QWidget()
+        self.window.setWindowTitle(f"Train a classifier: {JOB_TITLES[row]}")
+        layout = QVBoxLayout(self.window)
+        layout.addWidget(QLabel(f"Raw image: {self.raw_path.name}"))
+
+        label_box = QGroupBox("Paint")
+        label_layout = QHBoxLayout(label_box)
+        self.label_group = QButtonGroup(self.window)
+        for index, name in enumerate(self.labels):
+            button = QRadioButton(name)
+            button.setToolTip(TIPS["labels"])
+            self.label_group.addButton(button, index + 1)
+            label_layout.addWidget(button)
+        self.label_group.button(min(2, len(self.labels))).setChecked(True)
+        self.label_group.idClicked.connect(self._choose_label)
+        layout.addWidget(label_box)
+
+        preview_row = QHBoxLayout()
+        self.live_box = QCheckBox("Live update")
+        self.live_box.setChecked(True)
+        self.live_box.setToolTip(TIPS["live"])
+        self.update_button = QPushButton("Update now")
+        self.update_button.setToolTip(TIPS["update"])
+        self.update_button.clicked.connect(lambda *_a: self.update(retrain=True))
+        preview_row.addWidget(self.live_box)
+        preview_row.addWidget(self.update_button)
+        layout.addLayout(preview_row)
+
+        self.channel_boxes: dict[int, Any] = {}
+        if self.channel_count > 1:
+            channel_box = QGroupBox("Channels")
+            channel_layout = QHBoxLayout(channel_box)
+            for channel in range(self.channel_count):
+                box = QCheckBox(f"C{channel + 1}")
+                box.setChecked(channel in channels)
+                box.setToolTip(TIPS["channels"])
+                box.toggled.connect(lambda *_a: self._features_changed())
+                self.channel_boxes[channel] = box
+                channel_layout.addWidget(box)
+            layout.addWidget(channel_box)
+
+        scale_box = QGroupBox("Scales (um)")
+        scale_layout = QHBoxLayout(scale_box)
+        self.scale_boxes: dict[float, Any] = {}
+        for scale in SCALE_CHOICES_UM:
+            box = QCheckBox(f"{scale:g}")
+            box.setChecked(scale in scales)
+            box.setToolTip(TIPS["scales"])
+            box.toggled.connect(lambda *_a: self._features_changed())
+            self.scale_boxes[scale] = box
+            scale_layout.addWidget(box)
+        layout.addWidget(scale_box)
+
+        path_row = QHBoxLayout()
+        self.path_edit = QLineEdit(str(path))
+        self.path_edit.setToolTip(TIPS["path"])
+        browse = QPushButton("Browse...")
+        browse.setToolTip(TIPS["browse"])
+        browse.clicked.connect(lambda *_a: self._browse())
+        path_row.addWidget(self.path_edit)
+        path_row.addWidget(browse)
+        layout.addLayout(path_row)
+
+        actions = QHBoxLayout()
+        self.save_button = QPushButton("Save classifier")
+        self.save_button.setToolTip(TIPS["save"])
+        self.save_button.clicked.connect(lambda *_a: self.save())
+        self.segment_button = QPushButton("Segment whole image")
+        self.segment_button.setToolTip(TIPS["segment"])
+        self.segment_button.clicked.connect(lambda *_a: self.segment_whole_image())
+        close = QPushButton("Close")
+        close.setToolTip(TIPS["close"])
+        close.clicked.connect(lambda *_a: self.window.close())
+        for button in (self.save_button, self.segment_button, close):
+            actions.addWidget(button)
+        layout.addLayout(actions)
+
+        self.status = QLabel("Reading the raw image...")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        self.timer = QTimer(self.window)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(self.DEBOUNCE_MS)
+        self.timer.timeout.connect(lambda: self.update(retrain=self._retrain))
+        self._set_enabled(False)
+        self._run(self._load, self._loaded)
+
+    # ----------------------------------------------------------- plumbing
+
+    def show(self) -> None:
+        self.window.show()
+        self.window.raise_()
+
+    def is_open(self) -> bool:
+        return bool(self.window.isVisible())
+
+    def _set_enabled(self, enabled: bool) -> None:
+        for widget in (self.update_button, self.save_button, self.segment_button):
+            widget.setEnabled(enabled)
+
+    def _say(self, text: str) -> None:
+        self.status.setText(text)
+
+    def _run(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
+        """Do *work* off the GUI thread, then *done* with its result on it.
+        One job at a time: a job asked for meanwhile waits, the latest only."""
+        if self._busy:
+            self._queued = lambda: self._run(work, done)
+            return
+        self._busy = True
+
+        def finish(result=None, error: BaseException | None = None) -> None:
+            self._busy = False
+            if error is not None:
+                self._say(str(error) or type(error).__name__)
+            else:
+                try:
+                    done(result)
+                except Exception as problem:  # noqa: BLE001 - shown, not raised into Qt
+                    self._say(str(problem))
+            queued, self._queued = self._queued, None
+            if queued is not None:
+                queued()
+
+        if self.synchronous:
+            try:
+                result = work()
+            except Exception as error:  # noqa: BLE001
+                finish(error=error)
+            else:
+                finish(result)
+            return
+        from napari.qt.threading import create_worker
+
+        worker = create_worker(work)
+        worker.returned.connect(lambda result: finish(result))
+        worker.errored.connect(lambda error: finish(error=error))
+        worker.start()
+
+    # -------------------------------------------------------------- setup
+
+    def _spec_choice(self) -> tuple[tuple[float, ...], tuple[int | None, ...]]:
+        scales = tuple(scale for scale, box in self.scale_boxes.items() if box.isChecked())
+        if self.channel_boxes:
+            channels = tuple(c for c, box in self.channel_boxes.items() if box.isChecked())
+        else:
+            channels = (None,)
+        return scales, channels
+
+    def _volumes_for(self, channels):
+        from haemolynx.classifier import read_raw_channels
+        from haemolynx.io.axis_order import axis_order_for_run
+
+        missing = [c for c in channels if c not in self._volumes]
+        if missing:
+            raw = read_raw_channels(
+                self.raw_path,
+                missing,
+                axis_order=axis_order_for_run(self.values),
+                voxel_size_policy=self.values.get("voxel_size_policy") or "auto",
+                voxel_size_override_xyz=self.values.get("voxel_size_override_xyz"),
+                use_memmap=bool(self.values.get("use_memmap_loading")),
+                memmap_directory=self.values.get("memmap_directory"),
+            )
+            self.voxel_size_zyx = raw.voxel_size_zyx
+            self._volumes.update(zip(missing, raw.volumes))
+        return [self._volumes[c] for c in channels]
+
+    def _make_live(self, scales, channels):
+        from haemolynx.classifier import new_classifier
+        from haemolynx.classifier.preview import LiveClassifier
+
+        if not scales:
+            raise ValueError("Tick at least one scale.")
+        if not channels:
+            raise ValueError("Tick at least one channel.")
+        volumes = self._volumes_for(channels)
+        loaded = self.loaded
+        if loaded is not None and loaded.spec.scales_um == tuple(sorted(scales)) and loaded.spec.channels == tuple(channels):
+            classifier = loaded
+        else:
+            classifier = new_classifier(self.purpose, scales_um=scales, channels=channels)
+        import os
+
+        workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+        return LiveClassifier(classifier, volumes, self.voxel_size_zyx, path=str(self.raw_path), workers=workers)
+
+    def _load(self):
+        return self._make_live(*self._spec_choice())
+
+    def _loaded(self, live) -> None:
+        from haemolynx.gui.classifier_training import (
+            IMAGE_LAYER,
+            PREVIEW_LAYER,
+            STROKES_LAYER,
+            layer_name,
+            result_colours,
+            stroke_colours,
+        )
+
+        self.live = live
+        scale = tuple(float(v) for v in live.voxel_size_zyx)
+        shape = live.shape
+        if self.image is None:
+            self.image = self.viewer.add_image(
+                live.volumes[0], name=layer_name(IMAGE_LAYER, self.row), scale=scale, colormap="gray"
+            )
+        if self.preview is None:
+            self.preview = self._labels_layer(np.zeros(shape, np.uint8), PREVIEW_LAYER, result_colours(self.purpose), scale)
+            self.preview.opacity = 0.5
+        if self.strokes is None:
+            self.strokes = self._labels_layer(live.painted_labels(), STROKES_LAYER, stroke_colours(self.purpose), scale)
+            self.strokes.brush_size = 3
+            self.strokes.mode = "paint"
+            self.strokes.events.paint.connect(lambda *_a: self._changed(retrain=True))
+            self.viewer.dims.events.current_step.connect(lambda *_a: self._changed(retrain=False))
+            self.viewer.dims.events.order.connect(lambda *_a: self._changed(retrain=False))
+        self.strokes.selected_label = self.label_group.checkedId()
+        self.viewer.layers.selection.active = self.strokes
+        self._set_enabled(True)
+        painted = int(np.count_nonzero(self.strokes.data))
+        self._say(
+            f"Paint a few strokes of each label on {self.raw_path.name}"
+            + (f" ({painted} voxels painted before)." if painted else ".")
+        )
+        if painted:
+            self.update(retrain=True)
+
+    def _labels_layer(self, data, kind: str, colours, scale):
+        from napari.utils.colormaps import DirectLabelColormap
+
+        from haemolynx.gui.classifier_training import layer_name
+
+        name = layer_name(kind, self.row)
+        if name in self.viewer.layers:
+            self.viewer.layers.remove(name)
+        layer = self.viewer.add_labels(data, name=name, scale=scale)
+        layer.colormap = DirectLabelColormap(color_dict={None: (0, 0, 0, 0), **colours})
+        return layer
+
+    def _choose_label(self, label: int) -> None:
+        if self.strokes is not None:
+            self.strokes.selected_label = int(label)
+            self.strokes.mode = "paint"
+
+    def _features_changed(self) -> None:
+        """Other scales or channels: a new classifier, the strokes kept."""
+        if self.live is None:
+            return
+        self._set_enabled(False)
+        self._say("Computing the new features...")
+        self.loaded = None
+
+        def remade(live) -> None:
+            self.live = live
+            self._set_enabled(True)
+            self.update(retrain=True)
+
+        self._run(lambda: self._make_live(*self._spec_choice()), remade)
+
+    def _browse(self) -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        from haemolynx.classifier import FILE_SUFFIX
+
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "Save classifier", self.path_edit.text(), f"Classifier (*{FILE_SUFFIX})"
+        )
+        if path:
+            self.path_edit.setText(path)
+
+    # ------------------------------------------------------------ preview
+
+    def _changed(self, *, retrain: bool) -> None:
+        self._retrain = self._retrain or retrain
+        if self.live_box.isChecked() and self.live is not None:
+            if self.synchronous:
+                self.update(retrain=self._retrain)
+            else:
+                self.timer.start()
+
+    def plane_in_view(self) -> tuple[int, int] | None:
+        from haemolynx.gui.classifier_training import plane_in_view
+
+        if self.strokes is None or self.viewer.dims.ndisplay != 2:
+            return None
+        point = self.strokes.world_to_data(self.viewer.dims.point)
+        return plane_in_view(self.viewer.dims.displayed, point, self.strokes.data.shape)
+
+    def update(self, *, retrain: bool = True) -> None:
+        """Train (when there are new strokes) and classify the plane in view."""
+        if self.live is None:
+            return
+        plane = self.plane_in_view()
+        retrain = retrain or self._retrain or self.live.classifier.forest is None
+        self._retrain = False
+        labels = self.strokes.data
+        live = self.live
+
+        def work():
+            if retrain:
+                live.train(labels)
+            if plane is None:
+                return None
+            return plane, live.predict_plane(*plane)
+
+        self._run(work, self._show_plane)
+
+    def _show_plane(self, result) -> None:
+        counts = self.live.classifier.voxels_per_label()
+        trained = ", ".join(f"{name} {count}" for name, count in counts.items() if count)
+        if result is None:
+            self._say(f"Trained on {trained} voxels. The preview shows in 2D view.")
+            return
+        (axis, index), labels = result
+        data = self.preview.data
+        if self._shown_plane is not None:
+            old_axis, old_index = self._shown_plane
+            clear = [slice(None)] * 3
+            clear[old_axis] = old_index
+            data[tuple(clear)] = 0
+        place = [slice(None)] * 3
+        place[axis] = index
+        data[tuple(place)] = labels
+        self._shown_plane = (axis, index)
+        self.preview.refresh()
+        self._say(f"Trained on {trained} voxels; showing {'zyx'[axis]} = {index}.")
+
+    # ------------------------------------------------------------ actions
+
+    def save(self) -> None:
+        """Train on every stroke and save; the panel's row then names the file."""
+        from haemolynx.classifier import save_classifier
+
+        if self.live is None:
+            return
+        path = Path(self.path_edit.text().strip() or "classifier")
+        labels = self.strokes.data
+        live = self.live
+
+        def work():
+            classifier = live.train(labels)
+            return save_classifier(classifier, path)
+
+        def saved(written) -> None:
+            self.loaded = self.live.classifier
+            self._say(f"Saved {written}.")
+            if self.on_saved is not None:
+                self.on_saved(Path(written))
+
+        self._run(work, saved)
+
+    def segment_whole_image(self) -> None:
+        """The whole raw image classified as a run would, as a layer."""
+        from haemolynx.classifier import classify_volume
+        from haemolynx.gui.classifier_training import SEGMENTATION_LAYER, result_colours
+
+        if self.live is None:
+            return
+        labels = self.strokes.data
+        live = self.live
+        self._say("Segmenting the whole image...")
+
+        def work():
+            classifier = live.train(labels)
+            out = None
+            if self.values.get("use_memmap_loading"):
+                from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+                out = new_memmap_array(live.shape, np.uint8, directory=self.values.get("memmap_directory"))
+            return classify_volume(
+                live.volumes, live.voxel_size_zyx, classifier, ranges=live.ranges, out=out,
+                box_voxels=1_000_000 if out is not None else None,
+            )
+
+        def done(result) -> None:
+            self.segmentation = self._labels_layer(
+                result, SEGMENTATION_LAYER, result_colours(self.purpose), tuple(self.live.voxel_size_zyx)
+            )
+            self.segmentation.opacity = 0.6
+            found = ", ".join(
+                f"{name} {100.0 * np.count_nonzero(result == index) / result.size:.1f}%"
+                for index, name in enumerate(self.labels) if index
+            )
+            self._say(f"Segmented the whole image: {found} of its voxels.")
+
+        self._run(work, done)
+
+
 class _BatchRunWindow:
     """The Batch run window. Its Images tab holds the batch's folders, the two
     conditions read from the images' file names, the images matched in them
@@ -15504,6 +15983,56 @@ def settings_widget(napari_viewer=None):
                 values[name] = original
         return values
 
+    #: The classifier training window open for each classifier row.
+    training_windows: dict[str, Any] = {}
+
+    def open_classifier_training(row_name: str, *, synchronous: bool = False):
+        """Open the training window for *row_name*'s classifier: saving one
+        fills the row and turns its switch on."""
+        from haemolynx.classifier.forest import SCIKIT_LEARN_MISSING, scikit_learn_available
+        from haemolynx.gui.classifier_training import CLASSIFIER_SWITCHES
+
+        open_window = training_windows.get(row_name)
+        if open_window is not None and open_window.is_open():
+            open_window.show()
+            return open_window
+        if not scikit_learn_available():
+            report.value = SCIKIT_LEARN_MISSING
+            return None
+
+        def saved(path: Path) -> None:
+            rows[row_name].value = str(path)
+            switch = CLASSIFIER_SWITCHES[row_name]
+            if switch in rows:
+                rows[switch].value = True
+            report.value = f"Saved the classifier to {path}; runs use it for this job."
+
+        try:
+            window = _ClassifierTrainingWindow(
+                viewer, current_values(), row_name, on_saved=saved, synchronous=synchronous
+            )
+        except (OSError, ValueError) as error:
+            report.value = str(error)
+            return None
+        training_windows[row_name] = window
+        window.show()
+        return window
+
+    from haemolynx.gui.chrome_tooltips import TRAIN_CLASSIFIER_TOOLTIP
+    from haemolynx.gui.classifier_training import CLASSIFIER_ROWS
+
+    for classifier_row in CLASSIFIER_ROWS:
+        # A FileEdit has a fixed set of widgets: the button joins its Qt row,
+        # beside "Select file", and so shows and hides with the row.
+        row_layout = getattr(getattr(rows.get(classifier_row), "native", None), "layout", lambda: None)()
+        if row_layout is None:
+            continue
+        train_button = PushButton(text="Train...")
+        train_button.tooltip = TRAIN_CLASSIFIER_TOOLTIP
+        train_button.changed.connect(lambda *_args, name=classifier_row: open_classifier_training(name))
+        row_layout.addWidget(train_button.native)
+        rows[classifier_row]._haemolynx_train_button = train_button
+
     def use_layer(layer) -> None:
         """Point the run at *layer*: its own file, or its array written out."""
         from haemolynx.graph.boundaries import network_is_synthetic
@@ -18957,6 +19486,8 @@ def settings_widget(napari_viewer=None):
     )
     # The Input tab's raw image rows: the schema's own, which every reader shares.
     panel._haemolynx_raw_data_row = rows["raw_image_path"]
+    panel._haemolynx_open_classifier_training = open_classifier_training
+    panel._haemolynx_classifier_windows = training_windows
     panel._haemolynx_raw_channel_row = rows["raw_image_channel"]
     panel._haemolynx_stain_reading_label = stain_reading_label
     panel._haemolynx_refresh_stain_reading = refresh_stain_reading

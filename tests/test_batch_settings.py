@@ -191,7 +191,7 @@ def test_synthetic_runs_are_refused_and_ilastik_needs_a_batch_of_raw_images(base
     assert "matched in the segmented folder" in error
     assert check_batch(ilastik, schema, raw).errors == []
     (error,) = check_batch(base, schema, raw).errors
-    assert "use_ilastik_segmentation is off" in error
+    assert "neither use_ilastik_segmentation nor use_pixel_classifier_segmentation is on" in error
 
 
 def test_ilastik_vessel_masks_are_made_from_each_images_own_raw_image(base, schema, tmp_path):

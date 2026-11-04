@@ -599,6 +599,34 @@ def vessel_mask_files_in_use(settings: Mapping[str, Any], mask_role: str) -> boo
     )
 
 
+#: Each role's switches for segmenting its masks from the raw image: ilastik's,
+#: then the HaemoLynx classifier's (shown only while ilastik's is off).
+VESSEL_MASK_SEGMENTATION_SWITCHES: dict[str, tuple[str, str]] = {
+    "large": ("use_ilastik_large_vessel_segmentation", "use_pixel_classifier_large_vessel_segmentation"),
+    "small": ("use_ilastik_small_vessel_segmentation", "use_pixel_classifier_small_vessel_segmentation"),
+}
+
+
+def vessel_mask_classifier_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the HaemoLynx classifier makes the role's masks: its switch on,
+    ilastik's off, and the role's own masks in use."""
+    ilastik, classifier = VESSEL_MASK_SEGMENTATION_SWITCHES[mask_role]
+    return (
+        bool(settings.get(classifier))
+        and not settings.get(ilastik)
+        and vessel_mask_files_in_use(settings, mask_role)
+    )
+
+
+def vessel_masks_segmented_from_raw(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the role's masks are made from the raw image -- by ilastik or
+    by the HaemoLynx classifier -- rather than read from mask files."""
+    ilastik, _classifier = VESSEL_MASK_SEGMENTATION_SWITCHES[mask_role]
+    if not vessel_mask_files_in_use(settings, mask_role):
+        return False
+    return bool(settings.get(ilastik)) or vessel_mask_classifier_in_use(settings, mask_role)
+
+
 def large_vessel_mask_split_diameter_um(settings: Mapping[str, Any]) -> float | None:
     """The width the large masks are split at, or None while they are not
     (:func:`small_vessel_masks_split_from_large`). Raises when they are and

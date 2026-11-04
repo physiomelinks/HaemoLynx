@@ -709,8 +709,16 @@ def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) ->
     sweep axis whose max is below its min, or a capillary block that would
     have nothing to block."""
     merged = {**values, **spec.applied_overrides(schema)}
+    raw_image = merged.get("raw_image_path") not in (None, "")
+
+    def unset(name: str, made_by: str) -> bool:
+        # A mask the HaemoLynx classifier makes from the raw image fills it.
+        return merged.get(name) in (None, "") and not (raw_image and merged.get(made_by))
+
     if spec.type == MEASURED_CONSTRICTION_TYPE:
-        if not merged.get("use_pericyte_mask_constriction") or merged.get("pericyte_mask_path") in (None, ""):
+        if not merged.get("use_pericyte_mask_constriction") or unset(
+            "pericyte_mask_path", "use_pixel_classifier_pericyte_segmentation"
+        ):
             return [
                 f"perturbation '{spec.name}' narrows each branch where a pericyte mask's "
                 "pericytes sit, as the segmentation shows it narrowed, but reads no mask: "
@@ -718,7 +726,7 @@ def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) ->
             ]
         return []
     if spec.type == "capillary_block_mask":
-        if merged.get("capillary_block_mask_path") in (None, ""):
+        if unset("capillary_block_mask_path", "use_pixel_classifier_block_segmentation"):
             return [
                 f"perturbation '{spec.name}' blocks the vessels a mask's blobs sit in "
                 "but names no mask: set capillary_block_mask_path to the mask of blocks"

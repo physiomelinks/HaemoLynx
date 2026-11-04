@@ -1163,3 +1163,39 @@ ENDOTHELIAL_OPTIMISE_TOOLTIPS = {
         "calibration"
     ),
 }
+
+
+#: The "Train..." button beside each classifier file row.
+TRAIN_CLASSIFIER_TOOLTIP = (
+    "Open the training window: paint a few strokes of each label on the raw image, "
+    "see the plane in view classified as you paint, then save the classifier for runs"
+)
+
+#: The classifier training window's controls.
+CLASSIFIER_TRAINING_TOOLTIPS: dict[str, str] = {
+    "labels": (
+        "The label your brush paints. Paint a few strokes of each, in several places: "
+        "clear examples teach more than many"
+    ),
+    "live": (
+        "Train again and classify the plane in view after every stroke and every move "
+        "through the image"
+    ),
+    "update": "Train on the strokes painted so far and classify the plane in view",
+    "channels": "The channels of the raw image the classifier reads",
+    "scales": (
+        "How far around each voxel the classifier looks, in microns. Wider scales see "
+        "larger vessels, but take longer"
+    ),
+    "path": "Where the classifier is saved",
+    "browse": "Choose where to save the classifier",
+    "save": (
+        "Save the classifier and use it for this job in the run, with the panel's "
+        "switch for it turned on"
+    ),
+    "segment": (
+        "Segment the whole raw image with the trained classifier and add the result to "
+        "the viewer, as a run would make it"
+    ),
+    "close": "Close the window; the strokes stay in the viewer until it is reopened",
+}

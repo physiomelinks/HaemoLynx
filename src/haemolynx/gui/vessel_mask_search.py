@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from haemolynx.graph.boundaries import vessel_mask_files_in_use
+from haemolynx.graph.boundaries import vessel_mask_files_in_use, vessel_masks_segmented_from_raw
 from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
 from haemolynx.io.vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
 
@@ -33,7 +33,7 @@ TRIGGER_SETTINGS = (
     *(
         names[key]
         for names in VESSEL_MASK_SETTINGS.values()
-        for key in ("enabled", "use_ilastik")
+        for key in ("enabled", "use_ilastik", "use_classifier")
     ),
     *REFERENCE_SETTINGS,
 )
@@ -69,11 +69,12 @@ def _names_a_file(value: Any) -> bool:
 
 def roles_searched(settings: Mapping[str, Any]) -> tuple[str, ...]:
     """The mask roles (``"large"``, ``"small"``) whose rows a search fills:
-    in use (`graph.vessel_mask_files_in_use`), and read from files, not ilastik."""
+    in use (`graph.vessel_mask_files_in_use`), and read from files, not made
+    from the raw image by ilastik or the HaemoLynx classifier."""
     return tuple(
         role
-        for role, names in VESSEL_MASK_SETTINGS.items()
-        if vessel_mask_files_in_use(settings, role) and not settings.get(names["use_ilastik"])
+        for role in VESSEL_MASK_SETTINGS
+        if vessel_mask_files_in_use(settings, role) and not vessel_masks_segmented_from_raw(settings, role)
     )
 
 

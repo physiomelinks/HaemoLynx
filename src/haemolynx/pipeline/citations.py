@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping
 
 from haemolynx.graph.boundaries import (
     vessel_classes_by_size,
+    vessel_mask_classifier_in_use,
     vessel_mask_files_in_use,
     vessel_masks_in_use,
 )
@@ -57,6 +58,20 @@ def _used_ilastik(settings: Mapping[str, Any]) -> bool:
     if settings.get("use_ilastik_segmentation"):
         return True
     return ilastik_segments_vessel_masks(settings)
+
+
+def _used_pixel_classifier(settings: Mapping[str, Any]) -> bool:
+    """Whether the HaemoLynx classifier segmented anything this run: the
+    main image (its switch in effect) or a vessel-mask role's masks (its
+    switch on with the role's masks in use)."""
+    from haemolynx.graph.boundaries import vessel_mask_classifier_in_use
+    from haemolynx.pipeline.naming import classifier_segments
+
+    if _synthetic(settings) or not _is_set(settings.get("raw_image_path")):
+        return False
+    return classifier_segments(settings) or any(
+        vessel_mask_classifier_in_use(settings, role) for role in ("large", "small")
+    )
 
 
 def _synthetic(settings: Mapping[str, Any]) -> bool:
@@ -137,6 +152,8 @@ def _image_readers(settings: Mapping[str, Any]) -> set[str]:
         readers.add("tifffile")
     if settings.get("use_ilastik_segmentation") and raw_image_set:
         readers.add(_reader(ilastik_output))
+    elif settings.get("use_pixel_classifier_segmentation") and raw_image_set:
+        readers.add("tifffile")  # the classifier writes TIFF
     elif _is_set(settings.get("input_path")):
         readers.add(_reader(settings.get("input_path")))
     for role, (ilastik_flag, mask_settings) in _VESSEL_MASK_FILES.items():
@@ -144,6 +161,9 @@ def _image_readers(settings: Mapping[str, Any]) -> set[str]:
             continue
         if settings.get(ilastik_flag):
             readers.add(_reader(ilastik_output))
+            continue
+        if vessel_mask_classifier_in_use(settings, role):
+            readers.add("tifffile")
             continue
         readers.update(
             _reader(settings.get(name)) for name in mask_settings if _is_set(settings.get(name))
@@ -441,6 +461,24 @@ PACKAGE_CITATIONS: tuple[Citation, ...] = (
             "https://doi.org/10.1038/s41592-019-0582-9"
         ),
         applies=_used_ilastik,
+    ),
+    Citation(
+        name="Random forests",
+        reason="the HaemoLynx pixel classifier that segmented the raw image",
+        reference=(
+            "Breiman, L. (2001). Random forests. Machine Learning, 45, 5-32. "
+            "https://doi.org/10.1023/A:1010933404324"
+        ),
+        applies=_used_pixel_classifier,
+    ),
+    Citation(
+        name="scikit-learn",
+        reason="growing the pixel classifier's random forest when it was trained",
+        reference=(
+            "Pedregosa, F., Varoquaux, G., Gramfort, A. et al. (2011). Scikit-learn: "
+            "machine learning in Python. Journal of Machine Learning Research, 12, 2825-2830."
+        ),
+        applies=_used_pixel_classifier,
     ),
     Citation(
         name="napari",
