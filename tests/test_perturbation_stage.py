@@ -115,6 +115,9 @@ def _settings(tmp_path: Path, perturbations: list[dict], **extra) -> dict:
             "run_haemodynamics": True,
             "run_perturbations": True,
             "perturbations": perturbations,
+            # The per-order table, not one diameter for every order: ticked,
+            # all_diams_const wins over a table (the Diameters review).
+            "all_diams_const": False,
             "diameter_by_branch_order": dict(DIAMETERS),
             "constriction_by_branch_order": {order: 0.6 for order in DIAMETERS},
             "measure_diameters_from_raw_image": False,
