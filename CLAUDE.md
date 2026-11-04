@@ -377,8 +377,11 @@ whatever other classifiers share its pass (`tests/test_pixel_classifier.py`,
 `test_classifier_scale.py`). A new classifier smooths its wide scales on a coarse grid
 (`FeatureSpec.coarse`, `features.coarse_factors`: block means aligned to the whole image,
 interpolated back), computed once per 1024-voxel tile of a slab and shared by its boxes; one saved
-before records none and reads every scale on the image's grid, as it was trained. Only training
-needs scikit-learn (`dev` and `napari` extras); a `.haemoclf` holds no pickle.
+before records none and reads every scale on the image's grid, as it was trained. A large image
+read lazily is classified on worker processes (`apply.classify_slabs(processes=)`, from
+`PROCESS_MIN_VOXELS`): threads stop at about 4x. `pixel_classifier_downsample` (off) classifies on a
+coarser grid (`lazy.BlockMeanVolume`) and writes the masks back at full size, recording the grid.
+Only training needs scikit-learn (`dev` and `napari` extras); a `.haemoclf` holds no pickle.
 
 **One raw image per run.** The Input tab's `raw_image_path`, `raw_image_channel` and
 `raw_image_stain` are the only raw image a run reads: ilastik segments it (the vessel masks'

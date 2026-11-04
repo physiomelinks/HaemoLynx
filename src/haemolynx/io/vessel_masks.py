@@ -381,8 +381,9 @@ _SHARED_VESSEL_MASK_SETTINGS = (
     "ilastik_reuse_existing_output",
     "voxel_size_override_xyz",
     "voxel_size_policy",
-    # Where the HaemoLynx classifier writes the masks it makes.
+    # Where the HaemoLynx classifier writes the masks it makes, and on what grid.
     "output_dir",
+    "pixel_classifier_downsample",
 )
 
 
@@ -471,6 +472,7 @@ def _segment_vessel_masks_with_classifier(
     voxel_size_policy: str,
     use_memmap: bool,
     memmap_directory,
+    downsample=None,
 ) -> tuple[Path, Path | None]:
     """``(arteriole or global mask, venule mask or None)``: the role's masks
     segmented from the raw image by the HaemoLynx classifier, in one pass."""
@@ -499,6 +501,7 @@ def _segment_vessel_masks_with_classifier(
         voxel_size_override_xyz=voxel_size_override_xyz,
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
+        downsample=downsample or "none",
     )
     return written["Arteriole"], written.get("Venule")
 
@@ -527,6 +530,7 @@ def load_and_validate_vessel_masks(
     use_classifier: bool = False,
     classifier_path: str | Path | None = None,
     output_dir: str | Path | None = None,
+    pixel_classifier_downsample=None,
     dilation_microns: float = 0.0,
     min_component_volume_um3: float = 0.0,
     swap_minority_components: bool = False,
@@ -684,6 +688,7 @@ def load_and_validate_vessel_masks(
             voxel_size_policy=voxel_size_policy,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
+            downsample=pixel_classifier_downsample,
         )
 
     if enabled and effective_arteriole_mask_path is not None and effective_venule_mask_path is None:

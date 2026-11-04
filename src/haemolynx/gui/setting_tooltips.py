@@ -119,6 +119,10 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "The classifier file, saved from the training window, that finds capillary blocks in the "
         "raw image. Each blob it finds is one block"
     ),
+    "pixel_classifier_downsample": (
+        "Classify the raw image on a coarser grid, then write the masks back at full size. "
+        "2x is about eight times faster, with masks at the coarser grid's detail"
+    ),
     "use_pixel_classifier_cell_segmentation": (
         "Make the cell mask from the raw image with a classifier trained in this panel, instead "
         "of reading a cell mask file"

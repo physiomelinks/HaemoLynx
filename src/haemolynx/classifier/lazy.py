@@ -75,6 +75,13 @@ class LazyTiffChannel:
         self._local = threading.local()
         self._handles: list = []
 
+    # A worker process opens the file itself: only where to read is sent.
+    def __getstate__(self):
+        return {"path": str(self.path), "channel": self.channel, "cache_bytes": self.cache_bytes}
+
+    def __setstate__(self, state):
+        self.__init__(state["path"], state["channel"], cache_bytes=state["cache_bytes"])
+
     # ------------------------------------------------------------- numpy-like
 
     @property
@@ -197,3 +204,51 @@ def can_read_lazily(path: str | Path, channel: int | None = None) -> bool:
     except (ValueError, OSError, IndexError):
         return False
     return True
+
+
+class BlockMeanVolume:
+    """*volume* read on a grid *factors* coarser along z, y and x: each voxel
+    the mean of its block of the image's voxels (fewer at the far faces), as
+    float32, computed only where it is read. What the classifier reads when
+    asked to classify on a coarser grid (``pixel_classifier_downsample``)."""
+
+    def __init__(self, volume, factors):
+        self.volume = volume
+        self.factors = tuple(int(f) for f in factors)
+        self.shape = tuple(-(-int(n) // f) for n, f in zip(volume.shape, self.factors))
+        self.dtype = np.dtype(np.float32)
+        self.ndim = 3
+
+    @property
+    def size(self) -> int:
+        return int(np.prod(self.shape, dtype=np.int64))
+
+    def __len__(self) -> int:
+        return self.shape[0]
+
+    def __getitem__(self, key) -> np.ndarray:
+        from .features import _block_mean
+
+        key = key if isinstance(key, tuple) else (key,)
+        key = key + (slice(None),) * (3 - len(key))
+        wanted, squeeze, fine = [], [], []
+        for part, n, f, total in zip(key, self.shape, self.factors, self.volume.shape):
+            if isinstance(part, (int, np.integer)):
+                index = np.array([int(part) + (n if part < 0 else 0)])
+                squeeze.append(True)
+            elif isinstance(part, slice):
+                index = np.arange(*part.indices(n))
+                squeeze.append(False)
+            else:
+                raise IndexError("a block-mean view takes slices and integers")
+            low, high = (int(index.min()), int(index.max()) + 1) if len(index) else (0, 0)
+            wanted.append(index - low)
+            fine.append(slice(low * f, min(int(total), high * f)))
+        coarse = _block_mean(np.asarray(self.volume[tuple(fine)]), self.factors)
+        out = coarse[np.ix_(*wanted)]
+        return out.reshape([len(w) for w, s in zip(wanted, squeeze) if not s])
+
+    def close(self) -> None:
+        close = getattr(self.volume, "close", None)
+        if close is not None:
+            close()

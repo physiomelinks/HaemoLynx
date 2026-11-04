@@ -71,6 +71,8 @@ input_and_segmentation:
   use_pixel_classifier_block_segmentation: false
   # Segment the capillary blocks with this classifier (.haemoclf), trained in the panel to tell blocks from background; each blob it finds is one block  [needs use_pixel_classifier_block_segmentation; must exist]
   pixel_classifier_block_path: null
+  # Classify the raw image on a grid this much coarser -- block means of its voxels, a coarser axis reduced less, as segmented_image_downsample reduces them -- and write every mask the HaemoLynx classifier makes back at the image's own size, a block of voxels per voxel classified. 2x classifies about 8 times fewer voxels, at the coarser grid's resolution; none classifies every voxel  [one of: none, 2x, 4x, 8x, 16x; needs raw_image_path]
+  pixel_classifier_downsample: none
   # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um; needs voxel_size_policy not metadata_only and network_source = segmented_image]
   voxel_size_override_xyz: null
   # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only; needs network_source = segmented_image]

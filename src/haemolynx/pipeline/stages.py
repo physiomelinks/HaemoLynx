@@ -480,6 +480,7 @@ def classifier_run_arguments(settings: Mapping[str, Any]) -> dict:
         voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
         use_memmap=bool(settings.get("use_memmap_loading")),
         memmap_directory=settings.get("memmap_directory"),
+        downsample=settings.get("pixel_classifier_downsample") or "none",
     )
 
 
@@ -717,6 +718,7 @@ def current_ilastik_output(settings: Mapping[str, Any]) -> tuple[Path | None, st
                 axis_order=arguments["axis_order"],
                 voxel_size_policy=arguments["voxel_size_policy"],
                 voxel_size_override_xyz=arguments["voxel_size_override_xyz"],
+                downsample=arguments["downsample"],
             )
         except (OSError, ValueError) as error:
             return None, str(error)

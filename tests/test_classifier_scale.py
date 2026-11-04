@@ -331,5 +331,73 @@ def test_coarse_scales_shared_by_a_tile_label_every_voxel_as_the_whole_volume_do
     features = features_of_box([volume], ranges, voxel, classifier.spec, whole, whole)
     expected = classifier.forest.predict(features.reshape(-1, classifier.spec.n_features)).reshape(volume.shape)
     monkeypatch.setattr(apply_module, "COARSE_TILE", tile)
+    monkeypatch.setattr(apply_module, "MIN_COARSE_TILE", tile)
     got = classify_volume([volume], voxel, classifier, workers=3, planes_per_slab=7, box_voxels=20_000)
     assert np.array_equal(got, expected)
+
+
+# ------------------------------------------------- processes, coarser grid
+
+
+@pytest.mark.parametrize("coarse", [False, True])
+def test_worker_processes_label_every_voxel_as_threads_do(tmp_path, coarse):
+    from test_pixel_classifier import trained_classifier
+
+    voxel = (2.0, 0.6, 0.6)
+    volume, truth = tube_volume(shape=(20, 64, 72))
+    raw = write_raw(tmp_path / "raw.tif", volume, voxel_zyx=voxel)
+    classifier = trained_classifier(volume, truth, spec=FeatureSpec(scales_um=(1.0, 4.0), coarse=coarse), voxel=voxel)
+    threads = classify_volume([volume], voxel, classifier, workers=2, processes=False, planes_per_slab=6)
+    lazy = LazyTiffChannel(raw)
+    processes = classify_volume([lazy], voxel, classifier, workers=2, processes=True, planes_per_slab=6,
+                                box_voxels=30_000)
+    lazy.close()
+    assert np.array_equal(processes, threads)
+
+
+def test_a_block_mean_view_reads_numpys_block_means():
+    from haemolynx.classifier.lazy import BlockMeanVolume
+
+    volume = np.random.default_rng(0).integers(0, 1000, (7, 11, 13)).astype(np.uint16)
+    view = BlockMeanVolume(volume, (2, 3, 3))
+    assert view.shape == (4, 4, 5)
+    padded = np.full((8, 12, 15), np.nan, np.float64)
+    padded[:7, :11, :13] = volume
+    expected = np.nanmean(padded.reshape(4, 2, 4, 3, 5, 3), axis=(1, 3, 5))
+    np.testing.assert_allclose(view[:, :, :], expected, rtol=1e-6)
+    np.testing.assert_allclose(view[2, 1:3, ::2], expected[2, 1:3, ::2], rtol=1e-6)
+
+
+def test_a_coarser_grid_writes_full_size_masks_of_its_coarse_labels(tmp_path, caplog):
+    from haemolynx.classifier.apply import grid_factors
+    from haemolynx.classifier.lazy import BlockMeanVolume
+
+    voxel = (2.0, 0.6, 0.6)
+    volume, truth = tube_volume(shape=(20, 64, 72))
+    raw = write_raw(tmp_path / "raw.tif", volume, voxel_zyx=voxel)
+    classifier = trained(volume, truth)
+    path = save_classifier(classifier, tmp_path / "c.haemoclf")
+    factors = grid_factors("2x", voxel)
+    assert factors == (1, 2, 2)  # z already as coarse as 2x makes y and x
+    out = segment_with_classifier(raw, path, {"Vessel": tmp_path / "m.tif"}, downsample="2x")["Vessel"]
+    mask = tifffile.imread(out)
+    assert mask.shape == volume.shape
+    coarse = classify_volume([BlockMeanVolume(volume, factors)], tuple(v * f for v, f in zip(voxel, factors)),
+                             classifier, workers=1)
+    spread = np.repeat(np.repeat(coarse == 1, 2, axis=1), 2, axis=2)[:, :64, :72]
+    assert np.array_equal(mask.astype(bool), spread)
+    caplog.set_level("INFO")
+    segment_with_classifier(raw, path, {"Vessel": tmp_path / "m.tif"}, downsample="2x")
+    assert "Reusing the segmentation" in caplog.text
+    caplog.clear()
+    segment_with_classifier(raw, path, {"Vessel": tmp_path / "m.tif"})
+    assert "another grid" in caplog.text
+
+
+def test_the_run_hands_the_classifier_its_grid(tmp_path):
+    from haemolynx.pipeline import default_schema, resolve_settings
+    from haemolynx.pipeline.stages import classifier_run_arguments
+
+    settings = resolve_settings({"output_dir": tmp_path, "raw_image_path": tmp_path / "r.tif",
+                                 "pixel_classifier_downsample": "4x"}, schema=default_schema(), config_path=None)
+    assert classifier_run_arguments(settings)["downsample"] == "4x"

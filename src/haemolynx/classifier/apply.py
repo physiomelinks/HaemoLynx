@@ -59,7 +59,7 @@ PROVENANCE_VERSION = 1
 
 #: The fields that must match this run's for an output to be used again.
 _PROVENANCE_KEYS = (
-    "version", "source", "classifier_sha256", "input", "label", "voxel_size_zyx", "axis_order",
+    "version", "source", "classifier_sha256", "input", "label", "voxel_size_zyx", "axis_order", "grid",
 )
 
 #: About how much memory one box being worked on takes, per padded voxel and
@@ -71,6 +71,10 @@ _BYTES_PER_CORE_FEATURE = 12
 #: Never more workers than this, however much memory there is: past it the
 #: threads wait on one another.
 MAX_WORKERS = 8
+
+#: Never more worker processes than this: each its own interpreter, so they
+#: run side by side, as threads do not.
+MAX_PROCESSES = 32
 
 #: Voxels per padded box under the low-RAM option. Smaller boxes would hold
 #: less, but recompute more of their margin (at 8 um and 0.5 um voxels, 42 a
@@ -84,8 +88,10 @@ MAX_SLAB_PLANES = 64
 
 #: The side (voxels) of the tiles of a slab whose coarse scales are computed
 #: once and shared by the boxes inside: wide, so their coarse margin is a
-#: small part of them.
+#: small part of them -- but cut down (:func:`tile_side`) until there are
+#: enough of them to keep every worker busy.
 COARSE_TILE = 1024
+MIN_COARSE_TILE = 256
 LOW_RAM_BUDGET_BYTES = 4 << 30
 
 #: How the masks are compressed: fast, and a 0/1 mask shrinks some fifty-fold.
@@ -370,6 +376,122 @@ def slab_planes(
     return int(max(1, min(MAX_SLAB_PLANES, max(fit, wanted), shape[0])))
 
 
+@dataclass
+class _Pass:
+    """What every tile of a pass reads: sent once to each worker process."""
+
+    volumes: list
+    ranges: list
+    voxel_size_zyx: tuple
+    shared: FeatureSpec
+    classifiers: list
+    outputs: list  # per job: ((key, marks), ...)
+    columns: list
+    needed: np.ndarray
+    halo: tuple
+    shape: tuple
+    tiled: bool
+    #: Worker processes sharing the decoded-page budget.
+    share: int = 1
+
+
+def _run_tile(state: _Pass, region: tuple, cores: list) -> dict[str, np.ndarray]:
+    """Every output of *region* (a tile of a slab): its coarse context, then
+    its boxes one after another."""
+    context = (
+        coarse_context(state.volumes, state.ranges, state.voxel_size_zyx, state.shared, region, state.needed)
+        if state.tiled else None
+    )
+    extent = tuple(r.stop - r.start for r in region)
+    out = {
+        key: np.zeros(extent, dtype=np.uint8)
+        for outputs in state.outputs for key, _marks in outputs
+    }
+    nf = state.shared.n_features
+    for core in cores:
+        padded = tuple(
+            slice(max(0, c.start - h), min(n, c.stop + h)) for c, h, n in zip(core, state.halo, state.shape)
+        )
+        inner = tuple(slice(c.start - p.start, c.stop - p.start) for c, p in zip(core, padded))
+        features = features_of_box(
+            state.volumes, state.ranges, state.voxel_size_zyx, state.shared, padded, inner,
+            needed=state.needed, coarse=context,
+        )
+        flat = features.reshape(-1, nf)
+        local = tuple(slice(c.start - r.start, c.stop - r.start) for c, r in zip(core, region))
+        for classifier, outputs, cols in zip(state.classifiers, state.outputs, state.columns):
+            labels = classifier.forest.predict(np.ascontiguousarray(flat[:, cols])).reshape(features.shape[:3])
+            for key, marks in outputs:
+                if marks is None:
+                    out[key][local] = labels
+                elif len(marks) == 1:
+                    out[key][local] = labels == marks[0]
+                else:
+                    out[key][local] = np.isin(labels, marks)
+    return out
+
+
+#: The pass a worker process was started for (:func:`_start_worker`).
+_WORKER_PASS: list = []
+
+
+def _start_worker(state: _Pass) -> None:
+    for volume in state.volumes:
+        reader = volume
+        while reader is not None and not hasattr(reader, "cache_bytes"):
+            reader = getattr(reader, "volume", None)
+        if reader is not None:
+            reader.cache_bytes = max(reader.cache_bytes // max(state.share, 1), 2 * getattr(reader, "_plane_bytes", 0))
+    _WORKER_PASS[:] = [state]
+
+
+def _worker_tile(region: tuple, cores: list) -> dict[str, np.ndarray]:
+    return _run_tile(_WORKER_PASS[0], region, cores)
+
+
+#: Images with fewer voxels than this are classified on threads: starting
+#: worker processes costs more than it saves.
+PROCESS_MIN_VOXELS = 64_000_000
+
+
+def _can_use_processes(volumes) -> bool:
+    """Whether every volume can be sent to a worker process as where to read
+    it, not as its voxels."""
+    from .lazy import LazyTiffChannel
+
+    def light(volume):
+        if isinstance(volume, LazyTiffChannel):
+            return True
+        inner = getattr(volume, "volume", None)
+        return inner is not None and light(inner)
+
+    return all(light(volume) for volume in volumes)
+
+
+def process_count(n_features: int, box_voxels: int, *, processes: int | None = None) -> int:
+    """How many worker processes: *processes* when given, else one a core
+    (at most :data:`MAX_PROCESSES`), fewer where free memory would not hold
+    their boxes, tiles and decoded pages."""
+    if processes is not None:
+        return max(1, int(processes))
+    # One core left for this process, which gathers the tiles and writes.
+    cores = max(1, (os.cpu_count() or 2) - 1)
+    per_process = box_voxels * _BYTES_PER_PADDED_VOXEL + box_voxels * n_features * 4
+    free = available_memory_bytes()
+    by_memory = MAX_PROCESSES if free is None else max(1, int(0.7 * free // max(per_process, 1)))
+    return max(1, min(cores, MAX_PROCESSES, by_memory))
+
+
+def tile_side(shape, slabs: int, workers: int) -> int:
+    """The side (voxels) of the tiles whose coarse context their boxes share:
+    :data:`COARSE_TILE` at most, smaller (to :data:`MIN_COARSE_TILE`, in steps
+    of 64) until the image holds a few tiles a worker, so none sits idle."""
+    area = int(shape[1]) * int(shape[2])
+    side = int(np.sqrt(area * max(slabs, 1) / max(3 * workers, 1)))
+    side = (side // 64) * 64
+    return int(max(MIN_COARSE_TILE, min(COARSE_TILE, side)))
+
+
 def classify_slabs(
     volumes: Sequence,
     ranges: Sequence[tuple[float, float]],
@@ -382,13 +504,22 @@ def classify_slabs(
     progress: Optional[Callable[[int, int], None]] = None,
     box_voxels: int | None = None,
     planes_per_slab: int | None = None,
+    processes: bool | None = None,
 ) -> None:
     """Classify the image a slab of planes at a time for every job at once,
     handing *sink* each slab's outputs, ``(z0, z1, {key: uint8 (planes, y, x)})``,
     in order. *volumes* and *ranges* are the shared spec's channels
     (:func:`shared_spec` over the jobs'), in its order. *poll* is called
-    between boxes: whatever it raises stops the work and propagates.
-    *progress* hears ``(boxes done, boxes)``."""
+    between tiles: whatever it raises stops the work and propagates.
+    *progress* hears ``(tiles done, tiles)``.
+
+    The work is cut into tiles of a slab -- a box each, or, with coarse
+    scales, a large tile whose coarse context its boxes share -- run on worker
+    processes (*processes*; by default for an image of at least
+    :data:`PROCESS_MIN_VOXELS` read lazily, each process with its own
+    interpreter, so they run side by side) or threads. Several slabs may be
+    in flight; *sink* still hears them in order. The labels are the same
+    every way."""
     if not jobs:
         return
     for job in jobs:
@@ -411,107 +542,105 @@ def classify_slabs(
             outputs=sum(len(job.outputs) for job in jobs), budget_bytes=LOW_RAM_BUDGET_BYTES,
         )
     slabs = [(z0, min(z0 + planes_per_slab, shape[0])) for z0 in range(0, shape[0], planes_per_slab)]
-    # Coarse scales are computed once per tile of the slab, large in y and x,
-    # and shared by the boxes inside it (features.coarse_context): no box
-    # reads or averages the coarse margin itself.
     tiled = has_coarse_scales(shared, voxel_size_zyx)
-    tile = COARSE_TILE if tiled else max(shape[1], shape[2])
-    plans = []
-    for z0, z1 in slabs:
+    use_processes = processes
+    if use_processes is None:
+        use_processes = int(np.prod(shape, dtype=np.int64)) >= PROCESS_MIN_VOXELS and _can_use_processes(volumes)
+    if use_processes and not _can_use_processes(volumes):
+        use_processes = False
+    planned = (
+        process_count(int(needed.sum()), box_voxels, processes=workers) if use_processes
+        else worker_count(box_voxels, box_voxels, int(needed.sum()), workers=workers)
+    )
+    side = tile_side(shape, len(slabs), planned)
+    tasks = []  # (slab number, region, cores)
+    for number, (z0, z1) in enumerate(slabs):
         by, bx = _slab_core(shape, halo, (z0, z1), box_voxels)
-        for ty in range(0, shape[1], tile):
-            for tx in range(0, shape[2], tile):
-                region = (slice(z0, z1), slice(ty, min(ty + tile, shape[1])), slice(tx, min(tx + tile, shape[2])))
-                for y0 in range(ty, region[1].stop, by):
-                    for x0 in range(tx, region[2].stop, bx):
-                        core = (
-                            slice(z0, z1),
-                            slice(y0, min(y0 + by, region[1].stop)),
-                            slice(x0, min(x0 + bx, region[2].stop)),
-                        )
-                        plans.append(((z0, z1), region, core))
-    largest = max(int(np.prod([s.stop - s.start for s in core])) for _slab, _region, core in plans)
-    count = worker_count(box_voxels, largest, int(needed.sum()), workers=workers)
-    nf = shared.n_features
+        tile = (side, side) if tiled else (by, bx)
+        for ty in range(0, shape[1], tile[0]):
+            for tx in range(0, shape[2], tile[1]):
+                region = (slice(z0, z1), slice(ty, min(ty + tile[0], shape[1])), slice(tx, min(tx + tile[1], shape[2])))
+                cores = [
+                    (slice(z0, z1), slice(y0, min(y0 + by, region[1].stop)), slice(x0, min(x0 + bx, region[2].stop)))
+                    for y0 in range(ty, region[1].stop, by)
+                    for x0 in range(tx, region[2].stop, bx)
+                ]
+                tasks.append((number, region, cores))
+    state = _Pass(
+        volumes=list(volumes), ranges=[tuple(r) for r in ranges], voxel_size_zyx=tuple(voxel_size_zyx),
+        shared=shared, classifiers=[_without_training(job.classifier) for job in jobs],
+        outputs=[tuple(job.outputs) for job in jobs], columns=columns, needed=needed, halo=halo,
+        shape=shape, tiled=tiled,
+    )
+    largest = max(int(np.prod([s.stop - s.start for s in core])) for _n, _r, cores in tasks for core in cores)
+    if use_processes:
+        from concurrent.futures import ProcessPoolExecutor
 
-    def one(core, context):
-        padded = tuple(
-            slice(max(0, c.start - h), min(n, c.stop + h)) for c, h, n in zip(core, halo, shape)
-        )
-        inner = tuple(slice(c.start - p.start, c.stop - p.start) for c, p in zip(core, padded))
-        features = features_of_box(
-            volumes, ranges, voxel_size_zyx, shared, padded, inner, needed=needed,
-            coarse=None if context is None else context.result(),
-        )
-        flat = features.reshape(-1, nf)
-        results = []
-        for job, cols in zip(jobs, columns):
-            labels = job.classifier.forest.predict(np.ascontiguousarray(flat[:, cols])).reshape(features.shape[:3])
-            for key, marks in job.outputs:
-                if marks is None:
-                    results.append((key, labels))
-                elif len(marks) == 1:
-                    results.append((key, (labels == marks[0]).astype(np.uint8)))
-                else:
-                    results.append((key, np.isin(labels, marks).astype(np.uint8)))
-        return core, results
+        count = planned
+        state.share = count
+        pool = ProcessPoolExecutor(max_workers=count, initializer=_start_worker, initargs=(state,))
+        run = _worker_tile
+    else:
+        count = worker_count(box_voxels, largest, int(needed.sum()), workers=workers)
+        pool = ThreadPoolExecutor(max_workers=count)
+
+        def run(region, cores):
+            return _run_tile(state, region, cores)
 
     keys = [key for job in jobs for key, _marks in job.outputs]
+    remaining = [0] * len(slabs)
+    for number, _region, _cores in tasks:
+        remaining[number] += 1
+    buffers: dict[int, dict[str, np.ndarray]] = {}
+    next_sink = 0
     done = 0
-    position = 0
-    with ThreadPoolExecutor(max_workers=count) as pool:
-        for z0, z1 in slabs:
-            buffers = {key: np.zeros((z1 - z0,) + shape[1:], dtype=np.uint8) for key in keys}
-            mine = [(region, core) for slab, region, core in plans[position:] if slab == (z0, z1)]
-            position += len(mine)
-            pending: set = set()
-            queued = iter(mine)
-            # Each tile's coarse context is started a few tiles ahead of its
-            # boxes, so the boxes rarely wait on one: the pool runs in order,
-            # so a box waits only on a context already running.
-            regions = list(dict.fromkeys(tuple((r.start, r.stop) for r in region) for region, _core in mine))
-            contexts: dict = {}
-            ahead = max(2, count // 2)
+    pending: dict = {}
+    queued = iter(tasks)
+    try:
+        while True:
+            while len(pending) < 2 * count:
+                task = next(queued, None)
+                if task is None:
+                    break
+                number, region, cores = task
+                pending[pool.submit(run, region, cores)] = (number, region)
+            if not pending:
+                break
+            finished, _ = wait(list(pending), timeout=0.5, return_when=FIRST_COMPLETED)
+            for future in finished:
+                number, region = pending.pop(future)
+                result = future.result()
+                z0, z1 = slabs[number]
+                slab = buffers.setdefault(
+                    number, {key: np.zeros((z1 - z0,) + shape[1:], dtype=np.uint8) for key in keys}
+                )
+                local = (slice(0, z1 - z0),) + region[1:]
+                for key, values in result.items():
+                    slab[key][local] = values
+                remaining[number] -= 1
+                done += 1
+                if progress is not None:
+                    progress(done, len(tasks))
+            while next_sink < len(slabs) and remaining[next_sink] == 0:
+                z0, z1 = slabs[next_sink]
+                sink(z0, z1, buffers.pop(next_sink))
+                next_sink += 1
+            if poll is not None:
+                poll()
+    except BaseException:
+        # Stopped (or failed): no waiting for tiles still running.
+        for future in pending:
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
 
-            def context_for(key):
-                at = regions.index(key)
-                for upcoming in regions[at:at + ahead]:
-                    if upcoming not in contexts:
-                        contexts[upcoming] = pool.submit(
-                            coarse_context, volumes, ranges, voxel_size_zyx, shared,
-                            tuple(slice(a, b) for a, b in upcoming), needed,
-                        )
-                for passed in [k for k in contexts if regions.index(k) < at]:
-                    del contexts[passed]  # its boxes hold their own reference
-                return contexts[key]
 
-            try:
-                while True:
-                    while len(pending) < 2 * count:
-                        item = next(queued, None)
-                        if item is None:
-                            break
-                        region, core = item
-                        context = context_for(tuple((r.start, r.stop) for r in region)) if tiled else None
-                        pending.add(pool.submit(one, core, context))
-                    if not pending:
-                        break
-                    finished, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
-                    for future in finished:
-                        core, results = future.result()
-                        local = (slice(core[0].start - z0, core[0].stop - z0),) + core[1:]
-                        for key, values in results:
-                            buffers[key][local] = values
-                        done += 1
-                        if progress is not None:
-                            progress(done, len(plans))
-                    if poll is not None:
-                        poll()
-            except BaseException:
-                for future in pending:
-                    future.cancel()
-                raise
-            sink(z0, z1, buffers)
+def _without_training(classifier: PixelClassifier) -> PixelClassifier:
+    """The classifier as a pass needs it: its forest, not its training voxels."""
+    from dataclasses import replace as replaced
+
+    return replaced(classifier, training=None)
 
 
 def classify_volume(
@@ -526,6 +655,7 @@ def classify_volume(
     progress: Optional[Callable[[int, int], None]] = None,
     box_voxels: int | None = None,
     planes_per_slab: int | None = None,
+    processes: bool | None = None,
 ) -> np.ndarray:
     """Each voxel's most probable label (uint8, an index into the
     classifier's labels) for the channel *volumes* of one image.
@@ -554,6 +684,7 @@ def classify_volume(
     classify_slabs(
         volumes, ranges, voxel_size_zyx, [Job(classifier, (("labels", None),))], sink=sink,
         workers=workers, poll=poll, progress=progress, box_voxels=box_voxels, planes_per_slab=planes_per_slab,
+        processes=processes,
     )
     return out
 
@@ -569,9 +700,11 @@ def classifier_provenance(
     channels: Sequence[int | None],
     voxel_size_zyx: Sequence[float],
     axis_order: str,
+    grid: Sequence[int] | None = None,
 ) -> dict:
     """What an output of mask *label* made from *raw_path* by
-    *classifier_path* depends on (see the module docstring)."""
+    *classifier_path* depends on (see the module docstring), and the coarser
+    *grid* it was classified on, when it was."""
     from haemolynx.io.ilastik import _file_identity, file_sha256
 
     classifier_path = Path(classifier_path)
@@ -586,6 +719,8 @@ def classifier_provenance(
         "classifier": str(classifier_path.resolve()),
     }
     record["input"]["channels"] = [None if c is None else int(c) for c in channels]
+    if grid is not None and any(int(f) > 1 for f in grid):
+        record["grid"] = [int(f) for f in grid]
     return record
 
 
@@ -614,6 +749,7 @@ def classifier_output_is_current(output_path: str | Path, provenance: dict) -> t
         "label": "it is another label's mask",
         "voxel_size_zyx": "the raw image's voxel size has changed",
         "axis_order": "the raw image is read in another axis order",
+        "grid": "it was classified on another grid",
     }
     for key in _PROVENANCE_KEYS:
         if recorded.get(key) != provenance.get(key):
@@ -746,6 +882,7 @@ def segment_with_classifiers(
     memmap_directory: str | Path | None = None,
     workers: int | None = None,
     poll: Optional[Callable[[], None]] = None,
+    downsample=1,
 ) -> list[dict[str, Path]]:
     """Segment the raw image with each classifier of *requests* --
     ``(classifier path, {mask: output path})`` -- in one pass, the features
@@ -754,7 +891,14 @@ def segment_with_classifiers(
     not run.
 
     A mask the classifier cannot make, or one it finds nowhere, raises
-    ``ValueError``; nothing is written then."""
+    ``ValueError``; nothing is written then.
+
+    *downsample* (``pixel_classifier_downsample``: ``"2x"``, 4, ...)
+    classifies on a coarser grid -- the raw image's block means, the coarser
+    axes reduced less (``io.downsample.axis_downsample_factors``) -- and
+    writes each mask back at the image's own size, a block of voxels per
+    voxel classified: at 2x, a fraction of the work, at the coarser grid's
+    resolution."""
     started = time.perf_counter()
     raw_image_path = Path(raw_image_path)
     loaded: list[tuple[Path, PixelClassifier, dict[str, Path], dict[str, tuple[int, ...]]]] = []
@@ -777,17 +921,47 @@ def segment_with_classifiers(
         voxel_size_override_xyz=voxel_size_override_xyz, use_memmap=use_memmap,
         memmap_directory=memmap_directory,
     )
+    factors = grid_factors(downsample, raw.voxel_size_zyx)
+    grid = raw
+    if factors != (1, 1, 1):
+        from .lazy import BlockMeanVolume
+
+        grid = RawChannels(
+            path=raw.path,
+            volumes=tuple(BlockMeanVolume(volume, factors) for volume in raw.volumes),
+            voxel_size_zyx=tuple(v * f for v, f in zip(raw.voxel_size_zyx, factors)),
+            axis_order=raw.axis_order, file_spacing=raw.file_spacing, channels=raw.channels,
+        )
     try:
         return _segment(
             raw, loaded, results, shared, started=started, reuse_existing=reuse_existing,
             use_memmap=use_memmap, memmap_directory=memmap_directory, workers=workers, poll=poll,
+            grid=grid, factors=factors,
         )
     finally:
         _release(*raw.volumes)
 
 
-def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memmap, memmap_directory, workers, poll):
+def grid_factors(downsample, voxel_size_zyx) -> tuple[int, int, int]:
+    """The coarser grid *downsample* asks the classifier to work on, per
+    axis, as the run's own downsampling chooses them; (1, 1, 1) for none."""
+    from haemolynx.io.downsample import axis_downsample_factors, downsample_factor
+
+    factor = downsample_factor(downsample)
+    if factor == 1:
+        return (1, 1, 1)
+    return tuple(int(f) for f in axis_downsample_factors(factor, voxel_size_zyx))  # type: ignore[return-value]
+
+
+def _segment(
+    raw, loaded, results, shared, *, started, reuse_existing, use_memmap, memmap_directory, workers, poll,
+    grid=None, factors=(1, 1, 1),
+):
+    """*raw* is the image as written to; *grid* as classified (the same, or
+    its block means on a grid *factors* coarser)."""
     from haemolynx.io.ilastik import sidecar_path
+
+    grid = grid or raw
 
     provenances: dict[Path, dict] = {}
     #: Each classifier's stale outputs, by its file: one used for several
@@ -797,7 +971,7 @@ def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memma
         for mask, path in paths.items():
             provenances[path] = classifier_provenance(
                 raw.path, classifier_path, mask, channels=classifier.spec.channels,
-                voxel_size_zyx=raw.voxel_size_zyx, axis_order=raw.axis_order,
+                voxel_size_zyx=raw.voxel_size_zyx, axis_order=raw.axis_order, grid=factors,
             )
         stale = {
             path: reason
@@ -830,8 +1004,8 @@ def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memma
     for job in jobs:
         passes.setdefault(job.classifier.spec.coarse, []).append(job)
     channels = sorted({c for job in jobs for c in job.classifier.spec.channels}, key=lambda c: -1 if c is None else c)
-    volumes = [raw.volume(channel) for channel in channels]
-    ranges_by_channel = {channel: intensity_range(raw.volume(channel)) for channel in channels}
+    volumes = [grid.volume(channel) for channel in channels]
+    ranges_by_channel = {channel: intensity_range(grid.volume(channel)) for channel in channels}
     keys = [key for job in jobs for key, _marks in job.outputs]
     logger.info(
         "Segmenting %s with %d classifier(s) in one pass (%s), %s.",
@@ -860,12 +1034,31 @@ def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memma
                 if use_memmap else np.zeros(raw.shape_zyx, np.uint8)
             )
 
+    def at_full_size(z0, planes):
+        """The image's own planes of coarse planes from *z0*: each voxel a
+        block of them."""
+        fz, fy, fx = factors
+        depth, rows, columns = raw.shape_zyx
+        for k in range(planes.shape[0]):
+            plane = planes[k]
+            if fy > 1 or fx > 1:
+                plane = np.repeat(np.repeat(plane, fy, axis=0), fx, axis=1)[:rows, :columns]
+            for z in range((z0 + k) * fz, min(depth, (z0 + k + 1) * fz)):
+                yield z, plane
+
     def sink(z0, z1, buffers):
         for key, planes in buffers.items():
-            if streaming:
-                writers[key].put(planes)
-            else:
-                whole[key][z0:z1] = planes
+            if factors == (1, 1, 1):
+                if streaming:
+                    writers[key].put(planes)
+                else:
+                    whole[key][z0:z1] = planes
+                continue
+            for z, plane in at_full_size(z0, planes):
+                if streaming:
+                    writers[key].put(plane[np.newaxis])
+                else:
+                    whole[key][z] = plane
 
     budget = LOW_RAM_BUDGET_BYTES
     free = available_memory_bytes()
@@ -874,10 +1067,10 @@ def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memma
     try:
         for group in passes.values():
             used = shared_spec([job.classifier.spec for job in group])
-            group_volumes = [raw.volume(channel) for channel in used.channels]
-            halo = feature_halo(used, raw.voxel_size_zyx)
+            group_volumes = [grid.volume(channel) for channel in used.channels]
+            halo = feature_halo(used, grid.voxel_size_zyx)
             per_slab = slab_planes(
-                raw.shape_zyx, halo, channels=len(group_volumes),
+                grid.shape_zyx, halo, channels=len(group_volumes),
                 itemsize=int(np.dtype(getattr(group_volumes[0], "dtype", np.uint16)).itemsize),
                 outputs=sum(len(job.outputs) for job in group), budget_bytes=budget,
             )
@@ -885,12 +1078,12 @@ def _segment(raw, loaded, results, shared, *, started, reuse_existing, use_memma
                 if hasattr(volume, "cache_bytes"):
                     # The slab's pages with their margin, within the budget:
                     # past it pages are decoded again rather than memory run out.
-                    reach = coarse_reach(used, raw.voxel_size_zyx)[0]
+                    reach = coarse_reach(used, grid.voxel_size_zyx)[0]
                     wanted = (per_slab + 2 * reach + 1) * volume._plane_bytes
                     share = budget // (2 * max(len(group_volumes), 1))
                     volume.cache_bytes = int(min(wanted, max(share, 2 * volume._plane_bytes)))
             classify_slabs(
-                group_volumes, [ranges_by_channel[c] for c in used.channels], raw.voxel_size_zyx, group,
+                group_volumes, [ranges_by_channel[c] for c in used.channels], grid.voxel_size_zyx, group,
                 sink=sink, workers=workers, poll=poll, progress=report,
                 box_voxels=box_size(budget_bytes=budget, workers=workers), planes_per_slab=per_slab,
             )
@@ -982,6 +1175,7 @@ def classifier_output_current(
     axis_order: str = "zyx",
     voxel_size_policy: str = "auto",
     voxel_size_override_xyz=None,
+    downsample=1,
 ) -> tuple[bool, str]:
     """Whether every output of *outputs* is current (see
     :func:`classifier_output_is_current`), without segmenting or reading
@@ -1004,6 +1198,7 @@ def classifier_output_current(
         provenance = classifier_provenance(
             raw_image_path, classifier_path, label,
             channels=channels, voxel_size_zyx=voxel_size_zyx_from_xyz(voxel_xyz), axis_order=order,
+            grid=grid_factors(downsample, voxel_size_zyx_from_xyz(voxel_xyz)),
         )
         current, reason = classifier_output_is_current(path, provenance)
         if not current:

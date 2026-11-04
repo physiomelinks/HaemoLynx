@@ -701,6 +701,23 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="pixel_classifier_downsample",
+            kind="choice",
+            default="none",
+            choices=("none", "2x", "4x", "8x", "16x"),
+            help=(
+                "Classify the raw image on a grid this much coarser -- block means of its "
+                "voxels, a coarser axis reduced less, as segmented_image_downsample reduces "
+                "them -- and write every mask the HaemoLynx classifier makes back at the "
+                "image's own size, a block of voxels per voxel classified. 2x classifies "
+                "about 8 times fewer voxels, at the coarser grid's resolution; none "
+                "classifies every voxel"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path",),
+            advanced=True,
+        ),
+        Setting(
             name="voxel_size_override_xyz",
             kind="float_list",
             default=None,
