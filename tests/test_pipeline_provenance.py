@@ -182,21 +182,42 @@ def test_the_settings_file_loads_back_as_the_settings_that_ran(tmp_path):
     }
 
 
-def test_a_stage_that_raises_the_process_peak_records_its_memory(tmp_path):
+def _record_a_stage_holding_200_mb(folder: str) -> None:
+    """The stage the test below records, run in a process of its own: prints
+    the resident size before it and the stage's record, as JSON."""
+    tmp_path = Path(folder)
     before = current_rss_bytes()
-    if before is None:
-        pytest.skip("the current resident size cannot be read here (macOS)")
-    settings = _settings(tmp_path)
-    with record_run(settings, SCHEMA) as run:
+    with record_run(_settings(tmp_path), SCHEMA) as run:
         with run.stage("segment"):
             held = np.ones(25_000_000)  # 200 MB, touched, held to the stage's end
             held[::4096] = 2.0
-
     (stage,) = _read(tmp_path / "out", "image")["stages"]
+    print(json.dumps({"before": before, "stage": stage}))
+    del held
+
+
+def test_a_stage_that_raises_the_process_peak_records_its_memory(tmp_path):
+    """In a fresh process. One that has held and freed more before, as a test
+    worker has by now, can give the 200 MB pages it still holds, and then its
+    resident size rightly does not rise: on Linux CI, mid-suite, not a page
+    of it did (claude/debug-rss, 2026-11-04)."""
+    if current_rss_bytes() is None:
+        pytest.skip("the current resident size cannot be read here (macOS)")
+    script = (
+        "import sys; sys.path[:0] = sys.argv[2:]; import test_pipeline_provenance as t; "
+        "t._record_a_stage_holding_200_mb(sys.argv[1])"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), str(REPO_ROOT / "tests"), str(REPO_ROOT / "src")],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    reading = json.loads(result.stdout.strip().splitlines()[-1])
+    before, stage = reading["before"], reading["stage"]
+
     assert stage["peak_rss_method"] in {"process_peak", "sampled"}
     assert stage["peak_rss_bytes"] >= before + 150_000_000
     assert stage["process_peak_rss_bytes"] >= stage["peak_rss_bytes"]
-    del held
 
 
 def test_the_process_peak_is_read_with_the_standard_library():
