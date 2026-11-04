@@ -130,6 +130,9 @@ class SegmentationRawComparison:
     missed_structure_total_volume_um3: float
     #: What the raw image was read as: ``plasma_column`` or ``endothelial``.
     stain: str = PLASMA_COLUMN
+    #: A 2D image (one plane): its missed structures are areas, in um2.
+    single_plane: bool = False
+    missed_structure_total_area_um2: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -344,6 +347,8 @@ def compare_segmentation_to_raw_image(
         missed_structure_total_voxels=missed_voxels,
         missed_structure_total_volume_um3=missed_voxels * voxel_volume_um3,
         stain=stain,
+        single_plane=mask.ndim == 3 and mask.shape[0] == 1,
+        missed_structure_total_area_um2=missed_voxels * float(voxel_size_zyx[1]) * float(voxel_size_zyx[2]),
     )
 
 
@@ -369,8 +374,13 @@ def format_segmentation_raw_comparison_report(
         f"  removed voxels:     {comparison.removed_voxel_count} "
         f"({comparison.removed_fraction * 100:.1f}% of the raw signal is missing from the segmentation)",
         f"  missed structures:  {comparison.missed_structure_count} whole structure(s) "
-        f"({comparison.missed_structure_total_volume_um3:.1f}um3 total) present in the raw "
-        "image but not captured by the segmentation at all",
+        + (
+            # One plane: an area, not a volume a voxel's z spacing deep.
+            f"({comparison.missed_structure_total_area_um2:.1f}um2 total, one plane) "
+            if comparison.single_plane
+            else f"({comparison.missed_structure_total_volume_um3:.1f}um3 total) "
+        )
+        + "present in the raw image but not captured by the segmentation at all",
     ]
     if comparison.agreement_iou < low_agreement_warning_threshold:
         lines.append(

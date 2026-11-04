@@ -690,3 +690,14 @@ def test_optimise_settings_is_refused_only_off_in_low_ram_mode_short_of_memory(
         assert searched[0]["min_downsample_factor"] == 16
     else:
         assert searched[0]["min_downsample_factor"] == 1
+
+
+def test_optimise_settings_on_an_empty_mask_is_refused_saying_why(tmp_path):
+    """Regression: it ran for seconds, tried nothing and proposed nothing,
+    without saying why."""
+    mask_path = tmp_path / "empty.tif"
+    tifffile.imwrite(mask_path, np.zeros((12, 30, 30), dtype=np.uint8))
+    settings = _stage_settings(tmp_path, mask_path)
+
+    with pytest.raises(gui_widget._OptimiseRefused, match="holds no vessel"):
+        gui_widget._optimise_settings_for_run(settings, downsample_factor=1)

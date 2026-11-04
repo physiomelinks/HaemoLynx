@@ -163,7 +163,7 @@ from haemolynx.gui.vessel_tubes import (
     vessel_tube_mesh,
     vessel_tubes_layer_name,
 )
-from haemolynx.io.crop import crop_volume_from_settings
+from haemolynx.io.crop import CropBox, crop_volume, crop_volume_from_settings
 from haemolynx.io.downsample import (
     RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
     Downsample,
@@ -203,11 +203,9 @@ from haemolynx.parsers import (
 )
 from haemolynx.pipeline import (
     default_schema,
-    load_volume_for_skeletonise,
     preflight,
     resolve_settings,
     run_pipeline_stages,
-    run_voxel_size_xyz,
     segment,
 )
 from haemolynx.pipeline import stages as pipeline_stages
@@ -6842,6 +6840,7 @@ def _load_raw_reference_image_or_none(
     downsample: "Mapping[str, Any] | Downsample | None" = None,
     voxel_size_xyz: "tuple[float, float, float] | None" = None,
     use_memmap: bool = False,
+    crop: "CropBox | None" = None,
 ) -> tuple["np.ndarray | None", "str | None"]:
     """Load the optional raw reference image from ``raw_image_path``.
 
@@ -6858,7 +6857,10 @@ def _load_raw_reference_image_or_none(
     the caller has around this load.
 
     The raw image goes through the segmented image's ``crop_on_import`` box
-    and then onto its grid: *downsample* is how the mask was reduced (the
+    (*crop*, the box the mask was cut by, after checking the raw image is
+    the whole stack that box was cut from: worked out from the raw image's
+    own shape instead, one of another size was cut at its own place and
+    passed the check after) and then onto its grid: *downsample* is how the mask was reduced (the
     record ``load_volume_for_skeletonise`` returns in its status, or a
     ``Downsample``), and with none, *voxel_size_xyz* -- the run's -- is what
     a ``raw_image_downsample`` of its own is read against.
@@ -6892,7 +6894,15 @@ def _load_raw_reference_image_or_none(
             **on_disk,
         )
         # The mask came through crop_on_import's box; the raw image goes too.
-        raw_image = crop_volume_from_settings(whole, local_settings, description="raw image")
+        if crop is not None:
+            if tuple(whole.shape) != tuple(crop.source_shape_zyx):
+                raise ValueError(
+                    "raw_image shape does not match the segmented image's whole shape: "
+                    f"{tuple(whole.shape)} != {tuple(crop.source_shape_zyx)}"
+                )
+            raw_image = crop_volume(whole, crop, **on_disk)
+        else:
+            raw_image = crop_volume_from_settings(whole, local_settings, description="raw image")
         release_superseded(whole, raw_image, keep=None)
         # And onto the mask's grid, as the run reads it.
         reduction = (
@@ -7105,6 +7115,13 @@ def _optimise_settings_for_run(
     raw_mask = _to_binary_volume_for_skeletonization(
         volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
     )
+    if not raw_mask.any():
+        # It ran for seconds, tried nothing and proposed nothing, unsaid why.
+        raise _OptimiseRefused(
+            "The segmented image holds no vessel (in its crop box, if it is cropped): there is "
+            "nothing to optimise settings on. Check the image, its crop box and which label is "
+            "vessel, then press Optimise settings."
+        )
     # The run's whole settings: the search changes only the ones it
     # tunes and builds every trial with the rest as a run would. Voxel
     # counts go in on the run's grid, as a run counts them there.
@@ -7127,6 +7144,7 @@ def _optimise_settings_for_run(
         downsample=volume.downsample,
         voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
         use_memmap=use_memmap,
+        crop=volume.crop,
     )
     raw_image_stain = "plasma_column"
     if raw_image is not None:
@@ -7689,13 +7707,15 @@ def _run_segmentation_quality_check_in_background(
     def run():
         local_settings = dict(settings)
         inputs = segment(local_settings, segmented_path=segmented_path)
-        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
-            local_settings, inputs.input_format
+        # As the run's skeletonise reads it, with the box and the reduction
+        # it came through, which the raw image is cut and reduced by too;
+        # under the low-RAM option, onto disk.
+        volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+        voxel_size_xyz = volume.voxel_size_xyz
+        use_memmap = bool(local_settings.get("use_memmap_loading"))
+        mask = _to_binary_volume_for_skeletonization(
+            volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
         )
-        voxel_size_xyz, _source = run_voxel_size_xyz(
-            local_settings, metadata_voxel_size, voxel_meta_status
-        )
-        mask = _to_binary_volume_for_skeletonization(image)
         voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
         score = score_segmented_mask(
             mask,
@@ -7743,8 +7763,10 @@ def _run_segmentation_quality_check_in_background(
         raw_image, raw_comparison_error = _load_raw_reference_image_or_none(
             local_settings,
             expected_shape=mask.shape,
-            downsample=(voxel_meta_status or {}).get("downsample"),
+            downsample=volume.downsample,
             voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
+            use_memmap=use_memmap,
+            crop=volume.crop,
         )
         if raw_image is not None:
             try:
@@ -16300,7 +16322,7 @@ def settings_widget(napari_viewer=None):
     #: shown, which is never the batch's. The optimisers are off too
     #: while the run draws a synthetic network: there is no image to try
     #: settings on.
-    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+    from haemolynx.gui.chrome_tooltips import CHECK_SYNTHETIC_TOOLTIP, OPTIMISE_SYNTHETIC_TOOLTIP
 
     single_image_buttons = [
         (button, button.tooltip)
@@ -16326,6 +16348,10 @@ def settings_widget(napari_viewer=None):
                 reason = SINGLE_IMAGE_IN_BATCH
             elif synthetic and any(button is optimiser for optimiser in optimiser_buttons):
                 reason = OPTIMISE_SYNTHETIC_TOOLTIP
+            elif synthetic and button is check_image_button:
+                # No segmented image: with one left in the row it was read as
+                # the template, and failed on its format.
+                reason = CHECK_SYNTHETIC_TOOLTIP
             if reason is not None:
                 button.enabled = False
                 button.tooltip = reason
@@ -16934,6 +16960,11 @@ def settings_widget(napari_viewer=None):
             return
         if batch_mode.setup is not None:
             report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        from haemolynx.gui.chrome_tooltips import CHECK_SYNTHETIC_TOOLTIP
+
+        if network_is_synthetic(current_values()):
+            report.value = CHECK_SYNTHETIC_TOOLTIP
             return
         segmented_path, refusal = _segmented_image_to_optimise(
             current_values(), action="Check segmented image"
