@@ -16240,6 +16240,8 @@ def settings_widget(napari_viewer=None):
             return
         show_layer_set(viewer, key)
         refresh_layer_sets()
+        # The Statistics tab follows the network shown.
+        refresh_statistics()
 
     def refresh_layer_sets(*_args) -> None:
         """List the networks in the viewer; hide the row with only the baseline.
@@ -16376,16 +16378,17 @@ def settings_widget(napari_viewer=None):
     view = SimpleNamespace(results=None)
     _view_z_apply = {"busy": False, "key": None}
 
-    from haemolynx.gui.statistics_view import statistics_report
+    from haemolynx.gui.statistics_view import shown_statistics_report, statistics_report
     from haemolynx.gui.tabs import assign_to_stages
 
     #: The left panel's Statistics tab, docked beside the view panel below.
     statistics_panel = _StatisticsPanel(assign_to_stages(schema).get("statistics", ""))
 
     def refresh_statistics() -> None:
-        """Show the statistics of the network on screen, if it has any."""
-        results = view.results
-        statistics_panel.show(statistics_report(results.graph if results is not None else None))
+        """Show the statistics of the network on screen, if it has any: the
+        perturbation's own when the view panel shows one."""
+        shown = _layer_set_shown(viewer) if viewer is not None else None
+        statistics_panel.show(shown_statistics_report(view.results, shown))
 
     #: Under the Input tab's stain row: what the last run read an "auto"
     #: stain as, from the graph it left (raw_image_stain and its reading),
@@ -17461,7 +17464,11 @@ def settings_widget(napari_viewer=None):
                     # The graph the run returns, shown in the viewer or not -- unless
                     # Clear, or a newer run, has taken this one's place.
                     if run_state.cancel_flag is run_flag and not run_flag["cancelled"]:
-                        statistics_panel.show(statistics_report(graph))
+                        # A perturbation still shown keeps its own report.
+                        shown = _layer_set_shown(viewer) if viewer is not None else None
+                        graphs = getattr(view.results, "perturbation_graphs", None) or {}
+                        own = statistics_report(graphs.get(shown)) if shown is not None else None
+                        statistics_panel.show(own or statistics_report(graph))
 
                 worker.returned.connect(statistics_of_the_run)
 

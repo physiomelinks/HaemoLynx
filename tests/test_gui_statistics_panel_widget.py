@@ -180,6 +180,32 @@ def test_a_stage_before_the_export_empties_the_tab_and_clear_does_too(make_napar
     assert stats.buttons == {}
 
 
+def test_the_tab_follows_the_network_the_showing_menu_chooses(make_napari_viewer):
+    """Regression: the tab showed the baseline's statistics while the view
+    panel showed a perturbation's network."""
+    import numpy as np
+
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    stats = panel._haemolynx_statistics_panel
+    _show_network_with(panel, viewer, FIRST)
+    dilated = nx.MultiGraph()
+    dilated.graph[STATISTICS_REPORT] = {**_report(basic={"Total Nodes": 7}), "network": "dilated"}
+    panel._haemolynx_view.results.perturbation_graphs = {"dilated": dilated}
+    # The perturbation's network in the viewer, as its layers are tagged.
+    viewer.add_points(np.zeros((1, 3)), name="dilated vessels", metadata={"haemolynx": {"layer_set": "dilated"}})
+    viewer._haemolynx_after_layers_applied()
+    menu = panel._haemolynx_layer_set_menu
+
+    next(action for action in menu.actions() if action.data() == "dilated").trigger()
+    assert "for the dilated perturbation" in stats.summary.text()
+    assert set(stats.buttons) == {"basic"}
+
+    next(action for action in menu.actions() if action.data() is None).trigger()
+    assert "perturbation" not in stats.summary.text()
+    assert HAEMODYNAMICS_SECTION in stats.buttons
+
+
 def test_view_controls_rebuilds_a_closed_statistics_tab_second_with_its_results(
     make_napari_viewer,
 ):

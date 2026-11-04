@@ -304,17 +304,20 @@ def export_non_sweep_perturbation_artifacts(
     # the baseline's ``statistics`` / ``visualize_results`` flags control the
     # published run, not these side-by-side arms.
     node_positions = nx.get_node_attributes(G, "pos")
-    stats = statistics.compute_comprehensive_vessel_statistics(
+    arguments = (
+        dict(statistics_kwargs)
+        if statistics_kwargs is not None
+        else {"statistics_mode": settings.get("statistics_mode", "fast")}
+    )
+    sections = statistics.compute_vessel_statistics_by_measure(
         G,
         node_positions=node_positions,
         image_dimensions=plot_image.shape if image_shape is None else tuple(image_shape),
         voxel_size=voxel_size,
-        **(
-            dict(statistics_kwargs)
-            if statistics_kwargs is not None
-            else {"statistics_mode": settings.get("statistics_mode", "fast")}
-        ),
+        **arguments,
     )
+    mode = arguments.get("statistics_mode", "fast")
+    stats = statistics.flatten_statistics_sections(sections, mode)
     stats_csv = output_dir / f"{stem}_statistics.csv"
     statistics.export_statistics_to_csv(stats, stats_csv)
     written.append(stats_csv)
@@ -352,6 +355,22 @@ def export_non_sweep_perturbation_artifacts(
             json_path = output_dir / f"{stem}_betweenness_communities_{suffix}.json"
             json_path.write_text(json.dumps(weighted[model_name], indent=2, default=str))
             written.append(json_path)
+
+    # What the panel's Statistics tab shows while this perturbation's network
+    # is: its own report, kept on its graph as export_results keeps the
+    # baseline's, naming the network it is of.
+    from haemolynx.pipeline.stages import (
+        BRANCH_ORDER_SECTION,
+        STATISTICS_REPORT,
+        WEIGHTED_MEASURES_SECTION,
+    )
+
+    report_sections = {**sections, BRANCH_ORDER_SECTION: branch_stats}
+    if betweenness_and_communities:
+        report_sections[WEIGHTED_MEASURES_SECTION] = weighted
+    G.graph[STATISTICS_REPORT] = {
+        "mode": mode, "csv": str(stats_csv), "sections": report_sections, "network": stem,
+    }
 
     degree_path = output_dir / "node_degree_distribution.png"
     plot_node_degree_distribution(

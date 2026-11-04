@@ -175,19 +175,18 @@ def vessel_class_scheme(labels: Iterable[Any]) -> str:
 
 
 def _density_volume(
-    G: nx.Graph, node_positions: Optional[dict], tissue_volume_um3: Optional[float]
+    G: nx.Graph, node_positions: Optional[dict], tissue_volume_um3: Optional[float], voxel_size=None
 ) -> tuple[Optional[float], str]:
     """What the densities divide by, and where it came from, as
     :func:`~haemolynx.statistics.shape.compute_vessel_density` chooses it."""
+    from .shape import node_box_volume_um3
+
     if tissue_volume_um3 is not None:
         return float(tissue_volume_um3), "tissue surface measured from the raw image"
     if node_positions:
         positions = np.array([node_positions[n] for n in G.nodes() if n in node_positions])
         if len(positions) > 0:
-            return (
-                float(np.prod(positions.max(axis=0) - positions.min(axis=0))),
-                "bounding box of the network's nodes",
-            )
+            return node_box_volume_um3(positions, voxel_size), "bounding box of the network's nodes"
     return None, "N/A (no position data)"
 
 
@@ -375,7 +374,7 @@ def compute_vessel_class_statistics(
     listed += [c for c in VESSEL_CATEGORY_SEQUENCE if c in by_class and c not in listed]
     listed += sorted(c for c in by_class if c not in listed)
 
-    volume, source = _density_volume(G, node_positions, tissue_volume_um3)
+    volume, source = _density_volume(G, node_positions, tissue_volume_um3, voxel_size)
     image_volume = (
         float(np.prod([d * s for d, s in zip(image_dimensions, voxel_size)]))
         if image_dimensions is not None and voxel_size is not None

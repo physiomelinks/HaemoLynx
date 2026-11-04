@@ -141,14 +141,24 @@ def _branch_order_sort_key(tag: str) -> tuple[int, int, str]:
 #: capillary bed. Both trees number their orders from their root (Large_Ven1
 #: at the outlet as Large_Art1 at the inlet; graph.branch_order).
 _TIER_DEPTH = {"large_art": 0, "large_ven": 0, "art": 1, "ven": 1, "bo": 2}
+#: The same for a run classed by size alone (global masks, the size
+#: convention), which has no orders, only these classes.
+_UNKNOWN_CLASS_DEPTH = {UNKNOWN_LARGE_VESSEL: 0, UNKNOWN_SMALL_VESSEL: 1, UNKNOWN_CAPILLARY: 2}
 
 
-def _parent_rank(tag: str) -> tuple[int, int, int, str]:
+def _parent_rank(tag: str, data: Optional[dict] = None) -> tuple:
     """A vessel's place in its own tree, a junction's parent lowest: its
     tier's depth from the tree's root, then its order, then the arterial
     side before the venous where the two meet. Not the display order
     (:func:`_branch_order_sort_key`), which runs Large_Art to Large_Ven and so
-    took a venous junction's smallest vessel for its parent."""
+    took a venous junction's smallest vessel for its parent. A run classed by
+    size ranks its classes the same way, largest first, and, having no
+    orders, the wider of two vessels of one class (*data*'s ``diameter_um``)
+    before the narrower: ranked by name, the capillary was the parent of the
+    large vessels it joined."""
+    if tag in _UNKNOWN_CLASS_DEPTH:
+        width = _positive_diameter_or_none((data or {}).get("diameter_um")) or 0.0
+        return (_UNKNOWN_CLASS_DEPTH[tag], 0, -width, str(tag))
     m = re.match(
         r"^(large_art|large_ven|art|ven|bo)\s*(\d+)$", str(tag), flags=re.IGNORECASE
     )
@@ -194,7 +204,7 @@ def _iter_parent_daughter_junctions(
             labelled.append((u, v, key, data, tag))
         if len(labelled) < 2:
             continue
-        ranks = [_parent_rank(item[4]) for item in labelled]
+        ranks = [_parent_rank(item[4], item[3]) for item in labelled]
         min_rank = min(ranks)
         parent_indices = [i for i, rank in enumerate(ranks) if rank == min_rank]
         if len(parent_indices) != 1:
@@ -376,7 +386,7 @@ def _emergence_angles(G: Union[nx.Graph, nx.MultiGraph], tangent_length_um: floa
             labelled.append((u, v, key, data, tag))
         if len(labelled) < 2:
             continue
-        ranks = [_parent_rank(item[4]) for item in labelled]
+        ranks = [_parent_rank(item[4], item[3]) for item in labelled]
         min_rank = min(ranks)
         parent_indices = [i for i, rank in enumerate(ranks) if rank == min_rank]
         if len(parent_indices) != 1:

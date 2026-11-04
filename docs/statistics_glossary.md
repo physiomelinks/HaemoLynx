@@ -74,7 +74,7 @@ names it lists.
 |---|---|---|
 | Total Vessel Length (microns) | um | The sum of every vessel's centreline length (the same as Total Edge Length). |
 | Vessel Density in Tissue (microns/micron³) | um/um^3 | Total vessel length over the tissue volume: the tissue measured from the raw image when it was, else the box the network's nodes span (Tissue Volume Source says which). |
-| Vessel-Occupied Volume (micron³) | um^3 | The volume of the axis-aligned box the network's nodes span. |
+| Vessel-Occupied Volume (micron³) | um^3 | The volume of the axis-aligned box the network's nodes span; an axis they do not spread along (a 2D image's z) one voxel deep, as the whole image's volume has it. |
 | Tissue Volume (micron³) | um^3 | The tissue's volume, inside the closed surface measured from the raw image (Additional measurements: tissue volume). |
 | Tissue Volume Source | (text) | What the in-tissue densities divide by: the measured tissue, or the bounding box of the network's nodes. |
 | Vessel Volume in Tissue (micron³) | um^3 | Segmented vessel voxels inside the measured tissue. |

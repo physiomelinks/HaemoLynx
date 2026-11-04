@@ -251,6 +251,30 @@ def test_a_long_list_is_cut_short_and_counted():
     assert value_text(thirty).endswith(", …] (30 items)")
 
 
+def test_a_shown_perturbation_shows_its_own_report_and_says_so():
+    """Regression: the tab showed the baseline's statistics whatever network
+    the view panel's "Showing" menu had chosen; a perturbation's were written
+    to its CSV and nowhere else."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui.statistics_view import shown_statistics_report
+
+    baseline, dilated, swept = nx.MultiGraph(), nx.MultiGraph(), nx.MultiGraph()
+    baseline.graph[STATISTICS_REPORT] = _report({"basic": {"Total Nodes": 7}})
+    own = {**_report({"basic": {"Total Nodes": 7}}, csv="out/dilated_statistics.csv"), "network": "dilated"}
+    dilated.graph[STATISTICS_REPORT] = own
+    results = SimpleNamespace(graph=baseline, perturbation_graphs={"dilated": dilated, "sweep": swept})
+
+    assert shown_statistics_report(results, None) is baseline.graph[STATISTICS_REPORT]
+    assert shown_statistics_report(results, "dilated") is own
+    # A sweep keeps no report of its own: the baseline's, which says it is the run's.
+    assert shown_statistics_report(results, "sweep") is baseline.graph[STATISTICS_REPORT]
+    assert shown_statistics_report(None, "dilated") is None
+    assert statistics_summary(own, "9. Additional measurements").startswith(
+        "1 result from the last run for the dilated perturbation in fast mode."
+    )
+
+
 def test_the_report_is_read_from_the_graph_the_export_left_it_on():
     G = nx.MultiGraph()
     assert statistics_report(G) is None

@@ -91,6 +91,20 @@ def statistics_report(graph: Any) -> Mapping[str, Any] | None:
     return report if isinstance(report, Mapping) else None
 
 
+def shown_statistics_report(results: Any, shown: str | None) -> Mapping[str, Any] | None:
+    """The report of the network the view panel shows: the perturbation
+    *shown*'s own (``ResultLayers.perturbation_graphs``) when it has one, else
+    the baseline's. A sweep keeps no report of its own, and shows the
+    baseline's, which says it is the run's."""
+    if results is None:
+        return None
+    if shown is not None:
+        report = statistics_report((getattr(results, "perturbation_graphs", None) or {}).get(shown))
+        if report is not None:
+            return report
+    return statistics_report(getattr(results, "graph", None))
+
+
 def section_title(key: str) -> str:
     """The button's text for section *key*."""
     return SECTION_TITLES.get(key) or key.replace("_", " ").capitalize()
@@ -232,6 +246,10 @@ def statistics_summary(report: Mapping[str, Any] | None, statistics_tab: str) ->
         )
     count = len(report["sections"])
     parts = [f"{count} result{'s' if count != 1 else ''} from the last run"]
+    network = report.get("network")
+    if network:
+        # A perturbation's own report, shown while its network is.
+        parts.append(f"for the {network} perturbation")
     mode = report.get("mode")
     if mode:
         parts.append(f"in {mode} mode")
