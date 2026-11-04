@@ -494,6 +494,7 @@ def _tab_with_the_layer_docks(viewer, dock, statistics=None) -> bool:
     # Raised at once, a dock just tabbed loses its tab again to the last
     # one tabbed when Qt lays the new tabs out.
     QTimer.singleShot(0, lambda: _bring_dock_to_front(dock))
+    _arrange_once_placed(dock, (dock, statistics, layer_list, controls))
     return True
 
 
@@ -512,6 +513,96 @@ def _tab_statistics_second(viewer, dock, statistics) -> None:
     for layer_dock in _layer_docks(viewer):
         if layer_dock is not None and layer_dock in tabbed:
             main_window.tabifyDockWidget(dock, layer_dock)
+    _arrange_once_placed(
+        statistics, (dock, statistics, *(d for d in _layer_docks(viewer) if d in tabbed))
+    )
+
+
+def _tab_bar_holding(main_window, title: str):
+    """*main_window*'s shown dock tab bar with a tab *title*, or None."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QTabBar
+
+    for bar in main_window.findChildren(QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly):
+        if not bar.isHidden() and title in _bar_titles(bar):
+            return bar
+    return None
+
+
+def _bar_titles(bar) -> list[str]:
+    return [bar.tabText(i) for i in range(bar.count())]
+
+
+def _arrange_tabs(main_window, docks, rebuilt) -> bool:
+    """Make *docks* one group of tabs in that order, the first open; True
+    when anything had to move.
+
+    On Linux, Qt's dock layout would not take *rebuilt* (a dock just made
+    again) as tabifyDockWidget's first dock, nor move a dock already in the
+    group when it was tabbed again, and the tab bar's own moves landed one
+    place off. What it does do is append a dock to a group it is tabbed
+    onto. So a stray dock is tabbed onto the group, then every dock after
+    the first is taken out and tabbed back on, in turn, each to the end;
+    no move is made onto *rebuilt*.
+    """
+    from qtpy.QtCore import Qt
+
+    wanted = [dock.windowTitle() for dock in docks]
+    bar = _tab_bar_holding(main_window, wanted[0])
+    if len(docks) < 2 or (bar is not None and _bar_titles(bar) == wanted):
+        return False
+
+    def anchor_for(moving):
+        return next(dock for dock in docks if dock is not moving and dock is not rebuilt)
+
+    joined = anchor_for(None)
+    for dock in docks:
+        if dock is not joined and dock not in main_window.tabifiedDockWidgets(joined):
+            main_window.tabifyDockWidget(joined, dock)
+    area = main_window.dockWidgetArea(joined)
+    if area == Qt.DockWidgetArea.NoDockWidgetArea:
+        area = Qt.DockWidgetArea.LeftDockWidgetArea
+    for dock in docks[1:]:
+        main_window.addDockWidget(area, dock)
+        main_window.tabifyDockWidget(anchor_for(dock), dock)
+    _bring_dock_to_front(docks[0])
+    return True
+
+
+def _arrange_once_placed(dock, docks, tries: int = 20) -> None:
+    """Put *docks* (None left out) in order once *dock* is placed.
+
+    napari shows a dock it adds a moment later, so a rebuilt dock is tabbed
+    while hidden. Windows then puts it with the tabs, in its place; Linux
+    put a rebuilt view dock beside them and a rebuilt Statistics dock last.
+    Each event-loop pass checks again, up to *tries*, until *dock* is no
+    longer hidden, and then :func:`_arrange_tabs`; where the tabs are already
+    right nothing moves. The docks are held weakly, and the window read
+    from *dock*, so a wait never keeps napari's viewer alive.
+    """
+    import weakref
+
+    from qtpy.QtCore import QTimer
+
+    watched = weakref.ref(dock)
+    held = [weakref.ref(each) for each in docks if each is not None]
+
+    def check(left: int) -> None:
+        this = watched()
+        try:
+            if this is None:
+                return
+            if this.isHidden() and left > 0:
+                QTimer.singleShot(0, lambda: check(left - 1))
+                return
+            main_window = this.parentWidget()
+            present = [ref() for ref in held]
+            if main_window is not None and all(each is not None for each in present):
+                _arrange_tabs(main_window, present, this)
+        except RuntimeError:
+            logger.debug("a dock is gone", exc_info=True)
+
+    QTimer.singleShot(0, lambda: check(tries))
 
 
 def _bring_dock_to_front(dock) -> None:
