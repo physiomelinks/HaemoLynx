@@ -34,6 +34,8 @@ from haemolynx.gui.form import (
     SHARED_ILASTIK_SETTING_SET,
     display_value_for,
     channel_choices,
+    exclusive_partner_in_effect,
+    exclusive_reason,
     raw_image_stain_note,
     unmet_chain,
     shared_ilastik_host,
@@ -10795,12 +10797,14 @@ class _ClassifierTrainingWindow:
         on_saved: Callable[[Path], None] | None = None,
         synchronous: bool = False,
         current_values: Callable[[], Mapping[str, Any]] | None = None,
+        parent=None,
     ):
-        from qtpy.QtCore import QTimer
+        from qtpy.QtCore import Qt, QTimer
         from qtpy.QtWidgets import (
             QButtonGroup,
             QCheckBox,
             QComboBox,
+            QGridLayout,
             QGroupBox,
             QHBoxLayout,
             QLabel,
@@ -10863,7 +10867,10 @@ class _ClassifierTrainingWindow:
             channels = default_channels(values, self.channel_count)
             path = default_classifier_path(self.raw_path, row)
 
-        self.window = QWidget()
+        # A window of its own, but the panel's child: it takes napari's
+        # stylesheet and theme, which napari sets on its main window only.
+        self.window = QWidget(parent, Qt.WindowType.Window)
+        self.window.setObjectName("haemolynx_classifier_training")
         self.window.setWindowTitle(f"Train a classifier: {JOB_TITLES[row]}")
         layout = QVBoxLayout(self.window)
         layout.addWidget(QLabel(f"Raw image: {self.raw_path.name}"))
@@ -10878,7 +10885,8 @@ class _ClassifierTrainingWindow:
         layout.addWidget(self.job_box)
 
         self.label_box = QGroupBox("Paint")
-        self.label_layout = QHBoxLayout(self.label_box)
+        # Three to a line: a job of six labels stays as narrow as the window.
+        self.label_layout = QGridLayout(self.label_box)
         self.label_group = QButtonGroup(self.window)
         self.label_group.idClicked.connect(self._choose_label)
         self._label_buttons()
@@ -10978,12 +10986,13 @@ class _ClassifierTrainingWindow:
         for button in list(self.label_group.buttons()):
             self.label_group.removeButton(button)
             self.label_layout.removeWidget(button)
+            button.hide()  # deleted only once the event loop comes round
             button.deleteLater()
         for index, name in enumerate(self.labels):
             button = QRadioButton(name)
             button.setToolTip(TIPS["labels"])
             self.label_group.addButton(button, index + 1)
-            self.label_layout.addWidget(button)
+            self.label_layout.addWidget(button, index // 3, index % 3)
         self.label_group.button(min(2, len(self.labels))).setChecked(True)
 
     def _set_enabled(self, enabled: bool) -> None:
@@ -16179,6 +16188,26 @@ def settings_widget(napari_viewer=None):
     #: The classifier training window open for each classifier row.
     training_windows: dict[str, Any] = {}
 
+    def vessel_masks_from_classifier(path) -> str | None:
+        """Make the Boundaries tab's vessel masks with the main image's
+        classifier at *path* when it also finds arterioles and venules --
+        the large masks', and the small masks' too for one telling large from
+        small -- turning those masks on; what the panel says, or None."""
+        from haemolynx.gui.classifier_training import (
+            classifier_vessel_mask_roles,
+            vessel_mask_note,
+            vessel_mask_settings_for,
+        )
+
+        roles = classifier_vessel_mask_roles(path)
+        if not roles:
+            return None
+        for name, value in vessel_mask_settings_for(path, roles).items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+                loaded_paths.pop(name, None)
+        return vessel_mask_note(roles)
+
     def open_classifier_training(row_name: str, *, synchronous: bool = False):
         """Open the training window for *row_name*'s classifier: saving one
         fills the row and turns its switch on."""
@@ -16194,16 +16223,28 @@ def settings_widget(napari_viewer=None):
             return None
 
         def saved(path: Path) -> None:
+            from haemolynx.gui.form import EXCLUSIVE_SWITCHES
+
             rows[row_name].value = str(path)
             switch = CLASSIFIER_SWITCHES[row_name]
+            # Saving one for this job chooses it over ilastik's project.
+            if EXCLUSIVE_SWITCHES.get(switch) in rows:
+                rows[EXCLUSIVE_SWITCHES[switch]].value = False
             if switch in rows:
                 rows[switch].value = True
-            report.value = f"Saved the classifier to {path}; runs use it for this job."
+            lines = [f"Saved the classifier to {path}; runs use it for this job."]
+            if row_name == "pixel_classifier_path":
+                # Saved over the same file the row already named, the row
+                # does not change: its job may have.
+                note = vessel_masks_from_classifier(path)
+                if note:
+                    lines.append(note)
+            report.value = "\n".join(lines)
 
         try:
             window = _ClassifierTrainingWindow(
                 viewer, current_values(), row_name, on_saved=saved, synchronous=synchronous,
-                current_values=current_values,
+                current_values=current_values, parent=panel,
             )
         except (OSError, ValueError) as error:
             report.value = str(error)
@@ -16421,10 +16462,13 @@ def settings_widget(napari_viewer=None):
                 visible = field.is_visible(values, unmet)
                 widget.visible = visible
                 enabled = enabled or not visible
+            tooltip = field.help if enabled else replace(field, enabled_by=unmet).why_disabled(gates)
+            partner = exclusive_partner_in_effect(schema, name, gates) if enabled else None
+            if partner is not None:
+                # The image's other way of being segmented is on: a run uses one.
+                enabled, tooltip = False, exclusive_reason(partner)
             widget.enabled = enabled
-            widget.tooltip = (
-                field.help if enabled else replace(field, enabled_by=unmet).why_disabled(gates)
-            )
+            widget.tooltip = tooltip
             if name in batch_row_labels:
                 _show_batch_row(widget, batch_row_labels[name], batch_mode.setup, name)
 
@@ -16583,6 +16627,19 @@ def settings_widget(napari_viewer=None):
     for name in MASK_SEARCH_TRIGGERS:
         if name in rows:
             rows[name].changed.connect(search_for_vessel_masks)
+
+    def classifier_row_fills_vessel_masks(*_args) -> None:
+        """A classifier chosen in the main image's row that also finds
+        arterioles and venules makes the Boundaries tab's vessel masks; never
+        while a config or a saved run fills the rows."""
+        if restoring_settings[0]:
+            return
+        note = vessel_masks_from_classifier(current_values().get("pixel_classifier_path"))
+        if note:
+            report.value = note
+
+    if "pixel_classifier_path" in rows:
+        rows["pixel_classifier_path"].changed.connect(classifier_row_fills_vessel_masks)
 
     def pericyte_mask_rows() -> dict[str, Any]:
         """The pericyte mask rows the panel shows -- Pericyte measurements'

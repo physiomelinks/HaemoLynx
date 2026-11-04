@@ -102,6 +102,23 @@ SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
 #: each collapse method alone reads, and ``capillary_block_selection`` the
 #: vessels a capillary block's other way of choosing them would read, inside
 #: a perturbation entry.
+#: The switches that segment one image two ways -- with an ilastik project or
+#: with the panel's own classifier -- each mapped to the other. A run uses one:
+#: while either is on (and in effect) the other greys, its tooltip saying why
+#: (:func:`exclusive_reason`). The classifier's ``!ilastik`` gate greys its row
+#: rather than hiding it (:func:`hidden_by`); the ilastik switch, which has no
+#: gate on the classifier, greys through :func:`exclusive_partner_in_effect`.
+#: Both on (an old config) greys only the classifier, out of effect, so the
+#: ilastik switch can still be unticked.
+_EXCLUSIVE_PAIRS = (
+    ("use_ilastik_segmentation", "use_pixel_classifier_segmentation"),
+    ("use_ilastik_large_vessel_segmentation", "use_pixel_classifier_large_vessel_segmentation"),
+    ("use_ilastik_small_vessel_segmentation", "use_pixel_classifier_small_vessel_segmentation"),
+)
+EXCLUSIVE_SWITCHES: dict[str, str] = {
+    one: other for pair in _EXCLUSIVE_PAIRS for one, other in (pair, pair[::-1])
+}
+
 HIDE_WHEN_UNMET_PARENTS = frozenset(
     {
         "smooth_centrelines",
@@ -303,8 +320,12 @@ class Field:
         if not unmet:
             return ""
         parts = []
+        exclusive = ""
         for rule in unmet:
             name, test, expected = parse_prerequisite(rule)
+            if test == PREREQUISITE_OFF and name == EXCLUSIVE_SWITCHES.get(self.name):
+                exclusive = exclusive_reason(name)
+                continue
             row = f'"{label_for(name)}"'
             shown = CHOICE_VALUE_LABELS.get(name, {}).get(expected, expected)
             if test == PREREQUISITE_EQUALS:
@@ -317,7 +338,30 @@ class Field:
                 parts.append(f"{row} is on")
             else:
                 parts.append(f"{row} is off")
-        return f"Not used while {' and '.join(parts)}"
+        text = f"Not used while {' and '.join(parts)}" if parts else ""
+        if exclusive:
+            text = f"{text}. {exclusive}" if text else exclusive
+        return text
+
+
+def exclusive_reason(partner: str) -> str:
+    """The tooltip of a switch greyed because *partner*, its other way of
+    segmenting the same image (:data:`EXCLUSIVE_SWITCHES`), is on."""
+    return (
+        f'Unavailable while "{label_for(partner)}" is on: the image is segmented one way at a '
+        "time. Untick that to choose this."
+    )
+
+
+def exclusive_partner_in_effect(schema: Schema, name: str, values: Mapping[str, Any]) -> str | None:
+    """*name*'s other way of segmenting the same image (:data:`EXCLUSIVE_SWITCHES`)
+    when it is on and in effect, so *name*'s row greys; None otherwise. A
+    partner ticked but out of effect (the classifier while ilastik is on too)
+    greys nothing, so two switches never grey each other."""
+    partner = EXCLUSIVE_SWITCHES.get(name)
+    if partner is None or partner not in schema or not is_prerequisite_met(partner, values):
+        return None
+    return None if unmet_chain(schema, partner, values) else partner
 
 
 def hidden_by(field: Field, unmet: Sequence[str]) -> tuple[str, ...]:
@@ -327,11 +371,15 @@ def hidden_by(field: Field, unmet: Sequence[str]) -> tuple[str, ...]:
     raw image is an input, not a parent toggle, so the switches that read
     it stay in view, greyed, while it is unset -- and the rows nested under
     those switches hide as they do under any switch that is not in effect.
+    Nor the row's other way of segmenting the same image being on
+    (:data:`EXCLUSIVE_SWITCHES`): greyed, the row says to untick that one.
     """
+    partner = EXCLUSIVE_SWITCHES.get(field.name)
     return tuple(
         rule
         for rule in unmet
         if not (rule in field.enabled_by and prerequisite_name(rule) in field.path_gates)
+        and not (partner is not None and parse_prerequisite(rule)[:2] == (partner, PREREQUISITE_OFF))
     )
 
 

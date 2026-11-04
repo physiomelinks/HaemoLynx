@@ -8,6 +8,8 @@ testable with no napari, no Qt and no display.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from pathlib import Path
@@ -16,6 +18,7 @@ from haemolynx.gui.form import (
     CHANNEL_SETTINGS,
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
+    EXCLUSIVE_SWITCHES,
     H5_DATASET_SETTINGS,
     HIDE_WHEN_UNMET_PARENTS,
     HIDE_WHEN_UNMET_SECTIONS,
@@ -25,6 +28,8 @@ from haemolynx.gui.form import (
     WIDGET_TYPES,
     Field,
     chain_met,
+    exclusive_partner_in_effect,
+    exclusive_reason,
     field_for,
     fields_for,
     label_for,
@@ -324,6 +329,55 @@ def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
         assert shared.is_visible({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}), name
         # Ticked with no raw image they stay beside the main ilastik rows.
         assert shared.is_visible({"use_ilastik_segmentation": True}), name
+
+
+PAIRS = (
+    ("use_ilastik_segmentation", "use_pixel_classifier_segmentation", {}),
+    ("use_ilastik_large_vessel_segmentation", "use_pixel_classifier_large_vessel_segmentation",
+     {"automated_vessel_assignment": True, "use_large_vessel_masks": True}),
+    ("use_ilastik_small_vessel_segmentation", "use_pixel_classifier_small_vessel_segmentation",
+     {"automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True}),
+)
+
+
+def test_each_ilastik_switch_and_its_classifier_switch_are_each_others():
+    assert {frozenset(p) for p in EXCLUSIVE_SWITCHES.items()} == {frozenset(p[:2]) for p in PAIRS}
+    for one, other in EXCLUSIVE_SWITCHES.items():
+        assert EXCLUSIVE_SWITCHES[other] == one and one in SCHEMA
+
+
+@pytest.mark.parametrize("ilastik, classifier, gates", PAIRS)
+def test_ilastik_on_greys_the_classifier_switch_rather_than_hiding_it(ilastik, classifier, gates):
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    values = {**gates, "raw_image_path": "raw.tif", ilastik: True}
+    unmet = unmet_chain(SCHEMA, classifier, values)
+    assert unmet == (f"!{ilastik}",)
+    assert fields[classifier].is_visible(values, unmet)
+    reason = replace(fields[classifier], enabled_by=unmet).why_disabled(values)
+    assert reason == exclusive_reason(ilastik)
+    assert f'"{label_for(ilastik)}" is on' in reason and "Untick" in reason
+    # Rows nested under the classifier switch still hide.
+    path = classifier.replace("use_", "").replace("_segmentation", "_path")  # its file row
+    nested = unmet_chain(SCHEMA, path, {**values, classifier: True})
+    assert not fields[path].is_visible({**values, classifier: True}, nested)
+
+
+@pytest.mark.parametrize("ilastik, classifier, gates", PAIRS)
+def test_the_classifier_on_greys_the_ilastik_switch(ilastik, classifier, gates):
+    values = {**gates, "raw_image_path": "raw.tif", classifier: True}
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, values) == classifier
+    assert exclusive_partner_in_effect(SCHEMA, classifier, values) is None
+    # Off, or ticked but out of effect (no raw image), greys nothing.
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, {**values, classifier: False}) is None
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, {**values, "raw_image_path": None}) is None
+
+
+@pytest.mark.parametrize("ilastik, classifier, gates", PAIRS)
+def test_both_on_greys_only_the_classifier_so_ilastik_can_be_unticked(ilastik, classifier, gates):
+    values = {**gates, "raw_image_path": "raw.tif", ilastik: True, classifier: True}
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, values) is None  # ilastik stays usable
+    assert unmet_chain(SCHEMA, ilastik, values) == ()
+    assert unmet_chain(SCHEMA, classifier, values) == (f"!{ilastik}",)  # the classifier greys
 
 
 def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():

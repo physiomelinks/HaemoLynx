@@ -34,6 +34,9 @@ PURPOSES: dict[str, tuple[str, ...]] = {
     "vessels": ("Background", "Vessel"),
     "vessel_classes": ("Background", "Arteriole", "Venule"),
     "vessels_and_classes": ("Background", "Capillary", "Arteriole", "Venule"),
+    "vessels_and_sized_classes": (
+        "Background", "Capillary", "Large arteriole", "Small arteriole", "Large venule", "Small venule",
+    ),
     "pericytes": ("Background", "Pericyte"),
     "blocks": ("Background", "Block"),
     "cells": ("Background", "Cell"),
@@ -49,7 +52,9 @@ RENAMED_LABELS: dict[str, dict[str, str]] = {
 #: The mask each purpose can write, and the labels it holds. A combined
 #: classifier (``vessels_and_classes``, a vessel neither arteriole nor venule
 #: painted "Capillary") makes the main vessel mask of every vessel label, so an
-#: arteriole is in the vessel mask and in the arteriole mask both.
+#: arteriole is in the vessel mask and in the arteriole mask both; one that
+#: tells large from small (``vessels_and_sized_classes``) makes the large and
+#: the small vessel masks' arteriole and venule masks too.
 MASK_LABELS: dict[str, dict[str, tuple[str, ...]]] = {
     "vessels": {"Vessel": ("Vessel",)},
     "vessel_classes": {"Arteriole": ("Arteriole",), "Venule": ("Venule",)},
@@ -58,6 +63,13 @@ MASK_LABELS: dict[str, dict[str, tuple[str, ...]]] = {
         "Arteriole": ("Arteriole",),
         "Venule": ("Venule",),
     },
+    "vessels_and_sized_classes": {
+        "Vessel": ("Capillary", "Large arteriole", "Small arteriole", "Large venule", "Small venule"),
+        "Large arteriole": ("Large arteriole",),
+        "Small arteriole": ("Small arteriole",),
+        "Large venule": ("Large venule",),
+        "Small venule": ("Small venule",),
+    },
     "pericytes": {"Pericyte": ("Pericyte",)},
     "blocks": {"Block": ("Block",)},
     "cells": {"Cell": ("Cell",)},
@@ -65,8 +77,8 @@ MASK_LABELS: dict[str, dict[str, tuple[str, ...]]] = {
 
 #: The purposes a classifier for each job may have.
 JOB_PURPOSES: dict[str, tuple[str, ...]] = {
-    "vessels": ("vessels", "vessels_and_classes"),
-    "vessel_classes": ("vessel_classes", "vessels_and_classes"),
+    "vessels": ("vessels", "vessels_and_classes", "vessels_and_sized_classes"),
+    "vessel_classes": ("vessel_classes", "vessels_and_classes", "vessels_and_sized_classes"),
     "pericytes": ("pericytes",),
     "blocks": ("blocks",),
     "cells": ("cells",),
@@ -74,6 +86,23 @@ JOB_PURPOSES: dict[str, tuple[str, ...]] = {
 
 #: The main vessel mask's name (:data:`MASK_LABELS`).
 VESSEL_LABEL = "Vessel"
+
+#: The vessel-mask roles (large, small) each vessel purpose makes masks for,
+#: from one file: the classifier in the main image's row fills these roles'.
+VESSEL_MASK_ROLES: dict[str, tuple[str, ...]] = {
+    "vessels_and_classes": ("large",),
+    "vessels_and_sized_classes": ("large", "small"),
+}
+
+
+def role_class_masks(purpose: str, role: str) -> tuple[str, str]:
+    """``(arteriole mask, venule mask)``: the masks of a vessel-mask *role*
+    (``"large"`` or ``"small"``) a classifier for *purpose* writes. One that
+    tells large from small writes each role its own; any other, the same."""
+    if purpose == "vessels_and_sized_classes":
+        size = role.capitalize()
+        return f"{size} arteriole", f"{size} venule"
+    return "Arteriole", "Venule"
 
 FILE_SUFFIX = ".haemoclf"
 FILE_KIND = "haemolynx-pixel-classifier"

@@ -240,6 +240,114 @@ def test_a_combined_classifier_saved_with_a_vessel_label_reads_as_capillary(tmp_
     assert check_pixel_classifiers(settings).errors == []
 
 
+# ---------------------------------------- the large and small vessel job
+
+
+def sized_tubes(shape=(12, 36, 64)):
+    """Five tubes along y, one for each vessel label of the job telling large
+    from small, told apart by brightness; the image and each voxel's label
+    (0 background, then the job's labels in order)."""
+    from scipy import ndimage as ndi
+
+    rng = np.random.default_rng(5)
+    z, _y, x = np.meshgrid(*(np.arange(s, dtype=np.float32) for s in shape), indexing="ij", sparse=True)
+    label = np.zeros(shape, np.uint8)
+    for k in range(5):
+        inside = ((z - shape[0] / 2) * VOXEL[0]) ** 2 + ((x - (6 + 13 * k)) * VOXEL[2]) ** 2 < 2.5**2
+        label[np.broadcast_to(inside, shape)] = k + 1
+    image = ndi.gaussian_filter(200 + 600.0 * label, 0.7) + rng.normal(0, 60, shape)
+    return np.clip(image, 0, 65535).astype(np.uint16), label
+
+
+def sized_classifier(volume, label, painted=range(6)):
+    """A classifier of the job telling large from small, shown the labels
+    *painted* (indices into its labels) where *label* says they are."""
+    classifier = new_classifier("vessels_and_sized_classes", scales_um=(1.0, 2.0))
+    ranges = [intensity_range(volume)]
+    rng = np.random.default_rng(0)
+    picks = {k: np.argwhere(label == k) for k in painted}
+    picks = {k: p[rng.choice(len(p), min(120, len(p)), replace=False)] for k, p in picks.items()}
+    points = np.concatenate(list(picks.values())).astype(np.int32)
+    classes = np.concatenate([np.full(len(p), k, np.uint8) for k, p in picks.items()])
+    image = TrainingImage("t.tif", volume.shape, VOXEL, tuple(ranges))
+    feats = features_at([volume], ranges, VOXEL, classifier.spec, points)
+    voxels = TrainingVoxels(feats, classes, np.zeros(len(classes), np.int32), points)
+    return classifier.with_image_voxels(image, voxels).trained(n_jobs=1)
+
+
+def _sized_run_settings(tmp_path, raw, path):
+    from haemolynx.pipeline import default_schema, resolve_settings
+
+    return resolve_settings({
+        "output_dir": tmp_path / "out", "raw_image_path": raw,
+        "use_pixel_classifier_segmentation": True, "pixel_classifier_path": path,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True, "use_pixel_classifier_large_vessel_segmentation": True,
+        "pixel_classifier_large_vessel_path": path,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "use_pixel_classifier_small_vessel_segmentation": True, "pixel_classifier_small_vessel_path": path,
+    }, schema=default_schema(), config_path=None)
+
+
+def test_a_classifier_telling_large_from_small_makes_each_role_its_own_masks(tmp_path):
+    from haemolynx.io.vessel_masks import classifier_role_outputs, vessel_mask_role_is_global
+    from haemolynx.pipeline.checks import check_pixel_classifiers
+    from haemolynx.pipeline.naming import classifier_segmented_path
+    from haemolynx.pipeline.stages import segment_with_run_classifiers
+
+    volume, label = sized_tubes()
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    classifier = sized_classifier(volume, label)
+    assert classifier.labels == (
+        "Background", "Capillary", "Large arteriole", "Small arteriole", "Large venule", "Small venule",
+    )
+    path = save_classifier(classifier, tmp_path / "sized.haemoclf")
+    settings = _sized_run_settings(tmp_path, raw, path)
+    assert check_pixel_classifiers(settings).errors == []
+    assert not vessel_mask_role_is_global(settings, "large")
+    assert not vessel_mask_role_is_global(settings, "small")
+    large = classifier_role_outputs(tmp_path / "out", raw, "large", path)
+    small = classifier_role_outputs(tmp_path / "out", raw, "small", path)
+    assert list(large) == ["Large arteriole", "Large venule"]
+    assert list(small) == ["Small arteriole", "Small venule"]
+
+    segment_with_run_classifiers(settings)
+    labels = classify_volume([volume], VOXEL, classifier)
+    assert np.mean(labels == label) > 0.95  # the five tubes told apart
+    vessel = tifffile.imread(classifier_segmented_path(settings)).astype(bool)
+    assert np.array_equal(vessel, labels > 0)
+    for mask, output in {**large, **small}.items():
+        made = tifffile.imread(output).astype(bool)
+        assert np.array_equal(made, labels == classifier.labels.index(mask)), mask
+        assert made.any() and not (made & ~vessel).any(), mask
+
+
+def test_a_role_whose_venules_were_never_painted_is_one_global_mask(tmp_path):
+    from haemolynx.io.vessel_masks import classifier_finds_venules, classifier_role_outputs, vessel_mask_role_is_global
+    from haemolynx.pipeline.checks import check_pixel_classifiers
+
+    volume, label = sized_tubes()
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    path = save_classifier(sized_classifier(volume, label, painted=range(5)), tmp_path / "no_small_venules.haemoclf")
+    assert classifier_finds_venules(path, "large") and not classifier_finds_venules(path, "small")
+    settings = _sized_run_settings(tmp_path, raw, path)
+    assert not vessel_mask_role_is_global(settings, "large") and vessel_mask_role_is_global(settings, "small")
+    assert list(classifier_role_outputs(tmp_path / "out", raw, "small", path)) == ["Small arteriole"]
+    assert check_pixel_classifiers(settings).errors == []
+
+
+def test_preflight_names_the_role_a_sized_classifier_was_never_shown(tmp_path):
+    from haemolynx.pipeline.checks import check_pixel_classifiers
+
+    volume, label = sized_tubes()
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    # Capillaries and large vessels only: no small arteriole for the small masks.
+    path = save_classifier(sized_classifier(volume, label, painted=(0, 1, 2, 4)), tmp_path / "large.haemoclf")
+    errors = check_pixel_classifiers(_sized_run_settings(tmp_path, raw, path)).errors
+    assert len(errors) == 1
+    assert "pixel_classifier_small_vessel_path" in errors[0] and "Small arteriole" in errors[0]
+
+
 # --------------------------------------------------- cells and 3D vessels
 
 

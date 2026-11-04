@@ -431,18 +431,30 @@ def ilastik_vessel_mask_output_path(
     return Path(output_dir) / f"{stem}_{mask_role}_{vessel_class}_segmented{suffix}"
 
 
-def classifier_finds_venules(classifier_path: str | Path | None) -> bool:
-    """Whether the HaemoLynx classifier at *classifier_path* was shown any
-    venule: one never shown one makes a global mask. False for no file."""
+def _classifier_record(classifier_path) -> dict | None:
     if classifier_path in (None, "") or not Path(classifier_path).is_file():
-        return False
+        return None
     from haemolynx.classifier import read_classifier_record
 
     try:
-        record = read_classifier_record(classifier_path)
+        return read_classifier_record(classifier_path)
     except (OSError, ValueError):
+        return None
+
+
+def classifier_finds_venules(classifier_path: str | Path | None, mask_role: str) -> bool:
+    """Whether the HaemoLynx classifier at *classifier_path* was shown any
+    venule of *mask_role*'s (``classifier.model.role_class_masks``): one never
+    shown one makes that role a global mask. False for no file."""
+    from haemolynx.classifier.model import MASK_LABELS, role_class_masks
+
+    record = _classifier_record(classifier_path)
+    if record is None:
         return False
-    return int((record.get("voxels_per_label") or {}).get("Venule", 0)) > 0
+    purpose = record.get("purpose")
+    venule = role_class_masks(purpose, mask_role)[1]
+    counts = record.get("voxels_per_label") or {}
+    return any(int(counts.get(label, 0)) > 0 for label in MASK_LABELS.get(purpose, {}).get(venule, ()))
 
 
 def classifier_role_outputs(
@@ -450,15 +462,21 @@ def classifier_role_outputs(
 ) -> dict[str, Path]:
     """The masks the HaemoLynx classifier writes for a role, ``{mask: path}``
     in *output_dir*, named as ilastik's: arteriole and venule, or one global
-    mask for a classifier never shown a venule. The one naming rule the run's
+    mask for a classifier never shown a venule; the arteriole's first. A
+    classifier telling large from small writes each role's own masks
+    (``classifier.model.role_class_masks``). The one naming rule the run's
     single pass, the mask loading and the training window share."""
+    from haemolynx.classifier.model import role_class_masks
+
     folder, raw = Path(output_dir or "."), Path(raw_image_path)
-    if classifier_finds_venules(classifier_path):
+    record = _classifier_record(classifier_path) or {}
+    arteriole, venule = role_class_masks(record.get("purpose"), mask_role)
+    if classifier_finds_venules(classifier_path, mask_role):
         return {
-            "Arteriole": ilastik_vessel_mask_output_path(folder, raw, mask_role, "arteriole", ".tif"),
-            "Venule": ilastik_vessel_mask_output_path(folder, raw, mask_role, "venule", ".tif"),
+            arteriole: ilastik_vessel_mask_output_path(folder, raw, mask_role, "arteriole", ".tif"),
+            venule: ilastik_vessel_mask_output_path(folder, raw, mask_role, "venule", ".tif"),
         }
-    return {"Arteriole": ilastik_vessel_mask_output_path(folder, raw, mask_role, "global", ".tif")}
+    return {arteriole: ilastik_vessel_mask_output_path(folder, raw, mask_role, "global", ".tif")}
 
 
 def _segment_vessel_masks_with_classifier(
@@ -487,7 +505,8 @@ def _segment_vessel_masks_with_classifier(
             )
     raw_image = resolve_image_path_with_optional_zip(Path(raw_image_path))
     outputs = classifier_role_outputs(output_dir, raw_image, mask_role, classifier_path)
-    global_mask = "Venule" not in outputs
+    masks = list(outputs)  # the arteriole's, then the venule's
+    global_mask = len(masks) == 1
     logger.info(
         f"Segmenting the {mask_role} {'global mask' if global_mask else 'arteriole and venule masks'} "
         f"with the HaemoLynx classifier: {raw_image}"
@@ -503,7 +522,7 @@ def _segment_vessel_masks_with_classifier(
         memmap_directory=memmap_directory,
         downsample=downsample or "none",
     )
-    return written["Arteriole"], written.get("Venule")
+    return written[masks[0]], (None if global_mask else written[masks[1]])
 
 
 def load_and_validate_vessel_masks(
@@ -1123,7 +1142,7 @@ def vessel_mask_role_is_global(
         # Cut from the large masks: one global mask exactly when they are.
         return vessel_mask_role_is_global(settings, "large")
     if settings.get(names["use_classifier"]) and not settings.get(names["use_ilastik"]):
-        return not classifier_finds_venules(settings.get(names["classifier_path"]))
+        return not classifier_finds_venules(settings.get(names["classifier_path"]), mask_role)
     venule = (
         names["ilastik_venule_classifier_path"]
         if settings.get(names["use_ilastik"])

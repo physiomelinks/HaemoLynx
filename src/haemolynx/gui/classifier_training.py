@@ -67,6 +67,7 @@ PURPOSE_TITLES: dict[str, str] = {
     "vessels": "All vessels",
     "vessel_classes": "Arterioles and venules",
     "vessels_and_classes": "Capillaries, arterioles and venules",
+    "vessels_and_sized_classes": "Capillaries, large and small arterioles and venules",
     "pericytes": "Pericytes",
     "blocks": "Capillary blocks",
     "cells": "Cells",
@@ -79,6 +80,10 @@ LABEL_COLOURS: dict[str, tuple[float, float, float, float]] = {
     "Capillary": (0.2, 0.8, 0.3, 0.9),
     "Arteriole": (0.9, 0.1, 0.1, 0.9),
     "Venule": (0.15, 0.35, 0.95, 0.9),
+    "Large arteriole": (0.55, 0.0, 0.0, 0.9),
+    "Small arteriole": (1.0, 0.5, 0.5, 0.9),
+    "Large venule": (0.0, 0.4, 0.1, 0.9),
+    "Small venule": (0.65, 1.0, 0.55, 0.9),
     "Pericyte": (0.2, 0.85, 0.35, 0.9),
     "Block": (0.98, 0.65, 0.1, 0.9),
     "Cell": (0.75, 0.3, 0.9, 0.9),
@@ -131,7 +136,7 @@ def mask_colours(mask: str) -> dict[int, tuple[float, float, float, float]]:
 
 
 #: Labels two jobs name differently: a stroke keeps its meaning when the job
-#: changes (the combined job's capillaries are the vessels job's vessels).
+#: changes (the combined jobs' capillaries are the vessels job's vessels).
 SAME_LABEL: dict[str, str] = {"Vessel": "Capillary", "Capillary": "Vessel"}
 
 
@@ -218,6 +223,52 @@ def window_in_view(axis: int, corners, shape: Sequence[int]):
         )
     except (TypeError, IndexError, ValueError):
         return whole
+
+
+def classifier_vessel_mask_roles(classifier_path: str | Path | None) -> tuple[str, ...]:
+    """The vessel-mask roles (``"large"``, ``"small"``) the classifier at
+    *classifier_path* also makes masks for (``classifier.model.VESSEL_MASK_ROLES``):
+    none for a classifier of vessels alone, or a file that is not one."""
+    from haemolynx.classifier import read_classifier_record
+    from haemolynx.classifier.model import VESSEL_MASK_ROLES
+
+    if classifier_path in (None, "") or not Path(classifier_path).is_file():
+        return ()
+    try:
+        purpose = read_classifier_record(classifier_path).get("purpose")
+    except (OSError, ValueError):
+        return ()
+    return VESSEL_MASK_ROLES.get(purpose, ())
+
+
+def vessel_mask_settings_for(classifier_path: str | Path, roles: Sequence[str]) -> dict[str, Any]:
+    """The settings that make *roles*' vessel masks with the classifier at
+    *classifier_path*: each role's classifier row given it and its switch on
+    (ilastik's off), then the Boundaries tab's vessel masks and each role's
+    mask switch on. In that order, so the panel's search for masks beside the
+    image finds each role made from the raw image and leaves its rows alone."""
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+
+    settings: dict[str, Any] = {}
+    for role in roles:
+        names = VESSEL_MASK_SETTINGS[role]
+        settings[names["classifier_path"]] = str(classifier_path)
+        settings[names["use_ilastik"]] = False
+        settings[names["use_classifier"]] = True
+    if roles:
+        settings["automated_vessel_assignment"] = True
+    for role in roles:
+        settings[VESSEL_MASK_SETTINGS[role]["enabled"]] = True
+    return settings
+
+
+def vessel_mask_note(roles: Sequence[str]) -> str:
+    """What the panel says when a classifier fills *roles*' vessel masks."""
+    sizes = " and ".join(roles)
+    return (
+        f"The classifier also finds {sizes} arterioles and venules: the Boundaries tab's "
+        f"{sizes} vessel masks are now made with it."
+    )
 
 
 def row_outputs(values: Mapping[str, Any], row: str, classifier_path: str | Path) -> dict[str, Path]:

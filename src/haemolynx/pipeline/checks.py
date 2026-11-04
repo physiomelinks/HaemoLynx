@@ -1774,8 +1774,11 @@ def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
     if not classifiers:
         return report
     from haemolynx.classifier import read_classifier_record
-    from haemolynx.classifier.model import JOB_PURPOSES, MASK_LABELS
+    from haemolynx.classifier.model import JOB_PURPOSES, MASK_LABELS, role_class_masks
     from haemolynx.io.channels import tiff_channels
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+
+    roles = {names["classifier_path"]: role for role, names in VESSEL_MASK_SETTINGS.items()}
 
     raw = settings.get("raw_image_path")
     try:
@@ -1798,6 +1801,8 @@ def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
                 "one for this job in the training window."
             )
             continue
+        if name in roles:  # a role's arteriole (or global) mask, as this classifier names it
+            mask = role_class_masks(record["purpose"], roles[name])[0]
         counts = record.get("voxels_per_label") or {}
         labels = MASK_LABELS[record["purpose"]][mask]
         if not any(counts.get(label) for label in labels):

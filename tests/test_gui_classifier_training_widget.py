@@ -40,6 +40,20 @@ def test_every_classifier_row_has_a_train_button(panel):
         assert button.native.parent() is rows[name].native, name
 
 
+def test_the_window_takes_the_stylesheet_napari_gives_the_panel(panel):
+    # napari sets its (dark) theme's stylesheet on its main window, the
+    # panel's ancestor; a parentless window never got it and came up light.
+    _viewer, widget, *_ = panel
+    widget.setStyleSheet("QWidget { background-color: rgb(38, 41, 48); color: rgb(240, 241, 242); }")
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert window.window.isWindow()
+    for part in (window.window, window.job_box, window.label_box, window.status):
+        part.ensurePolished()
+        palette = part.palette()
+        assert palette.color(part.backgroundRole()).getRgb()[:3] == (38, 41, 48), part
+        assert palette.color(part.foregroundRole()).getRgb()[:3] == (240, 241, 242), part
+
+
 def test_painting_classifies_only_the_plane_in_view(panel):
     viewer, widget, _rows, volume, truth, _raw = panel
     window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
@@ -149,6 +163,145 @@ def test_choosing_the_combined_job_keeps_the_strokes_by_name(panel):
     assert window.job_box.currentText() == "Capillaries, arterioles and venules"
     values = np.asarray(window.strokes.data)[tuple(points.T)]
     assert set(np.unique(values)) == {1, 4}  # Venule is now the fourth label
+
+
+BOTH_ROLES = {
+    "pixel_classifier_large_vessel_path", "pixel_classifier_small_vessel_path",
+}
+
+
+def test_saving_a_classifier_telling_large_from_small_makes_the_boundaries_masks(panel, tmp_path):
+    _viewer, widget, rows, _volume, truth, _raw = panel
+    from haemolynx.io.vessel_mask_discovery import find_vessel_masks
+
+    mask_rows = ("large_arteriole_mask_path", "large_venule_mask_path",
+                 "small_arteriole_mask_path", "small_venule_mask_path")
+    # Masks the panel's search would put in those rows, were it to look.
+    for word in ("large_arteriole", "large_venule", "small_arteriole", "small_venule"):
+        tifffile.imwrite(tmp_path / f"raw_{word}.tif", np.zeros((2, 4, 4), np.uint8))
+    assert all(found.is_pair for found in find_vessel_masks([_raw]).values())
+    before = {name: widget._haemolynx_values()[name] for name in mask_rows}
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    window.job_box.setCurrentIndex(window.purposes.index("vessels_and_sized_classes"))
+    assert window.job_box.currentText() == "Capillaries, large and small arterioles and venules"
+    assert [b.text() for b in window.label_group.buttons()] == list(window.labels)
+    points, classes = strokes(truth, per_class=60)
+    window.live_box.setChecked(False)
+    window.strokes.data[tuple(points.T)] = classes + 1  # Background and Capillary
+    target = tmp_path / "sized.haemoclf"
+    window.path_edit.setText(str(target))
+    window.save()
+    values = widget._haemolynx_values()
+    for name in BOTH_ROLES:
+        assert str(values[name]) == str(target), name
+    for switch in ("use_pixel_classifier_segmentation", "automated_vessel_assignment",
+                   "use_large_vessel_masks", "use_small_vessel_masks_for_boundary_assignment",
+                   "use_pixel_classifier_large_vessel_segmentation",
+                   "use_pixel_classifier_small_vessel_segmentation"):
+        assert values[switch] is True, switch
+    # The roles are made from the raw image: the search for mask files beside
+    # it left their rows as they were.
+    assert {name: values[name] for name in mask_rows} == before
+    assert "large and small vessel masks" in widget._haemolynx_report()
+    # The rows it filled are shown: their switches' chains are all on.
+    for name in BOTH_ROLES:
+        assert not rows[name].native.isHidden(), name
+
+
+def test_choosing_a_combined_classifier_in_the_row_makes_the_large_masks(panel, tmp_path):
+    from test_gui_classifier_training import _record_only
+
+    _viewer, widget, rows, *_ = panel
+    rows["use_pixel_classifier_segmentation"].value = True
+    rows["pixel_classifier_path"].value = _record_only(tmp_path / "combined.haemoclf", "vessels_and_classes")
+    values = widget._haemolynx_values()
+    assert str(values["pixel_classifier_large_vessel_path"]) == str(tmp_path / "combined.haemoclf")
+    assert values["use_large_vessel_masks"] is True
+    assert values["use_pixel_classifier_large_vessel_segmentation"] is True
+    assert values["use_small_vessel_masks_for_boundary_assignment"] is False
+    assert values["pixel_classifier_small_vessel_path"] in (None, "")
+    # A classifier of vessels alone changes nothing more.
+    rows["use_large_vessel_masks"].value = False
+    rows["pixel_classifier_path"].value = _record_only(tmp_path / "vessels.haemoclf", "vessels")
+    assert widget._haemolynx_values()["use_large_vessel_masks"] is False
+
+
+def test_loading_a_config_naming_such_a_classifier_leaves_the_boundaries_as_it_says(panel, tmp_path):
+    from test_gui_classifier_training import _record_only
+
+    _viewer, widget, _rows, _volume, _truth, raw = panel
+    path = _record_only(tmp_path / "sized.haemoclf", "vessels_and_sized_classes")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"raw_image_path: {raw.as_posix()}\nuse_pixel_classifier_segmentation: true\n"
+        f"pixel_classifier_path: {path.as_posix()}\n",
+        encoding="utf-8",
+    )
+    widget._haemolynx_load_config(config)
+    values = widget._haemolynx_values()
+    assert str(values["pixel_classifier_path"]) == str(path)
+    assert values["use_large_vessel_masks"] is False
+    assert values["pixel_classifier_large_vessel_path"] in (None, "")
+
+
+EXCLUSIVE = (
+    ("use_ilastik_segmentation", "use_pixel_classifier_segmentation", {}),
+    ("use_ilastik_large_vessel_segmentation", "use_pixel_classifier_large_vessel_segmentation",
+     {"automated_vessel_assignment": True, "use_large_vessel_masks": True}),
+    ("use_ilastik_small_vessel_segmentation", "use_pixel_classifier_small_vessel_segmentation",
+     {"automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True}),
+)
+
+
+@pytest.mark.parametrize("ilastik, classifier, gates", EXCLUSIVE)
+def test_ilastik_and_the_classifier_grey_each_other_and_say_why(panel, ilastik, classifier, gates):
+    from haemolynx.gui.form import exclusive_reason
+
+    _viewer, _widget, rows, *_ = panel
+    for name, value in gates.items():
+        rows[name].value = value
+    assert rows[ilastik].enabled and rows[classifier].enabled
+    rows[ilastik].value = True
+    assert not rows[classifier].enabled and not rows[classifier].native.isHidden()
+    assert rows[classifier].tooltip == exclusive_reason(ilastik)
+    assert rows[ilastik].enabled
+    rows[ilastik].value = False
+    rows[classifier].value = True
+    assert not rows[ilastik].enabled and not rows[ilastik].native.isHidden()
+    assert rows[ilastik].tooltip == exclusive_reason(classifier)
+    rows[classifier].value = False
+    assert rows[ilastik].enabled and rows[classifier].enabled
+
+
+def test_a_config_ticking_both_leaves_ilastik_free_to_untick(panel, tmp_path):
+    _viewer, widget, rows, _volume, _truth, raw = panel
+    config = tmp_path / "both.yaml"
+    config.write_text(
+        f"raw_image_path: {raw.as_posix()}\nuse_ilastik_segmentation: true\n"
+        "use_pixel_classifier_segmentation: true\n",
+        encoding="utf-8",
+    )
+    widget._haemolynx_load_config(config)
+    assert rows["use_ilastik_segmentation"].enabled
+    assert not rows["use_pixel_classifier_segmentation"].enabled
+    rows["use_ilastik_segmentation"].value = False
+    assert rows["use_pixel_classifier_segmentation"].enabled
+    assert not rows["use_ilastik_segmentation"].enabled
+
+
+def test_saving_a_classifier_chooses_it_over_ilastik(panel, tmp_path):
+    _viewer, widget, rows, _volume, truth, _raw = panel
+    rows["use_ilastik_segmentation"].value = True
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    points, classes = strokes(truth, per_class=40)
+    window.live_box.setChecked(False)
+    window.strokes.data[tuple(points.T)] = classes + 1
+    window.path_edit.setText(str(tmp_path / "mine.haemoclf"))
+    window.save()
+    values = widget._haemolynx_values()
+    assert values["use_ilastik_segmentation"] is False
+    assert values["use_pixel_classifier_segmentation"] is True
+    assert rows["use_pixel_classifier_segmentation"].enabled
 
 
 def test_no_raw_image_says_what_to_do(make_napari_viewer):
