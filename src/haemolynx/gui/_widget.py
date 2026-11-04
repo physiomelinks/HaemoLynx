@@ -4082,6 +4082,10 @@ def _store_sweep_metadata(layer, spec) -> None:
     else:
         tag.pop("sweep_points", None)
         tag.pop("sweep_points_colour_cycle", None)
+    if getattr(spec, "sweep_rows", None) is not None:
+        tag["sweep_rows"] = spec.sweep_rows
+    else:
+        tag.pop("sweep_rows", None)
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
@@ -4604,11 +4608,9 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
     per_edge: dict[str, np.ndarray] = {}
     flow_abs = np.asarray(sweep.flow_abs_at(*indices), dtype=float)
     per_edge["flow_abs"] = flow_abs[edge_index]
-    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_values
 
-    per_edge["flow_abs_log10"] = np.asarray(
-        [flow_abs_log10_value(v) for v in flow_abs], dtype=float
-    )[edge_index]
+    per_edge["flow_abs_log10"] = flow_abs_log10_values(flow_abs)[edge_index]
     signed = sweep.flow_signed_at(*indices)
     if signed is not None:
         per_edge["flow_signed"] = np.asarray(signed, dtype=float)[edge_index]
@@ -4677,32 +4679,40 @@ def _sweep_contrast_limits(sweep, tag: Mapping[str, Any], column: str | None):
 
 
 def _apply_sweep_points(viewer, layer_set: str | None, row: int) -> None:
-    """Move network *layer_set*'s sweep-following Points layers to grid *row*.
+    """Move network *layer_set*'s sweep-following layers to grid *row*.
 
     A spacing or length sweep moves the pericytes themselves, so this swaps
-    the points, not a column. The Z-depth filter's cache takes the grid
-    point's whole set, and the layer shows the part inside the current
-    window, as the filter would have drawn it.
+    the points, not a column; the nodes take the grid point's pressures and
+    the flow arrows its directions (``sweep_rows``). The Z-depth filter's
+    cache takes the grid point's whole set, and the layer shows the part
+    inside the current window, as the filter would have drawn it.
     """
     for layer in list(viewer.layers):
         if not _is_ours(layer) or _layer_set_of(layer) != layer_set:
             continue
         tag = getattr(layer, "metadata", {}).get(OURS) or {}
         per_row = tag.get("sweep_points")
-        if per_row is None or not 0 <= row < len(per_row):
+        rows_of = tag.get("sweep_rows")
+        if per_row is not None and 0 <= row < len(per_row):
+            data, features = per_row[row]
+        elif rows_of is not None and 0 <= row < len(rows_of):
+            data, features = rows_of.at(row)
+        else:
             continue
-        data, features = per_row[row]
+        kind = "vectors" if layer.__class__.__name__ == "Vectors" else "points"
         rule = _colouring_rule(layer)
         _store_z_filter_cache(layer, data, features)
         shown, shown_features = data, features
         window = _current_z_depth_window(viewer)
-        if window is not None:
+        if window is not None and kind == "vectors":
+            shown, shown_features, _owner = filter_vectors_by_z(data, features, window[0], window[1])
+        elif window is not None:
             shown, shown_features = filter_points_by_z(data, features, window[0], window[1])
-        # Fewer points than before recreates the layer (see
+        # Fewer items than before recreates the layer (see
         # _set_z_filtered_layer_data), so its colour controls go back on as
         # the Z-depth filter puts them back.
         layer = _set_z_filtered_layer_data(
-            viewer, layer, "points", shown, dict(shown_features), None
+            viewer, layer, kind, shown, dict(shown_features), None
         )
         _note_z_filter_window(layer, None if window is None else tuple(window))
         try:
@@ -9896,6 +9906,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         starting_values_for_type,
         summary,
         to_settings,
+        vessel_ids_with_ends,
         visible_tab_settings,
     )
 
@@ -9968,10 +9979,31 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             if name in editor.editors
         }
         values = entry_values(editor)
+        if "capillary_block_vessel_ids" in read:
+            read["capillary_block_vessel_ids"] = vessel_ids_with_ends(
+                read["capillary_block_vessel_ids"], shown_vessel_ends()
+            )
         return {
             name: value
             for name, value in read.items()
             if value is not None and entry_shows(name, values)
+        }
+
+    def shown_vessel_ends() -> dict[int, tuple]:
+        """The baseline vessels layer's ``branchID -> (u, v, key)``: the
+        network a branchID typed here was read off its hover."""
+        from haemolynx.gui.results import VESSELS
+        from haemolynx.haemodynamics.perturbations import plain
+
+        layer = viewer.layers[VESSELS] if VESSELS in viewer.layers else None
+        features = getattr(layer, "features", None)
+        if features is None or not {"edge_index", "u", "v", "key"} <= set(features.columns):
+            return {}
+        return {
+            int(index): (plain(u), plain(v), plain(key))
+            for index, u, v, key in zip(
+                features["edge_index"], features["u"], features["v"], features["key"]
+            )
         }
 
     def entry_shows(name: str, values: Mapping[str, Any]) -> bool:
@@ -10083,6 +10115,13 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             )
             if name in configured:
                 widget.value = display_value_for(schema[name], configured[name])
+            elif name in rows:
+                # What the run configured, not the schema's default: the
+                # shown editors become the entry's overrides, and a default
+                # would replace the value a loaded config gave.
+                widget.value = display_value_for(
+                    schema[name], field.to_setting_value(_safe_widget_value(rows[name]))
+                )
             editors[name] = widget
 
         remove_button = PushButton(text="Remove")

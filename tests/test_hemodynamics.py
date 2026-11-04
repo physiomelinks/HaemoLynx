@@ -556,6 +556,18 @@ def test_flow_abs_log10_zero_flow_is_finite():
     assert np.isfinite(G.edges[(0, 1, 0)]["flow_abs_log10"])
 
 
+def test_flow_abs_log10_of_an_array_is_each_values_to_the_bit():
+    """A sweep's slider recolours every vessel by it at each step, so it is
+    computed at once; it must give what the one-value version gives."""
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value, flow_abs_log10_values
+
+    flows = np.array([0.0, -0.0, 3.2e-12, -3.2e-12, 1e-25, 1e-20, 7.5e-15, np.nan, np.inf, -np.inf])
+    expected = np.array([flow_abs_log10_value(value) for value in flows])
+
+    np.testing.assert_array_equal(flow_abs_log10_values(flows), expected)
+    np.testing.assert_array_equal(flow_abs_log10_values(list(flows[:3])), expected[:3])
+
+
 def test_flow_conservation_residuals_reports_an_imbalance():
     """The auditor itself must flag pressures that violate Kirchhoff."""
     G = nx.MultiGraph()

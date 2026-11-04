@@ -783,7 +783,9 @@ def test_thick_vessel_fields_on_skeletonise_declare_hide_when_unmet():
 
 def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
     """The cartwheel hub guard's own knob hides until its toggle is on; the two
-    direction-aware merging reads too stay on the Graph tab either way."""
+    direction-aware merging reads too stay on the Graph tab either way. Like
+    every Graph-tab row they need a segmented image, which both their readers
+    do: a synthetic network reads none of them."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     fields = {field.name: field for field in tabs["3. Graph"].fields}
 
@@ -791,15 +793,20 @@ def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
     assert not fields["detect_cartwheel_hub_artifacts"].hide_when_unmet
     assert SCHEMA["detect_cartwheel_hub_artifacts"].default is False
 
-    off = {"detect_cartwheel_hub_artifacts": False}
-    on = {"detect_cartwheel_hub_artifacts": True}
+    image = {"network_source": "segmented_image"}
+    off = {**image, "detect_cartwheel_hub_artifacts": False}
+    on = {**image, "detect_cartwheel_hub_artifacts": True}
     guard_only = fields["cartwheel_hub_max_radial_dispersion"]
     assert guard_only.hide_when_unmet
     assert not guard_only.is_visible(off)
     assert guard_only.is_visible(on)
     for name in ("cartwheel_hub_min_degree", "cartwheel_hub_tangent_length_um"):
-        assert SCHEMA[name].requires == (), name
+        # Neither reader gates them: only the image both readers need.
+        assert SCHEMA[name].requires == ("network_source=segmented_image",), name
         assert fields[name].is_visible(off) and fields[name].is_visible(on), name
+        for direction_aware in (False, True):
+            values = {**off, "cluster_collapse_method": "direction_aware" if direction_aware else "distance_only"}
+            assert fields[name].is_visible(values), (name, direction_aware)
 
 
 def test_perturbation_output_dir_field_on_perturbations_declares_hide_when_unmet():

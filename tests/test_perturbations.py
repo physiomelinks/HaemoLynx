@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -509,6 +510,8 @@ def test_an_ordinary_name_is_left_alone():
 
 def _settings(**overrides):
     values = SCHEMA.defaults()
+    # Preflight checks the list only when it will run.
+    values.update(run_perturbations=True, run_haemodynamics=True)
     values.update(overrides)
     return values
 
@@ -537,6 +540,16 @@ def test_a_malformed_entry_is_an_error_before_the_run_starts():
 def test_two_perturbations_with_one_name_is_an_error():
     """Each writes its own CSVs under its own name, so they cannot share one."""
     entries = [dict(TWO_ENTRIES[0]), dict(TWO_ENTRIES[0])]
+    report = check_perturbations(_settings(perturbations=entries), SCHEMA)
+
+    assert not report.ok
+    assert any("repeats the name" in error for error in report.errors)
+
+
+def test_two_names_differing_only_in_case_are_an_error():
+    """On Windows and macOS 'Art' and 'art' of one type write into one
+    folder, the second over the first's files."""
+    entries = [dict(TWO_ENTRIES[0]), {**TWO_ENTRIES[0], "name": TWO_ENTRIES[0]["name"].upper()}]
     report = check_perturbations(_settings(perturbations=entries), SCHEMA)
 
     assert not report.ok
@@ -619,6 +632,104 @@ def test_a_perturbation_naming_a_mask_that_is_there_passes(tmp_path):
     report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
 
     assert report.ok, report.errors
+
+
+def test_a_list_that_will_not_run_does_not_stop_the_run():
+    """The stage runs no perturbation with run_perturbations off, or with no
+    haemodynamics to re-solve; preflight refused the run over the list's
+    errors all the same."""
+    bad = [{"name": "a", "type": "wider"}]
+
+    assert check_perturbations(_settings(perturbations=bad), SCHEMA).errors
+
+    off = check_perturbations(_settings(perturbations=bad, run_perturbations=False), SCHEMA)
+    assert off.ok and not off.warnings
+
+    unsolved = check_perturbations(_settings(perturbations=bad, run_haemodynamics=False), SCHEMA)
+    assert unsolved.ok
+    assert any("run_haemodynamics is off" in warning for warning in unsolved.warnings)
+
+
+def test_a_perturbation_switching_on_the_runs_missing_mask_fails_preflight(tmp_path):
+    """The entry turns the mask on and the run names it: the stage reads the
+    run's path, so preflight checks it, which it did only for a path the
+    entry set itself."""
+    entry = {
+        "name": "tighter",
+        "type": "pericyte_diameter_change",
+        "overrides": {"use_pericyte_mask_constriction": True},
+    }
+    missing = tmp_path / "no_such_mask.tif"
+
+    report = check_perturbations(
+        _settings(perturbations=[entry], pericyte_mask_path=str(missing)), SCHEMA
+    )
+
+    assert not report.ok
+    assert any("pericyte_mask_path" in error for error in report.errors)
+    # Off for this entry, the run's own path is not its business.
+    entry["overrides"] = {"use_pericyte_mask_constriction": False}
+    assert check_perturbations(
+        _settings(perturbations=[entry], pericyte_mask_path=str(missing)), SCHEMA
+    ).ok
+
+
+def test_a_spacing_sweep_of_mask_pericytes_is_warned_about(tmp_path):
+    """A mask places each pericyte where it lies, so sweeping their spacing
+    changes nothing: every row of the sweep came out the same."""
+    mask = tmp_path / "mask.tif"
+    mask.write_bytes(b"")
+    entry = {
+        "name": "spacing",
+        "type": "pericyte_spacing_sweep",
+        "overrides": {"use_pericyte_mask_constriction": True, "pericyte_mask_path": str(mask)},
+    }
+
+    report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
+
+    assert report.ok, report.errors
+    assert any("every point of the sweep will be the same" in w for w in report.warnings)
+    entry["overrides"] = {}
+    assert check_perturbations(_settings(perturbations=[entry]), SCHEMA).warnings == []
+
+
+def test_preflight_refuses_a_mask_perturbation_on_a_synthetic_network(tmp_path):
+    mask = tmp_path / "mask.tif"
+    mask.write_bytes(b"")
+    pericytes = {"use_pericyte_mask_constriction": True, "pericyte_mask_path": str(mask)}
+    for entry in (
+        {"name": "tone", "type": "pericyte_diameter_change", "overrides": pericytes},
+        {"name": "measured", "type": "pericyte_measured_constriction", "overrides": pericytes},
+        {"name": "blocks", "type": "capillary_block_mask", "overrides": {"capillary_block_mask_path": str(mask)}},
+    ):
+        for source in ("synthetic", "synthetic_surround"):
+            report = check_perturbations(_settings(perturbations=[entry], network_source=source), SCHEMA)
+            assert any("network is synthetic" in error for error in report.errors), (entry["name"], source)
+    periodic = {"name": "tone", "type": "pericyte_diameter_change", "overrides": {}}
+    report = check_perturbations(_settings(perturbations=[periodic], network_source="synthetic"), SCHEMA)
+    assert not any("network is synthetic" in error for error in report.errors)
+
+
+def test_preflight_refuses_a_perturbation_mask_of_another_shape(tmp_path):
+    """Read only once the perturbation ran, after the whole pipeline, a mask
+    of another shape than the image is caught from the TIFF headers first."""
+    import tifffile
+
+    image = tmp_path / "image.tif"
+    tifffile.imwrite(str(image), np.zeros((2, 4, 8), dtype=np.uint8))
+    for shape, refused in (((2, 4, 9), True), ((2, 4, 8), False)):
+        mask = tmp_path / f"mask_{shape[-1]}.tif"
+        tifffile.imwrite(str(mask), np.zeros(shape, dtype=np.uint8))
+        for entry in (
+            {
+                "name": "tone",
+                "type": "pericyte_diameter_change",
+                "overrides": {"use_pericyte_mask_constriction": True, "pericyte_mask_path": str(mask)},
+            },
+            {"name": "blocks", "type": "capillary_block_mask", "overrides": {"capillary_block_mask_path": str(mask)}},
+        ):
+            report = check_perturbations(_settings(perturbations=[entry], input_path=image), SCHEMA)
+            assert any("not a mask of this image" in e for e in report.errors) is refused, (shape, entry["name"])
 
 
 def test_preflight_reports_a_bad_perturbation(capsys):

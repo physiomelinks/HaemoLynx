@@ -306,9 +306,10 @@ if __name__ == "__main__":
     print("Synthetic pericyte mask integration run completed.")
 
 
-def _anisotropic_case(tmp_path: Path):
+def _anisotropic_case(tmp_path: Path, stated_z_um: float | None = None):
     """A vessel along x at z = 20 um, y = 8 um, from a 2 x 0.5 x 0.5 um image,
-    and a pericyte on it in a mask saved with no voxel size at all."""
+    and a pericyte on it in a mask saved with no voxel size at all, or, with
+    *stated_z_um*, one stating 0.5 um in x and y and *stated_z_um* in z."""
     tifffile = pytest.importorskip("tifffile")
     G = nx.MultiGraph()
     G.graph["image_voxel_size_zyx"] = (2.0, 0.5, 0.5)
@@ -319,7 +320,13 @@ def _anisotropic_case(tmp_path: Path):
     z, y, x = np.indices((20, 32, 64))
     blob = ((z - 10) * 2.0) ** 2 + ((y - 16) * 0.5) ** 2 + ((x - 32) * 0.5) ** 2 <= 3.5**2
     mask_path = tmp_path / "pericytes.tif"
-    tifffile.imwrite(str(mask_path), blob.astype(np.uint8) * 255)
+    if stated_z_um is None:
+        tifffile.imwrite(str(mask_path), blob.astype(np.uint8) * 255)
+    else:
+        tifffile.imwrite(
+            str(mask_path), blob.astype(np.uint8) * 255, imagej=True, resolution=(2.0, 2.0),
+            metadata={"spacing": float(stated_z_um), "unit": "um", "axes": "ZYX"},
+        )
     kwargs = dict(
         diameter_by_branch_order={"B01": 5.0},
         constriction_factor_by_branch_order={"B01": 0.8},
@@ -331,10 +338,11 @@ def _anisotropic_case(tmp_path: Path):
 
 def test_a_pericyte_mask_at_another_voxel_size_than_the_image_is_refused(tmp_path: Path):
     """Regression (audit): the mask's voxel size came from its own file alone,
-    unchecked -- saved without z spacing it read as 1 um against the image's
-    2 um, its pericyte landed 12.8 um off its vessel, past the 3 um limit, and
-    was silently dropped."""
-    G, kwargs = _anisotropic_case(tmp_path)
+    unchecked -- read as 1 um in z against the image's 2 um, its pericyte
+    landed 12.8 um off its vessel, past the 3 um limit, and was silently
+    dropped. A mask stating no voxel size now takes the image's (the auto
+    policy, as the vessel masks do); one stating another is refused."""
+    G, kwargs = _anisotropic_case(tmp_path, stated_z_um=1.0)
 
     with pytest.raises(ValueError, match="voxel size"):
         set_poiseuille_resistances_with_pericyte_mask(G, **kwargs)
