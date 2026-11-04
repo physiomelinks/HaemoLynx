@@ -8,12 +8,18 @@ several scales (:mod:`.features`), and the saved classifier (:mod:`.model`, a
 venule masks on the Boundaries tab. Its outputs are 0/1 masks named and kept
 as ilastik's are, so everything after segmentation reads them alike.
 
+A segmentation stopped part-way is taken up where it stopped (:mod:`.slabs`);
+an image unlike every image a classifier was trained on is warned about
+(:mod:`.familiar`); the labels painted in an ilastik project can be read as
+strokes (:mod:`.ilastik_labels`).
+
 Training needs scikit-learn; reading and applying a classifier needs only
 NumPy and SciPy.
 """
 from .apply import (
     Job,
     RawChannels,
+    SegmentProgress,
     classifier_output_current,
     classifier_output_is_current,
     classifier_provenance,
@@ -65,6 +71,7 @@ __all__ = [
     "LazyTiffChannel",
     "PixelClassifier",
     "RawChannels",
+    "SegmentProgress",
     "TrainingImage",
     "TrainingVoxels",
     "box_features",

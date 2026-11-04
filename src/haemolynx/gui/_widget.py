@@ -10851,6 +10851,8 @@ class _ClassifierTrainingWindow:
 
         existing = values.get(row)
         self.loaded = None
+        self.loaded_path = Path(existing) if existing not in (None, "") else None
+        self.axis_order = "zyx"
         if existing not in (None, "") and Path(existing).is_file():
             try:
                 loaded = load_classifier(existing)
@@ -10891,6 +10893,10 @@ class _ClassifierTrainingWindow:
         self.label_group.idClicked.connect(self._choose_label)
         self._label_buttons()
         layout.addWidget(self.label_box)
+        self.import_button = QPushButton("Import ilastik labels...")
+        self.import_button.setToolTip(TIPS["import"])
+        self.import_button.clicked.connect(lambda *_a: self.import_ilastik_labels())
+        layout.addWidget(self.import_button)
 
         preview_row = QHBoxLayout()
         self.live_box = QCheckBox("Live update")
@@ -10944,7 +10950,7 @@ class _ClassifierTrainingWindow:
         self.save_button.clicked.connect(lambda *_a: self.save())
         self.segment_button = QPushButton("Segment whole image")
         self.segment_button.setToolTip(TIPS["segment"])
-        self.segment_button.clicked.connect(lambda *_a: self.segment_whole_image())
+        self.segment_button.clicked.connect(lambda *_a: self._segment_clicked())
         close = QPushButton("Close")
         close.setToolTip(TIPS["close"])
         close.clicked.connect(lambda *_a: self.window.close())
@@ -10960,6 +10966,16 @@ class _ClassifierTrainingWindow:
         self.timer.setSingleShot(True)
         self.timer.setInterval(self.DEBOUNCE_MS)
         self.timer.timeout.connect(lambda: self.update(retrain=self._retrain))
+        #: While the whole image is segmented: what to say of how far it is
+        #: (set from the worker, shown on this thread), and whether to stop.
+        self._segmenting = False
+        self._stop_segmenting = False
+        self._progress_text: str | None = None
+        #: Said before the next training's result (what an import painted).
+        self._note: str | None = None
+        self.progress_timer = QTimer(self.window)
+        self.progress_timer.setInterval(500)
+        self.progress_timer.timeout.connect(self._show_progress)
         self._set_enabled(False)
         self._run(self._load, self._loaded)
 
@@ -10996,24 +11012,33 @@ class _ClassifierTrainingWindow:
         self.label_group.button(min(2, len(self.labels))).setChecked(True)
 
     def _set_enabled(self, enabled: bool) -> None:
-        for widget in (self.update_button, self.save_button, self.segment_button):
+        for widget in (self.update_button, self.save_button, self.segment_button, self.import_button):
             widget.setEnabled(enabled)
 
     def _say(self, text: str) -> None:
         self.status.setText(text)
 
-    def _run(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
-        """Do *work* off the GUI thread, then *done* with its result on it.
-        One job at a time: a job asked for meanwhile waits, the latest only."""
+    def _run(
+        self,
+        work: Callable[[], Any],
+        done: Callable[[Any], None],
+        failed: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """Do *work* off the GUI thread, then *done* with its result on it
+        (or *failed* with what it raised; else that is shown). One job at a
+        time: a job asked for meanwhile waits, the latest only."""
         if self._busy:
-            self._queued = lambda: self._run(work, done)
+            self._queued = lambda: self._run(work, done, failed)
             return
         self._busy = True
 
         def finish(result=None, error: BaseException | None = None) -> None:
             self._busy = False
             if error is not None:
-                self._say(str(error) or type(error).__name__)
+                if failed is not None:
+                    failed(error)
+                else:
+                    self._say(str(error) or type(error).__name__)
             else:
                 try:
                     done(result)
@@ -11064,6 +11089,7 @@ class _ClassifierTrainingWindow:
                 memmap_directory=self.values.get("memmap_directory"),
             )
             self.voxel_size_zyx = raw.voxel_size_zyx
+            self.axis_order = raw.axis_order
             self._volumes.update(zip(missing, raw.volumes))
         return [self._volumes[c] for c in channels]
 
@@ -11126,20 +11152,34 @@ class _ClassifierTrainingWindow:
             self.strokes.events.paint.connect(lambda *_a: self._changed(retrain=True))
             self.viewer.dims.events.current_step.connect(lambda *_a: self._changed(retrain=False))
             self.viewer.dims.events.order.connect(lambda *_a: self._changed(retrain=False))
-            self.viewer.camera.events.center.connect(lambda *_a: self._changed(retrain=False))
-            self.viewer.camera.events.zoom.connect(lambda *_a: self._changed(retrain=False))
+            camera = viewer_camera(self.viewer)
+            camera.events.center.connect(lambda *_a: self._changed(retrain=False))
+            camera.events.zoom.connect(lambda *_a: self._changed(retrain=False))
         self.strokes.selected_label = self.label_group.checkedId()
         self.viewer.layers.selection.active = self.strokes
         self._set_enabled(True)
         from haemolynx.classifier.sparse import painted_points
 
         painted = len(painted_points(self.strokes.data)[0])
+        note = self._unfamiliar_note(live)
         self._say(
             f"Paint a few strokes of each label on {self.raw_path.name}"
             + (f" ({painted} voxels painted before)." if painted else ".")
+            + (f" {note}" if note else "")
         )
         if painted:
             self.update(retrain=True)
+
+    def _unfamiliar_note(self, live) -> str:
+        """What to say when the classifier opened here was trained on images
+        unlike this one (``classifier.familiar``); empty otherwise."""
+        from haemolynx.classifier.familiar import unfamiliar_channels, unfamiliar_note
+
+        if self.loaded is None:
+            return ""
+        profiles = dict(zip(live.classifier.spec.channels, live.profile))
+        found = unfamiliar_channels(self.loaded, profiles)
+        return unfamiliar_note(self.raw_path.name, self.loaded_path.name, found) if found else ""
 
     def _labels_layer(self, data, kind: str, colours, scale, *, name: str | None = None):
         from napari.utils.colormaps import DirectLabelColormap
@@ -11270,8 +11310,11 @@ class _ClassifierTrainingWindow:
     def _show_plane(self, result) -> None:
         counts = self.live.classifier.voxels_per_label()
         trained = ", ".join(f"{name} {count}" for name, count in counts.items() if count)
+        # What the step that asked for this training said (an import), kept.
+        note, self._note = self._note, None
+        lead = f"{note} " if note else ""
         if result is None:
-            self._say(f"Trained on {trained} voxels. The preview shows in 2D view.")
+            self._say(f"{lead}Trained on {trained} voxels. The preview shows in 2D view.")
             return
         (axis, index), window, labels = result
         data = self.preview.data
@@ -11280,7 +11323,7 @@ class _ClassifierTrainingWindow:
         data[self._region(axis, index, window)] = labels
         self._shown = (axis, index, window)
         self.preview.refresh()
-        self._say(f"Trained on {trained} voxels; showing {'zyx'[axis]} = {index}.")
+        self._say(f"{lead}Trained on {trained} voxels; showing {'zyx'[axis]} = {index}.")
 
     # ------------------------------------------------------------ actions
 
@@ -11300,40 +11343,128 @@ class _ClassifierTrainingWindow:
 
         def saved(written) -> None:
             self.loaded = self.live.classifier
+            self.loaded_path = Path(written)
             self._say(f"Saved {written}.")
             if self.on_saved is not None:
                 self.on_saved(Path(written))
 
         self._run(work, saved)
 
+    def _strokes_unchanged(self) -> bool:
+        """Whether the classifier saved at :attr:`loaded_path` is the one the
+        window would train now: the same job and features, and trained on
+        exactly the strokes painted on this image."""
+        from haemolynx.classifier.sparse import painted_points
+
+        loaded = self.loaded
+        if (
+            loaded is None or loaded.forest is None or self.loaded_path is None or not self.loaded_path.is_file()
+            or loaded.purpose != self.purpose or self.live is None or loaded.spec != self.live.classifier.spec
+        ):
+            return False
+        points, values = painted_points(self.strokes.data)
+        index = loaded.image_index(self.raw_path)
+        if index is None:
+            return len(points) == 0
+        mine = loaded.training.image == index
+        old_points = loaded.training.points_zyx[mine].astype(np.int64)
+        old_values = loaded.training.classes[mine].astype(np.int64) + 1
+        if len(old_points) != len(points):
+            return False
+
+        def ordered(p, v):
+            order = np.lexsort((p[:, 2], p[:, 1], p[:, 0]))
+            return p[order], v[order]
+
+        a, av = ordered(np.asarray(points, np.int64), np.asarray(values, np.int64))
+        b, bv = ordered(old_points, old_values)
+        return bool(np.array_equal(a, b) and np.array_equal(av, bv))
+
+    def _segment_clicked(self) -> None:
+        """Segment whole image, or, while it runs, stop it."""
+        if self._segmenting:
+            self._stop_segmenting = True
+            self._say("Stopping once the tiles being classified are done...")
+            return
+        self.segment_whole_image()
+
+    def _show_progress(self) -> None:
+        if self._segmenting and self._progress_text and not self._stop_segmenting:
+            self._say(self._progress_text)
+
+    def _segmenting_ended(self) -> None:
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
+
+        self._segmenting = False
+        self.progress_timer.stop()
+        self.segment_button.setText("Segment whole image")
+        self.segment_button.setToolTip(TIPS["segment"])
+
     def segment_whole_image(self) -> None:
         """Save the classifier, segment the whole raw image with it into the
-        files the run writes (lazily, under the low-RAM option), and show them."""
+        files the run writes (lazily, under the low-RAM option), and show them.
+        While it runs the button stops it; what was done is kept, and
+        segmenting again with the same classifier picks up there."""
         from haemolynx.classifier import save_classifier, segment_with_classifiers
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
         from haemolynx.gui.classifier_training import SEGMENTATION_LAYER, layer_name, mask_colours, row_outputs
+        from haemolynx.pipeline.progress import segmentation_progress_text
         from haemolynx.pipeline.stages import classifier_run_arguments
 
-        if self.live is None:
+        if self.live is None or self._segmenting:
             return
         path = Path(self.path_edit.text().strip() or "classifier")
         labels = self.strokes.data
         live = self.live
+        self._segmenting, self._stop_segmenting, self._progress_text = True, False, None
+        self.segment_button.setText("Stop")
+        self.segment_button.setToolTip(TIPS["stop"])
+        self.progress_timer.start()
         self._say("Segmenting the whole image...")
 
+        def poll() -> None:
+            if self._stop_segmenting:
+                raise _SegmentingStopped()
+
+        def progress(state) -> None:
+            text = segmentation_progress_text(state)
+            if not state.writing and state.total:
+                text += f" ({state.done / state.total:.0%} of {'the rest' if state.start_plane else 'it'})"
+            self._progress_text = text + "."
+
+        unchanged = self.loaded_path == path and self._strokes_unchanged()
+
         def work():
-            save_classifier(live.train(labels), path)
+            # The classifier as saved, when this image's strokes are the ones
+            # it was trained on: saved again it would be another file (another
+            # checksum), and a segmentation stopped part-way is taken up only
+            # with the classifier that began it.
+            if not unchanged:
+                save_classifier(live.train(labels), path)
             values = {**self.values, **(self.current_values() if self.current_values else {})}
             values["raw_image_path"] = self.raw_path  # the image the strokes were painted on
             outputs = row_outputs(values, self.row, path)
-            segment_with_classifiers(self.raw_path, [(path, outputs)], **classifier_run_arguments(values))
+            segment_with_classifiers(
+                self.raw_path, [(path, outputs)], poll=poll, progress=progress, **classifier_run_arguments(values)
+            )
             return outputs
+
+        def failed(error: BaseException) -> None:
+            self._segmenting_ended()
+            if isinstance(error, _SegmentingStopped):
+                self.loaded, self.loaded_path = self.live.classifier, path
+                self._say(str(error))
+            else:
+                self._say(str(error) or type(error).__name__)
 
         def done(outputs) -> None:
             import tifffile
 
             from haemolynx.classifier.lazy import LazyTiffChannel
 
+            self._segmenting_ended()
             self.loaded = self.live.classifier
+            self.loaded_path = path
             if self.on_saved is not None:
                 self.on_saved(path)
             scale = tuple(float(v) for v in self.live.voxel_size_zyx)
@@ -11350,7 +11481,112 @@ class _ClassifierTrainingWindow:
             self.segmentation = next(iter(self.segmentations.values()), None)
             self._say("Segmented the whole image: " + ", ".join(str(p) for p in outputs.values()) + ".")
 
-        self._run(work, done)
+        self._run(work, done, failed)
+
+    # ------------------------------------------------------ ilastik labels
+
+    def import_ilastik_labels(self, project: str | Path | None = None, mapping=None) -> int:
+        """Paint the labels of an ilastik project's image that is this raw
+        image onto it as strokes, each ilastik label (numbered from 1) as the
+        label *mapping* names (None: left out), then train. Without *project*
+        a file is asked for, and without *mapping* the window asks, with each
+        label's likely match chosen (``classifier.ilastik_labels``). Returns
+        how many voxels were painted."""
+        from haemolynx.classifier.ilastik_labels import (
+            default_label_mapping,
+            ilastik_label_names,
+            read_ilastik_labels,
+            strokes_from_ilastik,
+        )
+
+        if self.live is None:
+            return 0
+        if project is None:
+            from qtpy.QtWidgets import QFileDialog
+
+            chosen, _ = QFileDialog.getOpenFileName(
+                self.window, "Import ilastik labels", str(self.raw_path.parent), "ilastik project (*.ilp)"
+            )
+            if not chosen:
+                return 0
+            project = chosen
+        project = Path(project)
+        try:
+            names = ilastik_label_names(project)
+            if mapping is None:
+                guess = default_label_mapping(
+                    names, self.labels, vessel_label=self._ilastik_vessel_label()
+                )
+                mapping = self._ask_label_mapping(project, names, guess)
+                if mapping is None:
+                    return 0
+            points, ilastik = read_ilastik_labels(
+                project, self.raw_path, shape_zyx=self.live.shape, axis_order=self.axis_order
+            )
+        except (OSError, ValueError, KeyError) as error:
+            self._say(f"Could not import labels from {project.name}: {error}")
+            return 0
+        points, values = strokes_from_ilastik(points, ilastik, mapping, self.labels)
+        if not len(points):
+            self._say(f"{project.name} has no labels for {self.raw_path.name} that are imported.")
+            return 0
+        self.strokes.data[tuple(points.T.astype(np.int64))] = values
+        self.strokes.refresh()
+        counts = np.bincount(values, minlength=len(self.labels) + 1)
+        shown = ", ".join(
+            f"{names[number - 1]} as {label} ({counts[self.labels.index(label) + 1]})"
+            for number, label in sorted(mapping.items()) if label is not None and number <= len(names)
+        )
+        self._note = f"Imported {len(points)} labelled voxels from {project.name}: {shown}."
+        self._say(f"{self._note} Training...")
+        self.update(retrain=True)
+        return int(len(points))
+
+    def _ilastik_vessel_label(self):
+        """The ilastik label the run reads as vessel for this row's job, as
+        the panel names it (``ilastik_vessel_label`` for the main image)."""
+        values = {**self.values, **(self.current_values() if self.current_values else {})}
+        return values.get("ilastik_vessel_label") if self.row == "pixel_classifier_path" else None
+
+    def _ask_label_mapping(self, project: Path, names, guess):
+        """Ask which label each ilastik label becomes, *guess* chosen; None
+        when cancelled."""
+        from qtpy.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel
+
+        from haemolynx.gui.chrome_tooltips import ILASTIK_IMPORT_TOOLTIPS as TIPS
+
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle(f"Import labels from {project.name}")
+        form = QFormLayout(dialog)
+        form.addRow(QLabel(f"What each label of {project.name} is here:"))
+        boxes = {}
+        for number, name in enumerate(names, start=1):
+            box = QComboBox()
+            box.addItem("Leave out", None)
+            for label in self.labels:
+                box.addItem(label, label)
+            if guess.get(number) is not None:
+                box.setCurrentIndex(box.findData(guess[number]))
+            box.setToolTip(TIPS["label"])
+            form.addRow(name, box)
+            boxes[number] = box
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return {number: box.currentData() for number, box in boxes.items()}
+
+
+class _SegmentingStopped(Exception):
+    """Segment whole image stopped by its button."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Stopped. What was segmented is kept: Segment whole image picks up from there "
+            "while the classifier is unchanged."
+        )
 
 
 class _BatchRunWindow:

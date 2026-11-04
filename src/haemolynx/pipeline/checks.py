@@ -1831,7 +1831,30 @@ def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
                 report.add_error(f"{name}: {Path(path).name} {problem}.")
                 continue
         report.add_pass(name, f"{Path(path).name}: " + ", ".join(f"{k} {v}" for k, v in counts.items()) + " voxels")
+        _warn_if_raw_image_unfamiliar(report, name, path, record, raw)
     return report
+
+
+def _warn_if_raw_image_unfamiliar(report: CheckReport, name: str, path, record: Mapping, raw) -> None:
+    """Warn when the raw image's intensities are unlike every image the
+    classifier at *path* was trained on (``classifier.familiar``)."""
+    from haemolynx.classifier.familiar import (
+        raw_image_profiles,
+        unfamiliar_channels_in_record,
+        unfamiliar_note,
+    )
+    from haemolynx.classifier.features import FeatureSpec
+
+    if raw in (None, "") or not Path(raw).is_file():
+        return
+    channels = FeatureSpec.from_record(record["spec"]).channels
+    try:
+        profiles = raw_image_profiles(raw, channels)
+    except Exception:  # noqa: BLE001 - an unreadable raw image is reported elsewhere
+        return
+    found = unfamiliar_channels_in_record(record, profiles)
+    if found:
+        report.add_warning(f"{name}: {unfamiliar_note(Path(raw).name, Path(path).name, found)}")
 
 
 def preflight(

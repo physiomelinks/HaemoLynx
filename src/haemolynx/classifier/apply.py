@@ -46,8 +46,10 @@ from .features import (
     features_of_box,
     has_coarse_scales,
     intensity_range,
+    intensity_range_and_profile,
 )
 from .model import PixelClassifier, load_classifier
+from .slabs import SlabStore, full_size_planes
 
 logger = logging.getLogger(__name__)
 
@@ -505,13 +507,15 @@ def classify_slabs(
     box_voxels: int | None = None,
     planes_per_slab: int | None = None,
     processes: bool | None = None,
+    start_plane: int = 0,
 ) -> None:
     """Classify the image a slab of planes at a time for every job at once,
     handing *sink* each slab's outputs, ``(z0, z1, {key: uint8 (planes, y, x)})``,
     in order. *volumes* and *ranges* are the shared spec's channels
     (:func:`shared_spec` over the jobs'), in its order. *poll* is called
     between tiles: whatever it raises stops the work and propagates.
-    *progress* hears ``(tiles done, tiles)``.
+    *progress* hears ``(tiles done, tiles)``. *start_plane*: the planes
+    before it are not classified (a segmentation taken up where it stopped).
 
     The work is cut into tiles of a slab -- a box each, or, with coarse
     scales, a large tile whose coarse context its boxes share -- run on worker
@@ -541,7 +545,11 @@ def classify_slabs(
             itemsize=int(np.dtype(getattr(volumes[0], "dtype", np.uint16)).itemsize),
             outputs=sum(len(job.outputs) for job in jobs), budget_bytes=LOW_RAM_BUDGET_BYTES,
         )
-    slabs = [(z0, min(z0 + planes_per_slab, shape[0])) for z0 in range(0, shape[0], planes_per_slab)]
+    slabs = [
+        (z0, min(z0 + planes_per_slab, shape[0])) for z0 in range(int(start_plane), shape[0], planes_per_slab)
+    ]
+    if not slabs:
+        return
     tiled = has_coarse_scales(shared, voxel_size_zyx)
     use_processes = processes
     if use_processes is None:
@@ -869,6 +877,38 @@ def _write_mask(path: Path, labels: np.ndarray, raw: RawChannels) -> int:
 
 # ----------------------------------------------------------- segmentation
 
+#: How often, at most, a segmentation tells its *progress* how far it is (s).
+PROGRESS_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class SegmentProgress:
+    """How far a segmentation has got (``segment_with_classifiers(progress=)``).
+
+    *done* of *total* tiles of the image classified in this pass (of
+    *passes*: ``(this one, how many)``), *seconds* since it began, and
+    *remaining*: about how many seconds are left, None until it can be told.
+    *start_plane*: the planes before it were classified by a segmentation
+    that stopped there, and are kept. *writing*: classifying is over, and the
+    masks are being put together."""
+
+    done: int
+    total: int
+    seconds: float
+    remaining: float | None
+    passes: tuple[int, int] = (1, 1)
+    start_plane: int = 0
+    writing: bool = False
+
+
+def remaining_seconds(done: int, total: int, seconds: float, counted: int) -> float | None:
+    """About how many seconds are left with *done* of *total* tiles finished,
+    from the *counted* tiles finished in the last *seconds* (timed from the
+    first tile's end, so the workers' start-up is not counted as work)."""
+    if counted <= 0 or seconds <= 0:
+        return None
+    return seconds / counted * max(0, total - done)
+
 
 def segment_with_classifiers(
     raw_image_path: str | Path,
@@ -883,6 +923,7 @@ def segment_with_classifiers(
     workers: int | None = None,
     poll: Optional[Callable[[], None]] = None,
     downsample=1,
+    progress: Optional[Callable[[SegmentProgress], None]] = None,
 ) -> list[dict[str, Path]]:
     """Segment the raw image with each classifier of *requests* --
     ``(classifier path, {mask: output path})`` -- in one pass, the features
@@ -892,6 +933,15 @@ def segment_with_classifiers(
 
     A mask the classifier cannot make, or one it finds nowhere, raises
     ``ValueError``; nothing is written then.
+
+    Each mask is kept a slab at a time beside its output while it is made
+    (:mod:`~haemolynx.classifier.slabs`): stopped part-way (*poll* raising,
+    or the process ending), a later segmentation making it the same way,
+    with *reuse_existing*, classifies only the planes after the last slab
+    kept, and the masks are the same bit for bit. *progress* hears a
+    :class:`SegmentProgress` at most every :data:`PROGRESS_SECONDS`. An image
+    whose intensities are unlike every image a classifier was trained on is
+    warned about (:mod:`~haemolynx.classifier.familiar`).
 
     *downsample* (``pixel_classifier_downsample``: ``"2x"``, 4, ...)
     classifies on a coarser grid -- the raw image's block means, the coarser
@@ -936,7 +986,7 @@ def segment_with_classifiers(
         return _segment(
             raw, loaded, results, shared, started=started, reuse_existing=reuse_existing,
             use_memmap=use_memmap, memmap_directory=memmap_directory, workers=workers, poll=poll,
-            grid=grid, factors=factors,
+            grid=grid, factors=factors, progress=progress,
         )
     finally:
         _release(*raw.volumes)
@@ -953,9 +1003,20 @@ def grid_factors(downsample, voxel_size_zyx) -> tuple[int, int, int]:
     return tuple(int(f) for f in axis_downsample_factors(factor, voxel_size_zyx))  # type: ignore[return-value]
 
 
+def _resume_point(stores: Sequence[SlabStore]) -> int:
+    """The grid plane every one of *stores* has its slabs up to, those past
+    it dropped: where a pass writing them all takes up."""
+    while True:
+        start = min(store.finished_planes() for store in stores)
+        for store in stores:
+            store.keep_before(start)
+        if all(store.finished_planes() == start for store in stores):
+            return start
+
+
 def _segment(
     raw, loaded, results, shared, *, started, reuse_existing, use_memmap, memmap_directory, workers, poll,
-    grid=None, factors=(1, 1, 1),
+    grid=None, factors=(1, 1, 1), progress=None,
 ):
     """*raw* is the image as written to; *grid* as classified (the same, or
     its block means on a grid *factors* coarser)."""
@@ -1005,26 +1066,58 @@ def _segment(
         passes.setdefault(job.classifier.spec.coarse, []).append(job)
     channels = sorted({c for job in jobs for c in job.classifier.spec.channels}, key=lambda c: -1 if c is None else c)
     volumes = [grid.volume(channel) for channel in channels]
-    ranges_by_channel = {channel: intensity_range(grid.volume(channel)) for channel in channels}
+    read = {channel: intensity_range_and_profile(grid.volume(channel)) for channel in channels}
+    ranges_by_channel = {channel: value_range for channel, (value_range, _profile) in read.items()}
+    # Compared at the image's own size, as the training images were read.
+    profiles = (
+        {channel: profile for channel, (_range, profile) in read.items()} if factors == (1, 1, 1)
+        else {channel: intensity_range_and_profile(raw.volume(channel))[1] for channel in channels}
+    )
+    _warn_if_unfamiliar(loaded, grouped, profiles, raw)
     keys = [key for job in jobs for key, _marks in job.outputs]
     logger.info(
         "Segmenting %s with %d classifier(s) in one pass (%s), %s.",
         raw.path.name, len(jobs), ", ".join(Path(k).name for k in keys),
         "read lazily" if not isinstance(volumes[0], np.ndarray) else "in memory",
     )
-    last = [0.0]
 
-    def report(done: int, total: int) -> None:
-        now = time.perf_counter()
-        if now - last[0] > 10.0 or done == total:
-            last[0] = now
-            logger.info("Classifier: %d of %d boxes (%.0f s).", done, total, now - started)
+    def reporter(number: int, start_plane: int):
+        """The *number*-th pass's progress, to the log and to *progress*."""
+        begun = time.perf_counter()
+        first: list = []  # (time, tiles done) as the first tile finished
+        logged = [0.0]
+        told = [0.0]
+
+        def report(done: int, total: int) -> None:
+            now = time.perf_counter()
+            if not first:
+                first.append((now, done))
+            if now - logged[0] > 10.0 or done == total:
+                logged[0] = now
+                logger.info("Classifier: %d of %d boxes (%.0f s).", done, total, now - started)
+            if progress is not None and (now - told[0] >= PROGRESS_SECONDS or done == total):
+                told[0] = now
+                progress(SegmentProgress(
+                    done=done, total=total, seconds=now - begun,
+                    remaining=remaining_seconds(done, total, now - first[0][0], done - first[0][1]),
+                    passes=(number, len(passes)), start_plane=start_plane,
+                ))
+
+        return report
 
     streaming = _streams(raw)
-    writers: dict[str, _MaskWriter] = {}
+    stores: dict[str, SlabStore] = {}
     whole: dict[str, np.ndarray] = {}
     if streaming:
-        writers = {key: _MaskWriter(Path(key), raw) for key in keys}
+        # Each mask kept a slab at a time beside its output: one stopped
+        # part-way is taken up where it stopped (classifier.slabs).
+        stores = {
+            key: SlabStore(
+                Path(key), provenances[Path(key)], keep=reuse_existing, factors=factors,
+                shape_zyx=raw.shape_zyx, compression=MASK_COMPRESSION,
+            )
+            for key in keys
+        }
     else:
         from haemolynx.preprocessing.memmap_support import new_memmap_array
 
@@ -1034,30 +1127,14 @@ def _segment(
                 if use_memmap else np.zeros(raw.shape_zyx, np.uint8)
             )
 
-    def at_full_size(z0, planes):
-        """The image's own planes of coarse planes from *z0*: each voxel a
-        block of them."""
-        fz, fy, fx = factors
-        depth, rows, columns = raw.shape_zyx
-        for k in range(planes.shape[0]):
-            plane = planes[k]
-            if fy > 1 or fx > 1:
-                plane = np.repeat(np.repeat(plane, fy, axis=0), fx, axis=1)[:rows, :columns]
-            for z in range((z0 + k) * fz, min(depth, (z0 + k + 1) * fz)):
-                yield z, plane
-
     def sink(z0, z1, buffers):
         for key, planes in buffers.items():
-            if factors == (1, 1, 1):
-                if streaming:
-                    writers[key].put(planes)
-                else:
-                    whole[key][z0:z1] = planes
-                continue
-            for z, plane in at_full_size(z0, planes):
-                if streaming:
-                    writers[key].put(plane[np.newaxis])
-                else:
+            if streaming:
+                stores[key].put(z0, z1, planes)
+            elif factors == (1, 1, 1):
+                whole[key][z0:z1] = planes
+            else:
+                for z, plane in full_size_planes(z0, planes, factors, raw.shape_zyx):
                     whole[key][z] = plane
 
     budget = LOW_RAM_BUDGET_BYTES
@@ -1065,7 +1142,7 @@ def _segment(
     if free is not None:
         budget = min(budget, int(0.4 * free)) if use_memmap else max(budget, int(0.4 * free))
     try:
-        for group in passes.values():
+        for number, group in enumerate(passes.values(), start=1):
             used = shared_spec([job.classifier.spec for job in group])
             group_volumes = [grid.volume(channel) for channel in used.channels]
             halo = feature_halo(used, grid.voxel_size_zyx)
@@ -1082,22 +1159,40 @@ def _segment(
                     wanted = (per_slab + 2 * reach + 1) * volume._plane_bytes
                     share = budget // (2 * max(len(group_volumes), 1))
                     volume.cache_bytes = int(min(wanted, max(share, 2 * volume._plane_bytes)))
+            start = 0
+            if streaming:
+                start = _resume_point([stores[key] for job in group for key, _marks in job.outputs])
+                if start:
+                    logger.info(
+                        "Taking up the segmentation of %s at plane %d of %d, where one stopped.",
+                        raw.path.name, start, grid.shape_zyx[0],
+                    )
             classify_slabs(
                 group_volumes, [ranges_by_channel[c] for c in used.channels], grid.voxel_size_zyx, group,
-                sink=sink, workers=workers, poll=poll, progress=report,
+                sink=sink, workers=workers, poll=poll, progress=reporter(number, start),
                 box_voxels=box_size(budget_bytes=budget, workers=workers), planes_per_slab=per_slab,
+                start_plane=start,
             )
+        for store in stores.values():
+            store.close()
     except BaseException:
-        for writer in writers.values():
-            writer.abort()
+        # What was classified stays beside each output, to be taken up.
+        for store in stores.values():
+            try:
+                store.close()
+            except Exception:  # noqa: BLE001 - the error that stopped the pass is the one raised
+                pass
         _release(*whole.values())
         raise
     counts: dict[str, int] = {}
     if streaming:
-        for key, writer in writers.items():
-            sidecar_path(writer.path).unlink(missing_ok=True)
-            writer.close()
-            counts[key] = writer.vessel
+        if progress is not None:
+            elapsed = time.perf_counter() - started
+            progress(SegmentProgress(done=1, total=1, seconds=elapsed, remaining=None, writing=True))
+        workers_for_writing = max(1, min(len(keys), 4))
+        with ThreadPoolExecutor(max_workers=workers_for_writing) as writing:
+            made = list(writing.map(lambda key: _assemble(stores[key], raw, grid.shape_zyx[0]), keys))
+        counts = dict(zip(keys, made))
     else:
         for key, mask in whole.items():
             sidecar_path(Path(key)).unlink(missing_ok=True)
@@ -1107,6 +1202,8 @@ def _segment(
     if empty:
         for key in keys:
             Path(key).unlink(missing_ok=True)
+        for store in stores.values():
+            store.remove()
         raise ValueError(
             f"The classifier found nothing for {', '.join(Path(k).name for k in empty)} in {raw.path.name}: "
             "train it on more of this image, or check the channels it reads."
@@ -1121,8 +1218,48 @@ def _segment(
         }
         sidecar_path(path).write_text(json.dumps(record, indent=2), encoding="utf-8")
         logger.info("Classifier output %s: %.2f%% of its voxels.", path, 100.0 * counts[key] / voxels)
+    for store in stores.values():
+        store.remove()
     logger.info("Classifier segmentation took %.1f s.", time.perf_counter() - started)
     return results
+
+
+def _assemble(store: SlabStore, raw: RawChannels, grid_depth: int) -> int:
+    """The output of *store* put together from its slabs; its vessel voxels.
+    Every grid plane must be in a slab."""
+    from haemolynx.io.ilastik import sidecar_path
+
+    if store.finished_planes() != grid_depth:
+        raise RuntimeError(
+            f"The slabs of {store.output.name} in {store.folder} stop at plane {store.finished_planes()} "
+            f"of {grid_depth}: segment again."
+        )
+    writer = _MaskWriter(store.output, raw)
+    try:
+        for plane in store.planes():
+            writer.put(plane[np.newaxis])
+    except BaseException:
+        writer.abort()
+        raise
+    sidecar_path(store.output).unlink(missing_ok=True)
+    writer.close()
+    return writer.vessel
+
+
+def _warn_if_unfamiliar(loaded, grouped, profiles, raw: RawChannels) -> None:
+    """Warn, once per classifier about to run, when the image is unlike every
+    image it was trained on (:mod:`~haemolynx.classifier.familiar`)."""
+    from .familiar import unfamiliar_channels, unfamiliar_note
+
+    warned: set[str] = set()
+    for classifier_path, classifier, _paths, _marks in loaded:
+        key = os.path.normcase(str(classifier_path.resolve()))
+        if key not in grouped or key in warned:
+            continue
+        warned.add(key)
+        found = unfamiliar_channels(classifier, profiles)
+        if found:
+            logger.warning(unfamiliar_note(raw.path.name, classifier_path.name, found))
 
 
 def segment_with_classifier(

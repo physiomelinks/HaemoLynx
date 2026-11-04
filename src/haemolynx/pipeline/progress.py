@@ -466,6 +466,23 @@ class StageProgress:
         )
         self._done += 1
 
+    def fraction(self, label: str, done: int, total: int) -> None:
+        """Report how far one long step has got: *done* of *total* of its
+        parts, as the step bar shows them, *label* saying what it is doing
+        (and how long is left). Not counted as a step finished."""
+        self._run.emit(
+            ProgressEvent(
+                kind=STEP,
+                stage=self._stage.call or "",
+                title=self._stage.title,
+                index=self._index,
+                total=self._run.total,
+                step=label,
+                step_index=max(0, int(done) - 1),
+                step_total=int(total),
+            )
+        )
+
     def alive(self) -> None:
         """Report that the stage is still working, with nothing new to show.
 
@@ -555,6 +572,33 @@ class RunProgress:
             self.emit(event(STAGE_FAILED, error=error, seconds=time.perf_counter() - started))
             raise
         self.emit(event(STAGE_FINISHED, seconds=time.perf_counter() - started))
+
+
+def segmentation_progress_text(progress) -> str:
+    """What a classifier segmentation is doing, for a progress bar or a
+    status line, from its ``classifier.SegmentProgress``."""
+    if progress.writing:
+        return "Writing the masks"
+    this, passes = progress.passes
+    text = "Classifying the raw image"
+    if passes > 1:
+        text += f" (pass {this} of {passes})"
+    if progress.start_plane:
+        text += f", taken up at plane {progress.start_plane}"
+    return f"{text}, {time_left(progress.remaining)}"
+
+
+def time_left(seconds: Optional[float]) -> str:
+    """About how long is left, as a person says it: ``about 2 h 05 min left``,
+    ``about 7 min left``, ``under a minute left``; None while it cannot be told."""
+    if seconds is None:
+        return "working out the time left"
+    if seconds < 60:
+        return "under a minute left"
+    minutes = int(round(seconds / 60.0))
+    if minutes < 60:
+        return f"about {minutes} min left"
+    return f"about {minutes // 60} h {minutes % 60:02d} min left"
 
 
 def format_seconds(seconds: float) -> str:

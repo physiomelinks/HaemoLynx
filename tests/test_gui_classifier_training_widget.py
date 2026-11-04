@@ -12,7 +12,12 @@ napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 pytest.importorskip("sklearn")
 
-from haemolynx.classifier import classify_volume, load_classifier, segment_with_classifier  # noqa: E402
+from haemolynx.classifier import (  # noqa: E402
+    classify_volume,
+    load_classifier,
+    save_classifier,
+    segment_with_classifier,
+)
 from haemolynx.gui._widget import settings_widget  # noqa: E402
 from haemolynx.gui.classifier_training import CLASSIFIER_ROWS  # noqa: E402
 
@@ -58,6 +63,9 @@ def test_painting_classifies_only_the_plane_in_view(panel):
     viewer, widget, _rows, volume, truth, _raw = panel
     window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
     assert window is not None and window.live is not None
+    # Loading ran to its end (it once stopped at napari's old camera name).
+    assert window.status.text().startswith("Paint a few strokes of each label")
+    assert window.save_button.isEnabled() and window.import_button.isEnabled()
     points, classes = strokes(truth, per_class=150)
     window.live_box.setChecked(False)
     window.strokes.data[tuple(points.T)] = classes + 1
@@ -302,6 +310,109 @@ def test_saving_a_classifier_chooses_it_over_ilastik(panel, tmp_path):
     assert values["use_ilastik_segmentation"] is False
     assert values["use_pixel_classifier_segmentation"] is True
     assert rows["use_pixel_classifier_segmentation"].enabled
+
+
+def _painted(window):
+    from haemolynx.classifier.sparse import painted_points
+
+    points, values = painted_points(window.strokes.data)
+    return {tuple(int(v) for v in p): int(value) for p, value in zip(points, values)}
+
+
+def test_importing_ilastik_labels_paints_them_and_trains(panel, tmp_path):
+    from test_classifier_ilastik_labels import write_project
+
+    _viewer, widget, _rows, volume, truth, _raw = panel
+    block = np.zeros((1, 2, 3), np.uint8)
+    block[0, 0, :] = 2  # Label 2: vessel
+    block[0, 1, :] = 1  # Label 1: background
+    project = write_project(tmp_path / "p.ilp", images=(("raw.tif", "zyx", volume.shape),),
+                            blocks={0: [((5, 10, 20), block)]})
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    window.live_box.setChecked(False)
+    assert window.import_button.toolTip()
+    count = window.import_ilastik_labels(project, mapping={1: "Background", 2: "Vessel"})
+    assert count == 6
+    painted = _painted(window)
+    assert all(painted[(5, 10, 20 + i)] == 2 and painted[(5, 11, 20 + i)] == 1 for i in range(3))
+    assert window.live.classifier.voxels_per_label() == {"Background": 3, "Vessel": 3}
+    assert "Imported 6 labelled voxels from p.ilp" in window.status.text()
+    # A label left out is not painted.
+    assert window.import_ilastik_labels(project, mapping={1: None, 2: "Vessel"}) == 3
+
+
+def test_import_guesses_the_vessel_label_from_the_runs_ilastik_setting(panel, tmp_path, monkeypatch):
+    from test_classifier_ilastik_labels import write_project
+
+    _viewer, widget, rows, volume, _truth, _raw = panel
+    rows["ilastik_vessel_label"].value = "Label 2"
+    project = write_project(tmp_path / "p.ilp", images=(("raw.tif", "zyx", volume.shape),),
+                            blocks={0: [((0, 0, 0), np.ones((1, 1, 1), np.uint8))]})
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    asked = {}
+
+    def ask(_project, names, guess):
+        asked.update(names=names, guess=guess)
+        return None  # cancelled
+
+    monkeypatch.setattr(window, "_ask_label_mapping", ask)
+    assert window.import_ilastik_labels(project) == 0
+    assert asked == {"names": ("Label 1", "Label 2"), "guess": {1: "Background", 2: "Vessel"}}
+    assert not _painted(window)
+
+
+def test_segment_whole_image_says_how_far_it_is_stops_and_picks_up(panel, tmp_path, monkeypatch):
+    from haemolynx.classifier import apply as apply_module
+    from haemolynx.classifier.slabs import SlabStore, slab_folder
+
+    _viewer, widget, rows, volume, truth, _raw = panel
+    rows["output_dir"].value = tmp_path / "out"
+    monkeypatch.setattr(apply_module, "slab_planes", lambda *_a, **_k: 3)
+    monkeypatch.setattr(apply_module, "PROGRESS_SECONDS", 0.0)
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    window.live_box.setChecked(False)
+    points, classes = strokes(truth, per_class=60)
+    window.strokes.data[tuple(points.T)] = classes + 1
+    classifier_path = tmp_path / "c.haemoclf"
+    window.path_edit.setText(str(classifier_path))
+    original = SlabStore.put
+    puts = [0]
+
+    def put(store, *args):
+        original(store, *args)
+        puts[0] += 1
+        if puts[0] == 2:
+            window._stop_segmenting = True  # as the Stop button does
+
+    monkeypatch.setattr(SlabStore, "put", put)
+    window.segment_whole_image()
+    assert window.status.text().startswith("Stopped. What was segmented is kept")
+    assert window.segment_button.text() == "Segment whole image"
+    assert window._progress_text.startswith("Classifying the raw image, ") and "%" in window._progress_text
+    output = tmp_path / "out" / "raw_segmented.tif"
+    assert not output.exists() and any(slab_folder(output).glob("*.tif"))
+    saved = classifier_path.stat().st_mtime_ns
+    monkeypatch.setattr(SlabStore, "put", original)
+    window.segment_whole_image()
+    assert output.exists() and not slab_folder(output).exists()
+    assert classifier_path.stat().st_mtime_ns == saved  # the same classifier, taken up
+    whole = classify_volume([volume], VOXEL, load_classifier(classifier_path), workers=2)
+    assert np.array_equal(tifffile.imread(output), (whole == 1).astype(np.uint8))
+
+
+def test_the_window_says_when_the_image_is_unlike_the_classifiers(make_napari_viewer, tmp_path):
+    from test_classifier_familiar import _trained_with_profile
+
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    volume, truth = tube_volume()
+    path = save_classifier(_trained_with_profile(volume, truth), tmp_path / "c.haemoclf")
+    rows["raw_image_path"].value = write_raw(tmp_path / "inverted.tif", (volume.max() - volume).astype(np.uint16))
+    rows["use_pixel_classifier_segmentation"].value = True
+    rows["pixel_classifier_path"].value = path
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert "inverted.tif is unlike every image c.haemoclf was trained on" in window.status.text()
 
 
 def test_no_raw_image_says_what_to_do(make_napari_viewer):

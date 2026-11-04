@@ -621,8 +621,22 @@ def segment_with_run_classifiers(
     if classifier_segments(settings):
         reading["input_path"] = naming_classifier_segmented_path(settings)
     segment_with_classifiers(
-        raw, requests, poll=progress.alive if progress is not None else None, **classifier_run_arguments(reading)
+        raw, requests, poll=progress.alive if progress is not None else None,
+        progress=_segmentation_progress(progress), **classifier_run_arguments(reading),
     )
+
+
+def _segmentation_progress(progress: StageProgress | None):
+    """The stage's step bar, filled as a classifier segmentation goes, saying
+    about how long is left."""
+    if progress is None:
+        return None
+    from haemolynx.pipeline.progress import segmentation_progress_text
+
+    def report(state) -> None:
+        progress.fraction(segmentation_progress_text(state), state.done, state.total)
+
+    return report
 
 
 def segment_object_masks(settings: dict, *, progress: StageProgress | None = None) -> dict[str, Path]:
@@ -647,6 +661,7 @@ def segment_object_masks(settings: dict, *, progress: StageProgress | None = Non
             Path(classifier),
             {mask.label: object_mask_output_path(settings, word)},
             poll=progress.alive if progress is not None else None,
+            progress=_segmentation_progress(progress),
             **classifier_run_arguments(settings),
         )[mask.label]
         for name in mask.readers:

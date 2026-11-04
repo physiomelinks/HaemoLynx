@@ -1199,7 +1199,17 @@ CLASSIFIER_TRAINING_TOOLTIPS: dict[str, str] = {
     ),
     "segment": (
         "Segment the whole raw image with the trained classifier and add the result to "
-        "the viewer, as a run would make it"
+        "the viewer, as a run would make it. Stopped part-way, it picks up where it stopped"
+    ),
+    "stop": "Stop segmenting. What is done is kept, and segmenting again picks up from there",
+    "import": (
+        "Paint the labels drawn in an ilastik project onto this image as strokes, each "
+        "ilastik label as the label you choose for it"
     ),
     "close": "Close the window; the strokes stay in the viewer until it is reopened",
+}
+
+#: The ilastik label import dialog's choices.
+ILASTIK_IMPORT_TOOLTIPS: dict[str, str] = {
+    "label": "The label these ilastik strokes become here, or leave them out",
 }

@@ -118,14 +118,21 @@ class TrainingImage:
     shape_zyx: tuple[int, int, int]
     voxel_size_zyx: tuple[float, float, float]
     ranges: tuple[tuple[float, float], ...]
+    #: Each channel's profile on its range (``features.intensity_range_and_profile``):
+    #: what an image the classifier is later given is compared with
+    #: (``classifier.familiar``). Empty for an image recorded before profiles were.
+    profile: tuple[tuple[float, ...], ...] = ()
 
     def to_record(self) -> dict:
-        return {
+        record = {
             "path": self.path,
             "shape_zyx": list(self.shape_zyx),
             "voxel_size_zyx": list(self.voxel_size_zyx),
             "ranges": [list(r) for r in self.ranges],
         }
+        if self.profile:
+            record["profile"] = [list(p) for p in self.profile]
+        return record
 
     @classmethod
     def from_record(cls, record: dict) -> "TrainingImage":
@@ -134,6 +141,7 @@ class TrainingImage:
             shape_zyx=tuple(int(v) for v in record["shape_zyx"]),  # type: ignore[arg-type]
             voxel_size_zyx=tuple(float(v) for v in record["voxel_size_zyx"]),  # type: ignore[arg-type]
             ranges=tuple((float(a), float(b)) for a, b in record["ranges"]),
+            profile=tuple(tuple(float(v) for v in p) for p in record.get("profile") or ()),
         )
 
 

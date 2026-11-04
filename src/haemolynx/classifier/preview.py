@@ -20,7 +20,7 @@ from typing import Sequence
 
 import numpy as np
 
-from .features import BOX_VOXELS, boxes, feature_halo, features_of_box, intensity_range
+from .features import BOX_VOXELS, boxes, feature_halo, features_of_box, intensity_range_and_profile
 from .model import PixelClassifier, TrainingImage, TrainingVoxels
 from .sparse import SparseLabels, painted_points
 
@@ -122,9 +122,14 @@ class LiveClassifier:
         self.volumes = tuple(volumes)
         self.voxel_size_zyx = tuple(float(v) for v in voxel_size_zyx)
         self.shape = tuple(int(n) for n in self.volumes[0].shape)
-        self.ranges = tuple(intensity_range(volume) for volume in self.volumes)
+        read = [intensity_range_and_profile(volume) for volume in self.volumes]
+        self.ranges = tuple(value_range for value_range, _profile in read)
+        #: Each channel's profile on its range: kept with the image it was
+        #: trained on, what a later image is compared with (``classifier.familiar``).
+        self.profile = tuple(profile for _range, profile in read)
         self.image = TrainingImage(
-            path=str(path), shape_zyx=self.shape, voxel_size_zyx=self.voxel_size_zyx, ranges=self.ranges
+            path=str(path), shape_zyx=self.shape, voxel_size_zyx=self.voxel_size_zyx, ranges=self.ranges,
+            profile=self.profile,
         )
         self.workers = max(1, int(workers))
         self.cache_bytes = int(cache_bytes)

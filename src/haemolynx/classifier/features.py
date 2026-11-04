@@ -44,6 +44,11 @@ RANGE_PERCENTILES = (1.0, 99.9)
 #: whole volume, the same lattice for the same shape.
 RANGE_SAMPLE_VOXELS = 4_000_000
 
+#: The percentiles of a channel's intensities, on its own range (0 at its low
+#: end, 1 at its high), that make its profile: the shape of its histogram,
+#: which its range does not scale away (:func:`intensity_profile`).
+PROFILE_PERCENTILES = (5.0, 25.0, 50.0, 75.0, 95.0)
+
 #: Voxels per padded box when a caller does not say.
 BOX_VOXELS = 4_000_000
 
@@ -166,23 +171,51 @@ def coarse_reach(spec: FeatureSpec, voxel_size_zyx: Sequence[float]) -> tuple[in
     return tuple(max(h[axis] for h in reach) for axis in range(3))  # type: ignore[return-value]
 
 
-def intensity_range(volume: np.ndarray) -> tuple[float, float]:
-    """``(low, high)``: the :data:`RANGE_PERCENTILES` of an even lattice of
-    about :data:`RANGE_SAMPLE_VOXELS` of *volume*'s voxels. The same volume
-    always gives the same range, a slab of the lattice read at a time."""
+def _lattice_sample(volume: np.ndarray, voxels: int = RANGE_SAMPLE_VOXELS) -> np.ndarray:
+    """An even lattice of about *voxels* of *volume*'s voxels, as float32,
+    read a plane of the lattice at a time."""
     shape = tuple(int(n) for n in np.shape(volume))
     total = int(np.prod(shape, dtype=np.int64))
     if total == 0:
         raise ValueError("The image is empty.")
-    step = max(1, int(math.ceil((total / RANGE_SAMPLE_VOXELS) ** (1.0 / len(shape)))))
-    sample = np.concatenate([
+    step = max(1, int(math.ceil((total / voxels) ** (1.0 / len(shape)))))
+    return np.concatenate([
         np.asarray(volume[z, ::step, ::step], dtype=np.float32).ravel()
         for z in range(0, shape[0], step)
     ])
+
+
+def _range_of(sample: np.ndarray) -> tuple[float, float]:
     low, high = (float(v) for v in np.percentile(sample, RANGE_PERCENTILES))
     if not high > low:
         high = low + 1.0
     return low, high
+
+
+def intensity_range(volume: np.ndarray) -> tuple[float, float]:
+    """``(low, high)``: the :data:`RANGE_PERCENTILES` of an even lattice of
+    about :data:`RANGE_SAMPLE_VOXELS` of *volume*'s voxels. The same volume
+    always gives the same range, a slab of the lattice read at a time."""
+    return _range_of(_lattice_sample(volume))
+
+
+def profile_of(sample: np.ndarray, value_range: tuple[float, float]) -> tuple[float, ...]:
+    """The :data:`PROFILE_PERCENTILES` of *sample* on *value_range* (0 its
+    low end, 1 its high)."""
+    low, high = value_range
+    return tuple(round((float(v) - low) / (high - low), 6) for v in np.percentile(sample, PROFILE_PERCENTILES))
+
+
+def intensity_range_and_profile(
+    volume: np.ndarray, voxels: int = RANGE_SAMPLE_VOXELS
+) -> tuple[tuple[float, float], tuple[float, ...]]:
+    """:func:`intensity_range` and the profile on it (:func:`profile_of`),
+    from one lattice of *volume*: the range a classifier scales the image by,
+    and the shape of its histogram, which that scaling leaves. With the
+    default *voxels* the range is :func:`intensity_range`'s, exactly."""
+    sample = _lattice_sample(volume, voxels)
+    value_range = _range_of(sample)
+    return value_range, profile_of(sample, value_range)
 
 
 def scaled(box: np.ndarray, value_range: tuple[float, float]) -> np.ndarray:

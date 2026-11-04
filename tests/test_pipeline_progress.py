@@ -31,6 +31,8 @@ from haemolynx.pipeline.progress import (
     RunProgress,
     format_seconds,
     log_progress,
+    segmentation_progress_text,
+    time_left,
 )
 from haemolynx.pipeline.stages import HaemodynamicModel, run_pipeline_stages
 
@@ -431,6 +433,39 @@ def test_format_seconds_reads_as_a_person_would_say_it():
     assert format_seconds(12.34) == "12.3 s"
     assert format_seconds(61) == "1 min 01 s"
     assert format_seconds(3725) == "1 h 02 min"
+
+
+def test_time_left_reads_as_a_person_would_say_it():
+    assert time_left(None) == "working out the time left"
+    assert time_left(40) == "under a minute left"
+    assert time_left(7 * 60 + 10) == "about 7 min left"
+    assert time_left(2 * 3600 + 5 * 60) == "about 2 h 05 min left"
+
+
+def test_a_segmentation_says_what_it_is_doing_and_the_time_left():
+    from haemolynx.classifier import SegmentProgress
+
+    def state(**kw):
+        return SegmentProgress(**{"done": 3, "total": 10, "seconds": 5.0, "remaining": 600.0, **kw})
+
+    assert segmentation_progress_text(state()) == "Classifying the raw image, about 10 min left"
+    assert segmentation_progress_text(state(passes=(2, 2), start_plane=40)) == (
+        "Classifying the raw image (pass 2 of 2), taken up at plane 40, about 10 min left"
+    )
+    assert segmentation_progress_text(state(writing=True)) == "Writing the masks"
+
+
+def test_a_long_step_reports_how_far_it_is_without_counting_steps():
+    events = []
+    run = RunProgress(events.append)
+    with run.stage("segment") as stage:
+        stage.fraction("Classifying", 30, 120)
+        stage.fraction("Classifying", 120, 120)
+        assert stage.steps_done == 0
+    steps = [e for e in events if e.kind == STEP]
+    assert [(e.step, e.step_index, e.step_total) for e in steps] == [
+        ("Classifying", 29, 120), ("Classifying", 119, 120),
+    ]
 
 
 def test_log_progress_reports_a_failure_as_an_error(caplog):
