@@ -4,6 +4,8 @@ plane in view, and only that plane; saving fills the row and its switch; the
 whole image segmented in the window is what a run makes of it."""
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 import tifffile
@@ -388,7 +390,8 @@ def test_segment_whole_image_says_how_far_it_is_stops_and_picks_up(panel, tmp_pa
     window.segment_whole_image()
     assert window.status.text().startswith("Stopped. What was segmented is kept")
     assert window.segment_button.text() == "Segment whole image"
-    assert window._progress_text.startswith("Classifying the raw image, ") and "%" in window._progress_text
+    assert window._progress_text.startswith("Classifying the raw image, ")
+    assert re.search(r"\(\d+% complete\)\.$", window._progress_text)
     output = tmp_path / "out" / "raw_segmented.tif"
     assert not output.exists() and any(slab_folder(output).glob("*.tif"))
     saved = classifier_path.stat().st_mtime_ns

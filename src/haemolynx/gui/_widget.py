@@ -11528,7 +11528,7 @@ class _ClassifierTrainingWindow:
         def progress(state) -> None:
             text = segmentation_progress_text(state)
             if not state.writing and state.total:
-                text += f" ({state.done / state.total:.0%} of {'the rest' if state.start_plane else 'it'})"
+                text += f" ({state.done / state.total:.0%} complete)"
             self._progress_text = text + "."
 
         unchanged = self.loaded_path == path and self._strokes_unchanged()
