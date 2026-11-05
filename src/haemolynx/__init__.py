@@ -1,7 +1,7 @@
 """
 HaemoLynx: Vascular network analysis from 3D microscopy.
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from . import io
 from . import preprocessing
