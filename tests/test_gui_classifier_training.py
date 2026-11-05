@@ -266,3 +266,35 @@ def test_a_filled_row_that_does_not_exist_yet_is_not_asked_for_before_the_run(tm
     errors = " ".join(check_settings(default_schema(), settings).errors)
     for name in ("input_path", "large_arteriole_mask_path", "large_venule_mask_path"):
         assert name not in errors, name
+
+
+#: Each mask of objects, the switch of its classifier, its classifier row,
+#: what makes the run read it, and the rows naming it.
+_OBJECT_MASKS = {
+    "pericytes": ("use_pixel_classifier_pericyte_segmentation", "pixel_classifier_pericyte_path",
+                  {"measure_pericytes": True},
+                  ("pericyte_mask_path", "pericyte_measurement_mask_path")),
+    "blocks": ("use_pixel_classifier_block_segmentation", "pixel_classifier_block_path",
+               {"run_haemodynamics": True, "run_perturbations": True,
+                "perturbations": [{"name": "b", "type": "capillary_block_mask"}]},
+               ("capillary_block_mask_path",)),
+    "cells": ("use_pixel_classifier_cell_segmentation", "pixel_classifier_cell_path",
+              {"measurement_3d_to_cell_mask": True}, ("cell_mask_path",)),
+    "vessels_3d": ("use_pixel_classifier_3d_vessel_segmentation", "pixel_classifier_3d_vessel_path",
+                   {"measurement_3d_to_cell_mask": True}, ("measurement_3d_vessel_mask_path",)),
+}
+
+
+@pytest.mark.parametrize("word", sorted(_OBJECT_MASKS))
+def test_each_row_reading_a_mask_of_objects_names_the_mask_its_classifier_writes(tmp_path, word):
+    switch, row, read, readers = _OBJECT_MASKS[word]
+    path = _record_only(tmp_path / f"{word}.haemoclf", "vessels")
+    settings = _run_settings(tmp_path, **{switch: True, row: path, **read})
+    filled = classifier_filled_rows(settings)
+    mask = tmp_path / "out" / f"raw_{word}_segmented.tif"
+    assert filled == {name: mask for name in readers}
+    assert _made_by_the_run(settings) == {mask}  # what the run writes, and reads there
+    # The classifier off, or nothing to segment, fills nothing.
+    assert classifier_filled_rows({**settings, switch: False}) == {}
+    assert classifier_filled_rows({**settings, "raw_image_path": None}) == {}
+    assert classifier_filled_rows({**settings, "network_source": "synthetic"}) == {}

@@ -563,3 +563,59 @@ def test_a_combined_classifier_fills_the_vessel_mask_rows_with_its_masks(panel, 
     values = widget._haemolynx_values()
     assert _same_file(values["large_arteriole_mask_path"], tmp_path / "out2" / "raw_large_global_segmented.tif")
     assert values["large_venule_mask_path"] in (None, "")
+
+
+def test_the_object_mask_classifiers_keep_their_mask_rows_in_view_naming_their_masks(panel, tmp_path):
+    from haemolynx.gui.form import classifier_filled_reason
+
+    _viewer, widget, rows, *_ = panel
+    out = tmp_path / "out"
+    rows["output_dir"].value = out
+    pericytes, cells = "use_pixel_classifier_pericyte_segmentation", "use_pixel_classifier_cell_segmentation"
+    rows["measure_pericytes"].value = True
+    rows["run_haemodynamics"].value = True
+    rows["measurement_3d_to_cell_mask"].value = True
+    rows[pericytes].value = True
+    rows[cells].value = True
+    values = widget._haemolynx_values()
+    for name, switch, mask in (
+        ("pericyte_measurement_mask_path", pericytes, out / "raw_pericytes_segmented.tif"),
+        ("cell_mask_path", cells, out / "raw_cells_segmented.tif"),
+    ):
+        assert not rows[name].native.isHidden() and not rows[name].enabled, name
+        assert rows[name].tooltip == classifier_filled_reason(switch), name
+        assert _same_file(values[name], mask), name
+
+    # A perturbation entry reading the block or the pericyte mask shows it
+    # too, greyed, with the classifier's rows under it, and never takes it as
+    # its override (the pericyte mask's only row is an entry's).
+    rows["run_perturbations"].value = True
+    perturbations = widget._haemolynx_perturbations
+    perturbations.add()
+    perturbations.choose_type(0, "capillary_block_mask")
+    perturbations.add()
+    perturbations.choose_type(1, "pericyte_measured_constriction")
+    rows["use_pixel_classifier_block_segmentation"].value = True
+    for index, (name, kind, switch, mask) in enumerate((
+        ("capillary_block_mask_path", "blocks", "use_pixel_classifier_block_segmentation",
+         out / "raw_blocks_segmented.tif"),
+        ("pericyte_mask_path", "pericytes", pericytes, out / "raw_pericytes_segmented.tif"),
+    )):
+        editor = perturbations.editors()[index]
+        row = editor.editors[name]
+        assert not row.native.isHidden() and not row.enabled, name
+        assert row.tooltip == classifier_filled_reason(switch), name
+        assert _same_file(row.value, mask), name
+        assert name not in (perturbations.entries()[index].get("overrides") or {}), name
+        widgets = list(editor.container)
+        slot = widgets.index(next(w for w in widgets if w is editor.classifier_slots[kind]))
+        assert widgets[slot - 1] is row, name
+    block = perturbations.editors()[0].editors["capillary_block_mask_path"]
+
+    # Unticked, each row is the user's again, still naming the classifier's mask.
+    rows["use_pixel_classifier_block_segmentation"].value = False
+    rows[pericytes].value = False
+    assert block.enabled and not block.native.isHidden()
+    assert _same_file(block.value, out / "raw_blocks_segmented.tif")
+    row = rows["pericyte_measurement_mask_path"]
+    assert row.enabled and _same_file(widget._haemolynx_values()[row.name], out / "raw_pericytes_segmented.tif")

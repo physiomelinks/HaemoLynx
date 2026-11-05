@@ -300,12 +300,15 @@ def classifier_filled_rows(values: Mapping[str, Any]) -> dict[str, Path | None]:
     run names it (:func:`row_outputs`): the segmented image while the main
     classifier segments; each vessel-mask role's arteriole (or global) and
     venule rows while its classifier makes that role's masks, the venule row
-    emptied for a global mask, as an empty venule row means one. A role's
-    masks are named by what its classifier was shown, so a role whose
-    classifier file is not there yet fills nothing."""
+    emptied for a global mask, as an empty venule row means one; every row
+    reading a mask of objects (``stages.OBJECT_MASKS``: the pericytes, the
+    capillary blocks, the cells, the cell distances' vessels) while its
+    classifier's switch is on. A role's masks are named by what its classifier
+    was shown, so a role whose classifier file is not there yet fills nothing."""
     from haemolynx.graph.boundaries import network_is_synthetic, vessel_mask_classifier_in_use
     from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
     from haemolynx.pipeline.naming import classifier_segmented_path, classifier_segments
+    from haemolynx.pipeline.stages import OBJECT_MASKS, object_mask_output_path
 
     if network_is_synthetic(values) or values.get("raw_image_path") in (None, ""):
         return {}
@@ -321,6 +324,10 @@ def classifier_filled_rows(values: Mapping[str, Any]) -> dict[str, Path | None]:
         masks = list(row_outputs(values, names["classifier_path"], classifier).values())
         filled[names["arteriole_mask_path"]] = masks[0]
         filled[names["venule_mask_path"]] = masks[1] if len(masks) > 1 else None
+    for word, mask in OBJECT_MASKS.items():
+        if values.get(mask.switch):
+            for name in mask.readers:
+                filled[name] = object_mask_output_path(values, word)
     return filled
 
 

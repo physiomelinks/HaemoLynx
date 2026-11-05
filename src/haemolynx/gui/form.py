@@ -121,17 +121,25 @@ EXCLUSIVE_SWITCHES: dict[str, str] = {
 
 #: The rows a classifier fills with the masks it makes from the raw image, each
 #: mapped to that classifier's switch: the segmented image (the main
-#: classifier's mask of every vessel) and each vessel-mask role's arteriole (or
-#: global) and venule masks. While the switch is on and in effect the row stays
-#: in view, greyed (:func:`classifier_filled_reason`) and filled with the path
-#: of the mask the run makes (``gui.classifier_training.classifier_filled_rows``),
-#: rather than hiding; unticked, it keeps naming that file.
+#: classifier's mask of every vessel), each vessel-mask role's arteriole (or
+#: global) and venule masks, and the masks of objects (pericytes, capillary
+#: blocks, cells, the cell distances' vessels). While the switch is on and in
+#: effect the row stays in view, greyed (:func:`classifier_filled_reason`) and
+#: filled with the path of the mask the run makes
+#: (``gui.classifier_training.classifier_filled_rows``), rather than hiding --
+#: in a perturbation entry too, though never as its override; unticked, it
+#: keeps naming that file.
 CLASSIFIER_FILLED_ROWS: dict[str, str] = {
     "input_path": "use_pixel_classifier_segmentation",
     "large_arteriole_mask_path": "use_pixel_classifier_large_vessel_segmentation",
     "large_venule_mask_path": "use_pixel_classifier_large_vessel_segmentation",
     "small_arteriole_mask_path": "use_pixel_classifier_small_vessel_segmentation",
     "small_venule_mask_path": "use_pixel_classifier_small_vessel_segmentation",
+    "pericyte_mask_path": "use_pixel_classifier_pericyte_segmentation",
+    "pericyte_measurement_mask_path": "use_pixel_classifier_pericyte_segmentation",
+    "capillary_block_mask_path": "use_pixel_classifier_block_segmentation",
+    "cell_mask_path": "use_pixel_classifier_cell_segmentation",
+    "measurement_3d_vessel_mask_path": "use_pixel_classifier_3d_vessel_segmentation",
 }
 
 HIDE_WHEN_UNMET_PARENTS = frozenset(

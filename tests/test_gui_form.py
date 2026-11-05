@@ -394,6 +394,14 @@ _FILLED_ROW_GATES = {
     "small_venule_mask_path": {
         "automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True,
     },
+    # The masks of objects: the pericytes (the solve's constriction and the
+    # measurements), the capillary blocks (read in a perturbation entry), the
+    # cells and the cell distances' vessels.
+    "pericyte_mask_path": {"run_haemodynamics": True, "use_pericyte_mask_constriction": True},
+    "pericyte_measurement_mask_path": {"measure_pericytes": True},
+    "capillary_block_mask_path": {},
+    "cell_mask_path": {"measurement_3d_to_cell_mask": True},
+    "measurement_3d_vessel_mask_path": {"measurement_3d_to_cell_mask": True},
 }
 
 
@@ -430,15 +438,21 @@ def test_a_row_the_classifier_fills_still_hides_for_its_other_gates(row):
     switch = CLASSIFIER_FILLED_ROWS[row]
     values = {**_FILLED_ROW_GATES[row], "raw_image_path": "raw.tif", switch: True}
     # ilastik segmenting the image instead hides the row as before.
-    ilastik = EXCLUSIVE_SWITCHES[switch]
-    with_ilastik = {**values, ilastik: True}
-    assert not fields[row].is_visible(with_ilastik, unmet_chain(SCHEMA, row, with_ilastik))
-    # So does a synthetic network, or the role's masks unticked.
+    if switch in EXCLUSIVE_SWITCHES:
+        with_ilastik = {**values, EXCLUSIVE_SWITCHES[switch]: True}
+        assert not fields[row].is_visible(with_ilastik, unmet_chain(SCHEMA, row, with_ilastik))
+    # A synthetic network reads no raw image: the classifier makes nothing there.
     synthetic = {**values, "network_source": "synthetic"}
-    assert not fields[row].is_visible(synthetic, unmet_chain(SCHEMA, row, synthetic))
+    assert f"!{switch}" not in unmet_chain(SCHEMA, row, synthetic)
+    if row == "input_path" or row.startswith(("large_", "small_")):  # image-only rows
+        assert not fields[row].is_visible(synthetic, unmet_chain(SCHEMA, row, synthetic))
+    # The row's other gates hide it (or grey it) as before.
     for gate in _FILLED_ROW_GATES[row]:
         unticked = {**values, gate: False}
-        assert not fields[row].is_visible(unticked, unmet_chain(SCHEMA, row, unticked)), gate
+        unmet = unmet_chain(SCHEMA, row, unticked)
+        assert gate in unmet, gate
+        if fields[row].hide_when_unmet:
+            assert not fields[row].is_visible(unticked, unmet), gate
 
 
 def test_the_input_tab_keeps_the_segmented_image_row_while_the_classifier_segments():

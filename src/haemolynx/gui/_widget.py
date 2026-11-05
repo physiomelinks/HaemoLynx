@@ -29,6 +29,7 @@ import numpy as np
 
 from haemolynx.gui.form import (
     CHANNEL_SETTINGS,
+    CLASSIFIER_FILLED_ROWS,
     Field,
     HOSTED_CLASSIFIER_ROWS,
     HOSTED_CLASSIFIER_SETTING_SET,
@@ -8159,6 +8160,13 @@ def _resolved_path(path: str) -> Path:
     return Path(path).resolve()
 
 
+def _names_same_file(shown: Any, path: Any) -> bool:
+    """Whether a path row showing *shown* already names *path* (None: empty)."""
+    if shown in (None, "") or path in (None, ""):
+        return shown in (None, "") and path in (None, "")
+    return _resolved_path(str(shown)) == _resolved_path(str(path))
+
+
 def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=None):
     """The Boundaries tab's "point at it instead of typing it" controls.
 
@@ -10172,10 +10180,48 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         values = entry_values(editor)
         shown = set(rows_for_type(editor.type.value))
         for name, widget in editor.editors.items():
-            widget.visible = name in shown and entry_shows(name, values)
+            widget.visible = name in shown and entry_row_in_view(name, values)
+            if name in CLASSIFIER_FILLED_ROWS:
+                show_classifier_mask(name, widget, values)
         editor.advanced.refresh(
-            lambda n: n in shown and entry_shows(n, values), values, schema
+            lambda n: n in shown and entry_row_in_view(n, values), values, schema
         )
+
+    def entry_row_in_view(name: str, values: Mapping[str, Any]) -> bool:
+        """An option that applies (`entry_shows`), or a mask row whose only
+        unmet gate is the classifier that makes its mask (form.CLASSIFIER_FILLED_ROWS),
+        which stays in view greyed and is not one of the entry's overrides."""
+        if entry_shows(name, values):
+            return True
+        switch = CLASSIFIER_FILLED_ROWS.get(name)
+        unmet = unmet_chain(schema, name, values)
+        return switch is not None and unmet == (f"!{switch}",) and fields[name].is_visible(values, unmet)
+
+    def show_classifier_mask(name: str, widget, values: Mapping[str, Any]) -> None:
+        """Grey a mask row the classifier makes the mask of, naming the file
+        it writes (`classifier_training.classifier_filled_rows`); put it back
+        as the user's row otherwise. Its value is never written as the
+        entry's override while it is greyed (`overrides_from`)."""
+        from haemolynx.gui.classifier_training import classifier_filled_rows
+
+        greyed = entry_row_in_view(name, values) and not entry_shows(name, values)
+        widget.enabled = not greyed
+        if not greyed:
+            widget.tooltip = fields[name].help
+            return
+        unmet = unmet_chain(schema, name, values)
+        widget.tooltip = replace(fields[name], enabled_by=unmet).why_disabled(values)
+        filled = classifier_filled_rows(values)
+        if name not in filled:
+            return
+        if _names_same_file(fields[name].to_setting_value(_safe_widget_value(widget)), filled[name]):
+            return
+        applying = state.applying
+        state.applying = True  # shown, not the entry's override: nothing is written
+        try:
+            widget.value = display_value_for(schema[name], filled[name])
+        finally:
+            state.applying = applying
 
     def lay_out_editors(editor) -> None:
         """Name, type, this type's knobs in SETTINGS_FOR_TYPE order, Remove.
@@ -16839,10 +16885,7 @@ def settings_widget(napari_viewer=None):
         for name, path in classifier_filled_rows(values).items():
             if name not in rows:
                 continue
-            shown = fields[name].to_setting_value(_safe_widget_value(rows[name]))
-            if shown in (None, "") and path is None:
-                continue
-            if shown not in (None, "") and path is not None and _resolved_path(str(shown)) == _resolved_path(str(path)):
+            if _names_same_file(fields[name].to_setting_value(_safe_widget_value(rows[name])), path):
                 continue
             rows[name].value = display_value_for(schema[name], path)
             loaded_paths.pop(name, None)
@@ -17111,10 +17154,18 @@ def settings_widget(napari_viewer=None):
     def pericyte_mask_rows() -> dict[str, Any]:
         """The pericyte mask rows the panel shows -- Pericyte measurements'
         while it is ticked, and each perturbation entry's revealed one --
-        and what each names."""
+        and what each names. Not a row the classifier names its own mask in
+        (form.CLASSIFIER_FILLED_ROWS): that is the classifier's, not the
+        follower's, while its switch is on."""
+        from haemolynx.gui.classifier_training import classifier_filled_rows
+
         values = current_values()
         shown: dict[str, Any] = {}
-        if values.get("measure_pericytes") and PERICYTE_MEASUREMENT_FIELD in rows:
+        if (
+            values.get("measure_pericytes")
+            and PERICYTE_MEASUREMENT_FIELD in rows
+            and PERICYTE_MEASUREMENT_FIELD not in classifier_filled_rows(values)
+        ):
             shown[PERICYTE_MEASUREMENT_FIELD] = values.get(PERICYTE_MEASUREMENT_FIELD)
         if perturbations is not None:
             for index, value in perturbations.pericyte_masks().items():
@@ -17183,6 +17234,10 @@ def settings_widget(napari_viewer=None):
     for name in PERICYTE_MASK_TRIGGERS:
         if name in rows:
             rows[name].changed.connect(follow_pericyte_masks)
+    # The pericyte classifier takes the rows it names its mask in from the
+    # follower while it is on, and gives them back when it goes off.
+    if "use_pixel_classifier_pericyte_segmentation" in rows:
+        rows["use_pixel_classifier_pericyte_segmentation"].changed.connect(follow_pericyte_masks)
     if perturbations is not None:
         perturbations.on_change(lambda rebuilt: follow_pericyte_masks(rebuilt=rebuilt))
 
