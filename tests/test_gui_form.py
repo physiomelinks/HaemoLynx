@@ -1773,8 +1773,12 @@ def test_the_pericyte_classifier_sits_with_the_perturbations_that_read_its_mask(
     other = {**base, "perturbations": [_entry("pericyte_dilation_sweep", use_pericyte_mask_constriction=False)]}
     assert hosted_classifier_host("pericytes", other) is None
     assert hosted_classifier_host("pericytes", {**other, "measure_pericytes": True}) == "measurements"
-    # Perturbations not run make no mask.
-    assert hosted_classifier_host("pericytes", {**reads, "run_perturbations": False}) is None
+    # The rows go with the entry whether perturbations run this time or not.
+    assert hosted_classifier_host("pericytes", {**reads, "run_perturbations": False}) == "perturbations"
+    from haemolynx.gui.form import hosted_classifier_entry
+
+    two = {"perturbations": [_entry("arteriole_diameter_change"), _entry("pericyte_measured_constriction")]}
+    assert hosted_classifier_entry("pericytes", two) == 1
 
 
 def test_the_block_classifier_sits_with_a_capillary_block_from_a_mask():

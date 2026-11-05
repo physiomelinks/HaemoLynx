@@ -803,7 +803,8 @@ def test_the_pericyte_and_block_classifiers_join_what_reads_their_masks(make_nap
         return widgets[position - 1] is editor.editors[mask]
 
     assert placement == {"pericytes": None, "blocks": None}
-    rows["run_perturbations"].value = True
+    # Perturbations need not be ticked to run: the rows go with the entry.
+    assert rows["run_perturbations"].value is False
     perturbations.add()
     perturbations.choose_type(0, "capillary_block_mask")
     assert placement == {"pericytes": None, "blocks": ("perturbations", 0)}
@@ -829,11 +830,16 @@ def test_the_pericyte_and_block_classifiers_join_what_reads_their_masks(make_nap
     rows["measure_pericytes"].value = True
     assert placement["pericytes"] == "measurements"
     assert inside(holders["measurements"], "use_pixel_classifier_pericyte_segmentation")
-    # Perturbations off: nothing reads the block mask.
+    # Ticking perturbations to run, or not, leaves the rows in the entry.
     perturbations.add()
     perturbations.choose_type(0, "capillary_block_mask")
     assert placement["blocks"] == ("perturbations", 0)
+    rows["run_perturbations"].value = True
     rows["run_perturbations"].value = False
+    assert placement["blocks"] == ("perturbations", 0)
+    assert inside(perturbations.classifier_slot(0, "blocks"), "use_pixel_classifier_block_segmentation")
+    # Another type there: the rows leave it.
+    perturbations.choose_type(0, "capillary_block")
     assert placement["blocks"] is None
     assert not inside(perturbations.classifier_slot(0, "blocks"), "use_pixel_classifier_block_segmentation")
     # Hosted rows keep their Train... buttons wherever they go.

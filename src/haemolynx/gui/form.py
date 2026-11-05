@@ -231,13 +231,14 @@ HOSTED_MASK_SETTINGS: dict[str, str] = {"pericytes": "pericyte_mask_path", "bloc
 
 
 def hosted_classifier_entry(kind: str, values: Mapping[str, Any]) -> int | None:
-    """The first perturbation the run makes that reads the mask of *kind*
-    (a pericyte type placing pericytes from a mask, the measured constriction;
-    a capillary block from a mask), by its place in the list; None for none."""
+    """The first perturbation in the list that reads the mask of *kind* (a
+    pericyte type placing pericytes from a mask, the measured constriction; a
+    capillary block from a mask), by its place in the list; None for none.
+    Whether perturbations run this time or not: the rows go with the entry."""
     from haemolynx.graph.boundaries import network_is_synthetic
     from haemolynx.haemodynamics.perturbations import perturbation_mask_setting, perturbations_from_settings
 
-    if network_is_synthetic(values) or not values.get("run_perturbations"):
+    if network_is_synthetic(values):
         return None
     wanted = HOSTED_MASK_SETTINGS[kind]
     for index, spec in enumerate(perturbations_from_settings(values)):
@@ -248,7 +249,7 @@ def hosted_classifier_entry(kind: str, values: Mapping[str, Any]) -> int | None:
 
 def hosted_classifier_host(kind: str, values: Mapping[str, Any]) -> str | None:
     """Where the classifier rows of *kind* (:data:`HOSTED_CLASSIFIER_ROWS`)
-    appear: ``"perturbations"`` while a perturbation the run makes reads its
+    appear: ``"perturbations"`` while a perturbation in the list reads its
     mask (in that entry, :func:`hosted_classifier_entry`), else
     ``"measurements"`` for the pericytes while Pericyte measurements is
     ticked, else None."""
